@@ -7,7 +7,7 @@
 logs/
 .idea/
 .vscode/
-**/target/
+security-toolbox-server/target/
 **/node_modules/
 **/dist/
 *.tsbuildinfo

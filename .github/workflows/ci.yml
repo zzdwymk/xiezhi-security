@@ -57,7 +57,7 @@ jobs:
             esac
 
             case "/${file}/" in
-              */.agents/*|*/.run/*|*/.h2tmp/*|*/.tmp/*|*/node_modules/*|*/target/*|*/dist/*|*/desktop-release/*|*/__pycache__/*|*/.pytest_cache/*|*/.idea/*|*/.vscode/*|*/logs/*|*/ai-runtime/build/*|*/ai-runtime/data/*|*/security-toolbox-server/data/*|*/security-toolbox-web/data/*)
+              */.agents/*|*/.run/*|*/.h2tmp/*|*/.tmp/*|*/node_modules/*|/security-toolbox-server/target/*|*/dist/*|*/desktop-release/*|*/__pycache__/*|*/.pytest_cache/*|*/.idea/*|*/.vscode/*|*/logs/*|*/ai-runtime/build/*|*/ai-runtime/data/*|*/security-toolbox-server/data/*|*/security-toolbox-web/data/*)
                 violations+=("generated or runtime path: ${file}")
                 ;;
             esac
