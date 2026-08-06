@@ -34,7 +34,6 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     outputs:
-      artifact_name: ${{ steps.meta.outputs.artifact_name }}
       release_tag: ${{ steps.meta.outputs.release_tag }}
       version: ${{ steps.meta.outputs.version }}
     steps:
@@ -67,7 +66,6 @@ jobs:
 
           "version=$version" >> $env:GITHUB_OUTPUT
           "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
-          "artifact_name=xiezhi-windows-$releaseTag" >> $env:GITHUB_OUTPUT
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -235,11 +233,29 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Upload Windows release artifact
+      - name: Upload portable‑zip artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.meta.outputs.artifact_name }}
-          path: ${{ runner.temp }}/security-toolbox-release-assets/*
+          name: windows-portable-zip-${{ steps.meta.outputs.release_tag }}
+          path: ${{ runner.temp }}/security-toolbox-release-assets/*.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload NSIS installer exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-setup-exe-${{ steps.meta.outputs.release_tag }}
+          path: ${{ runner.temp }}/security-toolbox-release-assets/*‑setup.exe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload SHA256SUMS checksum artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows‑sha256‑sums‑${{ steps.meta.outputs.release_tag }}
+          path: ${{ runner.temp }}/security-toolbox-release-assets/SHA256SUMS.txt
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
@@ -254,10 +270,22 @@ jobs:
       contents: write
     environment: release
     steps:
-      - name: Download Windows release artifact
+      - name: Download portable‑zip artifact
         uses: actions/download-artifact@v4
         with:
-          name: ${{ needs.build.outputs.artifact_name }}
+          name: windows-portable-zip-${{ needs.build.outputs.release_tag }}
+          path: release-assets
+
+      - name: Download NSIS installer exe artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-setup-exe-${{ needs.build.outputs.release_tag }}
+          path: release-assets
+
+      - name: Download SHA256SUMS checksum artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows‑sha256‑sums‑${{ needs.build.outputs.release_tag }}
           path: release-assets
 
       - name: Verify release checksums
