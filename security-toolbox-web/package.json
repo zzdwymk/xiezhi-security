@@ -1,7 +1,7 @@
 {
   "name": "security-toolbox-desktop",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.2.0",
   "description": "Xiezhi authorized security testing platform",
   "type": "module",
   "main": "electron/main.cjs",
