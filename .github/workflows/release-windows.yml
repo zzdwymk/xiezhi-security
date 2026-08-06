@@ -120,7 +120,7 @@ jobs:
           python -m pip check
           Push-Location security-toolbox-web
           try {
-            npm.cmd ci
+            npm.cmd ci --include=dev
             if ($LASTEXITCODE -ne 0) { throw "npm ci failed." }
           } finally {
             Pop-Location
@@ -179,11 +179,10 @@ jobs:
           if (Test-Path -LiteralPath $installerOutput) {
             Remove-Item -LiteralPath $installerOutput -Recurse -Force
           }
-          $electronDist = (Resolve-Path -LiteralPath "security-toolbox-web/node_modules/electron/dist").Path
 
           Push-Location security-toolbox-web
           try {
-            & npm.cmd exec -- electron-builder --win nsis "--config.directories.output=$installerOutput" "--config.electronDist=$electronDist"
+            & npm.cmd exec -- electron-builder --win nsis "--config.directories.output=$installerOutput"
             if ($LASTEXITCODE -ne 0) { throw "NSIS installer build failed." }
           } finally {
             Pop-Location

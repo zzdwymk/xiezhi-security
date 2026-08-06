@@ -45,9 +45,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed.' }
 
     $buildOutput = Join-Path $env:LOCALAPPDATA ('Temp\security-toolbox-build-' + [Guid]::NewGuid().ToString('N'))
-    $electronDist = Join-Path $frontend 'node_modules\electron\dist'
     Write-Host 'Packaging Electron unpacked application...' -ForegroundColor Cyan
-    & $npmCommand.Source exec -- electron-builder --dir "--config.directories.output=$buildOutput" "--config.electronDist=$electronDist"
+    & $npmCommand.Source exec -- electron-builder --dir "--config.directories.output=$buildOutput"
     if ($LASTEXITCODE -ne 0) { throw 'Electron packaging failed.' }
 
     $source = Join-Path $buildOutput 'win-unpacked'
