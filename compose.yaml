@@ -1,0 +1,25 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: security_toolbox
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD before starting PostgreSQL}"
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - toolbox-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d security_toolbox"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  juice-shop:
+    image: bkimminich/juice-shop:latest
+    ports:
+      - "127.0.0.1:3000:3000"
+    profiles: ["lab"]
+
+volumes:
+  toolbox-postgres:

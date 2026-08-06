@@ -1,0 +1,512 @@
+.product-icon .el-icon,
+.login-logo .el-icon {
+  font-size: 18px;
+}
+.empty-state {
+  display: flex;
+  min-height: 180px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  color: #94a3b8;
+  text-align: center;
+}
+.empty-mark {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 12px;
+  border: 1px solid #dbe2ea;
+  border-radius: 50%;
+  background: #f8fafc;
+  color: #94a3b8;
+  font-size: 20px;
+}
+.empty-state strong {
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 500;
+}
+.empty-state p {
+  max-width: 420px;
+  margin: 7px 0 0;
+  color: #9ca3af;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.panel .el-table {
+  font-size: 12px;
+}
+.panel .el-table .cell {
+  line-height: 1.45;
+}
+.panel .el-button--primary {
+  --el-button-bg-color: #2563eb;
+  --el-button-border-color: #2563eb;
+  --el-button-hover-bg-color: #1d4ed8;
+  --el-button-hover-border-color: #1d4ed8;
+}
+.el-dialog {
+  border-radius: 8px;
+}
+.el-dialog__header {
+  margin-right: 0;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #eef0f3;
+}
+.el-dialog__footer {
+  padding-top: 16px;
+  border-top: 1px solid #eef0f3;
+}
+
+/* Desktop workspace shell */
+.desktop-shell {
+  min-height: 560px;
+  background: #e9edf2;
+}
+.desktop-shell .app-sidebar {
+  display: flex;
+  padding: 0;
+  background: #202833;
+  border-right: 1px solid #151b23;
+}
+.desktop-shell .product {
+  height: 48px;
+  gap: 9px;
+  padding: 0 10px;
+  border-bottom: 1px solid #323b47;
+  background: #1c232d;
+}
+.desktop-shell .product-icon {
+  width: 27px;
+  height: 27px;
+  border-radius: 3px;
+  background: #3979b7;
+}
+.desktop-shell .product-icon .el-icon {
+  font-size: 14px;
+}
+.desktop-shell .product strong {
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+.desktop-shell .product small {
+  margin-top: 1px;
+  color: #778596;
+  font-size: 9px;
+}
+.sidebar-body {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+}
+.activity-rail {
+  display: flex;
+  width: 43px;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  padding: 5px 0;
+  background: #181f28;
+  border-right: 1px solid #303945;
+}
+.activity-rail button {
+  position: relative;
+  display: grid;
+  width: 43px;
+  height: 41px;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: #788697;
+  cursor: pointer;
+}
+.activity-rail button:hover {
+  color: #d7dce3;
+}
+.activity-rail button.active {
+  color: #fff;
+}
+.activity-rail button.active::before {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+  width: 2px;
+  background: #4b8dcc;
+  content: "";
+}
+.activity-rail .el-icon {
+  font-size: 18px;
+}
+.activity-rail .activity-bottom {
+  margin-top: auto;
+}
+.tool-explorer {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+.explorer-head {
+  display: flex;
+  height: 35px;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px 0 11px;
+  border-bottom: 1px solid #303945;
+  color: #aab4c0;
+  font-size: 9px;
+  letter-spacing: 0;
+}
+.explorer-head button {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: #798697;
+  cursor: pointer;
+}
+.explorer-head button:hover {
+  color: #fff;
+}
+.desktop-shell .sidebar-nav {
+  flex: 1;
+  padding: 5px 0 9px;
+}
+.desktop-shell .nav-group + .nav-group {
+  margin-top: 3px;
+}
+.desktop-shell .nav-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 10px 3px;
+  color: #778596;
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+.desktop-shell .nav-label span {
+  color: #647180;
+  font-size: 10px;
+}
+.desktop-shell .app-menu .el-menu-item {
+  height: 30px;
+  margin: 0;
+  padding-left: 22px !important;
+  border-radius: 0;
+  color: #aeb8c4;
+  font-size: 11px;
+}
+.desktop-shell .app-menu .el-menu-item:hover {
+  background: #293440;
+  color: #eef2f6;
+}
+.desktop-shell .app-menu .el-menu-item.is-active {
+  background: #344455;
+  color: #fff;
+  box-shadow: inset 2px 0 #4b8dcc;
+}
+.desktop-shell .app-menu .el-icon {
+  font-size: 13px;
+}
+.desktop-shell .sidebar-status {
+  margin-top: 0;
+  padding: 10px;
+  border-top: 1px solid #303945;
+  background: #1d252f;
+}
+.desktop-shell .sidebar-status b {
+  font-size: 10px;
+}
+.desktop-shell .sidebar-status small {
+  font-size: 9px;
+}
+.desktop-shell .workspace {
+  background: #edf0f4;
+}
+.app-toolbar {
+  height: 44px;
+  padding: 0 9px;
+  border-bottom: 1px solid #cdd3db;
+  background: #f8f9fb;
+}
+.toolbar-left,
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.toolbar-action {
+  display: flex;
+  height: 28px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: #475362;
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+.toolbar-action:hover {
+  border-color: #d6dbe2;
+  background: #fff;
+}
+.toolbar-action.primary {
+  border-color: #3979b7;
+  background: #3979b7;
+  color: #fff;
+}
+.toolbar-action.primary:hover {
+  border-color: #2f6ca5;
+  background: #2f6ca5;
+}
+.command-entry {
+  display: flex;
+  width: min(390px, 38vw);
+  height: 27px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 7px;
+  border: 1px solid #cfd5dc;
+  border-radius: 3px;
+  background: #fff;
+  color: #7b8592;
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  box-shadow: 0 1px 1px rgba(15, 23, 42, 0.03);
+}
+.command-entry:hover {
+  border-color: #9eabb9;
+}
+.command-entry span {
+  flex: 1;
+  text-align: left;
+}
+.command-entry kbd {
+  padding: 1px 5px;
+  border: 1px solid #d7dce2;
+  border-radius: 2px;
+  background: #f3f5f7;
+  color: #8b94a0;
+  font-family: inherit;
+  font-size: 8px;
+}
+.engine-pill {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 7px;
+  border: 1px solid #d9dee4;
+  border-radius: 3px;
+  background: #fff;
+  color: #657180;
+  font-size: 9px;
+}
+.desktop-shell .user-menu {
+  height: 30px;
+  gap: 6px;
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+.desktop-shell .user-menu:hover {
+  background: #e9edf2;
+}
+.desktop-shell .avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
+  background: #dfe9f4;
+  color: #346b9e;
+  font-size: 10px;
+}
+.desktop-shell .user-menu > span:nth-child(2) {
+  min-width: 56px;
+}
+.desktop-shell .user-menu b {
+  font-size: 9px;
+}
+.desktop-shell .user-menu small {
+  font-size: 8px;
+}
+.workspace-context {
+  display: flex;
+  height: 24px;
+  flex: none;
+  align-items: center;
+  padding: 0 11px;
+  border-bottom: 1px solid #d9dee4;
+  background: #f5f7f9;
+}
+.desktop-shell .page-heading {
+  gap: 6px;
+  font-size: 9px;
+}
+.desktop-shell .page-heading span {
+  color: #8a94a0;
+  font-size: 8px;
+  letter-spacing: 0;
+}
+.desktop-shell .page-heading strong {
+  color: #566170;
+  font-size: 9px;
+  font-weight: 550;
+}
+.desktop-shell .workspace-tabs {
+  height: 32px;
+  padding: 0;
+  background: #e3e7ec;
+  border-bottom: 1px solid #cfd5dc;
+}
+.desktop-shell .workspace-tab {
+  position: relative;
+  min-width: 100px;
+  height: 31px;
+  justify-content: flex-start;
+  gap: 7px;
+  padding: 0 9px;
+  border: 0;
+  border-right: 1px solid #cfd5dc;
+  border-radius: 0;
+  background: #e8ebef;
+  color: #6e7885;
+  font-size: 10px;
+}
+.desktop-shell .workspace-tab:hover {
+  background: #eef1f4;
+}
+.desktop-shell .workspace-tab.active {
+  background: #fff;
+  color: #2f3945;
+}
+.tab-indicator {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border: 1px solid #84909e;
+  border-radius: 1px;
+  background: #f7f8f9;
+}
+.desktop-shell .workspace-tab.active .tab-indicator {
+  border-color: #3979b7;
+  background: #3979b7;
+}
+.desktop-shell .tab-close {
+  margin-left: auto;
+  font-size: 13px;
+}
+.desktop-shell .content-area {
+  padding: 16px 18px;
+  background: #edf0f4;
+}
+.desktop-shell .app-statusbar {
+  height: 23px;
+  gap: 15px;
+  padding: 0 9px;
+  border-top: 0;
+  background: #285f91;
+  color: #dce9f4;
+  font-size: 9px;
+}
+.desktop-shell .app-statusbar span,
+.desktop-shell .app-statusbar button {
+  gap: 5px;
+}
+.desktop-shell .app-statusbar b {
+  color: #fff;
+  font-weight: 550;
+}
+.desktop-shell .app-statusbar .status-dot {
+  width: 6px;
+  height: 6px;
+  background: #9fe0b4;
+}
+.desktop-shell .app-statusbar button {
+  margin-left: 0;
+  color: #e7f1f8;
+}
+.desktop-shell .app-statusbar button:hover {
+  background: #3471a8;
+  color: #fff;
+}
+.status-spacer {
+  flex: 1;
+}
+.desktop-shell .panel {
+  border-color: #d9dee5;
+  border-radius: 4px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.025);
+}
+.desktop-shell .el-button {
+  border-radius: 3px;
+}
+.desktop-shell .el-input__wrapper,
+.desktop-shell .el-select__wrapper,
+.desktop-shell .el-textarea__inner {
+  border-radius: 3px;
+}
+.desktop-shell .el-dialog {
+  border-radius: 4px;
+}
+
+@media (max-width: 900px) {
+  .desktop-shell .app-sidebar {
+    width: 52px !important;
+  }
+  .desktop-shell .product {
+    justify-content: center;
+    padding: 0;
+  }
+  .desktop-shell .product div,
+  .tool-explorer {
+    display: none;
+  }
+  .desktop-shell .activity-rail {
+    width: 51px;
+    border-right: 0;
+  }
+  .desktop-shell .activity-rail button {
+    width: 51px;
+  }
+  .command-entry {
+    width: min(300px, 42vw);
+  }
+  .engine-pill {
+    display: none;
+  }
+  .desktop-shell .content-area {
+    padding: 13px;
+  }
+  .workspace-context {
+    display: none;
+  }
+}
+@media (max-width: 650px) {
+  .toolbar-left .toolbar-action:not(.primary),
+  .desktop-shell .user-menu > span:nth-child(2),
+  .command-entry span,
+  .command-entry kbd {
+    display: none;
+  }
+  .command-entry {
+    width: 31px;
+    justify-content: center;
+    padding: 0;
+  }
+  .desktop-shell .app-statusbar span:nth-child(2),
+  .desktop-shell .app-statusbar span:nth-child(3) {
+    display: none;
+  }
+}

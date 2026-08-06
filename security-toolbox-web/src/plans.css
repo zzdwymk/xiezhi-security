@@ -1,0 +1,21 @@
+.plan-step {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  padding: 14px 16px;
+  margin: 10px 0;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: var(--app-surface);
+}
+.plan-step b {
+  color: var(--app-text);
+  font-size: 13px;
+}
+.plan-step p {
+  margin: 6px 0;
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}

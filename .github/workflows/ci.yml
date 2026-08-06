@@ -1,0 +1,206 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JAVA_VERSION: "17"
+  NODE_VERSION: "24"
+  PYTHON_VERSION: "3.10"
+
+jobs:
+  hygiene:
+    name: Repository hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Reject generated, sensitive, or oversized tracked files
+        shell: bash
+        run: |
+          set -euo pipefail
+          violations=()
+
+          while IFS= read -r -d '' file; do
+            case "${file}" in
+              .github/*|ai-runtime/*|security-toolbox-server/*|security-toolbox-web/*)
+                ;;
+              scripts/package-desktop-release.ps1|scripts/start-all.ps1|scripts/start-desktop.ps1|scripts/status-all.ps1|scripts/stop-all.ps1)
+                ;;
+              .gitignore|README.md|compose.yaml|package-desktop-release.cmd|start-all.cmd|start-desktop.cmd|stop-all.cmd|LICENSE|LICENSE.*|CONTRIBUTING.md|SECURITY.md|CODE_OF_CONDUCT.md|.editorconfig)
+                ;;
+              *)
+                violations+=("outside public tool repository scope: ${file}")
+                ;;
+            esac
+
+            case "${file}" in
+              ai-runtime/README.md)
+                violations+=("internal technical document: ${file}")
+                ;;
+            esac
+
+            case "/${file}/" in
+              */.agents/*|*/.run/*|*/.h2tmp/*|*/.tmp/*|*/node_modules/*|*/target/*|*/dist/*|*/desktop-release/*|*/__pycache__/*|*/.pytest_cache/*|*/.idea/*|*/.vscode/*|*/logs/*|*/ai-runtime/build/*|*/ai-runtime/data/*|*/security-toolbox-server/data/*|*/security-toolbox-web/data/*)
+                violations+=("generated or runtime path: ${file}")
+                ;;
+            esac
+
+            case "${file}" in
+              *.log|*.tsbuildinfo|*.p12|*.jks|*.keystore|*.mv.db|*.lock.db|*.key|*.doc|*.docx|*.pdf|*.ppt|*.pptx|*.xls|*.xlsx|*/development-secrets.json|*/runtime-token.txt|.env|*/.env|.env.local|*/.env.local|.env.development|*/.env.development|.env.production|*/.env.production)
+                violations+=("sensitive or generated file: ${file}")
+                ;;
+            esac
+
+            if [[ -f "${file}" ]]; then
+              size=$(stat -c '%s' "${file}")
+              if (( size > 94371840 )); then
+                violations+=("tracked file is larger than 90 MiB: ${file}")
+              fi
+            fi
+          done < <(git ls-files -z)
+
+          if (( ${#violations[@]} > 0 )); then
+            printf 'Repository hygiene check failed:\n'
+            printf ' - %s\n' "${violations[@]}"
+            exit 1
+          fi
+
+  backend:
+    name: Spring Boot tests
+    needs: hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ADMIN_PASSWORD: ci-only-admin-password
+      JWT_SECRET: ci-only-jwt-secret-with-more-than-thirty-two-bytes
+      TRAFFIC_MITM_CA_PASSWORD: ci-only-mitm-ca-password
+      TRAFFIC_MITM_ENABLED: "false"
+      AI_ENABLED: "false"
+      AI_RUNTIME_ENABLED: "false"
+      RECON_PASSIVE_SOURCES_ENABLED: "false"
+      CISA_KEV_ENABLED: "false"
+      NUCLEI_CATALOG_IMPORT_ON_STARTUP: "false"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Verify backend
+        working-directory: security-toolbox-server
+        run: mvn -B -ntp verify
+
+      - name: Upload backend test reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-reports
+          path: security-toolbox-server/target/surefire-reports/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  ai-runtime:
+    name: AI Runtime tests
+    needs: hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            ai-runtime/requirements.txt
+            ai-runtime/requirements-build.txt
+
+      - name: Install AI Runtime dependencies
+        working-directory: ai-runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-build.txt
+          python -m pip check
+
+      - name: Test AI Runtime
+        working-directory: ai-runtime
+        run: >-
+          python -m pytest -q
+          --basetemp="${{ runner.temp }}/security-toolbox-ai-pytest"
+          --junitxml="${{ runner.temp }}/security-toolbox-ai-junit.xml"
+
+      - name: Upload AI Runtime test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-runtime-test-report
+          path: ${{ runner.temp }}/security-toolbox-ai-junit.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
+  frontend:
+    name: Vue and Electron checks
+    needs: hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: security-toolbox-web/package-lock.json
+
+      - name: Use the official npm registry on hosted runners
+        run: |
+          node -e "const fs=require('node:fs');const p='security-toolbox-web/package-lock.json';const s=fs.readFileSync(p,'utf8');fs.writeFileSync(p,s.replaceAll('https://registry.npmmirror.com/','https://registry.npmjs.org/'));"
+          npm config set registry https://registry.npmjs.org/
+
+      - name: Install frontend dependencies
+        working-directory: security-toolbox-web
+        run: npm ci
+
+      - name: Test Electron file boundaries
+        working-directory: security-toolbox-web
+        run: npm run test:json-file
+
+      - name: Test offline tools
+        working-directory: security-toolbox-web
+        run: npm run test:offline
+
+      - name: Build Vue renderer
+        working-directory: security-toolbox-web
+        run: npm run build

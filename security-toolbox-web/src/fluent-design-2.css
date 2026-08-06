@@ -1,0 +1,3366 @@
+/*
+ * Xiezhi Fluent Design 2 layer
+ *
+ * This file is intentionally additive.  Window material ownership remains in
+ * unified-theme.css/electron (none, Mica and Acrylic).  Surfaces below use the
+ * existing --app-* tokens so the same rules adapt to all three materials.
+ */
+
+/* Shared type and motion contract.  Keep compact telemetry/code blocks
+   compact; all user-facing secondary copy gets at least the Fluent caption 1
+   size for legibility. */
+.desktop-v2-app-frame,
+.desktop-v2-app-frame :where(button, input, textarea, select),
+.el-dialog,
+.el-message-box,
+.el-popper {
+  font-family: var(--fluent-font);
+  font-synthesis: none;
+}
+
+.desktop-v2-app-frame
+  :where(
+    .desktop-v2-brand small,
+    .desktop-v2-context,
+    .desktop-v2-section-label,
+    .desktop-v2-nav-group-toggle,
+    .desktop-v2-recents small,
+    .desktop-v2-scope small,
+    .desktop-v2-user-copy small,
+    .section-head p,
+    .simple-page-heading p,
+    .settings-list small,
+    .start-panel header p,
+    .start-action-copy small,
+    .start-action-copy p
+  ) {
+  color: color-mix(in srgb, var(--app-text) 78%, transparent);
+  font-size: var(--fluent-body1-size);
+  line-height: var(--fluent-body1-line);
+}
+
+.desktop-v2-app-frame
+  :where(
+    .desktop-v2-brand small,
+    .desktop-v2-recents small,
+    .desktop-v2-scope small,
+    .desktop-v2-user-copy small
+  ) {
+  font-size: var(--fluent-caption1-size);
+  line-height: var(--fluent-caption1-line);
+}
+
+/* Keep vertical scrolling available while removing scrollbar chrome globally.
+   This is deliberately in the last-loaded Fluent layer so component-level
+   scrollbar rules cannot reintroduce a visible vertical rail. */
+html,
+body,
+#app,
+* {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+*::-webkit-scrollbar:vertical {
+  display: none !important;
+  width: 0 !important;
+}
+
+*::-webkit-scrollbar-thumb:vertical,
+*::-webkit-scrollbar-track:vertical {
+  display: none !important;
+  background: transparent !important;
+}
+
+.el-scrollbar__bar.is-vertical {
+  display: none !important;
+}
+
+/* The navigation is grouped without changing any route.  It can scroll on
+   short windows so the new group labels never hide the safety/status footer. */
+.desktop-v2-nav {
+  min-height: 0;
+  flex: 0 1 auto;
+  gap: 8px;
+  overflow: auto;
+  padding: 2px 0;
+  /* Keep the navigation scrollable without reintroducing a visible vertical
+     scrollbar.  The global Fluent layer intentionally hides scrollbar chrome. */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.desktop-v2-nav::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+.desktop-v2-nav::-webkit-scrollbar-thumb {
+  display: none !important;
+}
+
+.desktop-v2-nav-group {
+  display: grid;
+  gap: 2px;
+}
+
+.desktop-v2-nav-group + .desktop-v2-nav-group {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: var(--fluent-stroke-thin) solid var(--app-border);
+}
+
+.desktop-v2-nav-group-toggle {
+  min-height: 30px;
+  justify-content: space-between;
+  padding: 0 10px;
+  color: var(--app-text);
+  font-family: var(--fluent-font-small);
+  font-size: var(--fluent-caption1-size);
+  font-weight: var(--fluent-weight-semibold);
+  letter-spacing: 0;
+  line-height: var(--fluent-caption1-line);
+}
+
+.desktop-v2-nav-group-toggle:hover {
+  background: var(--app-surface-soft);
+  color: var(--app-text);
+}
+
+.desktop-v2-nav-group-toggle:focus-visible {
+  outline: var(--fluent-stroke-thick) solid var(--app-accent);
+  outline-offset: -2px;
+}
+
+.desktop-v2-nav-group-toggle > .el-icon {
+  flex: none;
+  color: color-mix(in srgb, var(--app-text) 72%, transparent);
+  font-size: 14px;
+  transition: transform var(--fluent-normal, 180ms) ease;
+}
+
+.desktop-v2-nav-group.collapsed .desktop-v2-nav-group-toggle > .el-icon {
+  transform: rotate(-90deg);
+}
+
+/* Collapse/expand chevrons stay hidden until the group is hovered or focused (or is
+   already collapsed, so the state stays discoverable), fading + rotating smoothly. */
+.desktop-v2-nav-group-toggle > .el-icon,
+.desktop-v2-recents-toggle > .el-icon:last-child {
+  opacity: 0;
+  transition:
+    transform var(--fluent-normal, 180ms) ease,
+    opacity 160ms ease;
+}
+.desktop-v2-nav-group:hover .desktop-v2-nav-group-toggle > .el-icon,
+.desktop-v2-nav-group-toggle:hover > .el-icon,
+.desktop-v2-nav-group-toggle:focus-visible > .el-icon,
+.desktop-v2-nav-group.collapsed .desktop-v2-nav-group-toggle > .el-icon,
+.desktop-v2-recents:hover .desktop-v2-recents-toggle > .el-icon:last-child,
+.desktop-v2-recents-toggle:hover > .el-icon:last-child,
+.desktop-v2-recents-toggle:focus-visible > .el-icon:last-child,
+.desktop-v2-recents.collapsed .desktop-v2-recents-toggle > .el-icon:last-child {
+  opacity: 1;
+}
+
+.desktop-v2-nav-group-items {
+  display: grid;
+  max-height: 240px;
+  gap: 2px;
+  overflow: hidden;
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    max-height var(--fluent-normal, 180ms) ease,
+    opacity var(--fluent-fast),
+    transform var(--fluent-normal, 180ms) ease;
+}
+
+.desktop-v2-nav-group.collapsed .desktop-v2-nav-group-items {
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+}
+
+.desktop-v2-nav-item {
+  min-height: var(--fluent-control-height-large);
+  border: var(--fluent-stroke-thin) solid transparent;
+  border-radius: var(--fluent-radius-control);
+  color: var(--app-text);
+  font-size: var(--fluent-body1-size);
+  transition:
+    background-color var(--fluent-fast),
+    border-color var(--fluent-fast),
+    color var(--fluent-fast),
+    transform var(--fluent-fast);
+}
+
+.desktop-v2-nav-item:hover {
+  border-color: color-mix(in srgb, var(--app-accent) 34%, var(--app-border));
+  background: var(--app-accent-soft);
+  color: var(--app-text);
+  box-shadow: var(--fluent-shadow-4);
+}
+
+.desktop-v2-nav-item:active {
+  transform: translateY(1px);
+}
+
+.desktop-v2-nav-item.active {
+  border-color: color-mix(in srgb, var(--app-accent) 24%, var(--app-border));
+  background: var(--app-accent-soft-strong);
+  color: var(--app-text);
+  font-weight: var(--fluent-weight-semibold);
+}
+
+.desktop-v2-nav-item > .el-icon {
+  color: color-mix(in srgb, var(--app-text) 72%, transparent);
+  font-size: 18px;
+}
+
+.desktop-v2-nav-item.active > .el-icon {
+  color: var(--app-accent);
+}
+
+.desktop-v2-new-task {
+  min-height: var(--fluent-control-height-large);
+  border-radius: var(--fluent-radius-control);
+  border-color: var(--app-border-strong);
+  background: color-mix(in srgb, var(--app-surface) 78%, transparent);
+  color: var(--app-text);
+  box-shadow: var(--fluent-shadow-2);
+  transition:
+    background-color var(--fluent-fast),
+    border-color var(--fluent-fast),
+    box-shadow var(--fluent-fast),
+    transform var(--fluent-fast);
+}
+
+.desktop-v2-new-task:hover {
+  border-color: color-mix(in srgb, var(--app-accent) 42%, var(--app-border));
+  background: color-mix(in srgb, var(--app-accent-soft) 82%, transparent);
+  box-shadow: var(--fluent-shadow-4);
+}
+
+.desktop-v2-new-task:active {
+  transform: translateY(1px);
+}
+
+/* Fluent cards and workbench surfaces.  None of these selectors touch the
+   root/shell/sidebar/native title-bar backgrounds, preserving DWM materials. */
+.desktop-v2-app-frame
+  :where(
+    .panel,
+    .metric,
+    .start-action,
+    .start-panel,
+    .settings-list,
+    .settings-list > button,
+    .traffic-workbench,
+    .execution-plan-card,
+    .agent-citations-card,
+    .task-progress-card,
+    .message-bubble
+  ) {
+  border: var(--fluent-stroke-thin) solid var(--app-border);
+  border-radius: var(--fluent-radius-card);
+  background: var(--app-surface);
+  box-shadow: var(--fluent-card-shadow);
+}
+
+.desktop-v2-app-frame
+  :where(
+    .panel,
+    .metric,
+    .start-action,
+    .start-panel,
+    .settings-list > button,
+    .execution-plan-card,
+    .agent-citations-card,
+    .task-progress-card,
+    .message-bubble
+  ) {
+  transition:
+    border-color var(--fluent-fast),
+    box-shadow var(--fluent-fast),
+    background-color var(--fluent-fast),
+    transform var(--fluent-fast);
+}
+
+.desktop-v2-app-frame
+  :where(
+    .start-action,
+    .settings-list > button,
+    .recent-row,
+    .desktop-v2-recent-item
+  ) {
+  cursor: pointer;
+}
+
+.desktop-v2-app-frame
+  :where(
+    .start-action:hover,
+    .settings-list > button:hover,
+    .recent-row:hover,
+    .desktop-v2-recent-item:hover
+  ) {
+  border-color: color-mix(in srgb, var(--app-accent) 34%, var(--app-border));
+  background: var(--app-accent-soft);
+  box-shadow: var(--fluent-shadow-4);
+}
+
+.desktop-v2-app-frame
+  :where(.start-action:active, .settings-list > button:active) {
+  transform: translateY(1px);
+}
+
+/* Controls */
+.desktop-v2-app-frame
+  :where(
+    .el-button,
+    .el-input__wrapper,
+    .el-select__wrapper,
+    .el-textarea__inner,
+    .el-checkbox,
+    .el-radio,
+    .el-switch
+  ) {
+  border-radius: var(--fluent-radius-control);
+  transition:
+    border-color var(--fluent-fast),
+    background-color var(--fluent-fast),
+    box-shadow var(--fluent-fast),
+    color var(--fluent-fast);
+}
+
+.desktop-v2-app-frame :where(.el-button) {
+  min-height: var(--fluent-control-height);
+  padding-inline: 14px;
+  font-size: var(--fluent-body1-size);
+  font-weight: var(--fluent-weight-medium);
+}
+
+.desktop-v2-app-frame
+  :where(.el-button--primary:not(.is-plain):not(.is-text):not(.is-link)) {
+  --el-button-bg-color: var(--app-accent);
+  --el-button-border-color: var(--app-accent);
+  --el-button-hover-bg-color: var(--app-accent-dark);
+  --el-button-hover-border-color: var(--app-accent-dark);
+  --el-button-active-bg-color: var(--app-accent-dark);
+  --el-button-active-border-color: var(--app-accent-dark);
+  --el-button-text-color: var(--app-overlay-bg);
+  --el-button-hover-text-color: var(--app-overlay-bg);
+  --el-button-active-text-color: var(--app-overlay-bg);
+}
+
+.desktop-v2-app-frame
+  :where(.el-input__wrapper, .el-select__wrapper, .el-textarea__inner) {
+  min-height: var(--fluent-control-height);
+  /* Element Plus draws the control edge with inset box-shadow. A real CSS
+     border on top of that creates the double-box look on login and forms. */
+  border: 0 !important;
+  background: var(--app-surface-strong);
+  box-shadow: 0 0 0 var(--fluent-stroke-thin) var(--app-border) inset !important;
+  color: var(--app-text);
+}
+
+.desktop-v2-app-frame
+  :where(
+    .el-input__wrapper:hover,
+    .el-select__wrapper:hover,
+    .el-textarea__inner:hover
+  ) {
+  box-shadow: 0 0 0 var(--fluent-stroke-thin) var(--app-border) inset !important;
+}
+
+.desktop-v2-app-frame
+  :where(
+    .el-input__wrapper.is-focus,
+    .el-select__wrapper.is-focused,
+    .el-textarea__inner:focus,
+    .el-textarea__inner:focus-within
+  ) {
+  /* Shared with login page: one accent ring only — no outer glow stacked on an inner border. */
+  box-shadow:
+    inset 0 0 0 1px var(--app-border),
+    inset 0 -2px 0 0 var(--app-accent) !important;
+}
+
+/* Tables */
+.desktop-v2-app-frame :where(.el-table) {
+  overflow: hidden;
+  border: var(--fluent-stroke-thin) solid var(--app-border);
+  border-radius: var(--fluent-radius-card);
+  background: var(--app-surface);
+  color: var(--app-text);
+  font-size: var(--fluent-body1-size);
+}
+
+.desktop-v2-app-frame :where(.el-table th.el-table__cell) {
+  background: var(--app-surface-soft);
+  color: color-mix(in srgb, var(--app-text) 84%, transparent);
+  font-size: var(--fluent-caption1-size);
+  font-weight: var(--fluent-weight-semibold);
+  letter-spacing: 0;
+}
+
+.desktop-v2-app-frame :where(.el-table td.el-table__cell) {
+  border-bottom-color: var(--app-border);
+  color: var(--app-text);
+}
+
+.desktop-v2-app-frame :where(.el-table__body tr:hover > td.el-table__cell) {
+  background: var(--app-accent-soft) !important;
+}
+
+/* Tabs and segmented navigation */
+.desktop-v2-app-frame :where(.el-tabs__item) {
+  min-height: var(--fluent-control-height);
+  color: color-mix(in srgb, var(--app-text) 78%, transparent);
+  font-size: var(--fluent-body1-size);
+  font-weight: var(--fluent-weight-medium);
+  transition:
+    color var(--fluent-fast),
+    background-color var(--fluent-fast);
+}
+
+.desktop-v2-app-frame :where(.el-tabs__item:hover, .el-tabs__item.is-active) {
+  color: var(--app-accent);
+}
+
+.desktop-v2-app-frame :where(.el-tabs__active-bar) {
+  height: var(--fluent-stroke-thick);
+  border-radius: var(--fluent-radius-circular);
+  background: var(--app-accent);
+}
+
+/* Dialogs, popovers and messages */
+:where(.el-dialog, .el-message-box, .el-popper, .el-notification, .el-message) {
+  border: var(--fluent-stroke-thin) solid var(--app-border);
+  border-radius: var(--fluent-radius-overlay);
+  background: var(--app-surface);
+  color: var(--app-text);
+  box-shadow: var(--fluent-overlay-shadow);
+}
+
+:where(.el-dialog__header, .el-message-box__header) {
+  margin-right: 0;
+  border-bottom: var(--fluent-stroke-thin) solid var(--app-border);
+}
+
+:where(.el-dialog__title, .el-message-box__title) {
+  color: var(--app-text);
+  font-family: var(--fluent-font-display);
+  font-size: var(--fluent-subtitle2-size);
+  font-weight: var(--fluent-weight-semibold);
+}
+
+:where(.el-dialog__footer, .el-message-box__btns) {
+  border-top: var(--fluent-stroke-thin) solid var(--app-border);
+}
+
+/* Empty states and status text */
+.desktop-v2-app-frame
+  :where(
+    .el-empty,
+    .empty-state,
+    .start-empty,
+    .dependency-empty,
+    .traffic-empty
+  ) {
+  color: color-mix(in srgb, var(--app-text) 76%, transparent);
+}
+
+.desktop-v2-app-frame
+  :where(
+    .el-empty__description p,
+    .empty-state p,
+    .empty-state small,
+    .start-empty p,
+    .dependency-empty p
+  ) {
+  color: color-mix(in srgb, var(--app-text) 76%, transparent);
+  font-size: var(--fluent-body1-size);
+  line-height: var(--fluent-body1-line);
+}
+
+.desktop-v2-app-frame :where(.el-tag) {
+  min-height: 24px;
+  border-radius: var(--fluent-radius-control);
+  font-size: var(--fluent-caption1-size);
+  font-weight: var(--fluent-weight-medium);
+}
+
+.desktop-v2-app-frame
+  :where(.task-runtime-log, .agent-event-list li code, pre) {
+  border: var(--fluent-stroke-thin) solid var(--app-border);
+  border-radius: var(--fluent-radius-control);
+  background: var(--app-surface-strong);
+  color: var(--app-text);
+}
+
+/* Keyboard focus is intentionally stronger than the mouse state and remains
+   compatible with the existing Fluent token contract. */
+.desktop-v2-app-frame
+  :where(
+    a,
+    button,
+    [role="button"],
+    [tabindex],
+    .el-button,
+    .el-checkbox,
+    .el-radio,
+    .el-switch
+  ):focus-visible {
+  outline: var(--fluent-stroke-thick) solid var(--app-accent);
+  outline-offset: var(--fluent-stroke-thick);
+}
+
+/* Inputs/selects/textareas already show a single focus ring via Element Plus's
+   own .is-focus / focus-within border. Adding the offset keyboard outline on top
+   produced a confusing double box (an outer ring around the inner border), so
+   these controls opt out of the extra outline and keep only their own border. */
+.desktop-v2-app-frame
+  :where(.el-input__wrapper, .el-textarea__inner, .el-select__wrapper):focus,
+.desktop-v2-app-frame
+  :where(
+    .el-input__wrapper,
+    .el-textarea__inner,
+    .el-select__wrapper
+  ):focus-visible,
+.desktop-v2-app-frame
+  :where(
+    .el-input__wrapper,
+    .el-textarea__inner,
+    .el-select__wrapper
+  ):focus-within {
+  outline: none !important;
+}
+
+/* Native input inside Element Plus must not paint a second browser focus ring. */
+.desktop-v2-app-frame
+  :where(.el-input__inner, .el-textarea__inner, .el-select__input):focus,
+.desktop-v2-app-frame
+  :where(
+    .el-input__inner,
+    .el-textarea__inner,
+    .el-select__input
+  ):focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .desktop-v2-app-frame *,
+  .desktop-v2-app-frame *::before,
+  .desktop-v2-app-frame *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .desktop-v2-nav-group-toggle {
+    padding-inline: 8px;
+  }
+}
+
+/* -------------------------------------------------------------------------
+ * Global control contract
+ *
+ * Element Plus renders menus, pickers and message boxes under <body>, so the
+ * rules below intentionally are not limited to .desktop-v2-app-frame.  They
+ * provide one contrast-safe state model for the workspace, setup and login
+ * pages while leaving the native none/Mica/Acrylic material branches alone.
+ * ------------------------------------------------------------------------- */
+:root {
+  --fluent-action-bg: var(--app-accent);
+  --fluent-action-bg-hover: var(--app-accent-dark);
+  --fluent-action-fg: var(--system-accent-foreground);
+  --fluent-link-fg: var(--app-accent-dark);
+  --fluent-control-bg: var(--app-surface-strong);
+  --fluent-control-fg: var(--app-text);
+  --fluent-control-muted-fg: color-mix(
+    in srgb,
+    var(--app-text) 78%,
+    transparent
+  );
+  --fluent-disabled-bg: color-mix(
+    in srgb,
+    var(--app-text) 7%,
+    var(--app-surface-strong)
+  );
+  --fluent-disabled-border: color-mix(
+    in srgb,
+    var(--app-text) 32%,
+    var(--app-surface-strong)
+  );
+  --fluent-disabled-fg: color-mix(
+    in srgb,
+    var(--app-text) 72%,
+    var(--app-surface-strong)
+  );
+  --fluent-overlay-bg: var(--app-overlay-bg);
+  --fluent-overlay-fg: var(--app-overlay-text);
+  --fluent-overlay-muted-fg: color-mix(
+    in srgb,
+    var(--app-overlay-text) 74%,
+    var(--app-overlay-bg)
+  );
+  --fluent-overlay-hover-bg: #e5e7eb;
+  --fluent-overlay-selected-bg: #dbeafe;
+  --fluent-overlay-disabled-fg: #6b7280;
+  --fluent-danger-bg: #b42318;
+  --fluent-danger-hover-bg: #8f1d14;
+  --fluent-success-bg: #107c41;
+  --fluent-success-hover-bg: #0b5c30;
+  --fluent-warning-bg: #8a4b08;
+  --fluent-warning-hover-bg: #693805;
+  --fluent-info-bg: #475569;
+  --fluent-info-hover-bg: #334155;
+}
+
+:root[data-system-theme="dark"] {
+  --fluent-overlay-hover-bg: #3f3f46;
+  --fluent-overlay-selected-bg: #164e63;
+  --fluent-overlay-disabled-fg: #a1a1aa;
+}
+
+/* Primary and semantic solid buttons use the foreground selected by the
+   native accent contrast calculation (system-theme.ts).  In particular, do
+   not substitute a fixed white foreground for a light Windows accent. */
+:where(.el-button) {
+  --el-button-text-color: var(--fluent-control-fg);
+  --el-button-hover-text-color: var(--fluent-control-fg);
+  --el-button-active-text-color: var(--fluent-control-fg);
+  --el-button-disabled-text-color: var(--fluent-disabled-fg);
+  --el-button-disabled-bg-color: var(--fluent-disabled-bg);
+  --el-button-disabled-border-color: var(--fluent-disabled-border);
+  min-height: var(--fluent-control-height);
+  font-size: var(--fluent-body1-size);
+}
+
+:where(.el-button--primary:not(.is-disabled)) {
+  --el-button-bg-color: var(--fluent-action-bg);
+  --el-button-border-color: var(--fluent-action-bg);
+  --el-button-hover-bg-color: var(--fluent-action-bg-hover);
+  --el-button-hover-border-color: var(--fluent-action-bg-hover);
+  --el-button-active-bg-color: var(--fluent-action-bg-hover);
+  --el-button-active-border-color: var(--fluent-action-bg-hover);
+  --el-button-text-color: var(--fluent-action-fg);
+  --el-button-hover-text-color: var(--fluent-action-fg);
+  --el-button-active-text-color: var(--fluent-action-fg);
+  color: var(--fluent-action-fg) !important;
+}
+
+:where(.el-button--primary.is-plain:not(.is-disabled)) {
+  --el-button-bg-color: var(--app-surface-strong);
+  --el-button-border-color: var(--app-accent);
+  --el-button-hover-bg-color: var(--app-accent-soft);
+  --el-button-hover-border-color: var(--app-accent-dark);
+  --el-button-active-bg-color: var(--app-accent-soft-strong);
+  --el-button-active-border-color: var(--app-accent-dark);
+  --el-button-text-color: var(--fluent-link-fg);
+  --el-button-hover-text-color: var(--fluent-link-fg);
+  --el-button-active-text-color: var(--fluent-link-fg);
+  color: var(--fluent-link-fg) !important;
+}
+
+:where(
+  .el-button--primary.is-text:not(.is-disabled),
+  .el-button--primary.is-link:not(.is-disabled)
+) {
+  --el-button-text-color: var(--fluent-link-fg);
+  --el-button-hover-text-color: var(--fluent-link-fg);
+  --el-button-active-text-color: var(--fluent-link-fg);
+  color: var(--fluent-link-fg) !important;
+}
+
+:where(.el-button:not(.el-button--primary).is-plain:not(.is-disabled)) {
+  --el-button-bg-color: var(--fluent-control-bg);
+  --el-button-border-color: var(--app-border-strong);
+  --el-button-hover-bg-color: var(--app-accent-soft);
+  --el-button-hover-border-color: var(--app-border-strong);
+  color: var(--fluent-control-fg) !important;
+}
+
+:where(
+  .el-button:not(.el-button--primary).is-text:not(.is-disabled),
+  .el-button:not(.el-button--primary).is-link:not(.is-disabled)
+) {
+  --el-button-text-color: var(--fluent-link-fg);
+  --el-button-hover-text-color: var(--fluent-link-fg);
+  --el-button-active-text-color: var(--fluent-link-fg);
+  color: var(--fluent-link-fg) !important;
+}
+
+/* Semantic solid colors are deliberately dark enough for white text in both
+   themes.  Plain/text variants continue to use the readable link foreground. */
+:where(
+  .el-button--danger:not(.is-plain):not(.is-text):not(.is-link):not(
+      .is-disabled
+    )
+) {
+  --el-button-bg-color: var(--fluent-danger-bg);
+  --el-button-border-color: var(--fluent-danger-bg);
+  --el-button-hover-bg-color: var(--fluent-danger-hover-bg);
+  --el-button-hover-border-color: var(--fluent-danger-hover-bg);
+  --el-button-active-bg-color: var(--fluent-danger-hover-bg);
+  --el-button-active-border-color: var(--fluent-danger-hover-bg);
+  --el-button-text-color: #fff;
+  --el-button-hover-text-color: #fff;
+  --el-button-active-text-color: #fff;
+  color: #fff !important;
+}
+
+:where(
+  .el-button--success:not(.is-plain):not(.is-text):not(.is-link):not(
+      .is-disabled
+    )
+) {
+  --el-button-bg-color: var(--fluent-success-bg);
+  --el-button-border-color: var(--fluent-success-bg);
+  --el-button-hover-bg-color: var(--fluent-success-hover-bg);
+  --el-button-hover-border-color: var(--fluent-success-hover-bg);
+  --el-button-active-bg-color: var(--fluent-success-hover-bg);
+  --el-button-active-border-color: var(--fluent-success-hover-bg);
+  --el-button-text-color: #fff;
+  --el-button-hover-text-color: #fff;
+  --el-button-active-text-color: #fff;
+  color: #fff !important;
+}
+
+:where(
+  .el-button--warning:not(.is-plain):not(.is-text):not(.is-link):not(
+      .is-disabled
+    )
+) {
+  --el-button-bg-color: var(--fluent-warning-bg);
+  --el-button-border-color: var(--fluent-warning-bg);
+  --el-button-hover-bg-color: var(--fluent-warning-hover-bg);
+  --el-button-hover-border-color: var(--fluent-warning-hover-bg);
+  --el-button-active-bg-color: var(--fluent-warning-hover-bg);
+  --el-button-active-border-color: var(--fluent-warning-hover-bg);
+  --el-button-text-color: #fff;
+  --el-button-hover-text-color: #fff;
+  --el-button-active-text-color: #fff;
+  color: #fff !important;
+}
+
+:where(
+  .el-button--info:not(.is-plain):not(.is-text):not(.is-link):not(.is-disabled)
+) {
+  --el-button-bg-color: var(--fluent-info-bg);
+  --el-button-border-color: var(--fluent-info-bg);
+  --el-button-hover-bg-color: var(--fluent-info-hover-bg);
+  --el-button-hover-border-color: var(--fluent-info-hover-bg);
+  --el-button-active-bg-color: var(--fluent-info-hover-bg);
+  --el-button-active-border-color: var(--fluent-info-hover-bg);
+  --el-button-text-color: #fff;
+  --el-button-hover-text-color: #fff;
+  --el-button-active-text-color: #fff;
+  color: #fff !important;
+}
+
+:where(
+  .el-button.is-disabled,
+  .el-button:disabled,
+  .el-button.is-disabled:hover,
+  .el-button:disabled:hover
+) {
+  opacity: 1 !important;
+  cursor: not-allowed;
+  color: var(--fluent-disabled-fg) !important;
+  background: var(--fluent-disabled-bg) !important;
+  border-color: var(--fluent-disabled-border) !important;
+  box-shadow: none !important;
+}
+
+/* Legacy generic button rules carry more specificity than :where(). Keep
+   semantic solid buttons opaque and readable wherever they are rendered. */
+html
+  .el-button.el-button--danger:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  ) {
+  border-color: var(--fluent-danger-bg) !important;
+  background: var(--fluent-danger-bg) !important;
+  color: #fff !important;
+}
+
+html
+  .el-button.el-button--success:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  ) {
+  border-color: var(--fluent-success-bg) !important;
+  background: var(--fluent-success-bg) !important;
+  color: #fff !important;
+}
+
+html
+  .el-button.el-button--warning:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  ) {
+  border-color: var(--fluent-warning-bg) !important;
+  background: var(--fluent-warning-bg) !important;
+  color: #fff !important;
+}
+
+html
+  .el-button.el-button--info:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  ) {
+  border-color: var(--fluent-info-bg) !important;
+  background: var(--fluent-info-bg) !important;
+  color: #fff !important;
+}
+
+html .el-button.is-disabled,
+html .el-button:disabled {
+  border-color: var(--fluent-disabled-border) !important;
+  background: var(--fluent-disabled-bg) !important;
+  color: var(--fluent-disabled-fg) !important;
+  opacity: 1 !important;
+}
+
+/* Primary plain buttons need a separate, high-specificity state contract.
+   Several legacy page rules style every `.el-button--primary`; without this
+   override a `plain` button can inherit the solid accent background while its
+   label keeps the accent foreground, producing the low-contrast blue-on-blue
+   controls visible on project analysis actions. */
+html
+  .desktop-v2-app-frame
+  .el-button.el-button--primary.is-plain:not(.is-disabled):not(.is-text):not(
+    .is-link
+  ) {
+  --el-button-bg-color: var(--app-surface-strong);
+  --el-button-border-color: var(--app-accent);
+  --el-button-hover-bg-color: var(--app-accent-soft);
+  --el-button-hover-border-color: var(--app-accent-dark);
+  --el-button-active-bg-color: var(--app-accent-soft-strong);
+  --el-button-active-border-color: var(--app-accent-dark);
+  --el-button-text-color: var(--fluent-link-fg);
+  --el-button-hover-text-color: var(--fluent-link-fg);
+  --el-button-active-text-color: var(--fluent-link-fg);
+  border-color: var(--app-accent) !important;
+  background-color: var(--app-surface-strong) !important;
+  color: var(--fluent-link-fg) !important;
+}
+
+html
+  .desktop-v2-app-frame
+  .el-button.el-button--primary.is-plain:not(.is-disabled):not(.is-text):not(
+    .is-link
+  ):hover,
+html
+  .desktop-v2-app-frame
+  .el-button.el-button--primary.is-plain:not(.is-disabled):not(.is-text):not(
+    .is-link
+  ):focus-visible {
+  border-color: var(--app-accent-dark) !important;
+  background-color: var(--app-accent-soft) !important;
+  color: var(--fluent-link-fg) !important;
+}
+
+html
+  .desktop-v2-app-frame
+  .el-button.el-button--primary.is-plain:not(.is-disabled):not(.is-text):not(
+    .is-link
+  ):active {
+  border-color: var(--app-accent-dark) !important;
+  background-color: var(--app-accent-soft-strong) !important;
+  color: var(--fluent-link-fg) !important;
+}
+
+html
+  .desktop-v2-app-frame
+  .el-button.el-button--primary.is-plain:not(.is-disabled)
+  > span,
+html
+  .desktop-v2-app-frame
+  .el-button.el-button--primary.is-plain:not(.is-disabled)
+  .el-icon {
+  color: inherit !important;
+}
+
+/* Keep solid primary actions readable even when a page-level legacy selector
+   supplies its own button variables. */
+html
+  .desktop-v2-app-frame
+  .el-button.el-button--primary:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  ) {
+  --el-button-text-color: var(--fluent-action-fg);
+  --el-button-hover-text-color: var(--fluent-action-fg);
+  --el-button-active-text-color: var(--fluent-action-fg);
+  color: var(--fluent-action-fg) !important;
+}
+
+html
+  .desktop-v2-app-frame
+  .el-button.el-button--primary:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  )
+  > span,
+html
+  .desktop-v2-app-frame
+  .el-button.el-button--primary:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  )
+  .el-icon {
+  color: inherit !important;
+}
+
+html
+  .el-button:is(
+    .el-button--danger,
+    .el-button--success,
+    .el-button--warning,
+    .el-button--info
+  )
+  > span {
+  color: inherit !important;
+}
+
+:where(.el-button.is-text, .el-button.is-link) {
+  min-height: var(--fluent-control-height);
+  padding-inline: 8px;
+}
+
+/* Links, selected navigation and segmented controls must not inherit a light
+   accent as text on a light surface. */
+:where(
+  .el-link.el-link--primary,
+  .el-link.el-link--primary:hover,
+  .el-tabs__item.is-active,
+  .el-tabs__item:hover
+) {
+  color: var(--fluent-link-fg) !important;
+}
+
+:where(
+  .el-menu-item.is-active,
+  .el-menu-item.is-active:hover,
+  .el-sub-menu.is-active > .el-sub-menu__title
+) {
+  color: var(--fluent-action-fg) !important;
+  background: var(--fluent-action-bg) !important;
+}
+
+:where(
+  .el-menu-item.is-active .el-icon,
+  .el-sub-menu.is-active > .el-sub-menu__title .el-icon
+) {
+  color: var(--fluent-action-fg) !important;
+}
+
+:where(
+  .el-radio-button__original:checked + .el-radio-button__inner,
+  .el-pagination.is-background .el-pager li.is-active
+) {
+  color: var(--fluent-action-fg) !important;
+  background: var(--fluent-action-bg) !important;
+  border-color: var(--fluent-action-bg) !important;
+}
+
+/* A selected table row is intentionally pale; non-primary row actions get an
+   opaque control surface so their labels never disappear into the selection. */
+:where(
+  .el-table tr.current-row .el-button:not(.el-button--primary),
+  .el-table tr.is-selected .el-button:not(.el-button--primary),
+  .el-table .el-table__row.current-row .el-button:not(.el-button--primary)
+) {
+  color: var(--fluent-control-fg) !important;
+  background: var(--fluent-control-bg) !important;
+  border-color: var(--app-border-strong) !important;
+}
+
+:where(
+  .el-table tr.current-row .el-button:not(.el-button--primary):hover,
+  .el-table tr.is-selected .el-button:not(.el-button--primary):hover,
+  .el-table .el-table__row.current-row .el-button:not(.el-button--primary):hover
+) {
+  background: var(--app-accent-soft) !important;
+  border-color: var(--app-accent-dark) !important;
+  color: var(--fluent-link-fg) !important;
+}
+
+/* Element Plus overlays are mounted under body.  Keep their palette opaque,
+   readable and consistent across tooltip, popover, dropdown, select and date
+   picker surfaces. */
+:where(
+  .el-popper,
+  .el-popover,
+  .el-dialog,
+  .el-drawer,
+  .el-message-box,
+  .el-notification,
+  .el-message
+) {
+  --el-bg-color: var(--fluent-overlay-bg);
+  --el-bg-color-overlay: var(--fluent-overlay-bg);
+  --el-fill-color-blank: var(--fluent-overlay-bg);
+  --el-fill-color-light: var(--fluent-overlay-hover-bg);
+  --el-text-color-primary: var(--fluent-overlay-fg);
+  --el-text-color-regular: var(--fluent-overlay-fg);
+  --el-text-color-secondary: var(--fluent-overlay-muted-fg);
+  --el-text-color-placeholder: var(--fluent-overlay-muted-fg);
+  --el-border-color: var(--app-overlay-border);
+  --el-border-color-light: var(--app-overlay-border);
+  border-color: var(--app-overlay-border) !important;
+  background: var(--fluent-overlay-bg) !important;
+  color: var(--fluent-overlay-fg) !important;
+  box-shadow: var(--fluent-overlay-shadow);
+}
+
+:where(
+  .el-popper .el-dropdown-menu__item,
+  .el-popper .el-select-dropdown__item,
+  .el-popper .el-cascader-node,
+  .el-popper .el-autocomplete-suggestion__list li
+) {
+  min-height: 32px;
+  border-radius: var(--fluent-radius-control);
+  color: var(--fluent-overlay-fg) !important;
+  font-size: var(--fluent-body1-size);
+  line-height: 20px;
+}
+
+:where(
+  .el-popper .el-dropdown-menu__item:hover,
+  .el-popper .el-select-dropdown__item.hover,
+  .el-popper .el-select-dropdown__item.is-hovering,
+  .el-popper .el-cascader-node:not(.is-disabled):hover,
+  .el-popper .el-autocomplete-suggestion__list li:hover
+) {
+  background: var(--fluent-overlay-hover-bg) !important;
+  color: var(--fluent-overlay-fg) !important;
+}
+
+:where(
+  .el-popper .el-select-dropdown__item.is-selected,
+  .el-popper .el-dropdown-menu__item.is-active,
+  .el-popper .el-cascader-node.is-active
+) {
+  background: var(--fluent-overlay-selected-bg) !important;
+  color: var(--fluent-link-fg) !important;
+  font-weight: var(--fluent-weight-semibold);
+}
+
+:where(
+  .el-popper .el-select-dropdown__item.is-disabled,
+  .el-popper .el-dropdown-menu__item.is-disabled,
+  .el-popper .el-cascader-node.is-disabled
+) {
+  color: var(--fluent-overlay-disabled-fg) !important;
+  opacity: 1 !important;
+}
+
+:where(
+  .el-picker-panel,
+  .el-date-picker,
+  .el-time-panel,
+  .el-date-range-picker,
+  .el-time-range-picker
+) {
+  color: var(--fluent-overlay-fg);
+  background: var(--fluent-overlay-bg);
+}
+
+:where(
+  .el-picker-panel__icon-btn,
+  .el-date-picker__header-label,
+  .el-date-table th,
+  .el-time-spinner__item
+) {
+  color: var(--fluent-overlay-fg) !important;
+}
+
+:where(
+  .el-date-table td.today span,
+  .el-month-table td.current:not(.disabled) .cell,
+  .el-year-table td.current:not(.disabled) .cell
+) {
+  color: var(--fluent-link-fg) !important;
+  font-weight: var(--fluent-weight-semibold);
+}
+
+:where(
+  .el-date-table td.current:not(.disabled) span,
+  .el-month-table td.current:not(.disabled) .cell,
+  .el-year-table td.current:not(.disabled) .cell
+) {
+  background: var(--fluent-action-bg) !important;
+  color: var(--fluent-action-fg) !important;
+}
+
+:where(
+  .el-date-table td.available:hover span,
+  .el-month-table td .cell:hover,
+  .el-year-table td .cell:hover,
+  .el-time-spinner__item:hover
+) {
+  background: var(--fluent-overlay-hover-bg) !important;
+  color: var(--fluent-overlay-fg) !important;
+}
+
+:where(
+  .el-message__content,
+  .el-notification__content,
+  .el-message-box__content,
+  .el-popover__title
+) {
+  color: var(--fluent-overlay-fg) !important;
+}
+
+/* Tooltips use the deliberately inverted high-contrast surface defined by
+   the existing tokens, while all other poppers use the regular overlay. */
+:where(
+  .el-popper[role="tooltip"]:not(.el-select__popper):not(
+      .el-dropdown__popper
+    ):not(.el-picker__popper):not(.el-cascader__dropdown):not(
+      .el-autocomplete__popper
+    )
+) {
+  --el-text-color-primary: var(--app-hover-popup-text);
+  --el-text-color-regular: var(--app-hover-popup-text);
+  border-color: var(--app-hover-popup-border) !important;
+  background: var(--app-hover-popup-bg) !important;
+  color: var(--app-hover-popup-text) !important;
+}
+
+:where(
+  .el-popper[role="tooltip"]:not(.el-select__popper):not(
+      .el-dropdown__popper
+    ):not(.el-picker__popper):not(.el-cascader__dropdown):not(
+      .el-autocomplete__popper
+    )
+    *
+) {
+  color: var(--app-hover-popup-text) !important;
+}
+
+/* Remove only redundant nested card elevation; the outer surface remains the
+   visual container, so this avoids the distracting “box inside box” effect. */
+:where(
+  .panel > .el-card,
+  .panel > .panel,
+  .app-dialog .el-card,
+  .app-dialog .panel,
+  .el-card .el-card
+) {
+  box-shadow: none !important;
+  border-color: var(--app-border) !important;
+}
+
+:where(.panel > .el-card, .app-dialog .el-card, .el-card .el-card) {
+  background: var(--app-surface-soft) !important;
+}
+
+/* A routed page is a layout plane, not another card.  Every route whose root
+   is the legacy .panel class therefore loses its outer stroke/elevation while
+   keeping its spacing.  Tables, editors and other purposeful inner surfaces
+   remain the single visible container.  Applying this regardless of empty or
+   loading state also prevents the outer frame from reappearing when a table
+   has no rows. */
+.desktop-v2-app-frame .desktop-v2-content > .panel {
+  width: 100%;
+  margin: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.desktop-v2-app-frame .desktop-v2-content > .panel > .section-head {
+  margin-bottom: 12px;
+}
+
+/* Native title bubbles are migrated by App.vue to data-fluent-tooltip and
+   aria-label.  This keeps icon actions accessible while ensuring every hover
+   bubble follows the same opaque Fluent overlay palette. */
+:where(
+  button,
+  a,
+  [role="button"],
+  input,
+  select,
+  textarea
+)[data-fluent-tooltip] {
+  position: relative;
+}
+
+:where(
+    button,
+    a,
+    [role="button"],
+    input,
+    select,
+    textarea
+  )[data-fluent-tooltip]::after {
+  position: absolute;
+  z-index: 3000;
+  top: calc(100% + 8px);
+  left: 50%;
+  width: max-content;
+  max-width: min(320px, 70vw);
+  padding: 6px 9px;
+  pointer-events: none;
+  border: var(--fluent-stroke-thin) solid var(--app-hover-popup-border);
+  border-radius: var(--fluent-radius-control);
+  background: var(--app-hover-popup-bg);
+  box-shadow: var(--fluent-overlay-shadow);
+  color: var(--app-hover-popup-text);
+  content: attr(data-fluent-tooltip);
+  font-family: var(--fluent-font);
+  font-size: var(--fluent-caption1-size);
+  font-weight: var(--fluent-weight-regular);
+  line-height: var(--fluent-caption1-line);
+  opacity: 0;
+  transform: translate(-50%, -2px);
+  transition:
+    opacity var(--fluent-fast),
+    transform var(--fluent-fast);
+  white-space: normal;
+}
+
+:where(
+    button,
+    a,
+    [role="button"],
+    input,
+    select,
+    textarea
+  )[data-fluent-tooltip]:hover::after,
+:where(
+    button,
+    a,
+    [role="button"],
+    input,
+    select,
+    textarea
+  )[data-fluent-tooltip]:focus-visible::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* Keep every vertical scroll owner usable while hiding the scrollbar rail. */
+:where(
+  .desktop-v2-nav,
+  .dependency-scroll,
+  .offline-tool-groups,
+  .el-dialog__body,
+  .el-drawer__body,
+  .el-scrollbar__wrap
+) {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+:where(
+    .desktop-v2-nav,
+    .dependency-scroll,
+    .offline-tool-groups,
+    .el-dialog__body,
+    .el-drawer__body,
+    .el-scrollbar__wrap
+  )::-webkit-scrollbar:vertical {
+  display: none !important;
+  width: 0 !important;
+}
+
+:where(
+    .desktop-v2-nav,
+    .dependency-scroll,
+    .offline-tool-groups,
+    .el-dialog__body,
+    .el-drawer__body,
+    .el-scrollbar__wrap
+  )::-webkit-scrollbar-thumb:vertical,
+:where(
+    .desktop-v2-nav,
+    .dependency-scroll,
+    .offline-tool-groups,
+    .el-dialog__body,
+    .el-drawer__body,
+    .el-scrollbar__wrap
+  )::-webkit-scrollbar-track:vertical {
+  display: none !important;
+  background: transparent !important;
+}
+
+/* -------------------------------------------------------------------------
+ * Workspace list pages
+ *
+ * Projects, targets, tasks, findings and audit data share the same job: show
+ * a heading and one primary result list.  They are layout planes in the
+ * workspace, rather than cards nested inside another card.  Keep this scope
+ * on the direct route root and its direct table only; detail workbenches,
+ * dialogs and project-scoped tables intentionally keep their own surfaces.
+ * ------------------------------------------------------------------------- */
+.desktop-v2-app-frame .desktop-v2-content > .workspace-list-page {
+  box-sizing: border-box;
+  display: flex;
+  min-height: 100%;
+  width: 100%;
+  flex-direction: column;
+  gap: 0;
+  padding: 20px 24px 24px;
+  margin: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .workspace-list-page
+  > .section-head {
+  display: flex;
+  min-height: 0;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  gap: 20px;
+  margin: 0 0 20px !important;
+  padding: 0;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .workspace-list-page
+  > .section-head
+  > div:first-child {
+  min-width: 0;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .workspace-list-page
+  > .section-head
+  h3 {
+  margin: 0 !important;
+  color: var(--app-text);
+  font-family: var(--fluent-font-display);
+  font-size: var(--type-section-title);
+  font-weight: var(--fluent-weight-semibold);
+  line-height: 1.35;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .workspace-list-page
+  > .section-head
+  p {
+  margin: 5px 0 0 !important;
+  color: color-mix(in srgb, var(--app-text) 72%, transparent);
+  font-size: var(--type-section-desc);
+  line-height: 1.5;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .workspace-list-page
+  > .section-head
+  > .el-button,
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .workspace-list-page
+  > .section-head-actions,
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .workspace-list-page
+  > .section-head
+  > .section-head-actions {
+  flex: 0 1 auto;
+  align-self: flex-start;
+  min-width: 0;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .workspace-list-page
+  .section-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  width: auto;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .workspace-list-page
+  .section-head-actions
+  > .el-button {
+  flex: 0 0 auto;
+  min-height: var(--fluent-control-height);
+  margin: 0 !important;
+}
+
+.desktop-v2-app-frame .desktop-v2-content > .workspace-list-page > .el-table {
+  flex: 0 0 auto;
+  width: 100%;
+  overflow: hidden;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  --el-table-bg-color: var(--app-surface);
+  --el-table-tr-bg-color: var(--app-surface);
+  --el-table-header-bg-color: var(--app-surface-soft);
+  --el-table-border-color: var(--app-border);
+  --el-table-row-hover-bg-color: var(--app-accent-soft);
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .workspace-list-page
+  > .el-table
+  > .el-table__inner-wrapper {
+  overflow: hidden;
+  border-radius: 0 !important;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .workspace-list-page
+  > .el-table
+  > .el-table__inner-wrapper::before {
+  height: var(--fluent-stroke-thin);
+  background: var(--app-border);
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .workspace-list-page
+  > .el-table
+  th.el-table__cell {
+  height: 48px;
+  padding: 0;
+  background: var(--app-surface-soft);
+  color: color-mix(in srgb, var(--app-text) 86%, transparent);
+  font-size: 13px;
+  font-weight: var(--fluent-weight-semibold);
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .workspace-list-page
+  > .el-table
+  td.el-table__cell {
+  padding: 12px 0;
+  border-bottom-color: var(--app-border);
+  color: var(--app-text);
+  font-size: 13px;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .workspace-list-page
+  > .el-table
+  .cell {
+  line-height: 1.45;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .workspace-list-page
+  > .el-table
+  .el-table__body
+  tr:hover
+  > td.el-table__cell {
+  background: var(--app-accent-soft) !important;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .workspace-list-page
+  > .empty-state {
+  display: flex;
+  min-height: 240px;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 40px 24px;
+  background: transparent;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .workspace-list-page
+  > .findings-pagination {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  margin-top: 18px;
+  padding: 16px 0 0;
+  border-top: var(--fluent-stroke-thin) solid var(--app-border);
+}
+
+@media (max-width: 760px) {
+  .desktop-v2-app-frame .desktop-v2-content > .workspace-list-page {
+    padding: 16px;
+  }
+
+  .desktop-v2-app-frame
+    .desktop-v2-content
+    > .workspace-list-page
+    > .section-head {
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .desktop-v2-app-frame
+    .desktop-v2-content
+    > .workspace-list-page
+    .section-head-actions,
+  .desktop-v2-app-frame
+    .desktop-v2-content
+    > .workspace-list-page
+    .finding-head-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}
+
+/* Project detail and workflow are richer workbenches, but their route-level
+   heading still follows the same spacing contract as the list pages.  Only
+   the route plane and in-page result tables are flattened; dialogs and the
+   intentional workflow/editor cards remain independent surfaces. */
+.desktop-v2-app-frame .desktop-v2-content > .project-detail-page {
+  box-sizing: border-box;
+  min-height: 100%;
+  width: 100%;
+  padding: 20px 24px 24px;
+  margin: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.desktop-v2-app-frame .desktop-v2-content > .workflow-page {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 0;
+  height: 100%;
+  padding: 10px 16px 10px;
+  margin: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .project-detail-page
+  > .section-head {
+  margin: 0 0 20px !important;
+  gap: 20px;
+}
+
+.desktop-v2-app-frame .desktop-v2-content > .workflow-page > .section-head {
+  margin: 0 0 10px !important;
+  gap: 12px;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .project-detail-page
+  > .section-head
+  h3,
+.desktop-v2-app-frame .desktop-v2-content > .workflow-page > .section-head h3 {
+  margin: 0 !important;
+  color: var(--app-text);
+  font-family: var(--fluent-font-display);
+  font-size: var(--type-section-title);
+  font-weight: var(--fluent-weight-semibold);
+  line-height: 1.35;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .project-detail-page
+  > .section-head
+  p,
+.desktop-v2-app-frame .desktop-v2-content > .workflow-page > .section-head p {
+  margin: 5px 0 0 !important;
+  color: color-mix(in srgb, var(--app-text) 72%, transparent);
+  font-size: var(--type-section-desc);
+  line-height: 1.5;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .project-detail-page
+  .detail-head-actions,
+.desktop-v2-app-frame .desktop-v2-content > .workflow-page .workflow-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px !important;
+  min-width: 0;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .project-detail-page
+  > .el-tabs
+  .el-tab-pane
+  > .el-table,
+.desktop-v2-app-frame .desktop-v2-content > .project-detail-page .project-table,
+.desktop-v2-app-frame .desktop-v2-content > .project-detail-page .icp-table {
+  overflow: hidden;
+  width: 100%;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  --el-table-bg-color: var(--app-surface);
+  --el-table-tr-bg-color: var(--app-surface);
+  --el-table-header-bg-color: var(--app-surface-soft);
+  --el-table-border-color: var(--app-border);
+  --el-table-row-hover-bg-color: var(--app-accent-soft);
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .project-detail-page
+  .project-table
+  > .el-table__inner-wrapper,
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .project-detail-page
+  .icp-table
+  > .el-table__inner-wrapper {
+  border-radius: 0 !important;
+}
+
+@media (max-width: 760px) {
+  .desktop-v2-app-frame .desktop-v2-content > .project-detail-page,
+  .desktop-v2-app-frame .desktop-v2-content > .workflow-page {
+    padding: 16px;
+  }
+
+  .desktop-v2-app-frame
+    .desktop-v2-content
+    > .project-detail-page
+    > .section-head,
+  .desktop-v2-app-frame .desktop-v2-content > .workflow-page > .section-head {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .desktop-v2-app-frame
+    .desktop-v2-content
+    > .project-detail-page
+    .detail-head-actions,
+  .desktop-v2-app-frame .desktop-v2-content > .workflow-page .workflow-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}
+
+/* The sidebar width remains resizable while each titled navigation group
+   folds vertically on its own. Recent work always keeps its reserved area. */
+.desktop-v2-app-frame .desktop-v2-sidebar {
+  z-index: 30;
+  overflow: visible;
+  transition: width var(--fluent-normal, 180ms) ease;
+}
+
+.desktop-v2-app-frame .desktop-v2-brand-copy {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  flex-direction: column;
+}
+
+.desktop-v2-app-frame .desktop-v2-nav {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+  max-height: 1000px;
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    max-height var(--fluent-normal, 180ms) ease,
+    opacity var(--fluent-fast),
+    transform var(--fluent-normal, 180ms) ease;
+}
+
+.desktop-v2-app-frame .desktop-v2-sidebar-spacer {
+  display: none;
+}
+
+.desktop-v2-app-frame .desktop-v2-recents {
+  display: flex;
+  min-height: 120px;
+  flex: 0 1 clamp(150px, 23vh, 250px);
+  max-height: none;
+  flex-direction: column;
+  overflow: hidden;
+  margin-top: 10px;
+  padding: 8px 2px 0;
+  border-top: var(--fluent-stroke-thin) solid var(--app-border);
+}
+
+.desktop-v2-app-frame .desktop-v2-recents-label {
+  display: flex;
+  width: 100%;
+  height: 28px;
+  flex: 0 0 28px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--fluent-radius-control);
+  background: transparent;
+  color: color-mix(in srgb, var(--app-text) 76%, transparent);
+  font-family: var(--fluent-font-small);
+  font-size: var(--fluent-caption1-size);
+  font-weight: var(--fluent-weight-semibold);
+  line-height: var(--fluent-caption1-line);
+  text-align: left;
+  cursor: pointer;
+}
+
+.desktop-v2-app-frame .desktop-v2-recents-label:hover {
+  background: var(--app-surface-soft);
+  color: var(--app-text);
+}
+
+.desktop-v2-app-frame .desktop-v2-recents-label:focus-visible {
+  outline: var(--fluent-stroke-thick) solid var(--app-accent);
+  outline-offset: -2px;
+}
+
+.desktop-v2-app-frame .desktop-v2-recents-label > span {
+  min-width: 0;
+  flex: 1;
+}
+
+.desktop-v2-app-frame .desktop-v2-recents-label > .el-icon {
+  flex: none;
+  color: color-mix(in srgb, var(--app-text) 70%, transparent);
+  font-size: 15px;
+}
+
+.desktop-v2-app-frame .desktop-v2-recents-list {
+  min-height: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow: auto;
+  padding: 2px 2px 4px 0;
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    max-height var(--fluent-normal, 180ms) ease,
+    opacity var(--fluent-fast),
+    transform var(--fluent-normal, 180ms) ease;
+}
+
+.desktop-v2-app-frame .desktop-v2-recents.collapsed {
+  min-height: 37px;
+  flex: 0 0 37px;
+}
+
+.desktop-v2-app-frame .desktop-v2-recents.collapsed .desktop-v2-recents-list {
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+}
+
+.desktop-v2-app-frame .desktop-v2-recents-list > .desktop-v2-recent-empty {
+  padding: 9px 10px;
+  color: color-mix(in srgb, var(--app-text) 60%, transparent);
+  font-size: var(--fluent-caption1-size);
+}
+
+@media (max-height: 620px) {
+  .desktop-v2-app-frame .desktop-v2-recents {
+    flex-basis: 150px;
+  }
+}
+
+@media (forced-colors: active) {
+  :root {
+    --fluent-action-bg: Highlight;
+    --fluent-action-bg-hover: Highlight;
+    --fluent-action-fg: HighlightText;
+    --fluent-link-fg: LinkText;
+    --fluent-control-bg: Field;
+    --fluent-control-fg: FieldText;
+    --fluent-overlay-bg: Canvas;
+    --fluent-overlay-fg: CanvasText;
+    --fluent-overlay-hover-bg: Highlight;
+    --fluent-overlay-selected-bg: Highlight;
+  }
+
+  :where(
+    .el-button--primary,
+    .el-menu-item.is-active,
+    .el-pagination.is-background .el-pager li.is-active
+  ) {
+    forced-color-adjust: none;
+    background: Highlight !important;
+    border-color: Highlight !important;
+    color: HighlightText !important;
+  }
+}
+
+/* -------------------------------------------------------------------------
+ * Sidebar information hierarchy
+ *
+ * Navigation and recent conversations share one scroll plane. Engine state
+ * and the user menu remain fixed, avoiding two invisible nested scroll areas.
+ * ------------------------------------------------------------------------- */
+.desktop-v2-app-frame .desktop-v2-sidebar {
+  container-name: desktop-sidebar;
+  container-type: inline-size;
+}
+
+.desktop-v2-app-frame .desktop-v2-sidebar-scroll {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 2px 2px 10px 0;
+  scroll-padding-block: 8px;
+  scrollbar-color: transparent transparent;
+  scrollbar-gutter: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.desktop-v2-app-frame .desktop-v2-sidebar-scroll::-webkit-scrollbar:vertical,
+.desktop-v2-app-frame
+  .desktop-v2-sidebar-scroll::-webkit-scrollbar-track:vertical,
+.desktop-v2-app-frame
+  .desktop-v2-sidebar-scroll::-webkit-scrollbar-thumb:vertical {
+  display: none !important;
+  width: 0 !important;
+  background: transparent !important;
+}
+
+.desktop-v2-app-frame .desktop-v2-nav {
+  min-height: auto;
+  max-height: none;
+  flex: none;
+  gap: 0;
+  overflow: visible;
+  padding: 0;
+}
+
+.desktop-v2-app-frame .desktop-v2-nav-group {
+  gap: 1px;
+}
+
+.desktop-v2-app-frame .desktop-v2-nav-group + .desktop-v2-nav-group {
+  margin-top: 5px;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.desktop-v2-app-frame .desktop-v2-nav-group-toggle,
+.desktop-v2-app-frame .desktop-v2-recents-label {
+  min-height: 28px;
+  height: 28px;
+  padding: 0 9px;
+  color: color-mix(in srgb, var(--app-text) 68%, transparent);
+  font-size: var(--fluent-caption1-size);
+  font-weight: var(--fluent-weight-semibold);
+  letter-spacing: 0;
+}
+
+.desktop-v2-app-frame .desktop-v2-nav-group-toggle:hover,
+.desktop-v2-app-frame .desktop-v2-recents-label:hover {
+  background: transparent;
+  color: color-mix(in srgb, var(--app-text) 88%, transparent);
+}
+
+.desktop-v2-app-frame .desktop-v2-nav-group-toggle > .el-icon,
+.desktop-v2-app-frame .desktop-v2-recents-toggle > .el-icon:last-child {
+  color: color-mix(in srgb, var(--app-text) 58%, transparent);
+  font-size: 13px;
+  opacity: 0.52;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-nav-group:hover
+  .desktop-v2-nav-group-toggle
+  > .el-icon,
+.desktop-v2-app-frame .desktop-v2-nav-group-toggle:hover > .el-icon,
+.desktop-v2-app-frame .desktop-v2-nav-group-toggle:focus-visible > .el-icon,
+.desktop-v2-app-frame
+  .desktop-v2-nav-group.collapsed
+  .desktop-v2-nav-group-toggle
+  > .el-icon,
+.desktop-v2-app-frame
+  .desktop-v2-recents:hover
+  .desktop-v2-recents-toggle
+  > .el-icon:last-child,
+.desktop-v2-app-frame .desktop-v2-recents-toggle:hover > .el-icon:last-child,
+.desktop-v2-app-frame
+  .desktop-v2-recents-toggle:focus-visible
+  > .el-icon:last-child,
+.desktop-v2-app-frame
+  .desktop-v2-recents.collapsed
+  .desktop-v2-recents-toggle
+  > .el-icon:last-child {
+  opacity: 1;
+}
+
+.desktop-v2-app-frame .desktop-v2-nav-group-items {
+  gap: 1px;
+}
+
+.desktop-v2-app-frame .desktop-v2-nav-item {
+  min-height: 38px;
+  gap: 10px;
+  padding-inline: 10px;
+  border-color: transparent;
+}
+
+.desktop-v2-app-frame .desktop-v2-nav-item:hover,
+.desktop-v2-app-frame .desktop-v2-nav-item.active {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.desktop-v2-app-frame .desktop-v2-nav-item:hover {
+  background: var(--app-surface-soft);
+}
+
+.desktop-v2-app-frame .desktop-v2-nav-item.active {
+  background: var(--app-accent-soft-strong);
+}
+
+.desktop-v2-app-frame .desktop-v2-recents,
+.desktop-v2-app-frame .desktop-v2-recents.empty,
+.desktop-v2-app-frame .desktop-v2-recents.collapsed {
+  min-height: 0;
+  max-height: none;
+  flex: none;
+  overflow: visible;
+}
+
+.desktop-v2-app-frame .desktop-v2-recents {
+  margin-top: 12px;
+  padding: 9px 0 0;
+  border-top: var(--fluent-stroke-thin) solid
+    color-mix(in srgb, var(--app-border) 84%, transparent);
+}
+
+.desktop-v2-app-frame .desktop-v2-recents-label {
+  flex: none;
+  gap: 7px;
+}
+
+.desktop-v2-app-frame .desktop-v2-recents-label > .desktop-v2-recents-title {
+  min-width: 0;
+  flex: 1;
+}
+
+.desktop-v2-app-frame .desktop-v2-recents-label > .desktop-v2-recents-count {
+  display: grid;
+  width: 20px;
+  height: 18px;
+  flex: 0 0 20px;
+  place-items: center;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--app-text) 8%, transparent);
+  color: color-mix(in srgb, var(--app-text) 68%, transparent);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+.desktop-v2-app-frame .desktop-v2-recents-list {
+  display: flex;
+  max-height: 520px;
+  flex: none;
+  gap: 2px;
+  overflow: hidden;
+  padding: 3px 2px 2px 0;
+}
+
+.desktop-v2-app-frame .desktop-v2-recents.collapsed .desktop-v2-recents-list {
+  max-height: 0;
+  padding-block: 0;
+}
+
+.desktop-v2-app-frame .desktop-v2-recent-item {
+  position: relative;
+  display: grid;
+  overflow: hidden;
+  grid-template-columns: minmax(0, 1fr);
+  border: 1px solid transparent;
+  border-radius: var(--fluent-radius-control);
+}
+
+.desktop-v2-app-frame .desktop-v2-recent-item:hover,
+.desktop-v2-app-frame .desktop-v2-recent-item.active {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.desktop-v2-app-frame .desktop-v2-recent-item:hover {
+  background: var(--app-surface-soft);
+}
+
+.desktop-v2-app-frame .desktop-v2-recent-item.active {
+  background: var(--app-accent-soft-strong);
+}
+
+.desktop-v2-app-frame .desktop-v2-recent-open {
+  min-height: 44px;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  padding: 5px 36px 5px 10px;
+  color: var(--app-text);
+}
+
+.desktop-v2-app-frame .desktop-v2-recent-open > .el-icon {
+  align-self: center;
+  margin-top: 0;
+  color: color-mix(in srgb, var(--app-text) 56%, transparent);
+  font-size: 15px;
+}
+
+.desktop-v2-app-frame .desktop-v2-recents strong {
+  color: var(--app-text);
+  font-size: 12px;
+  font-weight: var(--fluent-weight-semibold);
+}
+
+.desktop-v2-app-frame .desktop-v2-recents small {
+  margin-top: 1px;
+  color: color-mix(in srgb, var(--app-text) 56%, transparent);
+  font-size: 10px;
+}
+
+.desktop-v2-app-frame .desktop-v2-recent-delete {
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--fluent-radius-control);
+  transform: translateY(-50%);
+}
+
+.desktop-v2-app-frame .desktop-v2-recent-item:hover .desktop-v2-recent-delete,
+.desktop-v2-app-frame
+  .desktop-v2-recent-item:focus-within
+  .desktop-v2-recent-delete {
+  opacity: 1;
+}
+
+.desktop-v2-app-frame .desktop-v2-recent-delete:hover {
+  background: color-mix(in srgb, var(--app-danger, #c42b1c) 12%, transparent);
+  color: var(--app-danger, #c42b1c);
+}
+
+.desktop-v2-app-frame .desktop-v2-recent-empty {
+  display: grid;
+  min-height: 42px;
+  grid-template-columns: 25px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin: 2px 3px 0 0;
+  padding: 6px 8px;
+  border-radius: var(--fluent-radius-control);
+  background: color-mix(in srgb, var(--app-surface-soft) 72%, transparent);
+}
+
+.desktop-v2-app-frame .desktop-v2-recent-empty-icon {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  place-items: center;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--app-accent) 10%, transparent);
+  color: color-mix(in srgb, var(--app-accent) 78%, var(--app-text));
+  font-size: 13px;
+}
+
+.desktop-v2-app-frame .desktop-v2-recent-empty > span:last-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.desktop-v2-app-frame .desktop-v2-recent-empty strong {
+  font-size: 11px;
+}
+
+.desktop-v2-app-frame .desktop-v2-recent-empty small {
+  font-size: 9px;
+}
+
+@container desktop-sidebar (max-width: 232px) {
+  .desktop-v2-app-frame .desktop-v2-nav-item {
+    gap: 9px;
+    padding-inline: 8px;
+  }
+
+  .desktop-v2-app-frame .desktop-v2-recents small {
+    display: none;
+  }
+
+  .desktop-v2-app-frame .desktop-v2-recent-open {
+    min-height: 40px;
+    padding-left: 8px;
+  }
+}
+
+@media (max-height: 760px) {
+  .desktop-v2-app-frame .desktop-v2-nav-group + .desktop-v2-nav-group {
+    margin-top: 3px;
+  }
+
+  .desktop-v2-app-frame .desktop-v2-nav-item {
+    min-height: 36px;
+  }
+
+  .desktop-v2-app-frame .desktop-v2-recents {
+    margin-top: 9px;
+    padding-top: 7px;
+  }
+
+  .desktop-v2-app-frame .desktop-v2-recent-open {
+    min-height: 40px;
+  }
+
+  .desktop-v2-app-frame .desktop-v2-recents small {
+    display: none;
+  }
+}
+
+/* -------------------------------------------------------------------------
+ * Unified workspace page layout system
+ *
+ * Goal: every route root shares one clean shell — enough hierarchy to read
+ * titles/actions/filters/primary data, without double frames or sparse gaps.
+ * ------------------------------------------------------------------------- */
+.desktop-v2-app-frame .desktop-v2-content {
+  --page-pad-x: 20px;
+  --page-pad-y: 16px;
+  --page-gap: 14px;
+  --page-head-gap: 12px;
+  --page-title-size: var(--type-section-title, 18px);
+  --page-desc-size: var(--type-section-desc, 12px);
+  --page-meta-size: 11px;
+  --page-row-gap: 8px;
+  --page-chip-h: 26px;
+  --page-control-h: 32px;
+  --page-surface: var(--app-surface);
+  --page-soft: var(--app-surface-soft);
+  --page-border: var(--app-border);
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > :is(
+    .workspace-list-page,
+    .panel,
+    .settings-page,
+    .traffic-page,
+    .codex-traffic-page,
+    .offline-tools-page,
+    .chat-page,
+    .workflow-page,
+    .project-detail-page,
+    .data-page,
+    .recon-hub-page,
+    .targets-page,
+    .tasks-page,
+    .findings-page,
+    .projects-page
+  ) {
+  box-sizing: border-box;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 100%;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--page-gap);
+  margin: 0 !important;
+  padding: var(--page-pad-y) var(--page-pad-x) calc(var(--page-pad-y) + 4px) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+/* Active detection keeps a true three-pane grid. Do NOT force flex-column here —
+   that stacks catalog/detail/launcher and breaks the workbench. */
+.desktop-v2-app-frame .desktop-v2-content > .vuln-workbench {
+  box-sizing: border-box;
+  display: grid !important;
+  grid-template-columns: minmax(240px, 26%) minmax(320px, 1fr) minmax(
+      300px,
+      34%
+    );
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  flex: 1 1 auto;
+  gap: 0;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  overflow: hidden;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .vuln-workbench
+  > .vuln-catalog-pane,
+.desktop-v2-app-frame .desktop-v2-content > .vuln-workbench > .vuln-detail-pane,
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .vuln-workbench
+  > .scan-launcher-pane {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .vuln-workbench
+  > .vuln-detail-pane {
+  overflow: auto;
+}
+
+/* Chat keeps a tighter full-bleed conversation canvas. */
+.desktop-v2-app-frame .desktop-v2-content > .chat-page {
+  gap: 0;
+  padding: 0 !important;
+}
+
+/* Full-height workbenches should consume the viewport without extra outer cards.
+   Project detail is a multi-tab document page with long tables — it must remain
+   scrollable, so it is intentionally excluded from overflow:hidden. */
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > :is(
+    .traffic-page,
+    .codex-traffic-page,
+    .vuln-workbench,
+    .offline-tools-page,
+    .workflow-page,
+    .chat-page
+  ) {
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+.desktop-v2-app-frame .desktop-v2-content > .project-detail-page {
+  height: auto;
+  max-height: none;
+  min-height: 100%;
+  overflow: visible;
+}
+
+.desktop-v2-app-frame .desktop-v2-content > .project-detail-page .project-tabs,
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .project-detail-page
+  .project-tabs
+  > .el-tabs__content,
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .project-detail-page
+  .project-tabs
+  .el-tab-pane {
+  overflow: visible;
+}
+
+/* Shared page header: title + optional description + actions */
+.desktop-v2-app-frame
+  .desktop-v2-content
+  :is(
+    .section-head,
+    .editor-head,
+    .workbench-head,
+    .traffic-page-head,
+    .offline-tools-page > header
+  ) {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--page-head-gap) 16px;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0;
+  background: transparent;
+}
+
+/* Settings / simple pages: eyebrow + title + description stack vertically.
+   The shared space-between header rule was flattening them into one weird row. */
+.desktop-v2-app-frame
+  .desktop-v2-content
+  :is(.simple-page-heading, .settings-page > header) {
+  display: flex !important;
+  flex: 0 0 auto;
+  flex-direction: column !important;
+  align-items: flex-start !important;
+  justify-content: flex-start !important;
+  gap: 6px !important;
+  margin: 0 0 20px !important;
+  padding: 0 !important;
+  border: 0;
+  background: transparent;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .simple-page-heading > span,
+.desktop-v2-app-frame .desktop-v2-content .settings-page > header > span {
+  color: var(--app-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.3;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .simple-page-heading > h1,
+.desktop-v2-app-frame .desktop-v2-content .settings-page > header > h1 {
+  margin: 0 !important;
+  color: var(--app-text);
+  font-family: var(--fluent-font-display);
+  font-size: var(--type-section-title, 20px);
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .simple-page-heading > p,
+.desktop-v2-app-frame .desktop-v2-content .settings-page > header > p {
+  margin: 0 !important;
+  max-width: 56ch;
+  color: color-mix(in srgb, var(--app-text) 72%, transparent);
+  font-size: var(--type-section-desc, 13px);
+  line-height: 1.5;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  :is(.section-head, .editor-head)
+  > div:first-child {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* simple-page-heading children stack; do not stretch the eyebrow span. */
+.desktop-v2-app-frame .desktop-v2-content .simple-page-heading > :first-child {
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  :is(
+    .section-head h3,
+    .simple-page-heading h3,
+    .editor-head h4,
+    .workbench-head h3
+  ) {
+  margin: 0 !important;
+  color: var(--app-text);
+  font-family: var(--fluent-font-display);
+  font-size: var(--page-title-size);
+  font-weight: var(--fluent-weight-semibold, 600);
+  line-height: 1.3;
+  letter-spacing: 0;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  :is(
+    .section-head p,
+    .simple-page-heading p,
+    .editor-head p,
+    .workbench-head p
+  ) {
+  display: -webkit-box;
+  max-width: 68ch;
+  margin: 4px 0 0 !important;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--app-text) 68%, transparent);
+  font-size: var(--page-desc-size);
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  :is(
+    .section-head-actions,
+    .workflow-actions,
+    .editor-head-actions,
+    .toolbar-actions,
+    .page-actions
+  ) {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  :is(
+    .section-head-actions,
+    .workflow-actions,
+    .editor-head-actions,
+    .toolbar-actions,
+    .page-actions
+  )
+  > .el-button {
+  min-height: var(--page-control-h);
+  margin: 0 !important;
+}
+
+/* Compact meta / status rows */
+.desktop-v2-app-frame
+  .desktop-v2-content
+  :is(
+    .workflow-status-row,
+    .status-row,
+    .meta-row,
+    .filter-row,
+    .list-toolbar,
+    .catalog-filters,
+    .tasks-filters,
+    .findings-filters
+  ) {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 !important;
+  min-width: 0;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  :is(.status-chip, .meta-chip, .filter-chip) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--page-chip-h);
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--page-border) 88%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--page-soft) 88%, transparent);
+  color: color-mix(in srgb, var(--app-text) 78%, transparent);
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+/* Primary data surface: one clean plane, no nested card chrome on route roots */
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .workspace-list-page
+  > :is(.el-table, .el-card, .data-plane, .list-plane) {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--page-border) !important;
+  border-radius: 10px !important;
+  background: var(--page-surface) !important;
+  box-shadow: none !important;
+}
+
+.desktop-v2-app-frame .desktop-v2-content > .workspace-list-page > .el-table {
+  --el-table-bg-color: var(--page-surface);
+  --el-table-tr-bg-color: var(--page-surface);
+  --el-table-header-bg-color: color-mix(
+    in srgb,
+    var(--page-soft) 92%,
+    transparent
+  );
+  --el-table-border-color: var(--page-border);
+  --el-table-row-hover-bg-color: color-mix(
+    in srgb,
+    var(--app-accent-soft, #eaf2ff) 70%,
+    transparent
+  );
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .workspace-list-page
+  > .el-table
+  th.el-table__cell {
+  height: 40px;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .workspace-list-page
+  > .el-table
+  td.el-table__cell {
+  padding: 8px 0;
+  font-size: 13px;
+}
+
+.desktop-v2-app-frame .desktop-v2-content > .workspace-list-page .cell {
+  line-height: 1.4;
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+/* Alerts / notices stay secondary and compact */
+.desktop-v2-app-frame
+  .desktop-v2-content
+  :is(.el-alert, .graph-notice, .graph-validation, .workflow-guide) {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin: 0 !important;
+  border-radius: 10px;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .el-alert .el-alert__close-btn {
+  top: 50% !important;
+  right: 12px !important;
+  transform: translateY(-50%);
+  margin-top: 0 !important;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  line-height: 1;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .el-alert__title {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .el-alert__description,
+.desktop-v2-app-frame .desktop-v2-content .guide-list {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* Editor / split workbenches */
+.desktop-v2-app-frame
+  .desktop-v2-content
+  :is(
+    .workflow-editor-layout,
+    .project-detail-layout,
+    .vuln-workbench,
+    .offline-tools-layout,
+    .traffic-split,
+    .codex-traffic-page
+  ) {
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .workflow-editor-layout,
+.desktop-v2-app-frame .desktop-v2-content .project-detail-layout,
+.desktop-v2-app-frame .desktop-v2-content .offline-tools-layout {
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  :is(.editor-card, .side-card, .detail-card, .tool-card) {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--page-border);
+  border-radius: 12px;
+  background: var(--page-surface);
+  box-shadow: none;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .editor-card > header,
+.desktop-v2-app-frame .desktop-v2-content .side-card > header,
+.desktop-v2-app-frame .desktop-v2-content .detail-card > header {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--page-border);
+  background: color-mix(in srgb, var(--page-soft) 80%, transparent);
+}
+
+.desktop-v2-app-frame .desktop-v2-content .editor-card > header h4,
+.desktop-v2-app-frame .desktop-v2-content .side-card > header h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .editor-card > header p,
+.desktop-v2-app-frame .desktop-v2-content .side-card > header p {
+  margin: 3px 0 0;
+  color: color-mix(in srgb, var(--app-text) 64%, transparent);
+  font-size: 11px;
+  line-height: 1.4;
+  -webkit-line-clamp: 1;
+}
+
+/* Forms and settings denser but readable */
+.desktop-v2-app-frame .desktop-v2-content .settings-page {
+  max-width: 920px;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .settings-list {
+  overflow: hidden;
+  border: 1px solid var(--page-border);
+  border-radius: 12px;
+  background: var(--page-surface);
+}
+
+.desktop-v2-app-frame .desktop-v2-content .settings-list > * {
+  border-top: 1px solid var(--page-border);
+}
+
+.desktop-v2-app-frame .desktop-v2-content .settings-list > *:first-child {
+  border-top: 0;
+}
+
+/* Empty / helper text */
+.desktop-v2-app-frame
+  .desktop-v2-content
+  :is(.el-empty__description p, .helper-text, .muted-note) {
+  color: color-mix(in srgb, var(--app-text) 62%, transparent);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* Prevent page-local paddings from fighting the shared shell */
+.desktop-v2-app-frame .desktop-v2-content > .workflow-page.workflow-page,
+.desktop-v2-app-frame .desktop-v2-content > .panel.project-detail-page,
+.desktop-v2-app-frame .desktop-v2-content > .panel.workflow-page {
+  padding: var(--page-pad-y) var(--page-pad-x) calc(var(--page-pad-y) + 4px) !important;
+}
+
+/* Responsive: keep actions usable, collapse descriptive noise first */
+@media (max-width: 1200px) {
+  .desktop-v2-app-frame .desktop-v2-content {
+    --page-pad-x: 16px;
+    --page-pad-y: 14px;
+    --page-gap: 12px;
+  }
+
+  .desktop-v2-app-frame
+    .desktop-v2-content
+    :is(.section-head, .simple-page-heading, .editor-head) {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .desktop-v2-app-frame
+    .desktop-v2-content
+    :is(.section-head-actions, .workflow-actions, .editor-head-actions) {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 900px) {
+  .desktop-v2-app-frame .desktop-v2-content {
+    --page-pad-x: 12px;
+    --page-pad-y: 12px;
+  }
+
+  .desktop-v2-app-frame
+    .desktop-v2-content
+    :is(.section-head p, .simple-page-heading p, .editor-head p) {
+    -webkit-line-clamp: 3;
+    max-width: none;
+  }
+}
+
+/* Settings / special headings */
+.desktop-v2-app-frame .desktop-v2-content .simple-page-heading > span {
+  display: inline-block;
+  margin-bottom: 4px;
+  color: color-mix(in srgb, var(--app-text) 58%, transparent);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .simple-page-heading h1 {
+  margin: 0 !important;
+  color: var(--app-text);
+  font-family: var(--fluent-font-display);
+  font-size: var(--page-title-size);
+  font-weight: var(--fluent-weight-semibold, 600);
+  line-height: 1.3;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .settings-toggle-row,
+.desktop-v2-app-frame .desktop-v2-content .settings-list .settings-item,
+.desktop-v2-app-frame .desktop-v2-content .settings-list > div {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .settings-toggle-row span strong,
+.desktop-v2-app-frame .desktop-v2-content .settings-list strong {
+  display: block;
+  color: var(--app-text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .settings-toggle-row span small,
+.desktop-v2-app-frame .desktop-v2-content .settings-list small,
+.desktop-v2-app-frame .desktop-v2-content .settings-list p {
+  display: block;
+  margin: 3px 0 0;
+  color: color-mix(in srgb, var(--app-text) 64%, transparent);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* Traffic / vuln / offline denser chrome */
+.desktop-v2-app-frame
+  .desktop-v2-content
+  :is(.codex-traffic-toolbar, .vuln-toolbar, .offline-toolbar) {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 8px 10px !important;
+  border-bottom: 1px solid var(--page-border);
+  background: color-mix(in srgb, var(--page-soft) 70%, transparent);
+}
+
+.desktop-v2-app-frame .desktop-v2-content .codex-traffic-toolbar {
+  border-bottom: 0;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  :is(.codex-traffic-page, .vuln-workbench, .offline-tools-page)
+  > * {
+  min-width: 0;
+}
+
+/* Project detail tabs content breathing room without double frames */
+.desktop-v2-app-frame
+  .desktop-v2-content
+  .project-detail-page
+  :is(.el-tabs__header) {
+  margin: 0 0 12px;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  .project-detail-page
+  :is(.el-tab-pane, .detail-pane) {
+  min-width: 0;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .project-detail-page .el-card {
+  border-radius: 10px;
+  box-shadow: none;
+}
+
+/* Tables inside non-list pages also get denser cells */
+.desktop-v2-app-frame .desktop-v2-content .el-table th.el-table__cell {
+  height: 40px;
+  font-size: 12px;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .el-table td.el-table__cell {
+  padding: 8px 0;
+  font-size: 13px;
+}
+
+/* Dialogs remain self-contained and shouldn't inherit page shell padding hacks */
+.el-overlay .el-dialog,
+.el-overlay-dialog .el-dialog {
+  max-width: min(920px, calc(100vw - 32px));
+}
+
+/* List-page extras that appear on several routes */
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .workspace-list-page
+  > .section-head
+  > .el-button {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  min-height: var(--page-control-h);
+  margin: 0 0 0 auto !important;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .task-control-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  margin: 0 !important;
+  padding: 10px 12px;
+  border: 1px solid var(--page-border);
+  border-radius: 10px;
+  background: var(--page-surface);
+}
+
+.desktop-v2-app-frame .desktop-v2-content .task-control-summary span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .task-control-summary small {
+  color: color-mix(in srgb, var(--app-text) 58%, transparent);
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .task-control-summary strong {
+  color: var(--app-text);
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .recon-scope-note {
+  margin: 0 !important;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .finding-head-actions .el-input {
+  width: min(280px, 42vw);
+}
+
+.desktop-v2-app-frame .desktop-v2-content .schedule-count {
+  display: inline-grid;
+  min-width: 18px;
+  height: 18px;
+  margin-left: 6px;
+  place-items: center;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--app-accent) 16%, transparent);
+  color: var(--app-accent);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* Keep offline empty states centered but not oversized */
+.desktop-v2-app-frame .desktop-v2-content .offline-state,
+.desktop-v2-app-frame .desktop-v2-content .el-empty {
+  margin: 24px auto;
+}
+
+/* Workflow page fills the remaining workspace height so canvas + library grow. */
+
+.desktop-v2-app-frame .desktop-v2-content:has(> .vuln-workbench) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.desktop-v2-app-frame .desktop-v2-content:has(> .workflow-page) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.desktop-v2-app-frame .desktop-v2-content > .workflow-page {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .workflow-page
+  > .workflow-editor-layout {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(0, 1fr) minmax(380px, 420px);
+  gap: 18px;
+  align-items: stretch;
+  min-height: 0;
+  height: auto;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .workflow-editor-layout .flow-canvas,
+.desktop-v2-app-frame .desktop-v2-content .workflow-editor-layout .editor-card,
+.desktop-v2-app-frame
+  .desktop-v2-content
+  .workflow-editor-layout
+  .workflow-library {
+  min-height: 0;
+  height: 100%;
+}
+
+@media (max-width: 1100px) {
+  .desktop-v2-app-frame .desktop-v2-content:has(> .workflow-page) {
+    overflow: auto;
+  }
+
+  .desktop-v2-app-frame .desktop-v2-content > .workflow-page {
+    height: auto;
+    overflow: visible;
+  }
+
+  .desktop-v2-app-frame
+    .desktop-v2-content
+    > .workflow-page
+    > .workflow-editor-layout {
+    grid-template-columns: 1fr;
+    min-height: 640px;
+  }
+}
+
+/* Workflow editor header: copy left, actions right, vertically balanced. */
+.desktop-v2-app-frame
+  .desktop-v2-content
+  .workflow-page
+  .editor-card
+  > .editor-head {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 16px 20px !important;
+  width: 100%;
+  padding: 12px 16px !important;
+}
+.desktop-v2-app-frame .desktop-v2-content .workflow-page .editor-head-copy {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.desktop-v2-app-frame .desktop-v2-content .workflow-page .editor-head-actions {
+  flex: 0 0 auto;
+  margin-left: 0;
+}
+.desktop-v2-app-frame .desktop-v2-content .workflow-page .editor-head-desc {
+  display: block !important;
+  margin: 0 !important;
+  max-width: 52ch;
+}
+
+/* Final vertical scrollbar kill-switch: keep overflow scrolling, hide every vertical rail. */
+html,
+body,
+#app,
+*,
+*::before,
+*::after {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+*::-webkit-scrollbar:vertical,
+*::-webkit-scrollbar-thumb:vertical,
+*::-webkit-scrollbar-track:vertical,
+*::-webkit-scrollbar-corner {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+.el-scrollbar__bar.is-vertical,
+.el-scrollbar__bar.is-vertical .el-scrollbar__thumb,
+.el-table__body-wrapper .el-scrollbar__bar.is-vertical,
+.el-scrollbar__wrap + .el-scrollbar__bar.is-vertical {
+  display: none !important;
+  width: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* === Global Fluent consistency pass ======================================
+ * Last-loaded layer: force shared control geometry, edges, surfaces and
+ * focus across login, setup, offline tools and the main workspace so the
+ * whole app reads as one Fluent Design 2 product — not a mix of raw
+ * Element Plus defaults and page-local hex palettes.
+ * ======================================================================= */
+
+/* ----- Shared control metrics ----- */
+.desktop-v2-app-frame
+  :where(
+    .el-input__wrapper,
+    .el-select__wrapper,
+    .el-textarea__inner,
+    .el-button:not(.is-link):not(.is-text),
+    .el-pagination button,
+    .el-pager li
+  ) {
+  border-radius: var(--fluent-radius-control) !important;
+}
+
+.desktop-v2-app-frame
+  :where(
+    .el-input__wrapper,
+    .el-select__wrapper,
+    .el-button:not(.is-link):not(.is-text):not(.el-button--large)
+  ) {
+  min-height: var(--fluent-control-height);
+}
+
+.desktop-v2-app-frame :where(.el-button--large) {
+  min-height: var(--fluent-control-height-large);
+}
+
+/* ----- Canonical single-edge inputs (login + main + setup + dialogs) ----- */
+.desktop-v2-app-frame
+  :where(
+    .el-input__wrapper,
+    .el-select__wrapper,
+    .el-textarea__inner,
+    .el-input-number .el-input__wrapper
+  ),
+.login-page :where(.el-input__wrapper, .el-select__wrapper),
+.setup-page
+  :where(.el-input__wrapper, .el-select__wrapper, .el-textarea__inner),
+.el-overlay-dialog
+  :where(.el-input__wrapper, .el-select__wrapper, .el-textarea__inner),
+.el-popup-parent--hidden :where(.el-input__wrapper, .el-select__wrapper) {
+  border: 0 !important;
+  min-height: var(--fluent-control-height);
+  background: var(--app-surface-strong) !important;
+  /* Same soft rest stroke as the main workspace — never border-strong-only on login. */
+  box-shadow: 0 0 0 var(--fluent-stroke-thin) var(--app-border) inset !important;
+  color: var(--app-text) !important;
+}
+
+.desktop-v2-app-frame
+  :where(
+    .el-input__wrapper:hover,
+    .el-select__wrapper:hover,
+    .el-textarea__inner:hover
+  ),
+.login-page :where(.el-input__wrapper:hover, .el-select__wrapper:hover),
+.setup-page
+  :where(
+    .el-input__wrapper:hover,
+    .el-select__wrapper:hover,
+    .el-textarea__inner:hover
+  ),
+.el-overlay-dialog :where(.el-input__wrapper:hover, .el-select__wrapper:hover) {
+  box-shadow: 0 0 0 var(--fluent-stroke-thin) var(--app-border) inset !important;
+}
+
+.desktop-v2-app-frame
+  :where(
+    .el-input__wrapper.is-focus,
+    .el-select__wrapper.is-focused,
+    .el-textarea__inner:focus,
+    .el-textarea__inner:focus-within
+  ),
+.login-page :where(.el-input__wrapper.is-focus, .el-select__wrapper.is-focused),
+.setup-page
+  :where(
+    .el-input__wrapper.is-focus,
+    .el-select__wrapper.is-focused,
+    .el-textarea__inner:focus
+  ),
+.el-overlay-dialog
+  :where(
+    .el-input__wrapper.is-focus,
+    .el-select__wrapper.is-focused,
+    .el-textarea__inner:focus
+  ) {
+  box-shadow:
+    inset 0 0 0 1px var(--app-border),
+    inset 0 -2px 0 0 var(--app-accent) !important;
+}
+
+.desktop-v2-app-frame
+  :where(.el-input__inner, .el-select__input, .el-textarea__inner),
+.login-page :where(.el-input__inner, .el-select__input),
+.setup-page :where(.el-input__inner, .el-select__input, .el-textarea__inner) {
+  color: var(--app-text);
+}
+
+.desktop-v2-app-frame
+  :where(.el-input__inner, .el-select__input, .el-textarea__inner)::placeholder,
+.login-page :where(.el-input__inner)::placeholder,
+.setup-page :where(.el-input__inner, .el-textarea__inner)::placeholder {
+  color: var(--app-muted);
+}
+
+.desktop-v2-app-frame :where(.el-input__inner, .el-select__input):focus,
+.desktop-v2-app-frame :where(.el-input__inner, .el-select__input):focus-visible,
+.login-page :where(.el-input__inner):focus,
+.login-page :where(.el-input__inner):focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* ----- Buttons ----- */
+.desktop-v2-app-frame
+  :where(.el-button:not(.is-link):not(.is-text):not(.el-button--primary)),
+.login-page
+  :where(.el-button:not(.is-link):not(.is-text):not(.el-button--primary)),
+.setup-page
+  :where(.el-button:not(.is-link):not(.is-text):not(.el-button--primary)) {
+  border: var(--fluent-stroke-thin) solid var(--app-border-strong);
+  background: var(--app-surface-strong);
+  color: var(--app-text);
+  box-shadow: none;
+}
+
+.desktop-v2-app-frame
+  :where(.el-button:not(.is-link):not(.is-text):not(.el-button--primary):hover),
+.login-page
+  :where(.el-button:not(.is-link):not(.is-text):not(.el-button--primary):hover),
+.setup-page
+  :where(
+    .el-button:not(.is-link):not(.is-text):not(.el-button--primary):hover
+  ) {
+  border-color: color-mix(in srgb, var(--app-accent) 40%, var(--app-border));
+  background: var(--app-surface-soft);
+  color: var(--app-text);
+}
+
+.desktop-v2-app-frame
+  :where(.el-button--primary:not(.is-plain):not(.is-text):not(.is-link)),
+.login-page
+  :where(.el-button--primary:not(.is-plain):not(.is-text):not(.is-link)),
+.setup-page
+  :where(.el-button--primary:not(.is-plain):not(.is-text):not(.is-link)) {
+  --el-button-bg-color: var(--app-accent);
+  --el-button-border-color: var(--app-accent);
+  --el-button-hover-bg-color: var(--app-accent-dark);
+  --el-button-hover-border-color: var(--app-accent-dark);
+  --el-button-active-bg-color: var(--app-accent-dark);
+  --el-button-active-border-color: var(--app-accent-dark);
+  --el-button-text-color: var(--system-accent-foreground, #fff);
+  --el-button-hover-text-color: var(--system-accent-foreground, #fff);
+  border-color: var(--app-accent);
+  background: var(--app-accent);
+  color: var(--system-accent-foreground, #fff);
+  box-shadow: none;
+}
+
+/* ----- Cards / panels / tables / dialogs ----- */
+.desktop-v2-app-frame
+  :where(
+    .el-card,
+    .el-table,
+    .el-alert,
+    .panel,
+    .editor-card,
+    .workflow-library,
+    .vuln-workbench,
+    .simple-page,
+    .dependency-group
+  ) {
+  border-color: var(--app-border);
+  color: var(--app-text);
+}
+
+.desktop-v2-app-frame
+  :where(.el-card, .panel, .editor-card, .workflow-library) {
+  border-radius: var(--fluent-radius-card);
+  background: var(--app-surface);
+  box-shadow: var(--fluent-card-shadow);
+}
+
+.desktop-v2-app-frame :where(.el-table) {
+  --el-table-bg-color: var(--app-surface);
+  --el-table-tr-bg-color: var(--app-surface);
+  --el-table-header-bg-color: var(--app-surface-soft);
+  --el-table-row-hover-bg-color: var(--app-accent-soft);
+  --el-table-border-color: var(--app-border);
+  --el-table-text-color: var(--app-text);
+  --el-table-header-text-color: var(--app-muted);
+  background: var(--app-surface);
+  color: var(--app-text);
+}
+
+.desktop-v2-app-frame :where(.el-tag) {
+  border-radius: var(--fluent-radius-small);
+}
+
+.desktop-v2-app-frame :where(.el-dialog, .el-drawer),
+.el-overlay-dialog .el-dialog {
+  --el-dialog-bg-color: var(--app-surface);
+  border-radius: var(--fluent-radius-overlay);
+  color: var(--app-text);
+}
+
+.desktop-v2-app-frame :where(.el-dialog__header, .el-drawer__header) {
+  color: var(--app-text);
+  border-bottom: var(--fluent-stroke-thin) solid var(--app-border);
+}
+
+.desktop-v2-app-frame :where(.el-form-item__label),
+.login-page :where(.el-form-item__label),
+.setup-page :where(.el-form-item__label) {
+  color: var(--app-text);
+  font-weight: var(--fluent-weight-medium, 500);
+}
+
+/* ----- Page chrome that still ships page-local hex palettes ----- */
+.desktop-v2-app-frame
+  :where(
+    .vuln-catalog-pane,
+    .scan-launcher-pane,
+    .pane-title,
+    .catalog-search,
+    .scan-form,
+    .offline-notice,
+    .setup-content,
+    .dependency-group,
+    .dependency-group-head
+  ) {
+  border-color: var(--app-border) !important;
+  color: var(--app-text);
+}
+
+.desktop-v2-app-frame
+  :where(
+    .vuln-catalog-pane,
+    .scan-launcher-pane,
+    .pane-title,
+    .catalog-search
+  ) {
+  background: var(--app-surface-soft) !important;
+}
+
+.desktop-v2-app-frame :where(.pane-title) {
+  background: var(--app-surface) !important;
+}
+
+.desktop-v2-app-frame
+  :where(
+    .pane-title b,
+    .catalog-list b,
+    .detail-header h2,
+    .detail-tabs h3,
+    .rule-list b,
+    .section-head h3,
+    .login-header h1
+  ) {
+  color: var(--app-text) !important;
+}
+
+.desktop-v2-app-frame
+  :where(
+    .pane-title small,
+    .catalog-list i,
+    .catalog-list small,
+    .detail-tabs p,
+    .scan-form > label,
+    .port-help,
+    .scan-summary,
+    .login-header p,
+    .login-footer,
+    .section-head p
+  ) {
+  color: var(--app-muted) !important;
+}
+
+.desktop-v2-app-frame :where(.catalog-list button) {
+  border-color: var(--app-border) !important;
+  color: var(--app-text);
+  background: transparent;
+}
+
+.desktop-v2-app-frame :where(.catalog-list button:hover) {
+  background: var(--app-surface-soft) !important;
+}
+
+.desktop-v2-app-frame :where(.catalog-list button.active) {
+  background: var(--app-accent-soft) !important;
+  box-shadow: inset 3px 0 var(--app-accent) !important;
+}
+
+.desktop-v2-app-frame
+  :where(.detail-tabs section, .rule-list .el-checkbox, .source-facts) {
+  border-color: var(--app-border) !important;
+  background: var(--app-surface) !important;
+  color: var(--app-text);
+}
+
+.desktop-v2-app-frame :where(.login-card, .setup-card, .dependency-group) {
+  border: var(--fluent-stroke-thin) solid var(--app-border) !important;
+  border-radius: var(--fluent-radius-card) !important;
+  background: var(--app-surface) !important;
+  box-shadow: var(--fluent-card-shadow) !important;
+  color: var(--app-text);
+}
+
+/* Keep offline / setup tool surfaces on the same token set */
+.desktop-v2-app-frame
+  :where(
+    .offline-tool-card,
+    .offline-panel,
+    .setup-step,
+    .setup-card,
+    .network-tool-card
+  ) {
+  border-color: var(--app-border) !important;
+  background: var(--app-surface) !important;
+  color: var(--app-text) !important;
+  border-radius: var(--fluent-radius-card);
+}
+
+/* Progress / tags in task center */
+.desktop-v2-app-frame :where(.el-progress-bar__outer) {
+  background: var(--app-surface-soft);
+}
+
+.desktop-v2-app-frame :where(.el-pagination) {
+  --el-pagination-button-color: var(--app-text);
+  --el-pagination-hover-color: var(--app-accent);
+  color: var(--app-muted);
+}
+
+.desktop-v2-app-frame :where(.el-checkbox__label, .el-radio__label) {
+  color: var(--app-text);
+}
+
+/* The generic page rule above pins every page flush-left with margin:0.
+   Settings is a capped, centered reading column, so restore its auto side
+   margins with equal specificity placed later in the cascade. */
+.desktop-v2-app-frame .desktop-v2-content > .settings-page {
+  align-self: center;
+  width: 100%;
+  max-width: 920px;
+  margin-right: auto !important;
+  margin-left: auto !important;
+}

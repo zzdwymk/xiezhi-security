@@ -1,0 +1,96 @@
+server:
+  address: ${SERVER_ADDRESS:127.0.0.1}
+  port: 8080
+
+spring:
+  application:
+    name: security-toolbox-server
+  datasource:
+    url: jdbc:h2:file:./data/security-toolbox;MODE=PostgreSQL;AUTO_SERVER=TRUE
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+  task:
+    execution:
+      pool:
+        core-size: 2
+        max-size: 4
+        queue-capacity: 50
+
+toolbox:
+  recon:
+    passive-sources-enabled: ${RECON_PASSIVE_SOURCES_ENABLED:true}
+    # Optional trusted ICP provider. Use {domain} in the URL, or the server
+    # appends a domain query parameter. HTTPS is required.
+    icp-api-url: ${ICP_API_URL:}
+  auth:
+    admin-password: ${ADMIN_PASSWORD:admin123}
+    jwt-secret: ${JWT_SECRET:development-only-jwt-secret-change-me-32-bytes}
+    jwt-expiration-minutes: ${JWT_EXPIRATION_MINUTES:120}
+    desktop-mode: ${TOOLBOX_DESKTOP:false}
+    synchronize-desktop-admin-password: ${TOOLBOX_DESKTOP_SYNC_ADMIN_PASSWORD:false}
+    allow-insecure-development-credentials: ${ALLOW_INSECURE_DEVELOPMENT_CREDENTIALS:false}
+    migrate-legacy-development-credentials: ${MIGRATE_LEGACY_DEVELOPMENT_CREDENTIALS:false}
+  ai:
+    enabled: ${AI_ENABLED:false}
+    api-mode: ${AI_API_MODE:chat}
+    base-url: ${AI_BASE_URL:https://api.openai.com}
+    api-key: ${AI_API_KEY:}
+    model: ${AI_MODEL:gpt-4.1-mini}
+    # Idle timeout for AI reads. Every Responses SSE event resets the socket inactivity timer.
+    timeout-seconds: ${AI_TIMEOUT_SECONDS:180}
+    agent:
+      runtime-enabled: ${AI_RUNTIME_ENABLED:true}
+      runtime-base-url: ${AI_RUNTIME_URL:}
+      runtime-port: ${AI_RUNTIME_PORT:8090}
+      runtime-token: ${AI_RUNTIME_TOKEN:}
+      runtime-timeout-seconds: ${AI_RUNTIME_TIMEOUT_SECONDS:120}
+      memory-messages: ${AI_AGENT_MEMORY_MESSAGES:20}
+      max-sessions: ${AI_AGENT_MAX_SESSIONS:200}
+      session-ttl-minutes: ${AI_AGENT_SESSION_TTL_MINUTES:120}
+      max-active-tasks-per-project: ${AI_AGENT_MAX_ACTIVE_TASKS_PER_PROJECT:20}
+      max-active-tasks-per-target: ${AI_AGENT_MAX_ACTIVE_TASKS_PER_TARGET:4}
+  execution:
+    max-concurrent-tasks: ${MAX_CONCURRENT_TASKS:3}
+    max-concurrent-tasks-per-target: ${MAX_CONCURRENT_TASKS_PER_TARGET:1}
+    connect-timeout-seconds: 3
+    max-ports-per-task: 65535
+    max-nmap-ports-per-task: 65535
+    max-authorized-ports: 65535
+    allow-public-targets: ${ALLOW_PUBLIC_TARGETS:false}
+    nmap-path: ${NMAP_PATH:nmap}
+    nmap-timeout-seconds: 60
+    nmap-full-timeout-seconds: 600
+    nuclei-path: ${NUCLEI_PATH:nuclei}
+    nuclei-templates-path: ${NUCLEI_TEMPLATES_PATH:${user.home}/nuclei-templates}
+    nuclei-timeout-seconds: 900
+    max-nuclei-ports-per-task: 65535
+  vulnerability-catalog:
+    nuclei:
+      templates-path: ${NUCLEI_TEMPLATES_PATH:${user.home}/nuclei-templates}
+      import-on-startup: ${NUCLEI_CATALOG_IMPORT_ON_STARTUP:true}
+      max-template-bytes: 2097152
+    cisa-kev-enabled: ${CISA_KEV_ENABLED:true}
+    cisa-kev-url: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
+  traffic:
+    mitm-enabled: ${TRAFFIC_MITM_ENABLED:true}
+    mitm-ca-path: ${TRAFFIC_MITM_CA_PATH:./data/traffic-mitm-ca.p12}
+    mitm-ca-password: ${TRAFFIC_MITM_CA_PASSWORD:change-this-development-password}
+
+---
+spring:
+  config:
+    activate:
+      on-profile: postgres
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/security_toolbox}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver

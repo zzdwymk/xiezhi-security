@@ -1,0 +1,276 @@
+name: Windows Desktop Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build, for example v0.2.0
+        required: true
+        type: string
+      publish:
+        description: Publish or update the GitHub Release after building
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  JAVA_VERSION: "17"
+  NODE_VERSION: "24"
+  PYTHON_VERSION: "3.10"
+
+jobs:
+  build:
+    name: Build Windows desktop artifacts
+    runs-on: windows-latest
+    timeout-minutes: 90
+    outputs:
+      artifact_name: ${{ steps.meta.outputs.artifact_name }}
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate tag and package version
+        id: meta
+        shell: pwsh
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          $version = (Get-Content -LiteralPath "security-toolbox-web/package.json" -Raw -Encoding UTF8 | ConvertFrom-Json).version
+          $releaseTag = if ($env:GITHUB_EVENT_NAME -eq "workflow_dispatch") {
+            $env:REQUESTED_TAG
+          } else {
+            $env:GITHUB_REF_NAME
+          }
+
+          if ([string]::IsNullOrWhiteSpace($releaseTag)) {
+            throw "A release tag is required."
+          }
+          if ($releaseTag -cne "v$version") {
+            throw "Tag $releaseTag does not match package version $version."
+          }
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
+          "artifact_name=xiezhi-windows-$releaseTag" >> $env:GITHUB_OUTPUT
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          architecture: x64
+          cache: pip
+          cache-dependency-path: |
+            ai-runtime/requirements.txt
+            ai-runtime/requirements-build.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: security-toolbox-web/package-lock.json
+
+      - name: Cache Electron packaging tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: ${{ runner.os }}-electron-${{ hashFiles('security-toolbox-web/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
+      - name: Use the official npm registry on hosted runners
+        shell: pwsh
+        run: |
+          $lockPath = Join-Path $env:GITHUB_WORKSPACE "security-toolbox-web/package-lock.json"
+          $lock = [IO.File]::ReadAllText($lockPath)
+          $normalized = $lock.Replace("https://registry.npmmirror.com/", "https://registry.npmjs.org/")
+          [IO.File]::WriteAllText($lockPath, $normalized, [Text.UTF8Encoding]::new($false))
+          npm.cmd config set registry https://registry.npmjs.org/
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r ai-runtime/requirements-build.txt
+          python -m pip check
+          Push-Location security-toolbox-web
+          try {
+            npm.cmd ci
+            if ($LASTEXITCODE -ne 0) { throw "npm ci failed." }
+          } finally {
+            Pop-Location
+          }
+
+      - name: Clean previous desktop output
+        shell: pwsh
+        run: |
+          $releaseRoot = Join-Path $env:GITHUB_WORKSPACE "security-toolbox-web/desktop-release"
+          if (Test-Path -LiteralPath $releaseRoot) {
+            Remove-Item -LiteralPath $releaseRoot -Recurse -Force
+          }
+
+      - name: Build and health-check AI Runtime
+        shell: pwsh
+        run: |
+          & .\ai-runtime\build-windows.ps1 `
+            -Python python `
+            -RequiredPythonVersion $env:PYTHON_VERSION `
+            -SkipInstall
+
+      - name: Build and test Spring Boot engine
+        shell: pwsh
+        env:
+          ADMIN_PASSWORD: ci-only-admin-password
+          JWT_SECRET: ci-only-jwt-secret-with-more-than-thirty-two-bytes
+          TRAFFIC_MITM_CA_PASSWORD: ci-only-mitm-ca-password
+          TRAFFIC_MITM_ENABLED: "false"
+          AI_ENABLED: "false"
+          AI_RUNTIME_ENABLED: "false"
+          RECON_PASSIVE_SOURCES_ENABLED: "false"
+          CISA_KEV_ENABLED: "false"
+          NUCLEI_CATALOG_IMPORT_ON_STARTUP: "false"
+        run: mvn -B -ntp -f security-toolbox-server/pom.xml clean verify
+
+      - name: Build portable Electron release
+        shell: pwsh
+        run: |
+          & .\scripts\package-desktop-release.ps1 -SkipComponentBuild
+
+      - name: Build unsigned NSIS installer
+        shell: pwsh
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          $installerOutput = Join-Path $env:RUNNER_TEMP "security-toolbox-installer"
+          if (Test-Path -LiteralPath $installerOutput) {
+            Remove-Item -LiteralPath $installerOutput -Recurse -Force
+          }
+          $electronDist = (Resolve-Path -LiteralPath "security-toolbox-web/node_modules/electron/dist").Path
+
+          Push-Location security-toolbox-web
+          try {
+            & npm.cmd exec -- electron-builder --win nsis "--config.directories.output=$installerOutput" "--config.electronDist=$electronDist"
+            if ($LASTEXITCODE -ne 0) { throw "NSIS installer build failed." }
+          } finally {
+            Pop-Location
+          }
+
+      - name: Prepare public release assets
+        id: assets
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          $releaseRoot = Join-Path $env:GITHUB_WORKSPACE "security-toolbox-web/desktop-release"
+          $installerRoot = Join-Path $env:RUNNER_TEMP "security-toolbox-installer"
+          $assetRoot = Join-Path $env:RUNNER_TEMP "security-toolbox-release-assets"
+          if (Test-Path -LiteralPath $assetRoot) {
+            Remove-Item -LiteralPath $assetRoot -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $assetRoot | Out-Null
+
+          $portable = Get-Item -LiteralPath (Join-Path $releaseRoot "xiezhi-$env:RELEASE_VERSION-portable.zip")
+          $installer = Get-Item -LiteralPath (Join-Path $installerRoot "xiezhi-$env:RELEASE_VERSION-setup.exe")
+          $publicFiles = @($portable, $installer)
+          $copiedFiles = foreach ($file in $publicFiles) {
+            Copy-Item -LiteralPath $file.FullName -Destination $assetRoot
+            Get-Item -LiteralPath (Join-Path $assetRoot $file.Name)
+          }
+
+          $checksumLines = foreach ($file in $copiedFiles) {
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          [IO.File]::WriteAllLines(
+            (Join-Path $assetRoot "SHA256SUMS.txt"),
+            $checksumLines,
+            [Text.UTF8Encoding]::new($false)
+          )
+
+          foreach ($file in (Get-ChildItem -LiteralPath $assetRoot -File)) {
+            Write-Host "$($file.Name): $($file.Length) bytes"
+          }
+
+      - name: Upload build diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-diagnostics-${{ github.run_id }}
+          path: |
+            ai-runtime/build/health-test-*/
+            security-toolbox-server/target/surefire-reports/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload Windows release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.artifact_name }}
+          path: ${{ runner.temp }}/security-toolbox-release-assets/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    if: ${{ github.event_name == 'push' || inputs.publish == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    environment: release
+    steps:
+      - name: Download Windows release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: release-assets
+
+      - name: Verify release checksums
+        working-directory: release-assets
+        run: sha256sum --check SHA256SUMS.txt
+
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          assets=(release-assets/*)
+
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber --repo "${GITHUB_REPOSITORY}"
+          else
+            gh release create "${RELEASE_TAG}" "${assets[@]}" \
+              --verify-tag \
+              --generate-notes \
+              --title "Xiezhi ${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}"
+          fi

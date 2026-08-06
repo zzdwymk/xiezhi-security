@@ -1,0 +1,547 @@
+:root {
+  --ui-font: 14px;
+  --ui-font-small: 13px;
+  --ui-font-title: 16px;
+  --ui-control-height: 36px;
+  --app-sidebar-width: 274px;
+  --app-content-padding: 24px 28px;
+  --activity-rail-width: 52px;
+  font-size: 14px;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+}
+body {
+  min-width: 1100px;
+  font-size: var(--ui-font);
+}
+button,
+input,
+textarea,
+select {
+  font-size: inherit;
+}
+
+.desktop-shell .app-sidebar {
+  width: var(--app-sidebar-width) !important;
+}
+.desktop-shell .product {
+  height: 58px;
+  padding: 0 14px;
+}
+.desktop-shell .product-icon {
+  width: 34px;
+  height: 34px;
+}
+.desktop-shell .product-icon .el-icon {
+  font-size: 18px;
+}
+.desktop-shell .product strong {
+  font-size: 15px;
+}
+.desktop-shell .product small {
+  margin-top: 3px;
+  font-size: 12px;
+}
+.activity-rail {
+  width: var(--activity-rail-width);
+  padding-top: 8px;
+}
+.activity-rail button {
+  width: var(--activity-rail-width);
+  height: 48px;
+}
+.activity-rail .el-icon {
+  font-size: 21px;
+}
+.explorer-head {
+  height: 42px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+.desktop-shell .nav-label {
+  padding: 11px 12px 5px;
+  font-size: 12px;
+}
+.desktop-shell .nav-label span {
+  font-size: 12px;
+}
+.desktop-shell .app-menu .el-menu-item {
+  height: 38px;
+  padding-left: 25px !important;
+  font-size: 14px;
+}
+.desktop-shell .app-menu .el-icon {
+  font-size: 16px;
+}
+.desktop-shell .sidebar-status {
+  padding: 13px;
+}
+.desktop-shell .sidebar-status b {
+  font-size: 13px;
+}
+.desktop-shell .sidebar-status small {
+  margin-top: 3px;
+  font-size: 12px;
+}
+
+.app-toolbar {
+  height: 56px;
+  padding: 0 16px;
+}
+.toolbar-left,
+.toolbar-right {
+  gap: 8px;
+}
+.toolbar-action {
+  height: 36px;
+  gap: 7px;
+  padding: 0 13px;
+  font-size: 14px;
+}
+.command-entry {
+  width: min(540px, 38vw);
+  height: var(--ui-control-height);
+  padding: 0 11px;
+  font-size: 14px;
+}
+.command-entry kbd {
+  padding: 2px 7px;
+  font-size: 12px;
+}
+.engine-pill {
+  padding: 7px 10px;
+  font-size: 12px;
+}
+.desktop-shell .user-menu {
+  height: 38px;
+  gap: 8px;
+  padding: 3px 8px;
+}
+.desktop-shell .avatar {
+  width: 30px;
+  height: 30px;
+  font-size: 13px;
+}
+.desktop-shell .user-menu > span:nth-child(2) {
+  min-width: 72px;
+}
+.desktop-shell .user-menu b {
+  font-size: 13px;
+}
+.desktop-shell .user-menu small {
+  font-size: 12px;
+}
+
+.workspace-context {
+  height: 32px;
+  padding: 0 16px;
+}
+.desktop-shell .page-heading,
+.desktop-shell .page-heading strong {
+  font-size: 12px;
+}
+.desktop-shell .page-heading span {
+  font-size: 12px;
+}
+.desktop-shell .workspace-tabs {
+  height: 40px;
+}
+.desktop-shell .workspace-tab {
+  min-width: 130px;
+  max-width: 240px;
+  height: 39px;
+  padding: 0 13px;
+  font-size: 13px;
+}
+.tab-indicator {
+  width: 8px;
+  height: 8px;
+}
+.desktop-shell .tab-close {
+  font-size: 16px;
+}
+.desktop-shell .content-area {
+  padding: var(--app-content-padding);
+}
+.desktop-shell .app-statusbar {
+  height: 30px;
+  gap: 22px;
+  padding: 0 13px;
+  font-size: 12px;
+}
+
+.desktop-shell .el-button {
+  min-height: 34px;
+  font-size: 14px;
+}
+.desktop-shell .el-button.is-link {
+  min-height: auto;
+}
+.desktop-shell .el-input__wrapper,
+.desktop-shell .el-select__wrapper {
+  min-height: var(--ui-control-height);
+  font-size: 14px;
+}
+.desktop-shell .el-textarea__inner,
+.desktop-shell .el-form-item__label,
+.desktop-shell .el-checkbox__label,
+.desktop-shell .el-radio__label {
+  font-size: 14px;
+}
+.desktop-shell .el-table {
+  font-size: 14px;
+}
+.desktop-shell .el-table th.el-table__cell {
+  height: 46px;
+}
+.desktop-shell .el-table td.el-table__cell {
+  padding: 12px 0;
+}
+.desktop-shell .el-tag {
+  font-size: 12px;
+}
+.desktop-shell .panel {
+  padding: 24px;
+}
+.desktop-shell .panel h3 {
+  font-size: 17px;
+}
+.desktop-shell .section-head p,
+.empty-state p {
+  font-size: 13px;
+}
+.empty-state strong {
+  font-size: 14px;
+}
+.task-output,
+.finding-evidence {
+  font-size: 13px !important;
+  line-height: 1.65;
+}
+
+.launcher-page {
+  max-width: none !important;
+}
+.launcher-header {
+  margin-bottom: 24px !important;
+}
+.eyebrow {
+  font-size: 12px !important;
+}
+.launcher-header h1 {
+  font-size: 30px !important;
+}
+.launcher-header p {
+  max-width: 920px !important;
+  font-size: 14px !important;
+}
+.target-commandbar {
+  min-height: 76px !important;
+  padding: 13px 16px !important;
+}
+.target-command-icon {
+  width: 42px !important;
+  height: 42px !important;
+}
+.target-command-copy {
+  min-width: 240px !important;
+}
+.target-command-copy strong {
+  font-size: 14px !important;
+}
+.target-command-copy span,
+.target-scope,
+.target-scope code {
+  font-size: 12px !important;
+}
+.target-picker {
+  max-width: 620px !important;
+}
+.launcher-layout {
+  grid-template-columns: minmax(0, 1fr) 360px !important;
+  gap: 20px !important;
+}
+.workspace-section {
+  margin-bottom: 20px !important;
+  border-radius: 7px !important;
+}
+.workspace-section-head {
+  min-height: 64px !important;
+  padding: 13px 17px !important;
+}
+.workspace-section-head h2 {
+  font-size: 16px !important;
+}
+.workspace-section-head p,
+.workspace-section-head button {
+  font-size: 12px !important;
+}
+.tool-launch-card {
+  min-height: 148px !important;
+  grid-template-columns: 58px minmax(0, 1fr) !important;
+  padding: 21px !important;
+}
+.tool-monogram {
+  width: 54px !important;
+  height: 50px !important;
+  font-size: 13px !important;
+}
+.tool-copy strong {
+  font-size: 16px !important;
+}
+.tool-copy small {
+  font-size: 13px !important;
+}
+.tool-scope {
+  font-size: 12px !important;
+}
+.session-row {
+  grid-template-columns: 10px minmax(190px, 1fr) 120px 80px 180px !important;
+  padding: 14px 17px !important;
+}
+.session-name strong {
+  font-size: 14px !important;
+}
+.session-name small,
+.session-status,
+.session-time {
+  font-size: 12px !important;
+}
+.workspace-counters button {
+  min-height: 96px !important;
+  padding: 16px 18px !important;
+}
+.workspace-counters span {
+  font-size: 12px !important;
+}
+.workspace-counters strong {
+  font-size: 28px !important;
+}
+.compact-findings button {
+  grid-template-columns: 32px minmax(0, 1fr) !important;
+  padding: 13px 15px !important;
+}
+.compact-findings strong {
+  font-size: 13px !important;
+}
+.compact-findings small {
+  font-size: 12px !important;
+}
+.severity-mark {
+  width: 28px !important;
+  height: 28px !important;
+  font-size: 12px !important;
+}
+.engine-card {
+  padding: 7px 16px !important;
+}
+.engine-card > div {
+  grid-template-columns: 27px 1fr !important;
+  padding: 13px 0 !important;
+}
+.engine-card strong {
+  font-size: 13px !important;
+}
+.engine-card small {
+  font-size: 12px !important;
+}
+
+.vuln-workbench {
+  min-height: 560px !important;
+  grid-template-columns: minmax(230px, 26%) minmax(320px, 1fr) minmax(
+      300px,
+      34%
+    ) !important;
+}
+.pane-title {
+  height: 64px !important;
+  padding: 0 18px !important;
+}
+.pane-title b {
+  font-size: 15px !important;
+}
+.pane-title small {
+  font-size: 12px !important;
+}
+.catalog-search {
+  padding: 14px !important;
+}
+.catalog-list button {
+  gap: 8px !important;
+  padding: 16px 17px !important;
+}
+.catalog-list i,
+.catalog-list small {
+  font-size: 12px !important;
+}
+.catalog-list b {
+  font-size: 14px !important;
+}
+.vuln-detail-pane {
+  padding: 32px !important;
+}
+.detail-header span {
+  font-size: 13px !important;
+}
+.detail-header h2 {
+  font-size: 26px !important;
+}
+.detail-tabs {
+  gap: 20px !important;
+}
+.detail-tabs section {
+  padding: 22px !important;
+}
+.detail-tabs h3 {
+  font-size: 15px !important;
+}
+.detail-tabs p {
+  font-size: 14px !important;
+  line-height: 1.8 !important;
+}
+.scan-form {
+  padding: 18px !important;
+}
+.scan-form > label {
+  font-size: 13px !important;
+}
+.rule-list {
+  gap: 8px !important;
+}
+.rule-list .el-checkbox {
+  padding: 13px !important;
+}
+.rule-list b {
+  font-size: 13px !important;
+}
+.rule-list small {
+  font-size: 12px !important;
+}
+.scan-summary {
+  padding: 12px 18px !important;
+  font-size: 12px !important;
+}
+.scan-button {
+  margin: 0 18px 18px !important;
+}
+
+.setup-shell {
+  grid-template-columns: 280px minmax(760px, 980px);
+  min-height: 700px;
+}
+.setup-brand {
+  font-size: 18px;
+}
+.setup-brand small,
+.setup-steps li small {
+  font-size: 12px;
+}
+.setup-steps li span,
+.dependency-row b,
+.dependency-group h3 {
+  font-size: 14px;
+}
+.dependency-row small,
+.dep-version,
+.setup-content > footer {
+  font-size: 12px;
+}
+
+@media (min-width: 1800px) {
+  :root {
+    --ui-font: 15px;
+    --ui-font-small: 14px;
+    --ui-font-title: 18px;
+    --ui-control-height: 40px;
+    --app-sidebar-width: 304px;
+    --app-content-padding: 30px 36px;
+    --activity-rail-width: 56px;
+  }
+  .launcher-layout {
+    grid-template-columns: minmax(0, 1fr) 410px !important;
+  }
+  .tool-launch-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  }
+  .tool-launch-card {
+    border-bottom: 0 !important;
+  }
+  .tool-launch-card:nth-child(2) {
+    border-right: 1px solid #e5e8ec !important;
+  }
+  .vuln-workbench {
+    grid-template-columns: 360px minmax(620px, 1fr) 460px !important;
+    min-height: 640px !important;
+  }
+}
+
+@media (min-width: 2500px) {
+  :root {
+    --ui-font: 16px;
+    --ui-font-small: 15px;
+    --ui-font-title: 20px;
+    --ui-control-height: 42px;
+    --app-sidebar-width: 330px;
+    --app-content-padding: 36px 44px;
+    --activity-rail-width: 62px;
+  }
+  .launcher-header h1 {
+    font-size: 34px !important;
+  }
+  .tool-launch-card {
+    min-height: 170px !important;
+  }
+  .launcher-layout {
+    grid-template-columns: minmax(0, 1fr) 470px !important;
+  }
+  .vuln-workbench {
+    grid-template-columns: 400px minmax(760px, 1fr) 520px !important;
+  }
+}
+
+@media (max-width: 1350px) {
+  body {
+    min-width: 1000px;
+  }
+  :root {
+    --app-sidebar-width: 238px;
+    --app-content-padding: 18px 20px;
+    --activity-rail-width: 48px;
+  }
+  .launcher-layout {
+    grid-template-columns: 1fr !important;
+  }
+  .launcher-side {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .launcher-side .engine-card {
+    grid-column: 1 / 3;
+  }
+  .vuln-workbench {
+    height: auto !important;
+    min-height: 0 !important;
+    grid-template-columns: minmax(220px, 30%) minmax(360px, 1fr) !important;
+    grid-template-rows: minmax(560px, calc(100vh - 130px)) auto;
+    overflow: visible !important;
+  }
+  .scan-launcher-pane {
+    position: static;
+    grid-column: 1 / -1;
+    width: auto;
+    height: auto;
+    max-height: none;
+    border-top: 1px solid #e1e5eb;
+    border-left: 0;
+    box-shadow: none;
+  }
+  .scan-form {
+    overflow: visible !important;
+  }
+}

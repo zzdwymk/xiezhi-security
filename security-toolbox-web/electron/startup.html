@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>启动獬豸</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --system-accent: AccentColor;
+        --system-caption-color: AccentColor;
+        --system-theme-accent: var(--system-accent);
+        --bg: color-mix(in srgb, Canvas 56%, transparent);
+        --panel: color-mix(in srgb, Canvas 84%, transparent);
+        --sidebar: var(
+          --shared-chrome-surface,
+          color-mix(in srgb, Canvas 42%, transparent)
+        );
+        --sidebar-active: color-mix(
+          in srgb,
+          var(--system-theme-accent) 22%,
+          Canvas
+        );
+        --border: color-mix(in srgb, CanvasText 13%, transparent);
+        --text: CanvasText;
+        --muted: color-mix(in srgb, CanvasText 62%, transparent);
+        --subtle: color-mix(in srgb, CanvasText 50%, transparent);
+        --accent: var(--system-theme-accent);
+        --accent-dark: color-mix(
+          in srgb,
+          var(--system-theme-accent) 74%,
+          CanvasText
+        );
+        --accent-soft: color-mix(
+          in srgb,
+          var(--system-theme-accent) 14%,
+          Canvas
+        );
+        font-family:
+          "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+        font-synthesis: none;
+      }
+
+      :root[data-window-material="none"] {
+        --bg: Canvas;
+        --panel: Canvas;
+        --sidebar: Canvas;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      .shell {
+        display: flex;
+        width: 100vw;
+        height: 100vh;
+      }
+
+      .sidebar {
+        display: flex;
+        width: 260px;
+        flex: none;
+        flex-direction: column;
+        padding: 10px 9px 12px;
+        border-right: 0;
+        background: var(--sidebar);
+      }
+
+      .brand {
+        display: flex;
+        height: 52px;
+        align-items: center;
+        gap: 10px;
+        padding: 0 9px;
+      }
+
+      .logo {
+        display: grid;
+        width: 31px;
+        height: 31px;
+        flex: none;
+        place-items: center;
+        border: 0;
+        border-radius: 9px;
+        background: transparent;
+        color: var(--accent);
+        box-shadow: 0 1px 2px rgba(26, 26, 24, 0.06);
+        overflow: hidden;
+      }
+
+      .logo img {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      .brand-copy {
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+      }
+      .brand-copy strong {
+        color: var(--text);
+        font-size: 14px;
+        font-weight: 650;
+        line-height: 1.2;
+      }
+      .brand-copy small {
+        margin-top: 2px;
+        color: #888983;
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
+      .stage-label {
+        margin: 31px 12px 8px;
+        color: #8a8b85;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+
+      .steps {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      .step {
+        display: grid;
+        min-height: 46px;
+        grid-template-columns: 25px minmax(0, 1fr);
+        align-items: center;
+        gap: 8px;
+        padding: 0 12px;
+        border-radius: 8px;
+        color: #777873;
+        transition:
+          background 0.18s ease,
+          color 0.18s ease;
+      }
+
+      .step-index {
+        display: grid;
+        width: 22px;
+        height: 22px;
+        place-items: center;
+        border: 1px solid #d6d6d1;
+        border-radius: 50%;
+        background: #fff;
+        color: #888983;
+        font-size: 10px;
+        font-weight: 650;
+      }
+
+      .step span:last-child {
+        font-size: 12px;
+      }
+      .step.active {
+        background: var(--sidebar-active);
+        color: #1e1f1c;
+        font-weight: 600;
+      }
+      .step.active .step-index {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: #fff;
+      }
+      .step.complete {
+        color: #555650;
+      }
+      .step.complete .step-index {
+        border-color: #bdd7cd;
+        background: var(--accent-soft);
+        color: var(--accent-dark);
+      }
+
+      .engine-state {
+        display: grid;
+        grid-template-columns: 9px minmax(0, 1fr);
+        align-items: center;
+        gap: 9px;
+        margin: auto 4px 0;
+        padding: 10px 8px;
+        border-radius: 8px;
+        color: #555650;
+      }
+
+      .state-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-soft);
+        animation: pulse 1.6s ease-in-out infinite;
+      }
+
+      .engine-state span:last-child {
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+      }
+      .engine-state strong {
+        font-size: 11px;
+        font-weight: 550;
+      }
+      .engine-state small {
+        margin-top: 2px;
+        color: #94958f;
+        font-size: 10px;
+      }
+
+      .workspace {
+        position: relative;
+        display: flex;
+        min-width: 0;
+        flex: 1;
+        flex-direction: column;
+        overflow: hidden;
+        border-top-left-radius: 12px;
+        background: var(--panel);
+        background-clip: border-box;
+        box-shadow: none;
+        contain: paint;
+      }
+
+      .workspace::before {
+        position: absolute;
+        z-index: 10;
+        inset: 0;
+        border-top: 1px solid var(--border);
+        border-top-left-radius: inherit;
+        border-left: 1px solid var(--border);
+        pointer-events: none;
+        content: "";
+      }
+
+      .topbar {
+        display: flex;
+        height: 56px;
+        flex: none;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 24px;
+        border-bottom: 1px solid #eeeeeb;
+        background: var(--panel);
+      }
+
+      .topbar strong {
+        color: #2b2c29;
+        font-size: 14px;
+        font-weight: 620;
+      }
+      .topbar span {
+        color: #8a8b86;
+        font-size: 11px;
+      }
+
+      .content {
+        display: flex;
+        min-height: 0;
+        flex: 1;
+        align-items: center;
+        justify-content: center;
+        padding: 42px;
+        background: var(--bg);
+      }
+
+      .startup-card {
+        width: min(520px, 100%);
+        padding: 30px 30px 26px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--panel);
+        box-shadow: 0 2px 4px color-mix(in srgb, CanvasText 7%, transparent);
+      }
+
+      .status-icon {
+        display: grid;
+        width: 48px;
+        height: 48px;
+        place-items: center;
+        border-radius: 12px;
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+
+      .status-icon svg {
+        width: 23px;
+        height: 23px;
+      }
+      .eyebrow {
+        display: block;
+        margin-top: 22px;
+        color: var(--accent);
+        font-size: 11px;
+        font-weight: 650;
+        letter-spacing: 0.08em;
+      }
+      h1 {
+        margin: 7px 0 9px;
+        color: #252622;
+        font-size: 24px;
+        font-weight: 650;
+        letter-spacing: -0.02em;
+      }
+      .message {
+        min-height: 42px;
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.65;
+      }
+
+      .progress-track {
+        height: 5px;
+        overflow: hidden;
+        margin-top: 25px;
+        border-radius: 999px;
+        background: #ecece8;
+      }
+
+      .progress-bar {
+        width: 38%;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--accent);
+        animation: loading 1.45s ease-in-out infinite;
+        transform-origin: left;
+      }
+
+      .progress-meta {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 10px;
+        color: var(--subtle);
+        font-size: 10px;
+      }
+
+      .error {
+        display: none;
+        margin-top: 22px;
+        padding: 12px 13px;
+        border: 1px solid #edceca;
+        border-radius: 7px;
+        background: #fff8f7;
+        color: #9d3e35;
+        font-size: 11px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      /* The startup sidebar is window chrome and should expose native Mica.
+       The workspace at the right intentionally keeps its existing surfaces. */
+      :root[data-caption-mode="mica"] body,
+      :root[data-caption-mode="mica"] .shell,
+      :root[data-caption-mode="mica"] .sidebar {
+        background: transparent;
+      }
+
+      .startup-card.failed .status-icon {
+        background: #f7e7e5;
+        color: #b44b42;
+      }
+      .startup-card.failed .eyebrow {
+        color: #a9443c;
+      }
+      .startup-card.failed .progress-track,
+      .startup-card.failed .progress-meta {
+        display: none;
+      }
+      .startup-card.failed .error {
+        display: block;
+      }
+      .startup-card.failed + * {
+        animation: none;
+      }
+
+      @keyframes loading {
+        0% {
+          transform: translateX(-105%) scaleX(0.72);
+        }
+        55% {
+          transform: translateX(125%) scaleX(1);
+        }
+        100% {
+          transform: translateX(270%) scaleX(0.72);
+        }
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 0.65;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .progress-bar,
+        .state-dot {
+          animation: none;
+        }
+        .progress-bar {
+          width: 68%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="logo" aria-hidden="true">
+            <img src="./icon.png" alt="" />
+          </span>
+          <span class="brand-copy">
+            <strong>獬豸</strong>
+            <small>授权安全测试平台</small>
+          </span>
+        </div>
+
+        <div class="stage-label">启动进度</div>
+        <div class="steps" aria-label="启动进度">
+          <div class="step active" data-step="0">
+            <span class="step-index">1</span><span>检查并启动运行环境</span>
+          </div>
+          <div class="step" data-step="1">
+            <span class="step-index">2</span><span>检测工具依赖</span>
+          </div>
+          <div class="step" data-step="2">
+            <span class="step-index">3</span><span>加载工具工作区</span>
+          </div>
+        </div>
+
+        <div class="engine-state">
+          <span class="state-dot" aria-hidden="true"></span>
+          <span>
+            <strong>正在准备本地引擎</strong>
+            <small>所有服务仅在本机运行</small>
+          </span>
+        </div>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <strong>桌面工作区</strong>
+          <span>安全启动 · 本地运行</span>
+        </header>
+
+        <div class="content">
+          <section class="startup-card" id="startup-card" aria-live="polite">
+            <div class="status-icon" aria-hidden="true">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path
+                  d="M12 3 4.5 6v5.5c0 4.4 3 7.6 7.5 9.5 4.5-1.9 7.5-5.1 7.5-9.5V6L12 3Z"
+                />
+                <path d="m9 12 2 2 4-4" />
+              </svg>
+            </div>
+            <small class="eyebrow">LOCAL ENGINE</small>
+            <h1 id="title">检查并启动运行环境</h1>
+            <p class="message" id="message">
+              正在检查 Java 运行时和后端服务文件。
+            </p>
+            <div class="progress-track" id="progress">
+              <div class="progress-bar"></div>
+            </div>
+            <div class="progress-meta">
+              <span id="progress-label">步骤 1 / 3</span><span>请稍候</span>
+            </div>
+            <div class="error" id="error" role="alert"></div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const stepTitles = [
+        "检查并启动运行环境",
+        "检测工具依赖",
+        "加载工具工作区",
+      ];
+
+      function setActiveStep(title) {
+        const activeIndex = Math.max(0, stepTitles.indexOf(title));
+        document.querySelectorAll(".step").forEach((step, index) => {
+          step.classList.toggle("active", index === activeIndex);
+          step.classList.toggle("complete", index < activeIndex);
+          const indexNode = step.querySelector(".step-index");
+          indexNode.textContent = index < activeIndex ? "✓" : String(index + 1);
+        });
+        document.getElementById("progress-label").textContent =
+          `步骤 ${activeIndex + 1} / 3`;
+      }
+
+      window.setStartupStatus = function (title, message, error) {
+        document.getElementById("title").textContent = title;
+        document.getElementById("message").textContent = message || "";
+        const card = document.getElementById("startup-card");
+        const errorBox = document.getElementById("error");
+        const hasError = Boolean(error);
+        card.classList.toggle("failed", hasError);
+        errorBox.textContent = error || "";
+        if (!hasError) setActiveStep(title);
+      };
+    </script>
+  </body>
+</html>

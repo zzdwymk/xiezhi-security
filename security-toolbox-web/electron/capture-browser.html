@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; frame-src http: https:"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>獬豸抓包浏览器</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --system-accent: AccentColor;
+        --surface: color-mix(in srgb, Canvas 84%, transparent);
+        --surface-soft: color-mix(in srgb, Canvas 58%, transparent);
+        --border: color-mix(in srgb, CanvasText 14%, transparent);
+        --text: CanvasText;
+        --muted: color-mix(in srgb, CanvasText 60%, transparent);
+        --accent: var(--system-accent);
+        --accent-soft: color-mix(in srgb, var(--accent) 14%, Canvas);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+        color: var(--text);
+        font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      }
+      .shell {
+        display: grid;
+        width: 100%;
+        height: 100%;
+        grid-template-rows: 50px 28px minmax(0, 1fr);
+      }
+      .toolbar {
+        display: grid;
+        grid-template-columns: auto auto auto auto minmax(180px, 1fr) auto;
+        align-items: center;
+        gap: 6px;
+        padding: 7px 9px;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface-soft);
+        backdrop-filter: blur(24px) saturate(135%);
+      }
+      .toolbar button {
+        display: grid;
+        width: 34px;
+        height: 34px;
+        place-items: center;
+        border: 1px solid transparent;
+        border-radius: 7px;
+        background: transparent;
+        color: var(--muted);
+        font-size: 18px;
+        cursor: pointer;
+      }
+      .toolbar button:hover:not(:disabled) {
+        border-color: var(--border);
+        background: var(--surface);
+      }
+      .toolbar button:disabled {
+        cursor: default;
+        opacity: 0.35;
+      }
+      .address {
+        display: flex;
+        height: 35px;
+        align-items: center;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface);
+        box-shadow: 0 1px 2px color-mix(in srgb, CanvasText 5%, transparent);
+      }
+      .address i {
+        width: 9px;
+        height: 9px;
+        flex: none;
+        margin-left: 11px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-soft);
+      }
+      .address input {
+        min-width: 0;
+        flex: 1;
+        padding: 0 10px;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        color: var(--text);
+        font:
+          12px Consolas,
+          "SFMono-Regular",
+          monospace;
+      }
+      .go {
+        width: auto !important;
+        padding: 0 12px !important;
+        border-color: color-mix(
+          in srgb,
+          var(--accent) 40%,
+          var(--border)
+        ) !important;
+        background: var(--surface) !important;
+        color: var(--accent) !important;
+        font-size: 12px !important;
+        font-weight: 600;
+      }
+      .statusbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 11px;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--muted);
+        font-size: 10px;
+      }
+      .proxy {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--accent);
+      }
+      .proxy b {
+        font-family: Consolas, monospace;
+        font-weight: 600;
+      }
+      .page-status {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      webview {
+        display: flex;
+        width: 100%;
+        height: 100%;
+        background: Canvas;
+      }
+      .error {
+        color: #b24c4c;
+      }
+    </style>
+    <style>
+      :root {
+        --border: color-mix(in srgb, CanvasText 7%, transparent);
+      }
+      html,
+      body {
+        font-family:
+          "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+      }
+      .shell {
+        overflow: hidden;
+        isolation: isolate;
+      }
+      .toolbar button {
+        border-radius: 4px;
+        transition:
+          background-color 100ms,
+          border-color 100ms,
+          transform 100ms;
+      }
+      .toolbar button:active:not(:disabled) {
+        transform: scale(0.97);
+      }
+      .address {
+        border-radius: 4px;
+        box-shadow: inset 0 -1px 0 var(--border);
+      }
+      :root[data-window-material="mica"] .toolbar {
+        background: color-mix(in srgb, Canvas 62%, transparent);
+        backdrop-filter: none;
+      }
+      :root[data-window-material="mica"] .statusbar {
+        background: color-mix(in srgb, Canvas 82%, transparent);
+      }
+      :root[data-window-material="acrylic"] .toolbar {
+        background: color-mix(in srgb, Canvas 20%, transparent);
+        backdrop-filter: blur(30px) saturate(145%);
+      }
+      :root[data-window-material="acrylic"] .statusbar {
+        background: color-mix(in srgb, Canvas 36%, transparent);
+        backdrop-filter: blur(24px) saturate(135%);
+      }
+      :root[data-window-material="acrylic"] .address {
+        background: color-mix(in srgb, Canvas 46%, transparent);
+      }
+      :root[data-window-material="none"] .toolbar,
+      :root[data-window-material="none"] .statusbar {
+        background: Canvas;
+        backdrop-filter: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <form id="toolbar" class="toolbar">
+        <button id="back" type="button" title="后退" disabled>‹</button>
+        <button id="forward" type="button" title="前进" disabled>›</button>
+        <button id="reload" type="button" title="刷新">↻</button>
+        <button id="home" type="button" title="返回授权目标">⌂</button>
+        <label class="address"
+          ><i></i
+          ><input
+            id="address"
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            aria-label="地址"
+        /></label>
+        <button class="go" type="submit">访问</button>
+      </form>
+      <div class="statusbar">
+        <span class="proxy">代理已配置 <b id="proxy"></b></span
+        ><span id="status" class="page-status">正在打开授权目标…</span>
+      </div>
+      <webview id="browser"></webview>
+    </div>
+    <script>
+      (() => {
+        const params = new URLSearchParams(location.search);
+        const target = params.get("target") || "about:blank";
+        const partition = params.get("partition") || "";
+        const proxy = params.get("proxy") || "";
+        const browser = document.getElementById("browser");
+        const toolbar = document.getElementById("toolbar");
+        const address = document.getElementById("address");
+        const status = document.getElementById("status");
+        const back = document.getElementById("back");
+        const forward = document.getElementById("forward");
+        const reload = document.getElementById("reload");
+        const home = document.getElementById("home");
+        document.getElementById("proxy").textContent = proxy;
+        address.value = target === "about:blank" ? "" : target;
+        browser.setAttribute("partition", partition);
+        browser.setAttribute("src", target);
+
+        function setStatus(message, failed = false) {
+          status.textContent = message;
+          status.classList.toggle("error", failed);
+        }
+
+        function syncNavigation(url) {
+          if (url && /^https?:\/\//i.test(url)) address.value = url;
+          back.disabled = !browser.canGoBack();
+          forward.disabled = !browser.canGoForward();
+        }
+
+        function navigate(value) {
+          let url = String(value || "").trim();
+          if (!url) return;
+          if (!/^https?:\/\//i.test(url)) url = `http://${url}`;
+          try {
+            const parsed = new URL(url);
+            if (!["http:", "https:"].includes(parsed.protocol))
+              throw new Error();
+            setStatus("正在加载…");
+            browser.loadURL(parsed.toString());
+          } catch {
+            setStatus("地址格式不正确，仅支持 HTTP 或 HTTPS", true);
+          }
+        }
+
+        toolbar.addEventListener("submit", (event) => {
+          event.preventDefault();
+          navigate(address.value);
+        });
+        back.addEventListener("click", () => {
+          if (browser.canGoBack()) browser.goBack();
+        });
+        forward.addEventListener("click", () => {
+          if (browser.canGoForward()) browser.goForward();
+        });
+        reload.addEventListener("click", () => browser.reload());
+        home.addEventListener("click", () =>
+          target === "about:blank"
+            ? browser.loadURL("about:blank")
+            : navigate(target),
+        );
+        browser.addEventListener("did-start-loading", () =>
+          setStatus("正在通过本地代理加载…"),
+        );
+        browser.addEventListener("did-stop-loading", () => {
+          syncNavigation(browser.getURL());
+          setStatus("页面加载完成");
+        });
+        browser.addEventListener("did-navigate", (event) =>
+          syncNavigation(event.url),
+        );
+        browser.addEventListener("did-navigate-in-page", (event) =>
+          syncNavigation(event.url),
+        );
+        browser.addEventListener("page-title-updated", (event) => {
+          document.title = `${event.title || "页面"} · 獬豸抓包浏览器`;
+        });
+        browser.addEventListener("did-fail-load", (event) => {
+          if (event.errorCode === -3) return;
+          setStatus("页面加载失败，请检查目标地址和网络连接", true);
+        });
+      })();
+    </script>
+  </body>
+</html>

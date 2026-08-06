@@ -1,0 +1,2120 @@
+:root {
+  color-scheme: light dark;
+  /* ================================================================
+     Fluent Design 2 design tokens.
+     The layout layer (control heights, paddings, grid geometry) is kept
+     intact; only the design-language layer — typography ramp, corner
+     radius, elevation depth and motion — is expressed here so the whole
+     app can shift to Fluent 2 through token values alone. The window
+     material branches below (none / mica / acrylic) own their own
+     surfaces and are deliberately not touched.
+     ================================================================ */
+
+  /* Typography — Segoe UI Variable optical sizes + Fluent 2 type ramp */
+  --fluent-font:
+    "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  --fluent-font-display:
+    "Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  --fluent-font-small:
+    "Segoe UI Variable Small", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  --fluent-caption2-size: 10px;
+  --fluent-caption2-line: 14px;
+  --fluent-caption1-size: 12px;
+  --fluent-caption1-line: 16px;
+  --fluent-body1-size: 14px;
+  --fluent-body1-line: 20px;
+  --fluent-body2-size: 16px;
+  --fluent-body2-line: 22px;
+  --fluent-subtitle2-size: 16px;
+  --fluent-subtitle2-line: 22px;
+  --fluent-subtitle1-size: 20px;
+  --fluent-subtitle1-line: 26px;
+  --fluent-title3-size: 24px;
+  --fluent-title3-line: 32px;
+  --fluent-title2-size: 28px;
+  --fluent-title2-line: 36px;
+  --fluent-title1-size: 32px;
+  --fluent-title1-line: 40px;
+  --fluent-weight-regular: 400;
+  --fluent-weight-medium: 500;
+  --fluent-weight-semibold: 600;
+
+  /* Canonical page type scale — one size per semantic role so the same
+     element renders identically on every page. Anchored to the Fluent 2
+     ramp; use these instead of ad-hoc px values in view styles. */
+  --type-page-title: 28px; /* page <h1> in a page header */
+  --type-page-subtitle: 14px; /* page header description <p> */
+  --type-eyebrow: 12px; /* eyebrow / section label above a title */
+  --type-section-title: 16px; /* .section-head h3 and equivalent */
+  --type-section-desc: 13px; /* .section-head p and equivalent */
+  --type-body: 14px; /* default body copy */
+  --type-secondary: 13px; /* secondary body copy */
+  --type-caption: 12px; /* captions, table meta, chips */
+  --type-micro: 11px; /* smallest supporting text */
+
+  /* Corner radius — Fluent 2 scale (crisper than the softer WinUI 3 radii) */
+  --fluent-radius-small: 2px;
+  --fluent-radius-medium: 4px;
+  --fluent-radius-large: 6px;
+  --fluent-radius-xlarge: 8px;
+  --fluent-radius-circular: 10000px;
+  --fluent-radius-control: var(--fluent-radius-medium);
+  --fluent-radius-card: var(--fluent-radius-xlarge);
+  --fluent-radius-overlay: var(--fluent-radius-xlarge);
+  --fluent-workspace-radius: var(--fluent-radius-xlarge);
+
+  /* Control metrics + stroke widths (heights unchanged to preserve layout) */
+  --fluent-control-height: 32px;
+  --fluent-control-height-large: 40px;
+  --fluent-stroke-thin: 1px;
+  --fluent-stroke-thick: 2px;
+
+  /* Elevation — Fluent 2 dual-layer (directional key + ambient) shadows */
+  --fluent-shadow-2:
+    0 1px 2px color-mix(in srgb, CanvasText 11%, transparent),
+    0 0 1px color-mix(in srgb, CanvasText 8%, transparent);
+  --fluent-shadow-4:
+    0 2px 4px color-mix(in srgb, CanvasText 11%, transparent),
+    0 0 2px color-mix(in srgb, CanvasText 8%, transparent);
+  --fluent-shadow-8:
+    0 4px 8px color-mix(in srgb, CanvasText 11%, transparent),
+    0 0 2px color-mix(in srgb, CanvasText 8%, transparent);
+  --fluent-shadow-16:
+    0 8px 16px color-mix(in srgb, CanvasText 12%, transparent),
+    0 0 2px color-mix(in srgb, CanvasText 8%, transparent);
+  --fluent-shadow-28:
+    0 14px 28px color-mix(in srgb, CanvasText 15%, transparent),
+    0 0 8px color-mix(in srgb, CanvasText 8%, transparent);
+  --fluent-shadow-64:
+    0 32px 64px color-mix(in srgb, CanvasText 18%, transparent),
+    0 0 8px color-mix(in srgb, CanvasText 8%, transparent);
+  --fluent-card-shadow: var(--fluent-shadow-2);
+  --fluent-overlay-shadow: var(--fluent-shadow-28);
+
+  /* Motion — Fluent 2 durations + easing curves */
+  --fluent-curve-standard: cubic-bezier(0.33, 0, 0.67, 1);
+  --fluent-curve-decelerate: cubic-bezier(0.1, 0.9, 0.2, 1);
+  --fluent-curve-accelerate: cubic-bezier(0.9, 0.1, 1, 0.2);
+  --fluent-duration-ultrafast: 50ms;
+  --fluent-duration-faster: 100ms;
+  --fluent-duration-fast: 150ms;
+  --fluent-duration-normal: 200ms;
+  --fluent-duration-slow: 300ms;
+  --fluent-fast: var(--fluent-duration-faster) var(--fluent-curve-standard);
+  --fluent-normal: var(--fluent-duration-normal) var(--fluent-curve-standard);
+  --system-accent: AccentColor;
+  --system-caption-color: AccentColor;
+  --system-theme-accent: var(--system-accent);
+  --system-accent-foreground: AccentColorText;
+  --app-bg: color-mix(in srgb, Canvas 56%, transparent);
+  --app-surface: color-mix(in srgb, Canvas 84%, transparent);
+  --app-surface-strong: Canvas;
+  --app-surface-soft: color-mix(in srgb, Canvas 56%, transparent);
+  --app-workspace-surface: var(--app-surface);
+  --app-content-surface: var(--app-bg);
+  --app-chrome-surface: transparent;
+  --app-sidebar: var(
+    --shared-chrome-surface,
+    color-mix(in srgb, Canvas 42%, transparent)
+  );
+  --app-border: color-mix(in srgb, CanvasText 13%, transparent);
+  --app-border-strong: color-mix(in srgb, CanvasText 19%, transparent);
+  --app-text: CanvasText;
+  --app-muted: color-mix(in srgb, CanvasText 70%, transparent);
+  --app-overlay-bg: light-dark(#ffffff, #18181b);
+  --app-overlay-text: light-dark(#111827, #f8fafc);
+  --app-overlay-border: light-dark(#9ca3af, #71717a);
+  --app-hover-popup-bg: light-dark(#111827, #f8fafc);
+  --app-hover-popup-text: light-dark(#ffffff, #111827);
+  --app-hover-popup-border: light-dark(#374151, #cbd5e1);
+  --app-accent: var(--system-theme-accent);
+  --app-accent-dark: color-mix(
+    in srgb,
+    var(--system-theme-accent) 74%,
+    CanvasText
+  );
+  /* Compatibility aliases used by a few legacy page styles.  Keeping these
+     aliases in the token layer prevents an invalid `var(...)` declaration
+     from silently dropping the color/shadow (which was especially visible
+     on the login and information-collection pages). */
+  --app-accent-strong: var(--app-accent-dark);
+  --app-text-muted: var(--app-muted);
+  --app-shadow: var(--fluent-shadow-8);
+  --app-success: var(--fluent-success-bg);
+  --app-warning: var(--fluent-warning-bg);
+  --app-accent-soft: color-mix(in srgb, var(--system-theme-accent) 14%, Canvas);
+  --app-accent-soft-strong: color-mix(
+    in srgb,
+    var(--system-theme-accent) 22%,
+    Canvas
+  );
+  --shared-chrome-surface: transparent;
+  --startup-mica-tint-start: color-mix(
+    in srgb,
+    var(--system-caption-color) 10%,
+    transparent
+  );
+  --startup-mica-tint-end: color-mix(
+    in srgb,
+    var(--system-caption-color) 5%,
+    transparent
+  );
+  --app-solid-chrome: light-dark(#f3f3f3, #202020);
+  --v2-bg: var(--app-bg);
+  --v2-panel: var(--app-surface);
+  --v2-border: var(--app-border);
+  --v2-text: var(--app-text);
+  --v2-muted: var(--app-muted);
+  --v2-accent: var(--app-accent);
+  --v2-accent-dark: var(--app-accent-dark);
+  --v2-sidebar: var(--app-sidebar);
+  --v2-sidebar-active: var(--app-accent-soft-strong);
+  --v2-glass-panel: var(--app-surface);
+  --v2-glass-hover: var(--app-surface-soft);
+  --v2-glass-border: var(--app-border);
+  --el-color-primary: var(--app-accent);
+  --el-color-primary-light-3: color-mix(in srgb, var(--app-accent) 70%, Canvas);
+  --el-color-primary-light-5: color-mix(in srgb, var(--app-accent) 50%, Canvas);
+  --el-color-primary-light-7: color-mix(in srgb, var(--app-accent) 30%, Canvas);
+  --el-color-primary-light-8: color-mix(in srgb, var(--app-accent) 20%, Canvas);
+  --el-color-primary-light-9: color-mix(in srgb, var(--app-accent) 10%, Canvas);
+  --el-color-primary-dark-2: var(--app-accent-dark);
+  --el-border-color: var(--app-border);
+  --el-border-color-light: color-mix(in srgb, CanvasText 10%, transparent);
+  --el-border-color-lighter: color-mix(in srgb, CanvasText 7%, transparent);
+  --el-fill-color-light: var(--app-surface-soft);
+  --el-fill-color-lighter: color-mix(in srgb, Canvas 76%, transparent);
+  --el-fill-color-blank: var(--app-surface);
+  --el-text-color-primary: var(--app-text);
+  --el-text-color-regular: color-mix(in srgb, CanvasText 78%, transparent);
+  --el-text-color-secondary: var(--app-muted);
+  --el-border-radius-base: var(--fluent-radius-control);
+  /* Element Plus input edge is driven by these vars (inset box-shadow).
+     Keep them in lockstep with Fluent tokens so login and main shell match. */
+  --el-input-border-color: var(--app-border);
+  --el-input-hover-border-color: var(--app-border);
+  --el-input-focus-border-color: var(--app-accent);
+  --el-border-color: var(--app-border);
+  --el-border-color-hover: color-mix(
+    in srgb,
+    var(--app-accent) 44%,
+    var(--app-border)
+  );
+  --el-color-primary: var(--app-accent);
+
+  --el-border-radius-small: var(--fluent-radius-small);
+  --el-border-radius-round: 999px;
+  --el-component-size: var(--fluent-control-height);
+  --el-component-size-large: var(--fluent-control-height-large);
+  font-family: var(--fluent-font);
+  font-synthesis: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+/* Fluent 2 keyboard focus stroke: a 2px accent indicator shown only on
+   keyboard navigation (not mouse). Inputs/selects/textareas are excluded
+   because they already use the desktop/theme inset focus ring via box-shadow;
+   stacking both produces a double border. */
+:where(
+  a,
+  button,
+  [role="button"],
+  [tabindex],
+  summary,
+  .el-button,
+  .el-checkbox,
+  .el-radio,
+  .el-switch
+):focus-visible {
+  outline: var(--fluent-stroke-thick) solid var(--app-accent);
+  outline-offset: var(--fluent-stroke-thick);
+}
+
+.el-input__wrapper:focus-visible,
+.el-select__wrapper:focus-visible,
+.el-textarea__inner:focus-visible,
+.el-input__wrapper:focus-within,
+.el-select__wrapper:focus-within,
+.el-input__inner:focus,
+.el-input__inner:focus-visible {
+  outline: none !important;
+}
+
+h1,
+h2,
+h3,
+.desktop-v2-title,
+.simple-page-heading {
+  font-family: var(--fluent-font-display);
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: auto;
+}
+
+/* Native Windows 11 branch: DWM owns the title bar; the client uses Mica. */
+:root[data-caption-mode="accent"] {
+  --app-bg: color-mix(in srgb, Canvas 56%, transparent);
+  --app-surface: color-mix(in srgb, Canvas 84%, transparent);
+  --app-surface-strong: Canvas;
+  --app-surface-soft: color-mix(in srgb, Canvas 56%, transparent);
+  --app-sidebar: var(
+    --shared-chrome-surface,
+    color-mix(in srgb, Canvas 42%, transparent)
+  );
+}
+
+/* Match the startup window: transparent chrome, an 84% workspace panel,
+   and a lighter 56% content layer over the native Mica backdrop. */
+:root[data-window-material="mica"] {
+  --app-bg: color-mix(in srgb, Canvas 56%, transparent);
+  --app-surface: color-mix(in srgb, Canvas 84%, transparent);
+  --app-surface-strong: color-mix(in srgb, Canvas 92%, transparent);
+  --app-surface-soft: color-mix(in srgb, Canvas 56%, transparent);
+  --app-workspace-surface: var(--app-surface);
+  --app-content-surface: var(--app-bg);
+  --app-chrome-surface: transparent;
+  --app-sidebar: transparent;
+  --v2-glass-panel: var(--app-surface);
+  --v2-glass-hover: var(--app-surface-soft);
+}
+
+/* Acrylic uses the exact Mica surface geometry/tints. The native DWM
+   backdrop supplies the material difference; CSS must not add another blur. */
+:root[data-window-material="acrylic"] {
+  --app-bg: color-mix(in srgb, Canvas 56%, transparent);
+  --app-surface: color-mix(in srgb, Canvas 84%, transparent);
+  --app-surface-strong: color-mix(in srgb, Canvas 92%, transparent);
+  --app-surface-soft: color-mix(in srgb, Canvas 56%, transparent);
+  --app-workspace-surface: var(--app-surface);
+  --app-content-surface: var(--app-bg);
+  --app-chrome-surface: transparent;
+  --app-sidebar: transparent;
+  --app-muted: color-mix(in srgb, CanvasText 76%, transparent);
+  --el-text-color-regular: color-mix(in srgb, CanvasText 88%, transparent);
+  --el-text-color-secondary: color-mix(in srgb, CanvasText 76%, transparent);
+  --el-text-color-placeholder: color-mix(in srgb, CanvasText 62%, transparent);
+  --el-text-color-disabled: color-mix(in srgb, CanvasText 54%, transparent);
+  --v2-glass-panel: var(--app-surface);
+  --v2-glass-hover: var(--app-surface-soft);
+}
+
+/* Material "none" must win even when Windows uses an accent title bar. */
+:root[data-window-material="none"] {
+  --app-bg: Canvas;
+  --app-surface: Canvas;
+  --app-surface-strong: Canvas;
+  --app-surface-soft: Canvas;
+  --app-workspace-surface: Canvas;
+  --app-content-surface: Canvas;
+  --app-chrome-surface: Canvas;
+  --app-sidebar: Canvas;
+  --v2-glass-panel: Canvas;
+  --v2-glass-hover: color-mix(in srgb, CanvasText 5%, Canvas);
+}
+
+:root[data-system-theme="dark"] {
+  --startup-mica-tint-start: color-mix(
+    in srgb,
+    var(--system-caption-color) 14%,
+    transparent
+  );
+  --startup-mica-tint-end: color-mix(
+    in srgb,
+    var(--system-caption-color) 8%,
+    transparent
+  );
+}
+
+/* Opaque fallback used when Windows transparency/backdrop effects are off. */
+:root[data-caption-mode="solid"] {
+  --app-bg: Canvas;
+  --app-surface: Canvas;
+  --app-surface-strong: Canvas;
+  --app-surface-soft: color-mix(in srgb, CanvasText 5%, Canvas);
+  --app-workspace-surface: Canvas;
+  --app-content-surface: Canvas;
+  --app-chrome-surface: Canvas;
+  --app-sidebar: Canvas;
+}
+
+/* Explicit material choice wins over the generic solid-caption fallback. */
+:root[data-window-material="none"] {
+  --app-bg: Canvas;
+  --app-surface: Canvas;
+  --app-surface-strong: Canvas;
+  --app-surface-soft: Canvas;
+  --app-workspace-surface: Canvas;
+  --app-content-surface: Canvas;
+  --app-chrome-surface: Canvas;
+  --app-sidebar: Canvas;
+}
+
+html,
+body,
+#app {
+  overflow: hidden;
+  background: var(--app-chrome-surface);
+  color: var(--app-text);
+}
+
+.desktop-v2-native-frame {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.desktop-v2-native-frame > .desktop-v2-shell,
+.desktop-v2-native-frame > .setup-page,
+.desktop-v2-native-frame > .login-page {
+  height: auto;
+  min-height: 0;
+  flex: 1;
+}
+
+.desktop-v2-app-frame,
+.desktop-v2-shell {
+  background: var(--app-chrome-surface);
+}
+
+.desktop-v2-content {
+  background: var(--app-content-surface);
+}
+
+.desktop-v2-sidebar {
+  border-right-color: var(--app-border-strong);
+  background: var(--app-sidebar);
+}
+
+.desktop-v2-native-frame > .desktop-v2-shell > .desktop-v2-sidebar {
+  border-right: 0 !important;
+  background: var(--app-sidebar);
+  backdrop-filter: none;
+  box-shadow: none !important;
+}
+
+.desktop-v2-native-frame > .desktop-v2-shell > .desktop-v2-workspace {
+  position: relative;
+  overflow: hidden;
+  border: 0 !important;
+  border-top-left-radius: var(--fluent-workspace-radius);
+  background: var(--app-workspace-surface) !important;
+  background-clip: border-box;
+  box-shadow: none !important;
+  contain: paint;
+}
+
+.desktop-v2-native-frame > .desktop-v2-shell > .desktop-v2-workspace::before {
+  position: absolute;
+  z-index: 20;
+  inset: 0;
+  border-top: 1px solid var(--app-border);
+  border-left: 1px solid var(--app-border);
+  border-top-left-radius: inherit;
+  pointer-events: none;
+  content: "";
+}
+
+.desktop-v2-native-frame
+  > .desktop-v2-shell
+  > .desktop-v2-workspace
+  > .desktop-v2-content {
+  margin: 0;
+  overflow: auto;
+  border-top-left-radius: 0;
+  background: var(--app-content-surface) !important;
+}
+
+:root[data-caption-mode="accent"] .desktop-v2-native-titlebar {
+  color: var(--system-accent-foreground);
+}
+
+:root[data-caption-mode="accent"] .desktop-v2-native-titlebar-logo {
+  border-color: color-mix(
+    in srgb,
+    var(--system-accent-foreground) 32%,
+    transparent
+  );
+  background: color-mix(in srgb, Canvas 22%, transparent);
+  color: var(--system-accent-foreground);
+}
+
+.desktop-v2-logo,
+.desktop-v2-native-titlebar-logo {
+  border-color: var(--app-border-strong);
+  background: var(--app-surface);
+  color: var(--app-accent);
+}
+
+.desktop-v2-new-task {
+  border-color: var(--app-border-strong);
+  background: var(--app-surface);
+  color: var(--app-text);
+}
+
+.desktop-v2-new-task:hover,
+.desktop-v2-nav button:hover,
+.desktop-v2-recent-item:hover,
+.desktop-v2-user:hover {
+  background: var(--app-surface-soft);
+}
+
+.desktop-v2-nav button.active,
+.desktop-v2-recent-item.active {
+  position: relative;
+  background: var(--app-accent-soft-strong);
+  color: var(--app-text);
+  box-shadow: none;
+}
+
+.desktop-v2-nav button.active::before,
+.desktop-v2-recent-item.active::before {
+  position: absolute;
+  top: 9px;
+  bottom: 9px;
+  left: 0;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--app-accent);
+  content: "";
+}
+
+.desktop-v2-nav button.active > .el-icon,
+.desktop-v2-recent-item.active .el-icon {
+  color: var(--app-accent);
+}
+
+.desktop-v2-online-dot {
+  background: var(--app-accent);
+  box-shadow: 0 0 0 3px var(--app-accent-soft);
+}
+
+.desktop-v2-avatar {
+  background: var(--app-accent-soft-strong);
+  color: var(--app-accent-dark);
+}
+
+.desktop-v2-topbar,
+.panel,
+.metric,
+.start-action,
+.start-panel,
+.settings-list,
+.settings-list > button,
+.traffic-workbench {
+  background: var(--app-surface);
+}
+
+.desktop-v2-workspace {
+  background: var(--app-surface-soft);
+}
+
+/* MessageBox mounts under body; keep its mask aligned with the desktop workspace. */
+body:has(.desktop-v2-native-frame) > .el-overlay.is-message-box {
+  left: var(--desktop-sidebar-width, 260px);
+}
+
+/* Body-mounted Element Plus dialogs must use the native work area as their
+   containing viewport. Keep this selector specific to el-dialog overlays so
+   drawers, messages, loading masks and poppers retain their own geometry. */
+body:has(.desktop-v2-native-frame) > .el-overlay:has(> .el-overlay-dialog) {
+  right: 0;
+  left: var(--desktop-sidebar-width, 260px);
+  width: auto;
+}
+
+body:has(.desktop-v2-native-frame)
+  > .el-overlay:has(> .el-overlay-dialog)
+  .el-dialog {
+  max-width: calc(100% - 32px) !important;
+  max-height: calc(100% - 32px);
+}
+
+.desktop-v2-content,
+.content-area {
+  background: var(--app-bg);
+}
+
+html .desktop-v2-native-frame .chat-page,
+html .desktop-v2-native-frame .chat-header,
+html .desktop-v2-native-frame .chat-composer-wrap,
+html .desktop-v2-native-frame .welcome-composer,
+html .desktop-v2-native-frame .thread-composer,
+html .desktop-v2-native-frame .quick-actions button,
+html .desktop-v2-native-frame .message-bubble,
+html .desktop-v2-native-frame .task-progress-card {
+  border-color: var(--app-border) !important;
+  background: color-mix(in srgb, Canvas 84%, transparent) !important;
+}
+
+html .desktop-v2-native-frame .chat-page {
+  background: transparent !important;
+}
+
+html .desktop-v2-native-frame .chat-header,
+html .desktop-v2-native-frame .chat-composer-wrap {
+  background: var(--app-bg) !important;
+}
+
+html .desktop-v2-native-frame .chat-header {
+  background: var(--app-surface) !important;
+}
+
+html .desktop-v2-native-frame .chat-messages {
+  background: var(--app-bg) !important;
+}
+
+html .desktop-v2-native-frame .chat-message.user .message-bubble {
+  border-color: color-mix(
+    in srgb,
+    var(--app-accent) 24%,
+    var(--app-border)
+  ) !important;
+  background: var(--app-accent-soft) !important;
+}
+
+.panel,
+.metric,
+.start-action,
+.start-panel,
+.settings-list,
+.traffic-workbench {
+  border-color: var(--app-border);
+  border-radius: var(--fluent-radius-card);
+  box-shadow: var(--fluent-card-shadow);
+}
+
+.panel {
+  padding: 20px;
+  margin-bottom: 14px;
+}
+.panel h3 {
+  margin: 0 0 16px;
+  font-size: var(--type-section-title);
+}
+.section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.section-head h3 {
+  margin-bottom: 6px;
+  font-size: var(--type-section-title);
+}
+.section-head p {
+  margin: 0 0 18px;
+  font-size: var(--type-section-desc);
+}
+.ai-compose {
+  max-width: 760px;
+}
+
+.empty-state {
+  display: flex;
+  min-height: 180px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  color: var(--app-muted);
+  text-align: center;
+}
+
+.empty-mark {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 12px;
+  place-items: center;
+  border: 1px solid var(--app-border);
+  border-radius: 50%;
+  background: var(--app-surface-soft);
+}
+
+.empty-state strong {
+  color: var(--app-text);
+  font-size: 13px;
+  font-weight: 500;
+}
+.empty-state p {
+  max-width: 420px;
+  margin: 7px 0 0;
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* Fluent WinUI 3 control language */
+.el-button {
+  min-height: var(--fluent-control-height);
+  border-radius: var(--fluent-radius-control);
+  font-weight: 500;
+  transition:
+    background-color var(--fluent-fast),
+    border-color var(--fluent-fast),
+    color var(--fluent-fast),
+    transform var(--fluent-fast);
+}
+
+.el-button:active:not(.is-disabled) {
+  transform: scale(0.985);
+}
+
+.el-button:not(.el-button--primary):not(.is-link) {
+  border-color: var(--app-border-strong);
+  background: var(--app-surface-strong);
+  color: var(--app-text);
+  box-shadow: 0 1px 1px color-mix(in srgb, CanvasText 5%, transparent);
+}
+
+.el-button:not(.el-button--primary):not(.is-link):hover {
+  background: color-mix(in srgb, CanvasText 5%, var(--app-surface-strong));
+}
+
+.el-input__wrapper,
+.el-select__wrapper,
+.el-textarea__inner,
+.login-page .el-input__wrapper,
+.login-page .el-select__wrapper,
+.login-page .el-textarea__inner,
+.desktop-v2-shell .el-input__wrapper,
+.desktop-v2-shell .el-select__wrapper,
+.desktop-v2-shell .el-textarea__inner {
+  border: 0 !important;
+  border-radius: var(--fluent-radius-control) !important;
+  min-height: var(--fluent-control-height);
+  background: var(--app-surface-strong) !important;
+  /* One shared rest edge for login + main workspace (soft Fluent stroke). */
+  box-shadow: 0 0 0 var(--fluent-stroke-thin) var(--app-border) inset !important;
+  transition:
+    box-shadow var(--fluent-fast),
+    background-color var(--fluent-fast);
+}
+
+.el-input__wrapper:hover,
+.el-select__wrapper:hover,
+.el-textarea__inner:hover,
+.login-page .el-input__wrapper:hover,
+.login-page .el-select__wrapper:hover,
+.desktop-v2-shell .el-input__wrapper:hover,
+.desktop-v2-shell .el-select__wrapper:hover,
+.desktop-v2-shell .el-textarea__inner:hover {
+  box-shadow: 0 0 0 var(--fluent-stroke-thin) var(--app-border) inset !important;
+}
+
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focused,
+.el-textarea__inner:focus,
+.el-textarea__inner:focus-within,
+.login-page .el-input__wrapper.is-focus,
+.login-page .el-select__wrapper.is-focused,
+.login-page .el-textarea__inner:focus,
+.login-page .el-textarea__inner:focus-within {
+  /* Same single accent stroke as the main workspace. */
+  box-shadow:
+    inset 0 0 0 1px var(--app-border),
+    inset 0 -2px 0 0 var(--app-accent) !important;
+}
+
+.el-table {
+  --el-table-border-color: var(--app-border);
+  --el-table-header-bg-color: var(--app-surface-soft);
+  --el-table-row-hover-bg-color: var(--app-surface-soft);
+  overflow: hidden;
+  border-radius: var(--fluent-radius-card);
+}
+
+.el-table__inner-wrapper {
+  overflow: hidden;
+  border-radius: inherit;
+}
+
+.el-alert,
+.el-card,
+.el-notification {
+  border-radius: var(--fluent-radius-card);
+}
+
+.el-card,
+.el-collapse,
+.el-descriptions,
+.el-descriptions__body,
+.el-upload-dragger,
+.el-result,
+.el-skeleton__item {
+  border-radius: var(--fluent-radius-card) !important;
+}
+
+.el-card,
+.el-collapse,
+.el-descriptions__body,
+.el-upload-dragger {
+  overflow: hidden;
+}
+
+.el-dropdown-menu,
+.el-select-dropdown,
+.el-picker-panel,
+.el-popper {
+  border: 1px solid var(--app-overlay-border) !important;
+  border-radius: var(--fluent-radius-overlay);
+  background: var(--app-overlay-bg) !important;
+  color: var(--app-overlay-text) !important;
+  box-shadow: var(--fluent-overlay-shadow);
+  opacity: 1 !important;
+  backdrop-filter: none !important;
+}
+
+/* Hover tooltips and popovers use an intentionally inverted, opaque surface.
+   Selects, dropdowns and pickers keep the regular overlay palette above. */
+.el-popper[role="tooltip"]:not(.el-select__popper):not(
+    .el-dropdown__popper
+  ):not(.el-picker__popper):not(.el-cascader__dropdown):not(
+    .el-autocomplete__popper
+  ) {
+  --el-text-color-primary: var(--app-hover-popup-text);
+  --el-text-color-regular: var(--app-hover-popup-text);
+  border-color: var(--app-hover-popup-border) !important;
+  background: var(--app-hover-popup-bg) !important;
+  color: var(--app-hover-popup-text) !important;
+  text-shadow: none !important;
+}
+
+.el-popper[role="tooltip"]:not(.el-select__popper):not(
+    .el-dropdown__popper
+  ):not(.el-picker__popper):not(.el-cascader__dropdown):not(
+    .el-autocomplete__popper
+  )
+  .el-popper__content {
+  color: var(--app-hover-popup-text) !important;
+}
+
+/* Element Plus draws its arrow as a rotated square; remove it everywhere. */
+.el-popper__arrow,
+.el-popper__arrow::before {
+  display: none !important;
+}
+
+.el-dropdown-menu__item,
+.el-select-dropdown__item,
+.el-cascader-node {
+  min-height: 32px;
+  border-radius: var(--fluent-radius-control);
+  color: var(--app-text);
+  font-size: 12px;
+}
+
+.el-dropdown-menu__item:hover,
+.el-select-dropdown__item.hover,
+.el-select-dropdown__item.is-hovering,
+.el-cascader-node:not(.is-disabled):hover {
+  background: var(--app-surface-soft) !important;
+  color: var(--app-text);
+}
+
+.el-collapse {
+  overflow: hidden;
+  border: 1px solid var(--app-border);
+  border-radius: var(--fluent-radius-card);
+  background: var(--app-surface);
+}
+
+.el-collapse-item__header {
+  min-height: 44px;
+  padding: 0 14px;
+  border-bottom-color: var(--app-border);
+  background: var(--app-surface);
+  color: var(--app-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.el-collapse-item__wrap,
+.el-collapse-item__content {
+  border-bottom-color: var(--app-border);
+  background: var(--app-surface-soft);
+  color: var(--app-text);
+}
+
+.el-collapse-item__content {
+  padding: 12px 14px;
+}
+
+.el-dialog__headerbtn {
+  top: 13px;
+  right: 14px;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--fluent-radius-control);
+}
+
+.el-dialog__headerbtn:hover {
+  background: var(--app-surface-soft);
+}
+
+.el-dialog__footer .el-button + .el-button {
+  margin-left: 8px;
+}
+
+/* Unified business dialogs: one themed surface, one scroll owner, centered in
+   the workspace. Page components only control their inner content. */
+.app-dialog.el-dialog {
+  --el-dialog-padding-primary: 0;
+  --app-dialog-width: 560px;
+  display: flex;
+  width: min(var(--app-dialog-width), calc(100vw - 32px)) !important;
+  max-height: calc(100vh - 32px);
+  overflow: hidden;
+  flex-direction: column;
+  margin: auto;
+  padding: 0;
+  border: 1px solid var(--app-border-strong);
+  border-radius: var(--fluent-radius-overlay);
+  background: var(--app-surface-strong);
+  box-shadow: var(--fluent-overlay-shadow);
+}
+
+.app-dialog--sm.el-dialog {
+  --app-dialog-width: 560px;
+}
+.app-dialog--md.el-dialog {
+  --app-dialog-width: 640px;
+}
+.app-dialog--lg.el-dialog {
+  --app-dialog-width: 720px;
+}
+.app-dialog--wide.el-dialog {
+  --app-dialog-width: 800px;
+}
+.app-dialog--xl.el-dialog {
+  --app-dialog-width: 900px;
+}
+
+.app-dialog.el-dialog > .el-dialog__header {
+  min-height: 52px;
+  flex: none;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--app-border);
+  background: transparent;
+}
+
+.app-dialog.el-dialog .el-dialog__title {
+  color: var(--app-text);
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.app-dialog.el-dialog > .el-dialog__body {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 16px 20px;
+  background: transparent;
+  color: var(--app-text);
+}
+
+.app-dialog.el-dialog > .el-dialog__footer {
+  flex: none;
+  padding: 12px 20px;
+  border-top: 1px solid var(--app-border);
+  background: transparent;
+}
+
+.app-dialog.el-dialog > .el-dialog__header .el-dialog__headerbtn {
+  top: 12px;
+  right: 12px;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--fluent-radius-control);
+}
+
+.app-dialog.el-dialog > .el-dialog__footer .el-button {
+  min-width: 76px;
+  height: 32px;
+  border-radius: var(--fluent-radius-control);
+}
+
+.app-dialog.el-dialog
+  > .el-dialog__footer
+  .el-button--primary:not(.is-plain):not(.is-text):not(.is-link) {
+  border-color: var(--app-accent);
+  background: var(--app-accent);
+}
+
+@media (max-width: 760px) {
+  .app-dialog.el-dialog {
+    width: calc(100vw - 20px) !important;
+    max-height: calc(100vh - 20px);
+  }
+  .app-dialog.el-dialog > .el-dialog__header {
+    padding: 12px 15px;
+  }
+  .app-dialog.el-dialog > .el-dialog__body {
+    padding: 14px 15px;
+  }
+  .app-dialog.el-dialog > .el-dialog__footer {
+    padding: 10px 15px;
+  }
+}
+
+.el-switch.is-checked .el-switch__core {
+  border-color: var(--app-accent) !important;
+  background: var(--app-accent) !important;
+}
+
+html .desktop-v2-native-frame .targets-page,
+html .desktop-v2-native-frame .findings-page,
+html .desktop-v2-native-frame .vuln-workbench {
+  border-top: 0 !important;
+  border-left: 0 !important;
+}
+
+.panel h3,
+.section-head h3,
+.start-heading h1,
+.simple-page-heading h1 {
+  color: var(--app-text);
+}
+
+.section-head p,
+.start-heading p,
+.simple-page-heading p {
+  color: var(--app-muted);
+}
+
+.desktop-v2-shell
+  .el-button--primary:not(.is-plain):not(.is-text):not(.is-link),
+.panel .el-button--primary:not(.is-plain):not(.is-text):not(.is-link) {
+  --el-button-bg-color: var(--app-accent);
+  --el-button-border-color: var(--app-accent);
+  --el-button-hover-bg-color: var(--app-accent-dark);
+  --el-button-hover-border-color: var(--app-accent-dark);
+  --el-button-active-bg-color: var(--app-accent-dark);
+  --el-button-active-border-color: var(--app-accent-dark);
+  --el-button-text-color: var(--system-accent-foreground);
+  --el-button-hover-text-color: var(--system-accent-foreground);
+  --el-button-active-text-color: var(--system-accent-foreground);
+}
+
+.desktop-v2-shell .el-input__wrapper.is-focus,
+.desktop-v2-shell .el-select__wrapper.is-focused,
+.desktop-v2-shell .el-textarea__inner:focus,
+.desktop-v2-shell .el-textarea__inner:focus-within,
+.desktop-v2-app-frame .login-page .el-input__wrapper.is-focus,
+.desktop-v2-app-frame .login-page .el-select__wrapper.is-focused,
+.desktop-v2-app-frame .login-page .el-textarea__inner:focus,
+.desktop-v2-app-frame .login-page .el-textarea__inner:focus-within {
+  box-shadow:
+    inset 0 0 0 1px var(--app-border),
+    inset 0 -2px 0 0 var(--app-accent) !important;
+}
+
+/* login-page inputs intentionally share the global .el-input__wrapper edge —
+   do not reintroduce a stronger border-strong stroke here. */
+
+.desktop-v2-shell .el-switch.is-checked .el-switch__core,
+.desktop-v2-shell .el-checkbox__input.is-checked .el-checkbox__inner,
+.desktop-v2-shell .el-radio__input.is-checked .el-radio__inner {
+  border-color: var(--app-accent);
+  background: var(--app-accent);
+}
+
+.desktop-v2-shell .el-table {
+  --el-table-bg-color: var(--app-surface);
+  --el-table-tr-bg-color: var(--app-surface);
+  --el-table-expanded-cell-bg-color: var(--app-surface-strong);
+  --el-table-header-bg-color: var(--app-surface-soft);
+  --el-table-border-color: var(--app-border);
+  --el-table-row-hover-bg-color: var(--app-accent-soft);
+  --el-table-current-row-bg-color: var(--app-accent-soft);
+  --el-table-text-color: color-mix(in srgb, CanvasText 82%, transparent);
+  --el-table-header-text-color: var(--app-muted);
+}
+
+.desktop-v2-shell .el-pagination.is-background .el-pager li.is-active {
+  background: var(--app-accent);
+}
+
+.desktop-v2-shell .el-tabs__active-bar {
+  background: var(--app-accent);
+}
+
+.desktop-v2-shell .el-tabs__item.is-active,
+.desktop-v2-shell .el-tabs__item:hover,
+.desktop-v2-shell .el-link.el-link--primary {
+  color: var(--app-accent);
+}
+
+.el-dialog,
+.el-drawer,
+.el-message-box {
+  overflow: hidden;
+  isolation: isolate;
+  --el-dialog-bg-color: var(--app-surface);
+  border: 1px solid color-mix(in srgb, CanvasText 7%, transparent);
+  background: var(--app-surface);
+  background-clip: padding-box;
+  border-radius: var(--fluent-radius-overlay);
+  box-shadow: var(--fluent-overlay-shadow);
+}
+
+.el-dialog__header,
+.el-dialog__body,
+.el-dialog__footer,
+.el-drawer__header,
+.el-drawer__body,
+.el-drawer__footer {
+  background: inherit;
+}
+
+.empty-mark,
+.empty-orb {
+  border-color: var(--app-border-strong);
+  background: var(--app-surface-soft);
+  color: var(--app-muted);
+}
+
+.start-action:hover {
+  border-color: color-mix(in srgb, var(--app-accent) 48%, var(--app-border));
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--app-accent) 12%, transparent);
+}
+
+.start-action-icon,
+.start-action.scan .start-action-icon {
+  background: var(--app-accent-soft);
+  color: var(--app-accent);
+}
+
+.start-action-enter,
+.start-action.scan .start-action-enter,
+.start-panel header button,
+.start-heading > div > span,
+.simple-page-heading > span {
+  color: var(--app-accent);
+}
+
+.recent-row:hover,
+.settings-list > button:hover {
+  background: var(--app-surface-soft);
+}
+
+.recent-state.running {
+  background: var(--app-accent);
+  box-shadow: 0 0 0 3px var(--app-accent-soft);
+}
+
+.settings-list > button > .el-icon:first-child,
+.settings-version > .el-icon {
+  color: var(--app-accent);
+}
+
+.vuln-workbench {
+  border-color: var(--app-border) !important;
+}
+
+.vuln-catalog-pane,
+.scan-launcher-pane,
+.pane-title {
+  background: var(--app-surface-soft) !important;
+}
+
+.vuln-catalog-pane,
+.scan-launcher-pane,
+.pane-title,
+.catalog-search,
+.catalog-list button,
+.detail-header,
+.scan-summary {
+  border-color: var(--app-border) !important;
+}
+
+.catalog-list button:hover {
+  background: var(--app-surface-soft) !important;
+}
+
+.catalog-list button.active {
+  background: var(--app-accent-soft) !important;
+  box-shadow: inset 3px 0 var(--app-accent) !important;
+}
+
+.detail-header span {
+  color: var(--app-accent) !important;
+}
+
+.detail-tabs section {
+  border-color: var(--app-border) !important;
+  background: var(--app-surface) !important;
+}
+
+.traffic-row:hover {
+  background: var(--app-surface-soft) !important;
+}
+
+.traffic-row.active {
+  background: var(--app-accent-soft) !important;
+  box-shadow: inset 3px 0 var(--app-accent) !important;
+}
+
+.traffic-row > b,
+.session-row-title > b,
+.packet-title > b,
+.traffic-detail-head b {
+  color: var(--app-accent) !important;
+}
+
+.packet-title > b,
+.ai-mark,
+.reference-packet-preview > span {
+  background: var(--app-accent-soft) !important;
+  color: var(--app-accent-dark) !important;
+}
+
+.packet-tabs button.active::after,
+.inline-replay-tabs button.active {
+  border-color: var(--app-accent) !important;
+}
+
+.packet-tabs button.active::after {
+  background: var(--app-accent) !important;
+}
+
+.inline-replay-tabs button.active,
+.replay-response > header strong {
+  color: var(--app-accent-dark) !important;
+}
+
+.traffic-chat-composer:focus-within {
+  border-color: color-mix(
+    in srgb,
+    var(--app-accent) 48%,
+    var(--app-border)
+  ) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-accent) 8%, transparent) !important;
+}
+
+.traffic-chat-composer > button {
+  background: var(--app-accent) !important;
+}
+
+.traffic-chat-message.user > p {
+  border-color: color-mix(
+    in srgb,
+    var(--app-accent) 24%,
+    var(--app-border)
+  ) !important;
+  background: var(--app-accent-soft) !important;
+}
+
+.login-page {
+  display: grid;
+  min-height: 100%;
+  place-items: center;
+  padding: 24px;
+  background: var(--app-bg);
+}
+
+.login-card {
+  width: min(400px, 100%);
+  padding: 30px 32px 22px;
+  overflow: hidden;
+  isolation: isolate;
+  border: 1px solid var(--app-border);
+  border-radius: var(--fluent-radius-card);
+  background: var(--app-surface);
+  background-clip: padding-box;
+  box-shadow: 0 8px 24px color-mix(in srgb, CanvasText 9%, transparent);
+}
+
+.login-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 28px;
+}
+
+.login-header h1 {
+  margin: 0;
+  color: var(--app-text);
+  font-size: 19px;
+  font-weight: 600;
+}
+.login-header p {
+  margin: 4px 0 0;
+  color: var(--app-muted);
+  font-size: 12px;
+}
+.login-logo {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 9px;
+}
+.login-button {
+  width: 100%;
+  margin-top: 4px;
+}
+/* Consecutive login buttons stack full-width; cancel Element Plus's default sibling margin-left
+   (which otherwise shifts the second button right and breaks alignment). */
+.el-button.login-button + .el-button.login-button {
+  margin-left: 0;
+  margin-top: 10px;
+}
+.login-options {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  margin: -4px 0 12px;
+}
+.login-options .el-checkbox {
+  color: var(--app-muted);
+}
+.login-footer {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--app-border);
+  color: var(--app-muted);
+  font-size: 10px;
+}
+
+.settings-list {
+  border-radius: var(--fluent-radius-card);
+  box-shadow: var(--fluent-card-shadow);
+}
+
+.settings-list > button,
+.settings-version {
+  min-height: 68px;
+  border-color: var(--app-border);
+  background: var(--app-surface);
+  transition: background-color var(--fluent-fast);
+}
+
+.settings-list > button:hover {
+  background: var(--app-surface-soft);
+}
+
+.vuln-workbench {
+  overflow: hidden !important;
+  isolation: isolate;
+  background-clip: padding-box;
+}
+
+.login-logo {
+  background: var(--app-accent);
+  color: var(--system-accent-foreground);
+}
+
+.desktop-v2-topbar,
+.traffic-session-rail,
+.packet-editor-pane,
+.ai-thread-pane,
+.codex-traffic-toolbar,
+.traffic-session-rail > .session-rail-header,
+.traffic-list-pane > header,
+.traffic-detail-head,
+.packet-editor article,
+.traffic-chat-composer,
+.replay-response-grid article,
+.replay-response > header,
+.settings-version {
+  background: var(--app-surface);
+}
+
+/* Workspace chrome follows the startup window's lighter translucent band. */
+.codex-traffic-toolbar {
+  background: var(--app-surface-soft);
+  backdrop-filter: blur(20px) saturate(125%);
+}
+
+.traffic-detail-pane,
+.packet-editor,
+.traffic-ai-pane,
+.ai-composer,
+.replay-response,
+.inline-replay-editor {
+  background: var(--app-surface-soft);
+}
+
+.offline-tools-page,
+.offline-tools-heading,
+.offline-tools-layout,
+.offline-workbench,
+.offline-workbench-head {
+  background: var(--app-surface);
+}
+
+.offline-tool-index {
+  border-right-color: var(--app-border);
+  background: color-mix(in srgb, Canvas 66%, transparent);
+  backdrop-filter: blur(22px) saturate(125%);
+}
+
+.offline-tool-search {
+  border-color: var(--app-border-strong);
+  background: var(--app-surface-strong);
+  color: var(--app-muted);
+}
+
+.offline-tool-search input {
+  color: var(--app-text);
+}
+
+.offline-tool-search input::placeholder,
+.offline-tool-index h2,
+.offline-tool-index small {
+  color: var(--app-muted);
+}
+
+.offline-tool-index section > button {
+  color: color-mix(in srgb, CanvasText 76%, transparent);
+}
+
+.offline-tool-index section > button:hover {
+  background: color-mix(in srgb, Canvas 76%, transparent);
+}
+
+.offline-tool-index section > button.active {
+  background: var(--app-accent-soft);
+  color: var(--app-text);
+  box-shadow: inset 3px 0 var(--app-accent);
+}
+
+.offline-tool-index section > button.active > .el-icon,
+.offline-tool-index button.active small {
+  color: var(--app-accent);
+}
+
+.offline-tool-groups {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.offline-tool-groups::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.offline-workbench-icon,
+.offline-privacy-badge {
+  border-color: color-mix(in srgb, var(--app-accent) 24%, var(--app-border));
+  background: var(--app-accent-soft);
+  color: var(--app-accent-dark);
+}
+
+.offline-privacy-badge i {
+  background: var(--app-accent);
+  box-shadow: 0 0 0 3px var(--app-accent-soft-strong);
+}
+
+.desktop-v2-native-frame .settings-page {
+  padding-top: 24px;
+  padding-bottom: 24px;
+}
+
+.setup-page {
+  --setup-bg: var(--app-bg);
+  --setup-panel: var(--app-surface);
+  --setup-side: var(--app-sidebar);
+  --setup-border: var(--app-border);
+  --setup-text: var(--app-text);
+  --setup-muted: var(--app-muted);
+  --setup-accent: var(--app-accent);
+  --setup-accent-dark: var(--app-accent-dark);
+  background: var(--app-bg);
+}
+
+.setup-steps {
+  border-right-color: var(--app-border);
+  background: var(--app-sidebar);
+  backdrop-filter: none;
+}
+
+.setup-logo,
+.setup-storage,
+.dependency-group,
+.dependency-row,
+.dependency-loading {
+  border-color: var(--app-border);
+  background: var(--app-surface);
+}
+
+.setup-logo {
+  color: var(--app-accent);
+}
+
+.setup-steps li.active {
+  background: var(--app-accent-soft);
+  color: var(--app-text);
+  box-shadow: inset 3px 0 var(--app-accent);
+}
+
+.setup-steps li i {
+  border-color: var(--app-border-strong);
+  background: var(--app-surface-strong);
+}
+
+.setup-steps li.done i {
+  border-color: color-mix(in srgb, var(--app-accent) 26%, var(--app-border));
+  background: var(--app-accent-soft);
+  color: var(--app-accent);
+}
+
+.setup-steps li.active i {
+  border-color: var(--app-accent);
+  background: var(--app-accent);
+  color: var(--system-accent-foreground);
+}
+
+.setup-storage-title .el-icon,
+.setup-eyebrow,
+.dependency-loading > .el-icon,
+.dep-manual-link {
+  color: var(--app-accent);
+}
+
+.setup-content {
+  position: relative;
+  overflow: hidden;
+  border-top-left-radius: var(--fluent-workspace-radius);
+  background: var(--app-workspace-surface);
+  background-clip: border-box;
+  contain: paint;
+}
+
+.dependency-group {
+  box-shadow: 0 2px 7px color-mix(in srgb, CanvasText 5%, transparent);
+}
+
+.dependency-group-head,
+.dependency-row {
+  border-color: var(--app-border);
+}
+
+.dependency-group-icon {
+  background: var(--app-surface-soft);
+  color: var(--app-muted);
+}
+
+.dependency-group-icon.core,
+.dep-status.ready {
+  background: var(--app-accent-soft);
+  color: var(--app-accent);
+}
+
+.dependency-row:hover {
+  background: color-mix(in srgb, Canvas 74%, transparent);
+}
+
+.setup-page .el-tag--success {
+  --el-tag-bg-color: var(--app-accent-soft);
+  --el-tag-border-color: color-mix(
+    in srgb,
+    var(--app-accent) 24%,
+    var(--app-border)
+  );
+  --el-tag-text-color: var(--app-accent-dark);
+}
+
+.setup-content > footer .el-button--primary {
+  --el-button-text-color: var(--system-accent-foreground);
+  --el-button-hover-text-color: var(--system-accent-foreground);
+  --el-button-active-text-color: var(--system-accent-foreground);
+}
+
+.dependency-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  scrollbar-color: transparent transparent;
+}
+
+.dependency-scroll::-webkit-scrollbar,
+.dependency-scroll::-webkit-scrollbar-thumb {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent !important;
+}
+
+/*
+ * Let the native DWM Mica backdrop show through every part of the desktop
+ * chrome outside the actual workspace.  Keep this scoped to the Mica branch:
+ * the web build and the opaque Windows fallback retain their normal surfaces.
+ * The workspace and everything below it are deliberately not selected here.
+ */
+:root:is([data-window-material="mica"], [data-window-material="acrylic"]),
+:root:is([data-window-material="mica"], [data-window-material="acrylic"]) body,
+:root:is([data-window-material="mica"], [data-window-material="acrylic"]) #app,
+:root:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-native-titlebar,
+:root:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-native-frame,
+:root:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-native-frame
+  > .desktop-v2-shell,
+:root:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-native-frame
+  > .desktop-v2-shell
+  > .desktop-v2-sidebar,
+:root:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-native-frame
+  > .setup-page,
+:root:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-native-frame
+  > .login-page,
+:root:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-native-frame
+  > .setup-page
+  > .setup-shell
+  > .setup-steps {
+  background: transparent;
+  backdrop-filter: none;
+}
+
+:root:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-native-frame
+  > .setup-page
+  .dependency-group,
+:root:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-native-frame
+  > .setup-page
+  .dependency-row,
+:root:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-native-frame
+  > .setup-page
+  .dependency-loading,
+:root:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-native-frame
+  > .login-page
+  .login-card {
+  background: var(--app-surface);
+}
+
+:root[data-window-material="mica"]
+  .desktop-v2-native-frame
+  > .setup-page
+  .dependency-group,
+:root[data-window-material="mica"]
+  .desktop-v2-native-frame
+  > .setup-page
+  .dependency-row,
+:root[data-window-material="mica"]
+  .desktop-v2-native-frame
+  > .setup-page
+  .dependency-loading,
+:root[data-window-material="mica"]
+  .desktop-v2-native-frame
+  > .login-page
+  .login-card {
+  backdrop-filter: none;
+}
+
+:root[data-window-material="acrylic"]
+  .desktop-v2-native-frame
+  > .setup-page
+  .dependency-group,
+:root[data-window-material="acrylic"]
+  .desktop-v2-native-frame
+  > .setup-page
+  .dependency-row,
+:root[data-window-material="acrylic"]
+  .desktop-v2-native-frame
+  > .setup-page
+  .dependency-loading,
+:root[data-window-material="acrylic"]
+  .desktop-v2-native-frame
+  > .login-page
+  .login-card {
+  backdrop-filter: none;
+}
+
+/* Title bar and left navigation share the exact same surface in every mode. */
+:root[data-window-material="mica"]
+  .desktop-v2-native-frame
+  > .desktop-v2-shell
+  > .desktop-v2-sidebar,
+:root[data-window-material="mica"]
+  .desktop-v2-native-frame
+  > .setup-page
+  > .setup-shell
+  > .setup-steps,
+:root[data-window-material="mica"]
+  .desktop-v2-native-frame
+  > .desktop-v2-native-titlebar {
+  background: var(--shared-chrome-surface) !important;
+  backdrop-filter: none !important;
+}
+
+/* The rounded workspace corner exposes the client-area root beneath it.
+   Give the Mica client area one shared surface so the corner and sidebar can
+   never sample the native caption region differently on first composition. */
+:root[data-window-material="mica"] .desktop-v2-app-frame {
+  background: color-mix(in srgb, Canvas 8%, transparent) !important;
+  background-color: color-mix(in srgb, Canvas 8%, transparent) !important;
+}
+
+:root[data-window-material="mica"] .desktop-v2-native-frame > .desktop-v2-shell,
+:root[data-window-material="mica"]
+  .desktop-v2-native-frame
+  > .desktop-v2-shell
+  > .desktop-v2-sidebar {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+:root[data-window-material="acrylic"]
+  .desktop-v2-native-frame
+  > .desktop-v2-shell
+  > .desktop-v2-sidebar,
+:root[data-window-material="acrylic"]
+  .desktop-v2-native-frame
+  > .setup-page
+  > .setup-shell
+  > .setup-steps,
+:root[data-window-material="acrylic"]
+  .desktop-v2-native-frame
+  > .desktop-v2-native-titlebar {
+  background: var(--shared-chrome-surface) !important;
+  backdrop-filter: none !important;
+}
+
+/* Keep the outer document transparent while the shell and sidebar share the
+   same light Acrylic tint used by the native caption surface. */
+:root[data-window-material="acrylic"],
+:root[data-window-material="acrylic"] body,
+:root[data-window-material="acrylic"] #app,
+:root[data-window-material="acrylic"] .desktop-v2-app-frame,
+:root[data-window-material="acrylic"] .desktop-v2-native-frame {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+:root[data-window-material="acrylic"] .desktop-v2-native-titlebar,
+:root[data-window-material="acrylic"]
+  .desktop-v2-native-frame
+  > .desktop-v2-shell,
+:root[data-window-material="acrylic"]
+  .desktop-v2-native-frame
+  > .desktop-v2-shell
+  > .desktop-v2-sidebar {
+  background: transparent !important;
+  background-color: transparent !important;
+  backdrop-filter: none !important;
+}
+
+:root[data-window-material="acrylic"]
+  .desktop-v2-native-frame
+  > .desktop-v2-shell
+  > .desktop-v2-workspace::before {
+  border-left: 0;
+  box-shadow: none;
+}
+
+/* Acrylic needs stronger semantic text contrast because the native backdrop
+   can contain both light and dark desktop colours behind the same surface. */
+:root[data-window-material="acrylic"]
+  .desktop-v2-native-frame
+  :is(
+    .desktop-v2-brand small,
+    .desktop-v2-section-label,
+    .desktop-v2-recent-empty,
+    .desktop-v2-recents small,
+    .desktop-v2-scope small,
+    .desktop-v2-user-copy small,
+    .desktop-v2-context,
+    .simple-page-heading p,
+    .settings-list small,
+    .settings-version code,
+    .traffic-status-copy small,
+    .traffic-list-pane header span,
+    .traffic-row small,
+    .traffic-detail-head > span,
+    .traffic-ai-pane header small,
+    .ai-mode-row small,
+    .chat-page small
+  ) {
+  color: color-mix(in srgb, CanvasText 76%, transparent) !important;
+}
+
+:root[data-window-material="acrylic"]
+  .desktop-v2-native-frame
+  :is(
+    input::placeholder,
+    textarea::placeholder,
+    .el-input__inner::placeholder,
+    .el-textarea__inner::placeholder
+  ) {
+  color: color-mix(in srgb, CanvasText 62%, transparent) !important;
+  opacity: 1;
+}
+
+:root[data-window-material="acrylic"]
+  .desktop-v2-native-frame
+  :is(
+    .el-button.is-disabled,
+    .el-input.is-disabled,
+    .el-select.is-disabled,
+    [aria-disabled="true"]
+  ) {
+  opacity: 0.72;
+}
+
+/* App-wide Acrylic contrast contract. These semantic selectors cover page
+   components that still carry legacy hard-coded grey values. */
+:root[data-window-material="acrylic"]
+  :is(
+    .desktop-v2-native-frame,
+    .el-dialog,
+    .el-message-box,
+    .el-popper,
+    .el-notification,
+    .el-message
+  )
+  :is(
+    [class*="muted"],
+    [class*="subtitle"],
+    [class*="description"],
+    [class*="desc"],
+    [class*="hint"],
+    [class*="help"],
+    [class*="meta"],
+    [class*="empty"],
+    [class*="secondary"],
+    [class*="eyebrow"],
+    [class*="caption"],
+    [class*="version"],
+    [class*="path"],
+    [class*="status"] small,
+    [class*="copy"] small
+  ) {
+  color: color-mix(in srgb, CanvasText 76%, transparent) !important;
+}
+
+:root[data-window-material="acrylic"]
+  :is(.desktop-v2-native-frame, .el-dialog, .el-message-box, .el-popper)
+  :is(
+    .el-form-item__label,
+    .el-checkbox__label,
+    .el-radio__label,
+    .el-select__selected-item,
+    .el-input__inner,
+    .el-textarea__inner,
+    .el-table__body,
+    .el-tree-node__label,
+    .el-collapse-item__header,
+    .el-dropdown-menu__item,
+    .el-select-dropdown__item,
+    .el-tabs__item
+  ) {
+  color: color-mix(in srgb, CanvasText 88%, transparent) !important;
+}
+
+:root[data-window-material="acrylic"]
+  :is(.desktop-v2-native-frame, .el-dialog, .el-message-box, .el-popper)
+  :is(
+    .el-table__header,
+    .el-table th.el-table__cell,
+    .el-descriptions__label,
+    .el-select-dropdown__empty,
+    .el-empty__description,
+    .el-pagination,
+    .el-breadcrumb__inner
+  ) {
+  color: color-mix(in srgb, CanvasText 76%, transparent) !important;
+}
+
+:root[data-window-material="acrylic"]
+  :is(.desktop-v2-native-frame, .el-dialog, .el-message-box, .el-popper)
+  :is(.is-disabled, [disabled], [aria-disabled="true"]) {
+  --el-disabled-text-color: color-mix(in srgb, CanvasText 58%, transparent);
+  color: color-mix(in srgb, CanvasText 58%, transparent) !important;
+}
+
+:root[data-window-material="acrylic"]
+  :is(.desktop-v2-native-frame, .el-dialog, .el-message-box, .el-popper)
+  :is(input, textarea)::placeholder {
+  color: color-mix(in srgb, CanvasText 64%, transparent) !important;
+  opacity: 1 !important;
+}
+
+:root[data-window-material="acrylic"]
+  .desktop-v2-native-frame
+  :is(
+    .desktop-v2-nav button > .el-icon,
+    .desktop-v2-recent-open > .el-icon,
+    .desktop-v2-recent-delete,
+    .desktop-v2-user > .el-icon,
+    .quiet-icon-button
+  ) {
+  color: color-mix(in srgb, CanvasText 82%, transparent) !important;
+}
+
+:root[data-window-material="acrylic"]
+  .desktop-v2-native-frame
+  :is(
+    .start-action-copy small,
+    .start-action-copy p,
+    .start-panel header p,
+    .recent-main small,
+    .recent-status,
+    .proxy-state,
+    .traffic-column-head,
+    .traffic-row > i,
+    .traffic-empty,
+    .traffic-detail-head > span,
+    .packet-sections h3,
+    .ai-result ul,
+    .ai-result ol,
+    .pane-title small,
+    .catalog-list i,
+    .catalog-list small,
+    .scan-form > label,
+    .target-value,
+    .rule-list small,
+    .port-help,
+    .scan-summary,
+    .ai-settings-form p
+  ) {
+  color: color-mix(in srgb, CanvasText 76%, transparent) !important;
+}
+
+:root[data-window-material="acrylic"]
+  .desktop-v2-native-frame
+  :is(.traffic-row code, .detail-tabs p, .packet-sections pre) {
+  color: color-mix(in srgb, CanvasText 88%, transparent) !important;
+}
+
+:root[data-window-material="acrylic"]
+  .desktop-v2-native-frame
+  .offline-tools-page
+  :is(
+    small,
+    label,
+    .offline-tool-index h2,
+    .offline-workbench-head p,
+    .timestamp-tools p,
+    .http-no-checks,
+    .ioc-summary,
+    .file-meta-grid span
+  ) {
+  color: color-mix(in srgb, CanvasText 76%, transparent) !important;
+}
+
+:root[data-window-material="acrylic"]
+  :is(
+    .el-upload__tip,
+    .el-select__placeholder,
+    .el-cascader__search-input::placeholder,
+    .el-checkbox__input.is-disabled + .el-checkbox__label
+  ) {
+  color: color-mix(in srgb, CanvasText 62%, transparent) !important;
+}
+
+:root[data-caption-mode="solid"]
+  .desktop-v2-native-frame
+  > .desktop-v2-shell
+  > .desktop-v2-sidebar,
+:root[data-caption-mode="solid"]
+  .desktop-v2-native-frame
+  > .setup-page
+  > .setup-shell
+  > .setup-steps,
+:root[data-caption-mode="solid"]
+  .desktop-v2-native-frame
+  > .desktop-v2-native-titlebar {
+  background: var(--app-solid-chrome) !important;
+  backdrop-filter: none !important;
+}
+
+:root[data-window-material="none"]
+  .desktop-v2-native-frame
+  > .desktop-v2-shell
+  > .desktop-v2-sidebar,
+:root[data-window-material="none"]
+  .desktop-v2-native-frame
+  > .setup-page
+  > .setup-shell
+  > .setup-steps,
+:root[data-window-material="none"]
+  .desktop-v2-native-frame
+  > .desktop-v2-native-titlebar {
+  background: Canvas !important;
+  backdrop-filter: none !important;
+}
+
+/* Dependency setup page: one geometry, three material surfaces. */
+.desktop-v2-native-frame > .setup-page > .setup-shell > .setup-content {
+  overflow: hidden;
+  border-top: 1px solid var(--app-border);
+  border-left: 1px solid var(--app-border);
+  border-top-left-radius: var(--fluent-workspace-radius);
+  background-clip: border-box;
+  contain: paint;
+}
+
+.desktop-v2-native-frame > .setup-page > .setup-shell > .setup-steps {
+  border-right: 0 !important;
+}
+
+:root:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-native-frame
+  > .setup-page,
+:root:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-native-frame
+  > .setup-page
+  > .setup-shell,
+:root:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-native-frame
+  > .setup-page
+  > .setup-shell
+  > .setup-steps {
+  background: transparent !important;
+  background-color: transparent !important;
+  backdrop-filter: none !important;
+}
+
+:root:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-native-frame
+  > .setup-page
+  > .setup-shell
+  > .setup-content {
+  background: var(--app-workspace-surface) !important;
+  background-color: var(--app-workspace-surface) !important;
+}
+
+:root:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-native-frame
+  > .setup-page
+  :is(.dependency-scroll, .setup-header, .setup-content > footer) {
+  background: transparent !important;
+}
+
+:root:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-native-frame
+  > .setup-page
+  :is(
+    .setup-logo,
+    .setup-storage,
+    .dependency-group,
+    .dependency-row,
+    .dependency-loading
+  ) {
+  background: var(--app-surface) !important;
+  border-color: var(--app-border) !important;
+}
+
+:root[data-window-material="none"] .desktop-v2-native-frame > .setup-page,
+:root[data-window-material="none"]
+  .desktop-v2-native-frame
+  > .setup-page
+  > .setup-shell,
+:root[data-window-material="none"]
+  .desktop-v2-native-frame
+  > .setup-page
+  > .setup-shell
+  > .setup-steps,
+:root[data-window-material="none"]
+  .desktop-v2-native-frame
+  > .setup-page
+  > .setup-shell
+  > .setup-content,
+:root[data-window-material="none"]
+  .desktop-v2-native-frame
+  > .setup-page
+  .dependency-scroll {
+  background: Canvas !important;
+  background-color: Canvas !important;
+  backdrop-filter: none !important;
+}
+
+:root[data-window-material="none"]
+  .desktop-v2-native-frame
+  > .setup-page
+  :is(
+    .setup-logo,
+    .setup-storage,
+    .dependency-group,
+    .dependency-row,
+    .dependency-loading
+  ) {
+  background: Canvas !important;
+  background-color: Canvas !important;
+  border-color: var(--app-border) !important;
+}
+
+:root[data-window-material="acrylic"]
+  .desktop-v2-native-frame
+  > .setup-page
+  :is(
+    .setup-brand small,
+    .setup-side-label,
+    .setup-steps li small,
+    .setup-storage code,
+    .dependency-group-head p,
+    .dependency-group-head em,
+    .dep-main .dep-path,
+    .dep-version,
+    .dep-action,
+    .dependency-empty,
+    .dependency-loading,
+    .setup-content > footer
+  ) {
+  color: color-mix(in srgb, CanvasText 76%, transparent) !important;
+}
+
+/* Results center keeps wheel, touchpad and keyboard scrolling while removing
+   the visually redundant vertical scrollbar from the workspace edge. */
+.desktop-v2-content:has(.findings-page) {
+  scrollbar-width: none;
+}
+
+.desktop-v2-content:has(.findings-page)::-webkit-scrollbar {
+  width: 0;
+}
+
+.findings-page .el-scrollbar__bar.is-vertical {
+  display: none;
+}
+
+/* Active scanning uses the same unobtrusive workspace scrolling treatment. */
+.desktop-v2-content:has(.vuln-workbench) {
+  scrollbar-width: none;
+}
+
+.desktop-v2-content:has(.vuln-workbench)::-webkit-scrollbar {
+  width: 0;
+}
+
+@media (forced-colors: active) {
+  :root {
+    --app-bg: Canvas;
+    --app-surface: Canvas;
+    --app-surface-strong: Canvas;
+    --app-surface-soft: Canvas;
+    --app-sidebar: Canvas;
+    --app-border: ButtonBorder;
+    --app-border-strong: ButtonText;
+  }
+}
