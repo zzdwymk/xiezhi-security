@@ -47,29 +47,47 @@ java -version
 mvn -version
 node --version
 npm --version
-python --version
+python -c "import struct,sys; print(sys.executable); print(sys.implementation.name); print('.'.join(map(str,sys.version_info[:2]))); print(str(struct.calcsize('P')*8) + '-bit')"
 ```
 
-首次拉取项目后安装构建依赖：
+Python 检查结果必须为 CPython 3.10 和 64-bit。使用 Conda 或 Virtualenv 时，应先激活对应环境，再安装构建依赖：
 
 ```powershell
 python -m pip install --upgrade pip
 python -m pip install -r .\ai-runtime\requirements-build.txt
 
 Push-Location .\security-toolbox-web
-npm ci
+npm ci --include=dev
 Pop-Location
 ```
 
 生成经过测试和健康检查的 AI Runtime、Spring Boot JAR、Electron 解包目录、便携版 ZIP 和校验文件：
 
 ```powershell
-powershell -ExecutionPolicy Bypass `
-  -File .\scripts\package-desktop-release.ps1 `
-  -Python python
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\package-desktop-release.ps1
 ```
 
-如果 Python 3.10 没有加入 `PATH`，可以先激活对应的 Virtualenv/Conda 环境；脚本也会自动查找 `ai-runtime\.venv` 和本机已有的兼容 Conda 环境。也可以向 `-Python` 传入相对于当前目录或 `ai-runtime` 的解释器路径，不需要写死盘符。
+脚本会依次检查 `ai-runtime\.venv`、当前激活的 Virtualenv/Conda 环境、`PATH`、Windows Python Launcher 和本机已有的 Conda 环境。如果需要明确指定当前 PowerShell 环境中的解释器，可以执行：
+
+```powershell
+$python310 = if ($env:CONDA_PREFIX) {
+  Join-Path $env:CONDA_PREFIX 'python.exe'
+} else {
+  (Get-Command python.exe).Source
+}
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\package-desktop-release.ps1 `
+  -Python $python310
+```
+
+在 Anaconda Prompt 或 `cmd.exe` 中，可以直接传入当前 Conda 环境：
+
+```bat
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package-desktop-release.ps1 -Python "%CONDA_PREFIX%\python.exe"
+```
+
+当前 Electron npm 包不会在 `npm ci` 后自动创建 `node_modules\electron\dist`；这是正常行为。打包时 Electron Builder 会按项目版本从本机缓存或官方源取得运行时，不需要手动创建该目录。
 
 便携版输出位于：
 
@@ -78,6 +96,8 @@ security-toolbox-web\desktop-release\xiezhi-<version>-portable.zip
 security-toolbox-web\desktop-release\win-unpacked\
 security-toolbox-web\desktop-release\SHA256SUMS.txt
 ```
+
+可直接运行 `security-toolbox-web\desktop-release\win-unpacked\獬豸.exe`。源码中的界面修改不会自动进入旧 EXE；更新登录页等前端内容后，需要重新执行打包命令、完全退出旧程序，再启动新生成的 EXE。
 
 如需在本机继续生成未签名的 NSIS 安装包，先完成上述组件构建，再执行：
 

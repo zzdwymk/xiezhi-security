@@ -40,8 +40,12 @@ function Get-PythonInfo {
   if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) { return $null }
 
   try {
+    # Windows PowerShell 5.1 strips the double quotes embedded in a native
+    # command argument. Use Python single-quoted literals so the probe works
+    # both in powershell.exe and pwsh.
+    $probeScript = "import json,struct,sys; print(json.dumps({'bits':struct.calcsize('P')*8,'executable':sys.executable,'implementation':sys.implementation.name,'version':'.'.join(map(str,sys.version_info[:2]))}))"
     $probeOutput = @(
-      & $Executable -c 'import json,struct,sys; print(json.dumps({"bits":struct.calcsize("P")*8,"executable":sys.executable,"implementation":sys.implementation.name,"version":".".join(map(str,sys.version_info[:2]))}))' 2>$null
+      & $Executable -c $probeScript 2>$null
     )
     if ($LASTEXITCODE -ne 0 -or $probeOutput.Count -eq 0) { return $null }
 
