@@ -28,6 +28,7 @@
         <opennlp.version>2.5.9</opennlp.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <test.jvm.encoding.args>-Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8</test.jvm.encoding.args>
     </properties>
 
     <dependencies>
@@ -103,6 +104,15 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- OutputCaptureExtension decodes the forked test JVM's output. Keep its
+                         character set stable across Windows, Linux, and local Maven runs. -->
+                    <argLine>${test.jvm.encoding.args}</argLine>
+                </configuration>
             </plugin>
         </plugins>
     </build>

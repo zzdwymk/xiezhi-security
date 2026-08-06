@@ -154,7 +154,16 @@ jobs:
           RECON_PASSIVE_SOURCES_ENABLED: "false"
           CISA_KEV_ENABLED: "false"
           NUCLEI_CATALOG_IMPORT_ON_STARTUP: "false"
-        run: mvn -B -ntp -f security-toolbox-server/pom.xml clean verify
+          JAVA_TOOL_OPTIONS: >-
+            -Dfile.encoding=UTF-8
+            -Dsun.stdout.encoding=UTF-8
+            -Dsun.stderr.encoding=UTF-8
+        run: |
+          $utf8 = [Text.UTF8Encoding]::new($false)
+          [Console]::InputEncoding = $utf8
+          [Console]::OutputEncoding = $utf8
+          $OutputEncoding = $utf8
+          mvn.cmd -B -ntp -f security-toolbox-server/pom.xml clean verify
 
       - name: Build portable Electron release
         shell: pwsh
