@@ -615,6 +615,21 @@
   padding: 7px 8px;
 }
 
+.offline-tool-index section > .offline-tool-item.active {
+  position: relative;
+}
+
+.offline-tool-index section > .offline-tool-item.active::before {
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: 0;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--app-accent, #2563eb);
+  content: "";
+}
+
 .offline-tool-index .offline-tool-item > .el-icon {
   display: grid;
   width: 32px;
@@ -661,6 +676,7 @@
   gap: 8px;
   padding: 0 8px;
 }
+
 
 
 
