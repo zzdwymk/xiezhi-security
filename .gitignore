@@ -53,3 +53,29 @@ scripts/generate_thesis_docx.py
 scripts/update_strict_proposal.py
 scripts/update_thesis_documents.py
 **/.venv/
+
+# Temporary dev servers and test helpers
+security-toolbox-web/spa-server.cjs
+
+# AI-generated work tracking documents (not project deliverables)
+AGENTIC_RAG_HARNESS_TODO.md
+AGENTIC_RAG_HARNESS_IMPLEMENTATION_SUMMARY.md
+OUTER_DAG_LEDGER_AGENT_TODO.md
+OUTER_DAG_LEDGER_AGENT_PROGRESS.md
+PROGRESS_OUTER_DAG_LEDGER_*.md
+PLANNER_HARNESS_REFACTOR_SUMMARY.md
+PLANNER_HARNESS_SECURITY_REVIEW.md
+CLEAR_BUSINESS_DATA_IMPLEMENTATION_SUMMARY.md
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Editor temporary files
+*.swp
+*.swo
+*.bak
+*.orig
+*.rej
