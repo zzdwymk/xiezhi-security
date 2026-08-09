@@ -52,7 +52,7 @@
   border: 1px solid color-mix(in srgb, var(--app-accent, #2563eb) 30%, var(--app-border, transparent));
   border-radius: 999px;
   background: color-mix(in srgb, var(--app-accent, #2563eb) 10%, var(--app-surface, transparent));
-  color: var(--app-accent, #2563eb);
+  color: var(--app-accent-dark, var(--app-accent, #2563eb));
   font-size: 10px;
   font-weight: 600;
 }
@@ -676,6 +676,7 @@
   gap: 8px;
   padding: 0 8px;
 }
+
 
 
 
