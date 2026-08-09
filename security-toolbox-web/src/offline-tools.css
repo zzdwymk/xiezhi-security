@@ -139,13 +139,7 @@
   text-align: left;
   cursor: pointer;
 }
-.offline-tool-index section > button:hover {
-  background: #edede9;
-}
-.offline-tool-index section > button.active {
-  background: #e3eee9;
-  color: #1e4f42;
-}
+
 .offline-tool-index button > .el-icon {
   font-size: 15px;
 }
@@ -169,9 +163,7 @@
   color: #969791;
   font-size: 9px;
 }
-.offline-tool-index button.active small {
-  color: #66857a;
-}
+
 .offline-tool-empty {
   padding: 24px 10px;
   color: #a0a19b;
@@ -509,10 +501,7 @@
 .timestamp-tools pre {
   background: var(--app-surface-soft);
 }
-.offline-tool-index section > button.active {
-  background: var(--app-accent-soft-strong);
-  color: var(--app-text);
-}
+
 .offline-workbench-head,
 .hash-results header {
   border-color: var(--app-border);
@@ -567,8 +556,7 @@
   min-height: 40px;
   border-radius: 4px;
 }
-.offline-tool-index section > button.active {
-}
+
 .offline-workbench-head {
   height: 56px;
 }
@@ -673,3 +661,4 @@
   gap: 8px;
   padding: 0 8px;
 }
+
