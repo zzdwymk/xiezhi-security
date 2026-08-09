@@ -145,7 +145,6 @@
 .offline-tool-index section > button.active {
   background: #e3eee9;
   color: #1e4f42;
-  box-shadow: inset 2px 0 #168268;
 }
 .offline-tool-index button > .el-icon {
   font-size: 15px;
@@ -513,7 +512,6 @@
 .offline-tool-index section > button.active {
   background: var(--app-accent-soft-strong);
   color: var(--app-text);
-  box-shadow: inset 2px 0 var(--app-accent);
 }
 .offline-workbench-head,
 .hash-results header {
@@ -570,7 +568,6 @@
   border-radius: 4px;
 }
 .offline-tool-index section > button.active {
-  box-shadow: inset 3px 0 var(--app-accent);
 }
 .offline-workbench-head {
   height: 56px;

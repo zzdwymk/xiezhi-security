@@ -183,6 +183,42 @@
 }
 
 /* =================================================================
+   Offline tools sub-navigation - VFluent3 list-view selection
+   ================================================================= */
+
+.offline-tool-index .offline-tool-item {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--fluent3-list-item-radius) !important;
+  transition:
+    background-color var(--fluent-fast),
+    border-color var(--fluent-fast);
+}
+
+.offline-tool-index .offline-tool-item:hover {
+  background: var(--fluent3-reveal-bg) !important;
+}
+
+.offline-tool-index .offline-tool-item.active {
+  background: var(--fluent3-select-bg) !important;
+  box-shadow: none !important;
+}
+
+.offline-tool-index .offline-tool-item.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: var(--fluent3-slider-width);
+  height: 60%;
+  border-radius: var(--fluent3-slider-width);
+  background: var(--fluent3-slider-accent);
+  transition: height var(--fluent-normal), opacity var(--fluent-fast);
+  pointer-events: none;
+}
+
+/* =================================================================
    Table rows - VFluent3 list-view selection pattern
    ================================================================= */
 
@@ -364,7 +400,8 @@
   .desktop-v2-nav-item.active::before,
   .desktop-v2-recent-item.active::before,
   .setup-steps li.active::before,
-  .traffic-row.active::before {
+  .traffic-row.active::before,
+  .offline-tool-index .offline-tool-item.active::before {
     height: 40%;
   }
 }
