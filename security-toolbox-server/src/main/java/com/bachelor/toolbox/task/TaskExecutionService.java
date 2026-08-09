@@ -4,6 +4,7 @@ import com.bachelor.toolbox.audit.AuditService;
 import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.finding.Finding;
 import com.bachelor.toolbox.finding.FindingRepository;
+import com.bachelor.toolbox.settings.BusinessDataOperationGate;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.TargetService;
 import com.bachelor.toolbox.tool.*;
@@ -13,6 +14,8 @@ import java.time.Instant;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -34,7 +37,10 @@ public class TaskExecutionService {
   private final TaskSnapshotService snapshotService;
   private final TaskExecutionControlService executionControl;
   private final TaskProgressEventService progressEvents;
+  private final BusinessDataOperationGate operationGate;
+  private final ApplicationEventPublisher eventPublisher;
 
+  @Autowired
   public TaskExecutionService(
       SecurityTaskRepository taskRepository,
       FindingRepository findingRepository,
@@ -44,7 +50,9 @@ public class TaskExecutionService {
       ObjectMapper objectMapper,
       TaskSnapshotService snapshotService,
       TaskExecutionControlService executionControl,
-      TaskProgressEventService progressEvents) {
+      TaskProgressEventService progressEvents,
+      BusinessDataOperationGate operationGate,
+      ApplicationEventPublisher eventPublisher) {
     this.taskRepository = taskRepository;
     this.findingRepository = findingRepository;
     this.targetService = targetService;
@@ -54,13 +62,43 @@ public class TaskExecutionService {
     this.snapshotService = snapshotService;
     this.executionControl = executionControl;
     this.progressEvents = progressEvents;
+    this.operationGate = operationGate;
+    this.eventPublisher = eventPublisher;
+  }
+
+  TaskExecutionService(
+      SecurityTaskRepository taskRepository,
+      FindingRepository findingRepository,
+      TargetService targetService,
+      SecurityToolRegistry registry,
+      AuditService auditService,
+      ObjectMapper objectMapper,
+      TaskSnapshotService snapshotService,
+      TaskExecutionControlService executionControl,
+      TaskProgressEventService progressEvents) {
+    this(
+        taskRepository,
+        findingRepository,
+        targetService,
+        registry,
+        auditService,
+        objectMapper,
+        snapshotService,
+        executionControl,
+        progressEvents,
+        new BusinessDataOperationGate(),
+        event -> {});
   }
 
   @Async
   public void executeAsync(Long taskId) {
+    operationGate.withMutation(() -> executeUnderGate(taskId));
+  }
+
+  private void executeUnderGate(Long taskId) {
     SecurityTask task =
         taskRepository.findById(taskId).orElseThrow(() -> new ApiException("任务不存在"));
-    if ("CANCELLED".equals(task.getStatus()) || executionControl.isCancellationRequested(taskId)) {
+    if (!"PENDING".equals(task.getStatus()) || executionControl.isCancellationRequested(taskId)) {
       return;
     }
 
@@ -83,6 +121,7 @@ public class TaskExecutionService {
         task.setFinishedAt(Instant.now());
         taskRepository.save(task);
         progressEvents.publish(task, null);
+        eventPublisher.publishEvent(new TaskTerminalEvent(task.getId()));
       }
     } finally {
       executionControl.clear(taskId);

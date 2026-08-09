@@ -1,6 +1,8 @@
 package com.bachelor.toolbox.ai;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -8,32 +10,63 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.bachelor.toolbox.common.ApiException;
+import com.bachelor.toolbox.project.ProjectAuthorizationService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class AgentWorkflowSpecServiceTests {
   private AgentWorkflowSpecRepository repository;
+  private ProjectAuthorizationService authorization;
   private AgentWorkflowSpecService service;
+  private List<AgentWorkflowSpec> stored;
 
   @BeforeEach
   void setUp() {
     repository = mock(AgentWorkflowSpecRepository.class);
-    when(repository.findById(1L)).thenReturn(Optional.empty());
+    authorization = mock(ProjectAuthorizationService.class);
+    stored = new ArrayList<>();
+    when(authorization.currentUsername()).thenReturn("alice");
+    when(repository.findFirstByScopeIdOrderByRevisionDesc(any()))
+        .thenAnswer(
+            invocation -> {
+              Long scopeId = invocation.getArgument(0);
+              return stored.stream()
+                  .filter(item -> scopeId.equals(item.getScopeId()))
+                  .max(java.util.Comparator.comparingLong(AgentWorkflowSpec::getRevision));
+            });
+    when(repository.findByWorkflowIdAndRevision(any(), any()))
+        .thenAnswer(
+            invocation -> {
+              String workflowId = invocation.getArgument(0);
+              Long revision = invocation.getArgument(1);
+              return stored.stream()
+                  .filter(
+                      item ->
+                          workflowId.equals(item.getWorkflowId())
+                              && revision.equals(item.getRevision()))
+                  .findFirst();
+            });
     when(repository.save(any(AgentWorkflowSpec.class)))
-        .thenAnswer(invocation -> invocation.getArgument(0));
-    service = new AgentWorkflowSpecService(repository, new ObjectMapper());
+        .thenAnswer(
+            invocation -> {
+              AgentWorkflowSpec value = invocation.getArgument(0);
+              value.setId((long) stored.size() + 1);
+              stored.add(value);
+              return value;
+            });
+    service = new AgentWorkflowSpecService(repository, new ObjectMapper(), authorization);
   }
 
   @Test
   void v2GraphComputesParallelGroupsFromEdges() {
     Map<String, Object> saved =
         service.save(
+            101L,
             v2Graph(
                 List.of(
                     edge("__start__", "engage"),
@@ -64,7 +97,7 @@ class AgentWorkflowSpecServiceTests {
                 edge("port-scan", "validation"),
                 edge("validation", "port-scan"),
                 edge("validation", "__end__")));
-    assertThrows(ApiException.class, () -> service.save(body));
+    assertThrows(ApiException.class, () -> service.save(101L, body));
   }
 
   @Test
@@ -81,7 +114,7 @@ class AgentWorkflowSpecServiceTests {
     @SuppressWarnings("unchecked")
     List<Map<String, Object>> nodes = (List<Map<String, Object>>) graph.get("nodes");
     graph.put("nodes", nodes.subList(1, nodes.size()));
-    assertThrows(ApiException.class, () -> service.save(missingStart));
+    assertThrows(ApiException.class, () -> service.save(101L, missingStart));
 
     Map<String, Object> isolated =
         v2Graph(
@@ -97,7 +130,7 @@ class AgentWorkflowSpecServiceTests {
     List<Map<String, Object>> isolatedNodes =
         (List<Map<String, Object>>) isolatedGraph.get("nodes");
     isolatedNodes.add(node("orphan", "phase", null, "report"));
-    assertThrows(ApiException.class, () -> service.save(isolated));
+    assertThrows(ApiException.class, () -> service.save(101L, isolated));
   }
 
   @Test
@@ -114,7 +147,7 @@ class AgentWorkflowSpecServiceTests {
     @SuppressWarnings("unchecked")
     List<Map<String, Object>> steps = (List<Map<String, Object>>) body.get("steps");
     steps.get(0).put("nodeId", "header-scan");
-    assertThrows(ApiException.class, () -> service.save(body));
+    assertThrows(ApiException.class, () -> service.save(101L, body));
   }
 
   @Test
@@ -134,10 +167,104 @@ class AgentWorkflowSpecServiceTests {
                     false,
                     "group",
                     3)));
-    Map<String, Object> saved = service.save(body);
+    Map<String, Object> saved = service.save(101L, body);
     @SuppressWarnings("unchecked")
     List<Map<String, Object>> steps = (List<Map<String, Object>>) saved.get("steps");
     assertEquals(3, ((Number) steps.get(0).get("group")).intValue());
+  }
+
+  @Test
+  void revisionsAreAppendOnlyAndDigestIgnoresClientMetadata() {
+    Map<String, Object> body = v2Graph(validEdges());
+    body.put("workflowId", "forged");
+    body.put("revision", 999);
+    body.put("specDigest", "sha256:" + "0".repeat(64));
+
+    Map<String, Object> first = service.save(101L, body);
+    Map<String, Object> second = service.save(101L, body);
+
+    assertEquals(1L, first.get("revision"));
+    assertEquals(2L, second.get("revision"));
+    assertEquals(first.get("workflowId"), second.get("workflowId"));
+    assertEquals(first.get("specDigest"), second.get("specDigest"));
+    assertTrue(String.valueOf(first.get("specDigest")).matches("sha256:[0-9a-f]{64}"));
+    assertEquals("alice", second.get("updatedBy"));
+    assertEquals(2, stored.size());
+    assertNotEquals(stored.get(0).getId(), stored.get(1).getId());
+  }
+
+  @Test
+  void projectsHaveIndependentWorkflowHistories() {
+    Map<String, Object> projectA = service.save(101L, v2Graph(validEdges()));
+    Map<String, Object> projectB = service.save(202L, v2Graph(validEdges()));
+
+    assertEquals(1L, projectA.get("revision"));
+    assertEquals(1L, projectB.get("revision"));
+    assertNotEquals(projectA.get("workflowId"), projectB.get("workflowId"));
+    assertEquals(projectA.get("workflowId"), service.read(101L).get("workflowId"));
+    assertEquals(projectB.get("workflowId"), service.read(202L).get("workflowId"));
+    verify(authorization).requireManage(101L);
+    verify(authorization).requireManage(202L);
+    verify(authorization).requireAccess(101L);
+    verify(authorization).requireAccess(202L);
+  }
+
+  @Test
+  void frozenSnapshotDoesNotChangeWhenANewerRevisionIsSaved() {
+    Map<String, Object> first = service.save(101L, v2Graph(validEdges()));
+    AgentWorkflowSpecService.WorkflowSnapshot snapshot =
+        service.freezeSnapshot(
+            101L,
+            String.valueOf(first.get("workflowId")),
+            ((Number) first.get("revision")).longValue(),
+            String.valueOf(first.get("specDigest")));
+
+    Map<String, Object> changed = v2Graph(validEdges());
+    @SuppressWarnings("unchecked")
+    List<Map<String, Object>> changedSteps = (List<Map<String, Object>>) changed.get("steps");
+    changedSteps.get(0).put("parameters", Map.of("ports", "443"));
+    Map<String, Object> second = service.save(101L, changed);
+
+    assertEquals(1L, snapshot.revision());
+    assertEquals(first.get("specDigest"), snapshot.specDigest());
+    assertNotEquals(snapshot.specDigest(), second.get("specDigest"));
+    assertEquals(Map.of(), snapshot.executableSteps().get(0).get("parameters"));
+    assertThrows(
+        UnsupportedOperationException.class,
+        () -> snapshot.executableSteps().get(0).put("tool", "nuclei_scan"));
+  }
+
+  @Test
+  void snapshotDigestMismatchFailsClosed() {
+    Map<String, Object> saved = service.save(101L, v2Graph(validEdges()));
+    assertThrows(
+        ApiException.class,
+        () ->
+            service.freezeSnapshot(
+                101L,
+                String.valueOf(saved.get("workflowId")),
+                ((Number) saved.get("revision")).longValue(),
+                "sha256:" + "f".repeat(64)));
+  }
+
+  @Test
+  void runtimeStepsAreVisibleOnlyInsideTheBoundTurn() {
+    service.save(101L, v2Graph(validEdges()));
+    AgentWorkflowSpecService.WorkflowSnapshot snapshot = service.freezeSnapshot(101L);
+    assertEquals(List.of(), service.executableSteps());
+    service.withSnapshot(snapshot, () -> assertEquals(3, service.executableSteps().size()));
+    assertEquals(List.of(), service.executableSteps());
+    assertEquals("red-team-lifecycle", snapshot.spec().get("preset"));
+  }
+
+  private List<Map<String, Object>> validEdges() {
+    return List.of(
+        edge("__start__", "engage"),
+        edge("engage", "port-scan"),
+        edge("engage", "header-scan"),
+        edge("port-scan", "validation"),
+        edge("header-scan", "validation"),
+        edge("validation", "__end__"));
   }
 
   private Map<String, Object> v2Graph(List<Map<String, Object>> edges) {

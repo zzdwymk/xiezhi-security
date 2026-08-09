@@ -1,14 +1,10 @@
 package com.bachelor.toolbox.ai;
 
-import com.bachelor.toolbox.audit.AuditService;
 import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.PortRangeParser;
 import com.bachelor.toolbox.target.TargetPolicyService;
 import com.bachelor.toolbox.target.TargetService;
-import com.bachelor.toolbox.task.CreateTaskRequest;
-import com.bachelor.toolbox.task.SecurityTask;
-import com.bachelor.toolbox.task.TaskService;
 import com.bachelor.toolbox.tool.SecurityToolRegistry;
 import java.net.URI;
 import java.util.ArrayList;
@@ -18,6 +14,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -33,63 +30,47 @@ public class AiTaskDispatchService {
           "nmap_service_scan",
           "nuclei_scan");
 
-  private final AiPlanningService planningService;
   private final TargetService targetService;
   private final TargetPolicyService targetPolicyService;
   private final SecurityToolRegistry toolRegistry;
-  private final TaskService taskService;
-  private final AuditService auditService;
   private final PortRangeParser portRangeParser;
   private final int maxPortsPerTask;
   private final int maxNmapPortsPerTask;
+  private final AgentWorkflowSpecService workflowSpecs;
 
+  @Autowired
   public AiTaskDispatchService(
-      AiPlanningService planningService,
       TargetService targetService,
       TargetPolicyService targetPolicyService,
       SecurityToolRegistry toolRegistry,
-      TaskService taskService,
-      AuditService auditService,
       PortRangeParser portRangeParser,
       @Value("${toolbox.execution.max-ports-per-task:65535}") int maxPortsPerTask,
-      @Value("${toolbox.execution.max-nmap-ports-per-task:65535}") int maxNmapPortsPerTask) {
-    this.planningService = planningService;
+      @Value("${toolbox.execution.max-nmap-ports-per-task:65535}") int maxNmapPortsPerTask,
+      AgentWorkflowSpecService workflowSpecs) {
     this.targetService = targetService;
     this.targetPolicyService = targetPolicyService;
     this.toolRegistry = toolRegistry;
-    this.taskService = taskService;
-    this.auditService = auditService;
     this.portRangeParser = portRangeParser;
     this.maxPortsPerTask = maxPortsPerTask;
     this.maxNmapPortsPerTask = maxNmapPortsPerTask;
+    this.workflowSpecs = workflowSpecs;
   }
 
-  public AiDispatchResponse dispatch(AiPlanRequest request) throws Exception {
-    AiPlanResponse generatedPlan = planningService.plan(request);
-    return dispatchPlanned(request, generatedPlan);
-  }
-
-  public AiDispatchResponse dispatchPlanned(AiPlanRequest request, AiPlanResponse generatedPlan)
-      throws Exception {
-    AuthorizedTarget target = targetService.get(request.targetId());
-    AiPlanResponse executablePlan = prepare(request, generatedPlan);
-
-    List<Long> taskIds = new ArrayList<>();
-    for (AiPlanResponse.PlanStep step : executablePlan.steps()) {
-      SecurityTask task =
-          taskService.create(
-              new CreateTaskRequest(
-                  request.projectId(), target.getId(), step.toolCode(), step.parameters()));
-      taskIds.add(task.getId());
-    }
-    auditService.record(
-        "AI_DISPATCH_TASKS",
-        request.projectId() == null ? "TARGET" : "PROJECT",
-        request.projectId() == null ? target.getId() : request.projectId(),
-        "targetId=" + target.getId() + "; prompt=" + request.prompt() + "; taskIds=" + taskIds,
-        "ACCEPTED");
-    return new AiDispatchResponse(
-        target.getId(), executablePlan, taskIds.size(), List.copyOf(taskIds));
+  public AiTaskDispatchService(
+      TargetService targetService,
+      TargetPolicyService targetPolicyService,
+      SecurityToolRegistry toolRegistry,
+      PortRangeParser portRangeParser,
+      int maxPortsPerTask,
+      int maxNmapPortsPerTask) {
+    this(
+        targetService,
+        targetPolicyService,
+        toolRegistry,
+        portRangeParser,
+        maxPortsPerTask,
+        maxNmapPortsPerTask,
+        null);
   }
 
   /**
@@ -105,6 +86,98 @@ public class AiTaskDispatchService {
     List<AiPlanResponse.PlanStep> safeSteps = validateAndNormalize(generatedPlan, target);
     return new AiPlanResponse(
         generatedPlan.provider(), generatedPlan.model(), generatedPlan.summary(), false, safeSteps);
+  }
+
+  /** Final Java-side workflow closure. The immutable snapshot overrides every policy field. */
+  public AiPlanResponse prepareWorkflow(AiAgentRequest request, AiPlanResponse generatedPlan) {
+    if (workflowSpecs == null) throw new ApiException("工作流 Harness 未配置");
+    AgentWorkflowSpecService.WorkflowSnapshot snapshot =
+        workflowSpecs.freezeSnapshot(
+            request.projectId(),
+            request.workflowId(),
+            request.workflowRevision(),
+            request.workflowDigest());
+    AiPlanResponse normalized =
+        prepare(
+            new AiPlanRequest(
+                request.projectId(),
+                request.targetId(),
+                request.prompt(),
+                request.contextRefs(),
+                request.refs(),
+                request.mode()),
+            generatedPlan);
+    return closeAgainstSnapshot(normalized, snapshot);
+  }
+
+  private AiPlanResponse closeAgainstSnapshot(
+      AiPlanResponse plan, AgentWorkflowSpecService.WorkflowSnapshot snapshot) {
+    Map<String, Map<String, Object>> byNode = new LinkedHashMap<>();
+    for (Map<String, Object> step : snapshot.executableSteps()) {
+      String nodeId = Objects.toString(step.get("nodeId"), "");
+      if (nodeId.isBlank() || byNode.put(nodeId, step) != null) {
+        throw new ApiException("工作流快照包含无效或重复节点");
+      }
+    }
+    Set<String> selected =
+        plan.steps().stream()
+            .map(AiPlanResponse.PlanStep::workflowNodeId)
+            .filter(Objects::nonNull)
+            .collect(java.util.stream.Collectors.toSet());
+    if (selected.size() != plan.steps().size()) {
+      throw new ApiException("AI 计划缺少唯一 workflowNodeId");
+    }
+
+    List<AiPlanResponse.PlanStep> closed = new ArrayList<>();
+    for (AiPlanResponse.PlanStep proposed : plan.steps()) {
+      Map<String, Object> authoritative = byNode.get(proposed.workflowNodeId());
+      if (authoritative == null) throw new ApiException("AI 计划引用了不存在的工作流节点");
+      String tool = Objects.toString(authoritative.get("tool"), "");
+      if (!tool.equals(proposed.toolCode()) || !SAFE_AI_TOOLS.contains(tool)) {
+        throw new ApiException("AI 计划节点与工作流工具不匹配");
+      }
+      List<String> dependencies = stringList(authoritative.get("dependsOnNodeIds"));
+      Set<String> requiredExternal =
+          dependencies.stream()
+              .filter(
+                  nodeId -> {
+                    Map<String, Object> dependency = byNode.get(nodeId);
+                    return dependency != null
+                        && SAFE_AI_TOOLS.contains(Objects.toString(dependency.get("tool"), ""));
+                  })
+              .collect(java.util.stream.Collectors.toSet());
+      if (!selected.containsAll(requiredExternal)) {
+        throw new ApiException("AI 计划未包含工作流节点的完整依赖闭包");
+      }
+      closed.add(
+          new AiPlanResponse.PlanStep(
+              tool,
+              proposed.title(),
+              proposed.reason(),
+              proposed.parameters(),
+              proposed.workflowNodeId(),
+              integer(authoritative.get("group"), 0),
+              dependencies,
+              Objects.toString(authoritative.get("risk"), "SAFE"),
+              Boolean.TRUE.equals(authoritative.get("requiresApproval")),
+              proposed.evidenceRefs()));
+    }
+    return new AiPlanResponse(
+        plan.provider(), plan.model(), plan.summary(), plan.requiresConfirmation(), List.copyOf(closed));
+  }
+
+  private List<String> stringList(Object value) {
+    if (!(value instanceof List<?> list)) return List.of();
+    List<String> result = new ArrayList<>();
+    for (Object item : list) {
+      String text = Objects.toString(item, "");
+      if (text.isBlank() || !result.add(text)) throw new ApiException("工作流节点依赖无效");
+    }
+    return List.copyOf(result);
+  }
+
+  private int integer(Object value, int fallback) {
+    return value instanceof Number number ? number.intValue() : fallback;
   }
 
   private List<AiPlanResponse.PlanStep> validateAndNormalize(
@@ -128,7 +201,9 @@ public class AiTaskDispatchService {
       }
       toolCodes.add(step.toolCode());
       String stepKey =
-          "http_security_check".equals(step.toolCode())
+          step.workflowNodeId() != null && !step.workflowNodeId().isBlank()
+              ? "node:" + step.workflowNodeId()
+              : "http_security_check".equals(step.toolCode())
               ? step.toolCode()
                   + ":"
                   + Objects.toString(
@@ -142,7 +217,16 @@ public class AiTaskDispatchService {
           normalizeParameters(step.toolCode(), step.parameters(), target);
       safeSteps.add(
           new AiPlanResponse.PlanStep(
-              step.toolCode(), step.title(), step.reason(), Map.copyOf(parameters)));
+              step.toolCode(),
+              step.title(),
+              step.reason(),
+              Map.copyOf(parameters),
+              step.workflowNodeId(),
+              step.group(),
+              step.dependsOnNodeIds(),
+              step.risk(),
+              step.requiresApproval(),
+              step.evidenceRefs()));
     }
     if (toolCodes.contains("nmap_service_scan") && toolCodes.contains("tcp_ports")) {
       throw new ApiException("Nmap 服务识别与 TCP 端口探测不能在同一计划中重复扫描");

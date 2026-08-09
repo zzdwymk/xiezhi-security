@@ -1,24 +1,33 @@
 package com.bachelor.toolbox.ai;
 
 import com.bachelor.toolbox.common.ApiException;
+import com.bachelor.toolbox.project.ProjectAuthorizationService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.UUID;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Stores and validates the user-composed workflow.
@@ -31,12 +40,15 @@ import org.springframework.stereotype.Service;
  */
 @Service
 public class AgentWorkflowSpecService {
-  private static final long SINGLETON_ID = 1L;
   private static final int MAX_SPEC_BYTES = 512 * 1024;
   private static final int MAX_NODES = 128;
   private static final int MAX_EDGES = 256;
   private static final int MAX_STEPS = 16;
   private static final Pattern NODE_ID = Pattern.compile("[A-Za-z0-9_-]{1,64}");
+  private static final Pattern DIGEST = Pattern.compile("sha256:[0-9a-f]{64}");
+  private static final Set<String> SERVER_METADATA =
+      Set.of("workflowId", "scopeId", "revision", "specDigest", "updatedBy", "updatedAt");
+  private static final ThreadLocal<WorkflowSnapshot> RUN_SNAPSHOT = new ThreadLocal<>();
   private static final Set<String> RUNTIME_TOOLS =
       Set.of(
           "retrieve_project_context",
@@ -63,37 +75,119 @@ public class AgentWorkflowSpecService {
 
   private final AgentWorkflowSpecRepository repository;
   private final ObjectMapper objectMapper;
+  private final ProjectAuthorizationService authorization;
 
   public AgentWorkflowSpecService(
-      AgentWorkflowSpecRepository repository, ObjectMapper objectMapper) {
+      AgentWorkflowSpecRepository repository,
+      ObjectMapper objectMapper,
+      ProjectAuthorizationService authorization) {
     this.repository = repository;
     this.objectMapper = objectMapper;
+    this.authorization = authorization;
   }
 
-  public Object read() {
+  /** Returns the latest immutable revision for one project without creating a default. */
+  @Transactional(readOnly = true)
+  public Map<String, Object> read(Long scopeId) {
+    requireScope(scopeId, false);
     return repository
-        .findById(SINGLETON_ID)
-        .map(AgentWorkflowSpec::getSpecJson)
-        .map(this::parse)
+        .findFirstByScopeIdOrderByRevisionDesc(scopeId)
+        .map(this::toSnapshot)
+        .map(WorkflowSnapshot::response)
         .orElseGet(Map::of);
   }
 
-  public Map<String, Object> save(Map<String, Object> body) {
+  /** Appends a revision; an existing revision is never overwritten. */
+  @Transactional
+  public synchronized Map<String, Object> save(Long scopeId, Map<String, Object> body) {
+    requireScope(scopeId, true);
+    return appendSnapshot(scopeId, body).snapshot().response();
+  }
+
+  /**
+   * Resolves the exact revision used by a turn. Supplying no identity freezes the latest revision;
+   * for a new project, a project-bound default revision is persisted first.
+   */
+  @Transactional
+  public synchronized WorkflowSnapshot freezeSnapshot(
+      Long scopeId, String workflowId, Long revision, String specDigest) {
+    requireScope(scopeId, false);
+    boolean identityAbsent = blank(workflowId) && revision == null && blank(specDigest);
+    if (!identityAbsent && (blank(workflowId) || revision == null || blank(specDigest))) {
+      throw new ApiException("工作流快照标识必须同时包含 workflowId、revision 和 specDigest");
+    }
+    AgentWorkflowSpec stored;
+    if (identityAbsent) {
+      stored =
+          repository
+              .findFirstByScopeIdOrderByRevisionDesc(scopeId)
+              .orElseGet(() -> appendSnapshot(scopeId, defaultSpec()).stored());
+    } else {
+      if (revision <= 0 || !DIGEST.matcher(specDigest).matches()) {
+        throw new ApiException("工作流快照版本或摘要格式无效");
+      }
+      stored =
+          repository
+              .findByWorkflowIdAndRevision(workflowId, revision)
+              .filter(candidate -> scopeId.equals(candidate.getScopeId()))
+              .orElseThrow(() -> new ApiException("工作流快照不存在或不属于当前项目"));
+      if (!specDigest.equals(stored.getSpecDigest())) {
+        throw new ApiException("工作流摘要不一致，已拒绝使用漂移后的配置");
+      }
+    }
+    return toSnapshot(stored);
+  }
+
+  public WorkflowSnapshot freezeSnapshot(Long scopeId) {
+    return freezeSnapshot(scopeId, null, null, null);
+  }
+
+  /** Keeps the selected immutable revision visible to legacy runtime calls for exactly one turn. */
+  public <T> T withSnapshot(WorkflowSnapshot snapshot, Supplier<T> operation) {
+    if (snapshot == null || operation == null) throw new ApiException("工作流快照或执行操作不能为空");
+    WorkflowSnapshot previous = RUN_SNAPSHOT.get();
+    RUN_SNAPSHOT.set(snapshot);
+    try {
+      return operation.get();
+    } finally {
+      if (previous == null) RUN_SNAPSHOT.remove();
+      else RUN_SNAPSHOT.set(previous);
+    }
+  }
+
+  public void withSnapshot(WorkflowSnapshot snapshot, Runnable operation) {
+    withSnapshot(
+        snapshot,
+        () -> {
+          operation.run();
+          return null;
+        });
+  }
+
+  private SnapshotAndEntity appendSnapshot(Long scopeId, Map<String, Object> body) {
     if (body == null || body.isEmpty()) {
       throw new ApiException("工作流内容不能为空");
     }
     Map<String, Object> copy = copyMap(body);
+    SERVER_METADATA.forEach(copy::remove);
     Map<String, Object> normalized = normalize(copy);
-    String json = write(normalized);
+    @SuppressWarnings("unchecked")
+    Map<String, Object> canonical = (Map<String, Object>) canonicalize(normalized);
+    String json = write(canonical);
     if (json.getBytes(StandardCharsets.UTF_8).length > MAX_SPEC_BYTES) {
       throw new ApiException("工作流配置过大");
     }
-    AgentWorkflowSpec spec = repository.findById(SINGLETON_ID).orElseGet(AgentWorkflowSpec::new);
-    spec.setId(SINGLETON_ID);
+    Optional<AgentWorkflowSpec> latest = repository.findFirstByScopeIdOrderByRevisionDesc(scopeId);
+    AgentWorkflowSpec spec = new AgentWorkflowSpec();
+    spec.setWorkflowId(latest.map(AgentWorkflowSpec::getWorkflowId).orElseGet(() -> UUID.randomUUID().toString()));
+    spec.setScopeId(scopeId);
+    spec.setRevision(latest.map(item -> item.getRevision() + 1).orElse(1L));
+    spec.setSpecDigest(digest(json));
     spec.setSpecJson(json);
+    spec.setUpdatedBy(authorization.currentUsername());
     spec.setUpdatedAt(Instant.now());
-    repository.save(spec);
-    return normalized;
+    AgentWorkflowSpec stored = repository.save(spec);
+    return new SnapshotAndEntity(toSnapshot(stored), stored);
   }
 
   /**
@@ -102,9 +196,14 @@ public class AgentWorkflowSpecService {
    * have already passed {@link #normalize(Map)}.
    */
   public List<Map<String, Object>> executableSteps() {
-    Optional<AgentWorkflowSpec> stored = repository.findById(SINGLETON_ID);
-    if (stored.isEmpty()) return List.of();
-    Map<String, Object> root = parseMap(stored.get().getSpecJson());
+    WorkflowSnapshot snapshot = RUN_SNAPSHOT.get();
+    if (snapshot == null) return List.of();
+    return snapshot.executableSteps();
+  }
+
+  public List<Map<String, Object>> executableSteps(WorkflowSnapshot snapshot) {
+    if (snapshot == null) return List.of();
+    Map<String, Object> root = mutableCopyMap(snapshot.spec());
     if (root.isEmpty()) return List.of();
     try {
       return stepsFromNormalized(normalize(root));
@@ -231,7 +330,7 @@ public class AgentWorkflowSpecService {
     for (int i = 0; i < toolDepths.size(); i++) groupByDepth.put(toolDepths.get(i), i);
 
     List<Map<String, Object>> normalizedSteps =
-        normalizeGraphSteps(root.get("steps"), byId, depth, groupByDepth);
+        normalizeGraphSteps(root.get("steps"), byId, incoming, depth, groupByDepth);
     graph.put("nodes", nodes);
     graph.put("edges", edges);
     root.put("graph", graph);
@@ -241,6 +340,7 @@ public class AgentWorkflowSpecService {
   private List<Map<String, Object>> normalizeGraphSteps(
       Object value,
       Map<String, Map<String, Object>> nodes,
+      Map<String, List<String>> incoming,
       Map<String, Integer> depth,
       Map<Integer, Integer> groupByDepth) {
     List<Map<String, Object>> rawSteps = objectList(value, "steps");
@@ -278,6 +378,7 @@ public class AgentWorkflowSpecService {
       Map<String, Object> normalized = copyMap(raw);
       normalized.put("nodeId", nodeId);
       normalized.put("group", groupByDepth.getOrDefault(depth.get(nodeId), 0));
+      normalized.put("dependsOnNodeIds", nearestToolDependencies(nodeId, nodes, incoming));
       normalized.put(
           "parameters",
           raw.get("parameters") instanceof Map<?, ?> ? raw.get("parameters") : Map.of());
@@ -292,17 +393,61 @@ public class AgentWorkflowSpecService {
     List<Map<String, Object>> raw = objectList(value, "steps");
     if (raw.size() > MAX_STEPS) throw new ApiException("工作流工具步骤数量超过限制");
     List<Map<String, Object>> result = new ArrayList<>();
-    for (Map<String, Object> step : raw) {
+    Set<String> nodeIds = new HashSet<>();
+    for (int index = 0; index < raw.size(); index++) {
+      Map<String, Object> step = raw.get(index);
       String tool = text(step.get("tool"));
       if (tool == null || !RUNTIME_TOOLS.contains(tool)) throw new ApiException("工作流工具不受支持");
       Map<String, Object> normalized = copyMap(step);
+      String nodeId = text(step.get("nodeId"));
+      if (nodeId == null) nodeId = String.format("legacy-%02d-%s", index + 1, tool);
+      if (!NODE_ID.matcher(nodeId).matches() || !nodeIds.add(nodeId)) {
+        throw new ApiException("工作流节点 ID 无效或重复");
+      }
+      normalized.put("nodeId", nodeId);
       normalized.put("group", integer(step.get("group"), 0, 0, 32, "工作流并行组无效"));
       normalized.put(
           "parameters",
           step.get("parameters") instanceof Map<?, ?> ? step.get("parameters") : Map.of());
       result.add(normalized);
     }
+    Map<Integer, List<String>> nodesByGroup = new TreeMap<>();
+    for (Map<String, Object> step : result) {
+      nodesByGroup
+          .computeIfAbsent((Integer) step.get("group"), ignored -> new ArrayList<>())
+          .add(text(step.get("nodeId")));
+    }
+    for (Map<String, Object> step : result) {
+      int group = (Integer) step.get("group");
+      List<String> dependencies =
+          nodesByGroup.entrySet().stream()
+              .filter(entry -> entry.getKey() < group)
+              .reduce((first, second) -> second)
+              .map(Map.Entry::getValue)
+              .orElse(List.of());
+      step.put("dependsOnNodeIds", List.copyOf(dependencies));
+    }
     return result;
+  }
+
+  private List<String> nearestToolDependencies(
+      String nodeId,
+      Map<String, Map<String, Object>> nodes,
+      Map<String, List<String>> incoming) {
+    LinkedHashSet<String> result = new LinkedHashSet<>();
+    Deque<String> queue = new ArrayDeque<>(incoming.getOrDefault(nodeId, List.of()));
+    Set<String> visited = new HashSet<>();
+    while (!queue.isEmpty()) {
+      String predecessor = queue.removeFirst();
+      if (!visited.add(predecessor)) continue;
+      Map<String, Object> node = nodes.get(predecessor);
+      if (node != null && text(node.get("tool")) != null) {
+        result.add(predecessor);
+      } else {
+        queue.addAll(incoming.getOrDefault(predecessor, List.of()));
+      }
+    }
+    return List.copyOf(result);
   }
 
   private List<Map<String, Object>> stepsFromNormalized(Map<String, Object> root) {
@@ -409,11 +554,6 @@ public class AgentWorkflowSpecService {
     }
   }
 
-  private Object parse(String json) {
-    Map<String, Object> value = parseMap(json);
-    return value.isEmpty() ? Map.of() : value;
-  }
-
   private String write(Object value) {
     try {
       return objectMapper.writeValueAsString(value);
@@ -421,4 +561,149 @@ public class AgentWorkflowSpecService {
       throw new ApiException("工作流保存失败");
     }
   }
+
+  private void requireScope(Long scopeId, boolean manage) {
+    if (scopeId == null || scopeId <= 0) throw new ApiException("缺少有效的工作流项目编号");
+    if (manage) authorization.requireManage(scopeId);
+    else authorization.requireAccess(scopeId);
+  }
+
+  private WorkflowSnapshot toSnapshot(AgentWorkflowSpec stored) {
+    if (stored == null
+        || stored.getWorkflowId() == null
+        || stored.getScopeId() == null
+        || stored.getRevision() == null
+        || stored.getSpecDigest() == null
+        || stored.getUpdatedBy() == null
+        || stored.getUpdatedAt() == null) {
+      throw new ApiException("工作流快照元数据不完整");
+    }
+    Map<String, Object> parsed = parseMap(stored.getSpecJson());
+    if (parsed.isEmpty()) throw new ApiException("工作流快照内容损坏");
+    @SuppressWarnings("unchecked")
+    Map<String, Object> canonical = (Map<String, Object>) canonicalize(parsed);
+    String canonicalJson = write(canonical);
+    if (!DIGEST.matcher(stored.getSpecDigest()).matches()
+        || !stored.getSpecDigest().equals(digest(canonicalJson))) {
+      throw new ApiException("工作流快照摘要校验失败");
+    }
+    Map<String, Object> immutableSpec = immutableMap(canonical);
+    List<Map<String, Object>> steps = immutableStepList(stepsFromNormalized(canonical));
+    return new WorkflowSnapshot(
+        stored.getWorkflowId(),
+        stored.getScopeId(),
+        stored.getRevision(),
+        stored.getSpecDigest(),
+        stored.getUpdatedBy(),
+        stored.getUpdatedAt(),
+        immutableSpec,
+        steps);
+  }
+
+  private String digest(String canonicalJson) {
+    try {
+      byte[] bytes = MessageDigest.getInstance("SHA-256").digest(canonicalJson.getBytes(StandardCharsets.UTF_8));
+      return "sha256:" + HexFormat.of().formatHex(bytes);
+    } catch (NoSuchAlgorithmException ex) {
+      throw new IllegalStateException("SHA-256 不可用", ex);
+    }
+  }
+
+  private Object canonicalize(Object value) {
+    if (value instanceof Map<?, ?> map) {
+      Map<String, Object> sorted = new TreeMap<>();
+      map.forEach(
+          (key, item) -> {
+            if (key != null) sorted.put(String.valueOf(key), canonicalize(item));
+          });
+      return new LinkedHashMap<>(sorted);
+    }
+    if (value instanceof List<?> list) {
+      return list.stream().map(this::canonicalize).toList();
+    }
+    return value;
+  }
+
+  private Map<String, Object> mutableCopyMap(Map<String, Object> source) {
+    @SuppressWarnings("unchecked")
+    Map<String, Object> result = (Map<String, Object>) mutableCopy(source);
+    return result;
+  }
+
+  private Object mutableCopy(Object value) {
+    if (value instanceof Map<?, ?> map) {
+      Map<String, Object> result = new LinkedHashMap<>();
+      map.forEach(
+          (key, item) -> {
+            if (key != null) result.put(String.valueOf(key), mutableCopy(item));
+          });
+      return result;
+    }
+    if (value instanceof List<?> list) {
+      List<Object> result = new ArrayList<>();
+      list.forEach(item -> result.add(mutableCopy(item)));
+      return result;
+    }
+    return value;
+  }
+
+  private Map<String, Object> immutableMap(Map<String, Object> source) {
+    @SuppressWarnings("unchecked")
+    Map<String, Object> result = (Map<String, Object>) immutableValue(source);
+    return result;
+  }
+
+  private Object immutableValue(Object value) {
+    if (value instanceof Map<?, ?> map) {
+      Map<String, Object> result = new LinkedHashMap<>();
+      map.forEach(
+          (key, item) -> {
+            if (key != null) result.put(String.valueOf(key), immutableValue(item));
+          });
+      return Collections.unmodifiableMap(result);
+    }
+    if (value instanceof List<?> list) {
+      return Collections.unmodifiableList(list.stream().map(this::immutableValue).toList());
+    }
+    return value;
+  }
+
+  private List<Map<String, Object>> immutableStepList(List<Map<String, Object>> steps) {
+    return Collections.unmodifiableList(steps.stream().map(this::immutableMap).toList());
+  }
+
+  private Map<String, Object> defaultSpec() {
+    Map<String, Object> value = new LinkedHashMap<>();
+    value.put("version", 1);
+    value.put("preset", "runtime-default");
+    value.put("steps", List.of());
+    return value;
+  }
+
+  private boolean blank(String value) {
+    return value == null || value.isBlank();
+  }
+
+  public record WorkflowSnapshot(
+      String workflowId,
+      Long scopeId,
+      Long revision,
+      String specDigest,
+      String updatedBy,
+      Instant updatedAt,
+      Map<String, Object> spec,
+      List<Map<String, Object>> executableSteps) {
+    public Map<String, Object> response() {
+      Map<String, Object> response = new LinkedHashMap<>(spec);
+      response.put("workflowId", workflowId);
+      response.put("scopeId", scopeId);
+      response.put("revision", revision);
+      response.put("specDigest", specDigest);
+      response.put("updatedBy", updatedBy);
+      response.put("updatedAt", updatedAt);
+      return Collections.unmodifiableMap(response);
+    }
+  }
+
+  private record SnapshotAndEntity(WorkflowSnapshot snapshot, AgentWorkflowSpec stored) {}
 }

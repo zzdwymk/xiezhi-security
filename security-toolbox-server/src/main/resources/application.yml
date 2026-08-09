@@ -51,6 +51,7 @@ toolbox:
       runtime-base-url: ${AI_RUNTIME_URL:}
       runtime-port: ${AI_RUNTIME_PORT:8090}
       runtime-token: ${AI_RUNTIME_TOKEN:}
+      runtime-project-signing-secret: ${AI_RUNTIME_PROJECT_SIGNING_SECRET:}
       runtime-timeout-seconds: ${AI_RUNTIME_TIMEOUT_SECONDS:120}
       memory-messages: ${AI_AGENT_MEMORY_MESSAGES:20}
       max-sessions: ${AI_AGENT_MAX_SESSIONS:200}

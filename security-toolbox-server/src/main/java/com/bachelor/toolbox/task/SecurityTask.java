@@ -31,6 +31,24 @@ public class SecurityTask {
   @Column(length = 64)
   private String vulnerabilityCode;
 
+  @Column(length = 71)
+  private String workflowDigest;
+
+  @Column(length = 80)
+  private String workflowNodeId;
+
+  @Column(length = 160)
+  private String nodeRunId;
+
+  private Integer workflowGroup;
+
+  @Lob private String dependencyTaskIds;
+
+  @Column(length = 16)
+  private String effectiveRisk;
+
+  private Boolean workflowApprovalRequired;
+
   @Column(nullable = false, length = 30)
   private String status;
 

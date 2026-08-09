@@ -6,34 +6,25 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import com.bachelor.toolbox.audit.AuditService;
 import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.PortRangeParser;
 import com.bachelor.toolbox.target.TargetPolicyService;
 import com.bachelor.toolbox.target.TargetService;
-import com.bachelor.toolbox.task.CreateTaskRequest;
-import com.bachelor.toolbox.task.SecurityTask;
-import com.bachelor.toolbox.task.TaskService;
 import com.bachelor.toolbox.tool.SecurityTool;
 import com.bachelor.toolbox.tool.SecurityToolRegistry;
-import com.fasterxml.jackson.core.JsonProcessingException;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class AiTaskDispatchServiceTests {
-  private final AiPlanningService planningService = mock(AiPlanningService.class);
   private final TargetService targetService = mock(TargetService.class);
   private final TargetPolicyService targetPolicyService = mock(TargetPolicyService.class);
   private final SecurityToolRegistry toolRegistry = mock(SecurityToolRegistry.class);
-  private final TaskService taskService = mock(TaskService.class);
-  private final AuditService auditService = mock(AuditService.class);
   private final PortRangeParser portRangeParser = new PortRangeParser();
   private AiTaskDispatchService service;
   private AuthorizedTarget target;
@@ -42,12 +33,9 @@ class AiTaskDispatchServiceTests {
   void setUp() {
     service =
         new AiTaskDispatchService(
-            planningService,
             targetService,
             targetPolicyService,
             toolRegistry,
-            taskService,
-            auditService,
             portRangeParser,
             20,
             65535);
@@ -63,93 +51,74 @@ class AiTaskDispatchServiceTests {
   @Test
   void conversationalResponseCreatesNoTask() throws Exception {
     AiPlanRequest request = new AiPlanRequest(7L, "你好");
-    when(planningService.plan(request))
-        .thenReturn(new AiPlanResponse("test", "test-model", "你好！", false, List.of()));
+    AiPlanResponse generated =
+        new AiPlanResponse("test", "test-model", "你好！", false, List.of());
 
-    AiDispatchResponse response = service.dispatch(request);
+    AiPlanResponse response = service.prepare(request, generated);
 
-    assertEquals(0, response.taskCount());
-    assertEquals(List.of(), response.taskIds());
-    verify(taskService, never()).create(any(CreateTaskRequest.class));
+    assertEquals(List.of(), response.steps());
   }
 
   @Test
   void dispatchesValidatedPlanAndCanonicalizesAuthorizedPorts() throws Exception {
     AiPlanRequest request = new AiPlanRequest(7L, "scan selected ports");
-    when(planningService.plan(request))
-        .thenReturn(
-            new AiPlanResponse(
+    AiPlanResponse generated =
+        new AiPlanResponse(
                 "test",
                 "test-model",
                 "safe plan",
                 true,
                 List.of(
                     new AiPlanResponse.PlanStep(
-                        "tcp_ports", "ports", "requested", Map.of("ports", "8080, 80")))));
+                        "tcp_ports", "ports", "requested", Map.of("ports", "8080, 80"))));
     when(toolRegistry.require("tcp_ports")).thenReturn(mock(SecurityTool.class));
-    SecurityTask task = new SecurityTask();
-    task.setId(42L);
-    when(taskService.create(any(CreateTaskRequest.class)))
-        .thenAnswer(
-            invocation -> {
-              CreateTaskRequest create = invocation.getArgument(0);
-              assertEquals("80,8080", create.parameters().get("ports"));
-              return task;
-            });
 
-    AiDispatchResponse response = service.dispatch(request);
+    AiPlanResponse response = service.prepare(request, generated);
 
-    assertEquals(1, response.taskCount());
-    assertEquals(List.of(42L), response.taskIds());
-    assertFalse(response.plan().requiresConfirmation());
-    verify(taskService).create(any(CreateTaskRequest.class));
+    assertEquals("80,8080", response.steps().get(0).parameters().get("ports"));
+    assertFalse(response.requiresConfirmation());
   }
 
   @Test
-  void rejectsPortsOutsideTargetAuthorizationBeforeCreatingTasks() throws JsonProcessingException {
+  void rejectsPortsOutsideTargetAuthorizationBeforeCreatingTasks() {
     AiPlanRequest request = new AiPlanRequest(7L, "scan port 22");
-    when(planningService.plan(request))
-        .thenReturn(
-            new AiPlanResponse(
+    AiPlanResponse generated =
+        new AiPlanResponse(
                 "test",
                 "test-model",
                 "unsafe plan",
                 true,
                 List.of(
                     new AiPlanResponse.PlanStep(
-                        "tcp_ports", "ports", "requested", Map.of("ports", "22")))));
+                        "tcp_ports", "ports", "requested", Map.of("ports", "22"))));
     when(toolRegistry.require("tcp_ports")).thenReturn(mock(SecurityTool.class));
 
-    assertThrows(ApiException.class, () -> service.dispatch(request));
-    verify(taskService, never()).create(any(CreateTaskRequest.class));
+    assertThrows(ApiException.class, () -> service.prepare(request, generated));
   }
 
   @Test
-  void rejectsToolsOutsideHardCodedAiWhitelist() throws JsonProcessingException {
+  void rejectsToolsOutsideHardCodedAiWhitelist() {
     AiPlanRequest request = new AiPlanRequest(7L, "run a command");
-    when(planningService.plan(request))
-        .thenReturn(
-            new AiPlanResponse(
+    AiPlanResponse generated =
+        new AiPlanResponse(
                 "test",
                 "test-model",
                 "unsafe plan",
                 true,
                 List.of(
                     new AiPlanResponse.PlanStep(
-                        "shell", "shell", "not allowed", Map.of("command", "whoami")))));
+                        "shell", "shell", "not allowed", Map.of("command", "whoami"))));
 
-    assertThrows(ApiException.class, () -> service.dispatch(request));
+    assertThrows(ApiException.class, () -> service.prepare(request, generated));
     verify(toolRegistry, never()).require(any());
-    verify(taskService, never()).create(any(CreateTaskRequest.class));
   }
 
   @Test
   void allowsFullAuthorizedRangeForNmapButKeepsItCompact() throws Exception {
     target.setAllowedPorts("1-65535");
     AiPlanRequest request = new AiPlanRequest(7L, "full port scan");
-    when(planningService.plan(request))
-        .thenReturn(
-            new AiPlanResponse(
+    AiPlanResponse generated =
+        new AiPlanResponse(
                 "test",
                 "test-model",
                 "safe plan",
@@ -159,42 +128,31 @@ class AiTaskDispatchServiceTests {
                         "nmap_service_scan",
                         "nmap",
                         "requested",
-                        Map.of("ports", "1-65535", "mode", "quick")))));
+                        Map.of("ports", "1-65535", "mode", "quick"))));
     when(toolRegistry.require("nmap_service_scan")).thenReturn(mock(SecurityTool.class));
-    SecurityTask task = new SecurityTask();
-    task.setId(43L);
-    when(taskService.create(any(CreateTaskRequest.class)))
-        .thenAnswer(
-            invocation -> {
-              CreateTaskRequest create = invocation.getArgument(0);
-              assertEquals("1-65535", create.parameters().get("ports"));
-              assertEquals("quick", create.parameters().get("mode"));
-              return task;
-            });
 
-    AiDispatchResponse response = service.dispatch(request);
+    AiPlanResponse response = service.prepare(request, generated);
 
-    assertEquals(List.of(43L), response.taskIds());
+    assertEquals("1-65535", response.steps().get(0).parameters().get("ports"));
+    assertEquals("quick", response.steps().get(0).parameters().get("mode"));
   }
 
   @Test
-  void stillRejectsFullRangeForTcpDispatch() throws JsonProcessingException {
+  void stillRejectsFullRangeForTcpDispatch() {
     target.setAllowedPorts("1-65535");
     AiPlanRequest request = new AiPlanRequest(7L, "tcp all ports");
-    when(planningService.plan(request))
-        .thenReturn(
-            new AiPlanResponse(
+    AiPlanResponse generated =
+        new AiPlanResponse(
                 "test",
                 "test-model",
                 "unsafe plan",
                 true,
                 List.of(
                     new AiPlanResponse.PlanStep(
-                        "tcp_ports", "tcp", "requested", Map.of("ports", "1-65535")))));
+                        "tcp_ports", "tcp", "requested", Map.of("ports", "1-65535"))));
     when(toolRegistry.require("tcp_ports")).thenReturn(mock(SecurityTool.class));
 
-    assertThrows(ApiException.class, () -> service.dispatch(request));
-    verify(taskService, never()).create(any(CreateTaskRequest.class));
+    assertThrows(ApiException.class, () -> service.prepare(request, generated));
   }
 
   @Test
@@ -210,15 +168,9 @@ class AiTaskDispatchServiceTests {
     when(toolRegistry.require("http_headers")).thenReturn(mock(SecurityTool.class));
     when(targetPolicyService.validatedHttpUri(target))
         .thenReturn(java.net.URI.create("http://127.0.0.1"));
-    SecurityTask task = new SecurityTask();
-    task.setId(44L);
-    when(taskService.create(any(CreateTaskRequest.class))).thenReturn(task);
+    AiPlanResponse response = service.prepare(request, generated);
 
-    AiDispatchResponse response = service.dispatchPlanned(request, generated);
-
-    assertEquals(List.of(44L), response.taskIds());
-    verify(planningService, never()).plan(any());
-    verify(taskService, times(1)).create(any(CreateTaskRequest.class));
+    assertEquals("http_headers", response.steps().get(0).toolCode());
   }
 
   @Test
@@ -240,15 +192,8 @@ class AiTaskDispatchServiceTests {
     when(toolRegistry.require("http_security_check")).thenReturn(mock(SecurityTool.class));
     when(targetPolicyService.validatedHttpUri(target))
         .thenReturn(java.net.URI.create("http://127.0.0.1"));
-    SecurityTask first = new SecurityTask();
-    first.setId(45L);
-    SecurityTask second = new SecurityTask();
-    second.setId(46L);
-    when(taskService.create(any(CreateTaskRequest.class))).thenReturn(first, second);
+    AiPlanResponse response = service.prepare(request, generated);
 
-    AiDispatchResponse response = service.dispatchPlanned(request, generated);
-
-    assertEquals(List.of(45L, 46L), response.taskIds());
-    verify(taskService, times(2)).create(any(CreateTaskRequest.class));
+    assertEquals(2, response.steps().size());
   }
 }

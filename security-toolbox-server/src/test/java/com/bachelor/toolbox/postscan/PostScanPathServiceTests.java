@@ -11,9 +11,9 @@ import static org.mockito.Mockito.when;
 
 import com.bachelor.toolbox.ai.AiDispatchResponse;
 import com.bachelor.toolbox.ai.AiModelClient;
-import com.bachelor.toolbox.ai.AiPlanRequest;
 import com.bachelor.toolbox.ai.AiPlanResponse;
-import com.bachelor.toolbox.ai.AiTaskDispatchService;
+import com.bachelor.toolbox.ai.AiAgentRequest;
+import com.bachelor.toolbox.ai.SecurityAgentTools;
 import com.bachelor.toolbox.audit.AuditService;
 import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.finding.Finding;
@@ -42,7 +42,7 @@ class PostScanPathServiceTests {
   private final VulnerabilityDefinitionRepository vulnerabilityRepository =
       mock(VulnerabilityDefinitionRepository.class);
   private final AiModelClient modelClient = mock(AiModelClient.class);
-  private final AiTaskDispatchService dispatchService = mock(AiTaskDispatchService.class);
+  private final SecurityAgentTools agentTools = mock(SecurityAgentTools.class);
   private final AuditService auditService = mock(AuditService.class);
   private final AtomicReference<PostScanPath> savedPath = new AtomicReference<>();
   private PostScanPathService service;
@@ -62,7 +62,7 @@ class PostScanPathServiceTests {
             taskRepository,
             vulnerabilityRepository,
             modelClient,
-            dispatchService,
+            agentTools,
             auditService,
             new ObjectMapper());    target = new AuthorizedTarget();
     target.setId(7L);
@@ -114,11 +114,11 @@ class PostScanPathServiceTests {
         .anyMatch(step -> step.automated() && "SAFE".equals(step.riskLevel()));
     assertThat(planned.steps())
         .anyMatch(step -> !step.automated() && "CAUTION".equals(step.riskLevel()));
-    verify(dispatchService, never())
-        .dispatchPlanned(any(AiPlanRequest.class), any(AiPlanResponse.class));
+    verify(agentTools, never())
+        .executeAuthorizedPlan(any(AiAgentRequest.class), any(AiPlanResponse.class));
 
     AiPlanResponse executedPlan = new AiPlanResponse("local", "test", "ok", false, List.of());
-    when(dispatchService.dispatchPlanned(any(AiPlanRequest.class), any(AiPlanResponse.class)))
+    when(agentTools.executeAuthorizedPlan(any(AiAgentRequest.class), any(AiPlanResponse.class)))
         .thenReturn(new AiDispatchResponse(7L, executedPlan, 2, List.of(101L, 102L)));
     List<String> selected =
         planned.steps().stream()
@@ -131,8 +131,8 @@ class PostScanPathServiceTests {
     assertThat(first.status()).isEqualTo("DISPATCHED");
     assertThat(first.taskIds()).containsExactly(101L, 102L);
     assertThat(replay.taskIds()).containsExactly(101L, 102L);
-    verify(dispatchService, times(1))
-        .dispatchPlanned(any(AiPlanRequest.class), any(AiPlanResponse.class));
+    verify(agentTools, times(1))
+        .executeAuthorizedPlan(any(AiAgentRequest.class), any(AiPlanResponse.class));
   }
 
   @Test
@@ -142,6 +142,6 @@ class PostScanPathServiceTests {
     assertThatThrownBy(() -> service.plan(new PostScanPathRequest(PROJECT, 7L, List.of(11L), "follow up")))
         .isInstanceOf(ApiException.class)
         .hasMessageContaining("不属于当前授权目标");    verify(pathRepository, never()).save(any());
-    verify(dispatchService, never()).dispatchPlanned(any(), any());
+    verify(agentTools, never()).executeAuthorizedPlan(any(), any());
   }
 }

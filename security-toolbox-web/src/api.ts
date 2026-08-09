@@ -6,6 +6,7 @@ import type {
   ConversationAgentEventType,
   ConversationCitation,
   ConversationStep,
+  PublicAgentNodeStatus,
 } from "./stores/conversations";
 
 export { api } from "./apiClient";
@@ -24,6 +25,10 @@ export interface Target {
 }
 
 export interface PlanStep {
+  workflowNodeId?: string;
+  nodeRunId?: string;
+  group?: number;
+  dependsOnNodeIds?: string[];
   toolCode: string;
   title: string;
   reason: string;
@@ -49,12 +54,25 @@ export interface AiDispatch {
   answer?: string;
   citations?: ConversationCitation[];
   runId?: string;
+  workflowId?: string;
+  workflowRevision?: number;
+  workflowDigest?: string;
+  outerNodeId?: string;
+  nodeRunId?: string;
+  ledgerDigest?: string;
+  terminationReason?: string;
 }
 
 export interface AiAgentRequestPayload {
   projectId?: number;
   targetId: number;
   sessionId?: string;
+  turnId?: string;
+  workflowId?: string;
+  workflowRevision?: number;
+  workflowDigest?: string;
+  outerNodeId?: string;
+  nodeRunId?: string;
   prompt: string;
   execute?: boolean;
   mode?: CopilotMode;
@@ -69,6 +87,13 @@ interface AiAgentResponsePayload {
   message?: string;
   plan?: AiDispatch["plan"];
   taskIds?: number[];
+  workflowId?: string;
+  workflowRevision?: number;
+  workflowDigest?: string;
+  outerNodeId?: string;
+  nodeRunId?: string;
+  ledgerDigest?: string;
+  terminationReason?: string;
 }
 
 export interface AiDispatchProgress {
@@ -82,8 +107,6 @@ export interface AiDispatchProgress {
 
 export interface AgentStreamEvent extends ConversationAgentEvent {
   type: ConversationAgentEventType;
-  /** Original event payload is retained for adapters, but is not rendered. */
-  data?: unknown;
   dispatch?: AiDispatch;
   plan?: Partial<AiPlan> & {
     steps?: Array<Partial<PlanStep> & Record<string, unknown>>;
@@ -263,6 +286,7 @@ export interface WorkflowStepSpec {
   risk?: string;
   requiresApproval?: boolean;
   group?: number;
+  dependsOnNodeIds?: string[];
 }
 export interface WorkflowGraphNodeSpec {
   id: string;
@@ -278,6 +302,12 @@ export interface WorkflowGraphEdgeSpec {
   target: string;
 }
 export interface WorkflowSpecV2 {
+  workflowId?: string;
+  scopeId?: number;
+  revision?: number;
+  specDigest?: string;
+  updatedBy?: string;
+  updatedAt?: string;
   version?: number;
   preset?: string;
   steps?: WorkflowStepSpec[];
@@ -532,6 +562,9 @@ export interface TaskProgressEvent {
   startedAt?: string;
   finishedAt?: string;
   emittedAt?: string;
+  workflowNodeId?: string;
+  nodeRunId?: string;
+  dependsOnTaskIds?: number[];
 }
 
 export interface ProjectFindingRecord {
@@ -658,6 +691,12 @@ export interface AuditLogRecord {
   createdAt: string;
 }
 
+export interface ClearBusinessDataResponse {
+  clearedAt: string;
+  deletedRecords: number;
+  auditLogRetained: boolean;
+}
+
 export interface ProjectReportSummary {
   project: AssessmentProject;
   targets: ProjectTarget[];
@@ -741,6 +780,11 @@ export const endpoints = {
     api.get<{ status: string }>("/system/health", { timeout: 3_000 }),
   dependencies: () => api.get("/system/dependencies", { timeout: 45_000 }),
   dashboard: () => api.get("/dashboard/summary"),
+  clearBusinessData: () =>
+    api.delete<ClearBusinessDataResponse>("/settings/data", {
+      data: { confirmation: "CLEAR" },
+      timeout: 30_000,
+    }),
   changePassword: (payload: { currentPassword: string; newPassword: string }) =>
     api.post("/auth/change-password", payload),
   targets: () => api.get<Target[]>("/targets"),
@@ -853,11 +897,14 @@ export const endpoints = {
       params: { page, size, projectId },
     }),
   agentGraph: () => api.get<WorkflowGraph>("/ai/agent/graph"),
-  getWorkflowSpec: () => api.get<WorkflowSpecV2>("/ai/workflow"),
-  saveWorkflowSpec: (spec: WorkflowSpecV2) => api.put("/ai/workflow", spec),
+  getWorkflowSpec: (projectId: number) =>
+    api.get<WorkflowSpecV2>("/ai/workflow", { params: { projectId } }),
+  saveWorkflowSpec: (projectId: number, spec: WorkflowSpecV2) =>
+    api.put<WorkflowSpecV2>("/ai/workflow", spec, { params: { projectId } }),
 
   saveMemory: (payload: {
     projectId: number;
+    targetId: number;
     conversationId?: string;
     prompt: string;
     answer: string;
@@ -1240,6 +1287,58 @@ function normalizeEventType(value: unknown, fallback?: string): string {
   return aliases[raw.toLowerCase()] || raw;
 }
 
+const PUBLIC_NODE_STATUSES = new Set<PublicAgentNodeStatus>([
+  "ROUTING",
+  "RETRIEVING",
+  "GROUNDED",
+  "WAITING_APPROVAL",
+  "EXECUTING",
+  "REVIEWED",
+  "FAILED",
+]);
+
+function boundedNumber(value: unknown): number | undefined {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : undefined;
+}
+
+function boundedString(value: unknown, maxLength = 256): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim();
+  return text ? text.slice(0, maxLength) : undefined;
+}
+
+function publicNodeStatus(
+  raw: Record<string, any>,
+  type: string,
+): PublicAgentNodeStatus {
+  const explicit = String(
+    raw.publicNodeStatus || raw.outerNodeStatus || raw.nodeStatus || "",
+  ).toUpperCase() as PublicAgentNodeStatus;
+  if (PUBLIC_NODE_STATUSES.has(explicit)) return explicit;
+  const status = String(raw.status || "").toUpperCase();
+  const innerStep = String(
+    raw.innerStep || raw.node || raw.stage || raw.phase || "",
+  ).toLowerCase();
+  if (type === "error" || ["FAILED", "DENIED", "REJECTED"].includes(status))
+    return "FAILED";
+  if (type === "approval" || status === "APPROVAL_REQUIRED")
+    return "WAITING_APPROVAL";
+  if (/approval/.test(innerStep)) return "WAITING_APPROVAL";
+  if (/tool|execute|dispatch/.test(innerStep)) return "EXECUTING";
+  if (/review|finish|complete/.test(innerStep)) return "REVIEWED";
+  if (/ground|assess|plan/.test(innerStep)) return "GROUNDED";
+  if (/retrieve|rewrite|evidence/.test(innerStep)) return "RETRIEVING";
+  if (/route|scope|engage/.test(innerStep)) return "ROUTING";
+  if (["tool_call", "tool_result", "retry"].includes(type))
+    return "EXECUTING";
+  if (["review", "done"].includes(type)) return "REVIEWED";
+  if (type === "plan" || type === "guard") return "GROUNDED";
+  if (["evidence", "rewrite", "citation"].includes(type))
+    return "RETRIEVING";
+  return "ROUTING";
+}
+
 /** Normalize LangChain/LangGraph callback names and the native agent event
  * contract to one small shape consumed by the conversation store. */
 export function normalizeAgentEvent(
@@ -1278,25 +1377,38 @@ export function normalizeAgentEvent(
             citationCandidate.sourceName ||
             citationCandidate.provider,
           url: citationCandidate.url || citationCandidate.href,
-          snippet:
-            citationCandidate.snippet ||
-            citationCandidate.summary ||
-            citationCandidate.text,
+          summaryLength:
+            boundedNumber(citationCandidate.summaryLength) ??
+            String(
+              citationCandidate.snippet ||
+                citationCandidate.summary ||
+                citationCandidate.text ||
+                "",
+            ).length,
           locator: citationCandidate.locator || citationCandidate.path,
-          metadata: citationCandidate.metadata || citationCandidate.data,
         } as ConversationCitation)
       : undefined;
-  const planRaw =
-    raw.plan && typeof raw.plan === "object" ? raw.plan : undefined;
   const responseRaw =
     raw.response && typeof raw.response === "object" ? raw.response : undefined;
+  const planRaw =
+    raw.plan && typeof raw.plan === "object"
+      ? raw.plan
+      : responseRaw?.plan && typeof responseRaw.plan === "object"
+        ? responseRaw.plan
+        : undefined;
   const actionRaw = (raw.actions ||
     planRaw?.actions ||
     raw.steps ||
     planRaw?.steps) as Array<Record<string, any>> | undefined;
   const steps = Array.isArray(actionRaw)
     ? actionRaw.map((step, index) => ({
-        ...step,
+        workflowNodeId:
+          step.workflowNodeId || step.workflow_node_id || step.nodeId,
+        nodeRunId: step.nodeRunId,
+        group: boundedNumber(step.group),
+        dependsOnNodeIds: Array.isArray(step.dependsOnNodeIds)
+          ? step.dependsOnNodeIds.map(String).slice(0, 128)
+          : undefined,
         toolCode:
           step.toolCode || step.tool_code || step.tool || `step-${index + 1}`,
         title:
@@ -1306,20 +1418,32 @@ export function normalizeAgentEvent(
           step.toolCode ||
           step.tool ||
           `步骤 ${index + 1}`,
-        reason:
-          step.reason ||
-          step.description ||
-          step.summary ||
-          (step.parameters
-            ? JSON.stringify(step.parameters).slice(0, 200)
-            : undefined),
+        reason: boundedString(
+          step.reason || step.description || step.summary,
+          800,
+        ) || "",
+        parameters: {},
         requiresApproval: step.requiresApproval ?? step.requires_approval,
         status: step.status || "pending",
+        taskId: boundedNumber(step.taskId || step.task_id),
       }))
     : undefined;
   // Keep a plan object even when only actions[] was provided by the runtime.
   const normalizedPlan = planRaw
-    ? { ...planRaw, steps: steps || planRaw.steps || [] }
+    ? {
+        provider: boundedString(planRaw.provider || raw.source, 120) || "",
+        model: boundedString(planRaw.model || raw.model, 160) || "",
+        summary: boundedString(
+          planRaw.summary || raw.summary || raw.message,
+          1200,
+        ) || "",
+        requiresConfirmation: Boolean(
+          planRaw.requiresConfirmation ||
+            planRaw.requires_confirmation ||
+            steps?.some((step) => step.requiresApproval),
+        ),
+        steps: steps || [],
+      }
     : steps
       ? {
           provider: raw.source || raw.provider || "",
@@ -1329,8 +1453,19 @@ export function normalizeAgentEvent(
           steps,
         }
       : undefined;
+  const taskIds = Array.isArray(raw.taskIds || responseRaw?.taskIds)
+    ? (raw.taskIds || responseRaw?.taskIds)
+        .map(Number)
+        .filter((id: number) => Number.isFinite(id) && id > 0)
+    : undefined;
+  const evidenceIds = Array.isArray(raw.evidenceIds)
+    ? raw.evidenceIds.filter((id: unknown) => typeof id === "string")
+    : [];
+  const actions = Array.isArray(raw.actions || planRaw?.actions)
+    ? raw.actions || planRaw?.actions
+    : [];
   return {
-    ...raw,
+    id: boundedString(raw.id || raw.eventId, 128),
     type,
     stage:
       raw.stage ||
@@ -1371,9 +1506,6 @@ export function normalizeAgentEvent(
     toolName: raw.toolName || raw.tool_name || raw.name,
     toolCallId: raw.toolCallId || raw.tool_call_id || raw.callId,
     taskId: raw.taskId || raw.task_id,
-    command: raw.command || raw.cmd || raw.executionCommand,
-    input: raw.input || raw.arguments || raw.toolInput || raw.data?.input,
-    output: raw.output || raw.result || raw.toolOutput || raw.data?.output,
     attempt: raw.attempt ?? raw.retryCount,
     maxAttempts: raw.maxAttempts ?? raw.max_retries,
     approvalId: raw.approvalId || raw.approval_id,
@@ -1381,12 +1513,76 @@ export function normalizeAgentEvent(
     citation,
     plan: normalizedPlan,
     steps,
-    taskIds: raw.taskIds || responseRaw?.taskIds,
+    taskCount: boundedNumber(raw.taskCount ?? responseRaw?.taskCount),
+    taskIds,
     targetId: raw.targetId || responseRaw?.targetId,
     answer: raw.answer || responseRaw?.message,
     runId: raw.runId || raw.sessionId || responseRaw?.sessionId,
-    citations: Array.isArray(raw.citations)
-      ? raw.citations
+    contractVersion: boundedNumber(raw.contractVersion),
+    workflowId: boundedString(raw.workflowId || responseRaw?.workflowId, 64),
+    workflowRevision: boundedNumber(
+      raw.workflowRevision ?? raw.revision ?? responseRaw?.workflowRevision,
+    ),
+    workflowDigest: boundedString(
+      raw.workflowDigest || raw.specDigest || responseRaw?.workflowDigest,
+      71,
+    ),
+    workflowNodeId: boundedString(
+      raw.workflowNodeId ||
+        raw.workflow_node_id ||
+        raw.nodeId ||
+        responseRaw?.workflowNodeId,
+      64,
+    ),
+    outerNodeId: boundedString(
+      raw.outerNodeId || responseRaw?.outerNodeId,
+      80,
+    ),
+    nodeRunId: boundedString(raw.nodeRunId || responseRaw?.nodeRunId, 80),
+    publicNodeStatus: publicNodeStatus(raw, type),
+    innerStep: boundedString(raw.innerStep, 64),
+    ledgerSequence: boundedNumber(raw.ledgerSequence),
+    ledgerEntryDigest: boundedString(raw.ledgerEntryDigest, 71),
+    ledgerDigest: boundedString(
+      raw.ledgerDigest || responseRaw?.ledgerDigest,
+      71,
+    ),
+    terminationReason: boundedString(
+      raw.terminationReason || responseRaw?.terminationReason,
+      80,
+    ),
+    evidenceCount:
+      boundedNumber(raw.evidenceCount) ??
+      (evidenceIds.length ? evidenceIds.length : undefined),
+    actionCount:
+      boundedNumber(raw.actionCount) ??
+      (actions.length ? actions.length : undefined),
+    recoverable:
+      typeof raw.recoverable === "boolean"
+        ? raw.recoverable
+        : typeof raw.resumeAllowed === "boolean"
+          ? raw.resumeAllowed
+          : undefined,
+    dispatch:
+      raw.dispatch && typeof raw.dispatch === "object"
+        ? (raw.dispatch as AiDispatch)
+        : undefined,
+    citations: Array.isArray(raw.citations || responseRaw?.citations)
+      ? (raw.citations || responseRaw?.citations).map((item: unknown) => {
+          const candidate = eventPayload(item);
+          const text = String(
+            candidate.snippet || candidate.summary || candidate.text || "",
+          );
+          return {
+            id: boundedString(candidate.id || candidate.citationId, 128),
+            title: boundedString(candidate.title || candidate.name, 200),
+            source: boundedString(candidate.source || candidate.sourceName, 120),
+            url: boundedString(candidate.url || candidate.href, 1000),
+            locator: boundedString(candidate.locator || candidate.path, 300),
+            summaryLength:
+              boundedNumber(candidate.summaryLength) ?? text.length,
+          } satisfies ConversationCitation;
+        })
       : citation
         ? [citation]
         : undefined,
@@ -1397,19 +1593,7 @@ function dispatchFromEvent(
   event: AiDispatchStreamEvent,
 ): AiDispatch | undefined {
   const normalized = normalizeAgentEvent(event) || (event as AgentStreamEvent);
-  const payload =
-    normalized.data && typeof normalized.data === "object"
-      ? eventPayload(normalized.data)
-      : {};
-  const response =
-    payload.response && typeof payload.response === "object"
-      ? (payload.response as Record<string, any>)
-      : undefined;
   const candidate = (normalized.dispatch ||
-    response ||
-    (Object.keys(payload).length
-      ? (payload as Partial<AiDispatch>)
-      : undefined) ||
     normalized) as Partial<AiDispatch>;
   const plan =
     candidate.plan || (normalized.plan as AiDispatch["plan"] | undefined);
@@ -1439,6 +1623,13 @@ function dispatchFromEvent(
       | ConversationCitation[]
       | undefined,
     runId: (candidate.runId || normalized.runId) as string | undefined,
+    workflowId: normalized.workflowId,
+    workflowRevision: normalized.workflowRevision,
+    workflowDigest: normalized.workflowDigest,
+    outerNodeId: normalized.outerNodeId,
+    nodeRunId: normalized.nodeRunId,
+    ledgerDigest: normalized.ledgerDigest,
+    terminationReason: normalized.terminationReason,
   };
 }
 
@@ -1461,6 +1652,13 @@ function dispatchFromAgentResponse(
     taskIds,
     answer: response.message,
     runId: response.sessionId,
+    workflowId: response.workflowId,
+    workflowRevision: response.workflowRevision,
+    workflowDigest: response.workflowDigest,
+    outerNodeId: response.outerNodeId,
+    nodeRunId: response.nodeRunId,
+    ledgerDigest: response.ledgerDigest,
+    terminationReason: response.terminationReason,
   };
 }
 
@@ -1520,6 +1718,13 @@ export async function dispatchAiStreaming(
         await endpoints.dispatchAi({
           projectId: payload.projectId,
           targetId: payload.targetId,
+          sessionId: payload.sessionId,
+          turnId: payload.turnId,
+          workflowId: payload.workflowId,
+          workflowRevision: payload.workflowRevision,
+          workflowDigest: payload.workflowDigest,
+          outerNodeId: payload.outerNodeId,
+          nodeRunId: payload.nodeRunId,
           prompt: payload.prompt,
           mode: payload.mode,
           refs: payload.refs,

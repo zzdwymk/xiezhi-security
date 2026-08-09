@@ -4,6 +4,7 @@ import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.common.PageRequests;
 import com.bachelor.toolbox.project.AssessmentProjectService;
 import com.bachelor.toolbox.project.ProjectAuthorizationService;
+import com.bachelor.toolbox.settings.BusinessDataOperationGate;
 import com.bachelor.toolbox.target.TargetService;
 import com.bachelor.toolbox.task.CreateTaskRequest;
 import com.bachelor.toolbox.task.SecurityTask;
@@ -19,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Sort;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.scheduling.support.CronExpression;
@@ -43,20 +45,41 @@ public class ScanScheduleService {
   private final AssessmentProjectService projectService;
   private final ProjectAuthorizationService authorization;
   private final ObjectMapper objectMapper;
+  private final BusinessDataOperationGate operationGate;
 
+  @Autowired
   public ScanScheduleService(
       ScanScheduleRepository repository,
       TaskService taskService,
       TargetService targetService,
       AssessmentProjectService projectService,
       ProjectAuthorizationService authorization,
-      ObjectMapper objectMapper) {
+      ObjectMapper objectMapper,
+      BusinessDataOperationGate operationGate) {
     this.repository = repository;
     this.taskService = taskService;
     this.targetService = targetService;
     this.projectService = projectService;
     this.authorization = authorization;
     this.objectMapper = objectMapper;
+    this.operationGate = operationGate;
+  }
+
+  ScanScheduleService(
+      ScanScheduleRepository repository,
+      TaskService taskService,
+      TargetService targetService,
+      AssessmentProjectService projectService,
+      ProjectAuthorizationService authorization,
+      ObjectMapper objectMapper) {
+    this(
+        repository,
+        taskService,
+        targetService,
+        projectService,
+        authorization,
+        objectMapper,
+        new BusinessDataOperationGate());
   }
 
   public List<ScanSchedule> list() {
@@ -103,6 +126,10 @@ public class ScanScheduleService {
   @Scheduled(fixedDelayString = "${toolbox.scheduler.poll-ms:5000}")
   @Transactional
   public void dispatch() {
+    operationGate.withMutation(this::dispatchUnderGate);
+  }
+
+  private void dispatchUnderGate() {
     Instant dispatchTime = Instant.now();
     List<ScanSchedule> dueSchedules =
         repository.findByEnabledTrueAndNextRunAtLessThanEqual(

@@ -64,8 +64,7 @@ Pop-Location
 生成经过测试和健康检查的 AI Runtime、Spring Boot JAR、Electron 解包目录、便携版 ZIP 和校验文件：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\package-desktop-release.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package-desktop-release.ps1
 ```
 
 脚本会依次检查 `ai-runtime\.venv`、当前激活的 Virtualenv/Conda 环境、`PATH`、Windows Python Launcher 和本机已有的 Conda 环境。如果需要明确指定当前 PowerShell 环境中的解释器，可以执行：
@@ -172,7 +171,13 @@ powershell -ExecutionPolicy Bypass -File scripts\status-all.ps1
 - 后端：Java 17、Spring Boot 3.5.16、Spring Security、Spring Data JPA、H2/PostgreSQL、Bouncy Castle、Netty HTTP/2、OpenPDF
 - 前端：Vue 3、TypeScript、Vite、Element Plus、Pinia、Vue Router、Axios、ECharts
 - 桌面端：Electron、Windows Mica/Acrylic 外观、受限 IPC、本地 Java 服务生命周期与便携工具管理
-- AI：Python FastAPI 本地运行时、LangChain、LangGraph、LlamaIndex，兼容 OpenAI Chat Completions、Responses API 及 CC Switch（CCS）本地代理
+- AI：Python FastAPI 本地运行时、LangChain、LangGraph、BM25 Agentic RAG 与 Java Security Harness，兼容 OpenAI Chat Completions、Responses API 及 CC Switch（CCS）本地代理
+
+## AI Agent 架构
+
+本项目采用轻量级 Agentic RAG + Security Harness。项目事实问题和行动请求必须先经过项目级 BM25 检索、严格 EvidenceBundle 和 Grounded Planner；证据不足时最多允许一次只读查询改写。Python 只生成结构化提案，所有副作用任务仍由 Java 基于数据库实时状态重新校验并通过 `SecurityAgentTools` 创建。
+
+该实现不属于 GraphRAG 或多智能体系统：没有图数据库、实体关系遍历、Subagent 身份、代理间消息或无限自主循环。详细边界、时序、威胁模型和演示配置见 [AGENTIC_RAG_HARNESS_IMPLEMENTATION_SUMMARY.md](AGENTIC_RAG_HARNESS_IMPLEMENTATION_SUMMARY.md)。
 
 ## 主要功能
 
@@ -180,7 +185,7 @@ powershell -ExecutionPolicy Bypass -File scripts\status-all.ps1
 2. 安全评估项目管理：授权声明、负责人、有效期、状态和项目目标关联。
 3. 授权目标登记、端口范围、单目标有效期与启停管理；任务创建时同时校验项目和目标授权。
 4. 被动/受控信息收集、HTTP 指纹识别、框架识别、WAF 判断和证据留存。
-5. AI 或本地规则生成受控检测计划，支持连续对话、引用、NDJSON 实时 Plan 和结果总结。
+5. AI 或本地规则先检索项目证据，再生成可引用 Evidence ID 的回答或受控检测计划，支持一次查询改写、连续对话、NDJSON 实时 Plan 和结果总结。
 6. 白名单工具注册、异步任务、取消/失败重试、SSE 进度事件、实际命令日志和并发控制。
 7. TCP 探测、Nmap 服务识别、HTTP 响应头与安全项检查、TLS 配置检查及受限 Nuclei 扫描。
 8. 任务创建时固化授权、端口、工具版本、规则版本和 Nuclei 模板哈希，执行前再次比对快照。

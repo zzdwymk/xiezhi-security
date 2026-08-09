@@ -7,6 +7,7 @@ import {
   ref,
   watch,
 } from "vue";
+import "../plans.css";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
@@ -222,31 +223,10 @@ function relatedTasks(message: ConversationMessage) {
 }
 
 function taskLogs(message: ConversationMessage) {
-  const taskLog = relatedTasks(message)
+  return relatedTasks(message)
     .map((task) => formatExecutionLog(task.executionLog))
     .filter(Boolean)
     .join("\n");
-  const agentLog = (message.agentEvents || [])
-    .filter(isEssentialAgentEvent)
-    .map((event) => {
-      const prefix =
-        event.type === "tool_call"
-          ? "[工具调用]"
-          : event.type === "tool_result"
-            ? "[工具结果]"
-            : event.type === "retry"
-              ? "[重试]"
-              : "";
-      const body =
-        event.command ||
-        displayAgentValue(event.output) ||
-        event.summary ||
-        event.message;
-      return prefix && body ? `${prefix} ${body}` : "";
-    })
-    .filter(Boolean)
-    .join("\n");
-  return [taskLog, agentLog].filter(Boolean).join("\n");
 }
 
 function displayAgentValue(value: unknown, limit = 1600) {
@@ -256,6 +236,17 @@ function displayAgentValue(value: unknown, limit = 1600) {
 }
 
 function agentEventLabel(event: ConversationAgentEvent) {
+  const publicLabels: Record<string, string> = {
+    ROUTING: "路由中",
+    RETRIEVING: "检索中",
+    GROUNDED: "已形成依据",
+    WAITING_APPROVAL: "等待审批",
+    EXECUTING: "执行中",
+    REVIEWED: "已复核",
+    FAILED: "失败",
+  };
+  if (event.publicNodeStatus)
+    return publicLabels[event.publicNodeStatus] || event.publicNodeStatus;
   if (event.type === "approval") {
     const status = String(
       event.approvalStatus || event.status || "",
@@ -265,6 +256,9 @@ function agentEventLabel(event: ConversationAgentEvent) {
     return "等待确认";
   }
   const labels: Record<string, string> = {
+    route: "意图路由",
+    evidence: "项目证据",
+    rewrite: "查询改写",
     plan: "计划",
     step: "步骤",
     tool_call: "工具调用",
@@ -281,6 +275,15 @@ function agentEventLabel(event: ConversationAgentEvent) {
 }
 
 function agentEventClass(event: ConversationAgentEvent) {
+  if (event.publicNodeStatus === "FAILED") return "failed";
+  if (event.publicNodeStatus === "WAITING_APPROVAL") return "approval";
+  if (event.publicNodeStatus === "REVIEWED") return "success";
+  if (
+    ["ROUTING", "RETRIEVING", "EXECUTING"].includes(
+      event.publicNodeStatus || "",
+    )
+  )
+    return "running";
   if (
     event.type === "error" ||
     event.status === "failed" ||
@@ -573,22 +576,22 @@ function agentCitations(message: ConversationMessage) {
     .filter((citation) => {
       const title = String(citation.title || "").trim();
       const source = String(citation.source || "").trim();
-      const snippet = String(citation.snippet || "").trim();
+      const summaryLength = citationSummaryLength(citation);
       const url = String(citation.url || "").trim();
-      if (!title && !snippet && !url) return false;
+      if (!title && !summaryLength && !url) return false;
       const titleKey = title.toLowerCase();
       const sourceKey = source.toLowerCase();
       if (
         junk.has(titleKey) &&
         (!source || junk.has(sourceKey)) &&
-        !snippet &&
+        !summaryLength &&
         !url
       )
         return false;
       if (
         junk.has(sourceKey) &&
         (!title || junk.has(titleKey)) &&
-        !snippet &&
+        !summaryLength &&
         !url
       )
         return false;
@@ -605,10 +608,39 @@ function citationBubbleLabel(citation: ConversationCitation, index: number) {
 }
 
 function citationBubbleHint(citation: ConversationCitation) {
-  return [citation.source, citation.locator, citation.snippet]
+  const summaryLength = citationSummaryLength(citation);
+  return [
+    citation.source,
+    citation.locator,
+    summaryLength ? `摘要 ${summaryLength} 字符` : undefined,
+  ]
     .filter(Boolean)
     .join(" · ")
     .slice(0, 160);
+}
+
+function citationSummaryLength(citation: ConversationCitation) {
+  const legacySnippet = (
+    citation as ConversationCitation & { snippet?: unknown }
+  ).snippet;
+  return Math.max(
+    0,
+    Number(citation.summaryLength) ||
+      (typeof legacySnippet === "string" ? legacySnippet.length : 0),
+  );
+}
+
+function publicCitation(citation: ConversationCitation): ConversationCitation {
+  return {
+    id: citation.id ? String(citation.id).slice(0, 128) : undefined,
+    title: citation.title ? String(citation.title).slice(0, 200) : undefined,
+    source: citation.source ? String(citation.source).slice(0, 120) : undefined,
+    url: citation.url ? String(citation.url).slice(0, 1000) : undefined,
+    locator: citation.locator
+      ? String(citation.locator).slice(0, 300)
+      : undefined,
+    summaryLength: citationSummaryLength(citation),
+  };
 }
 
 function safeCitationUrl(citation: ConversationCitation) {
@@ -622,40 +654,43 @@ function safeCitationUrl(citation: ConversationCitation) {
 }
 
 function visibleAgentEvents(message: ConversationMessage) {
-  return (message.agentEvents || []).filter(isEssentialAgentEvent).slice(-20);
+  const collapsed: ConversationAgentEvent[] = [];
+  for (const event of (message.agentEvents || []).filter(isEssentialAgentEvent)) {
+    const previous = collapsed[collapsed.length - 1];
+    if (
+      previous &&
+      previous.outerNodeId === event.outerNodeId &&
+      previous.nodeRunId === event.nodeRunId &&
+      previous.publicNodeStatus === event.publicNodeStatus
+    ) {
+      collapsed[collapsed.length - 1] = event;
+    } else {
+      collapsed.push(event);
+    }
+  }
+  return collapsed.slice(-8);
 }
 
-/** Keep the live panel focused on user-actionable events. Framework state, index refreshes,
- * routine guard checks and provider heartbeat messages are intentionally not rendered. */
+/** The public UI treats LedgerAgent as one black-box node. Internal graph steps are never shown. */
 function isEssentialAgentEvent(event: ConversationAgentEvent) {
-  if (
-    ![
-      "plan",
-      "tool_call",
-      "tool_result",
-      "approval",
-      "retry",
-      "error",
-    ].includes(event.type)
-  )
-    return false;
-  if (event.type === "plan") {
-    const candidate = event as ConversationAgentEvent & {
-      steps?: unknown[];
-      plan?: { steps?: unknown[] };
-    };
-    return Boolean(
-      (candidate.steps && candidate.steps.length) ||
-      (candidate.plan?.steps && candidate.plan.steps.length),
-    );
-  }
-  if (event.type === "approval") {
-    const status = String(
-      event.approvalStatus || event.status || "",
-    ).toUpperCase();
-    return status !== "NOT_REQUIRED";
-  }
-  return true;
+  return Boolean(event.publicNodeStatus);
+}
+
+function publicNodeDetail(event: ConversationAgentEvent) {
+  const details = [
+    event.actionCount !== undefined ? `${event.actionCount} 个动作` : "",
+    event.evidenceCount !== undefined ? `${event.evidenceCount} 条证据引用` : "",
+    event.taskIds?.length ? `任务 ${event.taskIds.join(", ")}` : "",
+    event.terminationReason ? `终止原因：${event.terminationReason}` : "",
+    event.recoverable !== undefined
+      ? event.recoverable
+        ? "可恢复"
+        : "不可恢复"
+      : event.publicNodeStatus === "FAILED"
+        ? "恢复资格待服务端确认"
+        : "",
+  ].filter(Boolean);
+  return details.join(" · ") || "状态已由安全 Harness 校验";
 }
 
 function genericReferencePrompt(reference: CopilotReference) {
@@ -711,6 +746,12 @@ async function scrollToBottom() {
 }
 
 function eventStepIndex(message: ConversationMessage, event: AgentStreamEvent) {
+  if (event.workflowNodeId) {
+    const byWorkflowNode = message.steps.findIndex(
+      (step) => step.workflowNodeId === String(event.workflowNodeId),
+    );
+    if (byWorkflowNode >= 0) return byWorkflowNode;
+  }
   if (event.stepIndex !== undefined && Number.isFinite(Number(event.stepIndex)))
     return Number(event.stepIndex);
   if (event.stepId) {
@@ -758,6 +799,15 @@ function normalizedStep(
       raw.id || raw.stepId || raw.step_id
         ? String(raw.id || raw.stepId || raw.step_id)
         : `agent-step-${index + 1}`,
+    workflowNodeId:
+      raw.workflowNodeId || raw.workflow_node_id || raw.nodeId
+        ? String(raw.workflowNodeId || raw.workflow_node_id || raw.nodeId)
+        : undefined,
+    nodeRunId: raw.nodeRunId ? String(raw.nodeRunId) : undefined,
+    group: raw.group !== undefined ? Number(raw.group) : undefined,
+    dependsOnNodeIds: Array.isArray(raw.dependsOnNodeIds)
+      ? raw.dependsOnNodeIds.map(String)
+      : undefined,
     toolCode,
     title: String(raw.title || raw.name || raw.label || toolCode),
     reason:
@@ -798,8 +848,6 @@ function applyAgentEvent(
     type: event.type,
     stage: event.stage ? String(event.stage) : undefined,
     status: event.status ? String(event.status) : undefined,
-    summary: event.summary ? String(event.summary).slice(0, 800) : undefined,
-    message: event.message ? String(event.message).slice(0, 800) : undefined,
     stepId: event.stepId ? String(event.stepId) : undefined,
     stepIndex:
       event.stepIndex !== undefined ? Number(event.stepIndex) : undefined,
@@ -807,15 +855,6 @@ function applyAgentEvent(
     toolName: event.toolName ? String(event.toolName) : undefined,
     toolCallId: event.toolCallId ? String(event.toolCallId) : undefined,
     taskId: event.taskId ? Number(event.taskId) : undefined,
-    command: event.command ? String(event.command).slice(0, 2000) : undefined,
-    input:
-      event.input === undefined
-        ? undefined
-        : displayAgentValue(event.input, 2000),
-    output:
-      event.output === undefined
-        ? undefined
-        : displayAgentValue(event.output, 4000),
     attempt: event.attempt !== undefined ? Number(event.attempt) : undefined,
     maxAttempts:
       event.maxAttempts !== undefined ? Number(event.maxAttempts) : undefined,
@@ -823,13 +862,54 @@ function applyAgentEvent(
     approvalStatus: event.approvalStatus
       ? String(event.approvalStatus)
       : undefined,
-    citation: event.citation,
+    citation: event.citation ? publicCitation(event.citation) : undefined,
+    contractVersion:
+      event.contractVersion !== undefined
+        ? Number(event.contractVersion)
+        : undefined,
+    runId: event.runId ? String(event.runId) : undefined,
+    workflowId: event.workflowId ? String(event.workflowId) : undefined,
+    workflowRevision:
+      event.workflowRevision !== undefined
+        ? Number(event.workflowRevision)
+        : undefined,
+    workflowDigest: event.workflowDigest
+      ? String(event.workflowDigest)
+      : undefined,
+    workflowNodeId: event.workflowNodeId
+      ? String(event.workflowNodeId)
+      : undefined,
+    outerNodeId: event.outerNodeId ? String(event.outerNodeId) : undefined,
+    nodeRunId: event.nodeRunId ? String(event.nodeRunId) : undefined,
+    publicNodeStatus: event.publicNodeStatus,
+    innerStep: event.innerStep ? String(event.innerStep) : undefined,
+    ledgerSequence:
+      event.ledgerSequence !== undefined
+        ? Number(event.ledgerSequence)
+        : undefined,
+    ledgerEntryDigest: event.ledgerEntryDigest
+      ? String(event.ledgerEntryDigest)
+      : undefined,
+    ledgerDigest: event.ledgerDigest ? String(event.ledgerDigest) : undefined,
+    terminationReason: event.terminationReason
+      ? String(event.terminationReason)
+      : undefined,
+    evidenceCount:
+      event.evidenceCount !== undefined ? Number(event.evidenceCount) : undefined,
+    actionCount:
+      event.actionCount !== undefined ? Number(event.actionCount) : undefined,
+    taskIds: Array.isArray(event.taskIds)
+      ? event.taskIds.map(Number).filter((id) => Number.isFinite(id) && id > 0)
+      : undefined,
+    recoverable:
+      typeof event.recoverable === "boolean" ? event.recoverable : undefined,
     createdAt: new Date().toISOString(),
   };
   const last = events[events.length - 1];
   const duplicate =
     last &&
     last.type === eventRecord.type &&
+    last.publicNodeStatus === eventRecord.publicNodeStatus &&
     last.stepId === eventRecord.stepId &&
     last.toolCallId === eventRecord.toolCallId &&
     last.summary === eventRecord.summary &&
@@ -889,6 +969,12 @@ function applyAgentEvent(
     steps[targetIndex] = {
       ...current,
       id: current.id || (event.stepId ? String(event.stepId) : undefined),
+      workflowNodeId:
+        current.workflowNodeId ||
+        (event.workflowNodeId ? String(event.workflowNodeId) : undefined),
+      nodeRunId:
+        current.nodeRunId ||
+        (event.nodeRunId ? String(event.nodeRunId) : undefined),
       toolCode:
         current.toolCode ||
         String(event.toolCode || event.toolName || "agent-step"),
@@ -938,15 +1024,19 @@ function applyAgentEvent(
   ];
   for (const citation of incomingCitations) {
     if (!citation) continue;
+    const safeCitation = publicCitation(citation);
     const key =
-      citation.id || citation.url || citation.title || citation.source;
+      safeCitation.id ||
+      safeCitation.url ||
+      safeCitation.title ||
+      safeCitation.source;
     if (
       !key ||
       !citations.some(
         (item) => (item.id || item.url || item.title || item.source) === key,
       )
     )
-      citations.push(citation);
+      citations.push(safeCitation);
   }
   const progressSummary =
     event.summary ||
@@ -1055,11 +1145,15 @@ async function dispatchConversationMessage(
 ) {
   const requestPrompt = buildContextPrompt(thread, userMessage.id);
   const refs = messageReferences(userMessage);
+  const projectId = projectIdForTarget(thread.targetId, thread);
+  const workflow = await latestWorkflowIdentity(projectId);
   const data = await dispatchAiStreaming(
     {
-      projectId: projectIdForTarget(thread.targetId, thread),
+      projectId,
       targetId: thread.targetId,
       sessionId: thread.id,
+      turnId: userMessage.id,
+      ...workflow,
       prompt: requestPrompt,
       execute: true,
       mode: userMessage.copilotMode,
@@ -1084,6 +1178,18 @@ async function dispatchConversationMessage(
     );
     return {
       id: streamed?.id || `plan-step-${index + 1}`,
+      workflowNodeId: String(
+        step.workflowNodeId ||
+          step.nodeId ||
+          streamed?.workflowNodeId ||
+          "",
+      ) || undefined,
+      nodeRunId:
+        String(step.nodeRunId || streamed?.nodeRunId || "") || undefined,
+      group: step.group !== undefined ? Number(step.group) : streamed?.group,
+      dependsOnNodeIds: Array.isArray(step.dependsOnNodeIds)
+        ? step.dependsOnNodeIds.map(String)
+        : streamed?.dependsOnNodeIds,
       toolCode,
       title: String(step.title || streamed?.title || toolCode),
       reason: String(step.reason || streamed?.reason || toolCode),
@@ -1099,7 +1205,7 @@ async function dispatchConversationMessage(
   const finalCitations = [
     ...(streamedMessage?.citations || []),
     ...(data.citations || []),
-  ].filter((citation, index, all) => {
+  ].map(publicCitation).filter((citation, index, all) => {
     const key =
       citation.id || citation.url || citation.title || citation.source;
     return (
@@ -1136,6 +1242,37 @@ async function dispatchConversationMessage(
   await loadTasks();
 }
 
+async function latestWorkflowIdentity(
+  projectId?: number,
+): Promise<{
+  workflowId?: string;
+  workflowRevision?: number;
+  workflowDigest?: string;
+}> {
+  if (!projectId) return {};
+  const { data } = await endpoints.getWorkflowSpec(projectId);
+  const workflowId = data?.workflowId;
+  const workflowRevision = data?.revision;
+  const workflowDigest = data?.specDigest;
+  const identityFields = [workflowId, workflowRevision, workflowDigest].filter(
+    (value) => value !== undefined && value !== null && value !== "",
+  ).length;
+  if (!identityFields) return {};
+  if (
+    !workflowId ||
+    !Number.isInteger(Number(workflowRevision)) ||
+    Number(workflowRevision) <= 0 ||
+    !/^sha256:[0-9a-f]{64}$/.test(String(workflowDigest))
+  ) {
+    throw new Error("项目工作流快照元数据不完整，已停止本次 Agent 运行");
+  }
+  return {
+    workflowId,
+    workflowRevision: Number(workflowRevision),
+    workflowDigest,
+  };
+}
+
 // After each exchange, store a concise summary in the project's LlamaIndex so
 // future conversations can retrieve past findings. Best-effort; never blocks chat.
 async function saveConversationMemory(
@@ -1148,6 +1285,7 @@ async function saveConversationMemory(
   try {
     await endpoints.saveMemory({
       projectId,
+      targetId: thread.targetId,
       conversationId: thread.id,
       prompt: prompt.trim(),
       answer: answer.trim(),
@@ -2029,10 +2167,13 @@ onBeforeUnmount(() => {
                 </el-tooltip>
               </div>
               <section
-                v-if="message.role === 'assistant' && message.steps.length"
+                v-if="
+                  message.role === 'assistant' &&
+                  (message.steps.length || visibleAgentEvents(message).length)
+                "
                 class="execution-plan-card"
               >
-                <header>
+                <header v-if="message.steps.length">
                   <div>
                     <strong>执行计划清单</strong
                     ><span
@@ -2049,6 +2190,7 @@ onBeforeUnmount(() => {
                   </button>
                 </header>
                 <el-progress
+                  v-if="message.steps.length"
                   :percentage="planProgress(message)"
                   :stroke-width="6"
                   :show-text="false"
@@ -2089,7 +2231,7 @@ onBeforeUnmount(() => {
                   class="agent-event-details"
                   open
                 >
-                  <summary>智能体运行事件（实时）</summary>
+                  <summary>LedgerAgent 公开节点状态（实时）</summary>
                   <ol class="agent-event-list">
                     <li
                       v-for="(event, eventIndex) in visibleAgentEvents(message)"
@@ -2100,25 +2242,27 @@ onBeforeUnmount(() => {
                     >
                       <span>{{ agentEventLabel(event) }}</span>
                       <div>
-                        <strong>{{
-                          event.stage ||
-                          event.toolName ||
-                          event.toolCode ||
-                          event.summary ||
-                          event.message
-                        }}</strong
-                        ><small
-                          v-if="event.summary && event.summary !== event.stage"
-                          >{{ event.summary }}</small
-                        ><code v-if="event.command">{{ event.command }}</code>
-                      </div>
-                      <small v-if="event.attempt"
-                        >第 {{ event.attempt
-                        }}<template v-if="event.maxAttempts"
-                          >/{{ event.maxAttempts }}</template
+                        <strong>
+                          LedgerAgent
+                          <template v-if="event.outerNodeId">
+                            · {{ event.outerNodeId }}
+                          </template>
+                        </strong>
+                        <small>{{ publicNodeDetail(event) }}</small>
+                        <small v-if="event.nodeRunId" class="agent-node-run-id">
+                          nodeRunId: {{ event.nodeRunId }}
+                        </small>
+                        <small
+                          v-if="event.workflowRevision && event.workflowDigest"
+                          class="agent-node-snapshot"
                         >
-                        次</small
-                      >
+                          Workflow r{{ event.workflowRevision }} ·
+                          {{ event.workflowDigest }}
+                        </small>
+                      </div>
+                      <small v-if="event.ledgerSequence">
+                        Ledger #{{ event.ledgerSequence }}
+                      </small>
                     </li>
                   </ol>
                 </details>
@@ -3052,6 +3196,11 @@ onBeforeUnmount(() => {
     monospace;
   white-space: pre-wrap;
   word-break: break-word;
+}
+.agent-node-run-id,
+.agent-node-snapshot {
+  overflow-wrap: anywhere;
+  font-family: Consolas, "Courier New", monospace;
 }
 .agent-event-list li.running > span {
   background: var(--app-accent-soft);

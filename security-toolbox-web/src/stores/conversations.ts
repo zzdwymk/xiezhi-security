@@ -5,6 +5,10 @@ import type { CopilotMode } from "../types/copilot";
 
 export interface ConversationStep {
   id?: string;
+  workflowNodeId?: string;
+  nodeRunId?: string;
+  group?: number;
+  dependsOnNodeIds?: string[];
   toolCode: string;
   title: string;
   reason?: string;
@@ -35,6 +39,9 @@ export interface ConversationThinkingStep {
 /** Safe, server-authored events emitted by the agent graph.  The client never
  * renders hidden model reasoning; only these bounded summaries are persisted. */
 export type ConversationAgentEventType =
+  | "route"
+  | "evidence"
+  | "rewrite"
   | "plan"
   | "step"
   | "tool_call"
@@ -51,10 +58,19 @@ export interface ConversationCitation {
   title?: string;
   source?: string;
   url?: string;
-  snippet?: string;
+  /** Evidence text is never persisted by the UI; only its bounded length is retained. */
+  summaryLength?: number;
   locator?: string;
-  metadata?: Record<string, unknown>;
 }
+
+export type PublicAgentNodeStatus =
+  | "ROUTING"
+  | "RETRIEVING"
+  | "GROUNDED"
+  | "WAITING_APPROVAL"
+  | "EXECUTING"
+  | "REVIEWED"
+  | "FAILED";
 
 export interface ConversationAgentEvent {
   id?: string;
@@ -77,6 +93,24 @@ export interface ConversationAgentEvent {
   approvalId?: string;
   approvalStatus?: string;
   citation?: ConversationCitation;
+  contractVersion?: number;
+  runId?: string;
+  workflowId?: string;
+  workflowRevision?: number;
+  workflowDigest?: string;
+  workflowNodeId?: string;
+  outerNodeId?: string;
+  nodeRunId?: string;
+  publicNodeStatus?: PublicAgentNodeStatus;
+  innerStep?: string;
+  ledgerSequence?: number;
+  ledgerEntryDigest?: string;
+  ledgerDigest?: string;
+  terminationReason?: string;
+  evidenceCount?: number;
+  actionCount?: number;
+  taskIds?: number[];
+  recoverable?: boolean;
   createdAt?: string;
 }
 
@@ -240,6 +274,66 @@ function loadConversations(): ConversationThread[] {
   }
 }
 
+function finiteNumber(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : undefined;
+}
+
+function sanitizeStoredCitation(value: ConversationCitation & { snippet?: unknown }) {
+  return {
+    id: value.id,
+    title: value.title,
+    source: value.source,
+    url: value.url,
+    locator: value.locator,
+    summaryLength:
+      finiteNumber(value.summaryLength) ??
+      (typeof value.snippet === "string" ? value.snippet.length : 0),
+  } satisfies ConversationCitation;
+}
+
+function sanitizeStoredAgentEvent(event: ConversationAgentEvent) {
+  return {
+    id: event.id,
+    type: event.type,
+    status: event.status,
+    stepId: event.stepId,
+    stepIndex: finiteNumber(event.stepIndex),
+    toolCode: event.toolCode,
+    toolName: event.toolName,
+    toolCallId: event.toolCallId,
+    taskId: finiteNumber(event.taskId),
+    attempt: finiteNumber(event.attempt),
+    maxAttempts: finiteNumber(event.maxAttempts),
+    approvalId: event.approvalId,
+    approvalStatus: event.approvalStatus,
+    citation: event.citation
+      ? sanitizeStoredCitation(event.citation)
+      : undefined,
+    contractVersion: finiteNumber(event.contractVersion),
+    runId: event.runId,
+    workflowId: event.workflowId,
+    workflowRevision: finiteNumber(event.workflowRevision),
+    workflowDigest: event.workflowDigest,
+    workflowNodeId: event.workflowNodeId,
+    outerNodeId: event.outerNodeId,
+    nodeRunId: event.nodeRunId,
+    publicNodeStatus: event.publicNodeStatus,
+    innerStep: event.innerStep,
+    ledgerSequence: finiteNumber(event.ledgerSequence),
+    ledgerEntryDigest: event.ledgerEntryDigest,
+    ledgerDigest: event.ledgerDigest,
+    terminationReason: event.terminationReason,
+    evidenceCount: finiteNumber(event.evidenceCount),
+    actionCount: finiteNumber(event.actionCount),
+    taskIds: Array.isArray(event.taskIds)
+      ? event.taskIds.map(Number).filter((id) => Number.isFinite(id) && id > 0)
+      : undefined,
+    recoverable: event.recoverable,
+    createdAt: event.createdAt,
+  } satisfies ConversationAgentEvent;
+}
+
 function normalizeConversations(
   items: ConversationThread[],
 ): ConversationThread[] {
@@ -250,9 +344,11 @@ function normalizeConversations(
       taskIds: Array.isArray(message.taskIds) ? message.taskIds : [],
       steps: Array.isArray(message.steps) ? message.steps : [],
       agentEvents: Array.isArray(message.agentEvents)
-        ? message.agentEvents
+        ? message.agentEvents.map(sanitizeStoredAgentEvent)
         : [],
-      citations: Array.isArray(message.citations) ? message.citations : [],
+      citations: Array.isArray(message.citations)
+        ? message.citations.map(sanitizeStoredCitation)
+        : [],
     })),
   }));
 }

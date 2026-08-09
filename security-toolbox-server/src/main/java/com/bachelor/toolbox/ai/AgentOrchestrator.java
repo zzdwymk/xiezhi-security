@@ -2,14 +2,17 @@ package com.bachelor.toolbox.ai;
 
 import com.bachelor.toolbox.audit.AuditService;
 import com.bachelor.toolbox.common.ApiException;
+import com.bachelor.toolbox.settings.BusinessDataOperationGate;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 /**
@@ -21,6 +24,33 @@ import org.springframework.stereotype.Service;
  */
 @Service
 public class AgentOrchestrator {
+  private static final Set<String> SENSITIVE_PUBLIC_DATA_KEYS =
+      Set.of(
+          "apikey",
+          "authorization",
+          "chainofthought",
+          "content",
+          "cot",
+          "credential",
+          "credentials",
+          "evidencetext",
+          "evidencebody",
+          "evidencecontent",
+          "fullevidence",
+          "prompt",
+          "originalprompt",
+          "userprompt",
+          "rawprompt",
+          "rawevidence",
+          "reasoning",
+          "secret",
+          "snippet",
+          "systemprompt",
+          "text",
+          "token",
+          "accesstoken",
+          "refreshtoken",
+          "password");
   private final AiConversationMemoryService memory;
   private final SecurityAgentTools tools;
   private final AiAgentRuntimeClient runtimeClient;
@@ -29,7 +59,9 @@ public class AgentOrchestrator {
   private final AiAuthorizationGuard guard;
   private final AiExecutionReviewer reviewer;
   private final AuditService audit;
+  private final BusinessDataOperationGate operationGate;
 
+  @Autowired
   public AgentOrchestrator(
       AiConversationMemoryService memory,
       SecurityAgentTools tools,
@@ -38,7 +70,8 @@ public class AgentOrchestrator {
       AiPlanningService planner,
       AiAuthorizationGuard guard,
       AiExecutionReviewer reviewer,
-      AuditService audit) {
+      AuditService audit,
+      BusinessDataOperationGate operationGate) {
     this.memory = memory;
     this.tools = tools;
     this.runtimeClient = runtimeClient;
@@ -47,6 +80,28 @@ public class AgentOrchestrator {
     this.guard = guard;
     this.reviewer = reviewer;
     this.audit = audit;
+    this.operationGate = operationGate;
+  }
+
+  AgentOrchestrator(
+      AiConversationMemoryService memory,
+      SecurityAgentTools tools,
+      AiAgentRuntimeClient runtimeClient,
+      AiProjectIndexService projectIndex,
+      AiPlanningService planner,
+      AiAuthorizationGuard guard,
+      AiExecutionReviewer reviewer,
+      AuditService audit) {
+    this(
+        memory,
+        tools,
+        runtimeClient,
+        projectIndex,
+        planner,
+        guard,
+        reviewer,
+        audit,
+        new BusinessDataOperationGate());
   }
 
   public AiAgentResponse run(AiAgentRequest request) {
@@ -54,8 +109,15 @@ public class AgentOrchestrator {
   }
 
   public AiAgentResponse run(AiAgentRequest request, Consumer<AiAgentEvent> eventSink) {
+    return operationGate.withMutation(() -> runUnderGate(request, eventSink));
+  }
+
+  private AiAgentResponse runUnderGate(
+      AiAgentRequest request, Consumer<AiAgentEvent> eventSink) {
     Consumer<AiAgentEvent> sink = eventSink == null ? ignored -> {} : eventSink;
-    AtomicLong sequence = new AtomicLong();
+    EventSequence sequence = new EventSequence(request);
+    TurnProvenance provenance = new TurnProvenance();
+    TurnExecutionState executionState = new TurnExecutionState();
     AiConversationMemoryService.SessionHandle session =
         memory.open(request.sessionId(), request.projectId(), request.targetId());
 
@@ -143,6 +205,11 @@ public class AgentOrchestrator {
         // must not block the model from seeing the user turn.
         AiPlanResponse proposed = null;
         if (!runtimeClient.enabled()) {
+          provenance.markFallback("RUNTIME_DISABLED");
+          if (request.executionRequested()) {
+            throw new ApiException(
+                "AI Runtime 未启用，无法建立受信任的 v3 Ledger 证据链，本轮执行已安全停止");
+          }
           proposed =
               planner.planStreaming(
                   planRequest,
@@ -159,7 +226,8 @@ public class AgentOrchestrator {
                         "RUNNING",
                         text.isBlank() ? "正在理解当前请求" : text,
                         data);
-                  });
+                   });
+          provenance.setJavaPlannerSource(proposed);
         } else {
           emit(
               sink,
@@ -181,15 +249,21 @@ public class AgentOrchestrator {
                   request.execute(),
                   request.contextRefs(),
                   request.refs(),
-                  request.mode());
+                  request.mode(),
+                  request.turnId());
           try {
             AiAgentRuntimeClient.RuntimePlanResult runtimeResult =
                 runtimeClient.plan(
                     runtimeRequest,
                     planningPrompt,
-                    runtimeEvent -> emitRuntimeEvent(sink, sequence, runtimeEvent));
+                    runtimeEvent -> {
+                      provenance.accept(runtimeEvent);
+                      emitRuntimeEvent(sink, sequence, runtimeEvent);
+                    });
             proposed = runtimeResult.plan();
             runtimeAnswer = runtimeResult.answer();
+            provenance.apply(runtimeResult.provenance());
+            provenance.setRuntimeRunId(runtimeResult.runId());
             // The runtime is allowed to downgrade an ambiguous request to an
             // answer/clarification.  Never keep the preliminary Java steps in that
             // case; an empty runtime plan is an explicit no-execution decision.
@@ -201,8 +275,16 @@ public class AgentOrchestrator {
                 AgentPhase.ENGAGEMENT,
                 "RUNTIME_COMPLETED",
                 !hasSteps(proposed) ? "本地智能体判断当前请求无需执行工具" : "本地智能体运行时已生成行动方案；具体任务仍由受控执行边界派发",
-                Map.of("runtimeStatus", runtimeResult.status()));
+                provenance.eventData(Map.of("runtimeStatus", runtimeResult.status())));
+          } catch (AiAgentRuntimeClient.RuntimeProtocolException ex) {
+            provenance.markProtocolRejected();
+            throw new ApiException("AI Runtime 返回内容未通过 Harness 协议校验，本轮已安全停止");
           } catch (AiAgentRuntimeClient.RuntimeUnavailableException ex) {
+            provenance.markFallback("RUNTIME_UNAVAILABLE");
+            if (request.executionRequested()) {
+              throw new ApiException(
+                  "AI Runtime 当前不可用，无法建立受信任的 v3 Ledger 证据链，本轮执行已安全停止");
+            }
             emit(
                 sink,
                 sequence,
@@ -210,7 +292,7 @@ public class AgentOrchestrator {
                 AgentPhase.ENGAGEMENT,
                 "LOCAL_FALLBACK",
                 "本地 AI Runtime 不可用，改由 Java 规划器理解意图",
-                Map.of("fallback", true));
+                provenance.eventData(Map.of()));
             proposed =
                 planner.planStreaming(
                     planRequest,
@@ -228,6 +310,7 @@ public class AgentOrchestrator {
                           text.isBlank() ? "正在理解当前请求" : text,
                           data);
                     });
+            provenance.setJavaPlannerSource(proposed);
           }
         }
         if (proposed == null) {
@@ -248,6 +331,11 @@ public class AgentOrchestrator {
                         text.isBlank() ? "正在理解当前请求" : text,
                         data);
                   });
+          if (provenance.fallback) provenance.setJavaPlannerSource(proposed);
+        }
+        if (request.executionRequested() && hasSteps(proposed) && provenance.fallback) {
+          throw new ApiException(
+              "AI Runtime 未完成受信任的 v3 Ledger 证据链，本轮执行已安全停止；恢复 Runtime 后请使用同一 Turn 重试");
         }
         if (!hasSteps(proposed)) {
           String answer =
@@ -262,7 +350,8 @@ public class AgentOrchestrator {
               proposed == null
                   ? new AiPlanResponse("local-rule", "", answer, false, List.of())
                   : proposed,
-              answer);
+              answer,
+              provenance);
         }
         {
           Map<String, Object> planData = new LinkedHashMap<>();
@@ -270,6 +359,7 @@ public class AgentOrchestrator {
           planData.put("steps", proposed.steps() == null ? List.of() : proposed.steps());
           planData.put("summary", safe(proposed.summary(), 1000));
           planData.put("actionCount", proposed.steps() == null ? 0 : proposed.steps().size());
+          planData.putAll(provenance.eventData(Map.of()));
           emit(
               sink,
               sequence,
@@ -327,6 +417,7 @@ public class AgentOrchestrator {
           }
           taskIds = dispatch.taskIds();
           executed = true;
+          executionState.markDispatched(taskIds);
           for (Long taskId : taskIds) {
             emit(
                 sink,
@@ -399,41 +490,60 @@ public class AgentOrchestrator {
             AgentPhase.COMPLETED,
             "COMPLETED",
             message,
-            Map.of("response", response));
-        audit.record(
+            provenance.eventData(Map.of("response", response)));
+        audit.recordStructured(
             "AI_AGENT_TURN",
             "PROJECT",
             request.projectId(),
-            "sessionId="
-                + session.id()
-                + "; targetId="
-                + request.targetId()
-                + "; execute="
-                + executed
-                + "; taskIds="
-                + taskIds,
+            auditDetail(request, session.id(), executed, taskIds, provenance),
             "SUCCESS");
         return response;
       } catch (RuntimeException ex) {
-        emit(
-            sink,
-            sequence,
-            "error",
-            AgentPhase.ERROR,
-            "FAILED",
-            safeError(ex),
-            Map.of("retry", "MANUAL_AFTER_CORRECTION"));
-        audit.record(
-            "AI_AGENT_TURN",
-            "PROJECT",
-            request.projectId(),
-            "sessionId="
-                + session.id()
-                + "; targetId="
-                + request.targetId()
-                + "; error="
-                + safe(ex.getMessage(), 500),
-            "FAILED");
+        try {
+          emit(
+              sink,
+              sequence,
+              "error",
+              AgentPhase.ERROR,
+              "FAILED",
+              executionState.executed
+                  ? "受控任务已经创建，但后续处理失败；请先在任务中心核对，不要创建新 Turn 重试"
+                  : safeError(ex),
+              Map.of(
+                  "retry",
+                  executionState.executed
+                      ? "DO_NOT_RETRY_CHECK_TASK_CENTER"
+                      : "MANUAL_AFTER_CORRECTION",
+                  "executed",
+                  executionState.executed,
+                  "taskIds",
+                  executionState.taskIds));
+        } catch (RuntimeException sinkFailure) {
+          if (sinkFailure != ex) ex.addSuppressed(sinkFailure);
+        }
+        try {
+          audit.recordStructured(
+              "AI_AGENT_TURN",
+              "PROJECT",
+              request.projectId(),
+              auditDetail(
+                  request,
+                  session.id(),
+                  executionState.executed,
+                  executionState.taskIds,
+                  provenance,
+                  safe(ex.getMessage(), 500)),
+              "FAILED");
+        } catch (RuntimeException auditFailure) {
+          if (auditFailure != ex) ex.addSuppressed(auditFailure);
+        }
+        if (executionState.executed) {
+          ApiException postDispatchFailure =
+              new ApiException(
+                  "受控任务已经创建，但后续处理失败；请先在任务中心核对，不要创建新 Turn 重试");
+          postDispatchFailure.addSuppressed(ex);
+          throw postDispatchFailure;
+        }
         throw ex;
       }
     }
@@ -448,9 +558,10 @@ public class AgentOrchestrator {
       AiAgentRequest request,
       AiConversationMemoryService.SessionHandle session,
       Consumer<AiAgentEvent> sink,
-      AtomicLong sequence,
+      EventSequence sequence,
       AiPlanResponse plan,
-      String answer) {
+      String answer,
+      TurnProvenance provenance) {
     String message = answer == null || answer.isBlank() ? "我已理解你的问题，本轮不需要执行检测工具。" : answer;
     memory.addAssistant(session.id(), message);
     AiAgentResponse.AgentReview review =
@@ -476,16 +587,13 @@ public class AgentOrchestrator {
         AgentPhase.COMPLETED,
         "COMPLETED",
         message,
-        Map.of("response", response, "intent", "ANSWER", "executed", false));
-    audit.record(
+        provenance.eventData(
+            Map.of("response", response, "intent", "ANSWER", "executed", false)));
+    audit.recordStructured(
         "AI_AGENT_TURN",
         "PROJECT",
         request.projectId(),
-        "sessionId="
-            + session.id()
-            + "; targetId="
-            + request.targetId()
-            + "; intent=ANSWER; execute=false; taskIds=[]",
+        auditDetail(request, session.id(), false, List.of(), provenance),
         "SUCCESS");
     return response;
   }
@@ -500,21 +608,26 @@ public class AgentOrchestrator {
 
   private void emit(
       Consumer<AiAgentEvent> sink,
-      AtomicLong sequence,
+      EventSequence sequence,
       String type,
       AgentPhase phase,
       String status,
       String message,
       Map<String, Object> data) {
-    Map<String, Object> safeData = new LinkedHashMap<>();
-    if (data != null)
-      data.forEach(
-          (key, value) -> {
-            if (key != null && value != null) safeData.put(key, value);
-          });
+    Map<String, Object> safeData = sanitizePublicData(data);
+    if (!sequence.workflowDigest.isBlank()) {
+      safeData.putIfAbsent("workflowDigest", sequence.workflowDigest);
+    }
+    if (!sequence.outerNodeId.isBlank()) safeData.putIfAbsent("outerNodeId", sequence.outerNodeId);
+    if (!sequence.nodeRunId.isBlank()) safeData.putIfAbsent("nodeRunId", sequence.nodeRunId);
+    long stateVersion = sequence.next();
     sink.accept(
         new AiAgentEvent(
-            sequence.incrementAndGet(),
+            stateVersion,
+            AiAgentRuntimeClient.CONTRACT_VERSION,
+            sequence.runId,
+            stateVersion,
+            AiAgentRuntimeClient.POLICY_REVISION,
             type,
             phase,
             status,
@@ -548,12 +661,25 @@ public class AgentOrchestrator {
 
   private void emitRuntimeEvent(
       Consumer<AiAgentEvent> sink,
-      AtomicLong sequence,
+      EventSequence sequence,
       AiAgentRuntimeClient.RuntimeEvent runtimeEvent) {
     AgentPhase phase = phaseForRuntimeEvent(runtimeEvent);
-    Map<String, Object> data = new LinkedHashMap<>(runtimeEvent.data());
+    Map<String, Object> data = sanitizePublicData(runtimeEvent.data());
     data.put("runtimeEventId", runtimeEvent.eventId());
     data.put("runtimeNode", runtimeEvent.node());
+    data.put("runtimeRunId", runtimeEvent.runId());
+    data.put("runtimeStateVersion", runtimeEvent.stateVersion());
+    data.put("runtimePolicyRevision", runtimeEvent.policyRevision());
+    data.put("runtimeContractVersion", runtimeEvent.contractVersion());
+    data.put("workflowDigest", runtimeEvent.workflowDigest());
+    data.put("outerNodeId", runtimeEvent.outerNodeId());
+    data.put("nodeRunId", runtimeEvent.nodeRunId());
+    data.put("innerStep", runtimeEvent.innerStep());
+    data.put("ledgerSequence", runtimeEvent.ledgerSequence());
+    data.put("ledgerEntryDigest", runtimeEvent.ledgerEntryDigest());
+    if (!runtimeEvent.terminationReason().isBlank()) {
+      data.put("terminationReason", runtimeEvent.terminationReason());
+    }
     data.put("source", "python-langgraph-runtime");
     String status = Objects.toString(runtimeEvent.data().get("status"), "RUNNING");
     emit(sink, sequence, runtimeEvent.type(), phase, status, runtimeEvent.message(), data);
@@ -564,7 +690,9 @@ public class AgentOrchestrator {
     return switch (node) {
       case "engage", "engagement", "scope", "scope_confirmation", "planner" ->
           AgentPhase.ENGAGEMENT;
-      case "recon", "reconnaissance" -> AgentPhase.RECONNAISSANCE;
+      case "route" -> AgentPhase.ENGAGEMENT;
+      case "recon", "reconnaissance", "evidence", "rewrite", "retrieve" ->
+          AgentPhase.RECONNAISSANCE;
       case "map", "mapping", "asset_mapping", "executor" -> AgentPhase.MAPPING;
       case "discovery", "vulnerability_discovery" -> AgentPhase.DISCOVERY;
       case "validate", "validation", "approval_required", "authorization_guard" ->
@@ -576,12 +704,212 @@ public class AgentOrchestrator {
           switch (event.type()) {
             case "approval_required", "authorization_guard" -> AgentPhase.VALIDATION;
             case "tool" -> AgentPhase.MAPPING;
+            case "evidence", "rewrite" -> AgentPhase.RECONNAISSANCE;
+            case "route" -> AgentPhase.ENGAGEMENT;
             case "retry" -> AgentPhase.RETEST;
             case "review", "finish" -> AgentPhase.REPORTING;
             case "error" -> AgentPhase.ERROR;
             default -> AgentPhase.ENGAGEMENT;
           };
     };
+  }
+
+  private static Map<String, Object> sanitizePublicData(Map<?, ?> data) {
+    Map<String, Object> sanitized = new LinkedHashMap<>();
+    if (data == null) return sanitized;
+    data.forEach(
+        (key, value) -> {
+          if (key == null || value == null || isSensitivePublicKey(key.toString())) return;
+          sanitized.put(key.toString(), sanitizePublicValue(value));
+        });
+    return sanitized;
+  }
+
+  private static Object sanitizePublicValue(Object value) {
+    if (value instanceof Map<?, ?> map) return sanitizePublicData(map);
+    if (value instanceof List<?> list) {
+      return list.stream()
+          .filter(Objects::nonNull)
+          .map(AgentOrchestrator::sanitizePublicValue)
+          .toList();
+    }
+    return value;
+  }
+
+  private static boolean isSensitivePublicKey(String key) {
+    String normalized = key.toLowerCase(java.util.Locale.ROOT).replaceAll("[^a-z]", "");
+    return SENSITIVE_PUBLIC_DATA_KEYS.contains(normalized);
+  }
+
+  private Map<String, Object> auditDetail(
+      AiAgentRequest request,
+      String sessionId,
+      boolean executed,
+      List<Long> taskIds,
+      TurnProvenance provenance) {
+    return auditDetail(request, sessionId, executed, taskIds, provenance, "");
+  }
+
+  private Map<String, Object> auditDetail(
+      AiAgentRequest request,
+      String sessionId,
+      boolean executed,
+      List<Long> taskIds,
+      TurnProvenance provenance,
+      String error) {
+    Map<String, Object> detail = new LinkedHashMap<>();
+    detail.put("schemaVersion", AiAgentRuntimeClient.CONTRACT_VERSION);
+    detail.put("sessionId", sessionId);
+    detail.put("turnId", request.turnId());
+    detail.put("projectId", request.projectId());
+    detail.put("targetId", request.targetId());
+    detail.put("executed", executed);
+    detail.put("taskIds", taskIds == null ? List.of() : List.copyOf(taskIds));
+    detail.put("fallback", provenance.fallback);
+    detail.put("fallbackReason", provenance.fallbackReason);
+    detail.put("retrievalRoundCount", provenance.retrievalRoundCount);
+    detail.put("evidenceIds", provenance.evidenceIds);
+    detail.put("indexRevision", provenance.indexRevision);
+    detail.put("plannerSource", provenance.plannerSource);
+    detail.put("terminationReason", provenance.terminationReason);
+    detail.put("runtimeRunId", provenance.runtimeRunId);
+    detail.put("workflowDigest", Objects.toString(request.workflowDigest(), ""));
+    detail.put("outerNodeId", Objects.toString(request.outerNodeId(), ""));
+    detail.put("nodeRunId", Objects.toString(request.nodeRunId(), ""));
+    detail.put("ledgerSequence", provenance.ledgerSequence);
+    detail.put("ledgerEntryDigest", provenance.ledgerEntryDigest);
+    if (error != null && !error.isBlank()) detail.put("error", error);
+    return Collections.unmodifiableMap(detail);
+  }
+
+  private static final class TurnProvenance {
+    private boolean fallback;
+    private String fallbackReason = "NONE";
+    private int retrievalRoundCount;
+    private List<String> evidenceIds = List.of();
+    private String indexRevision = "";
+    private String plannerSource = "";
+    private String terminationReason = "";
+    private String runtimeRunId = "";
+    private long ledgerSequence;
+    private String ledgerEntryDigest = "";
+
+    private void accept(AiAgentRuntimeClient.RuntimeEvent event) {
+      runtimeRunId = event.runId();
+      ledgerSequence = event.ledgerSequence();
+      ledgerEntryDigest = event.ledgerEntryDigest();
+      if ("evidence".equals(event.type())) {
+        Object round = event.data().get("round");
+        Object status = event.data().get("status");
+        if (!"DENIED".equals(status) && round instanceof Number number) {
+          retrievalRoundCount = Math.max(retrievalRoundCount, number.intValue() + 1);
+        }
+        Object revision = event.data().get("indexRevision");
+        if (revision instanceof String text) indexRevision = text;
+      } else if ("finish".equals(event.type())) {
+        Object rounds = event.data().get("retrievalRoundCount");
+        if (rounds instanceof Number number) retrievalRoundCount = number.intValue();
+        evidenceIds = safeStringList(event.data().get("evidenceIds"));
+        Object revision = event.data().get("indexRevision");
+        indexRevision = revision instanceof String text ? text : "";
+        Object source = event.data().get("plannerSource");
+        plannerSource = source instanceof String text ? text : "";
+        Object termination = event.data().get("terminationReason");
+        terminationReason = termination instanceof String text ? text : "";
+      }
+    }
+
+    private void apply(AiAgentRuntimeClient.RuntimeProvenance value) {
+      if (value == null) return;
+      retrievalRoundCount = value.retrievalRoundCount();
+      evidenceIds = value.evidenceIds();
+      indexRevision = value.indexRevision();
+      plannerSource = value.plannerSource();
+      terminationReason = value.terminationReason();
+      String normalized = plannerSource.toLowerCase(java.util.Locale.ROOT);
+      if ("RAG_DISABLED".equals(terminationReason)) {
+        fallback = true;
+        fallbackReason = "PYTHON_RAG_DISABLED";
+      } else if (normalized.contains("legacy")
+          || normalized.contains("local")
+          || normalized.contains("rule")) {
+        fallback = true;
+        fallbackReason = "PYTHON_MODEL_FALLBACK";
+      }
+    }
+
+    private void markFallback(String reason) {
+      fallback = true;
+      fallbackReason = reason;
+    }
+
+    private void setRuntimeRunId(String value) {
+      runtimeRunId = value == null ? "" : value;
+    }
+
+    private void markProtocolRejected() {
+      fallback = false;
+      fallbackReason = "NONE";
+      plannerSource = "RUNTIME_PROTOCOL_REJECTED";
+      terminationReason = "PROTOCOL_REJECTED";
+    }
+
+    private void setJavaPlannerSource(AiPlanResponse plan) {
+      String provider = plan == null || plan.provider() == null ? "" : plan.provider();
+      plannerSource =
+          provider.toLowerCase(java.util.Locale.ROOT).contains("local-rule")
+              ? "JAVA_RULE_FALLBACK"
+              : "JAVA_MODEL_FALLBACK";
+    }
+
+    private Map<String, Object> eventData(Map<String, ?> base) {
+      Map<String, Object> data = new LinkedHashMap<>();
+      if (base != null) data.putAll(base);
+      data.put("fallback", fallback);
+      data.put("fallbackReason", fallbackReason);
+      data.put("retrievalRoundCount", retrievalRoundCount);
+      data.put("evidenceIds", evidenceIds);
+      data.put("indexRevision", indexRevision);
+      data.put("plannerSource", plannerSource);
+      data.put("terminationReason", terminationReason);
+      data.put("runtimeRunId", runtimeRunId);
+      data.put("ledgerSequence", ledgerSequence);
+      data.put("ledgerEntryDigest", ledgerEntryDigest);
+      return Collections.unmodifiableMap(data);
+    }
+
+    private static List<String> safeStringList(Object value) {
+      if (!(value instanceof List<?> list)) return List.of();
+      return list.stream().filter(String.class::isInstance).map(String.class::cast).toList();
+    }
+  }
+
+  private static final class EventSequence {
+    private final String runId = java.util.UUID.randomUUID().toString();
+    private final String workflowDigest;
+    private final String outerNodeId;
+    private final String nodeRunId;
+    private final AtomicLong value = new AtomicLong();
+
+    private EventSequence(AiAgentRequest request) {
+      workflowDigest = Objects.toString(request.workflowDigest(), "");
+      outerNodeId = Objects.toString(request.outerNodeId(), "");
+      nodeRunId = Objects.toString(request.nodeRunId(), "");
+    }
+
+    private long next() {
+      return value.incrementAndGet();
+    }
+  }
+
+  private static final class TurnExecutionState {
+    private boolean executed;
+    private List<Long> taskIds = List.of();
+
+    private void markDispatched(List<Long> value) {
+      executed = true;
+      taskIds = value == null ? List.of() : List.copyOf(value);
+    }
   }
 
   private AgentPhase phaseForPlan(AiPlanResponse plan) {

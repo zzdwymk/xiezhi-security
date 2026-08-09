@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
@@ -7,6 +7,7 @@ import {
   ArrowRight,
   ChatDotRound,
   Compass,
+  Delete,
   Document,
   Key,
   MagicStick,
@@ -14,12 +15,22 @@ import {
   Tools,
 } from "../components/fluentIcons";
 import { useCopilotStore } from "../stores/copilot";
+import { useAuthStore } from "../stores/auth";
+import { useConversationStore } from "../stores/conversations";
 import { endpoints } from "../api";
 import { toErrorMessage } from "../utils/errorMessage";
 
 const router = useRouter();
+const auth = useAuthStore();
 const copilot = useCopilotStore();
+const conversations = useConversationStore();
 const isDesktop = Boolean(window.toolboxDesktop);
+const canClearData = computed(() => auth.user?.role === "ADMIN");
+const clearingData = ref(false);
+const clearDataResult = ref<{
+  type: "success" | "error";
+  message: string;
+}>();
 const pwdVisible = ref(false);
 const pwdSaving = ref(false);
 const pwdForm = reactive({ current: "", next: "", confirm: "" });
@@ -107,6 +118,74 @@ function troubleshootWithCopilot() {
 
 function errorText(error: unknown, fallback: string) {
   return toErrorMessage(error, fallback);
+}
+
+function clearDataErrorText(error: unknown) {
+  const status = (error as { response?: { status?: number } })?.response?.status;
+  if (status === 400)
+    return "仍有等待中或运行中的任务，或流量代理正在启动或运行；请先结束后再清空";
+  if (status === 403) return "当前账号没有清空业务数据的管理员权限";
+  return errorText(error, "清空业务数据失败");
+}
+
+function clearBusinessDataCaches() {
+  conversations.clear();
+  copilot.clear();
+  localStorage.removeItem("security_toolbox_ai_conversations_v1");
+  localStorage.removeItem("security_toolbox_dashboard_target");
+  localStorage.removeItem("security_toolbox_traffic_chats_v1");
+}
+
+async function clearBusinessData() {
+  if (clearingData.value) return;
+  if (!canClearData.value)
+    return ElMessage.warning("只有管理员可以清空业务数据");
+
+  try {
+    await ElMessageBox.confirm(
+      "将永久删除项目、授权目标、任务、发现、审批、扫描结果、计划任务、流量记录和 AI 业务数据。管理员账户、工作流规范、检测规则、漏洞定义、流量过滤器和应用设置会保留。此操作不可撤销。",
+      "清空全部业务数据",
+      {
+        confirmButtonText: "继续",
+        cancelButtonText: "取消",
+        type: "error",
+      },
+    );
+    await ElMessageBox.prompt(
+      "请输入 CLEAR 确认永久清空。存在等待中或运行中的任务、正在启动或运行的流量代理时，系统会拒绝操作。",
+      "最终确认",
+      {
+        confirmButtonText: "永久清空",
+        cancelButtonText: "取消",
+        type: "error",
+        inputPlaceholder: "CLEAR",
+        inputPattern: /^CLEAR$/,
+        inputErrorMessage: "请输入大写 CLEAR",
+        inputValidator: (value) =>
+          value === "CLEAR" ? true : "请输入大写 CLEAR",
+      },
+    );
+
+    clearingData.value = true;
+    clearDataResult.value = undefined;
+    const { data } = await endpoints.clearBusinessData();
+    clearBusinessDataCaches();
+    const count = Number.isFinite(data.deletedRecords)
+      ? data.deletedRecords
+      : 0;
+    clearDataResult.value = {
+      type: "success",
+      message: `已清空 ${count} 条业务记录，清空操作审计已保留`,
+    };
+    ElMessage.success("业务数据已清空");
+  } catch (error) {
+    if (error === "cancel" || error === "close") return;
+    const message = clearDataErrorText(error);
+    clearDataResult.value = { type: "error", message };
+    ElMessage.error(message);
+  } finally {
+    clearingData.value = false;
+  }
 }
 
 async function loadMicaSetting() {
@@ -545,6 +624,41 @@ watch(
             </span>
             <el-icon class="settings-row-chevron"><ArrowRight /></el-icon>
           </button>
+        </div>
+      </section>
+
+      <section class="settings-group settings-group--danger">
+        <header class="settings-group-title">危险操作</header>
+        <div class="settings-list settings-list--danger">
+          <div class="settings-row settings-row--control settings-row--danger">
+            <el-icon class="settings-row-icon"><Delete /></el-icon>
+            <span class="settings-row-copy">
+              <strong>清空业务数据</strong>
+              <small
+                v-if="clearDataResult"
+                class="clear-data-status"
+                :class="`clear-data-status--${clearDataResult.type}`"
+                role="status"
+                aria-live="polite"
+                >{{ clearDataResult.message }}</small
+              >
+              <small v-else-if="clearingData" role="status" aria-live="polite"
+                >正在清空业务数据，请勿关闭应用</small
+              >
+              <small v-else-if="canClearData"
+                >永久删除项目、任务、结果、流量记录和 AI 数据；账户、规则与设置会保留</small
+              >
+              <small v-else>仅管理员可以执行此操作</small>
+            </span>
+            <el-button
+              type="danger"
+              plain
+              :loading="clearingData"
+              :disabled="!canClearData || clearingData"
+              @click="clearBusinessData"
+              >清空数据</el-button
+            >
+          </div>
         </div>
       </section>
 
@@ -1086,6 +1200,35 @@ button.settings-row:active {
   cursor: default;
 }
 
+.settings-list--danger {
+  border-color: color-mix(in srgb, var(--el-color-danger) 42%, var(--app-border));
+}
+
+.settings-row--danger .settings-row-icon {
+  background: color-mix(
+    in srgb,
+    var(--el-color-danger) 12%,
+    transparent
+  ) !important;
+  color: var(--el-color-danger) !important;
+}
+
+.settings-row--danger .settings-row-copy strong {
+  color: var(--el-color-danger) !important;
+}
+
+.settings-row--danger .settings-row-copy small {
+  -webkit-line-clamp: unset !important;
+}
+
+.clear-data-status--success {
+  color: var(--el-color-success) !important;
+}
+
+.clear-data-status--error {
+  color: var(--el-color-danger) !important;
+}
+
 .settings-version-code {
   min-width: 52px;
   padding: 4px 8px;
@@ -1139,6 +1282,12 @@ button.settings-row:active {
 
   .settings-version-code {
     margin-top: 2px;
+  }
+
+  .settings-row--danger > .el-button {
+    grid-column: 2;
+    justify-self: start;
+    margin: 2px 0 0;
   }
 
   .ai-dialog-footer,

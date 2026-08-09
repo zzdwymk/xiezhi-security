@@ -24,10 +24,16 @@ class _FallbackTool:
 
 def build_agent_tools(index_store: Any) -> dict[str, Any]:
     def retrieve_project_context(
-        project_id: int, query: str, top_k: int = 5
+        project_id: int,
+        query: str,
+        top_k: int = 5,
+        conversation_id: str | None = None,
+        target_id: int | None = None,
     ) -> list[dict[str, Any]]:
         """Retrieve only documents already indexed for an authorized project."""
-        return index_store.query(project_id, query, top_k)
+        return index_store.query(
+            project_id, query, top_k, conversation_id, target_id
+        )
 
     def propose_authorized_action(
         project_id: int,
@@ -35,6 +41,9 @@ def build_agent_tools(index_store: Any) -> dict[str, Any]:
         target_id: int | None = None,
         parameters: dict[str, Any] | None = None,
         risk: str = "SAFE",
+        action_id: str = "",
+        policy_revision: str = "",
+        decision_digest: str = "",
     ) -> dict[str, Any]:
         """Create a non-executing action proposal for the Java authorization boundary."""
         payload = {
@@ -43,6 +52,9 @@ def build_agent_tools(index_store: Any) -> dict[str, Any]:
             "toolCode": tool_code,
             "parameters": parameters or {},
             "risk": risk,
+            "actionId": action_id,
+            "policyRevision": policy_revision,
+            "decisionDigest": decision_digest,
             "executionBoundary": "JAVA_AUTHORIZED_EXECUTOR",
         }
         proposal_id = hashlib.sha256(

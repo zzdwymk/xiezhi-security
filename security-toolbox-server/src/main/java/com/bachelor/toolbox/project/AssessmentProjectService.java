@@ -135,6 +135,14 @@ public class AssessmentProjectService {
     requireProjectTarget(projectId, targetId, "目标不属于该评估项目");
   }
 
+  /** Serialize quota reservation and task creation for one project inside a transaction. */
+  public AssessmentProject lockForAgentExecution(Long projectId) {
+    authorization.requireAccess(projectId);
+    return projects
+        .findByIdForUpdate(projectId)
+        .orElseThrow(() -> new ApiException("评估项目不存在"));
+  }
+
   public ProjectDtos.Summary summary(Long id) {
     AssessmentProject project = get(id);
     List<SecurityTask> projectTasks = loadProjectTasks(id);

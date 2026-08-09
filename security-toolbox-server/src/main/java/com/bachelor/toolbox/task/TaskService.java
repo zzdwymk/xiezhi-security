@@ -11,8 +11,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 @Service
 public class TaskService {
@@ -31,7 +35,9 @@ public class TaskService {
   private final TaskExecutionControlService executionControl;
   private final AssessmentProjectService projectService;
   private final TaskProgressEventService progressEvents;
+  private final ApplicationEventPublisher eventPublisher;
 
+  @Autowired
   public TaskService(
       SecurityTaskRepository repository,
       TargetService targetService,
@@ -42,7 +48,8 @@ public class TaskService {
       TaskSnapshotService snapshotService,
       TaskExecutionControlService executionControl,
       AssessmentProjectService projectService,
-      TaskProgressEventService progressEvents) {
+      TaskProgressEventService progressEvents,
+      ApplicationEventPublisher eventPublisher) {
     this.repository = repository;
     this.targetService = targetService;
     this.registry = registry;
@@ -53,6 +60,32 @@ public class TaskService {
     this.executionControl = executionControl;
     this.projectService = projectService;
     this.progressEvents = progressEvents;
+    this.eventPublisher = eventPublisher;
+  }
+
+  TaskService(
+      SecurityTaskRepository repository,
+      TargetService targetService,
+      SecurityToolRegistry registry,
+      TaskExecutionService executionService,
+      AuditService auditService,
+      ObjectMapper objectMapper,
+      TaskSnapshotService snapshotService,
+      TaskExecutionControlService executionControl,
+      AssessmentProjectService projectService,
+      TaskProgressEventService progressEvents) {
+    this(
+        repository,
+        targetService,
+        registry,
+        executionService,
+        auditService,
+        objectMapper,
+        snapshotService,
+        executionControl,
+        projectService,
+        progressEvents,
+        event -> {});
   }
 
   public List<SecurityTask> list() {
@@ -100,6 +133,71 @@ public class TaskService {
     return saveAndExecute(task, "CREATE_TASK", null);
   }
 
+  /**
+   * Persists one workflow-bound task. Only root tasks are queued immediately; successors stay
+   * blocked until {@link WorkflowTaskDependencyScheduler} verifies every dependency.
+   */
+  public SecurityTask createWorkflowTask(
+      CreateTaskRequest request,
+      String workflowDigest,
+      String workflowNodeId,
+      String nodeRunId,
+      int workflowGroup,
+      String effectiveRisk,
+      boolean approvalRequired,
+      List<Long> dependencyTaskIds)
+      throws JsonProcessingException {
+    if (workflowDigest == null || !workflowDigest.matches("sha256:[0-9a-f]{64}")) {
+      throw new ApiException("工作流摘要格式无效");
+    }
+    if (workflowNodeId == null || !workflowNodeId.matches("[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}")) {
+      throw new ApiException("工作流节点 ID 格式无效");
+    }
+    if (nodeRunId == null || !nodeRunId.matches("[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}")) {
+      throw new ApiException("节点运行 ID 格式无效");
+    }
+    List<Long> dependencies =
+        dependencyTaskIds == null ? List.of() : dependencyTaskIds.stream().distinct().toList();
+    if (dependencies.stream().anyMatch(id -> id == null || id <= 0)) {
+      throw new ApiException("任务依赖 ID 无效");
+    }
+    projectService.validateProjectTarget(request.projectId(), request.targetId());
+    var target = targetService.getCurrentlyAuthorized(request.targetId(), request.projectId());
+    var tool = registry.require(request.toolCode());
+    for (SecurityTask dependency : repository.findAllById(dependencies)) {
+      if (!request.projectId().equals(dependency.getProjectId())
+          || !workflowDigest.equals(dependency.getWorkflowDigest())) {
+        throw new ApiException("工作流任务依赖越过项目或快照边界");
+      }
+    }
+    if (repository.findAllById(dependencies).size() != dependencies.size()) {
+      throw new ApiException("工作流任务依赖不存在");
+    }
+
+    SecurityTask task = new SecurityTask();
+    task.setTargetId(request.targetId());
+    task.setProjectId(request.projectId());
+    task.setToolCode(request.toolCode());
+    task.setStatus(dependencies.isEmpty() ? "PENDING" : "BLOCKED");
+    task.setProgress(0);
+    task.setProgressDeterminate(false);
+    task.setProgressMessage(dependencies.isEmpty() ? "等待本地执行资源" : "等待前置工作流节点完成");
+    task.setProgressUpdatedAt(java.time.Instant.now());
+    task.setQueueEnteredAt(java.time.Instant.now());
+    task.setRequestJson(
+        objectMapper.writeValueAsString(
+            request.parameters() == null ? Map.of() : request.parameters()));
+    task.setWorkflowDigest(workflowDigest);
+    task.setWorkflowNodeId(workflowNodeId);
+    task.setNodeRunId(nodeRunId);
+    task.setWorkflowGroup(Math.max(0, workflowGroup));
+    task.setDependencyTaskIds(objectMapper.writeValueAsString(dependencies));
+    task.setEffectiveRisk(effectiveRisk == null ? "SAFE" : effectiveRisk);
+    task.setWorkflowApprovalRequired(approvalRequired);
+    snapshotService.capture(task, target, tool);
+    return saveTask(task, "CREATE_WORKFLOW_TASK", null, dependencies.isEmpty());
+  }
+
   public SecurityTask retry(Long id) {
     SecurityTask original = get(id);
     if (!RETRYABLE_STATUSES.contains(original.getStatus())) {
@@ -144,11 +242,17 @@ public class TaskService {
     task.setErrorMessage("用户取消任务");
     repository.save(task);
     progressEvents.publish(task, "用户取消任务");
+    eventPublisher.publishEvent(new TaskTerminalEvent(task.getId()));
     auditService.record("CANCEL_TASK", "TASK", id, task.getToolCode(), "CANCELLED");
     return task;
   }
 
   private SecurityTask saveAndExecute(SecurityTask task, String auditAction, Long sourceTaskId) {
+    return saveTask(task, auditAction, sourceTaskId, true);
+  }
+
+  private SecurityTask saveTask(
+      SecurityTask task, String auditAction, Long sourceTaskId, boolean execute) {
     SecurityTask saved = repository.save(task);
     String detail =
         sourceTaskId == null
@@ -166,16 +270,38 @@ public class TaskService {
           saved.getId(),
           saved.getAuthorizationSnapshotHash());
     }
-    try {
-      executionService.executeAsync(saved.getId());
-    } catch (RuntimeException ex) {
-      saved.setStatus("REJECTED");
-      saved.setProgressMessage("本地任务队列已满");
-      saved.setProgressUpdatedAt(java.time.Instant.now());
-      saved.setErrorMessage("本地任务队列已满，请稍后重试");
-      repository.save(saved);
-      throw new ApiException("本地任务队列已满，请稍后重试");
+    if (!execute) return saved;
+    if (TransactionSynchronizationManager.isActualTransactionActive()
+        && TransactionSynchronizationManager.isSynchronizationActive()) {
+      TransactionSynchronizationManager.registerSynchronization(
+          new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+              enqueueAfterCommit(saved.getId());
+            }
+          });
+    } else {
+      enqueue(saved, true);
     }
     return saved;
+  }
+
+  private void enqueueAfterCommit(Long taskId) {
+    repository.findById(taskId).ifPresent(task -> enqueue(task, false));
+  }
+
+  private void enqueue(SecurityTask task, boolean propagateFailure) {
+    try {
+      executionService.executeAsync(task.getId());
+    } catch (RuntimeException ex) {
+      task.setStatus("REJECTED");
+      task.setProgressMessage("本地任务队列已满");
+      task.setProgressUpdatedAt(java.time.Instant.now());
+      task.setErrorMessage("本地任务队列已满，请稍后重试");
+      repository.save(task);
+      if (propagateFailure) {
+        throw new ApiException("本地任务队列已满，请稍后重试");
+      }
+    }
   }
 }

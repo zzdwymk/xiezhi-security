@@ -1,10 +1,12 @@
 package com.bachelor.toolbox.auth;
 
 import com.bachelor.toolbox.traffic.MitmCertificateAuthority;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -23,7 +25,7 @@ public class DefaultAdminInitializer implements ApplicationRunner {
   private final boolean synchronizeDesktopPassword;
   private final boolean allowInsecureDevelopmentCredentials;
   private final boolean migrateLegacyDevelopmentCredentials;
-  private final MitmCertificateAuthority certificateAuthority;
+  private final Supplier<MitmCertificateAuthority> certificateAuthority;
 
   @Autowired
   public DefaultAdminInitializer(
@@ -37,7 +39,7 @@ public class DefaultAdminInitializer implements ApplicationRunner {
           boolean allowInsecureDevelopmentCredentials,
       @Value("${toolbox.auth.migrate-legacy-development-credentials:false}")
           boolean migrateLegacyDevelopmentCredentials,
-      MitmCertificateAuthority certificateAuthority) {
+      ObjectProvider<MitmCertificateAuthority> certificateAuthority) {
     this.users = users;
     this.encoder = encoder;
     this.password = password;
@@ -45,7 +47,7 @@ public class DefaultAdminInitializer implements ApplicationRunner {
     this.synchronizeDesktopPassword = synchronizeDesktopPassword;
     this.allowInsecureDevelopmentCredentials = allowInsecureDevelopmentCredentials;
     this.migrateLegacyDevelopmentCredentials = migrateLegacyDevelopmentCredentials;
-    this.certificateAuthority = certificateAuthority;
+    this.certificateAuthority = certificateAuthority::getIfAvailable;
   }
 
   DefaultAdminInitializer(
@@ -63,7 +65,27 @@ public class DefaultAdminInitializer implements ApplicationRunner {
         synchronizeDesktopPassword,
         allowInsecureDevelopmentCredentials,
         false,
-        null);
+        (MitmCertificateAuthority) null);
+  }
+
+  DefaultAdminInitializer(
+      UserRepository users,
+      PasswordEncoder encoder,
+      String password,
+      boolean desktopMode,
+      boolean synchronizeDesktopPassword,
+      boolean allowInsecureDevelopmentCredentials,
+      boolean migrateLegacyDevelopmentCredentials,
+      MitmCertificateAuthority certificateAuthority) {
+    this(
+        users,
+        encoder,
+        password,
+        desktopMode,
+        synchronizeDesktopPassword,
+        allowInsecureDevelopmentCredentials,
+        migrateLegacyDevelopmentCredentials,
+        new FixedObjectProvider(certificateAuthority));
   }
 
   @Override
@@ -109,7 +131,8 @@ public class DefaultAdminInitializer implements ApplicationRunner {
     if (admin == null) {
       throw new IllegalStateException("迁移旧版开发凭据需要现有的管理员账户");
     }
-    if (certificateAuthority == null || !certificateAuthority.enabled()) {
+    MitmCertificateAuthority authority = certificateAuthority.get();
+    if (authority == null || !authority.enabled()) {
       throw new IllegalStateException("迁移旧版开发凭据需要现有的 HTTPS 中间人（MITM）证书颁发机构");
     }
 
@@ -117,8 +140,8 @@ public class DefaultAdminInitializer implements ApplicationRunner {
     boolean adminUsesLegacyPassword =
         !adminUsesConfiguredPassword
             && encoder.matches(LEGACY_DEVELOPMENT_PASSWORD, admin.getPasswordHash());
-    boolean caUsesConfiguredPassword = certificateAuthority.usesConfiguredPassword();
-    boolean caUsesLegacyPassword = certificateAuthority.usesLegacyDevelopmentPassword();
+    boolean caUsesConfiguredPassword = authority.usesConfiguredPassword();
+    boolean caUsesLegacyPassword = authority.usesLegacyDevelopmentPassword();
 
     // Validate both stores before changing either one. Configured values are accepted so an
     // interrupted first attempt can safely finish the remaining half on the next launch.
@@ -131,12 +154,36 @@ public class DefaultAdminInitializer implements ApplicationRunner {
 
     String migratedHash = adminUsesLegacyPassword ? encoder.encode(password) : null;
     if (caUsesLegacyPassword) {
-      certificateAuthority.migrateLegacyDevelopmentPassword();
+      authority.migrateLegacyDevelopmentPassword();
     }
     if (adminUsesLegacyPassword) {
       admin.setPasswordHash(migratedHash);
       users.saveAndFlush(admin);
     }
     log.info("旧版开发凭据已迁移为受保护的生成值");
+  }
+
+  private static final class FixedObjectProvider
+      implements ObjectProvider<MitmCertificateAuthority> {
+    private final MitmCertificateAuthority value;
+
+    private FixedObjectProvider(MitmCertificateAuthority value) {
+      this.value = value;
+    }
+
+    @Override
+    public MitmCertificateAuthority getObject(Object... args) {
+      return value;
+    }
+
+    @Override
+    public MitmCertificateAuthority getIfAvailable() {
+      return value;
+    }
+
+    @Override
+    public MitmCertificateAuthority getObject() {
+      return value;
+    }
   }
 }

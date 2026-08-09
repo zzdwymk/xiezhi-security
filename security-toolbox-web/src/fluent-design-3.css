@@ -1,0 +1,370 @@
+/*
+ * Fluent UI 3.0 design layer
+ *
+ * Upgrades the existing Fluent Design 2 system to Fluent UI 3.0,
+ * applying VFluent3 list-view patterns throughout:
+ *   - Selection slider: a 3px accent bar on the left of selected items
+ *   - Reveal effects: accent-tinted border reveal on hover
+ *   - Rounded items: consistent 3px border radius on list items
+ *   - Selection background: distinct accent-tinted background for selected items
+ *   - Consistent item height: 40px for list rows
+ *
+ * This file is intentionally additive and loaded last.
+ * It overrides specific Fluent 2 patterns where Fluent 3 differs.
+ */
+
+/* =================================================================
+   Token upgrades
+   ================================================================= */
+:root {
+  --fluent3-list-item-radius: 3px;
+  --fluent3-list-item-height: 40px;
+  --fluent3-slider-width: 3px;
+  --fluent3-slider-accent: var(--app-accent);
+  --fluent3-reveal-border: color-mix(in srgb, var(--app-accent) 28%, var(--app-border));
+  --fluent3-reveal-bg: color-mix(in srgb, var(--app-accent) 8%, transparent);
+  --fluent3-select-bg: var(--app-accent-soft-strong);
+  --fluent3-select-border: color-mix(in srgb, var(--app-accent) 24%, var(--app-border));
+  --fluent3-hover-bg: var(--app-accent-soft);
+  --fluent3-card-radius: var(--fluent-radius-xlarge);
+}
+
+/* =================================================================
+   Selection slider - VFluent3 showSlider pattern
+   3px accent bar on the left of active/selected items
+   ================================================================= */
+
+.desktop-v2-nav-item.active::before,
+.desktop-v2-nav button.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: var(--fluent3-slider-width);
+  height: 60%;
+  border-radius: var(--fluent3-slider-width);
+  background: var(--fluent3-slider-accent);
+  transition: height var(--fluent-normal), opacity var(--fluent-fast);
+  pointer-events: none;
+}
+
+.desktop-v2-recent-item.active {
+  box-shadow: none !important;
+}
+.desktop-v2-recent-item.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: var(--fluent3-slider-width);
+  height: 60%;
+  border-radius: var(--fluent3-slider-width);
+  background: var(--fluent3-slider-accent);
+  transition: height var(--fluent-normal), opacity var(--fluent-fast);
+  pointer-events: none;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .settings-list > button.active::before,
+.desktop-v2-app-frame .desktop-v2-content .settings-list > button[aria-current="true"]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: var(--fluent3-slider-width);
+  height: 50%;
+  border-radius: var(--fluent3-slider-width);
+  background: var(--fluent3-slider-accent);
+  transition: height var(--fluent-normal), opacity var(--fluent-fast);
+  pointer-events: none;
+}
+
+.setup-steps li.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: var(--fluent3-slider-width);
+  height: 50%;
+  border-radius: var(--fluent3-slider-width);
+  background: var(--fluent3-slider-accent);
+  transition: height var(--fluent-normal), opacity var(--fluent-fast);
+  pointer-events: none;
+}
+
+.traffic-row.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: var(--fluent3-slider-width);
+  height: 60%;
+  border-radius: var(--fluent3-slider-width);
+  background: var(--fluent3-slider-accent);
+  transition: height var(--fluent-normal), opacity var(--fluent-fast);
+  pointer-events: none;
+}
+
+/* =================================================================
+   Reveal effects - VFluent3 RevealContainer pattern
+   Accent-tinted border appears on hover with a soft background
+   ================================================================= */
+
+.desktop-v2-nav-item {
+  position: relative;
+  overflow: hidden;
+}
+.desktop-v2-nav-item:hover {
+  border-color: var(--fluent3-reveal-border) !important;
+  background: var(--fluent3-reveal-bg) !important;
+  box-shadow: none !important;
+}
+.desktop-v2-nav-item.active {
+  border-color: var(--fluent3-select-border) !important;
+  background: var(--fluent3-select-bg) !important;
+  box-shadow: none !important;
+}
+
+.desktop-v2-recent-item {
+  position: relative;
+  overflow: hidden;
+}
+.desktop-v2-recent-item:hover {
+  background: var(--fluent3-reveal-bg) !important;
+  box-shadow: none !important;
+}
+.desktop-v2-recent-item.active {
+  background: var(--fluent3-select-bg) !important;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .settings-list > button {
+  position: relative;
+  overflow: hidden;
+}
+.desktop-v2-app-frame .desktop-v2-content .settings-list > button:hover {
+  border-color: var(--fluent3-reveal-border) !important;
+  background: var(--fluent3-reveal-bg) !important;
+  box-shadow: none !important;
+}
+
+.start-action {
+  position: relative;
+  overflow: hidden;
+}
+.start-action:hover {
+  border-color: var(--fluent3-reveal-border) !important;
+  background: var(--fluent3-reveal-bg) !important;
+  box-shadow: none !important;
+}
+
+.setup-steps li {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--fluent3-list-item-radius) !important;
+}
+.setup-steps li:hover {
+  background: var(--fluent3-reveal-bg);
+}
+.setup-steps li.active {
+  background: var(--fluent3-select-bg) !important;
+}
+
+.dependency-row {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--fluent3-list-item-radius);
+}
+.dependency-row:hover {
+  background: var(--fluent3-reveal-bg) !important;
+}
+
+/* =================================================================
+   Table rows - VFluent3 list-view selection pattern
+   ================================================================= */
+
+.desktop-v2-app-frame .el-table__body tr {
+  min-height: var(--fluent3-list-item-height);
+  transition:
+    background-color var(--fluent-fast),
+    box-shadow var(--fluent-fast);
+}
+
+.desktop-v2-app-frame .el-table__body tr:hover > td.el-table__cell {
+  background: var(--fluent3-hover-bg) !important;
+}
+
+.desktop-v2-app-frame .el-table__body tr.current-row > td.el-table__cell,
+.desktop-v2-app-frame .el-table__body tr.is-selected > td.el-table__cell {
+  background: var(--fluent3-select-bg) !important;
+}
+
+.desktop-v2-app-frame .desktop-v2-content > .workspace-list-page > .el-table {
+  --el-table-row-hover-bg-color: var(--fluent3-hover-bg);
+}
+
+/* =================================================================
+   Cards and surfaces - Fluent 3 corner radius
+   ================================================================= */
+
+.desktop-v2-app-frame :where(
+    .metric,
+    .start-action,
+    .start-panel,
+    .settings-list,
+    .traffic-workbench,
+    .execution-plan-card,
+    .agent-citations-card,
+    .task-progress-card,
+    .message-bubble
+  ) {
+  border-radius: var(--fluent3-card-radius) !important;
+}
+
+.desktop-v2-app-frame .desktop-v2-content .settings-list {
+  border-radius: var(--fluent3-card-radius) !important;
+}
+
+/* =================================================================
+   Section headers - Fluent 3 label style
+   ================================================================= */
+.desktop-v2-section-label {
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* =================================================================
+   Dialogs and overlays - Fluent 3 refinements
+   ================================================================= */
+.desktop-v2-app-frame .el-dialog,
+.desktop-v2-app-frame .el-message-box {
+  border-radius: var(--fluent-radius-overlay) !important;
+}
+
+/* =================================================================
+   Tabs - Fluent 3 selection indicator
+   ================================================================= */
+.desktop-v2-app-frame .el-tabs__active-bar {
+  border-radius: var(--fluent3-slider-width);
+  height: var(--fluent3-slider-width) !important;
+}
+
+/* =================================================================
+   Pagination - Fluent 3 button styling
+   ================================================================= */
+.desktop-v2-app-frame .el-pagination .el-pager li {
+  border-radius: var(--fluent-radius-control);
+  transition:
+    background-color var(--fluent-fast),
+    color var(--fluent-fast);
+}
+.desktop-v2-app-frame .el-pagination .el-pager li.is-active {
+  background: var(--fluent3-select-bg);
+  color: var(--app-accent);
+  font-weight: var(--fluent-weight-semibold);
+}
+
+/* =================================================================
+   Tags - Fluent 3 rounded pill style
+   ================================================================= */
+.desktop-v2-app-frame .el-tag {
+  border-radius: var(--fluent-radius-circular);
+  border-color: var(--app-border);
+  font-size: var(--fluent-caption1-size);
+  font-weight: var(--fluent-weight-medium);
+}
+
+/* =================================================================
+   Tooltip - Fluent 3 overlay style
+   ================================================================= */
+.desktop-v2-app-frame .el-popper {
+  border-radius: var(--fluent-radius-overlay) !important;
+  box-shadow: var(--fluent-overlay-shadow) !important;
+}
+
+/* =================================================================
+   Checkbox and radio - Fluent 3 control styling
+   ================================================================= */
+.desktop-v2-app-frame .el-checkbox__inner,
+.desktop-v2-app-frame .el-radio__inner {
+  border-radius: var(--fluent3-list-item-radius);
+  transition:
+    border-color var(--fluent-fast),
+    background-color var(--fluent-fast);
+}
+.desktop-v2-app-frame .el-checkbox__input.is-checked .el-checkbox__inner,
+.desktop-v2-app-frame .el-radio__input.is-checked .el-radio__inner {
+  background: var(--app-accent);
+  border-color: var(--app-accent);
+}
+
+/* =================================================================
+   Switch - Fluent 3 toggle style
+   ================================================================= */
+.desktop-v2-app-frame .el-switch.is-checked .el-switch__core {
+  background-color: var(--app-accent);
+  border-color: var(--app-accent);
+}
+.desktop-v2-app-frame .el-switch__core {
+  border-radius: var(--fluent-radius-circular);
+}
+
+/* =================================================================
+   Workflow nodes - Fluent 3 list-view selection
+   ================================================================= */
+.workflow-node {
+  position: relative;
+  border-radius: var(--fluent3-list-item-radius);
+  transition:
+    background-color var(--fluent-fast),
+    border-color var(--fluent-fast);
+}
+.workflow-node.selected,
+.workflow-node.active {
+  background: var(--fluent3-select-bg);
+  border-color: var(--fluent3-select-border);
+}
+.workflow-node.selected::before,
+.workflow-node.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: var(--fluent3-slider-width);
+  height: 50%;
+  border-radius: var(--fluent3-slider-width);
+  background: var(--fluent3-slider-accent);
+  pointer-events: none;
+}
+
+/* =================================================================
+   Scrollbar - Fluent 3 subtle scrollbar on hover
+   ================================================================= */
+.desktop-v2-app-frame *:hover::-webkit-scrollbar:vertical {
+  display: block !important;
+  width: 4px !important;
+}
+.desktop-v2-app-frame *:hover::-webkit-scrollbar-thumb:vertical {
+  display: block !important;
+  background: color-mix(in srgb, var(--app-text) 20%, transparent) !important;
+  border-radius: var(--fluent-radius-circular) !important;
+}
+.desktop-v2-app-frame *:hover::-webkit-scrollbar-track:vertical {
+  background: transparent !important;
+}
+
+/* =================================================================
+   Mobile responsive - Fluent 3 adaptive
+   ================================================================= */
+@media (max-width: 768px) {
+  .desktop-v2-nav-item.active::before,
+  .desktop-v2-recent-item.active::before,
+  .setup-steps li.active::before,
+  .traffic-row.active::before {
+    height: 40%;
+  }
+}

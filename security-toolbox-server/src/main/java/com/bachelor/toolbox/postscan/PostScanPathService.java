@@ -1,10 +1,10 @@
 package com.bachelor.toolbox.postscan;
 
 import com.bachelor.toolbox.ai.AiDispatchResponse;
+import com.bachelor.toolbox.ai.AiAgentRequest;
 import com.bachelor.toolbox.ai.AiModelClient;
-import com.bachelor.toolbox.ai.AiPlanRequest;
 import com.bachelor.toolbox.ai.AiPlanResponse;
-import com.bachelor.toolbox.ai.AiTaskDispatchService;
+import com.bachelor.toolbox.ai.SecurityAgentTools;
 import com.bachelor.toolbox.audit.AuditService;
 import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.finding.Finding;
@@ -51,7 +51,7 @@ public class PostScanPathService {
   private final SecurityTaskRepository tasks;
   private final VulnerabilityDefinitionRepository vulnerabilities;
   private final AiModelClient modelClient;
-  private final AiTaskDispatchService dispatchService;
+  private final SecurityAgentTools agentTools;
   private final AuditService auditService;
   private final ObjectMapper objectMapper;
 
@@ -64,7 +64,7 @@ public class PostScanPathService {
       SecurityTaskRepository tasks,
       VulnerabilityDefinitionRepository vulnerabilities,
       AiModelClient modelClient,
-      AiTaskDispatchService dispatchService,
+      SecurityAgentTools agentTools,
       AuditService auditService,
       ObjectMapper objectMapper) {
     this.paths = paths;
@@ -75,7 +75,7 @@ public class PostScanPathService {
     this.tasks = tasks;
     this.vulnerabilities = vulnerabilities;
     this.modelClient = modelClient;
-    this.dispatchService = dispatchService;
+    this.agentTools = agentTools;
     this.auditService = auditService;
     this.objectMapper = objectMapper;
   }
@@ -192,14 +192,17 @@ public class PostScanPathService {
         new AiPlanResponse(
             entity.getProvider(), entity.getModel(), entity.getSummary(), true, planSteps);
     AiDispatchResponse dispatched =
-        dispatchService.dispatchPlanned(
-            new AiPlanRequest(
+        agentTools.executeAuthorizedPlan(
+            new AiAgentRequest(
                 entity.getProjectId(),
                 target.getId(),
+                "postscan-" + entity.getId(),
                 "经管理员确认执行扫描后安全验证路径",
+                true,
                 null,
                 null,
-                null),
+                "post-scan",
+                "postscan-" + entity.getId()),
             planned);    entity.setStatus("DISPATCHED");
     entity.setConfirmedAt(Instant.now());
     entity.setTaskIdsJson(objectMapper.writeValueAsString(dispatched.taskIds()));

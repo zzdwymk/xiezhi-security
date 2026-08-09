@@ -1,11 +1,8 @@
 package com.bachelor.toolbox;
 
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.sun.net.httpserver.HttpServer;
@@ -161,12 +158,7 @@ class SecurityToolboxApplicationTests {
                         + ",\"targetId\":"
                         + targetId
                         + ",\"prompt\":\"check http security headers\"}"))
-        .andExpect(status().isAccepted())
-        .andExpect(jsonPath("$.targetId").value(targetId))
-        .andExpect(jsonPath("$.taskCount").value(1))
-        .andExpect(jsonPath("$.taskIds[0]").isNumber())
-        .andExpect(jsonPath("$.plan.requiresConfirmation").value(false))
-        .andExpect(jsonPath("$.plan.steps[0].toolCode").value("http_headers"));
+        .andExpect(status().isGone());
 
     mockMvc.perform(get("/api/dashboard/summary")).andExpect(status().isUnauthorized());
     mockMvc
@@ -196,7 +188,7 @@ class SecurityToolboxApplicationTests {
   }
 
   @Test
-  void keepsAuthenticationDuringAiStreamingAsyncDispatch() throws Exception {
+  void rejectsLegacyStreamingDispatchOutsideTheAgentHarness() throws Exception {
     String token = login();
     long projectId = createProject(token, "AI stream project");
     String targetResponse =
@@ -221,26 +213,18 @@ class SecurityToolboxApplicationTests {
             .asLong();
     activateProject(token, projectId);
 
-    var initial =
-        mockMvc
-            .perform(
-                post("/api/ai/dispatches/stream")
-                    .header("Authorization", "Bearer " + token)
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content(
-                        "{\"projectId\":"
-                            + projectId
-                            + ",\"targetId\":"
-                            + targetId
-                            + ",\"prompt\":\"check http headers\"}"))
-            .andExpect(request().asyncStarted())
-            .andReturn();
-
     mockMvc
-        .perform(asyncDispatch(initial))
-        .andExpect(status().isOk())
-        .andExpect(content().contentTypeCompatibleWith("application/x-ndjson"))
-        .andExpect(content().string(org.hamcrest.Matchers.containsString("\"type\":\"done\"")));
+        .perform(
+            post("/api/ai/dispatches/stream")
+                .header("Authorization", "Bearer " + token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(
+                    "{\"projectId\":"
+                        + projectId
+                        + ",\"targetId\":"
+                        + targetId
+                        + ",\"prompt\":\"check http headers\"}"))
+        .andExpect(status().isGone());
   }
 
   @Test

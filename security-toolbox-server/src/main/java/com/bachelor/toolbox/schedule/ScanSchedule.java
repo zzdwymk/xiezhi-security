@@ -5,6 +5,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.Lob;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
@@ -17,7 +18,9 @@ import lombok.Setter;
 @Setter
 @NoArgsConstructor
 @Entity
-@Table(name = "scan_schedules")
+@Table(
+    name = "scan_schedules",
+    indexes = @Index(name = "idx_scan_schedules_due", columnList = "enabled, next_run_at, id"))
 public class ScanSchedule {
   @Id
   @GeneratedValue(strategy = GenerationType.IDENTITY)

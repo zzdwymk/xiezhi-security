@@ -20,8 +20,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -229,6 +234,46 @@ class ReconServiceTest {
       logger.setLevel(originalLevel);
       appender.stop();
     }
+  }
+
+  @Test
+  void passiveResponseCacheExpiresEntriesAndEvictsTheLeastRecentlyUsedEntry() {
+    ReconService.PassiveResponseCache cache = new ReconService.PassiveResponseCache(2);
+    cache.put("first", "one", 100L, 0L);
+    cache.put("second", "two", 100L, 0L);
+
+    assertThat(cache.get("first", 1L)).isEqualTo("one");
+    cache.put("third", "three", 100L, 1L);
+
+    assertThat(cache.get("second", 1L)).isNull();
+    assertThat(cache.get("first", 1L)).isEqualTo("one");
+    assertThat(cache.get("third", 100L)).isNull();
+    assertThat(cache.size()).isEqualTo(1);
+  }
+
+  @Test
+  void passiveResponseCacheStaysWithinCapacityDuringConcurrentAccess() throws Exception {
+    ReconService.PassiveResponseCache cache = new ReconService.PassiveResponseCache(16);
+    ExecutorService workers = Executors.newFixedThreadPool(8);
+    List<Future<?>> results = new ArrayList<>();
+    try {
+      for (int index = 0; index < 1_000; index++) {
+        int item = index;
+        results.add(
+            workers.submit(
+                () -> {
+                  String key = "key-" + item;
+                  cache.put(key, "value-" + item, Long.MAX_VALUE, item);
+                  cache.get(key, item);
+                }));
+      }
+      for (Future<?> result : results) result.get(10, TimeUnit.SECONDS);
+    } finally {
+      workers.shutdown();
+      assertThat(workers.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+    }
+
+    assertThat(cache.size()).isLessThanOrEqualTo(16);
   }
 
   private HttpServer startHttpServer() throws Exception {

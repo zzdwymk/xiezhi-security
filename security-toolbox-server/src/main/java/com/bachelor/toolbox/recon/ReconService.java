@@ -35,7 +35,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.naming.Context;
@@ -62,6 +61,7 @@ public class ReconService {
   private static final Duration PASSIVE_CONNECT_TIMEOUT = Duration.ofSeconds(4);
   private static final Duration PASSIVE_REQUEST_TIMEOUT = Duration.ofSeconds(8);
   private static final long PASSIVE_CACHE_TTL_MILLIS = 3_600_000;
+  private static final int PASSIVE_CACHE_MAX_ENTRIES = 128;
   private static final int MAX_PASSIVE_RESPONSE_LENGTH = 2_000_000;
   private static final String USER_AGENT = "Xiezhi-Recon/1.0";
   private static final Pageable HISTORY_PAGE = PageRequest.of(0, 1_000);
@@ -75,7 +75,8 @@ public class ReconService {
           .connectTimeout(PASSIVE_CONNECT_TIMEOUT)
           .followRedirects(HttpClient.Redirect.NEVER)
           .build();
-  private final Map<String, CacheEntry> passiveCache = new ConcurrentHashMap<>();
+  private final PassiveResponseCache passiveCache =
+      new PassiveResponseCache(PASSIVE_CACHE_MAX_ENTRIES);
 
   @Value("${toolbox.recon.passive-sources-enabled:true}")
   private boolean passiveSourcesEnabled;
@@ -683,11 +684,9 @@ public class ReconService {
   }
 
   private String getCached(String url) throws Exception {
-    CacheEntry cached = passiveCache.get(url);
     long now = System.currentTimeMillis();
-    if (cached != null && cached.expiresAt() > now) {
-      return cached.body();
-    }
+    String cached = passiveCache.get(url, now);
+    if (cached != null) return cached;
 
     URI uri = URI.create(url);
     if (!"https".equalsIgnoreCase(uri.getScheme())) {
@@ -708,7 +707,7 @@ public class ReconService {
       throw new IllegalStateException("数据源响应过大");
     }
 
-    passiveCache.put(url, new CacheEntry(response.body(), now + PASSIVE_CACHE_TTL_MILLIS));
+    passiveCache.put(url, response.body(), now + PASSIVE_CACHE_TTL_MILLIS, now);
     return response.body();
   }
 
@@ -754,6 +753,40 @@ public class ReconService {
       return message;
     }
     return "外部数据源请求失败，请稍后重试";
+  }
+
+  static final class PassiveResponseCache {
+    private final int maxEntries;
+    private final LinkedHashMap<String, CacheEntry> entries =
+        new LinkedHashMap<>(16, 0.75f, true);
+
+    PassiveResponseCache(int maxEntries) {
+      if (maxEntries < 1) throw new IllegalArgumentException("缓存容量必须大于 0");
+      this.maxEntries = maxEntries;
+    }
+
+    synchronized String get(String key, long now) {
+      CacheEntry cached = entries.get(key);
+      if (cached == null) return null;
+      if (cached.expiresAt() <= now) {
+        entries.remove(key);
+        return null;
+      }
+      return cached.body();
+    }
+
+    synchronized void put(String key, String body, long expiresAt, long now) {
+      entries.entrySet().removeIf(entry -> entry.getValue().expiresAt() <= now);
+      entries.put(key, new CacheEntry(body, expiresAt));
+      while (entries.size() > maxEntries) {
+        String eldest = entries.keySet().iterator().next();
+        entries.remove(eldest);
+      }
+    }
+
+    synchronized int size() {
+      return entries.size();
+    }
   }
 
   private record ReconSnapshot(

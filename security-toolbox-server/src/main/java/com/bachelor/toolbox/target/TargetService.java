@@ -70,6 +70,15 @@ public class TargetService {
     return validateCurrentlyAuthorized(load(id));
   }
 
+  public AuthorizedTarget lockForAgentExecution(Long id) {
+    AuthorizedTarget target =
+        repository
+            .findByIdForUpdate(id)
+            .orElseThrow(() -> new ApiException("授权目标不存在"));
+    requireTargetAccess(target);
+    return target;
+  }
+
   private AuthorizedTarget load(Long id) {
     return repository.findById(id).orElseThrow(() -> new ApiException("授权目标不存在"));
   }

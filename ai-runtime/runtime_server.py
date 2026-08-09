@@ -19,6 +19,12 @@ def parse_args() -> argparse.Namespace:
         help="UTF-8 令牌文件；不要在命令行直接传令牌",
     )
     parser.add_argument(
+        "--project-signing-secret-file",
+        type=Path,
+        default=None,
+        help="UTF-8 项目签名密钥文件；不要在命令行直接传密钥",
+    )
+    parser.add_argument(
         "--log-level",
         choices=("critical", "error", "warning", "info"),
         default="warning",
@@ -55,6 +61,19 @@ def main() -> int:
             print("拒绝启动：AI Runtime 令牌长度至少为 24 个字符。", file=sys.stderr)
             return 2
         os.environ["AI_RUNTIME_TOKEN"] = token
+    if args.project_signing_secret_file is not None:
+        signing_path = args.project_signing_secret_file.expanduser().resolve()
+        if not signing_path.is_file():
+            print("拒绝启动：项目签名密钥文件不存在。", file=sys.stderr)
+            return 2
+        if signing_path.stat().st_size > 4096:
+            print("拒绝启动：项目签名密钥文件大小异常。", file=sys.stderr)
+            return 2
+        signing_secret = signing_path.read_text(encoding="utf-8").strip()
+        if len(signing_secret) < 32:
+            print("拒绝启动：项目签名密钥长度至少为 32 个字符。", file=sys.stderr)
+            return 2
+        os.environ["AI_RUNTIME_PROJECT_SIGNING_SECRET"] = signing_secret
     os.environ["AI_RUNTIME_HOST"] = args.host
     os.environ["AI_RUNTIME_PORT"] = str(args.port)
 

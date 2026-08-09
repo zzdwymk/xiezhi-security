@@ -1,11 +1,19 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import Components from 'unplugin-vue-components/vite'
+import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 
 export default defineConfig({
   // Electron loads the production renderer through file://, so bundled assets
   // must be relative to dist/index.html instead of rooted at /assets.
   base: './',
-  plugins: [vue()],
+  plugins: [
+    vue(),
+    Components({
+      dts: false,
+      resolvers: [ElementPlusResolver({ importStyle: 'css' })],
+    }),
+  ],
   server: {
     port: 5173,
     watch: {

@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, markRaw, ref } from "vue";
+import "../offline-tools.css";
+import "../network-offline-tools.css";
 import { ElMessage } from "element-plus";
 import { formatDateTime } from "../utils/dateTime";
 import {

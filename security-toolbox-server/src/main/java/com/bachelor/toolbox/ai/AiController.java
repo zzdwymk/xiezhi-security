@@ -1,13 +1,16 @@
 package com.bachelor.toolbox.ai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.bachelor.toolbox.project.AssessmentProjectService;
+import com.bachelor.toolbox.project.ProjectAuthorizationService;
 import jakarta.validation.Valid;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
-import com.bachelor.toolbox.project.ProjectAuthorizationService;
-import org.springframework.http.CacheControl;import org.springframework.http.MediaType;
+import org.springframework.http.CacheControl;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
@@ -16,8 +19,6 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 @RequestMapping("/api/ai")
 public class AiController {
   private final AiPlanningService service;
-  private final AiTaskDispatchService dispatchService;
-  private final AiDispatchStreamingService streamingService;
   private final AiAnswerService answerService;
   private final AgentOrchestrator agentOrchestrator;
   private final AiAgentRuntimeClient runtimeClient;
@@ -25,21 +26,19 @@ public class AiController {
   private final AiWorkflowSuggestService workflowSuggestService;
   private final ObjectMapper objectMapper;
   private final ProjectAuthorizationService authorization;
+  private final AssessmentProjectService projects;
 
   public AiController(
       AiPlanningService service,
-      AiTaskDispatchService dispatchService,
-      AiDispatchStreamingService streamingService,
       AiAnswerService answerService,
       AgentOrchestrator agentOrchestrator,
       AiAgentRuntimeClient runtimeClient,
       AgentWorkflowSpecService workflowSpecs,
       AiWorkflowSuggestService workflowSuggestService,
       ObjectMapper objectMapper,
-      ProjectAuthorizationService authorization) {
+      ProjectAuthorizationService authorization,
+      AssessmentProjectService projects) {
     this.service = service;
-    this.dispatchService = dispatchService;
-    this.streamingService = streamingService;
     this.answerService = answerService;
     this.agentOrchestrator = agentOrchestrator;
     this.runtimeClient = runtimeClient;
@@ -47,6 +46,7 @@ public class AiController {
     this.workflowSuggestService = workflowSuggestService;
     this.objectMapper = objectMapper;
     this.authorization = authorization;
+    this.projects = projects;
   }
   /** Workflow topology (nodes/edges) for the visual workflow view. */
   @GetMapping("/agent/graph")
@@ -56,18 +56,19 @@ public class AiController {
 
   /** Read the user-composed workflow spec (ordered tool pipeline). */
   @GetMapping("/workflow")
-  public Object getWorkflow() {
-    return workflowSpecs.read();
+  public Object getWorkflow(@RequestParam Long projectId) {
+    return workflowSpecs.read(projectId);
   }
 
   /**
    * Save the user-composed workflow spec. V2 graph documents are validated as a start-to-end DAG
    * and their executable steps are topologically grouped for safe sequential/parallel execution.
    * Legacy steps-only documents remain supported.
-   */
+  */
   @PutMapping("/workflow")
-  public Object saveWorkflow(@RequestBody Map<String, Object> body) {
-    return workflowSpecs.save(body);
+  public Object saveWorkflow(
+      @RequestParam Long projectId, @RequestBody Map<String, Object> body) {
+    return workflowSpecs.save(projectId, body);
   }
 
   /** Real-time coaching tips for the visual workflow editor (SSE). */
@@ -121,17 +122,25 @@ public class AiController {
         body.get("projectId") == null ? 0 : Long.parseLong(String.valueOf(body.get("projectId")));
     if (projectId <= 0) throw new com.bachelor.toolbox.common.ApiException("缺少有效的项目编号");
     authorization.requireAccess(projectId);
-    String prompt = body.get("prompt") == null ? "" : String.valueOf(body.get("prompt")).strip();    String answer = body.get("answer") == null ? "" : String.valueOf(body.get("answer")).strip();
+    long targetId =
+        body.get("targetId") == null ? 0 : Long.parseLong(String.valueOf(body.get("targetId")));
+    if (targetId <= 0) throw new com.bachelor.toolbox.common.ApiException("缺少有效的目标编号");
+    projects.validateProjectTargetMembership(projectId, targetId);
+    String prompt = body.get("prompt") == null ? "" : String.valueOf(body.get("prompt")).strip();
+    String answer = body.get("answer") == null ? "" : String.valueOf(body.get("answer")).strip();
     if (prompt.isBlank() && answer.isBlank())
       throw new com.bachelor.toolbox.common.ApiException("对话内容为空，无法生成摘要");
     String conversationId =
         body.get("conversationId") == null ? "" : String.valueOf(body.get("conversationId"));
+    if (conversationId.isBlank())
+      throw new com.bachelor.toolbox.common.ApiException("会话编号不能为空");
     String title =
         prompt.isBlank() ? "对话记录" : (prompt.length() > 40 ? prompt.substring(0, 40) + "…" : prompt);
     String summary = "【问题】" + clip(prompt, 800) + "\n【结论】" + clip(answer, 1600);
     String id = "conv-" + java.util.UUID.randomUUID().toString().substring(0, 12);
     String createdAt = java.time.Instant.now().toString();
-    runtimeClient.appendMemory(projectId, id, title, summary, conversationId, createdAt);
+    runtimeClient.appendMemory(
+        projectId, targetId, id, title, summary, conversationId, createdAt);
     return Map.of("id", id, "title", title);
   }
 
@@ -154,7 +163,8 @@ public class AiController {
   @DeleteMapping("/memories")
   public Map<String, Object> clearMemories(@RequestParam long projectId) {
     authorization.requireAccess(projectId);
-    int deleted = runtimeClient.clearMemories(projectId);    return Map.of("deleted", deleted, "projectId", projectId);
+    int deleted = runtimeClient.clearMemories(projectId);
+    return Map.of("deleted", deleted, "projectId", projectId);
   }
 
   @PostMapping("/plans")
@@ -163,32 +173,18 @@ public class AiController {
   }
 
   @PostMapping("/dispatches")
-  @ResponseStatus(org.springframework.http.HttpStatus.ACCEPTED)
-  public AiDispatchResponse dispatch(@Valid @RequestBody AiPlanRequest request) throws Exception {
-    return dispatchService.dispatch(request);
+  public AiDispatchResponse dispatch(@Valid @RequestBody AiPlanRequest request) {
+    throw new org.springframework.web.server.ResponseStatusException(
+        org.springframework.http.HttpStatus.GONE,
+        "旧 AI 派发入口已停用，请使用 /api/ai/agent 并显式确认执行");
   }
 
   @PostMapping(value = "/dispatches/stream", produces = "application/x-ndjson")
   public ResponseEntity<StreamingResponseBody> dispatchStream(
       @Valid @RequestBody AiPlanRequest request) {
-    StreamingResponseBody body =
-        output ->
-            streamingService.stream(
-                request,
-                event -> {
-                  try {
-                    output.write(objectMapper.writeValueAsBytes(event));
-                    output.write('\n');
-                    output.flush();
-                  } catch (java.io.IOException ex) {
-                    throw new UncheckedIOException(ex);
-                  }
-                });
-    return ResponseEntity.ok()
-        .contentType(new MediaType("application", "x-ndjson", StandardCharsets.UTF_8))
-        .cacheControl(CacheControl.noCache())
-        .header("X-Accel-Buffering", "no")
-        .body(body);
+    throw new org.springframework.web.server.ResponseStatusException(
+        org.springframework.http.HttpStatus.GONE,
+        "旧 AI 流式派发入口已停用，请使用 /api/ai/agent/stream");
   }
 
   @PostMapping("/answers")
@@ -198,26 +194,34 @@ public class AiController {
 
   @PostMapping("/agent")
   public AiAgentResponse agent(@Valid @RequestBody AiAgentRequest request) {
-    return agentOrchestrator.run(request);
+    AgentWorkflowSpecService.WorkflowSnapshot snapshot = freezeWorkflow(request);
+    AiAgentRequest scopedRequest = request.withWorkflowSnapshot(snapshot);
+    return workflowSpecs.withSnapshot(snapshot, () -> agentOrchestrator.run(scopedRequest));
   }
 
   @PostMapping(value = "/agent/stream", produces = "application/x-ndjson")
   public ResponseEntity<StreamingResponseBody> agentStream(
       @Valid @RequestBody AiAgentRequest request) {
+    AgentWorkflowSpecService.WorkflowSnapshot snapshot = freezeWorkflow(request);
+    AiAgentRequest scopedRequest = request.withWorkflowSnapshot(snapshot);
     StreamingResponseBody body =
         output -> {
           try {
-            agentOrchestrator.run(
-                request,
-                event -> {
-                  try {
-                    output.write(objectMapper.writeValueAsBytes(event));
-                    output.write('\n');
-                    output.flush();
-                  } catch (java.io.IOException ex) {
-                    throw new UncheckedIOException(ex);
-                  }
-                });
+            workflowSpecs.withSnapshot(
+                snapshot,
+                () ->
+                    agentOrchestrator.run(
+                        scopedRequest,
+                        event -> {
+                          try {
+                            output.write(
+                                objectMapper.writeValueAsBytes(withWorkflowSnapshot(event, snapshot)));
+                            output.write('\n');
+                            output.flush();
+                          } catch (java.io.IOException ex) {
+                            throw new UncheckedIOException(ex);
+                          }
+                        }));
           } catch (RuntimeException ignored) {
             // AgentOrchestrator emits a terminal error event before propagating the failure.
           }
@@ -227,6 +231,35 @@ public class AiController {
         .cacheControl(CacheControl.noCache())
         .header("X-Accel-Buffering", "no")
         .body(body);
+  }
+
+  private AgentWorkflowSpecService.WorkflowSnapshot freezeWorkflow(AiAgentRequest request) {
+    return workflowSpecs.freezeSnapshot(
+        request.projectId(),
+        request.workflowId(),
+        request.workflowRevision(),
+        request.workflowDigest());
+  }
+
+  private AiAgentEvent withWorkflowSnapshot(
+      AiAgentEvent event, AgentWorkflowSpecService.WorkflowSnapshot snapshot) {
+    Map<String, Object> data = new LinkedHashMap<>();
+    if (event.data() != null) data.putAll(event.data());
+    data.put("workflowId", snapshot.workflowId());
+    data.put("workflowRevision", snapshot.revision());
+    data.put("workflowDigest", snapshot.specDigest());
+    return new AiAgentEvent(
+        event.sequence(),
+        event.contractVersion(),
+        event.runId(),
+        event.stateVersion(),
+        event.policyRevision(),
+        event.type(),
+        event.phase(),
+        event.status(),
+        event.message(),
+        event.timestamp(),
+        java.util.Collections.unmodifiableMap(data));
   }
 
   @DeleteMapping("/agent/sessions/{sessionId}")

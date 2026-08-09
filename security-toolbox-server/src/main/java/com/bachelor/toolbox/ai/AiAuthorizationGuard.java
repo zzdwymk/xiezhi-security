@@ -18,7 +18,7 @@ import org.springframework.stereotype.Service;
  */
 @Service
 public class AiAuthorizationGuard {
-  private static final List<String> ACTIVE_STATUSES = List.of("PENDING", "RUNNING");
+  private static final List<String> ACTIVE_STATUSES = List.of("BLOCKED", "PENDING", "RUNNING");
 
   private final AssessmentProjectService projects;
   private final TargetService targets;

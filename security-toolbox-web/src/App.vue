@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, markRaw, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import zhCn from "element-plus/es/locale/lang/zh-cn";
 import {
   Aim,
   ArrowDown,
@@ -218,7 +219,6 @@ const navigationGroups = [
     items: [
       { path: "/audits", label: "审计日志", icon: markRaw(Tickets) },
       { path: "/offline-tools", label: "离线工具集", icon: markRaw(Tools) },
-      { path: "/settings", label: "系统设置", icon: markRaw(Setting) },
     ],
   },
 ];
@@ -237,7 +237,6 @@ const activeNavigation = computed(() => {
   if (route.path.startsWith("/findings")) return "/findings";
   if (route.path.startsWith("/audits")) return "/audits";
   if (route.path.startsWith("/offline-tools")) return "/offline-tools";
-  if (route.path.startsWith("/settings")) return "/settings";
   return "";
 });
 
@@ -319,10 +318,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div
-    class="desktop-v2-app-frame"
-    :class="{ 'desktop-v2-native-frame': desktopMode }"
-  >
+  <el-config-provider :locale="zhCn">
+    <div
+      class="desktop-v2-app-frame"
+      :class="{ 'desktop-v2-native-frame': desktopMode }"
+    >
     <router-view v-if="route.meta.public" />
     <div
       v-else
@@ -570,5 +570,6 @@ onBeforeUnmount(() => {
         <main class="desktop-v2-content"><router-view /></main>
       </section>
     </div>
-  </div>
+    </div>
+  </el-config-provider>
 </template>

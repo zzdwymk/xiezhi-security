@@ -63,7 +63,7 @@ jobs:
             esac
 
             case "${file}" in
-              *.log|*.tsbuildinfo|*.p12|*.jks|*.keystore|*.mv.db|*.lock.db|*.key|*.doc|*.docx|*.pdf|*.ppt|*.pptx|*.xls|*.xlsx|*/development-secrets.json|*/runtime-token.txt|.env|*/.env|.env.local|*/.env.local|.env.development|*/.env.development|.env.production|*/.env.production)
+              *.log|*.tsbuildinfo|*.p12|*.jks|*.keystore|*.mv.db|*.lock.db|*.key|*.doc|*.docx|*.pdf|*.ppt|*.pptx|*.xls|*.xlsx|*/development-secrets.json|*/runtime-token.txt|*/runtime-project-signing-secret.txt|.env|*/.env|.env.local|*/.env.local|.env.development|*/.env.development|.env.production|*/.env.production)
                 violations+=("sensitive or generated file: ${file}")
                 ;;
             esac
@@ -163,6 +163,96 @@ jobs:
         with:
           name: ai-runtime-test-report
           path: ${{ runner.temp }}/security-toolbox-ai-junit.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
+  agent-runtime-e2e:
+    name: Java and Python agent harness
+    needs: hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AI_RUNTIME_E2E: "true"
+      AI_RUNTIME_TOKEN: ci-agent-runtime-token-9f45658115a34d68a1914ca62dfa39f1
+      AI_RUNTIME_PROJECT_SIGNING_SECRET: ci-project-signing-secret-f7ba0a8b185d40f7908df082e3200304
+      AI_RUNTIME_URL: http://127.0.0.1:8090
+      AI_RUNTIME_LLM_ENABLED: "true"
+      AI_RUNTIME_API_KEY: ci-mock-openai-key
+      AI_RUNTIME_BASE_URL: http://127.0.0.1:8091/v1
+      AI_RUNTIME_MODEL: mock-harness-model
+      AI_RUNTIME_DATA_DIR: ${{ runner.temp }}/security-toolbox-ai-e2e
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: ai-runtime/requirements.txt
+
+      - name: Install AI Runtime dependencies
+        working-directory: ai-runtime
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip check
+
+      - name: Start deterministic mock OpenAI service
+        working-directory: ai-runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tests/mock_openai_server.py --port 8091 --api-key "${AI_RUNTIME_API_KEY}" --model "${AI_RUNTIME_MODEL}" >"${RUNNER_TEMP}/mock-openai-e2e.log" 2>&1 &
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8091/health | python -c 'import json, sys; assert json.load(sys.stdin)["status"] == "UP"'; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat "${RUNNER_TEMP}/mock-openai-e2e.log"
+          exit 1
+
+      - name: Start Python LangGraph Runtime
+        working-directory: ai-runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m uvicorn app.main:app --host 127.0.0.1 --port 8090 >"${RUNNER_TEMP}/ai-runtime-e2e.log" 2>&1 &
+          for attempt in {1..60}; do
+            if curl --fail --silent http://127.0.0.1:8090/health | python -c 'import json, sys; data=json.load(sys.stdin); assert data["agent"]["graphCompiled"] is True'; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat "${RUNNER_TEMP}/ai-runtime-e2e.log"
+          exit 1
+
+      - name: Test the default Java-Python agent path
+        working-directory: security-toolbox-server
+        run: >-
+          mvn -B -ntp
+          -Dtest=AiPythonRuntimeEndToEndTests,AiPythonAgentRouteEndToEndTests
+          test
+
+      - name: Upload runtime log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-runtime-e2e-log
+          path: |
+            ${{ runner.temp }}/ai-runtime-e2e.log
+            ${{ runner.temp }}/mock-openai-e2e.log
+            security-toolbox-server/target/surefire-reports/
           if-no-files-found: ignore
           retention-days: 7
 

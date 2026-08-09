@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.bachelor.toolbox.traffic.MitmCertificateAuthority;
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
@@ -38,6 +40,28 @@ class DefaultAdminInitializerTests {
     assertThat(saved.getValue().getUsername()).isEqualTo("admin");
     assertThat(saved.getValue().getPasswordHash()).isEqualTo("encoded-password");
     assertThat(saved.getValue().getRole()).isEqualTo("ADMIN");
+  }
+
+  @Test
+  void doesNotInitializeCertificateAuthorityOutsideLegacyMigration() {
+    when(users.findByUsername("admin")).thenReturn(Optional.of(administrator("hash")));
+    @SuppressWarnings("unchecked")
+    ObjectProvider<MitmCertificateAuthority> provider =
+        org.mockito.Mockito.mock(ObjectProvider.class);
+    DefaultAdminInitializer initializer =
+        new DefaultAdminInitializer(
+            users,
+            encoder,
+            "generated-desktop-password",
+            true,
+            true,
+            false,
+            false,
+            provider);
+
+    initializer.run(arguments);
+
+    verifyNoInteractions(provider);
   }
 
   @Test

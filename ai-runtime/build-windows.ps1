@@ -1,7 +1,7 @@
 param(
   [string]$Python,
-  [ValidatePattern('^\d+\.\d+$')]
-  [string]$RequiredPythonVersion = '3.10',
+ [ValidatePattern('^\d+\.\d+$')]
+  [string]$MinPythonVersion = '3.11',
   [switch]$SkipInstall,
   [switch]$SkipBuild,
   [switch]$SkipHealthCheck
@@ -68,11 +68,11 @@ function Get-PythonInfo {
 function Test-PackagingPythonCompatibility {
   param([Parameter(Mandatory = $true)]$Info)
 
-  return (
-    $Info.Implementation -eq 'cpython' -and
-    $Info.Version -eq $RequiredPythonVersion -and
-    $Info.Bits -eq 64
-  )
+ return (
+   $Info.Implementation -eq 'cpython' -and
+    ([Version]$Info.Version) -ge ([Version]$MinPythonVersion) -and
+   $Info.Bits -eq 64
+ )
 }
 
 function Format-PythonDescription {
@@ -137,7 +137,7 @@ function Resolve-PackagingPython {
     $requestedInfo = Get-PythonInfo -Executable $requested -DiscoveredBy '-Python parameter'
     if (-not $requestedInfo) { throw "The requested Python executable could not be started: $requested" }
     if (-not (Test-PackagingPythonCompatibility -Info $requestedInfo)) {
-      throw "The requested interpreter is $(Format-PythonDescription -Info $requestedInfo); CPython $RequiredPythonVersion 64-bit is required."
+      throw "The requested interpreter is $(Format-PythonDescription -Info $requestedInfo); CPython $MinPythonVersion+ 64-bit is required."
     }
     return $requestedInfo
   }
@@ -163,7 +163,7 @@ function Resolve-PackagingPython {
   if ($env:GITHUB_ACTIONS -eq 'true') {
     if ($pathInfo -and (Test-PackagingPythonCompatibility -Info $pathInfo)) { return $pathInfo }
     if ($pathInfo) {
-      throw "GitHub Actions provided $(Format-PythonDescription -Info $pathInfo); configure actions/setup-python for CPython $RequiredPythonVersion x64."
+      throw "GitHub Actions provided $(Format-PythonDescription -Info $pathInfo); configure actions/setup-python for CPython $MinPythonVersion+ x64."
     }
     throw 'GitHub Actions did not provide Python on PATH. Run actions/setup-python before this script.'
   }
@@ -171,13 +171,13 @@ function Resolve-PackagingPython {
   if ($pathInfo -and (Test-PackagingPythonCompatibility -Info $pathInfo)) { return $pathInfo }
 
   $discovered = @()
-  $discovered += @(Get-PyLauncherPythonCandidates -Versions @($RequiredPythonVersion))
+  $discovered += @(Get-PyLauncherPythonCandidates -Versions @('3.11','3.12','3.13','3.14','3.15','3.16','3.17','3.18','3.19','3.20'))
   $discovered += @(Get-CondaPythonCandidates)
   $match = $discovered | Where-Object { Test-PackagingPythonCompatibility -Info $_ } | Select-Object -First 1
   if ($match) { return $match }
 
   $pathHint = if ($pathInfo) { " PATH currently resolves to $(Format-PythonDescription -Info $pathInfo)." } else { '' }
-  throw "No compatible Python was found. Install CPython $RequiredPythonVersion 64-bit, create ai-runtime\.venv, activate a matching environment, or pass -Python <path-or-command>.$pathHint"
+  throw "No compatible Python was found. Install CPython $MinPythonVersion+ 64-bit, create ai-runtime\.venv, activate a matching environment, or pass -Python <path-or-command>.$pathHint"
 }
 
 $pythonInfo = Resolve-PackagingPython
@@ -247,10 +247,10 @@ if (-not $SkipHealthCheck) {
       if (Test-Path -LiteralPath $startupError) { Get-Content -LiteralPath $startupError | Write-Error }
       throw "The packaged AI Runtime health check failed. Diagnostics: $testRoot"
     }
-    if (-not $health.agent.graphCompiled) { throw 'LangGraph did not compile in the packaged runtime.' }
-    if (-not ($health.components.langchain -and $health.components.langgraph -and $health.components.llamaIndex)) {
-      throw 'The packaged LangChain/LangGraph/LlamaIndex components are incomplete.'
-    }
+   if (-not $health.agent.graphCompiled) { throw 'LangGraph did not compile in the packaged runtime.' }
+    if (-not ($health.components.langchain -and $health.components.langgraph -and $health.components.retrieval -and $health.components.langchainTools)) {
+      throw 'The packaged LangChain/LangGraph/retrieval components are incomplete.'
+   }
     Write-Host "Packaged Runtime health check passed: $($health.status)" -ForegroundColor Green
     $healthPassed = $true
   } finally {

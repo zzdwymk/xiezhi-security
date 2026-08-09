@@ -566,7 +566,7 @@
 }
 .setup-steps li.active {
   background: var(--app-accent-soft-strong);
-  box-shadow: inset 3px 0 var(--setup-accent);
+  box-shadow: none;
 }
 .setup-steps li i {
   width: 24px;

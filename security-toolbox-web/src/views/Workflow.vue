@@ -16,6 +16,7 @@ import {
   QuestionFilled,
   Refresh,
   CircleCheck,
+  FolderOpened,
   Flag,
   Warning,
 } from "../components/fluentIcons";
@@ -38,6 +39,7 @@ import "@vue-flow/core/dist/theme-default.css";
 import {
   endpoints,
   streamWorkflowSuggestions,
+  type AssessmentProject,
   type WorkflowGraphEdgeSpec,
   type WorkflowGraphNodeSpec,
   type WorkflowSpecV2,
@@ -242,6 +244,19 @@ type PresetCode = (typeof PRESETS)[number]["value"];
 
 const loading = ref(false);
 const saving = ref(false);
+const projects = ref<AssessmentProject[]>([]);
+const selectedProjectId = ref<number>();
+const workflowSnapshot = ref<
+  Pick<
+    WorkflowSpecV2,
+    | "workflowId"
+    | "scopeId"
+    | "revision"
+    | "specDigest"
+    | "updatedBy"
+    | "updatedAt"
+  >
+>({});
 const showGuide = ref(false);
 const preset = ref<PresetCode>("standard");
 const nodes = shallowRef<EditorNode[]>([]);
@@ -259,6 +274,7 @@ const suggestions = ref<WorkflowSuggestion[]>([]);
 const suggestExpanded = ref(false);
 let suggestTimer: ReturnType<typeof setTimeout> | undefined;
 let suggestSeq = 0;
+let loadSeq = 0;
 let suggestAbort: AbortController | undefined;
 const { fitView, zoomIn, zoomOut } = useVueFlow("red-team-workflow");
 
@@ -286,6 +302,23 @@ const connectedEdgeCount = computed(() => edges.value.length);
 const graphReady = computed(
   () => graphValidation.value.length === 0 && nodes.value.length > 2,
 );
+const selectedProject = computed(() =>
+  projects.value.find((project) => project.id === selectedProjectId.value),
+);
+const hasWorkflowSnapshot = computed(
+  () =>
+    Boolean(workflowSnapshot.value.workflowId) &&
+    Number(workflowSnapshot.value.revision) > 0 &&
+    Boolean(workflowSnapshot.value.specDigest),
+);
+
+const WORKFLOW_PROJECT_STORAGE_KEY = "security_toolbox_workflow_project_v1";
+
+function workflowUpdatedAt(value?: string) {
+  if (!value) return "";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString("zh-CN");
+}
 
 function safeId(text: string) {
   return text
@@ -837,6 +870,11 @@ function serializeGraph(): WorkflowSpecV2 {
 }
 
 async function save() {
+  const projectId = selectedProjectId.value;
+  if (!projectId) {
+    ElMessage.warning("请先选择评估项目");
+    return;
+  }
   const problems = validateGraph();
   if (problems.length) {
     ElMessage.warning(problems[0]);
@@ -844,7 +882,12 @@ async function save() {
   }
   saving.value = true;
   try {
-    await endpoints.saveWorkflowSpec(serializeGraph());
+    const { data } = await endpoints.saveWorkflowSpec(
+      projectId,
+      serializeGraph(),
+    );
+    if (selectedProjectId.value !== projectId) return;
+    loadFromSpec(data);
     ElMessage.success("红队工作流已保存：连线依赖决定顺序，分叉节点可并行执行");
     graphNotice.value = "已保存。之后 AI 会按图中的依赖顺序组织受控任务。";
   } catch {
@@ -874,6 +917,14 @@ function toEditorNode(spec: WorkflowGraphNodeSpec): EditorNode {
 }
 
 function loadFromSpec(data: WorkflowSpecV2) {
+  workflowSnapshot.value = {
+    workflowId: data.workflowId,
+    scopeId: data.scopeId,
+    revision: data.revision,
+    specDigest: data.specDigest,
+    updatedBy: data.updatedBy,
+    updatedAt: data.updatedAt,
+  };
   if (data?.graph?.nodes?.length && data.graph.edges) {
     nodes.value = data.graph.nodes.map(toEditorNode);
     edges.value = dedupeEdges(
@@ -911,16 +962,52 @@ function loadFromSpec(data: WorkflowSpecV2) {
 }
 
 async function load() {
+  const sequence = ++loadSeq;
+  const projectId = selectedProjectId.value;
+  if (!projectId) {
+    workflowSnapshot.value = {};
+    buildPreset("standard");
+    return;
+  }
   loading.value = true;
   try {
-    const { data } = await endpoints.getWorkflowSpec();
+    const { data } = await endpoints.getWorkflowSpec(projectId);
+    if (sequence !== loadSeq || selectedProjectId.value !== projectId) return;
     loadFromSpec(data || {});
   } catch {
+    if (sequence !== loadSeq || selectedProjectId.value !== projectId) return;
+    workflowSnapshot.value = {};
     buildPreset("standard");
     ElMessage.warning("工作流服务暂不可用，已载入本地红队模板");
   } finally {
-    loading.value = false;
+    if (sequence === loadSeq) loading.value = false;
   }
+}
+
+async function loadProjects() {
+  try {
+    const { data } = await endpoints.projects();
+    projects.value = data || [];
+    const stored = Number(localStorage.getItem(WORKFLOW_PROJECT_STORAGE_KEY));
+    selectedProjectId.value =
+      projects.value.find((project) => project.id === stored)?.id ||
+      projects.value[0]?.id;
+    await load();
+  } catch {
+    projects.value = [];
+    selectedProjectId.value = undefined;
+    workflowSnapshot.value = {};
+    buildPreset("standard");
+    ElMessage.warning("项目列表暂不可用，工作流编辑器已载入本地模板");
+  }
+}
+
+async function changeProject(projectId: number) {
+  localStorage.setItem(WORKFLOW_PROJECT_STORAGE_KEY, String(projectId));
+  graphNotice.value = "";
+  selectedNodeId.value = "";
+  selectedEdgeId.value = "";
+  await load();
 }
 
 async function refit() {
@@ -1070,7 +1157,7 @@ function onWorkflowKeydown(event: KeyboardEvent) {
 onMounted(() => {
   scheduleSuggestions();
   window.addEventListener("keydown", onWorkflowKeydown);
-  void load();
+  void loadProjects();
 });
 onBeforeUnmount(() => {
   if (suggestTimer) clearTimeout(suggestTimer);
@@ -1089,6 +1176,23 @@ onBeforeUnmount(() => {
         </p>
       </div>
       <div class="workflow-actions">
+        <el-select
+          v-model="selectedProjectId"
+          class="project-select"
+          aria-label="评估项目"
+          placeholder="选择评估项目"
+          :loading="loading"
+          :disabled="saving"
+          @change="changeProject"
+        >
+          <template #prefix><el-icon><FolderOpened /></el-icon></template>
+          <el-option
+            v-for="project in projects"
+            :key="project.id"
+            :value="project.id"
+            :label="project.name"
+          />
+        </el-select>
         <el-button @click="showGuide = !showGuide"
           ><el-icon><QuestionFilled /></el-icon>使用说明</el-button
         >
@@ -1143,6 +1247,32 @@ onBeforeUnmount(() => {
     </el-alert>
 
     <div class="workflow-status-row">
+      <span class="status-chip">
+        <el-icon><FolderOpened /></el-icon>{{ selectedProject?.name || "未选择项目" }}
+      </span>
+      <span
+        class="status-chip workflow-snapshot-chip"
+        :data-fluent-tooltip="workflowSnapshot.workflowId || '保存后由服务端生成'"
+      >
+        Workflow {{ workflowSnapshot.workflowId || "尚未保存" }}
+      </span>
+      <span class="status-chip workflow-snapshot-chip">
+        Revision {{ workflowSnapshot.revision || "未生成" }}
+      </span>
+      <span
+        class="status-chip workflow-snapshot-chip"
+        :class="{ 'status-chip--ok': hasWorkflowSnapshot }"
+        :data-fluent-tooltip="workflowSnapshot.specDigest || '保存后由服务端计算'"
+      >
+        Digest {{ workflowSnapshot.specDigest || "未生成" }}
+      </span>
+      <span
+        v-if="workflowSnapshot.updatedAt"
+        class="status-chip workflow-snapshot-chip"
+      >
+        {{ workflowSnapshot.updatedBy || "系统" }} ·
+        {{ workflowUpdatedAt(workflowSnapshot.updatedAt) }}
+      </span>
       <span class="status-chip"
         ><el-icon><Flag /></el-icon>固定入口：开始 → 结束</span
       >
@@ -1532,6 +1662,13 @@ onBeforeUnmount(() => {
 }
 .preset-select {
   width: 170px;
+}
+.project-select {
+  width: 200px;
+}
+.workflow-snapshot-chip {
+  max-width: min(100%, 360px);
+  overflow-wrap: anywhere;
 }
 .workflow-guide {
   margin: 0 0 10px;

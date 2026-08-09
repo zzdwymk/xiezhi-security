@@ -1476,7 +1476,7 @@ html .desktop-v2-native-frame .vuln-workbench {
 .setup-steps li.active {
   background: var(--app-accent-soft);
   color: var(--app-text);
-  box-shadow: inset 3px 0 var(--app-accent);
+  box-shadow: none;
 }
 
 .setup-steps li i {

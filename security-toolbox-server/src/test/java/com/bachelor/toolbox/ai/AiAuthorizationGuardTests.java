@@ -58,7 +58,16 @@ class AiAuthorizationGuardTests {
   }
 
   private AiAgentRequest request(boolean execute) {
-    return new AiAgentRequest(7L, 9L, "guard-test", "请扫描端口", execute, null, List.of(), "standard");
+    return new AiAgentRequest(
+        7L,
+        9L,
+        "guard-test",
+        "请扫描端口",
+        execute,
+        null,
+        List.of(),
+        "standard",
+        "turn-guard-test");
   }
 
   private AiPlanResponse plan() {

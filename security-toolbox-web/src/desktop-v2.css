@@ -179,20 +179,6 @@
   cursor: col-resize;
   -webkit-app-region: no-drag;
 }
-.desktop-v2-sidebar-resizer::after {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 3px;
-  width: 1px;
-  background: transparent;
-  content: "";
-  transition: background 0.12s;
-}
-.desktop-v2-sidebar-resizer:hover::after,
-.sidebar-resizing .desktop-v2-sidebar-resizer::after {
-  background: color-mix(in srgb, CanvasText 28%, transparent);
-}
 body.sidebar-resizing {
   cursor: col-resize !important;
   user-select: none;

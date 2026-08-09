@@ -73,11 +73,18 @@ public class SecurityConfig {
                     .authenticated()
                     .requestMatchers(HttpMethod.POST, "/api/projects/*/approvals/*/decision")
                     .hasRole("ADMIN")
-                    .requestMatchers(HttpMethod.POST, "/api/ai/agent", "/api/ai/agent/stream")
+                    .requestMatchers(
+                        HttpMethod.POST,
+                        "/api/ai/agent",
+                        "/api/ai/agent/stream",
+                        "/api/ai/dispatches",
+                        "/api/ai/dispatches/stream")
                     .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.PUT, "/api/ai/workflow")
                     .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.DELETE, "/api/ai/agent/sessions/*")
+                    .hasRole("ADMIN")
+                    .requestMatchers(HttpMethod.DELETE, "/api/settings/data")
                     .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.GET, "/api/reports/projects/**")
                     .hasRole("ADMIN")

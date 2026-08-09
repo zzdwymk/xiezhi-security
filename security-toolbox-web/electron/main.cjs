@@ -19,6 +19,7 @@ const path = require("path");
 const { fileURLToPath } = require("url");
 const { Worker } = require("worker_threads");
 const { readJsonFile, writeJsonFileAtomic } = require("./json-file.cjs");
+const { createInvalidatableCache } = require("./invalidatable-cache.cjs");
 const {
   UserFacingError,
   diagnosticError,
@@ -34,6 +35,7 @@ let backendPort;
 let aiRuntimeConfig;
 let aiRuntimeStartError;
 let aiRuntimeTokenFile;
+let aiRuntimeSigningSecretFile;
 let shutdownToken;
 let quitting = false;
 let backendStartError;
@@ -282,7 +284,7 @@ function configuredWindowMaterial(settings = readDesktopSettings()) {
   return settings.micaEnabled === false ? "none" : "mica";
 }
 
-function currentSystemTheme() {
+function computeSystemTheme() {
   const rawAccent = String(systemPreferences.getAccentColor() || "").replace(
     /^#/,
     "",
@@ -348,6 +350,12 @@ function currentSystemTheme() {
   };
 }
 
+const systemThemeCache = createInvalidatableCache(computeSystemTheme);
+
+function currentSystemTheme() {
+  return systemThemeCache.get();
+}
+
 function applyNativeBackdrop(window, theme = currentSystemTheme()) {
   if (!window || window.isDestroyed() || process.platform !== "win32") return;
   window.setBackgroundColor(windowBackgroundColor(theme));
@@ -360,10 +368,9 @@ function applyNativeBackdrop(window, theme = currentSystemTheme()) {
   }
 }
 
-function applySystemThemeToStaticWindow(window) {
+function applySystemThemeToStaticWindow(window, theme = currentSystemTheme()) {
   if (!window || window.isDestroyed() || window.webContents.isDestroyed())
     return;
-  const theme = currentSystemTheme();
   const script = `(() => {
     const theme = ${JSON.stringify(theme)};
     const root = document.documentElement;
@@ -392,8 +399,13 @@ function broadcastSystemTheme() {
   ) {
     mainWindow.webContents.send("toolbox:system-theme-changed", theme);
   }
-  applySystemThemeToStaticWindow(startupWindow);
-  applySystemThemeToStaticWindow(captureBrowserWindow);
+  applySystemThemeToStaticWindow(startupWindow, theme);
+  applySystemThemeToStaticWindow(captureBrowserWindow, theme);
+}
+
+function handleSystemThemeChanged() {
+  systemThemeCache.invalidate();
+  broadcastSystemTheme();
 }
 
 function defaultToolsDirectory() {
@@ -406,13 +418,19 @@ function settingsPath() {
   return path.join(app.getPath("userData"), "desktop-settings.json");
 }
 
-function readDesktopSettings() {
+function loadDesktopSettings() {
   try {
     const parsed = JSON.parse(fs.readFileSync(settingsPath(), "utf8"));
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch {
     return {};
   }
+}
+
+const desktopSettingsCache = createInvalidatableCache(loadDesktopSettings);
+
+function readDesktopSettings() {
+  return desktopSettingsCache.get();
 }
 
 function writeDesktopSettings(settings) {
@@ -430,6 +448,8 @@ function writeDesktopSettings(settings) {
   } catch {
     /* Windows protects userData through the current user's ACL. */
   }
+  desktopSettingsCache.replace(settings);
+  systemThemeCache.invalidate();
 }
 
 const DESKTOP_CREDENTIAL_SCHEMA_VERSION = 1;
@@ -3086,11 +3106,9 @@ function resolveJava() {
     );
     if (fs.existsSync(candidate)) return candidate;
   }
-  const result = spawnSync("java", ["-version"], { windowsHide: true });
-  if (result.status === 0) return "java";
-  throw new Error(
-    "未检测到 Java 17 运行环境。请安装 Java 17，或设置 JAVA_HOME。",
-  );
+  // Let the real backend process perform PATH resolution. Its error listener
+  // preserves startup diagnostics without launching a throwaway JVM first.
+  return "java";
 }
 
 function resolveServerJar() {
@@ -3362,25 +3380,39 @@ async function allocateAiRuntimeSlot() {
   fs.mkdirSync(logDir, { recursive: true });
 
   const token = crypto.randomBytes(32).toString("base64url");
+  const signingSecret = crypto.randomBytes(32).toString("base64url");
   const tokenFile = path.join(runtimeDataDir, "runtime-token.txt");
+  const signingSecretFile = path.join(
+    runtimeDataDir,
+    "runtime-project-signing-secret.txt",
+  );
   const temporaryTokenFile = `${tokenFile}.${process.pid}.tmp`;
+  const temporarySigningSecretFile = `${signingSecretFile}.${process.pid}.tmp`;
   fs.writeFileSync(temporaryTokenFile, token, {
     encoding: "utf8",
     mode: 0o600,
   });
   if (fs.existsSync(tokenFile)) fs.unlinkSync(tokenFile);
   fs.renameSync(temporaryTokenFile, tokenFile);
+  fs.writeFileSync(temporarySigningSecretFile, signingSecret, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  if (fs.existsSync(signingSecretFile)) fs.unlinkSync(signingSecretFile);
+  fs.renameSync(temporarySigningSecretFile, signingSecretFile);
   try {
     fs.chmodSync(tokenFile, 0o600);
+    fs.chmodSync(signingSecretFile, 0o600);
   } catch {
     /* Windows ACL is inherited from userData. */
   }
   aiRuntimeTokenFile = tokenFile;
-  return { port, token, tokenFile, launch };
+  aiRuntimeSigningSecretFile = signingSecretFile;
+  return { port, token, tokenFile, signingSecret, signingSecretFile, launch };
 }
 
 function launchAiRuntimeProcess(slot) {
-  const { port, token, tokenFile, launch } = slot;
+  const { port, token, tokenFile, signingSecret, signingSecretFile, launch } = slot;
   const userDataDir = app.getPath("userData");
   const runtimeDataDir = path.join(userDataDir, "ai-runtime");
   const logDir = path.join(userDataDir, "logs");
@@ -3402,6 +3434,8 @@ function launchAiRuntimeProcess(slot) {
       runtimeDataDir,
       "--token-file",
       tokenFile,
+      "--project-signing-secret-file",
+      signingSecretFile,
       "--log-level",
       "warning",
     ],
@@ -3441,7 +3475,7 @@ function launchAiRuntimeProcess(slot) {
     }
   });
 
-  aiRuntimeSpawn = { port, token };
+  aiRuntimeSpawn = { port, token, signingSecret };
   return aiRuntimeSpawn;
 }
 async function waitForAiRuntimeReady(port) {
@@ -3450,6 +3484,7 @@ async function waitForAiRuntimeReady(port) {
     url: `http://127.0.0.1:${port}`,
     port,
     token: aiRuntimeSpawn?.token,
+    signingSecret: aiRuntimeSpawn?.signingSecret,
     health,
   };
   return aiRuntimeConfig;
@@ -3474,6 +3509,14 @@ function stopAiRuntime() {
       /* It may already be absent. */
     }
     aiRuntimeTokenFile = undefined;
+  }
+  if (aiRuntimeSigningSecretFile) {
+    try {
+      fs.unlinkSync(aiRuntimeSigningSecretFile);
+    } catch {
+      /* It may already be absent. */
+    }
+    aiRuntimeSigningSecretFile = undefined;
   }
 }
 
@@ -3536,6 +3579,7 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
     AI_RUNTIME_URL: runtime?.url || "",
     AI_RUNTIME_PORT: runtime?.port ? String(runtime.port) : "",
     AI_RUNTIME_TOKEN: runtime?.token || "",
+    AI_RUNTIME_PROJECT_SIGNING_SECRET: runtime?.signingSecret || "",
     ICP_API_URL: icpSettings.apiUrl,
     NUCLEI_PATH: fs.existsSync(path.join(toolsDir, "nuclei", "nuclei.exe"))
       ? path.join(toolsDir, "nuclei", "nuclei.exe")
@@ -3934,7 +3978,12 @@ async function boot() {
     backendPort = await findFreePort();
     mitmCaMigration = prepareDesktopMitmCaMigration();
     const aiSlot = await allocateAiRuntimeSlot();
-    startBackend(java, jar, backendPort, { url: `http://127.0.0.1:${aiSlot.port}`, port: aiSlot.port, token: aiSlot.token });
+    startBackend(java, jar, backendPort, {
+      url: `http://127.0.0.1:${aiSlot.port}`,
+      port: aiSlot.port,
+      token: aiSlot.token,
+      signingSecret: aiSlot.signingSecret,
+    });
     updateStartup("检查并启动运行环境", "本地服务正在初始化，请稍候…");
     await waitForBackend(backendPort);
     completeDesktopMitmCaMigration(mitmCaMigration);
@@ -3975,9 +4024,9 @@ async function boot() {
 
 if (hasSingleInstanceLock)
   app.whenReady().then(() => {
-    systemPreferences.on("accent-color-changed", broadcastSystemTheme);
-    systemPreferences.on("color-changed", broadcastSystemTheme);
-    nativeTheme.on("updated", broadcastSystemTheme);
+    systemPreferences.on("accent-color-changed", handleSystemThemeChanged);
+    systemPreferences.on("color-changed", handleSystemThemeChanged);
+    nativeTheme.on("updated", handleSystemThemeChanged);
     return boot();
   });
 app.on("second-instance", () => {
@@ -3997,9 +4046,9 @@ app.on("before-quit", (event) => {
       session.controller?.abort();
     }
   }
-  systemPreferences.off("accent-color-changed", broadcastSystemTheme);
-  systemPreferences.off("color-changed", broadcastSystemTheme);
-  nativeTheme.off("updated", broadcastSystemTheme);
+  systemPreferences.off("accent-color-changed", handleSystemThemeChanged);
+  systemPreferences.off("color-changed", handleSystemThemeChanged);
+  nativeTheme.off("updated", handleSystemThemeChanged);
   closeCaptureBrowser();
   stopAiRuntime();
   event.preventDefault();

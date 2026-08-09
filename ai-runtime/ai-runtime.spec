@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_dynamic_libs, collect_submodules, copy_metadata
 
 ROOT = Path(SPECPATH)
 datas = []
@@ -25,11 +25,9 @@ for package in (
     "uvicorn",
     "starlette",
     "pydantic",
-    "langchain",
     "langchain_core",
-    "langchain_openai",
     "langgraph",
-    "llama_index",
+    "rank_bm25",
     "tiktoken",
 ):
     try:
@@ -40,17 +38,26 @@ for package in (
     except Exception:
         hiddenimports += collect_submodules(package)
 
+# langchain_openai.middleware imports the top-level langchain package, which is
+# intentionally not installed (see README). Collect data/binaries normally but
+# filter the submodule scan so the build does not emit a false import warning.
+datas += collect_data_files("langchain_openai")
+binaries += collect_dynamic_libs("langchain_openai")
+hiddenimports += collect_submodules(
+    "langchain_openai",
+    filter=lambda name: "langchain_openai.middleware" not in name,
+)
+
 for distribution in (
     "fastapi",
     "uvicorn",
     "pydantic",
-    "langchain",
     "langchain-core",
     "langchain-openai",
     "langgraph",
     "langgraph-checkpoint",
     "langgraph-prebuilt",
-    "llama-index-core",
+    "rank-bm25",
     "openai",
     "tiktoken",
 ):
@@ -68,7 +75,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib", "IPython", "jupyter", "notebook", "torch", "tensorflow"],
+    excludes=["tkinter", "matplotlib", "IPython", "jupyter", "notebook", "torch", "tensorflow", "tzdata"],
     noarchive=False,
     optimize=1,
 )

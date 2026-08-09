@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.LongFunction;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -13,38 +14,43 @@ public class TaskProgressEventService {
   private static final long STREAM_TIMEOUT_MS = 30L * 60L * 1000L;
   private final Map<Long, Set<SseEmitter>> subscribers = new ConcurrentHashMap<>();
   private final Set<SseEmitter> allTaskSubscribers = ConcurrentHashMap.newKeySet();
-  private final Set<SseEmitter> dead = ConcurrentHashMap.newKeySet();
+  private final LongFunction<SseEmitter> emitterFactory;
+
+  public TaskProgressEventService() {
+    this(SseEmitter::new);
+  }
+
+  TaskProgressEventService(LongFunction<SseEmitter> emitterFactory) {
+    this.emitterFactory = emitterFactory;
+  }
 
   public SseEmitter subscribe(SecurityTask task) {
-    SseEmitter emitter = new SseEmitter(STREAM_TIMEOUT_MS);
-    subscribers
-        .computeIfAbsent(task.getId(), ignored -> ConcurrentHashMap.newKeySet())
-        .add(emitter);
-    Runnable cleanup =
-        () -> {
-          remove(task.getId(), emitter);
-          dead.remove(emitter);
-        };
+    SseEmitter emitter = emitterFactory.apply(STREAM_TIMEOUT_MS);
+    subscribers.compute(
+        task.getId(),
+        (ignored, emitters) -> {
+          Set<SseEmitter> current =
+              emitters == null ? ConcurrentHashMap.newKeySet() : emitters;
+          current.add(emitter);
+          return current;
+        });
+    Runnable cleanup = () -> remove(task.getId(), emitter);
     emitter.onCompletion(cleanup);
     emitter.onTimeout(cleanup);
     emitter.onError(ignored -> cleanup.run());
-    send(emitter, "snapshot", payload(task, null));
-    if (isTerminal(task.getStatus())) safeComplete(emitter);
+    boolean sent = send(task.getId(), emitter, "snapshot", payload(task, null));
+    if (sent && isTerminal(task.getStatus())) safeComplete(task.getId(), emitter);
     return emitter;
   }
 
   public SseEmitter subscribeAll() {
-    SseEmitter emitter = new SseEmitter(STREAM_TIMEOUT_MS);
+    SseEmitter emitter = emitterFactory.apply(STREAM_TIMEOUT_MS);
     allTaskSubscribers.add(emitter);
-    Runnable cleanup =
-        () -> {
-          allTaskSubscribers.remove(emitter);
-          dead.remove(emitter);
-        };
+    Runnable cleanup = () -> allTaskSubscribers.remove(emitter);
     emitter.onCompletion(cleanup);
     emitter.onTimeout(cleanup);
     emitter.onError(ignored -> cleanup.run());
-    send(emitter, "ready", Map.of("connected", true, "emittedAt", Instant.now().toString()));
+    send(null, emitter, "ready", Map.of("connected", true, "emittedAt", Instant.now().toString()));
     return emitter;
   }
 
@@ -52,10 +58,15 @@ public class TaskProgressEventService {
     Map<String, Object> payload = payload(task, logLine);
     Set<SseEmitter> emitters = subscribers.get(task.getId());
     if (emitters != null) {
-      emitters.forEach(emitter -> send(emitter, "progress", payload));
-      if (isTerminal(task.getStatus())) emitters.forEach(this::safeComplete);
+      boolean terminal = isTerminal(task.getStatus());
+      emitters.forEach(
+          emitter -> {
+            if (send(task.getId(), emitter, "progress", payload) && terminal) {
+              safeComplete(task.getId(), emitter);
+            }
+          });
     }
-    allTaskSubscribers.forEach(emitter -> send(emitter, "progress", payload));
+    allTaskSubscribers.forEach(emitter -> send(null, emitter, "progress", payload));
   }
 
   private Map<String, Object> payload(SecurityTask task, String logLine) {
@@ -64,6 +75,12 @@ public class TaskProgressEventService {
         Map.entry("projectId", task.getProjectId() == null ? 0L : task.getProjectId()),
         Map.entry("targetId", task.getTargetId() == null ? 0L : task.getTargetId()),
         Map.entry("toolCode", task.getToolCode() == null ? "" : task.getToolCode()),
+        Map.entry(
+            "workflowDigest", task.getWorkflowDigest() == null ? "" : task.getWorkflowDigest()),
+        Map.entry(
+            "workflowNodeId", task.getWorkflowNodeId() == null ? "" : task.getWorkflowNodeId()),
+        Map.entry("nodeRunId", task.getNodeRunId() == null ? "" : task.getNodeRunId()),
+        Map.entry("workflowGroup", task.getWorkflowGroup() == null ? 0 : task.getWorkflowGroup()),
         Map.entry("status", task.getStatus()),
         Map.entry("progress", task.getProgress()),
         Map.entry("progressDeterminate", Boolean.TRUE.equals(task.getProgressDeterminate())),
@@ -88,10 +105,10 @@ public class TaskProgressEventService {
         Map.entry("emittedAt", Instant.now().toString()));
   }
 
-  private void send(SseEmitter emitter, String eventName, Object data) {
-    if (dead.contains(emitter)) return;
+  private boolean send(Long taskId, SseEmitter emitter, String eventName, Object data) {
     try {
       emitter.send(SseEmitter.event().name(eventName).data(data));
+      return true;
     } catch (IOException | RuntimeException ex) {
       // The socket is gone, or the async context already errored (Tomcat fired
       // AsyncListener.onError and returned). Calling complete()/completeWithError() here
@@ -99,30 +116,31 @@ public class TaskProgressEventService {
       // "non-container thread used AsyncContext after error" IllegalStateException, which
       // would escape into whatever thread called publish() — including Tomcat request
       // threads (task create/retry/cancel), surfacing as an HTTP 500. Just retire it.
-      retire(emitter);
+      retire(taskId, emitter);
+      return false;
     }
   }
 
-  private void retire(SseEmitter emitter) {
-    if (!dead.add(emitter)) return;
-    subscribers.values().forEach(values -> values.remove(emitter));
-    allTaskSubscribers.remove(emitter);
+  private void retire(Long taskId, SseEmitter emitter) {
+    if (taskId == null) allTaskSubscribers.remove(emitter);
+    else remove(taskId, emitter);
   }
 
-  private void safeComplete(SseEmitter emitter) {
-    if (dead.contains(emitter)) return;
+  private void safeComplete(Long taskId, SseEmitter emitter) {
     try {
       emitter.complete();
     } catch (RuntimeException ex) {
-      retire(emitter);
+      retire(taskId, emitter);
     }
   }
 
   private void remove(Long taskId, SseEmitter emitter) {
-    Set<SseEmitter> emitters = subscribers.get(taskId);
-    if (emitters == null) return;
-    emitters.remove(emitter);
-    if (emitters.isEmpty()) subscribers.remove(taskId, emitters);
+    subscribers.computeIfPresent(
+        taskId,
+        (ignored, emitters) -> {
+          emitters.remove(emitter);
+          return emitters.isEmpty() ? null : emitters;
+        });
   }
 
   private boolean isTerminal(String status) {
@@ -130,6 +148,7 @@ public class TaskProgressEventService {
         || "FAILED".equals(status)
         || "CANCELLED".equals(status)
         || "TIMEOUT".equals(status)
-        || "REJECTED".equals(status);
+        || "REJECTED".equals(status)
+        || "SKIPPED".equals(status);
   }
 }
