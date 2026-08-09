@@ -238,6 +238,26 @@
   background: var(--fluent3-select-bg) !important;
 }
 
+.desktop-v2-app-frame .el-table__body tr td.el-table__cell:first-child {
+  position: relative;
+}
+
+.desktop-v2-app-frame .el-table__body tr.current-row > td.el-table__cell:first-child::before,
+.desktop-v2-app-frame .el-table__body tr.is-selected > td.el-table__cell:first-child::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: var(--fluent3-slider-width);
+  height: 60%;
+  border-radius: var(--fluent3-slider-width);
+  background: var(--fluent3-slider-accent);
+  transition: height var(--fluent-normal), opacity var(--fluent-fast);
+  pointer-events: none;
+  z-index: 1;
+}
+
 .desktop-v2-app-frame .desktop-v2-content > .workspace-list-page > .el-table {
   --el-table-row-hover-bg-color: var(--fluent3-hover-bg);
 }
@@ -401,7 +421,9 @@
   .desktop-v2-recent-item.active::before,
   .setup-steps li.active::before,
   .traffic-row.active::before,
-  .offline-tool-index .offline-tool-item.active::before {
+  .offline-tool-index .offline-tool-item.active::before,
+  .desktop-v2-app-frame .el-table__body tr.current-row > td.el-table__cell:first-child::before,
+  .desktop-v2-app-frame .el-table__body tr.is-selected > td.el-table__cell:first-child::before {
     height: 40%;
   }
 }
