@@ -138,6 +138,8 @@
       }
 
       .step {
+        position: relative;
+        overflow: hidden;
         display: grid;
         min-height: 46px;
         grid-template-columns: 25px minmax(0, 1fr);
@@ -171,6 +173,17 @@
         background: var(--sidebar-active);
         color: #1e1f1c;
         font-weight: 600;
+      }
+      .step.active::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 3px;
+        height: 50%;
+        border-radius: 3px;
+        background: var(--accent);
       }
       .step.active .step-index {
         border-color: var(--accent);
