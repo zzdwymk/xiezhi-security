@@ -427,3 +427,31 @@
     height: 40%;
   }
 }
+
+/* Vulnerability View Override */
+.catalog-list button {
+  position: relative;
+  border-radius: var(--fluent3-corner-small);
+  border-bottom: none !important;
+}
+.catalog-list button::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: var(--fluent3-slider-width);
+  height: 0;
+  border-radius: var(--fluent3-slider-width);
+  background: var(--fluent3-slider-accent);
+  transition: height var(--fluent-normal), opacity var(--fluent-fast);
+  pointer-events: none;
+  opacity: 0;
+}
+.catalog-list button.active {
+  box-shadow: none !important;
+}
+.catalog-list button.active::before {
+  height: 60%;
+  opacity: 1;
+}
