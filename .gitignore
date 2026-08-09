@@ -79,3 +79,7 @@ $RECYCLE.BIN/
 *.bak
 *.orig
 *.rej
+
+# Generated coverage files
+coverage/
+*.lcov
