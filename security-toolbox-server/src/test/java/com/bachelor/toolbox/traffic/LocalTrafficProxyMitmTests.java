@@ -147,7 +147,7 @@ class LocalTrafficProxyMitmTests {
     LocalTrafficProxy.Capture capture = awaitCapture("CONNECT");
     assertEquals("TLS_CLIENT_REJECTED", capture.captureState());
     assertEquals("https", capture.scheme());
-    assertEquals(CLIENT_ERROR_MESSAGE, capture.errorMessage());
+    assertEquals("浏览器未信任本地抓包证书，或拒绝了 TLS 安全连接", capture.errorMessage());
   }
 
   @Test
@@ -170,7 +170,7 @@ class LocalTrafficProxyMitmTests {
     LocalTrafficProxy.Capture capture = awaitCapture("GET");
     assertEquals("HTTPS", capture.protocol());
     assertEquals("UNSUPPORTED", capture.captureState());
-    assertEquals(CLIENT_ERROR_MESSAGE, capture.errorMessage());
+    assertEquals("HTTPS 请求 Host 必须与 CONNECT 目标一致", capture.errorMessage());
     assertEquals("127.0.0.1", capture.host());
     assertEquals(upstream.port(), capture.port());
     assertEquals(0, upstream.countRequestsForPath("/outside-boundary"));

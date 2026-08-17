@@ -26,9 +26,19 @@ class SystemDependencyControllerTests {
     SystemDependenciesResponse expected =
         new SystemDependenciesResponse("Windows", "amd64", List.of());
     when(request.getRemoteAddr()).thenReturn("127.0.0.1");
-    when(detectionService.detect()).thenReturn(expected);
+    when(detectionService.detect(false)).thenReturn(expected);
 
-    assertThat(controller.dependencies(request)).isSameAs(expected);
+    assertThat(controller.dependencies(request, false)).isSameAs(expected);
+  }
+
+  @Test
+  void forcesRefreshForExplicitRecheck() {
+    SystemDependenciesResponse expected =
+        new SystemDependenciesResponse("Windows", "amd64", List.of());
+    when(request.getRemoteAddr()).thenReturn("127.0.0.1");
+    when(detectionService.detect(true)).thenReturn(expected);
+
+    assertThat(controller.dependencies(request, true)).isSameAs(expected);
   }
 
   @Test
@@ -43,7 +53,7 @@ class SystemDependencyControllerTests {
   void rejectsRemoteDependencyStatusRequestWithChineseMessage() {
     when(request.getRemoteAddr()).thenReturn("192.0.2.10");
 
-    assertThatThrownBy(() -> controller.dependencies(request))
+    assertThatThrownBy(() -> controller.dependencies(request, false))
         .isInstanceOfSatisfying(
             ResponseStatusException.class,
             exception -> {
@@ -71,7 +81,7 @@ class SystemDependencyControllerTests {
   void rejectsMissingRemoteAddress() {
     when(request.getRemoteAddr()).thenReturn(null);
 
-    assertThatThrownBy(() -> controller.dependencies(request))
+    assertThatThrownBy(() -> controller.dependencies(request, false))
         .isInstanceOfSatisfying(
             ResponseStatusException.class,
             exception -> {

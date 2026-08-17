@@ -9,6 +9,7 @@
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
     "test:json-file": "node scripts/test-json-file.cjs",
+    "test:ai-settings": "node scripts/test-ai-settings.cjs",
     "test:offline": "node scripts/verify-offline-tools.cjs",
     "test:visual": "node scripts/visual-smoke.cjs",
     "preview": "vite preview",

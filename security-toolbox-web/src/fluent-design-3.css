@@ -27,6 +27,38 @@
   --fluent3-select-border: color-mix(in srgb, var(--app-accent) 24%, var(--app-border));
   --fluent3-hover-bg: var(--app-accent-soft);
   --fluent3-card-radius: var(--fluent-radius-xlarge);
+  --fluent3-slider-ease: 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* One animated indicator is shared by every navigable list and tab strip. */
+.fluent-selection-indicator {
+  position: absolute;
+  z-index: 3;
+  top: 0;
+  left: 0;
+  width: var(--selection-indicator-width, 3px);
+  height: var(--selection-indicator-height, 20px);
+  border-radius: 999px;
+  background: var(--fluent3-slider-accent);
+  opacity: var(--selection-indicator-opacity, 0);
+  transform: translate3d(
+    var(--selection-indicator-x, 0),
+    var(--selection-indicator-y, 0),
+    0
+  );
+  transition:
+    width var(--fluent3-slider-ease),
+    height var(--fluent3-slider-ease),
+    opacity var(--fluent-fast),
+    transform var(--fluent3-slider-ease);
+  pointer-events: none;
+  will-change: transform, width, height;
+}
+
+/* Layout collapse follows the active item directly; route changes keep the
+   normal Fluent sliding transition. */
+.fluent-selection-indicator.is-layout-tracking {
+  transition-property: width, height, opacity;
 }
 
 /* =================================================================
@@ -34,38 +66,9 @@
    3px accent bar on the left of active/selected items
    ================================================================= */
 
-.desktop-v2-nav-item.active::before,
-.desktop-v2-nav button.active::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: var(--fluent3-slider-width);
-  height: 60%;
-  border-radius: var(--fluent3-slider-width);
-  background: var(--fluent3-slider-accent);
-  transition: height var(--fluent-normal), opacity var(--fluent-fast);
-  pointer-events: none;
-}
-
 .desktop-v2-recent-item.active {
   box-shadow: none !important;
 }
-.desktop-v2-recent-item.active::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: var(--fluent3-slider-width);
-  height: 60%;
-  border-radius: var(--fluent3-slider-width);
-  background: var(--fluent3-slider-accent);
-  transition: height var(--fluent-normal), opacity var(--fluent-fast);
-  pointer-events: none;
-}
-
 .desktop-v2-app-frame .desktop-v2-content .settings-list > button.active::before,
 .desktop-v2-app-frame .desktop-v2-content .settings-list > button[aria-current="true"]::before {
   content: "";
@@ -77,7 +80,7 @@
   height: 60%;
   border-radius: var(--fluent3-slider-width);
   background: var(--fluent3-slider-accent);
-  transition: height var(--fluent-normal), opacity var(--fluent-fast);
+  transition: height var(--fluent3-slider-ease), opacity var(--fluent-fast);
   pointer-events: none;
 }
 
@@ -91,21 +94,7 @@
   height: 60%;
   border-radius: var(--fluent3-slider-width);
   background: var(--fluent3-slider-accent);
-  transition: height var(--fluent-normal), opacity var(--fluent-fast);
-  pointer-events: none;
-}
-
-.traffic-row.active::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: var(--fluent3-slider-width);
-  height: 60%;
-  border-radius: var(--fluent3-slider-width);
-  background: var(--fluent3-slider-accent);
-  transition: height var(--fluent-normal), opacity var(--fluent-fast);
+  transition: height var(--fluent3-slider-ease), opacity var(--fluent-fast);
   pointer-events: none;
 }
 
@@ -127,6 +116,105 @@
   border-color: var(--fluent3-select-border) !important;
   background: var(--fluent3-select-bg) !important;
   box-shadow: none !important;
+}
+
+/* Shared selection slider moves between routes instead of being recreated. */
+.desktop-v2-nav {
+  position: relative;
+}
+
+.traffic-session-rail,
+.catalog-list,
+.packet-tabs,
+.replay-document-tabs {
+  position: relative;
+}
+
+.offline-tool-index {
+  position: relative;
+}
+
+.desktop-v2-recents-list {
+  position: relative;
+}
+
+.desktop-v2-recent-item.active::before {
+  display: none !important;
+  content: none !important;
+}
+
+.desktop-v2-nav .desktop-v2-nav-item.active::before,
+.desktop-v2-nav button.active::before {
+  display: none !important;
+  content: none !important;
+}
+
+.offline-tool-index .offline-tool-item.active::before {
+  display: none !important;
+  content: none !important;
+}
+
+.offline-tool-index .offline-tool-item.active::before,
+.catalog-list button.active::before {
+  display: none !important;
+  content: none !important;
+}
+
+.desktop-v2-app-frame .desktop-v2-recents-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.desktop-v2-app-frame .desktop-v2-recents-head .desktop-v2-recents-toggle {
+  width: auto;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.packet-tabs-indicator,
+.replay-document-tabs-indicator {
+  border-radius: 999px;
+}
+
+.packet-tabs-indicator {
+  --selection-indicator-y: 37px;
+}
+
+.replay-document-tabs-indicator {
+  --selection-indicator-y: 35px;
+}
+
+.packet-tabs button.active::after,
+.inline-replay-tabs button.active,
+.inline-replay-tabs button.active::after,
+.replay-document-tabs > button.active::after {
+  box-shadow: none !important;
+}
+
+.packet-tabs button.active::after,
+.replay-document-tabs > button.active::after {
+  display: none !important;
+  content: none !important;
+}
+
+.inline-replay-tabs button.active {
+  border-bottom-color: transparent !important;
+}
+
+/* Route content uses a short Fluent entrance animation. */
+.desktop-v2-content.is-route-entering > * {
+  animation: workspace-route-enter 160ms cubic-bezier(0.2, 0.8, 0.2, 1)
+    both;
+}
+
+@keyframes workspace-route-enter {
+  from {
+    opacity: 0.72;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .desktop-v2-recent-item {
@@ -204,20 +292,6 @@
   box-shadow: none !important;
 }
 
-.offline-tool-index .offline-tool-item.active::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: var(--fluent3-slider-width);
-  height: 60%;
-  border-radius: var(--fluent3-slider-width);
-  background: var(--fluent3-slider-accent);
-  transition: height var(--fluent-normal), opacity var(--fluent-fast);
-  pointer-events: none;
-}
-
 /* =================================================================
    Table rows - VFluent3 list-view selection pattern
    ================================================================= */
@@ -253,7 +327,7 @@
   height: 60%;
   border-radius: var(--fluent3-slider-width);
   background: var(--fluent3-slider-accent);
-  transition: height var(--fluent-normal), opacity var(--fluent-fast);
+  transition: height var(--fluent3-slider-ease), opacity var(--fluent-fast);
   pointer-events: none;
   z-index: 1;
 }
@@ -306,6 +380,10 @@
 .desktop-v2-app-frame .el-tabs__active-bar {
   border-radius: var(--fluent3-slider-width);
   height: var(--fluent3-slider-width) !important;
+  transition:
+    width var(--fluent3-slider-ease),
+    transform var(--fluent3-slider-ease),
+    opacity var(--fluent-fast);
 }
 
 /* =================================================================
@@ -339,6 +417,25 @@
 .desktop-v2-app-frame .el-popper {
   border-radius: var(--fluent-radius-overlay) !important;
   box-shadow: var(--fluent-overlay-shadow) !important;
+}
+
+/* Date/time pickers are teleported under body and their component CSS loads
+   after the global theme. Keep every picker surface on the Fluent overlay radius. */
+.el-picker__popper.el-popper {
+  --el-popper-border-radius: var(--fluent-radius-overlay);
+  overflow: hidden;
+  border-radius: var(--fluent-radius-overlay) !important;
+}
+
+.el-picker__popper.el-popper
+  :is(
+    .el-picker-panel,
+    .el-date-picker,
+    .el-date-range-picker,
+    .el-time-panel,
+    .el-time-range-picker
+  ) {
+  border-radius: var(--fluent-radius-overlay) !important;
 }
 
 /* =================================================================
@@ -395,6 +492,7 @@
   border-radius: var(--fluent3-slider-width);
   background: var(--fluent3-slider-accent);
   pointer-events: none;
+  transition: height var(--fluent3-slider-ease), opacity var(--fluent-fast);
 }
 
 /* =================================================================
@@ -420,7 +518,6 @@
   .desktop-v2-nav-item.active::before,
   .desktop-v2-recent-item.active::before,
   .setup-steps li.active::before,
-  .traffic-row.active::before,
   .offline-tool-index .offline-tool-item.active::before,
   .desktop-v2-app-frame .el-table__body tr.current-row > td.el-table__cell:first-child::before,
   .desktop-v2-app-frame .el-table__body tr.is-selected > td.el-table__cell:first-child::before {
@@ -434,25 +531,7 @@
   border-radius: var(--fluent3-corner-small);
   border-bottom: none !important;
 }
-.catalog-list button::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: var(--fluent3-slider-width);
-  height: 0;
-  border-radius: var(--fluent3-slider-width);
-  background: var(--fluent3-slider-accent);
-  transition: height var(--fluent-normal), opacity var(--fluent-fast);
-  pointer-events: none;
-  opacity: 0;
-}
 .catalog-list button.active {
-  box-shadow: none !important;
-}
-.catalog-list button.active::before {
-  height: 60%;
-  opacity: 1;
+  box-shadow: inset 3px 0 var(--app-accent) !important;
 }
 

@@ -59,6 +59,17 @@ class AiControllerWorkflowTests {
   }
 
   @Test
+  void clearAgentSessionReturnsTheOrchestratorResult() {
+    when(orchestrator.clearSession("session-1")).thenReturn(false);
+
+    assertEquals(
+        Map.of("sessionId", "session-1", "cleared", false),
+        controller.clearAgentSession("session-1"));
+
+    verify(orchestrator).clearSession("session-1");
+  }
+
+  @Test
   void agentTurnRunsWithOneFrozenWorkflowRevision() {
     String digest = "sha256:" + "a".repeat(64);
     AgentWorkflowSpecService.WorkflowSnapshot snapshot =

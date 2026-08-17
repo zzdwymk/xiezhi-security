@@ -80,7 +80,7 @@ class AssessmentProjectServiceTests {
     assertThat(project.getStatus()).isEqualTo("DRAFT");
     assertThat(project.getId()).isEqualTo(1L);
     assertThat(project.getName()).isEqualTo("项目A");
-    assertThat(project.getOwner()).isEqualTo("admin");
+    assertThat(project.getOwner()).isEqualTo("负责人");
     verify(audit).record("CREATE_PROJECT", "PROJECT", 1L, "项目A", "SUCCESS");
   }
 

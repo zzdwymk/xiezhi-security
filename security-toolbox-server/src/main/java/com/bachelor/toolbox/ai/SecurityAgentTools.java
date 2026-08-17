@@ -38,6 +38,7 @@ public class SecurityAgentTools {
   private final ObjectMapper objectMapper;
   private final TaskService taskService;
   private final AuditService auditService;
+  private final CrossTurnRecoveryService recoveryService;
 
   public SecurityAgentTools(
       AssessmentProjectService projects,
@@ -47,7 +48,8 @@ public class SecurityAgentTools {
       AiAgentDispatchRepository dispatches,
       ObjectMapper objectMapper,
       TaskService taskService,
-      AuditService auditService) {
+      AuditService auditService,
+      CrossTurnRecoveryService recoveryService) {
     this.projects = projects;
     this.targets = targets;
     this.guard = guard;
@@ -56,6 +58,7 @@ public class SecurityAgentTools {
     this.objectMapper = objectMapper;
     this.taskService = taskService;
     this.auditService = auditService;
+    this.recoveryService = recoveryService;
   }
 
   /**
@@ -138,6 +141,29 @@ public class SecurityAgentTools {
   @Transactional
   public AiDispatchResponse executeAuthorizedPlan(
       AiAgentRequest request, AiPlanResponse proposedPlan) throws Exception {
+    return executeAuthorizedPlanInTransaction(request, proposedPlan, null);
+  }
+
+  /**
+   * Creates the task batch, dispatch idempotency record and continuation outbox in one database
+   * transaction. Runtime checkpoint delivery remains the continuation worker's responsibility
+   * after this transaction commits.
+   */
+  @Transactional
+  public AiDispatchResponse executeAuthorizedPlan(
+      AiAgentRequest request,
+      AiPlanResponse proposedPlan,
+      CrossTurnRecoveryService.RecoveryAnchor recoveryAnchor)
+      throws Exception {
+    if (recoveryAnchor == null) throw new ApiException("Agent 续接锚点不能为空");
+    return executeAuthorizedPlanInTransaction(request, proposedPlan, recoveryAnchor);
+  }
+
+  private AiDispatchResponse executeAuthorizedPlanInTransaction(
+      AiAgentRequest request,
+      AiPlanResponse proposedPlan,
+      CrossTurnRecoveryService.RecoveryAnchor recoveryAnchor)
+      throws Exception {
     projects.lockForAgentExecution(request.projectId());
     targets.lockForAgentExecution(request.targetId());
     String idempotencyKey = idempotencyKey(request);
@@ -151,6 +177,7 @@ public class SecurityAgentTools {
       targets.getCurrentlyAuthorized(request.targetId());
       AiPlanResponse normalized = prepareForHarness(request, proposedPlan);
       List<Long> taskIds = parseTaskIds(existing.getTaskIds());
+      checkpoint(request, recoveryAnchor, taskIds);
       return new AiDispatchResponse(request.targetId(), normalized, taskIds.size(), taskIds);
     }
     AiAuthorizationGuard.GuardDecision decision = guard.evaluate(request, proposedPlan);
@@ -218,7 +245,16 @@ public class SecurityAgentTools {
     record.setTaskIds(
         response.taskIds().stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(",")));
     dispatches.save(record);
+    checkpoint(request, recoveryAnchor, response.taskIds());
     return response;
+  }
+
+  private void checkpoint(
+      AiAgentRequest request,
+      CrossTurnRecoveryService.RecoveryAnchor recoveryAnchor,
+      List<Long> taskIds) {
+    if (recoveryAnchor == null) return;
+    recoveryService.checkpoint(recoveryAnchor.bind(request, taskIds));
   }
 
   private void rejectUnsafeParallelGroups(List<AiPlanResponse.PlanStep> steps) {

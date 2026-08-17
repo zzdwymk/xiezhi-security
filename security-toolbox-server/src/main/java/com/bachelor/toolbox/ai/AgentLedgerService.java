@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -318,7 +319,9 @@ public class AgentLedgerService {
     String evidenceJson = writeCanonical(request.evidenceIds());
     String actionJson = writeCanonical(request.actionIds());
     String previousDigest = previous == null ? null : previous.getEntryDigest();
-    Instant createdAt = Instant.now();
+    // PostgreSQL and the H2 PostgreSQL test profile persist timestamps at microsecond precision.
+    // Canonicalize before hashing so a database round-trip cannot change the signed payload.
+    Instant createdAt = Instant.now().truncatedTo(ChronoUnit.MICROS);
     String entryDigest =
         digest(
             canonicalPayload(

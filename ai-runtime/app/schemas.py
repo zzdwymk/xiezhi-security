@@ -65,6 +65,27 @@ class EmptyToolParameters(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class PocSelectionParameters(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    pocCodes: list[
+        Annotated[
+            StrictStr,
+            Field(pattern=r"^[A-Z]{2}-[A-F0-9]{24}$"),
+        ]
+    ] | None = Field(default=None, min_length=1, max_length=50)
+    allPocs: StrictBool | None = None
+
+    @model_validator(mode="after")
+    def require_one_selection_mode(self) -> "PocSelectionParameters":
+        if (self.pocCodes is None) == (self.allPocs is None):
+            raise ValueError("select concrete PoCs or all PoCs")
+        if self.allPocs is not None and not self.allPocs:
+            raise ValueError("allPocs must be true when provided")
+        if self.pocCodes is not None and len(self.pocCodes) != len(set(self.pocCodes)):
+            raise ValueError("PoC codes must be unique")
+        return self
+
+
 class RetrievalParameters(BaseModel):
     model_config = ConfigDict(extra="forbid")
     query: StrictStr = Field(min_length=1, max_length=2000)
@@ -104,6 +125,7 @@ WorkflowToolParameters = Union[
     PortScanParameters,
     NmapParameters,
     WorkflowHttpSecurityParameters,
+    PocSelectionParameters,
 ]
 
 GroundedParameterPatch = Union[
@@ -111,6 +133,7 @@ GroundedParameterPatch = Union[
     PortScanParameters,
     NmapParameters,
     WorkflowHttpSecurityParameters,
+    PocSelectionParameters,
 ]
 
 
@@ -156,6 +179,16 @@ class NucleiScanAction(_PlanAction):
     parameters: EmptyToolParameters
 
 
+class AfrogScanAction(_PlanAction):
+    tool: Literal["afrog_scan"]
+    parameters: PocSelectionParameters
+
+
+class XrayScanAction(_PlanAction):
+    tool: Literal["xray_scan"]
+    parameters: PocSelectionParameters
+
+
 PlanAction = Annotated[
     Union[
         RetrieveProjectContextAction,
@@ -165,6 +198,8 @@ PlanAction = Annotated[
         HttpSecurityCheckAction,
         TlsConfigAction,
         NucleiScanAction,
+        AfrogScanAction,
+        XrayScanAction,
     ],
     Field(discriminator="tool"),
 ]
@@ -397,6 +432,8 @@ class WorkflowStep(BaseModel):
         "http_security_check",
         "tls_config",
         "nuclei_scan",
+        "afrog_scan",
+        "xray_scan",
     ]
     parameters: WorkflowToolParameters
     risk: Literal["SAFE", "CAUTION"] = "SAFE"
@@ -418,6 +455,8 @@ class WorkflowStep(BaseModel):
         "http_security_check": WorkflowHttpSecurityParameters,
         "tls_config": EmptyToolParameters,
         "nuclei_scan": EmptyToolParameters,
+        "afrog_scan": PocSelectionParameters,
+        "xray_scan": PocSelectionParameters,
     }
 
     @model_validator(mode="before")
@@ -541,6 +580,73 @@ class LedgerAgentContext(BaseModel):
 
 # Source compatibility for existing callers while the public contract is named explicitly.
 AgentRequest = LedgerAgentContext
+
+
+class AgentRecoveryIdentity(BaseModel):
+    """Exact public identity shared by checkpoint and callback requests."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    projectId: StrictInt = Field(gt=0)
+    targetId: StrictInt = Field(gt=0)
+    conversationId: StrictStr | None = Field(default=None, max_length=200)
+    runId: StrictStr = Field(
+        min_length=8, max_length=80, pattern=r"^[A-Za-z0-9_-]+$"
+    )
+    nodeRunId: StrictStr = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+    )
+    workflowId: StrictStr = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+    )
+    workflowRevision: StrictInt = Field(ge=1)
+    workflowDigest: StrictStr = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    outerNodeId: StrictStr = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+    )
+    policyRevision: StrictStr = Field(
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+    )
+    requestDigest: StrictStr = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    stateVersion: StrictInt = Field(ge=1)
+    ledgerDigest: StrictStr = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class AgentCheckpointRequest(AgentRecoveryIdentity):
+    """Finite callback checkpoint; task IDs are references, never result bodies."""
+
+    pendingTaskIds: list[StrictInt] = Field(min_length=1, max_length=64)
+
+    @field_validator("pendingTaskIds")
+    @classmethod
+    def validate_pending_task_ids(cls, value: list[int]) -> list[int]:
+        if any(task_id <= 0 for task_id in value):
+            raise ValueError("pending task IDs must be positive")
+        if len(value) != len(set(value)):
+            raise ValueError("pending task IDs must be unique")
+        return value
+
+
+class AgentResumeRequest(AgentRecoveryIdentity):
+    """One idempotent terminal task callback for a persisted checkpoint."""
+
+    callbackId: StrictStr = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+    )
+    taskId: StrictInt = Field(gt=0)
+    taskStatus: Literal[
+        "SUCCESS", "FAILED", "TIMEOUT", "CANCELLED", "REJECTED", "SKIPPED"
+    ]
+    resultDigest: StrictStr = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
 class LedgerAgentProposedAction(BaseModel):

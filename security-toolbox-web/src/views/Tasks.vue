@@ -711,8 +711,7 @@ onUnmounted(() => {
   <el-dialog
     v-model="scheduleVisible"
     title="定时任务管理"
-    width="820px"
-    class="app-dialog app-dialog--lg"
+    class="app-dialog app-dialog--wide"
     align-center
     destroy-on-close
   >
@@ -933,7 +932,6 @@ onUnmounted(() => {
   <el-dialog
     v-model="detailVisible"
     title="任务详情"
-    width="720px"
     class="app-dialog app-dialog--lg"
     align-center
   >
@@ -1036,6 +1034,9 @@ onUnmounted(() => {
         <pre class="task-output">{{ detail.resultJson || "尚无结果" }}</pre>
       </el-descriptions-item>
     </el-descriptions>
+    <template #footer>
+      <el-button @click="detailVisible = false">关闭</el-button>
+    </template>
   </el-dialog>
 </template>
 

@@ -316,6 +316,7 @@
   cursor: help;
 }
 .dep-version {
+  display: block;
   overflow: hidden;
   color: #74756f;
   font:
@@ -323,6 +324,7 @@
     monospace;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: help;
 }
 .dep-action,
 .dep-manual-link {
@@ -370,15 +372,17 @@
   color: #8d8e88;
 }
 .dependency-loading > .el-icon {
+  width: 36px;
+  height: 36px;
   color: var(--setup-accent);
-  font-size: 25px;
+  font-size: 36px;
 }
 .dependency-loading strong {
   margin-top: 13px;
   color: #454641;
   font-size: 13px;
 }
-.dependency-loading span {
+.dependency-loading > span {
   margin-top: 5px;
   font-size: 11px;
 }
@@ -599,7 +603,7 @@
 
 /* Dependency actions — Fluent 2 control sizing and readable contrast. */
 .dependency-row {
-  grid-template-columns: 30px minmax(220px, 1fr) minmax(100px, 160px) 64px 124px;
+  grid-template-columns: 30px minmax(220px, 1fr) minmax(100px, 160px) 64px 190px;
 }
 .dep-main b {
   color: var(--setup-text);
@@ -613,7 +617,7 @@
 }
 .dep-actions {
   display: flex;
-  width: 124px;
+  width: 190px;
   align-items: center;
   justify-content: flex-end;
 }
@@ -630,6 +634,32 @@
 }
 .dep-actions > .el-button--primary:not(.is-plain) {
   --el-button-text-color: var(--system-accent-foreground);
+}
+.dep-ready-controls {
+  display: flex;
+  width: 190px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.dep-ready-controls .el-button {
+  min-height: 32px;
+  margin: 0 !important;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.dep-ready-controls .dep-uninstall-button,
+.dependency-uninstall-confirm {
+  border-color: var(--fluent-danger-bg) !important;
+  background: var(--fluent-danger-bg) !important;
+  color: #fff !important;
+}
+.dep-ready-controls .dep-uninstall-button:hover,
+.dependency-uninstall-confirm:hover {
+  border-color: var(--fluent-danger-hover-bg) !important;
+  background: var(--fluent-danger-hover-bg) !important;
+  color: #fff !important;
 }
 .dep-install-controls {
   display: grid;
@@ -694,7 +724,7 @@
 }
 @media (max-width: 900px) {
   .dependency-row {
-    grid-template-columns: 30px minmax(150px, 1fr) 64px 124px;
+    grid-template-columns: 30px minmax(150px, 1fr) 64px 190px;
   }
 }
 

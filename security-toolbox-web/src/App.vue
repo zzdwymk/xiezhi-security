@@ -1,12 +1,20 @@
 <script setup lang="ts">
-import { computed, markRaw, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import {
+  computed,
+  markRaw,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from "vue";
 import { useRoute, useRouter } from "vue-router";
 import zhCn from "element-plus/es/locale/lang/zh-cn";
+import { ElMessage, ElMessageBox } from "element-plus";
 import {
   Aim,
   ArrowDown,
   ChatDotRound,
-  Compass,
   Connection,
   Delete,
   HomeFilled,
@@ -25,6 +33,9 @@ import { useAuthStore } from "./stores/auth";
 import { useConversationStore } from "./stores/conversations";
 import { useEngineStore } from "./stores/engine";
 import { AUTH_EXPIRED_EVENT } from "./authToken";
+import { endpoints } from "./api";
+import { toErrorMessage } from "./utils/errorMessage";
+import { useSelectionIndicator } from "./composables/useSelectionIndicator";
 
 const route = useRoute();
 const router = useRouter();
@@ -94,6 +105,7 @@ function storedCollapsedNavigationGroups() {
 }
 
 const collapsedNavigationGroups = ref(storedCollapsedNavigationGroups());
+let trackPrimaryNavigationLayout = () => {};
 
 function persistCollapsedNavigationGroups(
   groups = collapsedNavigationGroups.value,
@@ -113,6 +125,7 @@ watch(
     next.delete(activeGroup);
     collapsedNavigationGroups.value = next;
     persistCollapsedNavigationGroups(next);
+    void nextTick(() => trackPrimaryNavigationLayout());
   },
   { immediate: true },
 );
@@ -167,6 +180,7 @@ function toggleNavigationGroup(groupId: string) {
   else next.add(groupId);
   collapsedNavigationGroups.value = next;
   persistCollapsedNavigationGroups(next);
+  void nextTick(() => trackPrimaryNavigationLayout());
 }
 
 const title = computed(() => (route.meta.title as string) || "安全工作台");
@@ -200,7 +214,6 @@ const navigationGroups = [
     items: [
       { path: "/projects", label: "评估项目", icon: markRaw(FolderOpened) },
       { path: "/targets", label: "授权目标", icon: markRaw(Location) },
-      { path: "/recon", label: "信息收集", icon: markRaw(Compass) },
     ],
   },
   {
@@ -227,9 +240,9 @@ const activeNavigation = computed(() => {
   if (route.path === "/") return "/";
   if (route.path.startsWith("/workflow")) return "/workflow";
   if (route.path.startsWith("/targets")) return "/targets";
-  if (route.path.startsWith("/recon")) return "/recon";
   if (route.path.startsWith("/projects") && route.query.tab === "recon")
-    return "/recon";
+    return "/projects";
+  if (route.path.startsWith("/recon")) return "/projects";
   if (route.path.startsWith("/projects")) return "/projects";
   if (route.path.startsWith("/traffic")) return "/traffic";
   if (route.path.startsWith("/vulnerabilities")) return "/vulnerabilities";
@@ -239,6 +252,59 @@ const activeNavigation = computed(() => {
   if (route.path.startsWith("/offline-tools")) return "/offline-tools";
   return "";
 });
+
+const primaryNavigation = ref<HTMLElement | null>(null);
+const recentNavigation = ref<HTMLElement | null>(null);
+const sidebarNavigationScroll = ref<HTMLElement | null>(null);
+const workspaceRouteAnimating = ref(false);
+let workspaceRouteSequence = 0;
+let workspaceRouteAnimationTimer = 0;
+
+const primarySelectionIndicator = useSelectionIndicator({
+    container: primaryNavigation,
+    activeSelector: ".desktop-v2-nav-item.active",
+    dependencies: [activeNavigation, collapsedNavigationGroups],
+    scrollContainers: [sidebarNavigationScroll],
+    indicatorSelector: ".desktop-v2-nav-indicator",
+    hidden: () =>
+      Boolean(
+        primaryNavigation.value
+          ?.querySelector<HTMLElement>(".desktop-v2-nav-item.active")
+          ?.closest<HTMLElement>(".desktop-v2-nav-group")
+          ?.classList.contains("collapsed"),
+      ),
+  });
+trackPrimaryNavigationLayout =
+  primarySelectionIndicator.trackSelectionIndicatorLayout;
+
+useSelectionIndicator({
+  container: recentNavigation,
+  activeSelector: ".desktop-v2-recent-item.active",
+  dependencies: [
+    () => route.query.conversation,
+    () => conversations.recent.map((item) => item.id).join(","),
+    collapsedNavigationGroups,
+  ],
+  indicatorSelector: ".desktop-v2-recent-indicator",
+  hidden: () => navigationGroupCollapsed("recent-work"),
+});
+
+watch(
+  () => route.path,
+  async () => {
+    const sequence = ++workspaceRouteSequence;
+    window.clearTimeout(workspaceRouteAnimationTimer);
+    workspaceRouteAnimating.value = false;
+    await nextTick();
+    if (sequence !== workspaceRouteSequence) return;
+    workspaceRouteAnimating.value = true;
+    workspaceRouteAnimationTimer = window.setTimeout(() => {
+      if (sequence === workspaceRouteSequence)
+        workspaceRouteAnimating.value = false;
+    }, 180);
+  },
+  { immediate: true },
+);
 
 function startNewTask() {
   router.push({ path: "/", query: {} });
@@ -258,9 +324,56 @@ function openConversation(id: string) {
   router.push({ path: "/", query: { conversation: id } });
 }
 
-function removeConversation(id: string) {
-  conversations.remove(id);
-  if (route.query.conversation === id) router.replace("/");
+async function removeConversation(id: string) {
+  try {
+    await ElMessageBox.confirm(
+      "删除这段本机对话记录？已经创建的检测任务不会被删除。",
+      "删除对话",
+      {
+        confirmButtonText: "删除",
+        cancelButtonText: "取消",
+        type: "warning",
+      },
+    );
+  } catch {
+    return;
+  }
+  try {
+    await endpoints.clearAgentSession(id);
+    conversations.remove(id);
+    if (route.query.conversation === id) await router.replace("/");
+    ElMessage.success("对话已删除");
+  } catch (error) {
+    ElMessage.error(toErrorMessage(error, "删除对话失败，请稍后重试"));
+  }
+}
+
+async function clearRecentConversations() {
+  const sessionIds = conversations.items.map((conversation) => conversation.id);
+  if (!sessionIds.length) return;
+  try {
+    await ElMessageBox.confirm(
+      "将清空本机保存的全部最近对话，已经创建的检测任务不会被删除。",
+      "清空最近对话",
+      {
+        confirmButtonText: "全部删除",
+        cancelButtonText: "取消",
+        type: "warning",
+      },
+    );
+  } catch {
+    return;
+  }
+  try {
+    await Promise.all(
+      sessionIds.map((sessionId) => endpoints.clearAgentSession(sessionId)),
+    );
+    conversations.clear();
+    if (route.path === "/") await router.replace("/");
+    ElMessage.success("最近对话已清空");
+  } catch (error) {
+    ElMessage.error(toErrorMessage(error, "清空对话失败，请稍后重试"));
+  }
 }
 
 function handleAuthExpired() {
@@ -311,6 +424,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
+  window.clearTimeout(workspaceRouteAnimationTimer);
   engine.stopPolling();
   nativeTooltipObserver?.disconnect();
   nativeTooltipObserver = undefined;
@@ -349,12 +463,17 @@ onBeforeUnmount(() => {
           <span>新建对话</span>
         </button>
 
-        <div class="desktop-v2-sidebar-scroll">
+        <div ref="sidebarNavigationScroll" class="desktop-v2-sidebar-scroll">
           <nav
             id="desktop-v2-primary-navigation"
+            ref="primaryNavigation"
             class="desktop-v2-nav"
             aria-label="主导航"
           >
+            <span
+              class="fluent-selection-indicator desktop-v2-nav-indicator"
+              aria-hidden="true"
+            />
             <section
               v-for="group in navigationGroups"
               :key="group.id"
@@ -379,20 +498,22 @@ onBeforeUnmount(() => {
                 :aria-hidden="navigationGroupCollapsed(group.id)"
                 :inert="navigationGroupCollapsed(group.id)"
               >
-                <button
-                  v-for="item in group.items"
-                  :key="item.path"
-                  type="button"
-                  class="desktop-v2-nav-item"
-                  :class="{ active: activeNavigation === item.path }"
-                  :aria-current="
-                    activeNavigation === item.path ? 'page' : undefined
-                  "
-                  @click="router.push(item.path)"
-                >
-                  <el-icon><component :is="item.icon" /></el-icon>
-                  <span>{{ item.label }}</span>
-                </button>
+                <div class="desktop-v2-nav-group-items-inner">
+                  <button
+                    v-for="item in group.items"
+                    :key="item.path"
+                    type="button"
+                    class="desktop-v2-nav-item"
+                    :class="{ active: activeNavigation === item.path }"
+                    :aria-current="
+                      activeNavigation === item.path ? 'page' : undefined
+                    "
+                    @click="router.push(item.path)"
+                  >
+                    <el-icon><component :is="item.icon" /></el-icon>
+                    <span>{{ item.label }}</span>
+                  </button>
+                </div>
               </div>
             </section>
           </nav>
@@ -405,31 +526,48 @@ onBeforeUnmount(() => {
             }"
             aria-label="最近对话区"
           >
-            <button
-              type="button"
-              class="desktop-v2-recents-label desktop-v2-recents-toggle"
-              aria-controls="desktop-v2-recents-list"
-              :aria-expanded="!navigationGroupCollapsed('recent-work')"
-              @click="toggleNavigationGroup('recent-work')"
-            >
-              <span class="desktop-v2-recents-title">最近对话</span>
-              <span
-                v-if="conversations.recent.length"
-                class="desktop-v2-recents-count"
+            <div class="desktop-v2-recents-head">
+              <button
+                type="button"
+                class="desktop-v2-recents-label desktop-v2-recents-toggle"
+                aria-controls="desktop-v2-recents-list"
+                :aria-expanded="!navigationGroupCollapsed('recent-work')"
+                @click="toggleNavigationGroup('recent-work')"
               >
-                {{ conversations.recent.length }}
-              </span>
-              <el-icon
-                :class="{ collapsed: navigationGroupCollapsed('recent-work') }"
-                ><ArrowDown
-              /></el-icon>
-            </button>
+                <span class="desktop-v2-recents-title">最近对话</span>
+                <span
+                  v-if="conversations.recent.length"
+                  class="desktop-v2-recents-count"
+                >
+                  {{ conversations.recent.length }}
+                </span>
+                <el-icon
+                  :class="{ collapsed: navigationGroupCollapsed('recent-work') }"
+                  ><ArrowDown
+                /></el-icon>
+              </button>
+              <button
+                v-if="conversations.recent.length"
+                type="button"
+                class="desktop-v2-recents-clear"
+                aria-label="清空最近对话"
+                @click="clearRecentConversations"
+              >
+                <el-icon><Delete /></el-icon>
+                <span>清空</span>
+              </button>
+            </div>
             <div
               id="desktop-v2-recents-list"
+              ref="recentNavigation"
               class="desktop-v2-recents-list"
               :aria-hidden="navigationGroupCollapsed('recent-work')"
               :inert="navigationGroupCollapsed('recent-work')"
             >
+              <span
+                class="fluent-selection-indicator desktop-v2-recent-indicator"
+                aria-hidden="true"
+              />
               <div
                 v-if="!conversations.recent.length"
                 class="desktop-v2-recent-empty"
@@ -567,7 +705,14 @@ onBeforeUnmount(() => {
           </div>
         </header>
 
-        <main class="desktop-v2-content"><router-view /></main>
+        <main
+          class="desktop-v2-content"
+          :class="{ 'is-route-entering': workspaceRouteAnimating }"
+        >
+          <router-view v-slot="{ Component, route: viewRoute }">
+            <component :is="Component" :key="viewRoute.path" />
+          </router-view>
+        </main>
       </section>
     </div>
     </div>

@@ -18,7 +18,18 @@ from .graph import (
     envelope_runtime_event,
 )
 from .indexing import IndexValidationError, ProjectIndexStore
-from .schemas import AgentRequest, AppendDocumentsRequest, IndexProjectRequest
+from .recovery import (
+    AgentTombstoneStore,
+    RecoveryConflict,
+    RecoveryNotFound,
+)
+from .schemas import (
+    AgentCheckpointRequest,
+    AgentRequest,
+    AgentResumeRequest,
+    AppendDocumentsRequest,
+    IndexProjectRequest,
+)
 from .security import require_project_authorization, require_runtime_token
 from .tools import LANGCHAIN_TOOLS_AVAILABLE
 
@@ -27,6 +38,12 @@ logger = logging.getLogger(__name__)
 VERSION = "0.1.0"
 index_store = ProjectIndexStore()
 agent_runtime = LedgerAgentRuntime(index_store)
+recovery_store = AgentTombstoneStore(
+    settings.data_dir / "recovery",
+    ttl_minutes=settings.recovery_ttl_minutes,
+    max_records_per_project=settings.recovery_max_records_per_project,
+    max_callbacks_per_record=settings.recovery_max_callbacks_per_record,
+)
 
 app = FastAPI(
     title="Xiezhi Local AI Runtime",
@@ -79,12 +96,16 @@ async def request_size_limit(request: Request, call_next):
 @app.get("/health")
 async def health() -> dict:
     index_stats = await asyncio.to_thread(index_store.stats)
+    recovery_stats = await asyncio.to_thread(recovery_store.stats)
     components = {
         "runtimeAuth": bool(settings.token),
         "langchain": agent_runtime.planner.status.get("langchainAvailable", False),
         "langgraph": agent_runtime.health.get("langGraphAvailable", False),
         "retrieval": index_stats.get("retrievalReady", False),
-        "llamaIndex": index_stats.get("realEmbeddingAvailable", False),
+        "embedding": index_stats.get("realEmbeddingAvailable", False),
+        # Legacy desktop readiness key: it now means that the selected
+        # retrieval backend (BM25 or real embedding) is ready.
+        "llamaIndex": index_stats.get("retrievalReady", False),
         "langchainTools": LANGCHAIN_TOOLS_AVAILABLE,
     }
     ready = all(
@@ -106,6 +127,7 @@ async def health() -> dict:
         "components": components,
         "agent": agent_runtime.health,
         "index": index_stats,
+        "recovery": recovery_stats,
     }
 
 
@@ -121,6 +143,43 @@ async def agent_graph_debug() -> dict:
     if not settings.internal_graph_debug:
         raise HTTPException(status_code=404, detail="内部图调试接口未启用")
     return agent_runtime.internal_graph_structure()
+
+
+@app.post("/agent/checkpoint", dependencies=[Depends(require_runtime_token)])
+async def agent_checkpoint(
+    request: AgentCheckpointRequest, raw_request: Request
+) -> dict:
+    """Persist finite callback metadata; prompts and evidence bodies are never stored."""
+    require_project_authorization(raw_request, request.projectId, "agent-resume")
+    try:
+        return await asyncio.to_thread(
+            recovery_store.checkpoint, request.model_dump(mode="json")
+        )
+    except RecoveryConflict as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+
+
+@app.post("/agent/resume", dependencies=[Depends(require_runtime_token)])
+async def agent_resume(request: AgentResumeRequest, raw_request: Request) -> dict:
+    """Accept one idempotent terminal-task callback for a verified checkpoint."""
+    require_project_authorization(raw_request, request.projectId, "agent-resume")
+    try:
+        return await asyncio.to_thread(
+            recovery_store.resume, request.model_dump(mode="json")
+        )
+    except RecoveryNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    except RecoveryConflict as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
 
 
 @app.post("/index/project", dependencies=[Depends(require_runtime_token)])

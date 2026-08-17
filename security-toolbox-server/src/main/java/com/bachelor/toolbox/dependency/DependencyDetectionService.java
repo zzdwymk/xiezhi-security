@@ -22,10 +22,10 @@ import org.springframework.stereotype.Service;
 public class DependencyDetectionService {
   private static final Logger log = LoggerFactory.getLogger(DependencyDetectionService.class);
 
-  private static final int MAX_DETECTION_WORKERS = 8;
-  private static final Duration COMMAND_TIMEOUT = Duration.ofSeconds(3);
+  private static final int MAX_DETECTION_WORKERS = 12;
+  private static final Duration COMMAND_TIMEOUT = Duration.ofMillis(1300);
   private static final Duration CACHE_TTL = Duration.ofSeconds(5);
-  private static final Duration WORKER_SHUTDOWN_TIMEOUT = Duration.ofSeconds(1);
+  private static final Duration WORKER_SHUTDOWN_TIMEOUT = Duration.ofMillis(200);
   private static final String UNKNOWN_VERSION = "unknown";
   private static final Pattern ANSI_ESCAPE =
       Pattern.compile("\\x1B(?:[@-Z\\\\-_]|\\[[0-?]*[ -/]*[@-~])");
@@ -39,10 +39,16 @@ public class DependencyDetectionService {
     this.commandRunner = commandRunner;
   }
 
-  public synchronized SystemDependenciesResponse detect() {
-    SystemDependenciesResponse cachedResponse = findCachedResponse(System.nanoTime());
-    if (cachedResponse != null) {
-      return cachedResponse;
+  public SystemDependenciesResponse detect() {
+    return detect(false);
+  }
+
+  public synchronized SystemDependenciesResponse detect(boolean forceRefresh) {
+    if (!forceRefresh) {
+      SystemDependenciesResponse cachedResponse = findCachedResponse(System.nanoTime());
+      if (cachedResponse != null) {
+        return cachedResponse;
+      }
     }
 
     List<DependencyDescriptor> descriptors = dependencyDescriptors();
@@ -146,7 +152,7 @@ public class DependencyDetectionService {
     String output = cleanOutput(result.output());
     if (result.timedOut()) {
       return buildStatus(
-          descriptor, DetectionStatus.TIMEOUT, parseVersion(output), safePath, "版本检测超过 3 秒，进程已终止。");
+          descriptor, DetectionStatus.TIMEOUT, parseVersion(output), safePath, "版本检测超过 1.3 秒，进程已终止。");
     }
     if (result.errorMessage() != null) {
       return buildStatus(descriptor, DetectionStatus.ERROR, null, safePath, "已找到，但无法执行版本检测。");
@@ -253,23 +259,23 @@ public class DependencyDetectionService {
             "检测到的命令不是 PostgreSQL psql。"),
         descriptor(
             "Nuclei",
-            List.of("nuclei"),
-            List.of("-version"),
+            scannerCandidates("NUCLEI_PATH", "nuclei"),
+            List.of("-disable-update-check", "-version"),
             false,
             "SCANNER",
             output -> containsIgnoreCase(output, "nuclei"),
             "检测到的命令不是 ProjectDiscovery Nuclei。"),
         descriptor(
             "Afrog",
-            List.of("afrog"),
-            List.of("-version"),
+            scannerCandidates("AFROG_PATH", "afrog"),
+            List.of("-disable-update-check", "-version"),
             false,
             "SCANNER_ADAPTER",
             output -> containsIgnoreCase(output, "afrog"),
             "检测到的命令不是 Afrog。当前仅检测版本，不默认执行。"),
         descriptor(
             "Xray",
-            List.of("xray", "xray_windows_amd64.exe"),
+            scannerCandidates("XRAY_PATH", "xray", "xray_windows_amd64.exe"),
             List.of("version"),
             false,
             "SCANNER_ADAPTER",
@@ -277,8 +283,8 @@ public class DependencyDetectionService {
             "检测到的命令不是 Xray。当前仅检测版本，不默认执行。"),
         descriptor(
             "ProjectDiscovery httpx",
-            List.of("httpx"),
-            List.of("-version"),
+            scannerCandidates("HTTPX_PATH", "httpx"),
+            List.of("-disable-update-check", "-version"),
             false,
             "SCANNER",
             this::isProjectDiscoveryHttpx,
@@ -311,6 +317,16 @@ public class DependencyDetectionService {
         candidates.add("D:/software/PostgreSQL/" + version + "/bin/psql.exe");
       }
     }
+    return candidates;
+  }
+
+  private List<String> scannerCandidates(String envName, String... fallback) {
+    List<String> candidates = new ArrayList<>();
+    String explicit = System.getenv(envName);
+    if (explicit != null && !explicit.isBlank()) {
+      candidates.add(explicit.trim());
+    }
+    candidates.addAll(List.of(fallback));
     return candidates;
   }
 

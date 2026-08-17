@@ -27,7 +27,6 @@ for package in (
     "pydantic",
     "langchain_core",
     "langgraph",
-    "rank_bm25",
     "tiktoken",
 ):
     try:
@@ -37,6 +36,10 @@ for package in (
         hiddenimports += package_hidden
     except Exception:
         hiddenimports += collect_submodules(package)
+
+# rank_bm25 is distributed as one module rather than a package, so collecting
+# package data or dynamic libraries for it only produces false warnings.
+hiddenimports.append("rank_bm25")
 
 # langchain_openai.middleware imports the top-level langchain package, which is
 # intentionally not installed (see README). Collect data/binaries normally but

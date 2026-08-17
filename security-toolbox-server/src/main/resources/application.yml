@@ -14,6 +14,12 @@ spring:
     hibernate:
       ddl-auto: update
     open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 500
+        order_inserts: true
+        order_updates: true
   jackson:
     serialization:
       write-dates-as-timestamps: false
@@ -23,6 +29,11 @@ spring:
         core-size: 2
         max-size: 4
         queue-capacity: 50
+  mvc:
+    # Streaming AI responses own their timeout budget. Keep Spring MVC from
+    # terminating the connection before the runtime/client limits can report a reason.
+    async:
+      request-timeout: ${AI_STREAM_REQUEST_TIMEOUT_MS:240000}
 
 toolbox:
   recon:
@@ -73,11 +84,24 @@ toolbox:
     nuclei-templates-path: ${NUCLEI_TEMPLATES_PATH:${user.home}/nuclei-templates}
     nuclei-timeout-seconds: 900
     max-nuclei-ports-per-task: 65535
+    afrog-path: ${AFROG_PATH:afrog}
+    afrog-pocs-path: ${AFROG_POCS_PATH:${user.home}/afrog-pocs}
+    afrog-timeout-seconds: 900
+    xray-path: ${XRAY_PATH:xray}
+    xray-pocs-path: ${XRAY_POCS_PATH:${user.home}/xray-pocs}
+    xray-timeout-seconds: 900
   vulnerability-catalog:
     nuclei:
       templates-path: ${NUCLEI_TEMPLATES_PATH:${user.home}/nuclei-templates}
-      import-on-startup: ${NUCLEI_CATALOG_IMPORT_ON_STARTUP:true}
+      import-on-startup: ${NUCLEI_CATALOG_IMPORT_ON_STARTUP:false}
       max-template-bytes: 2097152
+    afrog:
+      pocs-path: ${AFROG_POCS_PATH:${user.home}/afrog-pocs}
+    xray:
+      pocs-path: ${XRAY_POCS_PATH:${user.home}/xray-pocs}
+    scanner-pocs:
+      import-on-startup: ${SCANNER_POC_CATALOG_IMPORT_ON_STARTUP:false}
+      max-poc-bytes: 2097152
     cisa-kev-enabled: ${CISA_KEV_ENABLED:true}
     cisa-kev-url: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
   traffic:

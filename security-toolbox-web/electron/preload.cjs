@@ -47,13 +47,17 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.invoke("toolbox:reset-tools-directory"),
     listInstallableDependencies: () =>
       ipcRenderer.invoke("toolbox:list-installable-dependencies"),
-    installDependency: (packageId) =>
-      ipcRenderer.invoke("toolbox:install-dependency", packageId),
+    installDependency: (packageId, options) =>
+      ipcRenderer.invoke("toolbox:install-dependency", packageId, {
+        refreshCatalog: options?.refreshCatalog === true,
+      }),
     controlDependencyInstall: (packageId, action) =>
       ipcRenderer.invoke("toolbox:control-dependency-install", {
         packageId,
         action,
       }),
+    uninstallDependency: (packageId) =>
+      ipcRenderer.invoke("toolbox:uninstall-dependency", packageId),
     getAiSettings: () => ipcRenderer.invoke("toolbox:get-ai-settings"),
     getIcpSettings: () => ipcRenderer.invoke("toolbox:get-icp-settings"),
     getGithubTokenSettings: () =>
@@ -68,10 +72,14 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.invoke("toolbox:set-desktop-admin-password", password),
     testAiSettings: (settings) =>
       ipcRenderer.invoke("toolbox:test-ai-settings", settings),
+    testEmbeddingSettings: (settings) =>
+      ipcRenderer.invoke("toolbox:test-embedding-settings", settings),
     saveAiSettings: (settings) =>
       ipcRenderer.invoke("toolbox:save-ai-settings", settings),
     clearAiApiKey: (settings) =>
       ipcRenderer.invoke("toolbox:clear-ai-api-key", settings),
+    clearEmbeddingApiKey: (settings) =>
+      ipcRenderer.invoke("toolbox:clear-embedding-api-key", settings),
     saveIcpSettings: (settings) =>
       ipcRenderer.invoke("toolbox:save-icp-settings", settings),
     clearIcpSettings: () => ipcRenderer.invoke("toolbox:clear-icp-settings"),

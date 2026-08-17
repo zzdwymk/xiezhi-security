@@ -90,6 +90,27 @@ class Settings:
     retrieval_backend: str = _choice(
         "AI_RUNTIME_RETRIEVAL_BACKEND", "bm25", {"bm25", "real_embedding"}
     )
+    embedding_base_url: str = os.getenv(
+        "AI_RUNTIME_EMBEDDING_BASE_URL", "https://api.openai.com/v1"
+    ).strip()[:500]
+    embedding_api_key: str = os.getenv(
+        "AI_RUNTIME_EMBEDDING_API_KEY", os.getenv("AI_RUNTIME_API_KEY", "")
+    )
+    embedding_model: str = os.getenv(
+        "AI_RUNTIME_EMBEDDING_MODEL", "text-embedding-3-small"
+    ).strip()[:160]
+    embedding_dimension: int = _bounded_int(
+        "AI_RUNTIME_EMBEDDING_DIMENSION", 0, 0, 8192
+    )
+    embedding_timeout_seconds: float = _bounded_float(
+        "AI_RUNTIME_EMBEDDING_TIMEOUT_SECONDS", 15.0, 0.5, 60.0
+    )
+    embedding_batch_size: int = _bounded_int(
+        "AI_RUNTIME_EMBEDDING_BATCH_SIZE", 16, 1, 64
+    )
+    embedding_max_input_chars: int = _bounded_int(
+        "AI_RUNTIME_EMBEDDING_MAX_INPUT_CHARS", 12_000, 500, 50_000
+    )
     max_retrieval_rounds: int = _bounded_int(
         "AI_RUNTIME_MAX_RETRIEVAL_ROUNDS", 2, 1, 2
     )
@@ -110,6 +131,15 @@ class Settings:
     )
     graph_recursion_limit: int = _bounded_int(
         "AI_RUNTIME_GRAPH_RECURSION_LIMIT", 32, 8, 64
+    )
+    recovery_ttl_minutes: int = _bounded_int(
+        "AI_RUNTIME_RECOVERY_TTL_MINUTES", 30, 5, 24 * 60
+    )
+    recovery_max_records_per_project: int = _bounded_int(
+        "AI_RUNTIME_RECOVERY_MAX_RECORDS_PER_PROJECT", 256, 16, 2048
+    )
+    recovery_max_callbacks_per_record: int = _bounded_int(
+        "AI_RUNTIME_RECOVERY_MAX_CALLBACKS_PER_RECORD", 128, 16, 512
     )
     internal_graph_debug: bool = _bool("AI_RUNTIME_INTERNAL_GRAPH_DEBUG", False)
 

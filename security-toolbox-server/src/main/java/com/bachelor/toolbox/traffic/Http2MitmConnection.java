@@ -258,7 +258,7 @@ final class Http2MitmConnection {
       } else {
         sendError(state.stream, 502);
       }
-      captureFailure(state, "DECRYPT_FAILED", LocalTrafficProxy.CLIENT_ERROR_MESSAGE);
+      captureFailure(state, "DECRYPT_FAILED", LocalTrafficProxy.safeErrorMessage(ex));
     }
   }
 

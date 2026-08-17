@@ -16,6 +16,12 @@ from typing import Any, NamedTuple
 from rank_bm25 import BM25Plus
 
 from .config import settings
+from .embedding import (
+    EmbeddingProvider,
+    EmbeddingProviderError,
+    cosine_similarity,
+    validate_vector,
+)
 from .schemas import ProjectDocument
 from .security import safe_project_file
 
@@ -82,6 +88,14 @@ class _Bm25Corpus(NamedTuple):
     entries: tuple[tuple[dict[str, Any], tuple[str, ...]], ...]
 
 
+class _EmbeddingCorpus(NamedTuple):
+    document_revision: str
+    revision: str
+    model: str
+    dimension: int
+    entries: tuple[tuple[dict[str, Any], tuple[float, ...]], ...]
+
+
 def _canonical_documents(documents: list[dict[str, Any]]) -> bytes:
     return json.dumps(
         documents, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -131,6 +145,8 @@ class ProjectIndexStore:
         document_cache_chars: int | None = None,
         document_cache_projects: int | None = None,
         index_cache_projects: int | None = None,
+        retrieval_backend: str | None = None,
+        embedding_provider: EmbeddingProvider | None = None,
     ) -> None:
         self.root = (data_dir or settings.data_dir) / "indexes"
         self.root.mkdir(parents=True, exist_ok=True)
@@ -161,6 +177,30 @@ class ProjectIndexStore:
         self._stats_lock = threading.RLock()
         self._project_stats: dict[int, dict[str, Any]] = {}
         self._stats_loaded = False
+        selected_backend = (
+            retrieval_backend
+            or ("real_embedding" if embedding_provider is not None else settings.retrieval_backend)
+        )
+        if selected_backend not in {"bm25", "real_embedding"}:
+            raise ValueError("retrieval_backend must be bm25 or real_embedding")
+        self._retrieval_backend = selected_backend
+        self._embedding_provider_error: str | None = None
+        self._embedding_provider = embedding_provider
+        if self._retrieval_backend == "real_embedding" and self._embedding_provider is None:
+            try:
+                self._embedding_provider = EmbeddingProvider(
+                    settings.embedding_base_url,
+                    settings.embedding_api_key,
+                    settings.embedding_model,
+                    timeout_seconds=min(
+                        settings.embedding_timeout_seconds,
+                        settings.retrieval_timeout_seconds,
+                    ),
+                    max_batch_size=settings.embedding_batch_size,
+                    dimension=(settings.embedding_dimension or None),
+                )
+            except EmbeddingProviderError as exc:
+                self._embedding_provider_error = str(exc)
 
     def _project_lock(self, project_id: int) -> threading.RLock:
         return self._project_locks[project_id % len(self._project_locks)]
@@ -168,8 +208,8 @@ class ProjectIndexStore:
     def _document_path(self, project_id: int) -> Path:
         return self.root / safe_project_file(project_id)
 
-    def _index_path(self, project_id: int) -> Path:
-        return self.root / f"project-{project_id}" / "llama-index"
+    def _embedding_path(self, project_id: int) -> Path:
+        return self.root / f"project-{project_id}.embeddings.json"
 
     @staticmethod
     def _documents_chars(documents: list[dict[str, Any]]) -> int:
@@ -253,6 +293,22 @@ class ProjectIndexStore:
         ).encode("utf-8")
         return "sha256:" + hashlib.sha256(canonical).hexdigest()
 
+    @staticmethod
+    def _embedding_revision(
+        document_revision: str, model: str, dimension: int
+    ) -> str:
+        payload = json.dumps(
+            {
+                "documentRevision": document_revision,
+                "embeddingModel": model,
+                "dimension": dimension,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return "sha256:" + hashlib.sha256(payload).hexdigest()
+
     def _get_bm25_corpus(
         self,
         project_id: int,
@@ -276,6 +332,194 @@ class ProjectIndexStore:
         corpus = _Bm25Corpus(revision, tuple(entries))
         self._cache_index(project_id, corpus)
         return corpus
+
+    @staticmethod
+    def _embedding_text(document: dict[str, Any]) -> str:
+        return "\n".join(
+            value
+            for value in (
+                str(document.get("title") or "").strip(),
+                str(document.get("source") or "").strip(),
+                str(document.get("text") or "").strip(),
+            )
+            if value
+        )[: settings.embedding_max_input_chars]
+
+    def _read_embedding_record(self, project_id: int) -> dict[str, Any] | None:
+        path = self._embedding_path(project_id)
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _persist_embedding_record(
+        self,
+        project_id: int,
+        revision: str,
+        model: str,
+        dimension: int,
+        entries: list[dict[str, Any]],
+    ) -> None:
+        record = {
+            "projectId": project_id,
+            "documentRevision": revision,
+            "embeddingModel": model,
+            "dimension": dimension,
+            "embeddings": entries,
+        }
+        path = self._embedding_path(project_id)
+        temporary = path.with_suffix(f".tmp-{__import__('os').getpid()}")
+        temporary.write_text(
+            json.dumps(record, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+
+    def _build_embedding_corpus(
+        self,
+        project_id: int,
+        documents: list[dict[str, Any]],
+        deadline: float | None = None,
+    ) -> _EmbeddingCorpus:
+        provider = self._embedding_provider
+        if provider is None:
+            reason = self._embedding_provider_error or "embedding provider is not configured"
+            raise IndexValidationError(f"真实 Embedding 后端不可用：{reason}")
+        deadline = deadline or (
+            time.monotonic() + settings.embedding_timeout_seconds * 4
+        )
+        document_revision = self._revision(documents)
+        old = self._read_embedding_record(project_id) or {}
+        old_model = str(old.get("embeddingModel") or "")
+        old_revision = str(old.get("documentRevision") or "")
+        old_dimension = old.get("dimension")
+        try:
+            old_dimension = int(old_dimension) if old_dimension is not None else None
+        except (TypeError, ValueError):
+            old_dimension = None
+        reusable: dict[tuple[str, str], list[float]] = {}
+        compatible_dimension = (
+            provider.dimension is None
+            or old_dimension is None
+            or provider.dimension == old_dimension
+        )
+        if (
+            old_model == provider.model
+            and compatible_dimension
+            and isinstance(old.get("embeddings"), list)
+        ):
+            if provider.dimension is None and old_dimension is not None:
+                provider.dimension = old_dimension
+            for entry in old["embeddings"]:
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    vector = validate_vector(
+                        entry.get("vector"),
+                        expected_dimension=old_dimension,
+                        name="stored embedding",
+                    )
+                except (TypeError, ValueError):
+                    continue
+                reusable[(str(entry.get("documentId") or ""), str(entry.get("contentDigest") or ""))] = vector
+
+        vectors: dict[str, list[float]] = {}
+        missing: list[dict[str, Any]] = []
+        for document in documents:
+            document_id = str(document.get("id") or "")
+            content_digest = self._content_digest(document)
+            cached = reusable.get((document_id, content_digest))
+            if cached is not None:
+                vectors[document_id] = cached
+            else:
+                missing.append(document)
+
+        batch_size = min(
+            settings.embedding_batch_size,
+            int(getattr(provider, "max_batch_size", settings.embedding_batch_size)),
+        )
+        for offset in range(0, len(missing), batch_size):
+            if time.monotonic() > deadline:
+                raise IndexValidationError("项目 Embedding 建立超时")
+            batch = missing[offset : offset + batch_size]
+            try:
+                batch_vectors = provider.embed_documents(
+                    [self._embedding_text(document) for document in batch]
+                )
+            except EmbeddingProviderError as exc:
+                raise IndexValidationError("Embedding 服务调用失败") from exc
+            if len(batch_vectors) != len(batch):
+                raise IndexValidationError("Embedding 服务返回数量与文档数量不一致")
+            for document, vector in zip(batch, batch_vectors, strict=True):
+                try:
+                    vectors[str(document.get("id") or "")] = validate_vector(
+                        vector,
+                        expected_dimension=provider.dimension,
+                        name="embedding",
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise IndexValidationError("Embedding 服务返回了无效向量") from exc
+
+        dimension = provider.dimension or old_dimension or 0
+        if vectors and dimension <= 0:
+            dimension = len(next(iter(vectors.values())))
+        if vectors and any(len(vector) != dimension for vector in vectors.values()):
+            raise IndexValidationError("Embedding 向量维度不一致")
+        entries = [
+            {
+                "documentId": str(document.get("id") or ""),
+                "contentDigest": self._content_digest(document),
+                "vector": vectors[str(document.get("id") or "")],
+            }
+            for document in documents
+            if str(document.get("id") or "") in vectors
+        ]
+        if (
+            old_revision != document_revision
+            or len(entries) != len(documents)
+            or missing
+        ):
+            self._persist_embedding_record(
+                project_id,
+                document_revision,
+                provider.model,
+                dimension,
+                entries,
+            )
+        revision = self._embedding_revision(
+            document_revision, provider.model, dimension
+        )
+        corpus = _EmbeddingCorpus(
+            document_revision,
+            revision,
+            provider.model,
+            dimension,
+            tuple(
+                (document, tuple(vectors[str(document.get("id") or "")]))
+                for document in documents
+                if str(document.get("id") or "") in vectors
+            ),
+        )
+        self._cache_index(project_id, corpus)
+        return corpus
+
+    def _get_embedding_corpus(
+        self,
+        project_id: int,
+        documents: list[dict[str, Any]],
+        deadline: float,
+    ) -> _EmbeddingCorpus:
+        cached = self._get_cached_index(project_id)
+        document_revision = self._revision(documents)
+        if (
+            isinstance(cached, _EmbeddingCorpus)
+            and cached.document_revision == document_revision
+        ):
+            return cached
+        return self._build_embedding_corpus(project_id, documents, deadline)
 
     def _read_documents(self, project_id: int) -> list[dict[str, Any]]:
         cached = self._get_cached_documents(project_id)
@@ -366,11 +610,19 @@ class ProjectIndexStore:
             raise IndexValidationError(
                 f"项目资料总数不能超过 {settings.max_documents} 条"
             )
+        revision = self._revision(documents)
+        embedding_corpus = (
+            self._build_embedding_corpus(project_id, documents)
+            if self._retrieval_backend == "real_embedding"
+            else None
+        )
         digest = self._persist_documents(project_id, documents)
         self._cache_documents(project_id, documents)
         self._drop_cached_index(project_id)
+        if embedding_corpus is not None:
+            self._cache_index(project_id, embedding_corpus)
         legacy_vector_failure = False
-        if LLAMA_INDEX_AVAILABLE:
+        if self._retrieval_backend == "bm25" and LLAMA_INDEX_AVAILABLE:
             try:
                 legacy_vector_failure = _load_llama_api() is None
             except Exception:
@@ -379,10 +631,16 @@ class ProjectIndexStore:
             "projectId": project_id,
             "documentCount": len(documents),
             "sha256": digest,
-            "engine": "lexical-fallback" if legacy_vector_failure else "bm25",
-            "retrievalMethod": "bm25",
-            "indexRevision": f"sha256:{digest}",
-            "configuredBackend": settings.retrieval_backend,
+            "engine": "openai-compatible-embedding"
+            if self._retrieval_backend == "real_embedding"
+            else ("lexical-fallback" if legacy_vector_failure else "bm25"),
+            "retrievalMethod": self._retrieval_backend,
+            "indexRevision": (
+                embedding_corpus.revision
+                if embedding_corpus is not None
+                else revision
+            ),
+            "configuredBackend": self._retrieval_backend,
             "status": "DEGRADED" if legacy_vector_failure else "READY",
         }
 
@@ -412,6 +670,15 @@ class ProjectIndexStore:
             return []
         top_k = min(max(top_k, 1), 10)
         deadline = time.monotonic() + settings.retrieval_timeout_seconds
+        if self._retrieval_backend == "real_embedding":
+            return self._embedding_query(
+                project_id,
+                query,
+                top_k,
+                conversation_id,
+                target_id,
+                deadline,
+            )
         return self._bm25_query(
             project_id, query, top_k, conversation_id, target_id, deadline
         )
@@ -489,6 +756,85 @@ class ProjectIndexStore:
         scored.sort(key=lambda match: (-match[0], match[1]))
         return [result for _, _, result in scored[:top_k]]
 
+    def _embedding_query(
+        self,
+        project_id: int,
+        query: str,
+        top_k: int,
+        conversation_id: str | None,
+        target_id: int | None,
+        deadline: float,
+    ) -> list[dict[str, Any]]:
+        documents = self._read_documents(project_id)
+        corpus = self._get_embedding_corpus(project_id, documents, deadline)
+        visible = [
+            (item, vector)
+            for item, vector in corpus.entries
+            if self._visible_to_conversation(
+                str(item.get("source") or "project"),
+                item.get("metadata", {}),
+                conversation_id,
+                target_id,
+            )
+        ]
+        if not visible:
+            return []
+        provider = self._embedding_provider
+        if provider is None:
+            raise IndexValidationError("真实 Embedding 后端不可用")
+        if time.monotonic() > deadline:
+            raise IndexValidationError("项目资料检索超时")
+        try:
+            query_vector = provider.embed_query(query)
+            query_vector = validate_vector(
+                query_vector,
+                expected_dimension=corpus.dimension or provider.dimension,
+                name="query embedding",
+            )
+        except EmbeddingProviderError as exc:
+            raise IndexValidationError("Embedding 服务调用失败") from exc
+        except (TypeError, ValueError) as exc:
+            raise IndexValidationError("Embedding 查询向量无效") from exc
+
+        scored: list[tuple[float, str, dict[str, Any]]] = []
+        for item, vector in visible:
+            if time.monotonic() > deadline:
+                raise IndexValidationError("项目资料检索超时")
+            similarity = cosine_similarity(query_vector, vector)
+            if similarity <= 0:
+                continue
+            document_id = str(item.get("id") or "")
+            content_digest = self._content_digest(item)
+            evidence_seed = json.dumps(
+                {
+                    "projectId": project_id,
+                    "targetId": target_id,
+                    "conversationId": conversation_id,
+                    "documentId": document_id,
+                    "contentDigest": content_digest,
+                    "indexRevision": corpus.revision,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            stored_target = self._metadata_target_id(item.get("metadata", {}))
+            result = {
+                "evidenceId": "ev-" + hashlib.sha256(evidence_seed).hexdigest()[:24],
+                "documentId": document_id,
+                "title": str(item.get("title") or "项目资料"),
+                "source": str(item.get("source") or "project"),
+                "text": str(item.get("text") or "")[:4000],
+                "score": round((similarity + 1.0) / 2.0, 12),
+                "targetId": stored_target if stored_target is not None else target_id,
+                "contentDigest": content_digest,
+                "indexRevision": corpus.revision,
+                "retrievalMethod": "real_embedding",
+            }
+            scored.append((similarity, document_id, result))
+        scored.sort(key=lambda match: (-match[0], match[1]))
+        return [result for _, _, result in scored[:top_k]]
+
     def _lexical_query(
         self,
         project_id: int,
@@ -555,6 +901,15 @@ class ProjectIndexStore:
                 conversation_id,
                 target_id,
             )
+            if self._retrieval_backend == "real_embedding":
+                if matches:
+                    revision = str(matches[0]["indexRevision"])
+                elif self._embedding_provider is not None:
+                    revision = self._embedding_revision(
+                        revision,
+                        self._embedding_provider.model,
+                        self._embedding_provider.dimension or 0,
+                    )
             items: list[dict[str, Any]] = []
             used_chars = 0
             for match in matches:
@@ -583,7 +938,7 @@ class ProjectIndexStore:
                 "conversationId": conversation_id,
                 "query": query.strip(),
                 "round": round,
-                "retrievalMethod": "bm25",
+                "retrievalMethod": self._retrieval_backend,
                 "indexRevision": revision,
                 "items": items,
             }
@@ -717,9 +1072,16 @@ class ProjectIndexStore:
         ]
         if len(remaining) == len(documents):
             return {"deleted": False, "documentCount": len(documents)}
+        embedding_corpus = (
+            self._build_embedding_corpus(project_id, remaining)
+            if self._retrieval_backend == "real_embedding"
+            else None
+        )
         self._persist_documents(project_id, remaining)
         self._cache_documents(project_id, remaining)
         self._drop_cached_index(project_id)
+        if embedding_corpus is not None:
+            self._cache_index(project_id, embedding_corpus)
         return {"deleted": True, "documentCount": len(remaining)}
 
     def clear_documents_by_source(
@@ -751,15 +1113,24 @@ class ProjectIndexStore:
         removed = len(documents) - len(remaining)
         if removed <= 0:
             return {"deleted": 0, "documentCount": len(documents)}
+        embedding_corpus = (
+            self._build_embedding_corpus(project_id, remaining)
+            if self._retrieval_backend == "real_embedding"
+            else None
+        )
         self._persist_documents(project_id, remaining)
         self._cache_documents(project_id, remaining)
         self._drop_cached_index(project_id)
+        if embedding_corpus is not None:
+            self._cache_index(project_id, embedding_corpus)
         return {"deleted": removed, "documentCount": len(remaining)}
 
     def stats(self) -> dict[str, Any]:
         with self._stats_lock:
             if not self._stats_loaded:
                 for path in self.root.glob("project-*.json"):
+                    if path.name.endswith(".embeddings.json"):
+                        continue
                     try:
                         data = json.loads(path.read_text(encoding="utf-8"))
                         project_id = int(data.get("projectId"))
@@ -771,13 +1142,31 @@ class ProjectIndexStore:
                     except (OSError, TypeError, ValueError):
                         continue
                 self._stats_loaded = True
+            embedding_available = self._embedding_provider is not None
+            retrieval_ready = (
+                self._retrieval_backend == "bm25" or embedding_available
+            )
             return {
-                "engineAvailable": True,
-                "retrievalReady": True,
+                "engineAvailable": retrieval_ready,
+                "retrievalReady": retrieval_ready,
                 "ragEnabled": settings.rag_enabled,
-                "retrievalMethod": "bm25",
-                "configuredBackend": settings.retrieval_backend,
-                "realEmbeddingAvailable": False,
+                "retrievalMethod": self._retrieval_backend,
+                "configuredBackend": self._retrieval_backend,
+                "realEmbeddingAvailable": (
+                    self._retrieval_backend == "real_embedding"
+                    and embedding_available
+                ),
+                "embeddingModel": (
+                    self._embedding_provider.model
+                    if self._embedding_provider is not None
+                    else None
+                ),
+                "embeddingDimension": (
+                    self._embedding_provider.dimension
+                    if self._embedding_provider is not None
+                    else None
+                ),
+                "embeddingProviderError": self._embedding_provider_error,
                 "mockEmbedding": "DISABLED",
                 "projects": sorted(
                     (dict(value) for value in self._project_stats.values()),

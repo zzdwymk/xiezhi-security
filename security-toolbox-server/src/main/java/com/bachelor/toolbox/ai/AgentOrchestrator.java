@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
@@ -58,6 +59,7 @@ public class AgentOrchestrator {
   private final AiPlanningService planner;
   private final AiAuthorizationGuard guard;
   private final AiExecutionReviewer reviewer;
+  private final AiContextService contextService;
   private final AuditService audit;
   private final BusinessDataOperationGate operationGate;
 
@@ -70,6 +72,7 @@ public class AgentOrchestrator {
       AiPlanningService planner,
       AiAuthorizationGuard guard,
       AiExecutionReviewer reviewer,
+      AiContextService contextService,
       AuditService audit,
       BusinessDataOperationGate operationGate) {
     this.memory = memory;
@@ -79,6 +82,7 @@ public class AgentOrchestrator {
     this.planner = planner;
     this.guard = guard;
     this.reviewer = reviewer;
+    this.contextService = contextService;
     this.audit = audit;
     this.operationGate = operationGate;
   }
@@ -100,6 +104,30 @@ public class AgentOrchestrator {
         planner,
         guard,
         reviewer,
+        null,
+        audit,
+        new BusinessDataOperationGate());
+  }
+
+  AgentOrchestrator(
+      AiConversationMemoryService memory,
+      SecurityAgentTools tools,
+      AiAgentRuntimeClient runtimeClient,
+      AiProjectIndexService projectIndex,
+      AiPlanningService planner,
+      AiAuthorizationGuard guard,
+      AiExecutionReviewer reviewer,
+      AiContextService contextService,
+      AuditService audit) {
+    this(
+        memory,
+        tools,
+        runtimeClient,
+        projectIndex,
+        planner,
+        guard,
+        reviewer,
+        contextService,
         audit,
         new BusinessDataOperationGate());
   }
@@ -137,6 +165,42 @@ public class AgentOrchestrator {
                 request.projectId(),
                 "targetId",
                 request.targetId()));
+
+        String history = memory.transcript(session.id());
+        memory.addUser(session.id(), request.prompt());
+        Optional<String> directAuditAnswer =
+            contextService == null
+                ? Optional.empty()
+                : contextService.answerAuditQuestion(
+                    request.projectId(),
+                    request.targetId(),
+                    request.contextRefs(),
+                    request.refs(),
+                    request.prompt(),
+                    request.mode());
+        if (directAuditAnswer.isPresent()) {
+          String answer = directAuditAnswer.get();
+          return completeInformationalTurn(
+              request,
+              session,
+              sink,
+              sequence,
+              new AiPlanResponse("audit-analysis", "", answer, false, List.of()),
+              answer,
+              provenance);
+        }
+
+        if (isSimpleGreeting(request.prompt())) {
+          String answer = "你好，我可以帮你分析授权目标、流量、检测任务和安全结果。";
+          return completeInformationalTurn(
+              request,
+              session,
+              sink,
+              sequence,
+              new AiPlanResponse("local-greeting", "", answer, false, List.of()),
+              answer,
+              provenance);
+        }
 
         emit(
             sink,
@@ -176,8 +240,6 @@ public class AgentOrchestrator {
                 "available",
                 indexReady));
 
-        String history = memory.transcript(session.id());
-        memory.addUser(session.id(), request.prompt());
         String planningPrompt =
             history.isBlank()
                 ? request.prompt()
@@ -250,7 +312,12 @@ public class AgentOrchestrator {
                   request.contextRefs(),
                   request.refs(),
                   request.mode(),
-                  request.turnId());
+                  request.turnId(),
+                  request.workflowId(),
+                  request.workflowRevision(),
+                  request.workflowDigest(),
+                  request.outerNodeId(),
+                  request.nodeRunId());
           try {
             AiAgentRuntimeClient.RuntimePlanResult runtimeResult =
                 runtimeClient.plan(
@@ -278,7 +345,33 @@ public class AgentOrchestrator {
                 provenance.eventData(Map.of("runtimeStatus", runtimeResult.status())));
           } catch (AiAgentRuntimeClient.RuntimeProtocolException ex) {
             provenance.markProtocolRejected();
-            throw new ApiException("AI Runtime 返回内容未通过 Harness 协议校验，本轮已安全停止");
+            String runtimeMessage = ex.getMessage();
+            if (runtimeMessage != null && runtimeMessage.contains("TURN_TIMEOUT")) {
+              throw new ApiException(
+                  "模型在规定时间内没有完成回答，本轮已停止，未执行任何检测，请检查模型连接后重试");
+            }
+            if (runtimeMessage != null && runtimeMessage.contains("MODEL_ACCESS_DENIED")) {
+              throw new ApiException(
+                  "模型服务拒绝了这次请求，本轮已停止，未执行任何检测。请检查代理权限、模型权限，或改用兼容的模型服务后重试");
+            }
+            if (runtimeMessage != null && runtimeMessage.contains("MODEL_RATE_LIMITED")) {
+              throw new ApiException(
+                  "模型服务当前请求过多，本轮已停止，未执行任何检测。请稍后重试");
+            }
+            if (runtimeMessage != null && runtimeMessage.contains("MODEL_TIMEOUT")) {
+              throw new ApiException(
+                  "模型服务连接超时，本轮已停止，未执行任何检测。请检查服务状态后重试");
+            }
+            if (runtimeMessage != null && runtimeMessage.contains("MODEL_SERVICE_UNAVAILABLE")) {
+              throw new ApiException(
+                  "模型服务暂时不可用，本轮已停止，未执行任何检测。请检查服务状态后重试");
+            }
+            if (runtimeMessage != null && runtimeMessage.contains("MODEL_REQUEST_FAILED")) {
+              throw new ApiException(
+                  "模型服务请求失败，本轮已停止，未执行任何检测。请检查模型地址和连接后重试");
+            }
+            throw new ApiException(
+                "AI Runtime 返回内容未通过 Harness 协议校验：智能服务返回内容格式不完整，本轮已安全停止，请检查模型连接后重试");
           } catch (AiAgentRuntimeClient.RuntimeUnavailableException ex) {
             provenance.markFallback("RUNTIME_UNAVAILABLE");
             if (request.executionRequested()) {
@@ -333,7 +426,10 @@ public class AgentOrchestrator {
                   });
           if (provenance.fallback) provenance.setJavaPlannerSource(proposed);
         }
-        if (request.executionRequested() && hasSteps(proposed) && provenance.fallback) {
+        if (request.executionRequested()
+            && hasSteps(proposed)
+            && provenance.fallback
+            && !"PYTHON_MODEL_FALLBACK".equals(provenance.fallbackReason)) {
           throw new ApiException(
               "AI Runtime 未完成受信任的 v3 Ledger 证据链，本轮执行已安全停止；恢复 Runtime 后请使用同一 Turn 重试");
         }
@@ -409,7 +505,13 @@ public class AgentOrchestrator {
           try {
             // Tool implementation re-enters AuthorizationGuard immediately before
             // task creation to protect against authorization/quotas changing in flight.
-            dispatch = tools.executeAuthorizedPlan(request, decision.normalizedPlan());
+            CrossTurnRecoveryService.RecoveryAnchor recoveryAnchor =
+                recoveryAnchor(request, session.id(), provenance);
+            dispatch =
+                recoveryAnchor == null
+                    ? tools.executeAuthorizedPlan(request, decision.normalizedPlan())
+                    : tools.executeAuthorizedPlan(
+                        request, decision.normalizedPlan(), recoveryAnchor);
           } catch (ApiException ex) {
             throw ex;
           } catch (Exception ex) {
@@ -602,8 +704,23 @@ public class AgentOrchestrator {
     return plan != null && plan.steps() != null && !plan.steps().isEmpty();
   }
 
-  public void clearSession(String sessionId) {
-    memory.clear(sessionId);
+  public boolean clearSession(String sessionId) {
+    AiConversationMemoryService.SessionScope scope = memory.clear(sessionId);
+    boolean cleared = scope != null;
+    Map<String, Object> detail = new LinkedHashMap<>();
+    detail.put("sessionId", Objects.toString(sessionId, ""));
+    detail.put("cleared", cleared);
+    if (scope != null) {
+      detail.put("projectId", scope.projectId());
+      detail.put("targetId", scope.targetId());
+    }
+    audit.recordStructured(
+        "AI_CONVERSATION_DELETE",
+        "AI_CONVERSATION",
+        sessionId,
+        Collections.unmodifiableMap(detail),
+        cleared ? "SUCCESS" : "NOT_FOUND");
+    return cleared;
   }
 
   private void emit(
@@ -748,6 +865,26 @@ public class AgentOrchestrator {
       List<Long> taskIds,
       TurnProvenance provenance) {
     return auditDetail(request, sessionId, executed, taskIds, provenance, "");
+  }
+
+  private CrossTurnRecoveryService.RecoveryAnchor recoveryAnchor(
+      AiAgentRequest request, String sessionId, TurnProvenance provenance) {
+    if (provenance.runtimeRunId.isBlank()
+        || request.workflowId() == null
+        || request.workflowRevision() == null
+        || request.workflowDigest() == null
+        || request.nodeRunId() == null
+        || request.outerNodeId() == null
+        || provenance.ledgerSequence <= 0
+        || provenance.ledgerEntryDigest.isBlank()) {
+      return null;
+    }
+    return new CrossTurnRecoveryService.RecoveryAnchor(
+        provenance.runtimeRunId,
+        sessionId,
+        AiAgentRuntimeClient.POLICY_REVISION,
+        provenance.ledgerSequence,
+        provenance.ledgerEntryDigest);
   }
 
   private Map<String, Object> auditDetail(
@@ -916,7 +1053,11 @@ public class AgentOrchestrator {
     if (plan == null || plan.steps() == null || plan.steps().isEmpty())
       return AgentPhase.ENGAGEMENT;
     boolean validation =
-        plan.steps().stream().anyMatch(step -> "nuclei_scan".equals(step.toolCode()));
+        plan.steps().stream()
+            .anyMatch(
+                step ->
+                    Set.of("nuclei_scan", "afrog_scan", "xray_scan")
+                        .contains(step.toolCode()));
     if (validation) return AgentPhase.VALIDATION;
     boolean discovery =
         plan.steps().stream()
@@ -940,6 +1081,15 @@ public class AgentOrchestrator {
       return safe(ex.getMessage(), 1000);
     }
     return "AI 智能体处理失败，请检查模型服务和授权状态后重试";
+  }
+
+  private boolean isSimpleGreeting(String value) {
+    String compact =
+        Objects.toString(value, "")
+            .replaceAll("[\\s，。！？、,.!?]+", "")
+            .toLowerCase(java.util.Locale.ROOT);
+    return Set.of("你好", "您好", "嗨", "hi", "hello", "hey", "谢谢", "谢谢你")
+        .contains(compact);
   }
 
   private String safe(String value, int max) {

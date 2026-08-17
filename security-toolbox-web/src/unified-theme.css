@@ -527,6 +527,8 @@ body,
 /* MessageBox mounts under body; keep its mask aligned with the desktop workspace. */
 body:has(.desktop-v2-native-frame) > .el-overlay.is-message-box {
   left: var(--desktop-sidebar-width, 260px);
+  border-top-left-radius: var(--fluent-workspace-radius);
+  overflow: hidden;
 }
 
 /* Body-mounted Element Plus dialogs must use the native work area as their
@@ -536,6 +538,14 @@ body:has(.desktop-v2-native-frame) > .el-overlay:has(> .el-overlay-dialog) {
   right: 0;
   left: var(--desktop-sidebar-width, 260px);
   width: auto;
+  border-top-left-radius: var(--fluent-workspace-radius);
+  overflow: hidden;
+}
+
+body:has(.desktop-v2-native-frame)
+  > .el-overlay:has(> .el-overlay-dialog)
+  > .el-overlay-dialog {
+  position: absolute;
 }
 
 body:has(.desktop-v2-native-frame)
@@ -781,13 +791,13 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
   backdrop-filter: none !important;
 }
 
-/* Hover tooltips and popovers use an intentionally inverted, opaque surface.
-   Selects, dropdowns and pickers keep the regular overlay palette above. */
+/* Hover tooltips use an intentionally inverted, opaque surface. Business
+   popovers keep the regular overlay palette with other secondary surfaces. */
 .el-popper[role="tooltip"]:not(.el-select__popper):not(
     .el-dropdown__popper
   ):not(.el-picker__popper):not(.el-cascader__dropdown):not(
     .el-autocomplete__popper
-  ) {
+  ):not(.el-popover) {
   --el-text-color-primary: var(--app-hover-popup-text);
   --el-text-color-regular: var(--app-hover-popup-text);
   border-color: var(--app-hover-popup-border) !important;
@@ -800,7 +810,7 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
     .el-dropdown__popper
   ):not(.el-picker__popper):not(.el-cascader__dropdown):not(
     .el-autocomplete__popper
-  )
+  ):not(.el-popover)
   .el-popper__content {
   color: var(--app-hover-popup-text) !important;
 }
@@ -876,9 +886,9 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
    the workspace. Page components only control their inner content. */
 .app-dialog.el-dialog {
   --el-dialog-padding-primary: 0;
-  --app-dialog-width: 560px;
+  --app-dialog-width: 640px;
   display: flex;
-  width: min(var(--app-dialog-width), calc(100vw - 32px)) !important;
+  width: min(var(--app-dialog-width), calc(100% - 32px)) !important;
   max-height: calc(100vh - 32px);
   overflow: hidden;
   flex-direction: column;
@@ -891,19 +901,19 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
 }
 
 .app-dialog--sm.el-dialog {
-  --app-dialog-width: 560px;
+  --app-dialog-width: 480px;
 }
 .app-dialog--md.el-dialog {
   --app-dialog-width: 640px;
 }
 .app-dialog--lg.el-dialog {
-  --app-dialog-width: 720px;
+  --app-dialog-width: 760px;
 }
 .app-dialog--wide.el-dialog {
-  --app-dialog-width: 800px;
+  --app-dialog-width: 880px;
 }
 .app-dialog--xl.el-dialog {
-  --app-dialog-width: 900px;
+  --app-dialog-width: 920px;
 }
 
 .app-dialog.el-dialog > .el-dialog__header {
@@ -911,15 +921,17 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
   flex: none;
   box-sizing: border-box;
   margin: 0;
-  padding: 14px 20px;
+  padding: 14px 52px 14px 20px;
   border-bottom: 1px solid var(--app-border);
   background: transparent;
 }
 
 .app-dialog.el-dialog .el-dialog__title {
   color: var(--app-text);
-  font-size: 15px;
-  font-weight: 650;
+  font-family: var(--fluent-font-display);
+  font-size: var(--fluent-subtitle2-size, 16px);
+  font-weight: var(--fluent-weight-semibold, 600);
+  letter-spacing: 0;
   line-height: 1.4;
 }
 
@@ -933,7 +945,9 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
 }
 
 .app-dialog.el-dialog > .el-dialog__footer {
+  min-height: 57px;
   flex: none;
+  box-sizing: border-box;
   padding: 12px 20px;
   border-top: 1px solid var(--app-border);
   background: transparent;
@@ -953,6 +967,67 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
   border-radius: var(--fluent-radius-control);
 }
 
+.app-dialog.el-dialog > .el-dialog__footer .el-button + .el-button,
+.app-dialog.el-dialog
+  > .el-dialog__footer
+  .app-dialog__footer-row
+  .el-button
+  + .el-button {
+  margin-left: 8px;
+}
+
+.app-dialog__footer-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.app-dialog__footer-row .el-button,
+.app-dialog__footer-row .el-button + .el-button {
+  margin-left: 0 !important;
+}
+
+.app-dialog__footer-spacer {
+  min-width: 8px;
+  flex: 1 1 auto;
+}
+
+.app-dialog__intro {
+  margin: 0 0 16px;
+  color: var(--app-muted);
+  font-size: var(--fluent-body1-size, 14px);
+  line-height: 1.5;
+}
+
+.app-dialog.el-dialog .el-form-item {
+  margin-bottom: 16px;
+}
+
+.app-dialog.el-dialog .el-form-item:last-child {
+  margin-bottom: 0;
+}
+
+.app-dialog.el-dialog .el-form-item__label {
+  height: auto;
+  margin-bottom: 6px;
+  padding: 0;
+  color: var(--app-text);
+  font-size: var(--fluent-body1-size, 14px);
+  font-weight: var(--fluent-weight-semibold, 600);
+  line-height: 1.4;
+}
+
+.app-dialog.el-dialog .el-alert + :is(.el-form, div, section, .el-table) {
+  margin-top: 16px;
+}
+
+.app-dialog.el-dialog .el-descriptions {
+  --el-descriptions-item-bordered-label-background: var(--app-surface-soft);
+  font-size: var(--fluent-body1-size, 14px);
+}
+
 .app-dialog.el-dialog
   > .el-dialog__footer
   .el-button--primary:not(.is-plain):not(.is-text):not(.is-link) {
@@ -962,7 +1037,7 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
 
 @media (max-width: 760px) {
   .app-dialog.el-dialog {
-    width: calc(100vw - 20px) !important;
+    width: calc(100vw - 32px) !important;
     max-height: calc(100vh - 20px);
   }
   .app-dialog.el-dialog > .el-dialog__header {
@@ -974,6 +1049,122 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
   .app-dialog.el-dialog > .el-dialog__footer {
     padding: 10px 15px;
   }
+  .app-dialog__footer-row {
+    flex-wrap: wrap;
+  }
+  .app-dialog__footer-spacer {
+    display: none;
+  }
+}
+
+/* Element Plus confirmation and prompt dialogs mount under body. They use the
+   same header/body/footer rhythm as business dialogs. */
+.el-message-box.el-message-box {
+  width: min(440px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid var(--app-border-strong) !important;
+  border-radius: var(--fluent-radius-overlay);
+  background: var(--fluent-overlay-bg) !important;
+  color: var(--fluent-overlay-fg);
+  box-shadow: var(--fluent-overlay-shadow);
+}
+
+.el-message-box.el-message-box .el-message-box__header {
+  min-height: 52px;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 14px 52px 14px 20px;
+  border-bottom: 1px solid var(--app-border);
+}
+
+.el-message-box.el-message-box .el-message-box__title {
+  color: var(--fluent-overlay-fg);
+  font-family: var(--fluent-font-display);
+  font-size: var(--fluent-subtitle2-size, 16px);
+  font-weight: var(--fluent-weight-semibold, 600);
+  letter-spacing: 0;
+  line-height: 1.4;
+}
+
+.el-message-box.el-message-box .el-message-box__headerbtn {
+  top: 12px;
+  right: 12px;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--fluent-radius-control);
+}
+
+.el-message-box.el-message-box .el-message-box__headerbtn:hover {
+  background: var(--fluent-overlay-hover-bg);
+}
+
+.el-message-box.el-message-box .el-message-box__content {
+  padding: 18px 20px;
+  color: var(--fluent-overlay-fg);
+}
+
+.el-message-box.el-message-box .el-message-box__container {
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.el-message-box.el-message-box .el-message-box__status.el-icon {
+  position: static;
+  flex: none;
+  margin-top: 1px;
+  font-size: 22px !important;
+  transform: none;
+}
+
+.el-message-box.el-message-box .el-message-box__message {
+  min-width: 0;
+  padding-left: 0;
+  color: var(--fluent-overlay-fg);
+  font-size: var(--fluent-body1-size, 14px);
+  line-height: 1.5;
+}
+
+.el-message-box.el-message-box .el-message-box__message p {
+  margin: 0;
+}
+
+.el-message-box.el-message-box .el-message-box__input {
+  padding-top: 14px;
+}
+
+.el-message-box.el-message-box .el-message-box__btns {
+  min-height: 57px;
+  box-sizing: border-box;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--app-border);
+}
+
+.el-message-box.el-message-box .el-message-box__btns .el-button {
+  min-width: 76px;
+  height: 32px;
+  margin: 0;
+  border-radius: var(--fluent-radius-control);
+}
+
+.el-popover.el-popper {
+  padding: 12px;
+  border: 1px solid var(--app-overlay-border) !important;
+  border-radius: var(--fluent-radius-overlay);
+  background: var(--fluent-overlay-bg) !important;
+  color: var(--fluent-overlay-fg);
+  box-shadow: var(--fluent-overlay-shadow);
+}
+
+.el-popover.el-popper .el-popover__title {
+  margin-bottom: 8px;
+  color: var(--fluent-overlay-fg);
+  font-size: var(--fluent-body1-size, 14px);
+  font-weight: var(--fluent-weight-semibold, 600);
+  letter-spacing: 0;
 }
 
 .el-switch.is-checked .el-switch__core {
@@ -1171,7 +1362,7 @@ html .desktop-v2-native-frame .vuln-workbench {
 
 .traffic-row.active {
   background: var(--app-accent-soft) !important;
-  box-shadow: inset 3px 0 var(--app-accent) !important;
+  box-shadow: none !important;
 }
 
 .traffic-row > b,
@@ -1406,7 +1597,7 @@ html .desktop-v2-native-frame .vuln-workbench {
 .offline-tool-index section > button.active {
   background: var(--app-accent-soft);
   color: var(--app-text);
-  box-shadow: inset 3px 0 var(--app-accent);
+  box-shadow: none;
 }
 
 .offline-tool-index section > button.active > .el-icon,

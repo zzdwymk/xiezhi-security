@@ -5,10 +5,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.bachelor.toolbox.auth.User;
 import com.bachelor.toolbox.common.ApiException;
+import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 
 class ProjectAuthorizationServiceTests {
@@ -50,6 +54,20 @@ class ProjectAuthorizationServiceTests {
     assertThatThrownBy(service::currentUsername)
         .isInstanceOf(ApiException.class)
         .hasMessage("请先登录后再继续操作");
+  }
+
+  @Test
+  void currentUsernameUsesAuthenticatedUserEntityName() {
+    User user = new User();
+    user.setUsername("alice");
+    user.setRole("USER");
+    user.setEnabled(true);
+    SecurityContextHolder.getContext()
+        .setAuthentication(
+            new UsernamePasswordAuthenticationToken(
+                user, null, List.of(new SimpleGrantedAuthority("ROLE_USER"))));
+
+    assertThat(service.currentUsername()).isEqualTo("alice");
   }
 
   private AssessmentProject project(Long id, String owner) {

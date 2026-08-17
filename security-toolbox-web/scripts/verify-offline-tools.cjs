@@ -186,6 +186,22 @@ async function verify() {
   assert.match(trafficSource, /v-for="item in pagedSessions"/);
   assert.match(trafficSource, /v-model:page="sessionPage"/);
 
+  const offlineToolsSource = fs.readFileSync(
+    path.resolve(__dirname, "../src/views/OfflineTools.vue"),
+    "utf8",
+  );
+  const offlineToolsStyles = fs.readFileSync(
+    path.resolve(__dirname, "../src/offline-tools.css"),
+    "utf8",
+  );
+  assert.match(offlineToolsSource, /role="search"/);
+  assert.match(offlineToolsSource, /aria-label="搜索离线工具"/);
+  assert.match(offlineToolsSource, /aria-label="清除搜索"/);
+  assert.match(offlineToolsSource, /v-if="query"/);
+  assert.match(offlineToolsStyles, /\.offline-tool-search:focus-within/);
+  assert.match(offlineToolsStyles, /inset 0 -2px 0 0 var\(--app-accent\)/);
+  assert.match(offlineToolsStyles, /\.offline-tool-search-clear/);
+
   console.log("Offline tools and shared frontend verification passed.");
 }
 

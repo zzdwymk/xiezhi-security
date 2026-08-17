@@ -3,6 +3,7 @@ package com.bachelor.toolbox.migration;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
@@ -125,12 +126,68 @@ class LegacyProjectSchemaMigrationIntegrationTests {
             "SELECT preference_value FROM local_preferences WHERE id=1", String.class));
   }
 
+  @Test
+  void repairsLegacyAiGeneratedIdsWithoutLosingRows() throws Exception {
+    String legacyUrl = "jdbc:h2:mem:legacy-ai-generated-ids;MODE=PostgreSQL;DB_CLOSE_DELAY=-1";
+    DriverManagerDataSource legacyDataSource = new DriverManagerDataSource(legacyUrl, "sa", "");
+    JdbcTemplate jdbc = new JdbcTemplate(legacyDataSource);
+    jdbc.execute("DROP ALL OBJECTS");
+    jdbc.execute(
+        """
+        CREATE TABLE agent_workflow_spec (
+          id BIGINT NOT NULL PRIMARY KEY,
+          workflow_id VARCHAR(64) NOT NULL,
+          scope_id BIGINT NOT NULL,
+          revision BIGINT NOT NULL,
+          spec_digest VARCHAR(71) NOT NULL,
+          spec_json CLOB NOT NULL,
+          updated_by VARCHAR(100) NOT NULL,
+          updated_at TIMESTAMP WITH TIME ZONE NOT NULL
+        )
+        """);
+    jdbc.update(
+        """
+        INSERT INTO agent_workflow_spec
+        (id,workflow_id,scope_id,revision,spec_digest,spec_json,updated_by,updated_at)
+        VALUES (7,'legacy-workflow',10,1,'sha256:legacy','{}','admin',CURRENT_TIMESTAMP)
+        """);
+
+    LegacyProjectSchemaMigration legacyMigration =
+        new LegacyProjectSchemaMigration(legacyDataSource);
+    legacyMigration.migrate();
+
+    assertTrue(isAutoIncrement(legacyDataSource, "AGENT_WORKFLOW_SPEC", "ID"));
+    jdbc.update(
+        """
+        INSERT INTO agent_workflow_spec
+        (workflow_id,scope_id,revision,spec_digest,spec_json,updated_by,updated_at)
+        VALUES ('legacy-workflow',10,2,'sha256:next','{}','admin',CURRENT_TIMESTAMP)
+        """);
+    assertEquals(
+        8L,
+        jdbc.queryForObject(
+            "SELECT id FROM agent_workflow_spec WHERE revision=2", Long.class));
+
+    legacyMigration.migrate();
+    assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM agent_workflow_spec", Integer.class));
+  }
+
   private boolean isNullable(DataSource source, String table, String column) throws Exception {
     try (Connection connection = source.getConnection()) {
       DatabaseMetaData metadata = connection.getMetaData();
       try (ResultSet columns = metadata.getColumns(null, null, table, column)) {
         columns.next();
         return columns.getInt("NULLABLE") != DatabaseMetaData.columnNoNulls;
+      }
+    }
+  }
+
+  private boolean isAutoIncrement(DataSource source, String table, String column) throws Exception {
+    try (Connection connection = source.getConnection()) {
+      DatabaseMetaData metadata = connection.getMetaData();
+      try (ResultSet columns = metadata.getColumns(null, null, table, column)) {
+        columns.next();
+        return "YES".equalsIgnoreCase(columns.getString("IS_AUTOINCREMENT"));
       }
     }
   }

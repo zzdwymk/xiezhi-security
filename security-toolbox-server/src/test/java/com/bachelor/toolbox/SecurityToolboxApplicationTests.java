@@ -28,7 +28,9 @@ import org.springframework.test.web.servlet.MockMvc;
       "toolbox.auth.admin-password=test-admin-password-7bbbe095d8724fcb",
       "toolbox.auth.jwt-secret=test-jwt-secret-cdc24d415ad843aa9ef313028ae9be30",
       "toolbox.traffic.mitm-ca-password=test-mitm-ca-password-1d6ad9b95b76490e",
-      "toolbox.traffic.mitm-enabled=false"
+      "toolbox.traffic.mitm-enabled=false",
+      "toolbox.vulnerability-catalog.nuclei.import-on-startup=false",
+      "toolbox.vulnerability-catalog.scanner-pocs.import-on-startup=false"
     })
 @AutoConfigureMockMvc
 class SecurityToolboxApplicationTests {
@@ -234,7 +236,16 @@ class SecurityToolboxApplicationTests {
     mockMvc
         .perform(get("/api/vulnerabilities").header("Authorization", "Bearer " + token))
         .andExpect(status().isOk())
-        .andExpect(jsonPath("$.content[?(@.vulnerabilityCode == 'STB-WEB-001')]").exists());
+        .andExpect(jsonPath("$.totalElements").value(0))
+        .andExpect(jsonPath("$.content.length()").value(0));
+    mockMvc
+        .perform(get("/api/vulnerabilities/stats").header("Authorization", "Bearer " + token))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.total").value(0))
+        .andExpect(jsonPath("$.builtin").value(0))
+        .andExpect(jsonPath("$.nuclei").value(0))
+        .andExpect(jsonPath("$.afrog").value(0))
+        .andExpect(jsonPath("$.xray").value(0));
     mockMvc
         .perform(get("/api/vulnerabilities/rules").header("Authorization", "Bearer " + token))
         .andExpect(status().isOk())

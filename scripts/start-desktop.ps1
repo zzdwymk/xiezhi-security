@@ -1,4 +1,26 @@
 $ErrorActionPreference = 'Stop'
+
+$utf8 = [System.Text.UTF8Encoding]::new($false)
+[Console]::InputEncoding = $utf8
+[Console]::OutputEncoding = $utf8
+$OutputEncoding = $utf8
+
+function Add-ProcessJvmOptions([string]$Name, [string[]]$Options) {
+    $existing = [Environment]::GetEnvironmentVariable($Name, 'Process')
+    $parts = @()
+    if (-not [string]::IsNullOrWhiteSpace($existing)) { $parts += $existing.Trim() }
+    foreach ($option in $Options) {
+        if ($existing -notlike "*$option*") { $parts += $option }
+    }
+    [Environment]::SetEnvironmentVariable($Name, ($parts -join ' '), 'Process')
+}
+
+Add-ProcessJvmOptions 'MAVEN_OPTS' @(
+    '-Dfile.encoding=UTF-8',
+    '-Dsun.stdout.encoding=UTF-8',
+    '-Dsun.stderr.encoding=UTF-8'
+)
+
 $workspace = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $backend = Join-Path $workspace 'security-toolbox-server'
 $frontend = Join-Path $workspace 'security-toolbox-web'

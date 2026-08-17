@@ -26,7 +26,7 @@ class DependencyDetectionServiceTests {
         };
     CommandRunner runner =
         (executable, arguments, timeout) -> {
-          assertThat(timeout).isEqualTo(Duration.ofSeconds(3));
+          assertThat(timeout).isEqualTo(Duration.ofMillis(1300));
           if (executable.getFileName().toString().startsWith("nmap")) {
             return CommandResult.completed(0, "Nmap version 7.99\n");
           }
@@ -74,7 +74,7 @@ class DependencyDetectionServiceTests {
 
     assertThat(nuclei.status()).isEqualTo("TIMEOUT");
     assertThat(nuclei.version()).isEqualTo("unknown");
-    assertThat(nuclei.message()).contains("3 秒");
+    assertThat(nuclei.message()).contains("1.3 秒");
   }
 
   @Test
@@ -94,6 +94,63 @@ class DependencyDetectionServiceTests {
 
     assertThat(second).isSameAs(first);
     assertThat(locateCalls).hasValue(12);
+  }
+
+  @Test
+  void forcedRefreshBypassesRecentCachedResponse() {
+    AtomicInteger locateCalls = new AtomicInteger();
+    ExecutableLocator locator =
+        candidates -> {
+          locateCalls.incrementAndGet();
+          return Optional.empty();
+        };
+    DependencyDetectionService service =
+        new DependencyDetectionService(
+            locator, (executable, arguments, timeout) -> CommandResult.completed(0, "unused"));
+
+    SystemDependenciesResponse first = service.detect();
+    SystemDependenciesResponse refreshed = service.detect(true);
+
+    assertThat(refreshed).isNotSameAs(first);
+    assertThat(locateCalls).hasValue(24);
+  }
+
+  @Test
+  void disablesAfrogUpdateCheckDuringVersionProbe() {
+    ExecutableLocator locator = locateCandidate("afrog", Path.of("C:/tools/afrog.exe"));
+    CommandRunner runner =
+        (executable, arguments, timeout) -> {
+          assertThat(arguments).containsExactly("-disable-update-check", "-version");
+          return CommandResult.completed(0, "Afrog 3.5.6");
+        };
+
+    DependencyStatus afrog =
+        find(new DependencyDetectionService(locator, runner).detect(), "Afrog");
+
+    assertThat(afrog.status()).isEqualTo("AVAILABLE");
+    assertThat(afrog.version()).isEqualTo("Afrog 3.5.6");
+  }
+
+  @Test
+  void disablesNetworkUpdateChecksForProjectDiscoveryScanners() {
+    ExecutableLocator locator =
+        candidates -> {
+          if (candidates.contains("nuclei")) return Optional.of(Path.of("C:/tools/nuclei.exe"));
+          if (candidates.contains("httpx")) return Optional.of(Path.of("C:/tools/httpx.exe"));
+          return Optional.empty();
+        };
+    CommandRunner runner =
+        (executable, arguments, timeout) -> {
+          assertThat(arguments).containsExactly("-disable-update-check", "-version");
+          return executable.getFileName().toString().startsWith("nuclei")
+              ? CommandResult.completed(0, "Nuclei Engine Version: 3.5.0")
+              : CommandResult.completed(0, "Current Version: v1.7.1 httpx");
+        };
+
+    SystemDependenciesResponse response = new DependencyDetectionService(locator, runner).detect();
+
+    assertThat(find(response, "Nuclei").status()).isEqualTo("AVAILABLE");
+    assertThat(find(response, "ProjectDiscovery httpx").status()).isEqualTo("AVAILABLE");
   }
 
   @Test

@@ -10,10 +10,46 @@ import com.bachelor.toolbox.common.ApiException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class AgentOrchestratorTests {
+  @Test
+  void directlyAnswersReferencedAuditWithoutProjectIndexOrPlan() {
+    AiConversationMemoryService memory = new AiConversationMemoryService(20, 20, 120);
+    SecurityAgentTools tools = mock(SecurityAgentTools.class);
+    AiAgentRuntimeClient runtime = mock(AiAgentRuntimeClient.class);
+    AiProjectIndexService index = mock(AiProjectIndexService.class);
+    AiPlanningService planner = mock(AiPlanningService.class);
+    AiAuthorizationGuard guard = mock(AiAuthorizationGuard.class);
+    AiExecutionReviewer reviewer = mock(AiExecutionReviewer.class);
+    AiContextService context = mock(AiContextService.class);
+    AuditService audit = mock(AuditService.class);
+    when(context.answerAuditQuestion(anyLong(), anyLong(), any(), any(), anyString(), anyString()))
+        .thenReturn(Optional.of("**结论**\n\n操作已正常处理。\n\n**进一步核查方向**\n\n- 核对任务结果"));
+
+    AgentOrchestrator orchestrator =
+        new AgentOrchestrator(memory, tools, runtime, index, planner, guard, reviewer, context, audit);
+    AiAgentRequest request =
+        new AiAgentRequest(
+            5L,
+            8L,
+            "audit-answer",
+            "请结合这条审计日志判断是否符合预期",
+            true,
+            null,
+            List.of(new AiPlanRequest.ContextRef("audit", 114L, 8L, "审计记录 #114")),
+            "analyze",
+            "turn-audit-answer");
+
+    AiAgentResponse response = orchestrator.run(request);
+
+    assertThat(response.executed()).isFalse();
+    assertThat(response.message()).contains("结论", "进一步核查方向");
+    verify(context).answerAuditQuestion(eq(5L), eq(8L), isNull(), anyList(), anyString(), eq("analyze"));
+    verifyNoInteractions(index, runtime, planner, guard, reviewer, tools);
+  }
   @Test
   void expiredProjectCanStillAnswerInformationalQuestionWithoutStrictGuard() {
     AiConversationMemoryService memory = new AiConversationMemoryService(20, 20, 120);
@@ -83,7 +119,12 @@ class AgentOrchestratorTests {
             null,
             List.of(),
             "standard",
-            "turn-protocol-failure");
+            "turn-protocol-failure",
+            "workflow-protocol-failure",
+            7L,
+            "sha256:" + "a".repeat(64),
+            "ledger-agent",
+            "node-protocol-failure");
 
     assertThatThrownBy(() -> orchestrator.run(request))
         .isInstanceOf(ApiException.class)
@@ -91,6 +132,14 @@ class AgentOrchestratorTests {
     verify(planner, never()).planStreaming(any(), any());
     verify(tools, never()).executeAuthorizedPlan(any(), any());
     verifyNoInteractions(guard, reviewer);
+
+    ArgumentCaptor<AiAgentRequest> runtimeRequest = ArgumentCaptor.forClass(AiAgentRequest.class);
+    verify(runtime).plan(runtimeRequest.capture(), anyString(), any());
+    assertThat(runtimeRequest.getValue().workflowId()).isEqualTo(request.workflowId());
+    assertThat(runtimeRequest.getValue().workflowRevision()).isEqualTo(request.workflowRevision());
+    assertThat(runtimeRequest.getValue().workflowDigest()).isEqualTo(request.workflowDigest());
+    assertThat(runtimeRequest.getValue().outerNodeId()).isEqualTo(request.outerNodeId());
+    assertThat(runtimeRequest.getValue().nodeRunId()).isEqualTo(request.nodeRunId());
   }
 
   @Test
@@ -164,6 +213,96 @@ class AgentOrchestratorTests {
         .hasMessageContaining("v3 Ledger 证据链");
     verifyNoInteractions(guard, reviewer);
     verify(tools, never()).executeAuthorizedPlan(any(), any());
+  }
+
+  @Test
+  void verifiedLocalGroundedFallbackDispatchesThroughGuardAndReview() throws Exception {
+    AiConversationMemoryService memory = new AiConversationMemoryService(20, 20, 120);
+    SecurityAgentTools tools = mock(SecurityAgentTools.class);
+    AiAgentRuntimeClient runtime = mock(AiAgentRuntimeClient.class);
+    AiProjectIndexService index = mock(AiProjectIndexService.class);
+    AiPlanningService planner = mock(AiPlanningService.class);
+    AiAuthorizationGuard guard = mock(AiAuthorizationGuard.class);
+    AiExecutionReviewer reviewer = mock(AiExecutionReviewer.class);
+    AuditService audit = mock(AuditService.class);
+    AiPlanResponse runtimePlan = actionablePlan("langgraph-runtime");
+    AiAgentRequest request = request("runtime-local-fallback", true, "turn-local-fallback");
+    AiAgentRuntimeClient.RuntimePlanResult runtimeResult =
+        new AiAgentRuntimeClient.RuntimePlanResult(
+            runtimePlan,
+            runtimePlan.summary(),
+            "COMPLETED",
+            "runtime-local-fallback",
+            AiAgentRuntimeClient.POLICY_REVISION,
+            11,
+            new AiAgentRuntimeClient.RuntimeProvenance(
+                1,
+                List.of("ev-a"),
+                "sha256:" + "a".repeat(64),
+                "local-grounded-fallback",
+                "EVIDENCE_FINALIZED"));
+    AiAuthorizationGuard.GuardDecision decision =
+        new AiAuthorizationGuard.GuardDecision(
+            "ALLOWED", "CONFIRMED_BY_REQUEST", "authorized", runtimePlan, 0, 0);
+    AiAgentResponse.AgentReview review =
+        new AiAgentResponse.AgentReview("VERIFIED", "verified", false, List.of(42L));
+
+    when(tools.inspectProjectContext(5L, 8L)).thenReturn("authorized context");
+    when(runtime.enabled()).thenReturn(true);
+    when(runtime.plan(any(AiAgentRequest.class), anyString(), any())).thenReturn(runtimeResult);
+    when(guard.evaluate(same(request), same(runtimePlan))).thenReturn(decision);
+    when(tools.executeAuthorizedPlan(same(request), same(runtimePlan)))
+        .thenReturn(new AiDispatchResponse(8L, runtimePlan, 1, List.of(42L)));
+    when(reviewer.review(5L, 8L, List.of(42L))).thenReturn(review);
+    AgentOrchestrator orchestrator =
+        new AgentOrchestrator(memory, tools, runtime, index, planner, guard, reviewer, audit);
+    List<AiAgentEvent> events = new ArrayList<>();
+
+    AiAgentResponse response = orchestrator.run(request, events::add);
+
+    assertThat(response.executed()).isTrue();
+    assertThat(response.taskIds()).containsExactly(42L);
+    verify(guard).evaluate(same(request), same(runtimePlan));
+    verify(tools).executeAuthorizedPlan(same(request), same(runtimePlan));
+    verify(reviewer).review(5L, 8L, List.of(42L));
+    AiAgentEvent done =
+        events.stream().filter(event -> "done".equals(event.type())).findFirst().orElseThrow();
+    assertThat(done.data())
+        .containsEntry("fallback", true)
+        .containsEntry("fallbackReason", "PYTHON_MODEL_FALLBACK")
+        .containsEntry("plannerSource", "local-grounded-fallback");
+  }
+
+  @Test
+  void clearingSessionAuditsItsProjectAndTargetScope() {
+    AiConversationMemoryService memory = mock(AiConversationMemoryService.class);
+    AuditService audit = mock(AuditService.class);
+    when(memory.clear("session-delete"))
+        .thenReturn(new AiConversationMemoryService.SessionScope(5L, 8L));
+    AgentOrchestrator orchestrator =
+        new AgentOrchestrator(
+            memory,
+            mock(SecurityAgentTools.class),
+            mock(AiAgentRuntimeClient.class),
+            mock(AiProjectIndexService.class),
+            mock(AiPlanningService.class),
+            mock(AiAuthorizationGuard.class),
+            mock(AiExecutionReviewer.class),
+            audit);
+
+    assertThat(orchestrator.clearSession("session-delete")).isTrue();
+
+    verify(audit)
+        .recordStructured(
+            "AI_CONVERSATION_DELETE",
+            "AI_CONVERSATION",
+            "session-delete",
+            Map.of(
+                "sessionId", "session-delete",
+                "cleared", true,
+                "projectId", 5L,
+                "targetId", 8L),
+            "SUCCESS");
   }
 
   @Test

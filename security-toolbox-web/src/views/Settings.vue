@@ -68,6 +68,7 @@ async function changeLoginPassword() {
 const aiDialog = ref(false);
 const aiLoading = ref(false);
 const aiTesting = ref(false);
+const embeddingTesting = ref(false);
 const aiSaving = ref(false);
 const windowMaterial = ref<WindowMaterial>("mica");
 const materialSaving = ref(false);
@@ -85,8 +86,73 @@ const githubForm = reactive<{ token: string }>({ token: "" });
 const aiForm = reactive<AiSettingsInput>({
   baseUrl: "https://api.openai.com",
   model: "gpt-4.1-mini",
+  retrievalBackend: "bm25",
+  embeddingModel: "text-embedding-3-small",
+  embeddingConnectionMode: "shared",
+  embeddingBaseUrl: "https://api.openai.com",
+  embeddingApiKey: "",
   apiKey: "",
   proxyMode: false,
+});
+
+const hasIndependentEmbedding = computed(
+  () =>
+    aiStatus.value?.retrievalBackend === "real_embedding" &&
+    aiStatus.value.embeddingConnectionMode === "custom",
+);
+
+const aiServiceSummary = computed(() => {
+  if (!isDesktop) return "网页模式请通过服务端配置";
+  const status = aiStatus.value;
+  if (!status) return "正在读取配置";
+
+  const chatSummary =
+    status.provider === "openai-compatible"
+      ? status.proxyMode
+        ? `对话使用本地代理连接（${status.model}）`
+        : `对话服务已连接（${status.model}）`
+      : "对话使用本地规则";
+  const embeddingConnection =
+    status.embeddingConnectionMode === "shared"
+      ? "复用对话连接"
+      : "单独配置";
+  const embeddingState =
+    status.embeddingConnectionMode === "shared" &&
+    status.provider !== "openai-compatible"
+      ? "向量检索待连接"
+      : "向量检索";
+  const retrievalSummary =
+    status.retrievalBackend === "real_embedding"
+      ? `${embeddingState}（${embeddingConnection} · ${status.embeddingModel}）`
+      : "关键词检索";
+  const keySummary =
+    status.provider === "openai-compatible" && status.keyHint
+      ? ` · ${status.keyHint}`
+      : "";
+  return `${chatSummary} · ${retrievalSummary}${keySummary}`;
+});
+
+const aiConnectionAlert = computed(() => {
+  if (aiStatus.value?.provider === "openai-compatible") {
+    return {
+      type: "success" as const,
+      title: aiStatus.value.proxyMode
+        ? "对话服务已通过本地代理连接"
+        : aiStatus.value.keyHint
+          ? `对话服务已启用（${aiStatus.value.keyHint}）`
+          : "对话服务已启用",
+    };
+  }
+  if (hasIndependentEmbedding.value) {
+    return {
+      type: "info" as const,
+      title: "对话使用本地规则；向量检索使用单独配置的连接。",
+    };
+  }
+  return {
+    type: "warning" as const,
+    title: "尚未配置对话服务，对话会使用本地规则生成计划和回答。",
+  };
 });
 
 function rerunSetup() {
@@ -108,8 +174,17 @@ function troubleshootWithCopilot() {
       data: {
         provider,
         model: aiStatus.value?.model || aiForm.model,
+        retrievalBackend:
+          aiStatus.value?.retrievalBackend || aiForm.retrievalBackend,
+        embeddingModel:
+          aiStatus.value?.embeddingModel || aiForm.embeddingModel,
+        embeddingConnectionMode:
+          aiStatus.value?.embeddingConnectionMode ||
+          aiForm.embeddingConnectionMode,
         proxyMode: Boolean(aiStatus.value?.proxyMode),
-        configured: aiStatus.value?.provider === "openai-compatible",
+        configured:
+          aiStatus.value?.provider === "openai-compatible" ||
+          hasIndependentEmbedding.value,
       },
     },
   });
@@ -222,12 +297,31 @@ async function loadAiSettings(open = false) {
     aiStatus.value = await window.toolboxDesktop.getAiSettings();
     aiForm.baseUrl = aiStatus.value.baseUrl;
     aiForm.model = aiStatus.value.model;
+    aiForm.retrievalBackend = aiStatus.value.retrievalBackend;
+    aiForm.embeddingModel = aiStatus.value.embeddingModel;
+    aiForm.embeddingConnectionMode = aiStatus.value.embeddingConnectionMode;
+    aiForm.embeddingBaseUrl = aiStatus.value.embeddingBaseUrl;
     aiForm.apiKey = "";
+    aiForm.embeddingApiKey = "";
     aiForm.proxyMode = aiStatus.value.proxyMode;
   } catch (error) {
     ElMessage.error(errorText(error, "无法读取 AI 设置"));
   } finally {
     aiLoading.value = false;
+  }
+}
+
+async function testEmbedding() {
+  if (!window.toolboxDesktop?.testEmbeddingSettings)
+    return ElMessage.warning("向量连接测试仅支持桌面应用");
+  embeddingTesting.value = true;
+  try {
+    const result = await window.toolboxDesktop.testEmbeddingSettings({ ...aiForm });
+    ElMessage.success(result.message);
+  } catch (error) {
+    ElMessage.error(errorText(error, "向量服务连接失败"));
+  } finally {
+    embeddingTesting.value = false;
   }
 }
 
@@ -261,11 +355,35 @@ async function saveAi() {
     aiSaving.value = true;
     aiStatus.value = await window.toolboxDesktop.saveAiSettings({ ...aiForm });
     aiForm.apiKey = "";
+    aiForm.embeddingApiKey = "";
     aiDialog.value = false;
     ElMessage.success("AI 设置已保存，本地服务已重新加载");
   } catch (error) {
     if (error !== "cancel" && error !== "close")
       ElMessage.error(errorText(error, "AI 设置保存失败"));
+  } finally {
+    aiSaving.value = false;
+  }
+}
+
+async function clearEmbeddingApiKey() {
+  if (!window.toolboxDesktop?.clearEmbeddingApiKey) return;
+  try {
+    await ElMessageBox.confirm(
+      "清除后，单独配置的向量服务将不再发送鉴权密钥。确定继续吗？",
+      "清除向量 API Key",
+      { confirmButtonText: "清除", cancelButtonText: "取消", type: "warning" },
+    );
+    aiSaving.value = true;
+    aiStatus.value = await window.toolboxDesktop.clearEmbeddingApiKey({
+      ...aiForm,
+      embeddingApiKey: "",
+    });
+    aiForm.embeddingApiKey = "";
+    ElMessage.success("向量 API Key 已清除");
+  } catch (error) {
+    if (error !== "cancel" && error !== "close")
+      ElMessage.error(errorText(error, "向量 API Key 清除失败"));
   } finally {
     aiSaving.value = false;
   }
@@ -496,21 +614,7 @@ watch(
             <el-icon class="settings-row-icon"><ChatDotRound /></el-icon>
             <span class="settings-row-copy">
               <strong>AI 模型服务</strong>
-              <small v-if="!isDesktop">网页模式请通过后端环境变量配置</small>
-              <small v-else-if="aiStatus?.provider === 'openai-compatible'"
-                >{{
-                  aiStatus.proxyMode
-                    ? "已启用 CCS 本地代理"
-                    : "已连接 OpenAI 兼容服务"
-                }}
-                · {{ aiStatus.model
-                }}<template v-if="aiStatus.keyHint">
-                  · {{ aiStatus.keyHint }}</template
-                ></small
-              >
-              <small v-else
-                >当前使用本地规则模式，点击填写 API 地址、Key 和模型</small
-              >
+              <small>{{ aiServiceSummary }}</small>
             </span>
             <el-icon class="settings-row-chevron"><ArrowRight /></el-icon>
           </button>
@@ -679,9 +783,9 @@ watch(
     <el-dialog
       v-model="pwdVisible"
       title="修改登录密码"
-      width="420px"
-      class="app-dialog"
+      class="app-dialog app-dialog--sm"
       align-center
+      append-to-body
       destroy-on-close
     >
       <el-form label-position="top" @keyup.enter="changeLoginPassword">
@@ -690,7 +794,6 @@ watch(
             v-model="pwdForm.current"
             type="password"
             show-password
-            size="large"
             autocomplete="current-password"
             placeholder="已通过本机凭据 / Hello 登录可留空"
             :disabled="pwdSaving"
@@ -700,7 +803,6 @@ watch(
             v-model="pwdForm.next"
             type="password"
             show-password
-            size="large"
             autocomplete="new-password"
             placeholder="请输入新密码"
             :disabled="pwdSaving"
@@ -710,7 +812,6 @@ watch(
             v-model="pwdForm.confirm"
             type="password"
             show-password
-            size="large"
             autocomplete="new-password"
             placeholder="请再次输入新密码"
             :disabled="pwdSaving"
@@ -732,9 +833,9 @@ watch(
     <el-dialog
       v-model="icpDialog"
       title="ICP备案数据源"
-      width="620px"
       class="app-dialog app-dialog--md"
       align-center
+      append-to-body
       destroy-on-close
     >
       <div v-loading="icpLoading" class="icp-settings-dialog">
@@ -775,7 +876,7 @@ watch(
         </el-form>
       </div>
       <template #footer>
-        <div class="icp-dialog-footer">
+        <div class="app-dialog__footer-row">
           <el-button
             v-if="icpStatus?.configured"
             type="danger"
@@ -784,7 +885,7 @@ watch(
             @click="clearIcpSettings"
             >清除配置</el-button
           >
-          <span />
+          <span class="app-dialog__footer-spacer" />
           <el-button @click="icpDialog = false">取消</el-button>
           <el-button
             type="primary"
@@ -800,9 +901,9 @@ watch(
     <el-dialog
       v-model="githubDialog"
       title="GitHub 访问令牌"
-      width="520px"
       class="app-dialog app-dialog--md"
       align-center
+      append-to-body
       destroy-on-close
     >
       <div v-loading="githubLoading" class="icp-settings-form">
@@ -862,7 +963,7 @@ watch(
         </el-form>
       </div>
       <template #footer>
-        <div class="icp-dialog-footer">
+        <div class="app-dialog__footer-row">
           <el-button
             v-if="githubStatus?.configured && githubStatus?.source !== 'env'"
             type="danger"
@@ -871,7 +972,7 @@ watch(
             @click="clearGithubToken"
             >清除令牌</el-button
           >
-          <span />
+          <span class="app-dialog__footer-spacer" />
           <el-button @click="githubDialog = false">取消</el-button>
           <el-button
             type="primary"
@@ -891,9 +992,9 @@ watch(
     <el-dialog
       v-model="aiDialog"
       title="AI 模型服务"
-      width="620px"
       class="app-dialog app-dialog--md ai-model-dialog"
       align-center
+      append-to-body
       destroy-on-close
     >
       <div v-loading="aiLoading" class="ai-settings-dialog">
@@ -905,20 +1006,9 @@ watch(
           show-icon
         />
         <el-alert
-          v-else-if="aiStatus?.provider === 'openai-compatible'"
-          :title="
-            aiStatus.proxyMode
-              ? 'CCS 本地代理已启用'
-              : `外部 AI 已启用（${aiStatus.keyHint}）`
-          "
-          type="success"
-          :closable="false"
-          show-icon
-        />
-        <el-alert
           v-else
-          title="尚未配置 AI 服务，对话会使用本地规则生成计划和回答。"
-          type="warning"
+          :title="aiConnectionAlert.title"
+          :type="aiConnectionAlert.type"
           :closable="false"
           show-icon
         />
@@ -971,31 +1061,119 @@ watch(
               :disabled="!isDesktop"
             />
           </el-form-item>
+          <el-form-item label="知识检索方式">
+            <el-segmented
+              v-model="aiForm.retrievalBackend"
+              :options="[
+                { label: 'BM25 关键词', value: 'bm25' },
+                { label: '真实向量嵌入', value: 'real_embedding' },
+              ]"
+              :disabled="!isDesktop"
+            />
+            <p>
+              BM25 不调用向量服务；真实向量嵌入可复用对话连接，也可单独配置。
+            </p>
+          </el-form-item>
+          <el-form-item
+            v-if="aiForm.retrievalBackend === 'real_embedding'"
+            label="向量服务连接方式"
+          >
+            <el-segmented
+              v-model="aiForm.embeddingConnectionMode"
+              :options="[
+                { label: '复用对话连接', value: 'shared' },
+                { label: '单独配置', value: 'custom' },
+              ]"
+              :disabled="!isDesktop"
+            />
+          </el-form-item>
+          <el-form-item
+            v-if="
+              aiForm.retrievalBackend === 'real_embedding' &&
+              aiForm.embeddingConnectionMode === 'custom'
+            "
+            label="向量 API 地址"
+          >
+            <el-input
+              v-model="aiForm.embeddingBaseUrl"
+              placeholder="https://api.openai.com"
+              :disabled="!isDesktop"
+            />
+          </el-form-item>
+          <el-form-item
+            v-if="
+              aiForm.retrievalBackend === 'real_embedding' &&
+              aiForm.embeddingConnectionMode === 'custom'
+            "
+            label="向量 API Key"
+          >
+            <el-input
+              v-model="aiForm.embeddingApiKey"
+              type="password"
+              show-password
+              autocomplete="new-password"
+              :placeholder="
+                aiStatus?.hasEmbeddingApiKey
+                  ? '留空表示继续使用已保存的密钥'
+                  : '可留空（服务不要求密钥时）'
+              "
+              :disabled="!isDesktop"
+            />
+          </el-form-item>
+          <el-form-item
+            v-if="aiForm.retrievalBackend === 'real_embedding'"
+            label="Embedding 模型"
+          >
+            <el-input
+              v-model="aiForm.embeddingModel"
+              placeholder="text-embedding-3-small"
+              :disabled="!isDesktop"
+            />
+          </el-form-item>
         </el-form>
       </div>
       <template #footer>
-        <div class="ai-dialog-footer">
+        <div class="app-dialog__footer-row">
           <el-button
             v-if="aiStatus?.hasApiKey"
             type="danger"
             plain
             :disabled="aiSaving"
             @click="clearApiKey"
-            >清除密钥</el-button
+            >清除对话密钥</el-button
           >
-          <span />
+          <el-button
+            v-if="
+              aiForm.retrievalBackend === 'real_embedding' &&
+              aiForm.embeddingConnectionMode === 'custom' &&
+              aiStatus?.hasEmbeddingApiKey
+            "
+            type="danger"
+            plain
+            :disabled="aiSaving"
+            @click="clearEmbeddingApiKey"
+            >清除向量密钥</el-button
+          >
+          <span class="app-dialog__footer-spacer" />
           <el-button @click="aiDialog = false">取消</el-button>
           <el-tooltip
             content="会真实发送一次极短对话请求，可能产生少量费用"
             placement="top"
             :show-after="350"
-            ><el-button
+          ><el-button
               :loading="aiTesting"
               :disabled="!isDesktop || aiSaving"
               aria-label="测试连接"
               @click="testAi"
               >测试连接</el-button
             ></el-tooltip
+          >
+          <el-button
+            v-if="aiForm.retrievalBackend === 'real_embedding'"
+            :loading="embeddingTesting"
+            :disabled="!isDesktop || aiSaving || aiTesting"
+            @click="testEmbedding"
+            >测试向量连接</el-button
           >
           <el-button
             type="primary"
@@ -1029,20 +1207,8 @@ watch(
 .icp-settings-form code {
   font-family: Consolas, monospace;
 }
-.ai-dialog-footer {
-  display: grid;
-  grid-template-columns: auto 1fr auto auto auto;
-  align-items: center;
-  gap: 8px;
-}
 .icp-settings-dialog {
   min-height: 190px;
-}
-.icp-dialog-footer {
-  display: grid;
-  grid-template-columns: auto 1fr auto auto;
-  align-items: center;
-  gap: 8px;
 }
 .material-select {
   width: 168px;
@@ -1290,31 +1456,5 @@ button.settings-row:active {
     margin: 2px 0 0;
   }
 
-  .ai-dialog-footer,
-  .icp-dialog-footer {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: 8px;
-  }
-
-  .ai-dialog-footer > span,
-  .icp-dialog-footer > span {
-    display: none;
-  }
-
-  .ai-dialog-footer :deep(.el-button),
-  .icp-dialog-footer :deep(.el-button) {
-    margin: 0;
-  }
-}
-
-@media (max-width: 440px) {
-  .ai-dialog-footer :deep(.el-button) {
-    flex: 1 1 calc(50% - 4px);
-  }
-  .icp-dialog-footer :deep(.el-button) {
-    flex: 1 1 calc(50% - 4px);
-  }
 }
 </style>

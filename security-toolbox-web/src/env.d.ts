@@ -38,23 +38,39 @@ interface ToolboxDesktopBridge {
     string | { changed?: boolean; toolsDirectory?: string; path?: string }
   >;
   readonly listInstallableDependencies: () => Promise<
-    Array<{ packageId: string; version: string }>
+    Array<{
+      packageId: string;
+      version: string;
+      optional?: boolean;
+      uninstallSupported?: boolean;
+    }>
   >;
   readonly installDependency: (
     packageId: string,
+    options?: { refreshCatalog?: boolean },
   ) => Promise<{
     packageId: string;
     version?: string;
+    latestVersion?: string;
     path?: string;
     toolsDirectory?: string;
     sha256?: string;
     integritySource?: string;
-    status?: "paused" | "canceled";
+    status?: "paused" | "canceled" | "up-to-date";
+    updated?: boolean;
+    catalogUpdated?: boolean;
   }>;
   readonly controlDependencyInstall?: (
     packageId: string,
     action: "pause" | "cancel",
   ) => Promise<{ packageId: string; status: "paused" | "canceled" }>;
+  readonly uninstallDependency?: (
+    packageId: string,
+  ) => Promise<{
+    packageId: string;
+    version?: string;
+    status: "uninstalled";
+  }>;
   readonly getAiSettings?: () => Promise<AiSettingsStatus>;
   readonly getIcpSettings?: () => Promise<IcpSettingsStatus>;
   readonly getGithubTokenSettings?: () => Promise<GithubTokenSettingsStatus>;
@@ -74,10 +90,16 @@ interface ToolboxDesktopBridge {
   readonly testAiSettings?: (
     settings: AiSettingsInput,
   ) => Promise<{ ok: boolean; model: string; message: string }>;
+  readonly testEmbeddingSettings?: (
+    settings: AiSettingsInput,
+  ) => Promise<{ ok: boolean; model: string; message: string }>;
   readonly saveAiSettings?: (
     settings: AiSettingsInput,
   ) => Promise<AiSettingsStatus>;
   readonly clearAiApiKey?: (
+    settings: AiSettingsInput,
+  ) => Promise<AiSettingsStatus>;
+  readonly clearEmbeddingApiKey?: (
     settings: AiSettingsInput,
   ) => Promise<AiSettingsStatus>;
   readonly saveIcpSettings?: (
@@ -128,6 +150,11 @@ interface CaptureBrowserStatus {
 interface AiSettingsInput {
   baseUrl: string;
   model: string;
+  retrievalBackend: "bm25" | "real_embedding";
+  embeddingModel: string;
+  embeddingConnectionMode: "shared" | "custom";
+  embeddingBaseUrl: string;
+  embeddingApiKey?: string;
   apiKey?: string;
   proxyMode: boolean;
 }
@@ -135,6 +162,12 @@ interface AiSettingsInput {
 interface AiSettingsStatus {
   readonly baseUrl: string;
   readonly model: string;
+  readonly retrievalBackend: "bm25" | "real_embedding";
+  readonly embeddingModel: string;
+  readonly embeddingConnectionMode: "shared" | "custom";
+  readonly embeddingBaseUrl: string;
+  readonly hasEmbeddingApiKey: boolean;
+  readonly embeddingKeyHint: string;
   readonly hasApiKey: boolean;
   readonly proxyMode: boolean;
   readonly apiMode: "chat_completions" | "responses";

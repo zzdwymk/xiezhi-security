@@ -20,6 +20,8 @@ const { fileURLToPath } = require("url");
 const { Worker } = require("worker_threads");
 const { readJsonFile, writeJsonFileAtomic } = require("./json-file.cjs");
 const { createInvalidatableCache } = require("./invalidatable-cache.cjs");
+const { evaluateInstalledRelease } = require("./dependency-version.cjs");
+const { selectEmbeddingTestConnection } = require("./ai-settings.cjs");
 const {
   UserFacingError,
   diagnosticError,
@@ -45,155 +47,8 @@ let captureBrowserWindow;
 let captureBrowserSession;
 let captureBrowserPartition;
 let captureBrowserConfig;
-let vulnerabilityCatalogStartupCheck;
 let desktopCredentials;
 let desktopLoginCredentialsIssued = false;
-
-function vulnerabilityCatalogUpdateStatePath() {
-  return path.join(
-    app.getPath("userData"),
-    "vulnerability-catalog-update.json",
-  );
-}
-
-async function latestNucleiTemplateManifest() {
-  const apiUrl =
-    "https://api.github.com/repos/projectdiscovery/nuclei-templates/releases/latest";
-  const response = await fetchDependencyResource(apiUrl, {
-    headers: githubApiHeaders(),
-  });
-  if (!response.ok) {
-    if (response.status === 403 || response.status === 429)
-      throw githubApiError(response);
-    throw new Error(`查询漏洞库版本失败：HTTP ${response.status}`);
-  }
-  allowedResponseHost(response, apiUrl, ["api.github.com"]);
-  const release = await response.json();
-  if (release.draft || release.prerelease)
-    throw new Error("漏洞库最新版本不是稳定 Release");
-  const tag = String(release.tag_name || "");
-  const version = tag.replace(/^v/i, "");
-  if (!/^\d+\.\d+\.\d+$/.test(version))
-    throw new Error("漏洞库版本号格式无法识别");
-  const checksumName = `nuclei-templates-${version}_checksums.txt`;
-  const assets = (Array.isArray(release.assets) ? release.assets : []).filter(
-    (asset) => asset?.name === checksumName && asset?.state === "uploaded",
-  );
-  if (assets.length !== 1) throw new Error("漏洞库 Release 缺少唯一校验清单");
-  const checksumUrl = String(assets[0].browser_download_url || "");
-  const checksumResponse = await fetchDependencyResource(checksumUrl);
-  if (!checksumResponse.ok)
-    throw new Error(`下载漏洞库校验清单失败：HTTP ${checksumResponse.status}`);
-  allowedResponseHost(checksumResponse, checksumUrl, [
-    "github.com",
-    "release-assets.githubusercontent.com",
-    "objects.githubusercontent.com",
-  ]);
-  const text = await checksumResponse.text();
-  if (text.length > 64 * 1024) throw new Error("漏洞库校验清单大小异常");
-  const archiveName = `nuclei-templates-${version}.zip`;
-  const matches = text
-    .split(/\r?\n/)
-    .map((line) => line.trim().match(/^([a-f0-9]{64})\s+(.+)$/i))
-    .filter((match) => match && match[2] === archiveName);
-  if (matches.length !== 1)
-    throw new Error("漏洞库校验清单中的压缩包记录不唯一");
-  return {
-    repository: "projectdiscovery/nuclei-templates",
-    version: tag,
-    hash: matches[0][1].toLowerCase(),
-  };
-}
-
-function postBackendJson(port, pathname) {
-  return new Promise((resolve, reject) => {
-    const options = {
-      hostname: "127.0.0.1",
-      port,
-      path: pathname,
-      method: "POST",
-      timeout: 10 * 60_000,
-    };
-    const request = http.request(options, (response) => {
-      const chunks = [];
-      response.on("data", (chunk) => chunks.push(chunk));
-      response.on("end", () =>
-        response.statusCode >= 200 && response.statusCode < 300
-          ? resolve(Buffer.concat(chunks).toString("utf8"))
-          : reject(
-              new Error(`同步漏洞库索引失败：HTTP ${response.statusCode}`),
-            ),
-      );
-    });
-    request.on("timeout", () =>
-      request.destroy(new Error("同步漏洞库索引超时")),
-    );
-    request.on("error", reject);
-    request.end();
-  });
-}
-
-function checkVulnerabilityCatalogOnStartup(port) {
-  if (vulnerabilityCatalogStartupCheck) return vulnerabilityCatalogStartupCheck;
-  vulnerabilityCatalogStartupCheck = (async () => {
-    const statePath = vulnerabilityCatalogUpdateStatePath();
-    const previous = readJsonFile(statePath);
-    const checkedAt = new Date().toISOString();
-    try {
-      writeJsonFileAtomic(statePath, {
-        ...previous,
-        lastCheckedAt: checkedAt,
-        status: "CHECKING",
-        error: null,
-      });
-      const remote = await latestNucleiTemplateManifest();
-      const toolsDir = resolveToolsDirectory();
-      const templatesDir = path.join(toolsDir, "nuclei-templates");
-      const installed = readJsonFile(
-        path.join(templatesDir, ".toolbox-source.json"),
-      );
-      const installedHash = String(
-        installed.archiveSha256 || previous.hash || "",
-      ).toLowerCase();
-      if (installedHash === remote.hash && fs.existsSync(templatesDir)) {
-        writeJsonFileAtomic(statePath, {
-          ...remote,
-          lastCheckedAt: checkedAt,
-          status: "UP_TO_DATE",
-          error: null,
-        });
-        return;
-      }
-      const session = {
-        artifacts: new Set(),
-        state: "running",
-        phase: "checking",
-        intent: undefined,
-        controller: undefined,
-      };
-      await downloadOfficialNucleiTemplates(templatesDir, session);
-      await postBackendJson(port, "/api/vulnerabilities/sync/nuclei");
-      writeJsonFileAtomic(statePath, {
-        ...remote,
-        lastCheckedAt: checkedAt,
-        lastUpdatedAt: new Date().toISOString(),
-        status: "UPDATED",
-        error: null,
-      });
-    } catch (error) {
-      writeDesktopStartupDiagnostic("vulnerability-catalog-update", error);
-      writeJsonFileAtomic(statePath, {
-        ...previous,
-        lastCheckedAt: checkedAt,
-        status: "FAILED",
-        error: "漏洞库自动更新失败，请稍后重试",
-      });
-    } finally {
-      vulnerabilityCatalogStartupCheck = undefined;
-    }
-  })();
-  return vulnerabilityCatalogStartupCheck;
-}
 
 function readRegistryDword(key, name, fallback = 0) {
   if (process.platform !== "win32") return fallback;
@@ -632,6 +487,9 @@ function rollbackDesktopMitmCaMigration(migration) {
 
 const DEFAULT_AI_BASE_URL = "https://api.openai.com";
 const DEFAULT_AI_MODEL = "gpt-4.1-mini";
+const DEFAULT_AI_RETRIEVAL_BACKEND = "bm25";
+const DEFAULT_AI_EMBEDDING_MODEL = "text-embedding-3-small";
+const DEFAULT_AI_EMBEDDING_CONNECTION_MODE = "shared";
 
 function normalizeAiBaseUrl(value) {
   const normalized = String(value || DEFAULT_AI_BASE_URL)
@@ -680,6 +538,38 @@ function normalizeAiModel(value) {
   return model;
 }
 
+function normalizeAiRetrievalBackend(value) {
+  const backend = String(value || DEFAULT_AI_RETRIEVAL_BACKEND)
+    .trim()
+    .toLowerCase();
+  if (!["bm25", "real_embedding"].includes(backend)) {
+    throw new UserFacingError("检索后端只能是 BM25 或真实向量嵌入");
+  }
+  return backend;
+}
+
+function normalizeAiEmbeddingModel(value) {
+  const model = String(value || DEFAULT_AI_EMBEDDING_MODEL).trim();
+  if (!model || model.length > 120) {
+    throw new UserFacingError("Embedding 模型名称不能为空且不能超过 120 个字符");
+  }
+  return model;
+}
+
+function normalizeAiEmbeddingBaseUrl(value, fallback) {
+  return normalizeAiBaseUrl(value || fallback || DEFAULT_AI_BASE_URL);
+}
+
+function normalizeAiEmbeddingConnectionMode(value) {
+  const mode = String(value || DEFAULT_AI_EMBEDDING_CONNECTION_MODE)
+    .trim()
+    .toLowerCase();
+  if (!["shared", "custom"].includes(mode)) {
+    throw new UserFacingError("向量模型连接方式只能是复用对话连接或单独配置");
+  }
+  return mode;
+}
+
 function decryptStoredApiKey(settings = readDesktopSettings()) {
   const encrypted = settings.ai?.encryptedApiKey;
   if (!encrypted) return "";
@@ -705,13 +595,48 @@ function resolvedAiSettings(settings = readDesktopSettings()) {
   const proxyMode = stored
     ? Boolean(stored.proxyMode)
     : environmentEnabled && !apiKey;
+  const environmentEmbeddingConfigured = Boolean(
+    process.env.AI_RUNTIME_EMBEDDING_BASE_URL ||
+      process.env.AI_RUNTIME_EMBEDDING_API_KEY,
+  );
+  const embeddingConnectionMode = normalizeAiEmbeddingConnectionMode(
+    stored?.embeddingConnectionMode ||
+      (environmentEmbeddingConfigured ? "custom" : "shared"),
+  );
+  const customEmbeddingApiKey = stored?.embeddingApiKeyCleared
+    ? ""
+    : stored?.encryptedEmbeddingApiKey
+      ? decryptStoredEmbeddingApiKey(settings)
+      : String(process.env.AI_RUNTIME_EMBEDDING_API_KEY || "");
+  const baseUrl = normalizeAiBaseUrl(
+    stored?.baseUrl || process.env.AI_BASE_URL || DEFAULT_AI_BASE_URL,
+  );
+  const embeddingBaseUrl = normalizeAiEmbeddingBaseUrl(
+    stored?.embeddingBaseUrl || process.env.AI_RUNTIME_EMBEDDING_BASE_URL,
+    baseUrl,
+  );
   return {
-    baseUrl: normalizeAiBaseUrl(
-      stored?.baseUrl || process.env.AI_BASE_URL || DEFAULT_AI_BASE_URL,
-    ),
+    baseUrl,
     model: normalizeAiModel(
       stored?.model || process.env.AI_MODEL || DEFAULT_AI_MODEL,
     ),
+    retrievalBackend: normalizeAiRetrievalBackend(
+      stored?.retrievalBackend ||
+        process.env.AI_RUNTIME_RETRIEVAL_BACKEND ||
+        DEFAULT_AI_RETRIEVAL_BACKEND,
+    ),
+    embeddingModel: normalizeAiEmbeddingModel(
+      stored?.embeddingModel ||
+        process.env.AI_RUNTIME_EMBEDDING_MODEL ||
+        DEFAULT_AI_EMBEDDING_MODEL,
+    ),
+    embeddingConnectionMode,
+    embeddingBaseUrl,
+    customEmbeddingApiKey,
+    effectiveEmbeddingBaseUrl:
+      embeddingConnectionMode === "shared" ? baseUrl : embeddingBaseUrl,
+    effectiveEmbeddingApiKey:
+      embeddingConnectionMode === "shared" ? apiKey : customEmbeddingApiKey,
     apiKey,
     proxyMode,
     enabled: Boolean(apiKey || proxyMode || environmentEnabled),
@@ -724,6 +649,14 @@ function publicAiSettings(settings = readDesktopSettings()) {
   return {
     baseUrl: resolved.baseUrl,
     model: resolved.model,
+    retrievalBackend: resolved.retrievalBackend,
+    embeddingModel: resolved.embeddingModel,
+    embeddingConnectionMode: resolved.embeddingConnectionMode,
+    embeddingBaseUrl: resolved.embeddingBaseUrl,
+    hasEmbeddingApiKey: Boolean(resolved.customEmbeddingApiKey),
+    embeddingKeyHint: resolved.customEmbeddingApiKey
+      ? `末尾 ${resolved.customEmbeddingApiKey.slice(-4)}`
+      : "",
     hasApiKey: Boolean(resolved.apiKey),
     keyHint: resolved.apiKey ? `末尾 ${resolved.apiKey.slice(-4)}` : "",
     proxyMode: resolved.proxyMode,
@@ -733,7 +666,11 @@ function publicAiSettings(settings = readDesktopSettings()) {
   };
 }
 
-function updatedAiSettings(previousSettings, payload, clearApiKey = false) {
+function updatedAiSettings(
+  previousSettings,
+  payload,
+  { clearApiKey = false, clearEmbeddingApiKey = false } = {},
+) {
   const existing =
     previousSettings.ai && typeof previousSettings.ai === "object"
       ? previousSettings.ai
@@ -741,7 +678,15 @@ function updatedAiSettings(previousSettings, payload, clearApiKey = false) {
   const previousResolved = resolvedAiSettings(previousSettings);
   const baseUrl = normalizeAiBaseUrl(payload?.baseUrl);
   const apiKey = String(payload?.apiKey || "").trim();
+  const embeddingApiKey = String(payload?.embeddingApiKey || "").trim();
   const proxyMode = Boolean(payload?.proxyMode);
+  const embeddingConnectionMode = normalizeAiEmbeddingConnectionMode(
+    payload?.embeddingConnectionMode,
+  );
+  const embeddingBaseUrl = normalizeAiEmbeddingBaseUrl(
+    payload?.embeddingBaseUrl,
+    baseUrl,
+  );
   if (
     !clearApiKey &&
     !proxyMode &&
@@ -753,10 +698,25 @@ function updatedAiSettings(previousSettings, payload, clearApiKey = false) {
       "API 地址已变化，请重新填写与新服务对应的 API Key",
     );
   }
+  if (
+    !clearEmbeddingApiKey &&
+    embeddingConnectionMode === "custom" &&
+    !embeddingApiKey &&
+    previousResolved.customEmbeddingApiKey &&
+    embeddingBaseUrl !== previousResolved.embeddingBaseUrl
+  ) {
+    throw new UserFacingError(
+      "向量 API 地址已变化，请重新填写与新服务对应的向量 API Key",
+    );
+  }
   const nextAi = {
     ...existing,
     baseUrl,
     model: normalizeAiModel(payload?.model),
+    retrievalBackend: normalizeAiRetrievalBackend(payload?.retrievalBackend),
+    embeddingModel: normalizeAiEmbeddingModel(payload?.embeddingModel),
+    embeddingConnectionMode,
+    embeddingBaseUrl,
     proxyMode,
   };
   if (clearApiKey) {
@@ -777,6 +737,18 @@ function updatedAiSettings(previousSettings, payload, clearApiKey = false) {
   ) {
     delete nextAi.encryptedApiKey;
     nextAi.apiKeyCleared = true;
+  }
+  if (clearEmbeddingApiKey) {
+    delete nextAi.encryptedEmbeddingApiKey;
+    nextAi.embeddingApiKeyCleared = true;
+  } else if (embeddingApiKey) {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new UserFacingError("系统安全存储不可用，无法安全保存向量 API Key");
+    }
+    nextAi.encryptedEmbeddingApiKey = safeStorage
+      .encryptString(embeddingApiKey)
+      .toString("base64");
+    delete nextAi.embeddingApiKeyCleared;
   }
   return { ...previousSettings, ai: nextAi };
 }
@@ -1021,6 +993,7 @@ function ensureWritableDirectory(directory) {
 const INSTALLABLE_PACKAGES = Object.freeze({
   nuclei: Object.freeze({
     id: "nuclei",
+    optional: true,
     repository: "projectdiscovery/nuclei",
     executable: "nuclei.exe",
     assetName: (version) => `nuclei_${version}_windows_amd64.zip`,
@@ -1028,6 +1001,7 @@ const INSTALLABLE_PACKAGES = Object.freeze({
   }),
   httpx: Object.freeze({
     id: "httpx",
+    optional: true,
     repository: "projectdiscovery/httpx",
     executable: "httpx.exe",
     assetName: (version) => `httpx_${version}_windows_amd64.zip`,
@@ -1035,6 +1009,7 @@ const INSTALLABLE_PACKAGES = Object.freeze({
   }),
   xray: Object.freeze({
     id: "xray",
+    optional: true,
     repository: "chaitin/xray",
     executable: "xray_windows_amd64.exe",
     assetName: () => "xray_windows_amd64.exe.zip",
@@ -1046,6 +1021,7 @@ const INSTALLABLE_PACKAGES = Object.freeze({
   }),
   afrog: Object.freeze({
     id: "afrog",
+    optional: true,
     repository: "zan8in/afrog",
     executable: "afrog.exe",
     assetName: (version) => `afrog_${version}_windows_amd64.zip`,
@@ -1767,6 +1743,23 @@ async function downloadOfficialNucleiTemplates(
     throw new UserFacingError("官方校验文件中的模板压缩包记录不唯一");
   }
   const expectedSha256 = checksumMatches[0][1].toLowerCase();
+  const installedMetadata = readJsonFile(
+    path.join(templatesDir, ".toolbox-source.json"),
+  );
+  const installedState = evaluateInstalledRelease({
+    metadata: installedMetadata,
+    repository: "projectdiscovery/nuclei-templates",
+    latestVersion: version,
+    payloadExists: isRegularDirectory(templatesDir),
+  });
+  if (
+    installedState.upToDate &&
+    String(installedMetadata.archiveSha256 || "").toLowerCase() ===
+      expectedSha256
+  ) {
+    reportProgress({ stage: "Nuclei 模板已是最新版本", progress: 1 });
+    return { updated: false, version };
+  }
   const sourceUrl = `https://github.com/projectdiscovery/nuclei-templates/archive/refs/tags/${tag}.zip`;
   const downloadsDir = path.join(path.dirname(templatesDir), ".downloads");
   const archivePath = path.join(
@@ -1853,6 +1846,7 @@ async function downloadOfficialNucleiTemplates(
       }
     }
     removeDownloadState(archivePath, metadataPath);
+    return { updated: true, version };
   } catch (error) {
     if (
       /SHA-256|长度/.test(
@@ -1865,6 +1859,237 @@ async function downloadOfficialNucleiTemplates(
       await fs.promises.rm(stagingDir, { recursive: true, force: true });
     if (!fs.existsSync(templatesDir) && fs.existsSync(backupDir))
       fs.renameSync(backupDir, templatesDir);
+    throw error;
+  }
+}
+
+async function testEmbeddingConnection(payload) {
+  const existing = resolvedAiSettings();
+  const mode = normalizeAiEmbeddingConnectionMode(
+    payload?.embeddingConnectionMode,
+  );
+  const chatBaseUrl = normalizeAiBaseUrl(payload?.baseUrl);
+  const embeddingBaseUrl = normalizeAiEmbeddingBaseUrl(
+    payload?.embeddingBaseUrl,
+    chatBaseUrl,
+  );
+  const model = normalizeAiEmbeddingModel(payload?.embeddingModel);
+  const connection = selectEmbeddingTestConnection({
+    mode,
+    submitted: {
+      baseUrl: chatBaseUrl,
+      embeddingBaseUrl,
+      apiKey: payload?.apiKey,
+      embeddingApiKey: payload?.embeddingApiKey,
+    },
+    existing: {
+      baseUrl: existing.baseUrl,
+      embeddingBaseUrl: existing.embeddingBaseUrl,
+      apiKey: existing.apiKey,
+      embeddingApiKey: existing.customEmbeddingApiKey,
+    },
+  });
+  if (connection.requiresReplacementKey) {
+    throw new UserFacingError(
+      "向量 API 地址已变化，请填写新服务对应的向量 API Key 后再测试",
+    );
+  }
+  const controller = new AbortController();
+  const timeoutMs = 20000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (connection.apiKey) {
+      headers.Authorization = `Bearer ${connection.apiKey}`;
+    }
+    const response = await electronNet.fetch(
+      `${aiRuntimeBaseUrl(connection.baseUrl)}/embeddings`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ model, input: ["连接测试"] }),
+        signal: controller.signal,
+      },
+    );
+    if (!response.ok) {
+      throw new UserFacingError(
+        `向量服务返回错误状态（HTTP ${response.status}）`,
+      );
+    }
+    const body = await response.json();
+    const vector = body?.data?.[0]?.embedding;
+    if (!Array.isArray(vector) || !vector.length) {
+      throw new UserFacingError("向量服务已响应，但没有返回有效向量");
+    }
+    return { ok: true, model, message: `向量连接成功（${vector.length} 维）` };
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new UserFacingError(`向量服务连接超时（${timeoutMs / 1000} 秒）`);
+    }
+    if (error instanceof UserFacingError) throw error;
+    throw new UserFacingError(
+      `向量服务连接失败：${error?.message || "请检查地址和服务状态"}`,
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function decryptStoredEmbeddingApiKey(settings = readDesktopSettings()) {
+  const encrypted = settings.ai?.encryptedEmbeddingApiKey;
+  if (!encrypted) return "";
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new UserFacingError("当前系统无法解密已保存的向量 API Key");
+  }
+  try {
+    return safeStorage.decryptString(Buffer.from(encrypted, "base64"));
+  } catch {
+    throw new UserFacingError("已保存的向量 API Key 无法解密，请重新填写");
+  }
+}
+
+function isRegularFile(filePath) {
+  try {
+    const stat = fs.lstatSync(filePath);
+    return stat.isFile() && !stat.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+function isRegularDirectory(directory) {
+  try {
+    const stat = fs.lstatSync(directory);
+    return stat.isDirectory() && !stat.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+async function downloadOfficialScannerPocs({
+  packageId,
+  release,
+  toolsDir,
+  session,
+  reportProgress = () => {},
+}) {
+  const scannerLabel = { afrog: "Afrog", xray: "Xray" }[packageId];
+  if (!scannerLabel) throw new UserFacingError("不支持下载该扫描器 PoC");
+  const pocsDir = path.join(toolsDir, `${packageId}-pocs`);
+  const downloadsDir = path.join(toolsDir, ".downloads");
+  const identity = crypto
+    .createHash("sha256")
+    .update(`${release.repository}@${release.tag}:pocs`, "utf8")
+    .digest("hex");
+  const archivePath = path.join(
+    downloadsDir,
+    `${packageId}-pocs-${release.version}-${identity.slice(0, 16)}.zip.part`,
+  );
+  const metadataPath = `${archivePath}.json`;
+  const sourceUrl = `https://github.com/${release.repository}/archive/refs/tags/${encodeURIComponent(release.tag)}.zip`;
+  const installedMetadata = readJsonFile(
+    path.join(pocsDir, ".toolbox-source.json"),
+  );
+  const installedState = evaluateInstalledRelease({
+    metadata: installedMetadata,
+    repository: release.repository,
+    latestVersion: release.version,
+    payloadExists: isRegularDirectory(pocsDir),
+  });
+  if (
+    installedState.upToDate &&
+    String(installedMetadata.ref || "") === String(release.tag || "")
+  ) {
+    reportProgress({
+      stage: `${scannerLabel} PoC 已是最新版本`,
+      progress: 1,
+    });
+    return { updated: false, version: release.version, path: pocsDir };
+  }
+  [pocsDir, downloadsDir, archivePath, metadataPath].forEach((candidate) =>
+    assertInside(toolsDir, candidate),
+  );
+  fs.mkdirSync(downloadsDir, { recursive: true });
+  session.artifacts.add(JSON.stringify([archivePath, metadataPath]));
+  session.phase = "downloading-scanner-pocs";
+  session.controller = new AbortController();
+  await downloadResumableFile({
+    url: sourceUrl,
+    filePath: archivePath,
+    metadataPath,
+    expectedSha256: "",
+    maxBytes: 250 * 1024 * 1024,
+    allowedHosts: [
+      "github.com",
+      "codeload.github.com",
+      "objects.githubusercontent.com",
+    ],
+    signal: session.controller.signal,
+    onProgress: (progress) => {
+      const total = Number(progress.totalBytes || 0);
+      const received = Number(progress.receivedBytes || 0);
+      reportProgress({
+        ...progress,
+        progress: total > 0 ? 0.05 + 0.45 * (received / total) : 0.05,
+      });
+    },
+  });
+  throwIfDependencyInterrupted(session);
+  session.phase = "verifying-scanner-pocs";
+  session.controller = undefined;
+  const stagingDir = path.join(
+    toolsDir,
+    `.${packageId}-pocs-${crypto.randomUUID()}`,
+  );
+  const backupDir = path.join(
+    toolsDir,
+    `.${packageId}-pocs-backup-${crypto.randomUUID()}`,
+  );
+  assertInside(toolsDir, stagingDir);
+  assertInside(toolsDir, backupDir);
+  fs.mkdirSync(stagingDir, { recursive: true });
+  try {
+    await runDependencyWorker(
+      "extract-scanner-pocs",
+      {
+        archivePath,
+        maxArchiveBytes: 250 * 1024 * 1024,
+        stagingDir,
+        maxFiles: 10000,
+        maxExtractedBytes: 512 * 1024 * 1024,
+        sourceSubdirectory: "pocs",
+        scannerLabel,
+        sourceMetadata: {
+          repository: release.repository,
+          version: release.version,
+          ref: release.tag,
+          sourceUrl,
+          acquisition: "official-release-tag-source-snapshot",
+          installedAt: new Date().toISOString(),
+        },
+      },
+      (progress) =>
+        reportProgress({
+          ...progress,
+          progress: 0.5 + Number(progress.progress || 0) * 0.5,
+        }),
+    );
+    if (fs.existsSync(pocsDir)) fs.renameSync(pocsDir, backupDir);
+    fs.renameSync(stagingDir, pocsDir);
+    if (fs.existsSync(backupDir)) {
+      try {
+        await fs.promises.rm(backupDir, { recursive: true, force: true });
+      } catch {
+        // A stale backup does not invalidate the newly promoted snapshot.
+      }
+    }
+    removeDownloadState(archivePath, metadataPath);
+    return { updated: true, version: release.version, path: pocsDir };
+  } catch (error) {
+    if (fs.existsSync(stagingDir))
+      await fs.promises.rm(stagingDir, { recursive: true, force: true });
+    if (!fs.existsSync(pocsDir) && fs.existsSync(backupDir))
+      fs.renameSync(backupDir, pocsDir);
     throw error;
   }
 }
@@ -2038,12 +2263,96 @@ async function resolveLatestPackage(definition) {
   return value;
 }
 
-async function installPortableDependency(packageId, reportProgress = () => {}) {
+async function refreshPortableDependencyCatalog({
+  packageId,
+  release,
+  toolsDir,
+  session,
+  report,
+  progressStart,
+  progressSpan,
+}) {
+  if (packageId === "nuclei") {
+    const templatesDir = path.join(toolsDir, "nuclei-templates");
+    assertInside(toolsDir, templatesDir);
+    report("正在检查 Nuclei 官方模板版本", progressStart, 0, 0, {
+      progressDeterminate: false,
+    });
+    return downloadOfficialNucleiTemplates(
+      templatesDir,
+      session,
+      (progress) => {
+        const templateProgress = Math.max(
+          0,
+          Math.min(1, Number(progress.progress || 0)),
+        );
+        report(
+          progress.stage || "正在更新 Nuclei 官方模板",
+          progressStart + Math.round(templateProgress * progressSpan),
+          Number(progress.receivedBytes || progress.processedBytes || 0),
+          Number(progress.totalBytes || 0),
+          {
+            progressDeterminate:
+              (Number(progress.totalBytes || 0) > 0 &&
+                (typeof progress.receivedBytes === "number" ||
+                  typeof progress.processedBytes === "number")) ||
+              (Number(progress.totalFiles || 0) > 0 &&
+                typeof progress.processedFiles === "number"),
+            processedFiles: progress.processedFiles,
+            totalFiles: progress.totalFiles,
+            resumed: progress.resumedBytes > 0,
+            resumedBytes: Number(progress.resumedBytes || 0),
+            rangeAccepted: Boolean(progress.rangeAccepted),
+          },
+        );
+      },
+    );
+  }
+  if (packageId === "afrog" || packageId === "xray") {
+    const scannerLabel = packageId === "afrog" ? "Afrog" : "Xray";
+    report(`正在检查 ${scannerLabel} 官方 PoC 版本`, progressStart, 0, 0, {
+      progressDeterminate: false,
+    });
+    return downloadOfficialScannerPocs({
+      packageId,
+      release,
+      toolsDir,
+      session,
+      reportProgress: (progress) => {
+        const pocProgress = Math.max(
+          0,
+          Math.min(1, Number(progress.progress || 0)),
+        );
+        report(
+          progress.stage || `正在更新 ${scannerLabel} 官方 PoC`,
+          progressStart + Math.round(pocProgress * progressSpan),
+          Number(progress.receivedBytes || progress.processedBytes || 0),
+          Number(progress.totalBytes || 0),
+          {
+            progressDeterminate:
+              Number(progress.totalBytes || 0) > 0 ||
+              Number(progress.totalFiles || 0) > 0,
+            processedFiles: progress.processedFiles,
+            totalFiles: progress.totalFiles,
+          },
+        );
+      },
+    });
+  }
+  return { updated: false };
+}
+
+async function installPortableDependency(
+  packageId,
+  options = {},
+  reportProgress = () => {},
+) {
   const definition = INSTALLABLE_PACKAGES[packageId];
   if (!definition) throw new UserFacingError("不支持安装该依赖");
   if (process.platform !== "win32" || process.arch !== "x64") {
     throw new UserFacingError("当前安装包仅支持 Windows x64");
   }
+  const refreshCatalog = options?.refreshCatalog === true;
   const existing = activeInstalls.get(packageId);
   if (existing?.state === "paused") activeInstalls.delete(packageId);
   else if (existing) return existing.promise;
@@ -2079,7 +2388,8 @@ async function installPortableDependency(packageId, reportProgress = () => {}) {
         paused: false,
         canPause:
           session.phase === "downloading-package" ||
-          session.phase === "downloading-templates",
+          session.phase === "downloading-templates" ||
+          session.phase === "downloading-scanner-pocs",
         ...extra,
       };
       session.lastProgress = progress;
@@ -2129,7 +2439,48 @@ async function installPortableDependency(packageId, reportProgress = () => {}) {
     session.artifacts.add(JSON.stringify([archivePath, archiveMetadataPath]));
 
     let installationCompleted = false;
+    let catalogUpdated = false;
     try {
+      const installedMetadata = readJsonFile(
+        path.join(targetDir, ".toolbox-source.json"),
+      );
+      const installedState = evaluateInstalledRelease({
+        metadata: installedMetadata,
+        repository: release.repository,
+        latestVersion: release.version,
+        payloadExists: isRegularFile(targetExecutable),
+      });
+      if (installedState.upToDate) {
+        if (refreshCatalog) {
+          const catalogResult = await refreshPortableDependencyCatalog({
+            packageId,
+            release,
+            toolsDir,
+            session,
+            report,
+            progressStart: 5,
+            progressSpan: 94,
+          });
+          catalogUpdated = catalogResult.updated === true;
+        }
+        const stage = refreshCatalog
+          ? catalogUpdated
+            ? "工具已是最新版本，漏洞目录已更新"
+            : "工具和漏洞目录已是最新版本"
+          : "当前已是最新版本";
+        report(stage, 100, 0, 0, { progressDeterminate: true });
+        session.state = "completed";
+        return {
+          packageId,
+          version: installedState.installedVersion,
+          latestVersion: release.version,
+          path: targetExecutable,
+          toolsDirectory: toolsDir,
+          status: "up-to-date",
+          updated: false,
+          catalogUpdated,
+        };
+      }
       report(`正在连接官方下载源（v${release.version}）`, 2, 0, 0, {
         progressDeterminate: false,
       });
@@ -2228,42 +2579,16 @@ async function installPortableDependency(packageId, reportProgress = () => {}) {
         }
         throw error;
       }
-      if (packageId === "nuclei") {
-        const templatesDir = path.join(toolsDir, "nuclei-templates");
-        assertInside(toolsDir, templatesDir);
-        report("正在安装 Nuclei 官方签名模板", 93, 0, 0, {
-          progressDeterminate: false,
-        });
-        await downloadOfficialNucleiTemplates(
-          templatesDir,
-          session,
-          (progress) => {
-            const templateProgress = Math.max(
-              0,
-              Math.min(1, Number(progress.progress || 0)),
-            );
-            report(
-              progress.stage || "正在安装 Nuclei 官方签名模板",
-              93 + Math.round(templateProgress * 6),
-              Number(progress.receivedBytes || progress.processedBytes || 0),
-              Number(progress.totalBytes || 0),
-              {
-                progressDeterminate:
-                  (Number(progress.totalBytes || 0) > 0 &&
-                    (typeof progress.receivedBytes === "number" ||
-                      typeof progress.processedBytes === "number")) ||
-                  (Number(progress.totalFiles || 0) > 0 &&
-                    typeof progress.processedFiles === "number"),
-                processedFiles: progress.processedFiles,
-                totalFiles: progress.totalFiles,
-                resumed: progress.resumedBytes > 0,
-                resumedBytes: Number(progress.resumedBytes || 0),
-                rangeAccepted: Boolean(progress.rangeAccepted),
-              },
-            );
-          },
-        );
-      }
+      const catalogResult = await refreshPortableDependencyCatalog({
+        packageId,
+        release,
+        toolsDir,
+        session,
+        report,
+        progressStart: 93,
+        progressSpan: 6,
+      });
+      catalogUpdated = catalogResult.updated === true;
       session.phase = "installing";
       report("正在原子替换工具文件", 99, 0, 0, { progressDeterminate: false });
       const recordedSha256 = String(
@@ -2306,10 +2631,13 @@ async function installPortableDependency(packageId, reportProgress = () => {}) {
       return {
         packageId,
         version: release.version,
+        latestVersion: release.version,
         path: targetExecutable,
         toolsDirectory: toolsDir,
         sha256: recordedSha256,
         integritySource: release.integritySource,
+        updated: true,
+        catalogUpdated,
       };
     } catch (error) {
       if (session.intent === "pause" || session.intent === "cancel") {
@@ -2377,6 +2705,62 @@ async function installPortableDependency(packageId, reportProgress = () => {}) {
     if (session.state !== "paused" && activeInstalls.get(packageId) === session)
       activeInstalls.delete(packageId);
   }
+}
+
+function portableDependencyInstallState(definition, toolsDir) {
+  const targetDir = path.join(toolsDir, definition.id);
+  const targetExecutable = path.join(targetDir, definition.executable);
+  const metadata = readJsonFile(
+    path.join(targetDir, ".toolbox-source.json"),
+  );
+  const state = evaluateInstalledRelease({
+    metadata,
+    repository: definition.repository,
+    latestVersion: metadata.version,
+    payloadExists: isRegularFile(targetExecutable),
+  });
+  return {
+    ...state,
+    metadata,
+    targetDir,
+    targetExecutable,
+  };
+}
+
+async function uninstallPortableDependency(packageId) {
+  const definition = INSTALLABLE_PACKAGES[packageId];
+  if (!definition || definition.optional !== true) {
+    throw new UserFacingError("只能卸载应用管理的可选依赖");
+  }
+  if (activeInstalls.has(packageId)) {
+    throw new UserFacingError("该依赖正在更新，请等待完成或先取消下载");
+  }
+  const toolsDir = resolveToolsDirectory();
+  const installed = portableDependencyInstallState(definition, toolsDir);
+  assertInside(toolsDir, installed.targetDir);
+  if (!installed.managed) {
+    throw new UserFacingError("该依赖不是由本应用安装，无法在此卸载");
+  }
+
+  const removalDir = path.join(
+    toolsDir,
+    `.uninstall-${packageId}-${crypto.randomUUID()}`,
+  );
+  assertInside(toolsDir, removalDir);
+  fs.renameSync(installed.targetDir, removalDir);
+  try {
+    await fs.promises.rm(removalDir, { recursive: true, force: true });
+  } catch (error) {
+    if (!fs.existsSync(installed.targetDir) && fs.existsSync(removalDir)) {
+      fs.renameSync(removalDir, installed.targetDir);
+    }
+    throw error;
+  }
+  return {
+    packageId,
+    version: installed.installedVersion,
+    status: "uninstalled",
+  };
 }
 
 async function controlDependencyInstall(packageId, action) {
@@ -2814,17 +3198,28 @@ handleRendererIpc("toolbox:reset-tools-directory", async (event) => {
 });
 handleRendererIpc("toolbox:list-installable-dependencies", (event) => {
   assertMainRenderer(event);
-  return Object.values(INSTALLABLE_PACKAGES).map(({ id }) => ({
-    packageId: id,
-    version: "latest",
-  }));
-});
-handleRendererIpc("toolbox:install-dependency", (event, packageId) => {
-  assertMainRenderer(event);
-  return installPortableDependency(String(packageId), (progress) => {
-    if (!event.sender.isDestroyed())
-      event.sender.send("toolbox:dependency-install-progress", progress);
+  const toolsDir = resolveToolsDirectory();
+  return Object.values(INSTALLABLE_PACKAGES).map((definition) => {
+    const installed = portableDependencyInstallState(definition, toolsDir);
+    return {
+      packageId: definition.id,
+      version: installed.installedVersion || "latest",
+      optional: definition.optional === true,
+      uninstallSupported:
+        definition.optional === true && installed.managed === true,
+    };
   });
+});
+handleRendererIpc("toolbox:install-dependency", (event, packageId, options) => {
+  assertMainRenderer(event);
+  return installPortableDependency(
+    String(packageId),
+    { refreshCatalog: options?.refreshCatalog === true },
+    (progress) => {
+      if (!event.sender.isDestroyed())
+        event.sender.send("toolbox:dependency-install-progress", progress);
+    },
+  );
 });
 handleRendererIpc("toolbox:control-dependency-install", (event, payload) => {
   assertMainRenderer(event);
@@ -2832,6 +3227,10 @@ handleRendererIpc("toolbox:control-dependency-install", (event, payload) => {
     String(payload?.packageId || ""),
     String(payload?.action || ""),
   );
+});
+handleRendererIpc("toolbox:uninstall-dependency", (event, packageId) => {
+  assertMainRenderer(event);
+  return uninstallPortableDependency(String(packageId));
 });
 handleRendererIpc("toolbox:get-ai-settings", (event) => {
   assertMainRenderer(event);
@@ -3017,6 +3416,10 @@ handleRendererIpc("toolbox:test-ai-settings", (event, payload) => {
   assertMainRenderer(event);
   return testAiConnection(payload);
 });
+handleRendererIpc("toolbox:test-embedding-settings", (event, payload) => {
+  assertMainRenderer(event);
+  return testEmbeddingConnection(payload);
+});
 handleRendererIpc("toolbox:save-ai-settings", (event, payload) => {
   assertMainRenderer(event);
   return serializeAiSettingsOperation(async () => {
@@ -3037,7 +3440,27 @@ handleRendererIpc("toolbox:clear-ai-api-key", (event, payload) => {
   assertMainRenderer(event);
   return serializeAiSettingsOperation(async () => {
     const previousSettings = readDesktopSettings();
-    const nextSettings = updatedAiSettings(previousSettings, payload, true);
+    const nextSettings = updatedAiSettings(previousSettings, payload, {
+      clearApiKey: true,
+    });
+    writeDesktopSettings(nextSettings);
+    try {
+      await restartAiRuntimeAndBackend();
+      return publicAiSettings(nextSettings);
+    } catch (error) {
+      writeDesktopSettings(previousSettings);
+      await restartAiRuntimeAndBackend().catch(() => {});
+      throw error;
+    }
+  });
+});
+handleRendererIpc("toolbox:clear-embedding-api-key", (event, payload) => {
+  assertMainRenderer(event);
+  return serializeAiSettingsOperation(async () => {
+    const previousSettings = readDesktopSettings();
+    const nextSettings = updatedAiSettings(previousSettings, payload, {
+      clearEmbeddingApiKey: true,
+    });
     writeDesktopSettings(nextSettings);
     try {
       await restartAiRuntimeAndBackend();
@@ -3182,6 +3605,133 @@ function waitForBackend(port, timeoutMs = 90000) {
   });
 }
 
+const AI_RUNTIME_MIN_PYTHON = Object.freeze([3, 11]);
+const AI_RUNTIME_PYTHON_MODULES = Object.freeze([
+  "fastapi",
+  "uvicorn",
+  "pydantic",
+  "httpx",
+  "langchain_core",
+  "langchain_openai",
+  "langgraph",
+  "rank_bm25",
+]);
+
+function inspectAiRuntimePython(candidate) {
+  const probe = [
+    "import importlib.util,json,struct,sys",
+    `modules=${JSON.stringify(AI_RUNTIME_PYTHON_MODULES)}`,
+    "missing=[name for name in modules if importlib.util.find_spec(name) is None]",
+    "print(json.dumps({'major':sys.version_info.major,'minor':sys.version_info.minor,'bits':struct.calcsize('P')*8,'implementation':sys.implementation.name,'missing':missing}))",
+  ].join(";");
+  const result = spawnSync(candidate.command, [...candidate.args, "-c", probe], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 10000,
+  });
+  if (result.status !== 0) return undefined;
+  try {
+    const info = JSON.parse(String(result.stdout || "").trim().split(/\r?\n/).at(-1));
+    const compatibleVersion =
+      info.major > AI_RUNTIME_MIN_PYTHON[0] ||
+      (info.major === AI_RUNTIME_MIN_PYTHON[0] &&
+        info.minor >= AI_RUNTIME_MIN_PYTHON[1]);
+    if (
+      info.implementation !== "cpython" ||
+      info.bits !== 64 ||
+      !compatibleVersion ||
+      !Array.isArray(info.missing) ||
+      info.missing.length
+    )
+      return undefined;
+    return { ...candidate, major: info.major, minor: info.minor };
+  } catch {
+    return undefined;
+  }
+}
+
+function discoverAiRuntimePython(runtimeRoot) {
+  const projectPython =
+    process.platform === "win32"
+      ? path.join(runtimeRoot, ".venv", "Scripts", "python.exe")
+      : path.join(runtimeRoot, ".venv", "bin", "python");
+  if (fs.existsSync(projectPython)) {
+    const projectCandidate = inspectAiRuntimePython({
+      command: projectPython,
+      args: [],
+      source: "ai-runtime/.venv",
+    });
+    if (projectCandidate) return projectCandidate;
+  }
+
+  const candidates = [];
+  const seen = new Set();
+  const addPath = (candidatePath, source) => {
+    if (!candidatePath || !fs.existsSync(candidatePath)) return;
+    const resolved = path.resolve(candidatePath);
+    const key = resolved.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push({ command: resolved, args: [], source });
+  };
+  const addCommand = (command, source) => {
+    const key = `command:${command.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push({ command, args: [], source });
+  };
+
+  for (const environmentRoot of [
+    process.env.VIRTUAL_ENV,
+    process.env.CONDA_PREFIX,
+  ]) {
+    if (!environmentRoot) continue;
+    addPath(
+      process.platform === "win32"
+        ? path.join(environmentRoot, "python.exe")
+        : path.join(environmentRoot, "bin", "python"),
+      "active environment",
+    );
+  }
+  addCommand("python", "PATH");
+
+  if (process.platform === "win32") {
+    const condaCommand = process.env.CONDA_EXE || "conda";
+    const conda = spawnSync(condaCommand, ["env", "list", "--json"], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 10000,
+    });
+    if (conda.status === 0) {
+      try {
+        for (const environmentRoot of JSON.parse(conda.stdout).envs || [])
+          addPath(path.join(environmentRoot, "python.exe"), "Conda environment");
+      } catch {
+        // Ignore malformed third-party Conda output and continue discovery.
+      }
+    }
+
+    const launcher = spawnSync("py", ["-0p"], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 10000,
+    });
+    if (launcher.status === 0) {
+      for (const line of String(launcher.stdout || "").split(/\r?\n/)) {
+        const match = line.match(/([A-Za-z]:\\.*?python(?:\.exe)?)\s*$/i);
+        if (match) addPath(match[1].trim(), "Python Launcher");
+      }
+    }
+  } else {
+    addCommand("python3", "PATH");
+  }
+
+  return candidates
+    .map(inspectAiRuntimePython)
+    .filter(Boolean)
+    .sort((left, right) => left.major - right.major || left.minor - right.minor)[0];
+}
+
 function resolveAiRuntimeLaunch() {
   const runtimeRoot = app.isPackaged
     ? path.join(process.resourcesPath, "ai-runtime")
@@ -3225,34 +3775,13 @@ function resolveAiRuntimeLaunch() {
 
   const sourceEntrypoint = path.join(runtimeRoot, "runtime_server.py");
   if (fs.existsSync(sourceEntrypoint)) {
-    const virtualEnvironmentPython =
-      process.platform === "win32"
-        ? path.join(runtimeRoot, ".venv", "Scripts", "python.exe")
-        : path.join(runtimeRoot, ".venv", "bin", "python");
-    if (fs.existsSync(virtualEnvironmentPython)) {
+    const python = discoverAiRuntimePython(runtimeRoot);
+    if (python) {
       return {
-        command: virtualEnvironmentPython,
-        args: [sourceEntrypoint],
+        command: python.command,
+        args: [...python.args, sourceEntrypoint],
         cwd: runtimeRoot,
       };
-    }
-    const python = spawnSync("python", ["--version"], {
-      encoding: "utf8",
-      windowsHide: true,
-    });
-    if (python.status === 0)
-      return { command: "python", args: [sourceEntrypoint], cwd: runtimeRoot };
-    if (process.platform === "win32") {
-      const launcher = spawnSync("py", ["-3.10", "--version"], {
-        encoding: "utf8",
-        windowsHide: true,
-      });
-      if (launcher.status === 0)
-        return {
-          command: "py",
-          args: ["-3.10", sourceEntrypoint],
-          cwd: runtimeRoot,
-        };
     }
   }
   if (fs.existsSync(packagedExecutable))
@@ -3449,6 +3978,12 @@ function launchAiRuntimeProcess(slot) {
         AI_RUNTIME_API_KEY: aiSettings.apiKey,
         AI_RUNTIME_BASE_URL: aiRuntimeBaseUrl(aiSettings.baseUrl),
         AI_RUNTIME_MODEL: aiSettings.model,
+        AI_RUNTIME_RETRIEVAL_BACKEND: aiSettings.retrievalBackend,
+        AI_RUNTIME_EMBEDDING_BASE_URL: aiRuntimeBaseUrl(
+          aiSettings.effectiveEmbeddingBaseUrl,
+        ),
+        AI_RUNTIME_EMBEDDING_API_KEY: aiSettings.effectiveEmbeddingApiKey,
+        AI_RUNTIME_EMBEDDING_MODEL: aiSettings.embeddingModel,
       },
       stdio: ["ignore", stdout, stderr],
       windowsHide: true,
@@ -3585,6 +4120,19 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
       ? path.join(toolsDir, "nuclei", "nuclei.exe")
       : "nuclei",
     NUCLEI_TEMPLATES_PATH: path.join(toolsDir, "nuclei-templates"),
+    HTTPX_PATH: fs.existsSync(path.join(toolsDir, "httpx", "httpx.exe"))
+      ? path.join(toolsDir, "httpx", "httpx.exe")
+      : "httpx",
+    AFROG_PATH: fs.existsSync(path.join(toolsDir, "afrog", "afrog.exe"))
+      ? path.join(toolsDir, "afrog", "afrog.exe")
+      : "afrog",
+    AFROG_POCS_PATH: path.join(toolsDir, "afrog-pocs"),
+    XRAY_PATH: fs.existsSync(
+      path.join(toolsDir, "xray", "xray_windows_amd64.exe"),
+    )
+      ? path.join(toolsDir, "xray", "xray_windows_amd64.exe")
+      : "xray",
+    XRAY_POCS_PATH: path.join(toolsDir, "xray-pocs"),
     PATH: [
       path.join(toolsDir, "nuclei"),
       path.join(toolsDir, "httpx"),
@@ -3610,6 +4158,9 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
   // client, MITM authority, scan tools) until first use. ~40s -> ~12s to
   // first ready on this machine; the first API request pays a small init
   // cost, but single-user desktop startup latency matters more than throughput.
+      "-Dfile.encoding=UTF-8",
+      "-Dsun.stdout.encoding=UTF-8",
+      "-Dsun.stderr.encoding=UTF-8",
       "-XX:TieredStopAtLevel=1",
       "-jar",
       jar,
@@ -3999,9 +4550,7 @@ async function boot() {
           stopAiRuntime();
         });
     });
-    // Startup must never wait for an external update service. The guarded job
-    // compares the signed release manifest hash and downloads only on change.
-    setImmediate(() => checkVulnerabilityCatalogOnStartup(backendPort));
+    // 漏洞知识库保持显式同步语义：启动时不自动联网下载或导入模板。
   } catch (error) {
     stopAiRuntime();
     await stopBackend();

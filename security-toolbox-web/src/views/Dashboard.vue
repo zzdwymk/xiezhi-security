@@ -12,20 +12,15 @@ import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   Aim,
-  ArrowRight,
   ChatDotRound,
   CircleCheck,
   Connection,
   Delete,
   Dismiss,
   DocumentChecked,
-  FolderOpened,
-  List,
   Plus,
   Promotion,
   Refresh,
-  Tickets,
-  Warning,
 } from "../components/fluentIcons";
 import {
   connectTaskEventFeed,
@@ -53,7 +48,12 @@ import {
 import { useEngineStore } from "../stores/engine";
 import { useCopilotStore } from "../stores/copilot";
 import { formatDateTime, formatExecutionLog } from "../utils/dateTime";
-import { toErrorMessage } from "../utils/errorMessage";
+import {
+  aiToolLabel,
+  localizeAiRuntimeFailure,
+  localizeAiToolCodes,
+  readableAiConversationError,
+} from "../utils/aiPresentation";
 import type { CopilotDraft, CopilotReference } from "../types/copilot";
 import { renderMarkdown } from "../utils/markdown";
 import {
@@ -148,67 +148,6 @@ const quickActions = [
     description: "审阅最近发现与风险",
     path: "/findings",
     icon: DocumentChecked,
-  },
-];
-
-// Keep the existing welcome composition, but make the implemented workspaces
-// discoverable without requiring users to infer routes from the sidebar.
-const capabilityCards = [
-  {
-    label: "评估项目",
-    description: "授权范围、目标、任务和项目报告",
-    path: "/projects",
-    icon: FolderOpened,
-    tone: "teal",
-  },
-  {
-    label: "授权目标",
-    description: "登记目标与允许端口范围",
-    path: "/targets",
-    icon: Aim,
-    tone: "blue",
-  },
-  {
-    label: "探测与信息收集",
-    description: "指纹、WAF、域名与网络证据",
-    path: "/recon",
-    icon: Connection,
-    tone: "violet",
-  },
-  {
-    label: "红队工作流",
-    description: "手动连线并编排并行评估阶段",
-    path: "/workflow",
-    icon: Promotion,
-    tone: "indigo",
-  },
-  {
-    label: "任务控制中心",
-    description: "实时进度、命令日志、取消与重试",
-    path: "/tasks",
-    icon: List,
-    tone: "amber",
-  },
-  {
-    label: "漏洞复测与扫描 Diff",
-    description: "复测发现并比较两次扫描",
-    path: "/findings",
-    icon: Warning,
-    tone: "red",
-  },
-  {
-    label: "项目报告",
-    description: "导出项目级 PDF 总结报告",
-    path: "/projects",
-    icon: DocumentChecked,
-    tone: "green",
-  },
-  {
-    label: "审批与审计",
-    description: "查看授权守卫与操作审计记录",
-    path: "/audits",
-    icon: Tickets,
-    tone: "slate",
   },
 ];
 
@@ -619,6 +558,20 @@ function citationBubbleHint(citation: ConversationCitation) {
     .slice(0, 160);
 }
 
+function displayedMessageContent(message: ConversationMessage) {
+  return message.role === "assistant" && message.status === "failed"
+    ? localizeAiRuntimeFailure(message.content)
+    : message.content;
+}
+
+function displayedStepTitle(step: ConversationStep) {
+  return aiToolLabel(step.toolCode, step.title);
+}
+
+function displayedStepReason(step: ConversationStep) {
+  return localizeAiToolCodes(step.reason || aiToolLabel(step.toolCode));
+}
+
 function citationSummaryLength(citation: ConversationCitation) {
   const legacySnippet = (
     citation as ConversationCitation & { snippet?: unknown }
@@ -671,7 +624,7 @@ function visibleAgentEvents(message: ConversationMessage) {
   return collapsed.slice(-8);
 }
 
-/** The public UI treats LedgerAgent as one black-box node. Internal graph steps are never shown. */
+/** The public UI treats the agent as one black-box node. Internal graph steps are never shown. */
 function isEssentialAgentEvent(event: ConversationAgentEvent) {
   return Boolean(event.publicNodeStatus);
 }
@@ -681,7 +634,6 @@ function publicNodeDetail(event: ConversationAgentEvent) {
     event.actionCount !== undefined ? `${event.actionCount} 个动作` : "",
     event.evidenceCount !== undefined ? `${event.evidenceCount} 条证据引用` : "",
     event.taskIds?.length ? `任务 ${event.taskIds.join(", ")}` : "",
-    event.terminationReason ? `终止原因：${event.terminationReason}` : "",
     event.recoverable !== undefined
       ? event.recoverable
         ? "可恢复"
@@ -690,10 +642,17 @@ function publicNodeDetail(event: ConversationAgentEvent) {
         ? "恢复资格待服务端确认"
         : "",
   ].filter(Boolean);
-  return details.join(" · ") || "状态已由安全 Harness 校验";
+  return details.join(" · ") || "状态已通过系统校验";
 }
 
 function genericReferencePrompt(reference: CopilotReference) {
+  if (reference.type === "audit" || reference.type === "audit-log") {
+    return [
+      `[审计记录引用]`,
+      `记录编号：${reference.id}`,
+      "请以服务端重新查询并校验后的该条记录为准，不要使用其他项目资料代替。",
+    ].join("\n");
+  }
   const details =
     reference.data && Object.keys(reference.data).length
       ? JSON.stringify(reference.data, null, 2).slice(0, 5000)
@@ -716,6 +675,29 @@ function referencesPrompt(references: ConversationMessage["references"]) {
         : genericReferencePrompt(reference),
     )
     .join("\n\n");
+}
+
+function agentContextReferences(references: ConversationMessage["references"]) {
+  return (references || [])
+    .map((reference) => {
+      const item = reference as CopilotReference;
+      const type =
+        item.type === "audit-log" ? "audit" : String(item.type || "");
+      const id = Number(item.id);
+      if (!type || !Number.isInteger(id) || id <= 0) return undefined;
+      return {
+        type,
+        id,
+        targetId:
+          Number(item.targetId) > 0
+            ? Number(item.targetId)
+            : undefined,
+        title: item.title || item.label,
+      };
+    })
+    .filter((reference): reference is NonNullable<typeof reference> =>
+      Boolean(reference),
+    );
 }
 
 function buildContextPrompt(thread: ConversationThread, userMessageId: string) {
@@ -954,11 +936,13 @@ function applyAgentEvent(
     event.toolCallId ||
     event.taskId,
   );
-  if (
+  const isActionStepEvent =
     index !== undefined ||
-    ["step", "tool_call", "tool_result", "retry"].includes(event.type) ||
-    (event.type === "approval" && hasStepIdentity)
-  ) {
+    (hasStepIdentity &&
+      ["step", "tool_call", "tool_result", "retry", "approval"].includes(
+        event.type,
+      ));
+  if (isActionStepEvent) {
     const targetIndex = index !== undefined ? index : steps.length;
     if (!steps[targetIndex])
       steps[targetIndex] = normalizedStep(
@@ -1042,7 +1026,7 @@ function applyAgentEvent(
     event.summary ||
     event.message ||
     (event.type === "tool_call"
-      ? `正在调用 ${event.toolName || event.toolCode || "安全工具"}`
+      ? `正在调用 ${aiToolLabel(event.toolCode, event.toolName)}`
       : "");
   const stage = String(event.stage || event.node || "").toLowerCase();
   const stageLabel: Record<string, string> = {
@@ -1098,7 +1082,7 @@ function applyAgentEvent(
                 : message.status;
   let content = message.content;
   if (event.type === "error")
-    content = toErrorMessage(
+    content = readableAiConversationError(
       event.message || event.summary,
       "智能体执行失败。",
     ).slice(0, 2000);
@@ -1135,7 +1119,10 @@ function readableConversationError(error: unknown) {
   const value = error as { code?: string };
   return value?.code === "ECONNABORTED"
     ? "智能体长时间没有返回新的分析进度，请稍后再试。"
-    : toErrorMessage(error, "智能体无法派发任务，请检查目标授权范围和后端配置。");
+    : readableAiConversationError(
+        error,
+        "智能体无法派发任务，请检查目标授权范围和后端配置。",
+      );
 }
 
 async function dispatchConversationMessage(
@@ -1157,7 +1144,7 @@ async function dispatchConversationMessage(
       prompt: requestPrompt,
       execute: true,
       mode: userMessage.copilotMode,
-      refs,
+      refs: agentContextReferences(refs),
     },
     (event) => recordThinkingProgress(thread.id, assistantMessage.id, event),
   );
@@ -1227,7 +1214,12 @@ async function dispatchConversationMessage(
     status: data.taskIds.length ? "running" : "completed",
     provider: data.plan.provider,
     taskIds: data.taskIds,
-    steps: finalSteps.length ? finalSteps : streamedMessage?.steps || [],
+    steps:
+      planSteps.length || data.taskIds.length
+        ? finalSteps.length
+          ? finalSteps
+          : streamedMessage?.steps || []
+        : [],
     citations: finalCitations.slice(-30),
     planningStage: "completed",
     planningStatus: data.taskIds.length
@@ -1478,7 +1470,7 @@ async function requestFinalAnswer(
     });
   } catch (error: any) {
     conversations.updateMessage(thread.id, message.id, { status: "completed" });
-    const summaryError = toErrorMessage(
+    const summaryError = readableAiConversationError(
       error,
       "暂时无法生成汇总回答。你可以继续追问，或前往“结果中心”查看详细结果。",
     );
@@ -1654,10 +1646,16 @@ async function removeCurrentConversation() {
         type: "warning",
       },
     );
+  } catch {
+    return;
+  }
+  try {
+    await endpoints.clearAgentSession(thread.id);
     conversations.remove(thread.id);
     await router.replace("/");
-  } catch {
-    // User cancelled.
+    ElMessage.success("对话已删除");
+  } catch (error) {
+    ElMessage.error(readableAiConversationError(error, "删除对话失败，请稍后重试"));
   }
 }
 
@@ -1673,10 +1671,20 @@ async function clearConversations() {
         type: "warning",
       },
     );
+  } catch {
+    return;
+  }
+  try {
+    await Promise.all(
+      conversations.items.map((thread) =>
+        endpoints.clearAgentSession(thread.id),
+      ),
+    );
     conversations.clear();
     await router.replace("/");
-  } catch {
-    // User cancelled.
+    ElMessage.success("全部对话已清空");
+  } catch (error) {
+    ElMessage.error(readableAiConversationError(error, "清空对话失败，请稍后重试"));
   }
 }
 
@@ -1905,96 +1913,6 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <section
-        class="capability-center"
-        aria-labelledby="capability-center-title"
-      >
-        <header class="capability-center-head">
-          <div>
-            <span class="capability-eyebrow">红队评估闭环</span>
-            <h2 id="capability-center-title">
-              从授权范围到复测报告，闭环管理安全评估
-            </h2>
-          </div>
-          <p>
-            阶段进度、证据与审计上下文贯穿整个项目，所有验证都以授权范围为前提。
-          </p>
-        </header>
-
-        <div
-          class="agent-architecture red-team-loop"
-          aria-label="红队安全评估闭环阶段"
-        >
-          <div class="architecture-node phase-start">
-            <span>1</span><strong>启动 / 范围</strong
-            ><small>确认授权目标、边界、审批与时间窗口</small>
-          </div>
-          <i aria-hidden="true"
-            ><el-icon><ArrowRight /></el-icon
-          ></i>
-          <div class="architecture-node phase-recon">
-            <span>2</span><strong>侦察</strong
-            ><small>收集域名、指纹、WAF 与公开信息</small>
-          </div>
-          <i aria-hidden="true"
-            ><el-icon><ArrowRight /></el-icon
-          ></i>
-          <div class="architecture-node phase-assets">
-            <span>3</span><strong>资产发现</strong
-            ><small>枚举子域、端口、服务与关联资产</small>
-          </div>
-          <i aria-hidden="true"
-            ><el-icon><ArrowRight /></el-icon
-          ></i>
-          <div class="architecture-node phase-validate">
-            <span>4</span><strong>漏洞验证</strong
-            ><small>按授权范围验证漏洞与证据</small>
-          </div>
-          <i aria-hidden="true"
-            ><el-icon><ArrowRight /></el-icon
-          ></i>
-          <div class="architecture-node phase-impact">
-            <span>5</span><strong>影响评估</strong
-            ><small>评估可达性、影响面与业务风险</small>
-          </div>
-          <i aria-hidden="true"
-            ><el-icon><ArrowRight /></el-icon
-          ></i>
-          <div class="architecture-node phase-retest">
-            <span>6</span><strong>复测</strong
-            ><small>复核修复状态并比较扫描 Diff</small>
-          </div>
-          <i aria-hidden="true"
-            ><el-icon><ArrowRight /></el-icon
-          ></i>
-          <div class="architecture-node phase-report">
-            <span>7</span><strong>报告 / 结束</strong
-            ><small>汇总审计记录、结论与项目报告</small>
-          </div>
-        </div>
-
-        <div class="capability-grid">
-          <button
-            v-for="card in capabilityCards"
-            :key="card.label"
-            type="button"
-            class="capability-card"
-            :class="`tone-${card.tone}`"
-            @click="router.push(card.path)"
-          >
-            <span class="capability-icon"
-              ><el-icon><component :is="card.icon" /></el-icon
-            ></span>
-            <span class="capability-copy"
-              ><strong>{{ card.label }}</strong
-              ><small>{{ card.description }}</small></span
-            >
-            <span class="capability-arrow" aria-hidden="true"
-              ><el-icon><ArrowRight /></el-icon
-            ></span>
-          </button>
-        </div>
-      </section>
     </section>
 
     <template v-else>
@@ -2028,7 +1946,7 @@ onBeforeUnmount(() => {
               <div
                 v-if="message.role === 'assistant'"
                 class="message-bubble markdown-body"
-                v-html="renderMarkdown(message.content)"
+                v-html="renderMarkdown(displayedMessageContent(message))"
               />
               <div v-else class="message-bubble">{{ message.content }}</div>
               <div class="message-actions">
@@ -2210,8 +2128,8 @@ onBeforeUnmount(() => {
                       ><template v-else>{{ index + 1 }}</template></i
                     >
                     <div>
-                      <strong>{{ step.title }}</strong
-                      ><small>{{ step.reason || step.toolCode }}</small
+                      <strong>{{ displayedStepTitle(step) }}</strong
+                      ><small>{{ displayedStepReason(step) }}</small
                       ><el-progress
                         v-if="planStepState(message, index).state === 'running'"
                         :percentage="planStepState(message, index).progress"
@@ -2231,7 +2149,7 @@ onBeforeUnmount(() => {
                   class="agent-event-details"
                   open
                 >
-                  <summary>LedgerAgent 公开节点状态（实时）</summary>
+                  <summary>智能助手处理进度</summary>
                   <ol class="agent-event-list">
                     <li
                       v-for="(event, eventIndex) in visibleAgentEvents(message)"
@@ -2242,27 +2160,9 @@ onBeforeUnmount(() => {
                     >
                       <span>{{ agentEventLabel(event) }}</span>
                       <div>
-                        <strong>
-                          LedgerAgent
-                          <template v-if="event.outerNodeId">
-                            · {{ event.outerNodeId }}
-                          </template>
-                        </strong>
+                        <strong>智能助手</strong>
                         <small>{{ publicNodeDetail(event) }}</small>
-                        <small v-if="event.nodeRunId" class="agent-node-run-id">
-                          nodeRunId: {{ event.nodeRunId }}
-                        </small>
-                        <small
-                          v-if="event.workflowRevision && event.workflowDigest"
-                          class="agent-node-snapshot"
-                        >
-                          Workflow r{{ event.workflowRevision }} ·
-                          {{ event.workflowDigest }}
-                        </small>
                       </div>
-                      <small v-if="event.ledgerSequence">
-                        Ledger #{{ event.ledgerSequence }}
-                      </small>
                     </li>
                   </ol>
                 </details>
@@ -3888,334 +3788,17 @@ a.agent-citation-bubble {
   background: var(--app-surface-soft);
 }
 
-/* Fluent 2 capability surface: keep the welcome composition intact while
-   making the already-available workspaces visible at a glance. */
-.capability-center {
-  width: min(980px, 100%);
-  margin-top: 24px;
-  padding: 18px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--fluent-radius-card);
-  background: var(--app-surface);
-  box-shadow: var(--fluent-card-shadow);
-  text-align: left;
-}
-.capability-center-head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 18px;
-  margin-bottom: 14px;
-}
-.capability-eyebrow {
-  display: block;
-  margin-bottom: 4px;
-  color: var(--app-accent);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0;
-}
-.capability-center h2 {
-  margin: 0;
-  color: var(--app-text);
-  font-size: 16px;
-  font-weight: 650;
-  letter-spacing: 0;
-}
-.capability-center-head p {
-  max-width: 330px;
-  margin: 0;
-  color: var(--app-muted);
-  font-size: 11px;
-  line-height: 1.5;
-  text-align: right;
-}
-.agent-architecture {
-  display: grid;
-  grid-template-columns:
-    minmax(0, 1fr) auto minmax(0, 1.2fr) auto minmax(0, 1fr)
-    auto minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 16px;
-  padding: 10px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--fluent-radius-control);
-  background: var(--app-surface-soft);
-}
-.architecture-node {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: 24px minmax(0, 1fr);
-  align-items: center;
-  column-gap: 8px;
-  padding: 8px 9px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--fluent-radius-control);
-  background: var(--app-surface-strong);
-}
-.architecture-node > span {
-  display: grid;
-  width: 22px;
-  height: 22px;
-  place-items: center;
-  border-radius: 50%;
-  background: var(--app-accent-soft);
-  color: var(--app-accent);
-  font-size: 10px;
-  font-weight: 700;
-}
-.architecture-node strong,
-.architecture-node small {
-  grid-column: 2;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.architecture-node strong {
-  color: var(--app-text);
-  font-size: 11px;
-  font-weight: 700;
-}
-.architecture-node small {
-  margin-top: 2px;
-  color: var(--app-muted);
-  font-size: 9px;
-}
-.architecture-node.phase-start {
-  border-color: color-mix(in srgb, var(--app-accent) 42%, var(--app-border));
-  background: var(--app-accent-soft);
-}
-.architecture-node.phase-start > span {
-  background: var(--app-accent);
-  color: var(--system-accent-foreground, #fff);
-}
-.agent-architecture > i {
-  color: var(--app-accent);
-  font-size: 16px;
-  font-style: normal;
-  text-align: center;
-}
-.capability-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-}
-.capability-card {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: 30px minmax(0, 1fr) 14px;
-  align-items: center;
-  gap: 8px;
-  padding: 10px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--fluent-radius-control);
-  background: var(--app-surface-strong);
-  color: var(--app-text);
-  text-align: left;
-  cursor: pointer;
-  transition:
-    background-color var(--fluent-fast),
-    border-color var(--fluent-fast),
-    transform var(--fluent-fast),
-    box-shadow var(--fluent-fast);
-}
-.capability-card:hover {
-  border-color: color-mix(in srgb, var(--app-accent) 44%, var(--app-border));
-  background: var(--app-surface-soft);
-  box-shadow: var(--fluent-shadow-2);
-  transform: translateY(-1px);
-}
-.capability-card:focus-visible {
-  outline: 2px solid var(--app-accent);
-  outline-offset: 2px;
-}
-.capability-icon {
-  display: grid;
-  width: 30px;
-  height: 30px;
-  place-items: center;
-  border-radius: var(--fluent-radius-control);
-  background: var(--app-accent-soft);
-  color: var(--app-accent);
-  font-size: 16px;
-}
-.capability-copy {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-}
-.capability-copy strong {
-  overflow: hidden;
-  color: var(--app-text);
-  font-size: 11px;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.capability-copy small {
-  display: -webkit-box;
-  overflow: hidden;
-  margin-top: 3px;
-  color: var(--app-muted);
-  font-size: 9px;
-  line-height: 1.35;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-.capability-arrow {
-  color: var(--app-accent);
-  font-size: 15px;
-  font-weight: 600;
-  text-align: center;
-}
-.capability-card.tone-blue .capability-icon {
-  background: color-mix(in srgb, #3178c6 14%, var(--app-surface));
-  color: #2767ae;
-}
-.capability-card.tone-violet .capability-icon {
-  background: color-mix(in srgb, #7b61c9 14%, var(--app-surface));
-  color: #654bb0;
-}
-.capability-card.tone-indigo .capability-icon {
-  background: color-mix(in srgb, #526bb4 14%, var(--app-surface));
-  color: #405b9f;
-}
-.capability-card.tone-amber .capability-icon {
-  background: color-mix(in srgb, #c88c2d 16%, var(--app-surface));
-  color: #986719;
-}
-.capability-card.tone-red .capability-icon {
-  background: color-mix(in srgb, #c75757 14%, var(--app-surface));
-  color: #a43f3f;
-}
-.capability-card.tone-green .capability-icon {
-  background: color-mix(in srgb, #3b9b70 14%, var(--app-surface));
-  color: #277b57;
-}
-.capability-card.tone-slate .capability-icon {
-  background: color-mix(in srgb, #607384 14%, var(--app-surface));
-  color: #4b5d6d;
-}
 .agent-event-details[open] > summary,
 .plan-runtime-details[open] > summary {
   font-weight: 700;
 }
-@media (max-width: 980px) {
-  .capability-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .agent-architecture {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 6px;
-  }
-  .agent-architecture > i {
-    display: none;
-  }
-  .architecture-node {
-    grid-template-columns: 22px minmax(0, 1fr);
-    padding: 7px;
-  }
-}
-@media (max-width: 760px) {
-  .capability-center {
-    padding: 13px;
-  }
-  .capability-center-head {
-    display: block;
-  }
-  .capability-center-head p {
-    max-width: none;
-    margin-top: 6px;
-    text-align: left;
-  }
-  .capability-grid {
-    grid-template-columns: 1fr;
-  }
-  .agent-architecture {
-    grid-template-columns: 1fr 1fr;
-  }
-  .architecture-node small {
-    font-size: 8px;
-  }
-}
-
-/* Seven-stage red-team assessment loop. The wide layout keeps the flow on a
- * single line; narrower windows switch to a readable phase grid. */
-.red-team-loop {
-  display: flex;
-  align-items: stretch;
-  gap: 6px;
-}
-
-.red-team-loop .architecture-node {
-  flex: 1 1 0;
-  align-content: center;
-  align-items: start;
-  padding: 8px;
-}
-
-.red-team-loop .architecture-node small {
-  display: -webkit-box;
-  min-height: 2.7em;
-  overflow: hidden;
-  white-space: normal;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.red-team-loop > i {
-  flex: 0 0 auto;
-  align-self: center;
-}
-
-.red-team-loop .phase-validate > span {
-  background: color-mix(in srgb, #c75757 15%, var(--app-surface));
-  color: light-dark(#993c3c, #ffb7b7);
-}
-
-.red-team-loop .phase-impact > span {
-  background: color-mix(in srgb, #c88c2d 17%, var(--app-surface));
-  color: light-dark(#875b12, #ffd48a);
-}
-
-.red-team-loop .phase-retest > span,
-.red-team-loop .phase-report > span {
-  background: color-mix(in srgb, #3b9b70 15%, var(--app-surface));
-  color: light-dark(#236e4f, #9ee3c4);
-}
-
-@media (max-width: 1180px) {
-  .red-team-loop {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 8px;
-  }
-
-  .red-team-loop > i {
-    display: none;
-  }
-}
-
-@media (max-width: 760px) {
-  .red-team-loop {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 520px) {
-  .red-team-loop {
-    grid-template-columns: 1fr;
-  }
-}
-
 /* Dashboard layout guardrails
  *
  * The welcome area is a column flex container.  Its composer contains a
  * textarea and a footer, so allowing the item to shrink makes the browser
- * collapse it to a thin strip when the capability center is also visible.
- * Keep the input as a non-shrinking, content-sized surface; the parent can
- * still scroll when the window is shorter than the complete welcome screen.
+ * collapse it to a thin strip in shorter windows. Keep the input as a
+ * non-shrinking, content-sized surface; the parent can still scroll when the
+ * window is shorter than the complete welcome screen.
  */
 .chat-welcome .welcome-composer {
   flex: 0 0 auto;
@@ -4228,28 +3811,8 @@ a.agent-citation-bubble {
   min-height: 112px;
 }
 
-/* Flatten the capability section so it does not read as a card inside a
- * second card. Individual capability actions remain distinct, keyboard
- * focusable surfaces while the architecture row is visually open.
- */
-.chat-welcome .capability-center {
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-  padding-right: 0;
-  padding-left: 0;
-}
-
-.chat-welcome .agent-architecture {
-  border: 0;
-  background: transparent;
-  padding-right: 0;
-  padding-left: 0;
-}
-
 /* Keep labels readable in both light/dark and Windows high-contrast themes. */
 .chat-welcome .quick-actions button,
-.chat-welcome .capability-card,
 .chat-welcome .create-target,
 .chat-header-actions button,
 .message-actions button,
@@ -4257,8 +3820,7 @@ a.agent-citation-bubble {
   color: var(--app-text);
 }
 
-.chat-welcome .quick-actions button strong,
-.chat-welcome .capability-card strong {
+.chat-welcome .quick-actions button strong {
   color: var(--app-text);
 }
 
@@ -4419,8 +3981,6 @@ a.agent-citation-bubble {
   height: 32px;
 }
 
-/* The capability section is already flattened into the page. Increase its
-   rhythm and let the seven stages wrap before their labels become cramped. */
 .quick-actions {
   gap: 12px;
   margin-top: 18px;
@@ -4430,97 +3990,6 @@ a.agent-citation-bubble {
   min-height: 76px;
   gap: 12px;
   padding: 14px 16px;
-}
-
-.chat-welcome .capability-center {
-  margin-top: 30px;
-}
-
-.capability-center-head {
-  align-items: flex-start;
-  gap: 24px;
-  margin-bottom: 20px;
-}
-
-.capability-center h2 {
-  font-size: 18px;
-  line-height: 1.4;
-}
-
-.capability-center-head p {
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.chat-welcome .red-team-loop {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-  margin-bottom: 22px;
-  padding: 0 0 4px;
-}
-
-.red-team-loop > i {
-  display: none;
-}
-
-.red-team-loop .architecture-node {
-  min-height: 88px;
-  grid-template-columns: 28px minmax(0, 1fr);
-  align-content: center;
-  column-gap: 10px;
-  padding: 12px;
-}
-
-.red-team-loop .architecture-node > span {
-  width: 26px;
-  height: 26px;
-  font-size: 11px;
-}
-
-.red-team-loop .architecture-node strong {
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.red-team-loop .architecture-node small {
-  margin-top: 4px;
-  font-size: 10px;
-  line-height: 1.45;
-}
-
-.capability-grid {
-  gap: 12px;
-}
-
-.capability-card {
-  min-height: 78px;
-  grid-template-columns: 36px minmax(0, 1fr) 18px;
-  gap: 10px;
-  padding: 14px;
-}
-
-.capability-icon {
-  width: 36px;
-  height: 36px;
-  font-size: 18px;
-}
-
-.capability-copy strong {
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.capability-copy small {
-  margin-top: 4px;
-  font-size: 10px;
-  line-height: 1.45;
-}
-
-@media (max-width: 980px) {
-  .capability-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 
 @media (max-width: 760px) {
@@ -4546,24 +4015,6 @@ a.agent-citation-bubble {
   .agent-event-list li {
     grid-template-columns: auto minmax(0, 1fr);
   }
-
-  .capability-center-head {
-    display: block;
-  }
-
-  .chat-welcome .red-team-loop {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .capability-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 520px) {
-  .chat-welcome .red-team-loop {
-    grid-template-columns: 1fr;
-  }
 }
 
 /* Icon-only controls use an explicit square box so the SVG optical centre and
@@ -4583,10 +4034,12 @@ a.agent-citation-bubble {
   width: 18px;
   height: 18px;
   place-items: center;
-  line-height: 1;
+  font-size: 16px;
+  line-height: 0;
 }
-.chat-header-actions .header-icon-button :deep(svg) {
+.chat-header-actions .header-icon-button :deep(.fluent-system-icon) {
   display: block;
+  vertical-align: 0;
 }
 .chat-welcome .welcome-mark {
   display: inline-grid;

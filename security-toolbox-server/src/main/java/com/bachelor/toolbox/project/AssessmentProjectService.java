@@ -173,7 +173,7 @@ public class AssessmentProjectService {
     project.setAuthorizationStatement(request.authorizationStatement());
     project.setAuthorizationValidFrom(request.authorizationValidFrom());
     project.setAuthorizationExpiresAt(request.authorizationExpiresAt());
-    project.setOwner(authorization.currentUsername());
+    project.setOwner(resolveCreatedOwner(request.owner()));
     project.setStatus("DRAFT");
     return project;
   }
@@ -200,8 +200,22 @@ public class AssessmentProjectService {
       throw new ApiException("普通用户不能修改项目负责人");
     }
     if (request.owner() != null && authorization.isAdmin()) {
-      project.setOwner(request.owner());
+      project.setOwner(resolveOwner(request.owner()));
     }
+  }
+
+  private String resolveOwner(String owner) {
+    if (owner == null || owner.isBlank()) {
+      return authorization.currentUsername();
+    }
+    return owner.strip();
+  }
+
+  private String resolveCreatedOwner(String owner) {
+    if (authorization.isAdmin()) {
+      return resolveOwner(owner);
+    }
+    return authorization.currentUsername();
   }
 
   private void validateStatus(String status) {

@@ -225,6 +225,104 @@ async function extractTemplates(payload) {
   return { extractedFiles, extractedBytes, yamlFiles };
 }
 
+async function extractScannerPocs(payload) {
+  const {
+    archivePath,
+    maxArchiveBytes,
+    stagingDir,
+    maxFiles,
+    maxExtractedBytes,
+    sourceMetadata,
+    sourceSubdirectory = "pocs",
+    scannerLabel = "扫描器",
+  } = payload;
+  const archiveHash = await verifySha256(
+    archivePath,
+    "",
+    maxArchiveBytes,
+    `正在计算 ${scannerLabel} PoC 快照 SHA-256`,
+    0,
+    0.18,
+  );
+  report(`正在读取 ${scannerLabel} PoC 目录`, 0.2);
+  const zip = new AdmZip(archivePath);
+  const prefix = String(sourceSubdirectory || "pocs")
+    .replace(/\\/g, "/")
+    .replace(/^\/+|\/+$/g, "");
+  const prefixParts = prefix.split("/");
+  const entries = zip.getEntries().filter((entry) => {
+    if (entry.isDirectory) return false;
+    const safeName = safeArchiveEntryName(entry.entryName);
+    if (!safeName || safeName.parts.length < prefixParts.length + 2)
+      return false;
+    const repositoryRelative = safeName.parts.slice(1).join("/");
+    return (
+      repositoryRelative.startsWith(prefix + "/") &&
+      /\.ya?ml$/i.test(repositoryRelative)
+    );
+  });
+  if (!entries.length || entries.length > maxFiles)
+    throw new UserFacingError(`${scannerLabel} PoC 文件数量异常`);
+
+  let extractedFiles = 0;
+  let extractedBytes = 0;
+  for (const entry of entries) {
+    const safeName = safeArchiveEntryName(entry.entryName);
+    const relativeParts = safeName.parts.slice(1 + prefixParts.length);
+    const size = Number(entry.header.size);
+    if (!relativeParts.length || !Number.isSafeInteger(size) || size < 1)
+      throw new UserFacingError(`${scannerLabel} PoC 文件路径或大小异常`);
+    extractedFiles += 1;
+    extractedBytes += size;
+    if (extractedFiles > maxFiles || extractedBytes > maxExtractedBytes)
+      throw new UserFacingError(`${scannerLabel} PoC 解压数量或大小超过安全限制`);
+    const target = path.join(stagingDir, ...relativeParts);
+    const relativeTarget = path.relative(
+      path.resolve(stagingDir),
+      path.resolve(target),
+    );
+    if (relativeTarget.startsWith("..") || path.isAbsolute(relativeTarget))
+      throw new UserFacingError(`${scannerLabel} PoC 路径超出安装目录`);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, entry.getData(), { flag: "wx" });
+    if (extractedFiles === entries.length || extractedFiles % 100 === 0) {
+      report(
+        `正在解压 ${scannerLabel} PoC（${extractedFiles}/${entries.length}）`,
+        0.22 + 0.76 * (extractedFiles / entries.length),
+        {
+          processedFiles: extractedFiles,
+          totalFiles: entries.length,
+          processedBytes: extractedBytes,
+        },
+      );
+    }
+  }
+  fs.writeFileSync(
+    path.join(stagingDir, ".toolbox-source.json"),
+    JSON.stringify(
+      {
+        ...sourceMetadata,
+        archiveSha256: archiveHash.digest,
+        sourceSubdirectory: prefix,
+      },
+      null,
+      2,
+    ),
+    { encoding: "utf8", flag: "wx", mode: 0o600 },
+  );
+  report(`${scannerLabel} PoC 解压完成`, 1, {
+    processedFiles: extractedFiles,
+    totalFiles: entries.length,
+    processedBytes: extractedBytes,
+  });
+  return {
+    extractedFiles,
+    extractedBytes,
+    yamlFiles: extractedFiles,
+    archiveSha256: archiveHash.digest,
+  };
+}
+
 async function run() {
   if (!parentPort || !workerData || typeof workerData !== "object") {
     throw new UserFacingError("后台安装任务参数无效");
@@ -233,6 +331,8 @@ async function run() {
     return extractExecutable(workerData.payload);
   if (workerData.task === "extract-templates")
     return extractTemplates(workerData.payload);
+  if (workerData.task === "extract-scanner-pocs")
+    return extractScannerPocs(workerData.payload);
   throw new UserFacingError("不支持的后台安装任务");
 }
 

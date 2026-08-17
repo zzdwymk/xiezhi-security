@@ -27,7 +27,11 @@ public class AiWorkflowSuggestService {
           "http_headers",
           "http_security_check",
           "tls_config",
-          "nuclei_scan");
+          "nuclei_scan",
+          "afrog_scan",
+          "xray_scan");
+  private static final Set<String> SCANNER_TOOLS =
+      Set.of("nuclei_scan", "afrog_scan", "xray_scan");
 
   private final AiModelClient modelClient;
   private final ObjectMapper objectMapper;
@@ -210,7 +214,7 @@ public class AiWorkflowSuggestService {
         tools.contains("nmap_service_scan")
             || tools.contains("tcp_ports")
             || tools.contains("http_headers");
-    if (!tools.contains("nuclei_scan") || hasDiscovery) {
+    if (tools.stream().noneMatch(SCANNER_TOOLS::contains) || hasDiscovery) {
       return;
     }
     suggestions.add(
@@ -218,7 +222,7 @@ public class AiWorkflowSuggestService {
             "order",
             "warning",
             "漏洞扫描前先做资产发现",
-            "当前有受控漏洞模板扫描，但缺少端口/服务/Web 基础采集。建议先完成 mapping 再验证。",
+            "当前有漏洞扫描器节点，但缺少端口/服务/Web 基础采集。建议先完成 mapping 再验证。",
             actionAddTool("nmap_service_scan", "mapping")));
   }
 
@@ -243,11 +247,11 @@ public class AiWorkflowSuggestService {
 
   private void addRiskConfirmationSuggestion(
       List<Map<String, Object>> suggestions, Set<String> tools) {
-    if (!tools.contains("nuclei_scan")) {
+    if (tools.stream().noneMatch(SCANNER_TOOLS::contains)) {
       return;
     }
     suggestions.add(
-        tip("risk", "warning", "高风险能力需人工确认", "受控漏洞模板扫描会在执行前要求确认；AI 派发时仍会二次校验授权。", null));
+        tip("risk", "warning", "漏洞扫描器需人工确认", "Nuclei、Afrog 和 Xray 扫描器会在执行前要求确认；AI 派发时仍会二次校验授权。", null));
   }
 
   private void addEmptyWorkflowSuggestion(List<Map<String, Object>> suggestions, long toolCount) {
@@ -348,7 +352,7 @@ public class AiWorkflowSuggestService {
         + " item:{kind,severity,title,detail,action}."
         + " action null or {type:add_tool,tool,phase}."
         + " tools:retrieve_project_context,tcp_ports,nmap_service_scan,http_headers,"
-        + "http_security_check,tls_config,nuclei_scan. max 5.";
+        + "http_security_check,tls_config,nuclei_scan,afrog_scan,xray_scan. max 5.";
   }
 
   private String modelUserPrompt(WorkflowInput input) throws Exception {

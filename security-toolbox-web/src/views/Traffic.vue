@@ -24,6 +24,7 @@ import { useClientPagination } from "../composables/useClientPagination";
 import { useCopilotStore } from "../stores/copilot";
 import { toErrorMessage } from "../utils/errorMessage";
 import { renderMarkdown } from "../utils/markdown";
+import { useSelectionIndicator } from "../composables/useSelectionIndicator";
 
 const copilot = useCopilotStore();
 const router = useRouter();
@@ -125,6 +126,8 @@ interface TrafficChatMessage {
 const status = ref<TrafficStatus>({ running: false, capturedCount: 0 });
 const sessions = ref<TrafficSession[]>([]);
 const selectedId = ref<number | string>();
+const packetTabsElement = ref<HTMLElement | null>(null);
+const replayDocumentTabsElement = ref<HTMLElement | null>(null);
 const filter = ref("");
 const loading = ref(false);
 const changingProxy = ref(false);
@@ -244,6 +247,26 @@ const {
   resetPage: resetSessionPage,
 } = useClientPagination(filteredSessions);
 watch(filter, resetSessionPage);
+useSelectionIndicator({
+  container: packetTabsElement,
+  activeSelector: "button.active",
+  dependencies: [packetTab],
+  orientation: "horizontal",
+  sizeRatio: 0.72,
+  minSize: 22,
+  maxSize: 56,
+  indicatorSelector: ".packet-tabs-indicator",
+});
+useSelectionIndicator({
+  container: replayDocumentTabsElement,
+  activeSelector: "button.active",
+  dependencies: [activeReplayTabId, replayTabs],
+  orientation: "horizontal",
+  sizeRatio: 0.72,
+  minSize: 22,
+  maxSize: 150,
+  indicatorSelector: ".replay-document-tabs-indicator",
+});
 const proxyAddress = computed(
   () =>
     `${status.value.listenHost || "127.0.0.1"}:${status.value.listenPort || 8088}`,
@@ -1282,6 +1305,7 @@ onUnmounted(() => {
           </div>
           <el-input
             v-model="filter"
+            class="traffic-session-filter"
             :prefix-icon="Search"
             placeholder="筛选 URL、Host 或方法"
             clearable
@@ -1408,7 +1432,8 @@ onUnmounted(() => {
               >
             </div>
           </header>
-          <nav class="packet-tabs" aria-label="报文内容">
+          <nav ref="packetTabsElement" class="packet-tabs" aria-label="报文内容">
+            <span class="fluent-selection-indicator packet-tabs-indicator" aria-hidden="true" />
             <button
               type="button"
               :class="{ active: packetTab === 'request' }"
@@ -1449,7 +1474,8 @@ onUnmounted(() => {
                 >
               </div>
             </header>
-            <nav class="replay-document-tabs" aria-label="重放请求标签">
+            <nav ref="replayDocumentTabsElement" class="replay-document-tabs" aria-label="重放请求标签">
+              <span class="fluent-selection-indicator replay-document-tabs-indicator" aria-hidden="true" />
               <button
                 v-for="tab in replayTabs"
                 :key="tab.id"
@@ -1643,7 +1669,6 @@ onUnmounted(() => {
     <el-dialog
       v-model="captureFilterDialogVisible"
       title="抓包黑白名单"
-      width="780px"
       class="app-dialog app-dialog--wide"
       align-center
     >
@@ -1754,12 +1779,14 @@ onUnmounted(() => {
         域名匹配不区分大小写并包含子域名；URL
         使用完整地址包含匹配；关键字会检查方法、URL、请求和响应头、请求和响应体。
       </p>
+      <template #footer>
+        <el-button @click="captureFilterDialogVisible = false">关闭</el-button>
+      </template>
     </el-dialog>
 
     <el-dialog
       v-model="replayDialogVisible"
       title="HTTP 发包器"
-      width="760px"
       class="app-dialog app-dialog--wide"
       align-center
       destroy-on-close
@@ -1890,13 +1917,14 @@ onUnmounted(() => {
   background: transparent;
 }
 .codex-traffic-toolbar {
-  min-height: 52px;
+  min-height: 32px;
   margin: 0;
-  padding: 8px 12px;
+  padding: 0;
+  align-items: flex-start;
   border: 0;
-  border-bottom: 1px solid var(--app-border);
   border-radius: 0;
-  background: var(--app-surface);
+  background: transparent;
+  box-shadow: none;
 }
 .traffic-workspace-title {
   display: flex;
@@ -2634,8 +2662,13 @@ onUnmounted(() => {
   padding: 10px 14px;
   border-top: 1px solid var(--app-border);
   color: var(--app-muted);
-  font-size: var(--type-micro);
   line-height: 1.5;
+}
+.traffic-points-foot > small {
+  display: block;
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
 }
 .ai-thread-header {
   flex: none;
@@ -3162,15 +3195,18 @@ onUnmounted(() => {
   font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
 }
 .codex-traffic-toolbar {
-  min-height: 48px;
-  padding: 8px 12px;
-  border-bottom: 0;
-  background: var(--app-surface-soft);
-  box-shadow: 0 1px 0 var(--app-border);
+  min-height: 32px;
+  padding: 0;
+  align-items: flex-start;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 .traffic-workspace-title > strong {
-  font-size: 14px;
-  font-weight: 600;
+  font-family: var(--fluent-font-display);
+  font-size: var(--page-title-size, 18px);
+  font-weight: var(--fluent-weight-semibold, 600);
+  line-height: 1.3;
   letter-spacing: 0;
 }
 .codex-toolbar-actions {
@@ -3261,7 +3297,10 @@ onUnmounted(() => {
 }
 .codex-traffic-workbench {
   gap: 0;
+  border: 1px solid var(--app-border);
+  border-radius: var(--traffic-card-radius);
   background: var(--app-bg);
+  box-shadow: none;
 }
 .traffic-session-rail,
 .packet-editor-pane,
@@ -3284,6 +3323,36 @@ onUnmounted(() => {
 }
 .session-rail-header :deep(.el-input__wrapper) {
   border-radius: var(--traffic-control-radius);
+}
+.session-rail-header :deep(.traffic-session-filter .el-input__wrapper) {
+  min-height: var(--traffic-control-height);
+  height: var(--traffic-control-height);
+  padding: 0 9px;
+  border: 0;
+  border-radius: var(--traffic-control-radius);
+  background: var(--app-surface-strong);
+  box-shadow: 0 0 0 1px var(--app-border) inset !important;
+}
+.session-rail-header :deep(.traffic-session-filter .el-input__wrapper:hover) {
+  box-shadow: 0 0 0 1px var(--app-border-strong) inset !important;
+}
+.session-rail-header :deep(.traffic-session-filter .el-input__wrapper.is-focus) {
+  box-shadow:
+    inset 0 0 0 1px var(--app-border),
+    inset 0 -2px 0 var(--app-accent) !important;
+}
+.session-rail-header :deep(.traffic-session-filter .el-input__prefix) {
+  margin-right: 7px;
+  color: var(--app-muted);
+}
+.session-rail-header :deep(.traffic-session-filter .el-input__prefix-inner) {
+  font-size: 14px;
+}
+.session-rail-header :deep(.traffic-session-filter .el-input__inner) {
+  height: var(--traffic-control-height);
+  color: var(--app-text);
+  font-size: 13px;
+  line-height: var(--traffic-control-height);
 }
 .traffic-row-wrap {
   margin: 2px 6px;
@@ -3357,7 +3426,7 @@ onUnmounted(() => {
 }
 .inline-replay-tabs button.active {
   border-bottom: 0;
-  box-shadow: 0 -2px 0 var(--app-accent) inset;
+  box-shadow: none;
 }
 .packet-editor {
   padding: 12px;

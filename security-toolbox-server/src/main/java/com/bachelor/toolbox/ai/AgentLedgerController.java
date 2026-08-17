@@ -10,6 +10,7 @@ import jakarta.validation.constraints.Positive;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -30,6 +31,7 @@ public class AgentLedgerController {
   private final AgentWorkflowSpecService workflows;
   private final long recoveryWindowSeconds;
 
+  @Autowired
   public AgentLedgerController(
       AgentLedgerService ledger,
       ProjectAuthorizationService authorization,
@@ -43,6 +45,18 @@ public class AgentLedgerController {
     this.targets = targets;
     this.workflows = workflows;
     this.recoveryWindowSeconds = Math.max(1, Math.min(recoveryWindowSeconds, 86_400));
+  }
+
+  /** Source compatibility for callers compiled against the removed console-only recovery draft. */
+  public AgentLedgerController(
+      AgentLedgerService ledger,
+      ProjectAuthorizationService authorization,
+      AssessmentProjectService projects,
+      TargetService targets,
+      AgentWorkflowSpecService workflows,
+      CrossTurnRecoveryService ignoredRecoveryService,
+      long recoveryWindowSeconds) {
+    this(ledger, authorization, projects, targets, workflows, recoveryWindowSeconds);
   }
 
   @GetMapping("/{runId}/nodes/{nodeRunId}")
@@ -101,4 +115,5 @@ public class AgentLedgerController {
 
   public record RecoveryCheckRequest(
       @NotNull @Positive Long projectId, @NotNull @Positive Long targetId) {}
+
 }

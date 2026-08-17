@@ -24,6 +24,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -67,15 +68,18 @@ public class NucleiScanTool implements SecurityTool {
   private final TargetPolicyService policy;
   private final PortRangeParser ports;
   private final ObjectMapper objectMapper;
+  private final ScannerPocSelectionService pocSelection;
   private final String executable;
   private final Path templatesPath;
   private final int maxPorts;
   private final long timeoutSeconds;
 
+  @Autowired
   public NucleiScanTool(
       TargetPolicyService policy,
       PortRangeParser ports,
       ObjectMapper objectMapper,
+      ScannerPocSelectionService pocSelection,
       @Value("${toolbox.execution.nuclei-path:nuclei}") String executable,
       @Value("${toolbox.execution.nuclei-templates-path:${user.home}/nuclei-templates}")
           String templatesPath,
@@ -84,6 +88,25 @@ public class NucleiScanTool implements SecurityTool {
     this.policy = policy;
     this.ports = ports;
     this.objectMapper = objectMapper;
+    this.pocSelection = pocSelection;
+    this.executable = executable;
+    this.templatesPath = Path.of(templatesPath).toAbsolutePath().normalize();
+    this.maxPorts = maxPorts;
+    this.timeoutSeconds = timeoutSeconds;
+  }
+
+  NucleiScanTool(
+      TargetPolicyService policy,
+      PortRangeParser ports,
+      ObjectMapper objectMapper,
+      String executable,
+      String templatesPath,
+      int maxPorts,
+      long timeoutSeconds) {
+    this.policy = policy;
+    this.ports = ports;
+    this.objectMapper = objectMapper;
+    this.pocSelection = null;
     this.executable = executable;
     this.templatesPath = Path.of(templatesPath).toAbsolutePath().normalize();
     this.maxPorts = maxPorts;
@@ -116,12 +139,22 @@ public class NucleiScanTool implements SecurityTool {
       AuthorizedTarget target, Map<String, Object> parameters, ToolExecutionObserver observer)
       throws Exception {
     String host = policy.validatedHost(target);
-    if (parameters != null && !parameters.isEmpty()) throw new ApiException("Nuclei 扫描不接受自定义执行参数");
+    List<ScannerPocSelectionService.SelectedPoc> selected =
+        pocSelection == null
+            ? List.of()
+            : pocSelection.resolve(NucleiTemplateCatalogService.SOURCE_TYPE, parameters, true);
+    boolean allPocs = pocSelection != null && pocSelection.selectsAll(parameters);
     String canonicalPorts = ports.canonicalizeCompact(target.getAllowedPorts(), maxPorts);
     assertExecutableIfAbsolute();
-    if (!hasTemplates()) throw new ApiException("未安装 Nuclei 模板，请先在依赖检测页面更新或重新安装 Nuclei");
+    if (selected.isEmpty() && !hasTemplates())
+      throw new ApiException("未安装 Nuclei 模板，请先在依赖检测页面更新或重新安装 Nuclei");
     Path targetList = createTargetList(target, host, canonicalPorts);
-    List<String> command = buildCommand(targetList);
+    List<String> command =
+        buildCommand(
+            targetList,
+            allPocs
+                ? List.of(templatesPath)
+                : selected.stream().map(ScannerPocSelectionService.SelectedPoc::file).toList());
     observer.command(command);
     ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);
     Process process = ProcessEnvironmentSanitizer.sanitize(builder).start();
@@ -157,19 +190,23 @@ public class NucleiScanTool implements SecurityTool {
   }
 
   List<String> buildCommand(Path targetList) {
+    return buildCommand(targetList, List.of());
+  }
+
+  List<String> buildCommand(Path targetList, List<Path> selectedTemplates) {
     List<String> command = new ArrayList<>();
     command.add(executable);
     command.addAll(List.of("-list", targetList.toString()));
-    for (Path safeDirectory : safeTemplateDirectories()) {
+    List<Path> templates = selectedTemplates.isEmpty() ? safeTemplateDirectories() : selectedTemplates;
+    for (Path safeDirectory : templates) {
       command.add("-templates");
       command.add(safeDirectory.toString());
     }
+    if (selectedTemplates.isEmpty()) command.addAll(List.of("-pt", "http,ssl", "-ni"));
+    else command.addAll(List.of("-headless", "-code"));
     command.addAll(
         List.of(
-            "-pt",
-            "http,ssl",
             "-dr",
-            "-ni",
             "-dut",
             "-duc",
             "-or",
@@ -189,11 +226,9 @@ public class NucleiScanTool implements SecurityTool {
             "-c",
             "10",
             "-bs",
-            "25",
-            "-etags",
-            EXCLUDED_TAGS,
-            "-severity",
-            "info,low,medium,high,critical"));
+            "25"));
+    if (selectedTemplates.isEmpty()) command.addAll(List.of("-etags", EXCLUDED_TAGS));
+    command.addAll(List.of("-severity", "info,low,medium,high,critical"));
     return List.copyOf(command);
   }
 

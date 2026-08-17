@@ -1,6 +1,29 @@
 param([switch]$NoBrowser)
 
 $ErrorActionPreference = 'Stop'
+
+$utf8 = [System.Text.UTF8Encoding]::new($false)
+[Console]::InputEncoding = $utf8
+[Console]::OutputEncoding = $utf8
+$OutputEncoding = $utf8
+
+function Add-ProcessJvmOptions([string]$Name, [string[]]$Options) {
+    $existing = [Environment]::GetEnvironmentVariable($Name, 'Process')
+    $parts = @()
+    if (-not [string]::IsNullOrWhiteSpace($existing)) { $parts += $existing.Trim() }
+    foreach ($option in $Options) {
+        if ($existing -notlike "*$option*") { $parts += $option }
+    }
+    [Environment]::SetEnvironmentVariable($Name, ($parts -join ' '), 'Process')
+}
+
+$utf8JvmOptions = @(
+    '-Dfile.encoding=UTF-8',
+    '-Dsun.stdout.encoding=UTF-8',
+    '-Dsun.stderr.encoding=UTF-8'
+)
+Add-ProcessJvmOptions 'MAVEN_OPTS' $utf8JvmOptions
+
 $workspace = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $backendDir = Join-Path $workspace 'security-toolbox-server'
 $frontendDir = Join-Path $workspace 'security-toolbox-web'
@@ -239,8 +262,11 @@ try {
         'MIGRATE_LEGACY_DEVELOPMENT_CREDENTIALS',
         $developmentSecrets.legacyMigrationPending.ToString().ToLowerInvariant(),
         'Process')
+    $backendJavaArguments = (
+        ($utf8JvmOptions + @('-jar', ('"{0}"' -f $jar))) -join ' '
+    )
     $backend = Start-Process -FilePath $java `
-        -ArgumentList ('-jar "{0}"' -f $jar) `
+        -ArgumentList $backendJavaArguments `
         -WorkingDirectory $backendDir `
         -RedirectStandardOutput (Join-Path $logDir 'backend.out.log') `
         -RedirectStandardError (Join-Path $logDir 'backend.err.log') `

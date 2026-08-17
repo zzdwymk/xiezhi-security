@@ -18,7 +18,13 @@ from .authorization import (
     requested_port_intervals,
 )
 from .config import settings
-from .model import AgentPlanner, HIGH_RISK_TOOLS, PlannerOutputError
+from .model import (
+    AgentPlanner,
+    HIGH_RISK_TOOLS,
+    MODEL_PROVIDER_FAILURE_CODES,
+    PlannerOutputError,
+    model_failure_code,
+)
 from .schemas import (
     EvidenceBundle,
     LedgerAgentContext,
@@ -88,6 +94,8 @@ TOOL_STAGE = {
     "tls_config": "map",
     "http_security_check": "validate",
     "nuclei_scan": "validate",
+    "afrog_scan": "validate",
+    "xray_scan": "validate",
 }
 
 CONTRACT_VERSION = 3
@@ -617,7 +625,13 @@ class LedgerAgentRuntime:
                     {"status": "ROUTED", **routed},
                 ),
             }
-        except Exception:
+        except Exception as exc:
+            failure_code = model_failure_code(exc)
+            termination_reason = (
+                failure_code
+                if failure_code in MODEL_PROVIDER_FAILURE_CODES
+                else "ROUTE_FAILED"
+            )
             plan = self._clarify_plan("意图路由未通过严格契约，请调整请求后重试。", failed=True)
             routed = {
                 "intent": "CLARIFY",
@@ -630,13 +644,13 @@ class LedgerAgentRuntime:
                 "llmCallCount": min(
                     state.get("llmCallCount", 0) + 1, settings.max_rag_llm_calls
                 ),
-                "terminationReason": "ROUTE_FAILED",
+                "terminationReason": termination_reason,
                 "terminalStatus": "FAILED",
                 "event": _event(
                     "route",
                     "engage",
                     "意图路由失败，已安全停止",
-                    {"status": "FAILED", **routed},
+                    {"status": "FAILED", "failureCode": failure_code, **routed},
                 ),
             }
 
@@ -845,12 +859,18 @@ class LedgerAgentRuntime:
                 state.get("retrievalRound", 0),
                 list(state.get("retrievalQueries", [])),
             )
-        except Exception:
+        except Exception as exc:
+            failure_code = model_failure_code(exc)
+            termination_reason = (
+                failure_code
+                if failure_code in MODEL_PROVIDER_FAILURE_CODES
+                else "EVIDENCE_ASSESSMENT_FAILED"
+            )
             return {
                 "llmCallCount": min(
                     state.get("llmCallCount", 0) + 1, settings.max_rag_llm_calls
                 ),
-                "terminationReason": "EVIDENCE_ASSESSMENT_FAILED",
+                "terminationReason": termination_reason,
                 "terminalStatus": "FAILED",
                 "plan": self._clarify_plan("证据评估未通过严格契约，已安全停止。", failed=True),
             }
@@ -959,12 +979,18 @@ class LedgerAgentRuntime:
                 state["intentDecision"],
             )
             return {"plan": plan, "llmCallCount": call_count}
-        except Exception:
+        except Exception as exc:
+            failure_code = model_failure_code(exc)
+            termination_reason = (
+                failure_code
+                if failure_code in MODEL_PROVIDER_FAILURE_CODES
+                else "GROUNDED_GENERATION_FAILED"
+            )
             return {
                 "llmCallCount": min(
                     state.get("llmCallCount", 0) + 1, settings.max_rag_llm_calls
                 ),
-                "terminationReason": "GROUNDED_GENERATION_FAILED",
+                "terminationReason": termination_reason,
                 "terminalStatus": "FAILED",
                 "plan": self._clarify_plan("有依据的回答未通过严格契约，已安全停止。", failed=True),
             }

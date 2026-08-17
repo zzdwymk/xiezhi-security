@@ -26,7 +26,7 @@ powershell -ExecutionPolicy Bypass -File scripts\start-desktop.ps1
 
 运行桌面版需要系统提供 Java 17 x64。
 
-首次依赖检查支持从 ProjectDiscovery 官方 GitHub Release 安装 Nuclei、httpx 和 Nuclei Templates，并在安装前使用官方 checksums 校验 SHA-256。工具目录可由用户选择，应用会检查目录边界和写入权限。
+首次依赖检查支持安装 Nuclei、httpx、Afrog、Xray，以及 Nuclei 模板和 Afrog/Xray PoC 目录。应用从各项目的官方发布源获取文件，对提供官方校验清单的发布包核对 SHA-256，并为安装结果保存来源与摘要信息。工具目录可由用户选择，应用会检查目录边界和写入权限。
 
 Java、Npcap、Nmap、PostgreSQL 等需要运行时、驱动或系统安装的依赖只提供官方安装入口，不会静默运行安装程序。若应用位于不可写的系统目录，仍可正常启动，但便携工具安装会提示目录权限不足。
 
@@ -38,7 +38,7 @@ Java、Npcap、Nmap、PostgreSQL 等需要运行时、驱动或系统安装的�
 - PowerShell 5.1 或更高版本，推荐 PowerShell 7。
 - JDK 17 x64 和 Maven，推荐 Maven 3.9 或更高版本。
 - Node.js 24.x 和随附的 npm。
-- CPython 3.10 x64。构建脚本会拒绝错误的 Python 版本或 32 位解释器，以保证本机与 GitHub Actions 产物一致。
+- CPython 3.11 或更高版本 x64。AI Runtime 使用了 Python 3.11+ API，构建脚本会拒绝过旧版本、非 CPython 或 32 位解释器。
 
 Electron、Electron Builder、PyInstaller 和 NSIS 不需要全局安装，分别由 npm、pip 和 Electron Builder 管理。首次构建前可检查环境：
 
@@ -50,7 +50,7 @@ npm --version
 python -c "import struct,sys; print(sys.executable); print(sys.implementation.name); print('.'.join(map(str,sys.version_info[:2]))); print(str(struct.calcsize('P')*8) + '-bit')"
 ```
 
-Python 检查结果必须为 CPython 3.10 和 64-bit。使用 Conda 或 Virtualenv 时，应先激活对应环境，再安装构建依赖：
+Python 检查结果必须为 CPython 3.11+ 和 64-bit。使用 Conda 或 Virtualenv 时，可以先激活对应环境，再安装构建依赖：
 
 ```powershell
 python -m pip install --upgrade pip
@@ -67,17 +67,17 @@ Pop-Location
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package-desktop-release.ps1
 ```
 
-脚本会依次检查 `ai-runtime\.venv`、当前激活的 Virtualenv/Conda 环境、`PATH`、Windows Python Launcher 和本机已有的 Conda 环境。如果需要明确指定当前 PowerShell 环境中的解释器，可以执行：
+脚本优先使用 `ai-runtime\.venv`；否则会检查当前激活的 Virtualenv/Conda 环境、`PATH`、Windows Python Launcher 和本机已有的 Conda 环境，并自动选择最接近最低要求的兼容版本。例如同时安装 3.11 和 3.14 时会选择 3.11。需要明确指定解释器时，可以执行：
 
 ```powershell
-$python310 = if ($env:CONDA_PREFIX) {
+$pythonForBuild = if ($env:CONDA_PREFIX) {
   Join-Path $env:CONDA_PREFIX 'python.exe'
 } else {
   (Get-Command python.exe).Source
 }
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\package-desktop-release.ps1 `
-  -Python $python310
+  -Python $pythonForBuild
 ```
 
 在 Anaconda Prompt 或 `cmd.exe` 中，可以直接传入当前 Conda 环境：
@@ -96,7 +96,7 @@ security-toolbox-web\desktop-release\win-unpacked\
 security-toolbox-web\desktop-release\SHA256SUMS.txt
 ```
 
-可直接运行 `security-toolbox-web\desktop-release\win-unpacked\獬豸.exe`。源码中的界面修改不会自动进入旧 EXE；更新登录页等前端内容后，需要重新执行打包命令、完全退出旧程序，再启动新生成的 EXE。
+可直接运行 `security-toolbox-web\desktop-release\win-unpacked\獬豸安全测试平台.exe`。源码中的界面修改不会自动进入旧 EXE；更新前端内容后，需要重新执行打包命令、完全退出旧程序，再启动新生成的 EXE。
 
 如需在本机继续生成未签名的 NSIS 安装包，先完成上述组件构建，再执行：
 
@@ -116,7 +116,7 @@ Pop-Location
 仓库包含两条 GitHub Actions 工作流：
 
 - `.github/workflows/ci.yml`：在 `main`/`master` 提交、Pull Request 或手动触发时，以只读权限检查仓库卫生，并行运行 Spring Boot 测试、AI Runtime 测试、前端/Electron 边界测试和 Vue 生产构建。
-- `.github/workflows/release-windows.yml`：在推送版本标签或手动选择已有标签时，使用 Java 17、Python 3.10 和 Node.js 24 构建 Windows 便携版 ZIP 与未签名 NSIS 安装包。
+- `.github/workflows/release-windows.yml`：在推送版本标签或手动选择已有标签时，使用 Java 17、Python 3.11 和 Node.js 24 构建 Windows 便携版 ZIP 与未签名 NSIS 安装包。
 
 发布标签必须与 `security-toolbox-web/package.json` 中的版本严格一致：
 
@@ -171,13 +171,13 @@ powershell -ExecutionPolicy Bypass -File scripts\status-all.ps1
 - 后端：Java 17、Spring Boot 3.5.16、Spring Security、Spring Data JPA、H2/PostgreSQL、Bouncy Castle、Netty HTTP/2、OpenPDF
 - 前端：Vue 3、TypeScript、Vite、Element Plus、Pinia、Vue Router、Axios、ECharts
 - 桌面端：Electron、Windows Mica/Acrylic 外观、受限 IPC、本地 Java 服务生命周期与便携工具管理
-- AI：Python FastAPI 本地运行时、LangChain、LangGraph、BM25 Agentic RAG 与 Java Security Harness，兼容 OpenAI Chat Completions、Responses API 及 CC Switch（CCS）本地代理
+- AI：Python FastAPI 本地运行时、LangChain、LangGraph、关键词或真实向量项目检索与 Java 受控执行层，兼容 OpenAI Chat Completions、Responses API、Embedding API 及 CC Switch（CCS）本地代理
 
 ## AI Agent 架构
 
-本项目采用轻量级 Agentic RAG + Security Harness。项目事实问题和行动请求必须先经过项目级 BM25 检索、严格 EvidenceBundle 和 Grounded Planner；证据不足时最多允许一次只读查询改写。Python 只生成结构化提案，所有副作用任务仍由 Java 基于数据库实时状态重新校验并通过 `SecurityAgentTools` 创建。
+本项目采用轻量级的项目资料检索与受控执行架构。项目事实问题和行动请求必须先经过项目级检索；检索方式可选本地关键词匹配或真实向量相似度，并且都会保留可核对的证据标识、摘要和索引版本。证据不足时最多允许一次只读查询改写。Python 只生成结构化提案，所有会产生实际影响的任务仍由 Java 根据数据库实时状态重新校验后创建。
 
-该实现不属于 GraphRAG 或多智能体系统：没有图数据库、实体关系遍历、Subagent 身份、代理间消息或无限自主循环。详细边界、时序、威胁模型和演示配置见 [AGENTIC_RAG_HARNESS_IMPLEMENTATION_SUMMARY.md](AGENTIC_RAG_HARNESS_IMPLEMENTATION_SUMMARY.md)。
+该实现不属于 GraphRAG 或多智能体系统：没有图数据库、实体关系遍历、Subagent 身份、代理间消息或无限自主循环。当前进度、已完成能力、剩余缺口和验证限制见 [PROJECT_PROGRESS.md](PROJECT_PROGRESS.md)；前后端逐文件业务源码说明见 [BUSINESS_SOURCE_ANALYSIS.md](BUSINESS_SOURCE_ANALYSIS.md)。
 
 ## 主要功能
 
@@ -187,8 +187,8 @@ powershell -ExecutionPolicy Bypass -File scripts\status-all.ps1
 4. 被动/受控信息收集、HTTP 指纹识别、框架识别、WAF 判断和证据留存。
 5. AI 或本地规则先检索项目证据，再生成可引用 Evidence ID 的回答或受控检测计划，支持一次查询改写、连续对话、NDJSON 实时 Plan 和结果总结。
 6. 白名单工具注册、异步任务、取消/失败重试、SSE 进度事件、实际命令日志和并发控制。
-7. TCP 探测、Nmap 服务识别、HTTP 响应头与安全项检查、TLS 配置检查及受限 Nuclei 扫描。
-8. 任务创建时固化授权、端口、工具版本、规则版本和 Nuclei 模板哈希，执行前再次比对快照。
+7. TCP 探测、Nmap 服务识别、HTTP 响应头与安全项检查、TLS 配置检查，以及受限的 Nuclei、Afrog、Xray 扫描。
+8. 任务创建时固化授权、端口、工具版本、规则版本和所选模板/PoC 摘要，执行前再次比对快照。
 9. 漏洞知识库、CVE/CWE/CVSS/EPSS/CISA KEV 元数据、主动检测、扫描后路径、复测和扫描 Diff。
 10. HTTP/HTTPS MITM、HTTP/2 抓包、黑白名单过滤、标记/删除、AI 分析与对话、受控报文重放和独立抓包浏览器。
 11. 任务 HTML、目标聚合 PDF、项目结构化摘要、审计日志、项目审批、定时扫描和受控安全动作数据模型。
@@ -209,6 +209,30 @@ powershell -ExecutionPolicy Bypass -File scripts\status-all.ps1
 
 如果不使用 CCS，也可以直接配置其他 OpenAI 兼容 API 地址、API Key 和模型。
 
+## AI 对话与向量检索配置
+
+桌面应用可在“系统设置 -> AI 模型服务”中选择知识检索方式。使用“BM25 关键词”时完全在本地检索，不调用向量服务；使用“真实向量嵌入”时有两种连接方式：
+
+- **复用对话连接**：向量请求使用对话模型的 API 地址和 API Key，但仍需单独填写该服务实际支持的 Embedding 模型名称。所用兼容服务必须提供 `/embeddings` 接口。
+- **单独配置**：向量服务使用自己的 API 地址、API Key 和 Embedding 模型，可以与对话服务来自不同供应商。服务不要求鉴权时，向量 API Key 可以留空。
+
+两类密钥均由桌面主进程使用 Windows 安全存储加密，保存配置会重启本地服务。修改 API 地址时，应用会要求重新填写与新地址对应的密钥，避免把旧密钥误发给新服务。
+
+非桌面部署可直接配置 Python Runtime。以下是完整的真实向量相关环境变量：
+
+```powershell
+$env:AI_RUNTIME_RETRIEVAL_BACKEND='real_embedding'
+$env:AI_RUNTIME_EMBEDDING_BASE_URL='https://api.openai.com/v1'
+$env:AI_RUNTIME_EMBEDDING_API_KEY='your-embedding-api-key'
+$env:AI_RUNTIME_EMBEDDING_MODEL='text-embedding-3-small'
+$env:AI_RUNTIME_EMBEDDING_DIMENSION='0'            # 0 表示从首次响应推断
+$env:AI_RUNTIME_EMBEDDING_TIMEOUT_SECONDS='15'
+$env:AI_RUNTIME_EMBEDDING_BATCH_SIZE='16'
+$env:AI_RUNTIME_EMBEDDING_MAX_INPUT_CHARS='12000'
+```
+
+如需复用对话服务的密钥，可以不设置 `AI_RUNTIME_EMBEDDING_API_KEY`，Runtime 会读取 `AI_RUNTIME_API_KEY`；地址不会隐式复用，应把 `AI_RUNTIME_EMBEDDING_BASE_URL` 明确设为同一个兼容 API 地址。真实向量服务不可用或返回无效向量时会停止本次索引/检索，不会悄悄改用关键词结果。
+
 非桌面模式可以通过环境变量接入 CCS：
 
 ```powershell
@@ -224,7 +248,9 @@ mvn -f .\security-toolbox-server\pom.xml spring-boot:run
 
 系统将漏洞知识与可执行规则分开管理。知识库保存风险、检测思路、修复建议和公开漏洞元数据；可执行规则只能绑定后端白名单中的受控工具。
 
-Nuclei 模板从 ProjectDiscovery 官方稳定版本同步并校验 checksums。默认扫描只允许经过审核的低风险模板，排除侵入式利用、RCE、注入、OAST 和爆破等高影响行为；应用不会下载执行任意脚本，也不会让 AI 生成可执行 PoC。
+Nuclei 模板从 ProjectDiscovery 官方稳定版本同步并校验 checksums；Afrog 与 Xray 使用各自官方发布及 PoC 目录。三个目录会并行检查本地版本、展示下载和导入进度，并在切换页面后继续同步。默认扫描只允许经过审核的低风险模板/PoC，排除侵入式利用、RCE、注入、OAST、反连和爆破等高影响行为；应用不会下载执行任意脚本，也不会让 AI 生成可执行 PoC。
+
+主动检测页默认选择当前目标兼容的安全规则，按 Nuclei、Afrog、Xray 分别创建受控扫描任务。每个任务只执行用户选择且文件摘要核验通过的模板/PoC，解析结果后还会再次核对目标主机和端口，再统一生成漏洞记录。
 
 ## 扫描后的 AI 路径与安全自动化
 

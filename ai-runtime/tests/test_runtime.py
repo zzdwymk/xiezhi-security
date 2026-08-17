@@ -501,6 +501,9 @@ def test_internal_graph_is_available_only_from_explicit_debug_structure(tmp_path
         ("report", "finish"),
         ("finish", "__end__"),
     ]
+    assert graph_module.TOOL_STAGE["nuclei_scan"] == "validate"
+    assert graph_module.TOOL_STAGE["afrog_scan"] == "validate"
+    assert graph_module.TOOL_STAGE["xray_scan"] == "validate"
 
 
 def test_debug_graph_endpoint_requires_switch_and_runtime_token(

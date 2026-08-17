@@ -20,6 +20,7 @@ from .schemas import (
     IntentDecision,
     NmapParameters,
     PlannerOutput,
+    PocSelectionParameters,
     PortScanParameters,
     WorkflowStep,
 )
@@ -62,6 +63,8 @@ SAFE_TOOLS = {
     "http_security_check",
     "tls_config",
     "nuclei_scan",
+    "afrog_scan",
+    "xray_scan",
 }
 HIGH_RISK_TOOLS: set[str] = set()
 EXTERNAL_WORKFLOW_TOOLS = SAFE_TOOLS - {"retrieve_project_context"}
@@ -73,6 +76,8 @@ _ACTION_PARAMETER_MODELS: dict[str, type[BaseModel]] = {
     "http_security_check": HttpSecurityParameters,
     "tls_config": EmptyToolParameters,
     "nuclei_scan": EmptyToolParameters,
+    "afrog_scan": PocSelectionParameters,
+    "xray_scan": PocSelectionParameters,
 }
 
 _PARAMETER_SCHEMAS: dict[str, dict[str, Any]] = {
@@ -111,6 +116,36 @@ _PARAMETER_SCHEMAS: dict[str, dict[str, Any]] = {
         "properties": {},
         "additionalProperties": False,
     },
+    "afrog_scan": {
+        "type": "object",
+        "properties": {
+            "pocCodes": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 50,
+                "uniqueItems": True,
+                "items": {"type": "string", "pattern": "^[A-Z]{2}-[A-F0-9]{24}$"},
+            },
+            "allPocs": {"const": True},
+        },
+        "oneOf": [{"required": ["pocCodes"]}, {"required": ["allPocs"]}],
+        "additionalProperties": False,
+    },
+    "xray_scan": {
+        "type": "object",
+        "properties": {
+            "pocCodes": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 50,
+                "uniqueItems": True,
+                "items": {"type": "string", "pattern": "^[A-Z]{2}-[A-F0-9]{24}$"},
+            },
+            "allPocs": {"const": True},
+        },
+        "oneOf": [{"required": ["pocCodes"]}, {"required": ["allPocs"]}],
+        "additionalProperties": False,
+    },
 }
 
 
@@ -123,6 +158,44 @@ def _last_user_message(messages: list[dict[str, Any]]) -> str:
 
 class PlannerOutputError(ValueError):
     pass
+
+
+def model_failure_code(error: BaseException) -> str:
+    """Map provider failures to a small public-safe set of reasons.
+
+    Provider response bodies can contain account details or upstream prompts, so the
+    runtime only forwards a stable code. Contract parsing failures remain distinct.
+    """
+    status = getattr(error, "status_code", None)
+    if status is None:
+        response = getattr(error, "response", None)
+        status = getattr(response, "status_code", None)
+    try:
+        status = int(status) if status is not None else None
+    except (TypeError, ValueError):
+        status = None
+    if status in {401, 403}:
+        return "MODEL_ACCESS_DENIED"
+    if status == 429:
+        return "MODEL_RATE_LIMITED"
+    if status is not None and status >= 500:
+        return "MODEL_SERVICE_UNAVAILABLE"
+    if isinstance(error, (asyncio.TimeoutError, TimeoutError)):
+        return "MODEL_TIMEOUT"
+    if isinstance(error, PlannerOutputError):
+        return "MODEL_RESPONSE_INVALID"
+    return "MODEL_REQUEST_FAILED"
+
+
+MODEL_PROVIDER_FAILURE_CODES = frozenset(
+    {
+        "MODEL_ACCESS_DENIED",
+        "MODEL_RATE_LIMITED",
+        "MODEL_SERVICE_UNAVAILABLE",
+        "MODEL_TIMEOUT",
+        "MODEL_REQUEST_FAILED",
+    }
+)
 
 
 def _workflow_steps(workflow: Any) -> list[WorkflowStep]:
@@ -522,6 +595,12 @@ class AgentPlanner:
         messages = request.get("messages", [])
         user_message = _last_user_message(messages)
         current_request = _current_request(user_message)
+        if _is_simple_greeting(current_request):
+            return IntentDecision(
+                intent="GENERAL_QA",
+                needsRetrieval=False,
+                publicReasonCode="GENERAL_KNOWLEDGE",
+            ).model_dump(mode="json", exclude_none=True)
         conversation = _format_conversation_for_model(messages, user_message)
         chain = await self._contract_chain("_intent_chain")
         if chain is None:
@@ -594,6 +673,18 @@ class AgentPlanner:
     ) -> dict[str, Any]:
         """Generate a strict evidence-bound PlannerOutput extension."""
         evidence = _evidence_bundle(active_evidence)
+        user_message = _last_user_message(request.get("messages", []))
+        if _is_simple_greeting(user_message):
+            return GroundedPlannerOutput(
+                summary="欢迎使用安全助手",
+                answer="你好，我可以帮你分析授权目标、流量、检测任务和安全结果。",
+                intent="answer",
+                knowledgeMode="GENERAL",
+                evidenceRefs=[],
+                actions=[],
+            ).model_dump(mode="json", exclude_none=True) | {
+                "source": "local-greeting"
+            }
         self._validate_evidence_scope(request, evidence)
         try:
             routed = (
@@ -645,7 +736,19 @@ class AgentPlanner:
                 publicReasonCode="AUTHORIZED_ACTION_REQUEST",
             )
         elif _clearly_informational(current_request):
-            project_markers = ("项目", "目标", "任务", "漏洞", "报告", "授权", "结果", "资料")
+            project_markers = (
+                "项目",
+                "目标",
+                "任务",
+                "漏洞",
+                "报告",
+                "授权",
+                "结果",
+                "资料",
+                "审计",
+                "日志",
+                "记录",
+            )
             if any(marker in current_request for marker in project_markers):
                 decision = IntentDecision(
                     intent="PROJECT_QA",
@@ -774,7 +877,7 @@ class AgentPlanner:
             else {}
         )
         allowed_tools = ",".join(str(t) for t in auth.get("allowedTools", []) if t) or (
-            "retrieve_project_context,nmap_service_scan,tcp_ports,http_headers,http_security_check,tls_config,nuclei_scan"
+            "retrieve_project_context,nmap_service_scan,tcp_ports,http_headers,http_security_check,tls_config,nuclei_scan,afrog_scan,xray_scan"
         )
         conversation = _format_conversation_for_model(messages, user_message)
 
@@ -1061,6 +1164,8 @@ INTENT_SYSTEM_PROMPT = (
     "intent 只能是 GENERAL_QA、PROJECT_QA、ACTION_PLAN 或 CLARIFY。不要生成工具参数。\n"
     "PROJECT_QA 和 ACTION_PLAN 都必须设置 needsRetrieval=true 并提供 retrievalQuery；"
     "GENERAL_QA 与 CLARIFY 必须为 false 且无查询。\n"
+    "分析、解释或判断已有审计日志、任务记录和检测结果属于 PROJECT_QA，actions 必须为空；"
+    "只有用户明确要求开始新的扫描、检测、检查或审计时才属于 ACTION_PLAN。\n"
     "publicReasonCode 必须是与 intent 对应的公开枚举，不得放入内部分析。\n"
     'JSON：{{"intent":"GENERAL_QA|PROJECT_QA|ACTION_PLAN|CLARIFY",'
     '"needsRetrieval":boolean,"retrievalQuery":"PROJECT_QA/ACTION_PLAN 必需",'
@@ -1121,12 +1226,12 @@ SYSTEM_PROMPT = (
     "你是授权安全测试平台的智能安全助手与红队行动编排器。只输出 JSON，不要输出隐藏思维链。\n\n"
     "核心原则：理解用户自然语言意图，不要做关键词表匹配。\n"
     "1. 结合完整对话（历史 + 当前请求 + 短确认）判断用户现在要什么。\n"
-    "2. 执行意图（扫描/漏扫/探测/检查/审计，含口语）→ intent=plan，生成 actions，answer 一句话确认目标。\n"
-    "3. 问答/解释/找页面/看结果/闲聊 → intent=answer 或 clarify，actions 必须为 []。\n"
+    "2. 用户明确要求开始新的扫描/漏扫/探测/检查/审计（含口语）→ intent=plan，生成 actions，answer 一句话确认目标。\n"
+    "3. 问答/解释/找页面/看结果/分析已有审计日志、任务记录或检测结果/闲聊 → intent=answer 或 clarify，actions 必须为 []。\n"
     "4. 意图含糊时先用上下文推断；仍不够再 clarify。不要把明确执行请求误判成咨询。\n"
     "5. “能扫的都扫”→ 按白名单组合低风险工具。\n\n"
     "安全边界：只能使用白名单工具；禁止 HIGH 风险、shell、利用、爆破和任意命令参数。\n"
-    "白名单：retrieve_project_context, nmap_service_scan, tcp_ports, http_headers, http_security_check, tls_config, nuclei_scan\n\n"
+    "白名单：retrieve_project_context, nmap_service_scan, tcp_ports, http_headers, http_security_check, tls_config, nuclei_scan, afrog_scan, xray_scan\n\n"
     'JSON：{{"summary":string,"answer":string,"intent":"answer|plan|clarify","actions":[{{"tool":白名单枚举,"parameters":对应工具的严格对象,"risk":"SAFE|CAUTION","requiresApproval":boolean,"group":integer}}]}}'
 )
 
@@ -1176,6 +1281,20 @@ def _current_request(message: str) -> str:
     return value
 
 
+def _is_simple_greeting(message: str) -> bool:
+    compact = re.sub(r"[\s，。！？、,.!?]+", "", _current_request(message)).lower()
+    return compact in {
+        "你好",
+        "您好",
+        "嗨",
+        "hi",
+        "hello",
+        "hey",
+        "谢谢",
+        "谢谢你",
+    }
+
+
 def _conversation_history(message: str) -> str:
     value = str(message or "")
     marker = "当前请求："
@@ -1206,6 +1325,16 @@ _QUESTION_MARKERS = (
     "可以检测吗",
     "在哪里",
     "怎么用",
+)
+
+_AUDIT_ANALYSIS_MARKERS = (
+    "结合审计日志",
+    "根据审计日志",
+    "分析审计日志",
+    "查看审计日志",
+    "结合日志判断",
+    "判断是否",
+    "是否符合预期",
 )
 
 _EXECUTION_PHRASES = (
@@ -1242,6 +1371,11 @@ _EXECUTION_PHRASES = (
     "开始探测",
     "执行探测",
     "探测一下",
+    "请审计",
+    "帮我审计",
+    "开始审计",
+    "执行审计",
+    "审计一下",
     "运行工具",
     "执行工具",
     "运行扫描",
@@ -1344,6 +1478,11 @@ def _is_pure_question(message: str) -> bool:
         "帮我检查",
         "请探测",
         "开始探测",
+        "请审计",
+        "帮我审计",
+        "开始审计",
+        "执行审计",
+        "审计一下",
         "漏扫一下",
         "进行漏扫",
         "授权了",
@@ -1353,6 +1492,8 @@ def _is_pure_question(message: str) -> bool:
         marker in lowered for marker in _BROAD_SCAN
     ):
         return False
+    if any(marker in lowered for marker in _AUDIT_ANALYSIS_MARKERS):
+        return True
     if any(marker in lowered for marker in _QUESTION_MARKERS):
         return True
     if any(

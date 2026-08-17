@@ -198,8 +198,23 @@ class LocalTrafficProxyHttp2Tests {
 
     LocalTrafficProxy.Capture capture = awaitCaptures(1).get(0);
     assertEquals("DECRYPT_FAILED", capture.captureState());
-    assertEquals(CLIENT_ERROR_MESSAGE, capture.errorMessage());
+    assertEquals("上游返回了无效的响应长度", capture.errorMessage());
     assertEquals(1, upstream.countRequestsForPath("/invalid-content-length"));
+  }
+
+  @Test
+  void recordsAUsefulCauseWhenUpstreamClosesWithoutAResponse() throws Exception {
+    HttpResponse<String> response =
+        http2Client()
+            .send(request("/close-without-response").GET().build(), HttpResponse.BodyHandlers.ofString());
+
+    assertEquals(502, response.statusCode());
+    assertEquals(CLIENT_ERROR_MESSAGE, response.body());
+
+    LocalTrafficProxy.Capture capture = awaitCaptures(1).get(0);
+    assertEquals("DECRYPT_FAILED", capture.captureState());
+    assertEquals(
+        "上游 HTTPS 服务未返回响应，可能不支持 HTTP/1.1 或已关闭连接", capture.errorMessage());
   }
 
   private HttpClient http2Client() {
@@ -339,6 +354,8 @@ class LocalTrafficProxyHttp2Tests {
           output.flush();
           return;
         }
+
+        if (request.path().equals("/close-without-response")) return;
 
         if (request.path().equals("/large-fixed") || request.path().equals("/large-chunked")) {
           writeLargeResponse(socket.getOutputStream(), request.path().equals("/large-chunked"));

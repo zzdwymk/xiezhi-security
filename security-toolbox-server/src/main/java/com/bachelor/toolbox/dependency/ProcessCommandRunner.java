@@ -39,10 +39,10 @@ public class ProcessCommandRunner implements CommandRunner {
       output = reader.submit(() -> readOutput(processOutput));
       if (!process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)) {
         process.destroyForcibly();
-        process.waitFor(500, TimeUnit.MILLISECONDS);
+        process.waitFor(150, TimeUnit.MILLISECONDS);
         return CommandResult.timeout(readFinishedOutput(output));
       }
-      return CommandResult.completed(process.exitValue(), output.get(500, TimeUnit.MILLISECONDS));
+      return CommandResult.completed(process.exitValue(), output.get(150, TimeUnit.MILLISECONDS));
     } catch (Exception ex) {
       log.error("执行外部命令失败，executable={}", executable, ex);
       return CommandResult.failed(EXECUTION_FAILED_MESSAGE);
@@ -77,7 +77,7 @@ public class ProcessCommandRunner implements CommandRunner {
       return "";
     }
     try {
-      return output.get(300, TimeUnit.MILLISECONDS);
+      return output.get(100, TimeUnit.MILLISECONDS);
     } catch (Exception ex) {
       log.warn("读取外部命令输出失败", ex);
       return "";

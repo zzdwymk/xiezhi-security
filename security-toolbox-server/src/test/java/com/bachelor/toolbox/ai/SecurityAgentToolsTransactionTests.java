@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -66,20 +67,29 @@ class SecurityAgentToolsTransactionTests {
   @Autowired private SecurityTaskRepository tasks;
   @Autowired private AiAgentDispatchRepository dispatches;
   @Autowired private AuditLogRepository audits;
+  @Autowired private ConversationTombstoneRepository tombstones;
+  @Autowired private AgentLedgerRecordRepository ledgerRecords;
+  @Autowired private AgentLedgerService ledger;
+  @Autowired private AgentWorkflowSpecRepository workflowSpecs;
+  @Autowired private AgentWorkflowSpecService workflows;
 
   @MockBean private TaskExecutionService taskExecutionService;
   @SpyBean private TaskSnapshotService taskSnapshotService;
+  @SpyBean private CrossTurnRecoveryService recoveryService;
 
   private AssessmentProject project;
   private AuthorizedTarget target;
 
   @BeforeEach
   void setUp() {
-    reset(taskSnapshotService);
+    reset(taskSnapshotService, recoveryService);
     clearInvocations(taskExecutionService);
+    tombstones.deleteAllInBatch();
+    ledgerRecords.deleteAllInBatch();
     dispatches.deleteAllInBatch();
     audits.deleteAllInBatch();
     tasks.deleteAllInBatch();
+    workflowSpecs.deleteAllInBatch();
     projectTargets.deleteAllInBatch();
     targets.deleteAllInBatch();
     projects.deleteAllInBatch();
@@ -221,8 +231,149 @@ class SecurityAgentToolsTransactionTests {
     verifyNoInteractions(taskExecutionService);
   }
 
+  @Test
+  void recoveryDispatchCommitsTaskDispatchAndTombstoneAtomically() throws Exception {
+    RecoveryInvocation invocation = recoveryInvocation("atomic-success");
+
+    AiDispatchResponse response =
+        execute(invocation.request(), invocation.plan(), invocation.anchor());
+
+    assertThat(response.taskIds()).hasSize(1);
+    assertThat(tasks.count()).isEqualTo(1);
+    assertThat(dispatches.count()).isEqualTo(1);
+    assertThat(tombstones.count()).isEqualTo(1);
+    ConversationTombstone tombstone = tombstones.findAll().get(0);
+    assertThat(tombstone.getPendingTaskIdsJson())
+        .isEqualTo("[" + response.taskIds().get(0) + "]");
+    assertThat(tombstone.getRunId()).isEqualTo(invocation.anchor().runId());
+    assertThat(tombstone.getLedgerHeadDigest())
+        .isEqualTo(invocation.anchor().ledgerHeadDigest());
+    assertThat(tombstone.getStatus()).isEqualTo(ConversationTombstone.WAITING_TASKS);
+    verify(taskExecutionService, times(1)).executeAsync(response.taskIds().get(0));
+  }
+
+  @Test
+  void recoveryCheckpointFailureRollsBackTaskDispatchAuditAndOutbox() throws Exception {
+    RecoveryInvocation invocation = recoveryInvocation("atomic-rollback");
+    audits.deleteAllInBatch();
+    doThrow(new ApiException("Injected recovery checkpoint failure"))
+        .when(recoveryService)
+        .checkpoint(any(CrossTurnRecoveryService.CheckpointRequest.class));
+
+    assertThatThrownBy(
+            () -> execute(invocation.request(), invocation.plan(), invocation.anchor()))
+        .isInstanceOf(ApiException.class)
+        .hasMessageContaining("Injected recovery checkpoint failure");
+
+    assertThat(tasks.count()).isZero();
+    assertThat(dispatches.count()).isZero();
+    assertThat(tombstones.count()).isZero();
+    assertThat(audits.count()).isZero();
+    verifyNoInteractions(taskExecutionService);
+  }
+
   private AiDispatchResponse execute(AiAgentRequest request, AiPlanResponse plan) throws Exception {
     return authorization.callWithSystemAccess(() -> tools.executeAuthorizedPlan(request, plan));
+  }
+
+  private AiDispatchResponse execute(
+      AiAgentRequest request,
+      AiPlanResponse plan,
+      CrossTurnRecoveryService.RecoveryAnchor recoveryAnchor)
+      throws Exception {
+    return authorization.callWithSystemAccess(
+        () -> tools.executeAuthorizedPlan(request, plan, recoveryAnchor));
+  }
+
+  private RecoveryInvocation recoveryInvocation(String turnId) throws Exception {
+    AgentWorkflowSpecService.WorkflowSnapshot snapshot =
+        authorization.callWithSystemAccess(
+            () -> {
+              workflows.save(
+                  project.getId(),
+                  Map.of(
+                      "steps",
+                      List.of(
+                          Map.of(
+                              "tool",
+                              "http_headers",
+                              "parameters",
+                              Map.of(),
+                              "risk",
+                              "SAFE",
+                              "requiresApproval",
+                              false,
+                              "group",
+                              0))));
+              return workflows.freezeSnapshot(project.getId());
+            });
+    String nodeRunId = "node-" + turnId;
+    AiAgentRequest request =
+        new AiAgentRequest(
+            project.getId(),
+            target.getId(),
+            "tx-session",
+            "Inspect the authorized local HTTP target",
+            true,
+            null,
+            List.of(),
+            "standard",
+            turnId,
+            snapshot.workflowId(),
+            snapshot.revision(),
+            snapshot.specDigest(),
+            "ledger-agent",
+            nodeRunId);
+    AgentLedgerRecord head =
+        ledger.append(
+            new AgentLedgerService.AppendRequest(
+                "runtime-" + turnId,
+                snapshot.workflowId(),
+                snapshot.revision(),
+                snapshot.specDigest(),
+                request.outerNodeId(),
+                nodeRunId,
+                1L,
+                "finish",
+                "finish",
+                "COMPLETED",
+                "sha256:" + "d".repeat(64),
+                "sha256:" + "e".repeat(64),
+                List.of(),
+                List.of(),
+                AiAgentRuntimeClient.POLICY_REVISION,
+                "tx-index-v1",
+                project.getId(),
+                target.getId()));
+    CrossTurnRecoveryService.RecoveryAnchor anchor =
+        new CrossTurnRecoveryService.RecoveryAnchor(
+            head.getRunId(),
+            request.sessionId(),
+            head.getPolicyRevision(),
+            head.getSequence(),
+            head.getEntryDigest());
+    AgentLedgerService.StateSnapshot ledgerState =
+        ledger.state(project.getId(), head.getRunId(), nodeRunId);
+    assertThat(ledgerState.terminal()).as(ledgerState.toString()).isTrue();
+    AiPlanResponse plan =
+        new AiPlanResponse(
+            "mock-runtime",
+            "test-model",
+            "One workflow-bound safe task",
+            false,
+            List.of(
+                new AiPlanResponse.PlanStep(
+                    "http_headers",
+                    "Headers",
+                    "Inspect response headers",
+                    Map.of(),
+                    "legacy-01-http_headers",
+                    0,
+                    List.of(),
+                    "SAFE",
+                    false,
+                    List.of())));
+    return new RecoveryInvocation(request, plan, anchor);
   }
 
   private List<Attempt> executeConcurrently(List<Invocation> invocations) throws Exception {
@@ -296,6 +447,11 @@ class SecurityAgentToolsTransactionTests {
   }
 
   private record Invocation(AiAgentRequest request, AiPlanResponse plan) {}
+
+  private record RecoveryInvocation(
+      AiAgentRequest request,
+      AiPlanResponse plan,
+      CrossTurnRecoveryService.RecoveryAnchor anchor) {}
 
   private record Attempt(AiDispatchResponse response, Throwable failure) {
     static Attempt success(AiDispatchResponse response) {

@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$Python,
  [ValidatePattern('^\d+\.\d+$')]
   [string]$MinPythonVersion = '3.11',
@@ -7,6 +7,21 @@ param(
   [switch]$SkipHealthCheck
 )
 $ErrorActionPreference = 'Stop'
+
+# Python may emit Chinese paths through the native Windows pipe. Keep the
+# parent PowerShell stream UTF-8 after that child process returns as well.
+$env:PYTHONUTF8 = '1'
+$env:PYTHONIOENCODING = 'utf-8'
+
+# Keep Windows PowerShell 5.1 and native build tools on the same UTF-8 channel.
+$utf8 = [System.Text.UTF8Encoding]::new($false)
+function Set-Utf8ConsoleEncoding {
+  [Console]::InputEncoding = $utf8
+  [Console]::OutputEncoding = $utf8
+  $global:OutputEncoding = $utf8
+}
+Set-Utf8ConsoleEncoding
+
 $root = (Resolve-Path $PSScriptRoot).Path
 
 function Resolve-ExecutableReference {
@@ -68,11 +83,11 @@ function Get-PythonInfo {
 function Test-PackagingPythonCompatibility {
   param([Parameter(Mandatory = $true)]$Info)
 
- return (
-   $Info.Implementation -eq 'cpython' -and
+  return (
+    $Info.Implementation -eq 'cpython' -and
     ([Version]$Info.Version) -ge ([Version]$MinPythonVersion) -and
-   $Info.Bits -eq 64
- )
+    $Info.Bits -eq 64
+  )
 }
 
 function Format-PythonDescription {
@@ -146,6 +161,7 @@ function Resolve-PackagingPython {
   $projectInfo = Get-PythonInfo -Executable $projectPython -DiscoveredBy 'ai-runtime\.venv'
   if ($projectInfo -and (Test-PackagingPythonCompatibility -Info $projectInfo)) { return $projectInfo }
 
+  $discovered = @()
   foreach ($activeEnvironment in @(
     @{ Name = 'VIRTUAL_ENV'; Root = $env:VIRTUAL_ENV },
     @{ Name = 'CONDA_PREFIX'; Root = $env:CONDA_PREFIX }
@@ -156,7 +172,7 @@ function Resolve-PackagingPython {
       $activePython = Join-Path ([string]$activeEnvironment.Root) 'python.exe'
     }
     $activeInfo = Get-PythonInfo -Executable $activePython -DiscoveredBy $activeEnvironment.Name
-    if ($activeInfo -and (Test-PackagingPythonCompatibility -Info $activeInfo)) { return $activeInfo }
+    if ($activeInfo) { $discovered += $activeInfo }
   }
 
   $pathInfo = Get-PathPythonInfo
@@ -168,12 +184,16 @@ function Resolve-PackagingPython {
     throw 'GitHub Actions did not provide Python on PATH. Run actions/setup-python before this script.'
   }
 
-  if ($pathInfo -and (Test-PackagingPythonCompatibility -Info $pathInfo)) { return $pathInfo }
-
-  $discovered = @()
-  $discovered += @(Get-PyLauncherPythonCandidates -Versions @('3.11','3.12','3.13','3.14','3.15','3.16','3.17','3.18','3.19','3.20'))
+  if ($pathInfo) { $discovered += $pathInfo }
+  $minimum = [Version]$MinPythonVersion
+  $launcherVersions = $minimum.Minor..($minimum.Minor + 9) |
+    ForEach-Object { "$($minimum.Major).$_" }
+  $discovered += @(Get-PyLauncherPythonCandidates -Versions $launcherVersions)
   $discovered += @(Get-CondaPythonCandidates)
-  $match = $discovered | Where-Object { Test-PackagingPythonCompatibility -Info $_ } | Select-Object -First 1
+  $match = $discovered |
+    Where-Object { Test-PackagingPythonCompatibility -Info $_ } |
+    Sort-Object @{ Expression = { [Version]$_.Version } }, Path -Unique |
+    Select-Object -First 1
   if ($match) { return $match }
 
   $pathHint = if ($pathInfo) { " PATH currently resolves to $(Format-PythonDescription -Info $pathInfo)." } else { '' }
@@ -183,12 +203,14 @@ function Resolve-PackagingPython {
 $pythonInfo = Resolve-PackagingPython
 $pythonExe = $pythonInfo.Path
 $version = (& $pythonExe -c 'import sys; print(sys.version_info.major,sys.version_info.minor,sep=chr(46))').Trim()
+Set-Utf8ConsoleEncoding
 if ($LASTEXITCODE -ne 0) { throw 'Unable to determine the Python version.' }
 Write-Host "Packaging AI Runtime with Python $version at $pythonExe ($($pythonInfo.DiscoveredBy))" -ForegroundColor Cyan
 
 if (-not $SkipInstall) {
   $requirements = Join-Path $root 'requirements-build.txt'
   & $pythonExe -m pip install -r $requirements
+  Set-Utf8ConsoleEncoding
   if ($LASTEXITCODE -ne 0) { throw 'AI Runtime dependency installation failed.' }
 }
 
@@ -196,10 +218,12 @@ if (-not $SkipBuild) {
   Push-Location $root
   try {
     $pytestTemp = Join-Path $root ('.pytest-package-' + [Guid]::NewGuid().ToString('N'))
-    & $pythonExe -m pytest -q --basetemp $pytestTemp
+    & $pythonExe -m pytest -q -p no:cacheprovider --basetemp $pytestTemp
+    Set-Utf8ConsoleEncoding
     if ($LASTEXITCODE -ne 0) { throw 'AI Runtime tests failed.' }
     $spec = Join-Path $root 'ai-runtime.spec'
     & $pythonExe -m PyInstaller --noconfirm --clean $spec
+    Set-Utf8ConsoleEncoding
     if ($LASTEXITCODE -ne 0) { throw 'PyInstaller build failed.' }
   } finally {
     if ($pytestTemp -and (Test-Path -LiteralPath $pytestTemp)) {
@@ -247,10 +271,10 @@ if (-not $SkipHealthCheck) {
       if (Test-Path -LiteralPath $startupError) { Get-Content -LiteralPath $startupError | Write-Error }
       throw "The packaged AI Runtime health check failed. Diagnostics: $testRoot"
     }
-   if (-not $health.agent.graphCompiled) { throw 'LangGraph did not compile in the packaged runtime.' }
+    if (-not $health.agent.graphCompiled) { throw 'LangGraph did not compile in the packaged runtime.' }
     if (-not ($health.components.langchain -and $health.components.langgraph -and $health.components.retrieval -and $health.components.langchainTools)) {
       throw 'The packaged LangChain/LangGraph/retrieval components are incomplete.'
-   }
+    }
     Write-Host "Packaged Runtime health check passed: $($health.status)" -ForegroundColor Green
     $healthPassed = $true
   } finally {
@@ -263,4 +287,5 @@ if (-not $SkipHealthCheck) {
   }
 }
 
+Set-Utf8ConsoleEncoding
 Write-Host "AI Runtime Windows package generated: $exe" -ForegroundColor Green

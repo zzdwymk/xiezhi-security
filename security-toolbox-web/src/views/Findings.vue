@@ -487,7 +487,6 @@ onBeforeUnmount(() => {
   <el-dialog
     v-model="detailVisible"
     title="风险详情"
-    width="720px"
     class="app-dialog app-dialog--lg"
     align-center
   >
@@ -506,6 +505,7 @@ onBeforeUnmount(() => {
       }}</el-descriptions-item>
     </el-descriptions>
     <template #footer
+      ><el-button @click="detailVisible = false">关闭</el-button
       ><el-button
         v-if="detail"
         type="primary"
@@ -519,7 +519,6 @@ onBeforeUnmount(() => {
   <el-dialog
     v-model="postScanVisible"
     title="AI 扫描后渗透验证路径"
-    width="900px"
     class="app-dialog app-dialog--xl"
     align-center
     destroy-on-close
@@ -626,8 +625,7 @@ onBeforeUnmount(() => {
   <el-dialog
     v-model="diffVisible"
     title="扫描 Diff"
-    width="760px"
-    class="app-dialog"
+    class="app-dialog app-dialog--lg"
     align-center
   >
     <el-form label-position="top" inline>
@@ -663,6 +661,9 @@ onBeforeUnmount(() => {
         class="findings-pagination"
         :total="diffItems.length"
       />
+    </template>
+    <template #footer>
+      <el-button @click="diffVisible = false">关闭</el-button>
     </template>
   </el-dialog>
 </template>
@@ -771,9 +772,6 @@ onBeforeUnmount(() => {
 .findings-pagination :deep(.el-pagination) {
   justify-content: flex-end;
   font-size: 12px;
-}
-:deep(.el-dialog__title) {
-  font-size: 15px;
 }
 :deep(.el-descriptions) {
   font-size: 12px;

@@ -186,7 +186,7 @@ const approvalForm = ref({
 });
 const approvalDecision = ref<number>();
 const auditLoading = ref(false);
-const reportTargetId = ref<number>();
+const reportTargetId = ref<number | "ALL">("ALL");
 const projectReportHtmlLoading = ref(false);
 const projectReportPdfLoading = ref(false);
 const targetReportHtmlLoading = ref(false);
@@ -360,8 +360,9 @@ const filteredRecentTasks = computed(() =>
 );
 const reportTarget = computed(
   () =>
-    linkedTargets.value.find((target) => target.id === reportTargetId.value) ||
-    linkedTargets.value[0],
+    reportTargetId.value === "ALL"
+      ? undefined
+      : linkedTargets.value.find((target) => target.id === reportTargetId.value),
 );
 const selectedSecurityActionPreset = computed(
   () =>
@@ -418,10 +419,10 @@ watch(
   linkedTargets,
   (items) => {
     if (
-      !reportTargetId.value ||
+      reportTargetId.value !== "ALL" &&
       !items.some((item) => item.id === reportTargetId.value)
     )
-      reportTargetId.value = items[0]?.id;
+      reportTargetId.value = "ALL";
   },
   { immediate: true },
 );
@@ -1329,7 +1330,7 @@ async function openTargetHtmlReport() {
 
 const STATUS_OPTIONS = [
   { value: "DRAFT", label: "草稿" },
-  { value: "ACTIVE", label: "进行中（可建任务）" },
+  { value: "ACTIVE", label: "进行中" },
   { value: "PAUSED", label: "暂停" },
   { value: "COMPLETED", label: "已完成" },
   { value: "ARCHIVED", label: "已归档" },
@@ -2227,7 +2228,6 @@ onUnmounted(() => {
         <el-dialog
           v-model="targetDialog"
           title="在本项目下新建授权目标"
-          width="560px"
           class="app-dialog app-dialog--md"
           align-center
           destroy-on-close
@@ -2387,8 +2387,7 @@ onUnmounted(() => {
         <el-dialog
           v-model="pocRecommendationVisible"
           title="指纹关联的安全检测建议"
-          width="880px"
-          class="app-dialog app-dialog--lg"
+          class="app-dialog app-dialog--wide"
           align-center
           destroy-on-close
         >
@@ -3273,7 +3272,7 @@ onUnmounted(() => {
       <el-tab-pane label="AI 记忆" name="memory">
         <div class="project-tab-toolbar">
           <span
-            >这些项目级对话摘要会被 LlamaIndex 检索，用于后续连续分析。</span
+            >这些项目级对话摘要会被安全保存并按需查找，用于后续连续分析。</span
           >
           <div class="toolbar-inline">
             <el-button
@@ -3362,16 +3361,17 @@ onUnmounted(() => {
           <div>
             <strong>单目标附录</strong>
             <span
-              >仅导出所选授权目标的任务与漏洞记录，不替代项目总结报告。</span
+              >默认查看全部目标；选择单个目标后可导出该目标的任务与漏洞附录。</span
             >
           </div>
           <div class="toolbar-inline">
             <el-select
               v-model="reportTargetId"
               size="small"
-              placeholder="选择授权目标"
+              aria-label="报告目标范围"
               style="width: 260px"
             >
+              <el-option label="全部目标（项目汇总）" value="ALL" />
               <el-option
                 v-for="target in linkedTargets"
                 :key="target.id"
@@ -3552,8 +3552,7 @@ onUnmounted(() => {
     <el-dialog
       v-model="reportPreviewVisible"
       :title="reportPreviewTitle"
-      width="min(1180px, 94vw)"
-      class="app-dialog app-dialog--lg report-preview-dialog"
+      class="app-dialog app-dialog--xl report-preview-dialog"
       align-center
       destroy-on-close
       @closed="resetReportPreview"
@@ -3584,7 +3583,6 @@ onUnmounted(() => {
     <el-dialog
       v-model="taskDetailVisible"
       title="项目任务实时日志"
-      width="780px"
       class="app-dialog app-dialog--lg"
       align-center
       destroy-on-close
@@ -3657,12 +3655,14 @@ onUnmounted(() => {
         :closable="false"
         show-icon
       />
+      <template #footer>
+        <el-button @click="taskDetailVisible = false">关闭</el-button>
+      </template>
     </el-dialog>
 
     <el-dialog
       v-model="findingDetailVisible"
       title="项目漏洞详情"
-      width="720px"
       class="app-dialog app-dialog--lg"
       align-center
       destroy-on-close
@@ -3691,13 +3691,15 @@ onUnmounted(() => {
           findingDetail.remediation || "未提供"
         }}</el-descriptions-item></el-descriptions
       >
+      <template #footer>
+        <el-button @click="findingDetailVisible = false">关闭</el-button>
+      </template>
     </el-dialog>
 
     <el-dialog
       v-model="diffVisible"
       title="项目扫描 Diff"
-      width="820px"
-      class="app-dialog app-dialog--lg"
+      class="app-dialog app-dialog--wide"
       align-center
       destroy-on-close
     >
@@ -3757,12 +3759,14 @@ onUnmounted(() => {
         />
       </template>
       <el-empty v-else description="选择两个成功任务后比较扫描变化" />
+      <template #footer>
+        <el-button @click="diffVisible = false">关闭</el-button>
+      </template>
     </el-dialog>
 
     <el-dialog
       v-model="approvalDialog"
       title="申请项目审批"
-      width="560px"
       class="app-dialog app-dialog--md"
       align-center
       destroy-on-close
@@ -3806,8 +3810,7 @@ onUnmounted(() => {
     <el-dialog
       v-model="securityActionDialog"
       title="申请高风险安全行动"
-      width="720px"
-      class="app-dialog app-dialog--lg"
+      class="app-dialog app-dialog--wide"
       align-center
       destroy-on-close
     >
@@ -3940,7 +3943,6 @@ onUnmounted(() => {
     <el-dialog
       v-model="securityActionDetailVisible"
       title="安全行动详情与审批状态"
-      width="760px"
       class="app-dialog app-dialog--lg"
       align-center
       destroy-on-close
@@ -4015,6 +4017,9 @@ onUnmounted(() => {
           }}</pre>
         </el-descriptions-item>
       </el-descriptions>
+      <template #footer>
+        <el-button @click="securityActionDetailVisible = false">关闭</el-button>
+      </template>
     </el-dialog>
 
     <el-dialog
@@ -4024,7 +4029,6 @@ onUnmounted(() => {
           ? '登记安全行动完成'
           : '登记安全行动回滚'
       "
-      width="620px"
       class="app-dialog app-dialog--md"
       align-center
       destroy-on-close
@@ -4364,7 +4368,7 @@ onUnmounted(() => {
   font-size: 12px;
 }
 .report-safety-alert {
-  margin-top: 12px;
+  margin: 12px 0 18px;
 }
 .diff-form {
   display: flex;
@@ -4415,9 +4419,6 @@ onUnmounted(() => {
   border: 1px solid var(--app-border, var(--el-border-color));
   border-radius: 10px;
   background: #fff;
-}
-.report-preview-dialog :deep(.el-dialog__body) {
-  padding-top: 8px;
 }
 @media (max-width: 760px) {
   .report-preview-shell {
@@ -4570,10 +4571,31 @@ onUnmounted(() => {
 }
 
 /* Keep project workbenches readable through rhythm instead of nested surfaces. */
+.project-detail-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100% !important;
+  height: 100% !important;
+  overflow: hidden !important;
+}
+.project-tabs {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+.project-tabs :deep(.el-tabs__header) {
+  flex: none;
+  margin-bottom: 12px;
+}
 .project-tabs :deep(.el-tabs__content) {
-  overflow: visible;
+  flex: 1;
+  min-height: 0;
+  overflow: auto !important;
+  scrollbar-gutter: stable;
 }
 .project-tabs :deep(.el-tab-pane) {
+  min-height: 100%;
   padding: 8px 0 28px;
 }
 .project-tabs .toolbar {
@@ -4626,11 +4648,15 @@ onUnmounted(() => {
   font-size: 14px;
 }
 .project-tabs .recon-alert {
-  margin: 4px 0 18px;
+  display: inline-flex;
+  width: auto;
+  max-width: 100%;
+  margin: 0 0 16px !important;
 }
 .project-tabs .recon-controls {
   gap: 16px;
-  margin-bottom: 8px;
+  margin-top: 4px;
+  margin-bottom: 12px;
   padding: 16px 18px;
 }
 .project-tabs .recon-controls-row {
@@ -4641,6 +4667,12 @@ onUnmounted(() => {
 }
 .project-tabs .recon-grid {
   gap: 16px;
+}
+.project-tabs .recon-results :deep(.el-collapse-item__header) {
+  padding: 0 18px;
+}
+.project-tabs .recon-results :deep(.el-collapse-item__content) {
+  padding: 18px;
 }
 .project-tabs .security-action-guard-grid {
   gap: 12px;
@@ -4704,14 +4736,6 @@ onUnmounted(() => {
   .project-tabs .toolbar :deep(.el-button) {
     flex-basis: 100%;
   }
-}
-
-.project-detail-page {
-  min-height: 0;
-  overflow: visible;
-}
-.project-tabs :deep(.el-tabs__content) {
-  overflow: visible !important;
 }
 
 .report-cards {

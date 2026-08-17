@@ -327,8 +327,16 @@ body.sidebar-resizing * {
   flex: none;
   overflow: hidden;
 }
+.desktop-v2-recents-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .desktop-v2-recents-toggle {
-  width: 100%;
+  width: auto;
+  min-width: 0;
+  flex: 1 1 auto;
   justify-content: space-between;
   border: 0;
   background: transparent;
@@ -355,7 +363,7 @@ body.sidebar-resizing * {
 }
 .desktop-v2-recent-item.active {
   background: #e4eee9;
-  box-shadow: inset 2px 0 #0f8067;
+  box-shadow: none;
 }
 .desktop-v2-recent-open {
   display: grid;
@@ -400,6 +408,34 @@ body.sidebar-resizing * {
 .desktop-v2-recent-delete:hover {
   background: #e1dbe2;
   color: #b44b4b;
+}
+
+.desktop-v2-recents-clear {
+  min-height: 24px;
+  margin: 0 4px 0 0;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-secondary, #5f6368);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.desktop-v2-recents-clear > .el-icon {
+  font-size: 12px;
+}
+
+.desktop-v2-recents-clear:hover,
+.desktop-v2-recents-clear:focus-visible {
+  background: var(--color-bg-hover, rgba(0, 0, 0, 0.06));
+  color: var(--color-danger, #b42318);
+  outline: none;
 }
 .desktop-v2-recent-empty {
   padding: 9px 12px;
@@ -992,7 +1028,7 @@ body.sidebar-resizing * {
 }
 .traffic-row.active {
   background: #eaf5f6;
-  box-shadow: inset 3px 0 #168ca1;
+  box-shadow: none;
 }
 .traffic-row > b {
   color: #427199;

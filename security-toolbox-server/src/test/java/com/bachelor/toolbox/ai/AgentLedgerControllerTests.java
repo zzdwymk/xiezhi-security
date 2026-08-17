@@ -23,6 +23,7 @@ class AgentLedgerControllerTests {
   private AssessmentProjectService projects;
   private TargetService targets;
   private AgentWorkflowSpecService workflows;
+  private CrossTurnRecoveryService recoveryService;
   private AgentLedgerController controller;
 
   @BeforeEach
@@ -32,8 +33,9 @@ class AgentLedgerControllerTests {
     projects = mock(AssessmentProjectService.class);
     targets = mock(TargetService.class);
     workflows = mock(AgentWorkflowSpecService.class);
+    recoveryService = mock(CrossTurnRecoveryService.class);
     controller =
-        new AgentLedgerController(ledger, authorization, projects, targets, workflows, 900);
+        new AgentLedgerController(ledger, authorization, projects, targets, workflows, recoveryService, 900);
   }
 
   @Test

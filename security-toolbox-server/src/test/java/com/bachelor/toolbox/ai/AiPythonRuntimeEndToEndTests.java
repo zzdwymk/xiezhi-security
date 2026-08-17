@@ -43,7 +43,34 @@ class AiPythonRuntimeEndToEndTests {
     when(projects.get(71L)).thenReturn(project);
     when(targets.getCurrentlyAuthorized(91L)).thenReturn(target);
     when(tasks.countByProjectIdAndStatusIn(71L, List.of("PENDING", "RUNNING"))).thenReturn(0L);
-    when(workflows.executableSteps()).thenReturn(List.of());
+    List<Map<String, Object>> workflowSteps =
+        List.of(
+            Map.of(
+                "nodeId",
+                "nmap-service-scan",
+                "tool",
+                "nmap_service_scan",
+                "parameters",
+                Map.of(),
+                "risk",
+                "SAFE",
+                "requiresApproval",
+                false,
+                "group",
+                0,
+                "dependsOnNodeIds",
+                List.of()));
+    when(workflows.executableSteps()).thenReturn(workflowSteps);
+    AgentWorkflowSpecService.WorkflowSnapshot workflowSnapshot =
+        new AgentWorkflowSpecService.WorkflowSnapshot(
+            "ci-runtime-workflow",
+            71L,
+            1L,
+            "sha256:" + "a".repeat(64),
+            "ci",
+            Instant.parse("2026-08-11T00:00:00Z"),
+            Map.of("version", 1, "preset", "runtime-e2e", "steps", workflowSteps),
+            workflowSteps);
 
     AiAgentRuntimeClient client =
         new AiAgentRuntimeClient(
@@ -79,7 +106,8 @@ class AiPythonRuntimeEndToEndTests {
                 null,
                 List.of(),
                 "standard",
-                "ci-runtime-turn"),
+                "ci-runtime-turn")
+                .withWorkflowSnapshot(workflowSnapshot),
             "请扫描端口和服务",
             events::add);
 
@@ -113,7 +141,8 @@ class AiPythonRuntimeEndToEndTests {
     Object graph = client.graph();
     assertThat(graph).isInstanceOf(JsonNode.class);
     JsonNode graphJson = (JsonNode) graph;
-    assertThat(graphJson.path("source").asText()).isEqualTo("langgraph");
-    assertThat(graphJson.path("compiled").path("nodes").isArray()).isTrue();
+    assertThat(graphJson.path("source").asText()).isEqualTo("outer-dag");
+    assertThat(graphJson.path("nodes")).hasSize(1);
+    assertThat(graphJson.path("nodes").get(0).path("id").asText()).isEqualTo("ledger-agent");
   }
 }

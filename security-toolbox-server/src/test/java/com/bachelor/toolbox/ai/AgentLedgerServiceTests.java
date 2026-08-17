@@ -62,6 +62,8 @@ class AgentLedgerServiceTests {
     assertThat(second.getLedgerRevision()).isEqualTo(AgentLedgerService.LEDGER_REVISION);
     assertThat(second.getEvidenceIdsJson()).isEqualTo("[\"ev-1\"]");
 
+    entityManager.flush();
+    entityManager.clear();
     AgentLedgerService.VerificationResult verification = service.verify("run-1", "node-run-1");
     assertThat(verification.valid()).isTrue();
     assertThat(verification.entryCount()).isEqualTo(2);

@@ -180,6 +180,25 @@ export interface VulnerabilityDefinition {
   sourceUpdatedAt?: string;
 }
 
+export interface DependencyStatus {
+  name: string;
+  status?: string;
+  installed?: boolean;
+  version?: string;
+  path?: string;
+  required?: boolean;
+  category?: string;
+  message?: string;
+}
+
+export interface SystemDependenciesResponse {
+  os?: string;
+  arch?: string;
+  dependencies?: DependencyStatus[];
+  items?: DependencyStatus[];
+  developmentMode?: boolean;
+}
+
 export interface PageResponse<T> {
   content: T[];
   totalElements: number;
@@ -446,15 +465,62 @@ export interface VulnerabilityCatalogSyncResult {
   warnings: string[];
 }
 
+export interface ScannerPocCatalogSyncResult {
+  status: string;
+  sourceType: "AFROG" | "XRAY";
+  pocsPath: string;
+  sourceVersion: string;
+  discovered: number;
+  imported: number;
+  updated: number;
+  unchanged: number;
+  invalid: number;
+  deactivated: number;
+  completedAt: string;
+  warnings: string[];
+}
+
 export interface VulnerabilityCatalogStats {
   total: number;
   builtin: number;
   nuclei: number;
+  afrog: number;
+  xray: number;
   knownExploited: number;
   safeToScan: number;
   templatesAvailable: boolean;
   syncing: boolean;
   lastSync?: VulnerabilityCatalogSyncResult;
+  afrogPocsAvailable: boolean;
+  xrayPocsAvailable: boolean;
+  afrogSyncing: boolean;
+  xraySyncing: boolean;
+  lastAfrogSync?: ScannerPocCatalogSyncResult;
+  lastXraySync?: ScannerPocCatalogSyncResult;
+}
+
+export interface CatalogSyncProgress {
+  source: "NUCLEI" | "AFROG" | "XRAY";
+  stage:
+    | "IDLE"
+    | "PREPARING"
+    | "DISCOVERING"
+    | "IMPORTING"
+    | "FINALIZING"
+    | "COMPLETED"
+    | "FAILED";
+  processed: number;
+  total: number;
+  message: string;
+  startedAt: string;
+  updatedAt: string;
+  active: boolean;
+}
+
+export interface VulnerabilityCatalogClearResult {
+  removedDefinitions: number;
+  deletedPaths: string[];
+  missingPaths: string[];
 }
 
 /** Project-scoped records returned by the report summary endpoint.  Keeping the
@@ -771,6 +837,8 @@ export interface DetectionRule {
   targetType: string;
   riskLevel: string;
   enabled: boolean;
+  sourceType?: string;
+  sourceName?: string;
 }
 
 export const endpoints = {
@@ -778,7 +846,11 @@ export const endpoints = {
   // longer than the normal API timeout. Keep the larger timeout scoped to this endpoint.
   health: () =>
     api.get<{ status: string }>("/system/health", { timeout: 3_000 }),
-  dependencies: () => api.get("/system/dependencies", { timeout: 45_000 }),
+  dependencies: (refresh = false) =>
+    api.get<SystemDependenciesResponse>("/system/dependencies", {
+      params: refresh ? { refresh: true } : undefined,
+      timeout: 45_000,
+    }),
   dashboard: () => api.get("/dashboard/summary"),
   clearBusinessData: () =>
     api.delete<ClearBusinessDataResponse>("/settings/data", {
@@ -790,6 +862,8 @@ export const endpoints = {
   targets: () => api.get<Target[]>("/targets"),
   createTarget: (payload: Omit<Target, "id">) =>
     api.post<Target>("/targets", payload),
+  updateTarget: (id: number, payload: Omit<Target, "id">) =>
+    api.put<Target>(`/targets/${id}`, payload),
   deleteTarget: (id: number) => api.delete(`/targets/${id}`),
   createPlan: (payload: { targetId: number; prompt: string }) =>
     api.post<Omit<AiPlan, "targetId" | "objective">>("/ai/plans", payload, {
@@ -799,6 +873,10 @@ export const endpoints = {
     api.post<AiDispatch>("/ai/dispatches", payload, { timeout: 210000 }),
   runAgent: (payload: AiAgentRequestPayload) =>
     api.post<AiAgentResponsePayload>("/ai/agent", payload, { timeout: 210000 }),
+  clearAgentSession: (sessionId: string) =>
+    api.delete<{ sessionId: string; cleared: boolean }>(
+      `/ai/agent/sessions/${encodeURIComponent(sessionId)}`,
+    ),
   answerAi: (payload: {
     projectId: number;
     targetId: number;
@@ -829,9 +907,27 @@ export const endpoints = {
     }),
   vulnerabilityStats: () =>
     api.get<VulnerabilityCatalogStats>("/vulnerabilities/stats"),
+  vulnerabilitySyncStatus: () =>
+    api.get<CatalogSyncProgress[]>("/vulnerabilities/sync/status"),
+  clearVulnerabilityCatalog: () =>
+    api.delete<VulnerabilityCatalogClearResult>("/vulnerabilities/catalog", {
+      timeout: 120_000,
+    }),
   syncNucleiCatalog: () =>
     api.post<VulnerabilityCatalogSyncResult>(
       "/vulnerabilities/sync/nuclei",
+      undefined,
+      { timeout: 10 * 60_000 },
+    ),
+  syncAfrogCatalog: () =>
+    api.post<ScannerPocCatalogSyncResult>(
+      "/vulnerabilities/sync/afrog",
+      undefined,
+      { timeout: 10 * 60_000 },
+    ),
+  syncXrayCatalog: () =>
+    api.post<ScannerPocCatalogSyncResult>(
+      "/vulnerabilities/sync/xray",
       undefined,
       { timeout: 10 * 60_000 },
     ),
@@ -852,6 +948,8 @@ export const endpoints = {
     projectId: number;
     targetId: number;
     ruleCodes?: string[];
+    pocCodes?: string[];
+    allPocSources?: Array<"NUCLEI" | "AFROG" | "XRAY">;
     ports?: string;
   }) => api.post("/active-scans", payload),
   tasks: () => api.get<ProjectTaskRecord[]>("/tasks"),
@@ -927,6 +1025,14 @@ export const endpoints = {
     authorizationExpiresAt: string;
     owner: string;
   }) => api.post<AssessmentProject>("/projects", payload),
+  updateProject: (id: number, payload: Partial<{
+    name: string;
+    description?: string;
+    authorizationStatement: string;
+    authorizationValidFrom: string;
+    authorizationExpiresAt: string;
+    owner: string;
+  }>) => api.put<AssessmentProject>(`/projects/${id}`, payload),
   updateProjectStatus: (id: number, status: string) =>
     api.post<AssessmentProject>(`/projects/${id}/status`, { status }),
   projectSummary: (id: number) =>

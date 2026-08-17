@@ -14,6 +14,11 @@ const {
 const {
   createInvalidatableCache,
 } = require("../electron/invalidatable-cache.cjs");
+const {
+  compareStableVersions,
+  evaluateInstalledRelease,
+  parseStableVersion,
+} = require("../electron/dependency-version.cjs");
 
 const testDirectory = fs.mkdtempSync(
   path.join(os.tmpdir(), "security-toolbox-json-file-"),
@@ -58,6 +63,28 @@ try {
   assert.strictEqual(cache.replace(cachedReplacement), cachedReplacement);
   assert.strictEqual(cache.get(), cachedReplacement);
   assert.equal(cacheLoads, 2);
+
+  assert.equal(parseStableVersion("v3.5.6").normalized, "3.5.6");
+  assert.equal(parseStableVersion("latest"), undefined);
+  assert.equal(compareStableVersions("3.5.6", "3.5.6"), 0);
+  assert.equal(compareStableVersions("3.5.7", "3.5.6"), 1);
+  assert.equal(compareStableVersions("3.4.9", "3.5.0"), -1);
+  assert.deepEqual(
+    evaluateInstalledRelease({
+      metadata: { repository: "zan8in/afrog", version: "v3.5.6" },
+      repository: "zan8in/afrog",
+      latestVersion: "3.5.6",
+      payloadExists: true,
+    }),
+    {
+      managed: true,
+      installedVersion: "3.5.6",
+      latestVersion: "3.5.6",
+      comparison: 0,
+      upToDate: true,
+      updateAvailable: false,
+    },
+  );
 
   const privateError = new Error("private-node-detail C:\\sensitive\\file");
   assert.equal(
@@ -148,6 +175,99 @@ try {
     electronMainSource,
     /desktopSettingsCache\.replace\(settings\);\s*systemThemeCache\.invalidate\(\);/,
   );
+  const dependencyInstallSource = electronMainSource.slice(
+    electronMainSource.indexOf("async function installPortableDependency"),
+    electronMainSource.indexOf("async function controlDependencyInstall"),
+  );
+  assert.doesNotMatch(
+    dependencyInstallSource,
+    /postBackendJson|\/api\/vulnerabilities\/sync\//,
+    "a completed binary install must not become a failure because an unauthenticated catalog sync returned 401",
+  );
+  assert.doesNotMatch(electronMainSource, /postBackendJson|checkVulnerabilityCatalogOnStartup/);
+  assert.match(electronMainSource, /status:\s*"up-to-date"/);
+  assert.match(electronMainSource, /toolbox:uninstall-dependency/);
+  assert.match(electronMainSource, /只能卸载应用管理的可选依赖/);
+
+  const setupSource = fs.readFileSync(
+    path.resolve(__dirname, "..", "src", "views", "Setup.vue"),
+    "utf8",
+  );
+  assert.match(setupSource, /await check\(true\)/);
+  const vulnerabilitiesSource = fs.readFileSync(
+    path.resolve(__dirname, "..", "src", "views", "Vulnerabilities.vue"),
+    "utf8",
+  );
+  const catalogSyncStoreSource = fs.readFileSync(
+    path.resolve(__dirname, "..", "src", "stores", "catalogSync.ts"),
+    "utf8",
+  );
+  assert.match(
+    vulnerabilitiesSource,
+    /useCatalogSyncStore/,
+  );
+  assert.match(
+    vulnerabilitiesSource,
+    /catalogSync\.start\(sources\)/,
+    "catalog sync must remain owned by the global store when the route unmounts",
+  );
+  assert.match(
+    catalogSyncStoreSource,
+    /installDependency\(\s*source\.toLowerCase\(\),\s*\{\s*refreshCatalog:\s*true\s*\}/,
+  );
+  assert.match(
+    catalogSyncStoreSource,
+    /catalogFilesUpdated\s*===\s*false[\s\S]*catalogCount\(stats,\s*source\)\s*>\s*0[\s\S]*continue;/,
+    "an unchanged installed catalog with existing database rows must skip metadata re-import",
+  );
+  assert.match(catalogSyncStoreSource, /vulnerabilitySyncStatus\(\)/);
+  assert.doesNotMatch(
+    vulnerabilitiesSource,
+    /<el-option label="獬豸内置" value="BUILTIN"/,
+  );
+  const workflowSource = fs.readFileSync(
+    path.resolve(__dirname, "..", "src", "views", "Workflow.vue"),
+    "utf8",
+  );
+  assert.match(
+    workflowSource,
+    /SUBAGENTS\.filter\(\(agent\) => agent\.phase === selectedPhase\.value\)/,
+    "workflow capability library must filter cards by the selected phase",
+  );
+  assert.match(workflowSource, /v-for="agent in filteredAgents"/);
+  assert.doesNotMatch(workflowSource, /v-for="agent in SUBAGENTS"/);
+  assert.match(workflowSource, /<h4>阶段与受控能力库<\/h4>/);
+  assert.match(workflowSource, /<h5>流程阶段<\/h5>/);
+  assert.match(workflowSource, /流程阶段 · 用于组织能力和依赖/);
+  assert.match(workflowSource, /v-for="phase in PHASES"/);
+  assert.match(
+    workflowSource,
+    /function hasCanonicalPhaseNode|const hasCanonicalPhaseNode/,
+    "workflow phase library must distinguish phases already present on the canvas",
+  );
+  assert.match(
+    workflowSource,
+    /const existingId = phaseNodeId\(phase\)[\s\S]*makeNode\(existingId, "phase", phase, position\)/,
+    "restoring a phase must reuse its stable canonical node id",
+  );
+  assert.doesNotMatch(workflowSource, /\$\{meta\.label\}（自定义）/);
+  assert.match(
+    workflowSource,
+    /type LibraryDropPayload =\s*\| \{ type: "phase"; phase: PhaseCode \}\s*\| \{ type: "tool"; tool: string; phase: PhaseCode \}/,
+    "workflow library drag payload must support both phase and tool entries",
+  );
+  assert.match(workflowSource, /application\/x-workflow-tool/);
+  const appSource = fs.readFileSync(
+    path.resolve(__dirname, "..", "src", "App.vue"),
+    "utf8",
+  );
+  assert.match(appSource, /class="desktop-v2-recents-head"/);
+  assert.match(
+    appSource,
+    /class="desktop-v2-recents-clear"[\s\S]*?<span>清空<\/span>/,
+    "the compact clear action must live beside the recent conversation heading",
+  );
+  assert.doesNotMatch(appSource, /<span>清空最近对话<\/span>/);
 
   console.log("JSON 文件、启动缓存与用户错误边界测试通过。");
 } finally {

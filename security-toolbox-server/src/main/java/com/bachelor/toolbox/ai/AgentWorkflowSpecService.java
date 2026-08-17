@@ -57,7 +57,9 @@ public class AgentWorkflowSpecService {
           "http_headers",
           "http_security_check",
           "tls_config",
-          "nuclei_scan");
+          "nuclei_scan",
+          "afrog_scan",
+          "xray_scan");
   private static final Set<String> PHASES =
       Set.of(
           "engagement",
@@ -676,8 +678,34 @@ public class AgentWorkflowSpecService {
     Map<String, Object> value = new LinkedHashMap<>();
     value.put("version", 1);
     value.put("preset", "runtime-default");
-    value.put("steps", List.of());
+    value.put(
+        "steps",
+        List.of(
+            defaultStep("context", "retrieve_project_context", 0, "SAFE", false),
+            defaultStep("service-scan", "nmap_service_scan", 1, "SAFE", false),
+            defaultStep("headers", "http_headers", 1, "SAFE", false),
+            defaultStep("tls", "tls_config", 1, "SAFE", false),
+            defaultStep("http-security", "http_security_check", 2, "SAFE", false),
+            defaultStep("nuclei", "nuclei_scan", 3, "CAUTION", true),
+            defaultStep("afrog", "afrog_scan", 4, "CAUTION", true),
+            defaultStep("xray", "xray_scan", 5, "CAUTION", true)));
     return value;
+  }
+
+  private Map<String, Object> defaultStep(
+      String nodeId, String tool, int group, String risk, boolean requiresApproval) {
+    Map<String, Object> step = new LinkedHashMap<>();
+    step.put("nodeId", nodeId);
+    step.put("tool", tool);
+    step.put(
+        "parameters",
+        Set.of("afrog_scan", "xray_scan").contains(tool)
+            ? Map.of("allPocs", true)
+            : Map.of());
+    step.put("risk", risk);
+    step.put("requiresApproval", requiresApproval);
+    step.put("group", group);
+    return step;
   }
 
   private boolean blank(String value) {

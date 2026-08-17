@@ -154,6 +154,49 @@ def test_intent_contract_accepts_only_the_small_decision_shape():
     }
 
 
+def test_simple_greeting_uses_local_fast_path_without_model_calls():
+    planner = AgentPlanner(index_store=None)
+    intent_chain = _FakeChain(
+        {
+            "intent": "ACTION_PLAN",
+            "needsRetrieval": True,
+            "retrievalQuery": "wrong",
+            "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
+        }
+    )
+    grounded_chain = _FakeChain(_grounded_output())
+    planner._llm_requested = True
+    planner._chain_load_attempted = True
+    planner._intent_chain = intent_chain
+    planner._grounded_chain = grounded_chain
+    request = _request("你好")
+
+    intent = asyncio.run(planner.route(request))
+    answer = asyncio.run(
+        planner.grounded_plan(
+            request,
+            {
+                "projectId": 7,
+                "targetId": 9,
+                "conversationId": None,
+                "query": "你好",
+                "round": 0,
+                "retrievalMethod": "bm25",
+                "indexRevision": "sha256:" + "f" * 64,
+                "items": [],
+            },
+            intent,
+        )
+    )
+
+    assert intent["intent"] == "GENERAL_QA"
+    assert intent["needsRetrieval"] is False
+    assert answer["source"] == "local-greeting"
+    assert "你好" in answer["answer"]
+    assert intent_chain.calls == []
+    assert grounded_chain.calls == []
+
+
 def test_evidence_bundle_rejects_duplicate_ids_extra_fields_and_total_size():
     duplicate = _bundle()
     duplicate["items"][1]["evidenceId"] = "ev-1"
@@ -366,6 +409,34 @@ def test_contract_apis_remain_available_without_llm_or_rag():
     assert grounded["source"] == "local-grounded-fallback"
 
 
+def test_audit_log_analysis_routes_to_project_qa_without_execution():
+    planner = AgentPlanner(index_store=None)
+    planner._llm_requested = False
+    planner._chain_load_attempted = True
+
+    intent = asyncio.run(planner.route(_request("请结合审计日志判断是否符合预期")))
+
+    assert intent == {
+        "intent": "PROJECT_QA",
+        "needsRetrieval": True,
+        "retrievalQuery": "请结合审计日志判断是否符合预期",
+        "publicReasonCode": "PROJECT_CONTEXT_REQUIRED",
+    }
+
+
+@pytest.mark.parametrize("message", ["请开始审计", "执行审计并生成结果"])
+def test_explicit_audit_request_still_routes_to_action_plan(message):
+    planner = AgentPlanner(index_store=None)
+    planner._llm_requested = False
+    planner._chain_load_attempted = True
+
+    intent = asyncio.run(planner.route(_request(message)))
+
+    assert intent["intent"] == "ACTION_PLAN"
+    assert intent["needsRetrieval"] is True
+    assert intent["publicReasonCode"] == "AUTHORIZED_ACTION_REQUEST"
+
+
 def test_rule_fallback_binds_existing_evidence_to_each_action():
     planner = AgentPlanner(index_store=None)
     planner._llm_requested = False
@@ -405,6 +476,65 @@ def test_workflow_step_rejects_unknown_fields_and_wrong_tool_parameters():
         )
     with pytest.raises(ValidationError):
         WorkflowStep.model_validate({**valid, "nodeId": ""})
+
+
+def test_scanner_workflow_steps_keep_distinct_codes_and_poc_contracts():
+    workflow = [
+        {
+            "nodeId": "nuclei-01",
+            "tool": "nuclei_scan",
+            "parameters": {},
+            "risk": "CAUTION",
+            "requiresApproval": True,
+            "group": 0,
+            "dependsOnNodeIds": [],
+        },
+        {
+            "nodeId": "afrog-01",
+            "tool": "afrog_scan",
+            "parameters": {"allPocs": True},
+            "risk": "CAUTION",
+            "requiresApproval": True,
+            "group": 1,
+            "dependsOnNodeIds": ["nuclei-01"],
+        },
+        {
+            "nodeId": "xray-01",
+            "tool": "xray_scan",
+            "parameters": {"pocCodes": ["XR-AAAAAAAAAAAAAAAAAAAAAAAA"]},
+            "risk": "CAUTION",
+            "requiresApproval": True,
+            "group": 2,
+            "dependsOnNodeIds": ["afrog-01"],
+        },
+    ]
+
+    manifest = build_workflow_capability_manifest({"workflow": workflow})
+    actions = validate_workflow_action_closure(
+        [
+            {"workflowNodeId": step["nodeId"], "parameters": {}, "evidenceRefs": []}
+            for step in workflow
+        ],
+        workflow,
+    )
+
+    assert [node["tool"] for node in manifest["nodes"]] == [
+        "nuclei_scan",
+        "afrog_scan",
+        "xray_scan",
+    ]
+    assert [action["tool"] for action in actions] == [
+        "nuclei_scan",
+        "afrog_scan",
+        "xray_scan",
+    ]
+    assert actions[1]["parameters"] == {"allPocs": True}
+    assert actions[2]["parameters"] == {
+        "pocCodes": ["XR-AAAAAAAAAAAAAAAAAAAAAAAA"]
+    }
+
+    with pytest.raises(ValidationError):
+        WorkflowStep.model_validate({**workflow[1], "parameters": {}})
 
 
 def test_agent_request_requires_complete_snapshot_metadata_and_valid_dag():

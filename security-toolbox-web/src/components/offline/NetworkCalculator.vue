@@ -58,7 +58,7 @@ calculate();
         <code>{{ result[key] }}</code>
       </article>
     </div>
-    <div class="offline-notice warning network-prefix-note">
+    <div class="offline-notice network-prefix-note">
       /31 按点到点链路保留两个地址，/32
       表示单个主机；其他网段会扣除网络地址和广播地址。
     </div>

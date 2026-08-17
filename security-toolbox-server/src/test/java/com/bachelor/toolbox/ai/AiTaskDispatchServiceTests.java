@@ -196,4 +196,59 @@ class AiTaskDispatchServiceTests {
 
     assertEquals(2, response.steps().size());
   }
+
+  @Test
+  void preservesDistinctScannerCodesAndPocSelectionContracts() throws Exception {
+    target.setTargetType("URL");
+    target.setTargetValue("https://127.0.0.1");
+    when(targetPolicyService.validatedHttpUri(target))
+        .thenReturn(java.net.URI.create("https://127.0.0.1"));
+    for (String tool : List.of("nuclei_scan", "afrog_scan", "xray_scan")) {
+      when(toolRegistry.require(tool)).thenReturn(mock(SecurityTool.class));
+    }
+    AiPlanResponse generated =
+        new AiPlanResponse(
+            "test",
+            "test-model",
+            "scanner plan",
+            true,
+            List.of(
+                new AiPlanResponse.PlanStep(
+                    "nuclei_scan", "Nuclei", "requested", Map.of()),
+                new AiPlanResponse.PlanStep(
+                    "afrog_scan", "Afrog", "requested", Map.of("allPocs", true)),
+                new AiPlanResponse.PlanStep(
+                    "xray_scan",
+                    "Xray",
+                    "requested",
+                    Map.of("pocCodes", List.of("XR-AAAAAAAAAAAAAAAAAAAAAAAA")))));
+
+    AiPlanResponse response = service.prepare(new AiPlanRequest(7L, "run scanners"), generated);
+
+    assertEquals(
+        List.of("nuclei_scan", "afrog_scan", "xray_scan"),
+        response.steps().stream().map(AiPlanResponse.PlanStep::toolCode).toList());
+    assertEquals(Map.of("allPocs", true), response.steps().get(1).parameters());
+    assertEquals(
+        Map.of("pocCodes", List.of("XR-AAAAAAAAAAAAAAAAAAAAAAAA")),
+        response.steps().get(2).parameters());
+  }
+
+  @Test
+  void rejectsAfrogWithoutAnExplicitPocSelection() {
+    when(toolRegistry.require("afrog_scan")).thenReturn(mock(SecurityTool.class));
+    AiPlanResponse generated =
+        new AiPlanResponse(
+            "test",
+            "test-model",
+            "invalid scanner plan",
+            true,
+            List.of(
+                new AiPlanResponse.PlanStep(
+                    "afrog_scan", "Afrog", "requested", Map.of())));
+
+    assertThrows(
+        ApiException.class,
+        () -> service.prepare(new AiPlanRequest(7L, "run afrog"), generated));
+  }
 }

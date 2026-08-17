@@ -17,7 +17,6 @@ import {
   Refresh,
   CircleCheck,
   FolderOpened,
-  Flag,
   Warning,
 } from "../components/fluentIcons";
 import FluentIcon from "../components/FluentIcon.vue";
@@ -76,6 +75,7 @@ interface EditorNodeData {
   icon: string;
   tool?: string;
   risk?: string;
+  parameters?: Record<string, unknown>;
 }
 
 type EditorNode = Node<EditorNodeData> & { data: EditorNodeData };
@@ -209,14 +209,72 @@ const SUBAGENTS: {
   },
   {
     tool: "nuclei_scan",
-    name: "受控漏洞模板扫描",
+    name: "Nuclei 漏洞模板扫描",
     icon: "shield-task",
-    desc: "使用受限模板发现风险，执行前需人工确认",
+    desc: "使用 Nuclei 安全模板检查授权目标，执行前需人工确认",
+    risk: "CAUTION",
+    phase: "discovery",
+  },
+  {
+    tool: "afrog_scan",
+    name: "Afrog PoC 漏洞扫描",
+    icon: "shield-task",
+    desc: "使用已同步的 Afrog PoC 检查授权 Web 目标，执行前需人工确认",
+    risk: "CAUTION",
+    phase: "discovery",
+  },
+  {
+    tool: "xray_scan",
+    name: "Xray PoC 漏洞扫描",
+    icon: "shield-task",
+    desc: "使用已同步的 Xray PoC 检查授权 Web 目标，执行前需人工确认",
     risk: "CAUTION",
     phase: "discovery",
   },
 ];
 const agentOf = (tool?: string) => SUBAGENTS.find((item) => item.tool === tool);
+
+const SUGGESTION_KIND_LABELS: Record<string, string> = {
+  coverage_gap: "覆盖不足",
+  orchestration: "编排建议",
+  retest_gap: "复测缺口",
+  gap: "缺少步骤",
+  order: "执行顺序",
+  coverage: "覆盖建议",
+  risk: "风险提示",
+  empty: "流程待补充",
+  parallel: "并行建议",
+  orphan: "未连线节点",
+  preset: "模板建议",
+  focus: "当前节点",
+  tip: "优化建议",
+};
+
+const SUGGESTION_TERM_LABELS: Record<string, string> = {
+  coverage_gap: "覆盖不足",
+  orchestration: "工作流编排",
+  retest_gap: "复测缺口",
+  engagement: "项目启动与范围",
+  recon: "被动侦察",
+  mapping: "资产与服务发现",
+  discovery: "漏洞发现",
+  validation: "安全验证",
+  impact: "影响评估",
+  retest: "复测与修复确认",
+  report: "报告交付",
+};
+
+function suggestionKindLabel(kind?: string) {
+  return SUGGESTION_KIND_LABELS[String(kind || "").toLowerCase()] || "工作流建议";
+}
+
+function localizeSuggestionText(value?: string) {
+  let text = String(value || "");
+  Object.entries(SUGGESTION_TERM_LABELS).forEach(([term, label]) => {
+    text = text.replace(new RegExp(`\\b${term}\\b`, "gi"), label);
+  });
+  return text;
+}
 
 const PRESETS = [
   {
@@ -276,7 +334,18 @@ let suggestTimer: ReturnType<typeof setTimeout> | undefined;
 let suggestSeq = 0;
 let loadSeq = 0;
 let suggestAbort: AbortController | undefined;
-const { fitView, zoomIn, zoomOut } = useVueFlow("red-team-workflow");
+const { fitView, setViewport, zoomIn, zoomOut, screenToFlowCoordinate } =
+  useVueFlow("red-team-workflow");
+const flowCanvas = ref<HTMLElement | null>(null);
+
+const WORKFLOW_LAYOUT = {
+  startX: 24,
+  phaseStartX: 240,
+  phaseStepX: 520,
+  phaseY: 300,
+  toolOffsetX: 260,
+  toolGapY: 170,
+} as const;
 
 function zoomCanvasIn() {
   void zoomIn();
@@ -288,7 +357,17 @@ function fitWorkflowCanvas() {
   void fitView({ padding: 0.2, maxZoom: 0.95 });
 }
 
+function workflowToolY(index: number, count: number) {
+  return (
+    WORKFLOW_LAYOUT.phaseY +
+    (index - Math.max(0, count - 1) / 2) * WORKFLOW_LAYOUT.toolGapY
+  );
+}
+
 const sortedPhases = computed(() => PHASES);
+const filteredAgents = computed(() =>
+  SUBAGENTS.filter((agent) => agent.phase === selectedPhase.value),
+);
 const selectedNode = computed(() =>
   nodes.value.find((node) => node.id === selectedNodeId.value),
 );
@@ -298,27 +377,16 @@ const toolNodes = computed(() =>
 const phaseNodes = computed(() =>
   nodes.value.filter((node) => node.data.nodeKind === "phase"),
 );
+const hasCanonicalPhaseNode = (phase: PhaseCode) =>
+  nodes.value.some(
+    (node) =>
+      node.id === phaseNodeId(phase) && node.data.nodeKind === "phase",
+  );
 const connectedEdgeCount = computed(() => edges.value.length);
 const graphReady = computed(
   () => graphValidation.value.length === 0 && nodes.value.length > 2,
 );
-const selectedProject = computed(() =>
-  projects.value.find((project) => project.id === selectedProjectId.value),
-);
-const hasWorkflowSnapshot = computed(
-  () =>
-    Boolean(workflowSnapshot.value.workflowId) &&
-    Number(workflowSnapshot.value.revision) > 0 &&
-    Boolean(workflowSnapshot.value.specDigest),
-);
-
 const WORKFLOW_PROJECT_STORAGE_KEY = "security_toolbox_workflow_project_v1";
-
-function workflowUpdatedAt(value?: string) {
-  if (!value) return "";
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString("zh-CN");
-}
 
 function safeId(text: string) {
   return text
@@ -348,6 +416,7 @@ function nodeData(
   phase: PhaseCode,
   label?: string,
   tool?: string,
+  parameters?: Record<string, unknown>,
 ): EditorNodeData {
   const meta = phaseOf(phase);
   const agent = agentOf(tool);
@@ -359,7 +428,18 @@ function nodeData(
     icon: agent?.icon || meta.icon,
     tool,
     risk: agent?.risk,
+    ...(tool ? { parameters: workflowToolParameters(tool, parameters) } : {}),
   };
+}
+
+function workflowToolParameters(
+  tool?: string,
+  parameters?: Record<string, unknown>,
+) {
+  if (parameters && Object.keys(parameters).length) return { ...parameters };
+  return tool === "afrog_scan" || tool === "xray_scan"
+    ? { allPocs: true }
+    : {};
 }
 
 function makeNode(
@@ -369,13 +449,14 @@ function makeNode(
   position: { x: number; y: number },
   label?: string,
   tool?: string,
+  parameters?: Record<string, unknown>,
 ): EditorNode {
   const system = kind === "system";
   return {
     id,
     type: "workflowNode",
     position,
-    data: nodeData(kind, phase, label, tool),
+    data: nodeData(kind, phase, label, tool, parameters),
     draggable: !system,
     selectable: true,
     connectable: true,
@@ -406,7 +487,12 @@ function phaseToolMap(code: PresetCode): Record<PhaseCode, string[]> {
       engagement: [],
       recon: ["retrieve_project_context"],
       mapping: ["http_headers", "tls_config"],
-      discovery: ["http_security_check", "nuclei_scan"],
+      discovery: [
+        "http_security_check",
+        "nuclei_scan",
+        "afrog_scan",
+        "xray_scan",
+      ],
       validation: [],
       impact: [],
       retest: [],
@@ -431,14 +517,24 @@ function phaseToolMap(code: PresetCode): Record<PhaseCode, string[]> {
       discovery: [],
       validation: ["http_security_check"],
       impact: [],
-      retest: ["http_security_check", "nuclei_scan"],
+      retest: [
+        "http_security_check",
+        "nuclei_scan",
+        "afrog_scan",
+        "xray_scan",
+      ],
       report: [],
     };
   return {
     engagement: [],
     recon: ["retrieve_project_context"],
     mapping: ["nmap_service_scan", "http_headers", "tls_config"],
-    discovery: ["http_security_check", "nuclei_scan"],
+    discovery: [
+      "http_security_check",
+      "nuclei_scan",
+      "afrog_scan",
+      "xray_scan",
+    ],
     validation: [],
     impact: [],
     retest: [],
@@ -464,21 +560,36 @@ function buildPreset(code: PresetCode, retainedSteps?: WorkflowStepSpec[]) {
     ? emptyPhaseToolMap()
     : phaseToolMap(code);
   const migrated = retainedSteps?.length ? retainedSteps : [];
+  const migratedByTool = new Map<string, WorkflowStepSpec[]>();
   if (migrated.length) {
     migrated.forEach((step) => {
       const phase = inferPhase(step.tool);
       tools[phase].push(step.tool);
+      migratedByTool.set(step.tool, [
+        ...(migratedByTool.get(step.tool) || []),
+        step,
+      ]);
     });
   }
   const resultNodes: EditorNode[] = [];
   const resultEdges: Edge[] = [];
   resultNodes.push(
-    makeNode("__start__", "system", "engagement", { x: 20, y: 270 }, "开始"),
+    makeNode(
+      "__start__",
+      "system",
+      "engagement",
+      { x: WORKFLOW_LAYOUT.startX, y: WORKFLOW_LAYOUT.phaseY + 18 },
+      "开始",
+    ),
   );
   PHASES.forEach((phase, index) => {
-    const x = 220 + index * 390;
+    const x =
+      WORKFLOW_LAYOUT.phaseStartX + index * WORKFLOW_LAYOUT.phaseStepX;
     resultNodes.push(
-      makeNode(phaseNodeId(phase.code), "phase", phase.code, { x, y: 270 }),
+      makeNode(phaseNodeId(phase.code), "phase", phase.code, {
+        x,
+        y: WORKFLOW_LAYOUT.phaseY,
+      }),
     );
   });
   resultNodes.push(
@@ -486,7 +597,12 @@ function buildPreset(code: PresetCode, retainedSteps?: WorkflowStepSpec[]) {
       "__end__",
       "system",
       "report",
-      { x: 220 + PHASES.length * 390, y: 270 },
+      {
+        x:
+          WORKFLOW_LAYOUT.phaseStartX +
+          PHASES.length * WORKFLOW_LAYOUT.phaseStepX,
+        y: WORKFLOW_LAYOUT.phaseY + 18,
+      },
       "结束",
     ),
   );
@@ -502,27 +618,50 @@ function buildPreset(code: PresetCode, retainedSteps?: WorkflowStepSpec[]) {
         : "__end__";
     const phaseTools = tools[phase.code] || [];
     const counts = new Map<string, number>();
+    const phaseToolNodeIds: string[] = [];
     phaseTools.forEach((tool, toolIndex) => {
       const occurrence = (counts.get(tool) || 0) + 1;
       counts.set(tool, occurrence);
       const agent = agentOf(tool);
       if (!agent) return;
       const id = `tool-${safeId(tool)}-${phase.code}-${occurrence}`;
-      const y = 96 + (toolIndex % 4) * 112;
+      const migratedStep = migratedByTool.get(tool)?.[occurrence - 1];
       resultNodes.push(
         makeNode(
           id,
           "tool",
           phase.code,
-          { x: 220 + index * 390 + 190, y },
+          {
+            x:
+              WORKFLOW_LAYOUT.phaseStartX +
+              index * WORKFLOW_LAYOUT.phaseStepX +
+              WORKFLOW_LAYOUT.toolOffsetX,
+            y: workflowToolY(toolIndex, phaseTools.length),
+          },
           undefined,
           tool,
+          migratedStep?.parameters,
         ),
       );
-      resultEdges.push(makeEdge(milestone, id));
-      resultEdges.push(makeEdge(id, next));
+      phaseToolNodeIds.push(id);
     });
-    if (!phaseTools.length) resultEdges.push(makeEdge(milestone, next));
+    if (!phaseToolNodeIds.length) {
+      resultEdges.push(makeEdge(milestone, next));
+    } else if (
+      phaseTools.some((tool) => agentOf(tool)?.risk === "CAUTION")
+    ) {
+      let upstream = milestone;
+      phaseToolNodeIds.forEach((id) => {
+        resultEdges.push(makeEdge(upstream, id));
+        upstream = id;
+      });
+      resultEdges.push(makeEdge(upstream, next));
+    } else {
+      phaseToolNodeIds.forEach((id) => {
+        resultEdges.push(makeEdge(milestone, id));
+        resultEdges.push(makeEdge(id, next));
+      });
+    }
   });
   nodes.value = resultNodes;
   edges.value = dedupeEdges(resultEdges);
@@ -530,12 +669,17 @@ function buildPreset(code: PresetCode, retainedSteps?: WorkflowStepSpec[]) {
   selectedEdgeId.value = "";
   graphValidation.value = [];
   graphNotice.value = `${PRESETS.find((item) => item.value === code)?.label || "红队评估"}已载入，可拖动节点并手动连接依赖。`;
-  void refit();
+  void refit("start");
 }
 
 function inferPhase(tool?: string): PhaseCode {
   if (tool === "retrieve_project_context") return "recon";
-  if (tool === "http_security_check" || tool === "nuclei_scan")
+  if (
+    tool === "http_security_check" ||
+    tool === "nuclei_scan" ||
+    tool === "afrog_scan" ||
+    tool === "xray_scan"
+  )
     return "discovery";
   if (tool) return "mapping";
   return "validation";
@@ -718,7 +862,10 @@ function uniqueEdgeId(source: string, target: string) {
 }
 
 function onNodeClick(event: NodeMouseEvent) {
-  selectedNodeId.value = event.node.id;
+  selectNode(event.node.id);
+}
+function selectNode(id: string) {
+  selectedNodeId.value = id;
   setSelectedEdge("");
 }
 function onEdgeClick(event: { edge: Edge }) {
@@ -747,6 +894,11 @@ function onNodeDragStop(event: NodeDragEvent) {
 function removeSelectedEdge() {
   if (!selectedEdgeId.value) return;
   removeEdge(selectedEdgeId.value, true);
+}
+
+function removeSelectedNode() {
+  if (!selectedNodeId.value) return;
+  removeNode(selectedNodeId.value);
 }
 
 function removeEdge(edgeId: string, notify = false) {
@@ -780,28 +932,45 @@ function removeNode(id: string) {
   validateGraph();
 }
 
-function addPhaseNode() {
-  const phase = selectedPhase.value;
+function addPhaseNode(
+  phase: PhaseCode,
+  droppedPosition?: { x: number; y: number },
+) {
+  const existingId = phaseNodeId(phase);
+  if (hasCanonicalPhaseNode(phase)) {
+    selectedNodeId.value = existingId;
+    selectedPhase.value = phase;
+    ElMessage.info(`${phaseOf(phase).shortLabel}阶段已在画布中`);
+    return;
+  }
   const meta = phaseOf(phase);
-  const id = uniqueId(`phase-${phase}`);
-  const position = { x: 380 + nodes.value.length * 28, y: 500 };
+  const phaseIndex = PHASES.findIndex((item) => item.code === phase);
+  const position = droppedPosition || {
+    x: WORKFLOW_LAYOUT.phaseStartX + phaseIndex * WORKFLOW_LAYOUT.phaseStepX,
+    y: WORKFLOW_LAYOUT.phaseY,
+  };
   nodes.value = [
     ...nodes.value,
-    makeNode(id, "phase", phase, position, `${meta.label}（自定义）`),
+    makeNode(existingId, "phase", phase, position),
   ];
-  selectedNodeId.value = id;
-  graphNotice.value = "已添加阶段节点，请从右侧拖动连接点建立上游和下游依赖。";
+  selectedNodeId.value = existingId;
+  selectedPhase.value = phase;
+  graphNotice.value = `已加回“${meta.shortLabel}”阶段，请重新连接它的上游和下游依赖。`;
   validateGraph();
 }
 
-function addToolNode(tool: string, phase = selectedPhase.value) {
+function addToolNode(
+  tool: string,
+  phase = selectedPhase.value,
+  droppedPosition?: { x: number; y: number },
+) {
   const agent = agentOf(tool);
   if (!agent) return;
   const id = uniqueId(`tool-${safeId(tool)}-${phase}`);
   const phaseAnchor = nodes.value.find(
     (node) => node.id === phaseNodeId(phase),
   );
-  const position = {
+  const position = droppedPosition || {
     x: (phaseAnchor?.position.x || 420) + 185,
     y: 480 + (toolNodes.value.length % 4) * 112,
   };
@@ -827,14 +996,58 @@ function addToolNode(tool: string, phase = selectedPhase.value) {
   validateGraph();
 }
 
-function onLibraryDragStart(event: DragEvent, tool: string) {
-  event.dataTransfer?.setData("application/x-workflow-tool", tool);
+type LibraryDropPayload =
+  | { type: "phase"; phase: PhaseCode }
+  | { type: "tool"; tool: string; phase: PhaseCode };
+
+function setLibraryDragPayload(event: DragEvent, payload: LibraryDropPayload) {
+  event.dataTransfer?.setData(
+    "application/x-workflow-library-item",
+    JSON.stringify(payload),
+  );
   if (event.dataTransfer) event.dataTransfer.effectAllowed = "copy";
 }
+function onPhaseDragStart(event: DragEvent, phase: PhaseCode) {
+  if (hasCanonicalPhaseNode(phase)) {
+    event.preventDefault();
+    return;
+  }
+  setLibraryDragPayload(event, { type: "phase", phase });
+}
+function onLibraryDragStart(event: DragEvent, tool: string) {
+  setLibraryDragPayload(event, {
+    type: "tool",
+    tool,
+    phase: agentOf(tool)?.phase || selectedPhase.value,
+  });
+  // Keep the original payload so older drag handlers remain compatible.
+  event.dataTransfer?.setData("application/x-workflow-tool", tool);
+}
 function onCanvasDrop(event: DragEvent) {
-  const tool = event.dataTransfer?.getData("application/x-workflow-tool");
-  if (!tool) return;
-  addToolNode(tool, selectedPhase.value);
+  const position = screenToFlowCoordinate({ x: event.clientX, y: event.clientY });
+  const encoded = event.dataTransfer?.getData(
+    "application/x-workflow-library-item",
+  );
+  if (encoded) {
+    try {
+      const payload = JSON.parse(encoded) as LibraryDropPayload;
+      if (
+        payload.type === "phase" &&
+        PHASES.some((phase) => phase.code === payload.phase)
+      ) {
+        addPhaseNode(payload.phase, position);
+        return;
+      }
+      if (payload.type === "tool" && agentOf(payload.tool)) {
+        addToolNode(payload.tool, payload.phase, position);
+        return;
+      }
+    } catch {
+      // Fall through to the legacy tool-only payload.
+    }
+  }
+  const legacyTool = event.dataTransfer?.getData("application/x-workflow-tool");
+  if (legacyTool) addToolNode(legacyTool, selectedPhase.value, position);
 }
 
 async function resetPreset() {
@@ -856,7 +1069,10 @@ function serializeGraph(): WorkflowSpecV2 {
     nodeId: node.id,
     tool: node.data.tool || "",
     label: node.data.label,
-    parameters: {},
+    parameters: workflowToolParameters(
+      node.data.tool,
+      node.data.parameters,
+    ),
     risk: node.data.risk || "SAFE",
     requiresApproval: (node.data.risk || "SAFE") !== "SAFE",
     group: Math.max((topo.level.get(node.id) || 0) - firstToolLevel, 0),
@@ -897,7 +1113,10 @@ async function save() {
   }
 }
 
-function toEditorNode(spec: WorkflowGraphNodeSpec): EditorNode {
+function toEditorNode(
+  spec: WorkflowGraphNodeSpec,
+  parameters?: Record<string, unknown>,
+): EditorNode {
   const kind =
     spec.type === "system" || spec.id === "__start__" || spec.id === "__end__"
       ? "system"
@@ -913,10 +1132,19 @@ function toEditorNode(spec: WorkflowGraphNodeSpec): EditorNode {
     x: Number.isFinite(spec.position?.x) ? spec.position.x : 100,
     y: Number.isFinite(spec.position?.y) ? spec.position.y : 250,
   };
-  return makeNode(spec.id, kind, phase, position, spec.label, spec.tool);
+  return makeNode(
+    spec.id,
+    kind,
+    phase,
+    position,
+    spec.label,
+    spec.tool,
+    parameters,
+  );
 }
 
 function loadFromSpec(data: WorkflowSpecV2) {
+  let generatedPreset = false;
   workflowSnapshot.value = {
     workflowId: data.workflowId,
     scopeId: data.scopeId,
@@ -926,7 +1154,14 @@ function loadFromSpec(data: WorkflowSpecV2) {
     updatedAt: data.updatedAt,
   };
   if (data?.graph?.nodes?.length && data.graph.edges) {
-    nodes.value = data.graph.nodes.map(toEditorNode);
+    const parametersByNode = new Map(
+      (data.steps || [])
+        .filter((step) => step.nodeId)
+        .map((step) => [step.nodeId as string, step.parameters]),
+    );
+    nodes.value = data.graph.nodes.map((node) =>
+      toEditorNode(node, parametersByNode.get(node.id)),
+    );
     edges.value = dedupeEdges(
       data.graph.edges.map((edge) =>
         makeEdge(
@@ -952,13 +1187,15 @@ function loadFromSpec(data: WorkflowSpecV2) {
       (savedStepCount > 0 && graphToolCount !== savedStepCount)
     ) {
       buildPreset(preset.value, data.steps);
+      generatedPreset = true;
     }
   } else {
     // Backward-compatible migration for the old steps-only endpoint.
     preset.value = "standard";
     buildPreset("standard", data?.steps);
+    generatedPreset = true;
   }
-  void refit();
+  if (!generatedPreset) void refit();
 }
 
 async function load() {
@@ -1010,10 +1247,40 @@ async function changeProject(projectId: number) {
   await load();
 }
 
-async function refit() {
+async function refit(mode: "overview" | "start" = "overview") {
   await nextTick();
   window.setTimeout(() => {
-    void fitView({ padding: 0.14, duration: 180 });
+    if (mode === "start") {
+      const canvas = flowCanvas.value;
+      const width = canvas?.clientWidth || 1000;
+      const height = canvas?.clientHeight || 620;
+      const zoom = Math.min(0.9, Math.max(0.78, width / 1100));
+      const firstToolY = Math.min(
+        ...nodes.value.map((node) => node.position.y),
+      );
+      const lastToolBottom = Math.max(
+        ...nodes.value.map(
+          (node) =>
+            node.position.y +
+            (node.data.nodeKind === "tool"
+              ? 150
+              : node.data.nodeKind === "system"
+                ? 72
+                : 108),
+        ),
+      );
+      const graphHeight = lastToolBottom - firstToolY;
+      void setViewport(
+        {
+          x: 24 - WORKFLOW_LAYOUT.startX * zoom,
+          y: Math.max(24, (height - graphHeight * zoom) / 2) - firstToolY * zoom,
+          zoom,
+        },
+        { duration: 180 },
+      );
+      return;
+    }
+    void fitView({ padding: 0.14, maxZoom: 0.95, duration: 180 });
   }, 50);
 }
 
@@ -1129,13 +1396,18 @@ watch([nodes, edges], () => {
 watch([selectedNodeId, preset], () => scheduleSuggestions());
 
 function isTypingTarget(target: EventTarget | null) {
-  const el = target as HTMLElement | null;
+  const el = target instanceof HTMLElement ? target : null;
   return (
     !!el &&
     (el.tagName === "INPUT" ||
       el.tagName === "TEXTAREA" ||
       el.tagName === "SELECT" ||
-      el.isContentEditable)
+      el.isContentEditable ||
+      Boolean(
+        el.closest(
+          "input, textarea, select, [contenteditable='true'], [contenteditable='']",
+        ),
+      ))
   );
 }
 function onWorkflowKeydown(event: KeyboardEvent) {
@@ -1145,13 +1417,18 @@ function onWorkflowKeydown(event: KeyboardEvent) {
     return;
   }
   if (
-    (event.key === "Delete" || event.key === "Backspace") &&
-    selectedEdgeId.value &&
-    !isTypingTarget(event.target)
-  ) {
+    (event.key !== "Delete" && event.key !== "Backspace") ||
+    isTypingTarget(event.target)
+  )
+    return;
+  if (selectedNodeId.value) {
     event.preventDefault();
-    removeSelectedEdge();
+    removeSelectedNode();
+    return;
   }
+  if (!selectedEdgeId.value) return;
+  event.preventDefault();
+  removeSelectedEdge();
 }
 
 onMounted(() => {
@@ -1247,44 +1524,9 @@ onBeforeUnmount(() => {
     </el-alert>
 
     <div class="workflow-status-row">
-      <span class="status-chip">
-        <el-icon><FolderOpened /></el-icon>{{ selectedProject?.name || "未选择项目" }}
-      </span>
-      <span
-        class="status-chip workflow-snapshot-chip"
-        :data-fluent-tooltip="workflowSnapshot.workflowId || '保存后由服务端生成'"
-      >
-        Workflow {{ workflowSnapshot.workflowId || "尚未保存" }}
-      </span>
-      <span class="status-chip workflow-snapshot-chip">
-        Revision {{ workflowSnapshot.revision || "未生成" }}
-      </span>
-      <span
-        class="status-chip workflow-snapshot-chip"
-        :class="{ 'status-chip--ok': hasWorkflowSnapshot }"
-        :data-fluent-tooltip="workflowSnapshot.specDigest || '保存后由服务端计算'"
-      >
-        Digest {{ workflowSnapshot.specDigest || "未生成" }}
-      </span>
-      <span
-        v-if="workflowSnapshot.updatedAt"
-        class="status-chip workflow-snapshot-chip"
-      >
-        {{ workflowSnapshot.updatedBy || "系统" }} ·
-        {{ workflowUpdatedAt(workflowSnapshot.updatedAt) }}
-      </span>
       <span class="status-chip"
-        ><el-icon><Flag /></el-icon>固定入口：开始 → 结束</span
-      >
-      <span class="status-chip"
-        ><FluentIcon name="shield-checkmark" />每个动作自动复核授权范围</span
-      >
-      <span class="status-chip"
-        ><el-icon><CircleCheck /></el-icon>{{ phaseNodes.length }} 个阶段节点 ·
-        {{ toolNodes.length }} 个受控能力节点</span
-      >
-      <span class="status-chip"
-        ><el-icon><Refresh /></el-icon>{{ connectedEdgeCount }} 条依赖连线</span
+        ><el-icon><CircleCheck /></el-icon>{{ phaseNodes.length }} 个阶段 ·
+        {{ toolNodes.length }} 个能力 · {{ connectedEdgeCount }} 条连线</span
       >
       <span v-if="graphReady" class="status-chip status-chip--ok"
         ><el-icon><CircleCheck /></el-icon>拓扑可保存</span
@@ -1327,15 +1569,13 @@ onBeforeUnmount(() => {
             </p>
           </div>
           <div class="editor-head-actions">
-            <el-button size="small" @click="addPhaseNode"
-              ><el-icon><Plus /></el-icon>添加阶段节点</el-button
-            >
             <el-button size="small" :loading="loading" @click="load"
               ><el-icon><Refresh /></el-icon>重新加载</el-button
             >
           </div>
         </header>
         <div
+          ref="flowCanvas"
           v-loading="loading"
           class="flow-canvas"
           @drop.prevent="onCanvasDrop"
@@ -1351,7 +1591,6 @@ onBeforeUnmount(() => {
             :delete-key-code="null"
             :min-zoom="0.2"
             :max-zoom="1.6"
-            fit-view-on-init
             class="red-team-flow"
             @connect="onConnect"
             @node-click="onNodeClick"
@@ -1369,7 +1608,7 @@ onBeforeUnmount(() => {
                   `workflow-node--${data.phase}`,
                   { 'is-selected': id === selectedNodeId },
                 ]"
-                @click.stop="selectedNodeId = id"
+                @click.stop="selectNode(id)"
               >
                 <Handle
                   v-if="id !== '__start__'"
@@ -1451,10 +1690,14 @@ onBeforeUnmount(() => {
         </div>
         <footer class="editor-foot">
           <span
-            >提示：悬停高亮连线，单击选中后按 Delete 键或点击连线上的 ✕
-            删除；拖动节点只改变布局，不会改变执行顺序。</span
+            >提示：单击可删除节点或连线后按 Delete 键；也可点击节点垃圾桶或连线上的
+            ✕ 删除。拖动节点只改变布局，不会改变执行顺序。</span
           ><span v-if="selectedNode"
-            >已选节点：{{ selectedNode.data.label }}</span
+            >已选节点：{{ selectedNode.data.label }}{{
+              selectedNode.data.nodeKind === "system"
+                ? "（固定保留）"
+                : "，按 Delete 删除"
+            }}</span
           ><span v-else-if="selectedEdgeId"
             >已选连线：按 Delete 或点击连线上的 ✕ 删除</span
           >
@@ -1464,65 +1707,132 @@ onBeforeUnmount(() => {
       <aside class="workflow-library">
         <div class="library-head">
           <div>
-            <h4>受控能力库</h4>
-            <p>选择目标阶段后使用添加按钮，或把能力卡拖入画布。</p>
+            <h4>阶段与受控能力库</h4>
+            <p>阶段用于组织流程；能力是在授权范围内执行的具体检查。</p>
           </div>
-          <el-select
-            v-model="selectedPhase"
-            size="small"
-            aria-label="能力所属阶段"
-          >
-            <el-option
-              v-for="phase in sortedPhases"
-              :key="phase.code"
-              :value="phase.code"
-              :label="phase.shortLabel"
-            />
-          </el-select>
         </div>
 
-        <div class="library-scroll" aria-label="受控能力列表">
-          <div
-            v-for="agent in SUBAGENTS"
-            :key="agent.tool"
-            class="library-item"
-            :class="{ caution: agent.risk !== 'SAFE' }"
-            draggable="true"
-            @dragstart="onLibraryDragStart($event, agent.tool)"
-          >
-            <span class="library-icon"><FluentIcon :name="agent.icon" /></span>
-            <span class="library-copy"
-              ><strong>{{ agent.name }}</strong
-              ><small>{{ agent.desc }}</small
-              ><em
-                >{{
-                  phaseOf(
-                    selectedPhase === agent.phase ? selectedPhase : agent.phase,
-                  ).shortLabel
-                }}
-                · {{ agent.risk === "SAFE" ? "低影响" : "需人工确认" }}</em
-              ></span
-            >
-            <el-tooltip
-              content="加入选定阶段"
-              placement="left"
-              :show-after="350"
-              ><button
-                type="button"
-                class="library-add"
-                aria-label="加入选定阶段"
-                @click="addToolNode(agent.tool)"
+        <div class="library-scroll">
+          <section class="phase-library" aria-label="流程阶段列表">
+            <div class="library-section-head">
+              <div>
+                <h5>流程阶段</h5>
+                <p>用于组织能力和依赖，不会直接执行检查。</p>
+              </div>
+            </div>
+            <div class="phase-library-grid">
+              <div
+                v-for="phase in PHASES"
+                :key="phase.code"
+                class="phase-library-item"
+                :class="{
+                  'is-present': hasCanonicalPhaseNode(phase.code),
+                  'is-selected': selectedPhase === phase.code,
+                }"
+                :data-phase-code="phase.code"
+                :draggable="!hasCanonicalPhaseNode(phase.code)"
+                @click="selectedPhase = phase.code"
+                @dragstart="onPhaseDragStart($event, phase.code)"
               >
-                <el-icon><Plus /></el-icon></button
-            ></el-tooltip>
-          </div>
-          <div class="phase-legend">
-            <strong>阶段导航</strong
-            ><span v-for="phase in PHASES" :key="phase.code"
-              ><i><FluentIcon :name="phase.icon" /></i
-              >{{ phase.shortLabel }}</span
+                <span class="phase-library-icon"
+                  ><FluentIcon :name="phase.icon"
+                /></span>
+                <span class="phase-library-copy">
+                  <strong>{{ phase.shortLabel }}</strong>
+                  <small>流程阶段 · 用于组织能力和依赖</small>
+                </span>
+                <el-tooltip
+                  :content="
+                    hasCanonicalPhaseNode(phase.code)
+                      ? '该阶段已在画布中'
+                      : `加回${phase.shortLabel}阶段`
+                  "
+                  placement="left"
+                  :show-after="350"
+                >
+                  <button
+                    type="button"
+                    class="phase-library-action"
+                    :class="{
+                      'is-present': hasCanonicalPhaseNode(phase.code),
+                    }"
+                    :disabled="hasCanonicalPhaseNode(phase.code)"
+                    :aria-label="
+                      hasCanonicalPhaseNode(phase.code)
+                        ? `${phase.shortLabel}阶段已添加`
+                        : `加回${phase.shortLabel}阶段`
+                    "
+                    @click.stop="addPhaseNode(phase.code)"
+                  >
+                    <el-icon v-if="hasCanonicalPhaseNode(phase.code)"
+                      ><Check
+                    /></el-icon>
+                    <el-icon v-else><Plus /></el-icon>
+                  </button>
+                </el-tooltip>
+              </div>
+            </div>
+          </section>
+
+          <section class="capability-library" aria-label="受控能力列表">
+            <div class="library-section-head capability-library-head">
+              <div>
+                <h5>受控能力</h5>
+                <p>选择阶段后，只显示该阶段可执行的具体检查。</p>
+              </div>
+              <el-select
+                v-model="selectedPhase"
+                size="small"
+                aria-label="能力所属阶段"
+              >
+                <el-option
+                  v-for="phase in sortedPhases"
+                  :key="phase.code"
+                  :value="phase.code"
+                  :label="phase.shortLabel"
+                />
+              </el-select>
+            </div>
+            <div
+              v-for="agent in filteredAgents"
+              :key="agent.tool"
+              class="library-item"
+              :class="{ caution: agent.risk !== 'SAFE' }"
+              draggable="true"
+              @dragstart="onLibraryDragStart($event, agent.tool)"
             >
-          </div>
+              <span class="library-icon"
+                ><FluentIcon :name="agent.icon"
+              /></span>
+              <span class="library-copy"
+                ><strong>{{ agent.name }}</strong
+                ><small>{{ agent.desc }}</small
+                ><em
+                  >{{ phaseOf(agent.phase).shortLabel }}
+                  · {{ agent.risk === "SAFE" ? "低影响" : "需人工确认" }}</em
+                ></span
+              >
+              <el-tooltip
+                content="加入选定阶段"
+                placement="left"
+                :show-after="350"
+                ><button
+                  type="button"
+                  class="library-add"
+                  aria-label="加入选定阶段"
+                  @click="addToolNode(agent.tool)"
+                >
+                  <el-icon><Plus /></el-icon></button
+              ></el-tooltip>
+            </div>
+            <div v-if="!filteredAgents.length" class="library-empty">
+              <FluentIcon :name="phaseOf(selectedPhase).icon" />
+              <strong
+                >{{ phaseOf(selectedPhase).shortLabel }}暂无可添加的受控能力</strong
+              >
+              <small>该阶段用于组织流程、确认结论或交付结果。</small>
+            </div>
+          </section>
         </div>
 
         <div
@@ -1576,15 +1886,15 @@ onBeforeUnmount(() => {
               :class="[`suggest-card--${item.severity || 'info'}`]"
             >
               <header>
-                <strong>{{ item.title }}</strong>
+                <strong>{{ localizeSuggestionText(item.title) }}</strong>
                 <el-tag
                   size="small"
                   effect="plain"
                   :type="item.severity === 'warning' ? 'warning' : 'info'"
-                  >{{ item.kind || "tip" }}</el-tag
+                  >{{ suggestionKindLabel(item.kind) }}</el-tag
                 >
               </header>
-              <p>{{ item.detail }}</p>
+              <p>{{ localizeSuggestionText(item.detail) }}</p>
               <div v-if="item.action" class="suggest-actions">
                 <el-button
                   size="small"
@@ -1610,9 +1920,10 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.workflow-page {
+.workflow-page.workflow-page {
   display: flex;
   flex-direction: column;
+  gap: 0;
   min-height: 0;
   height: 100%;
   padding: 0;
@@ -1666,10 +1977,6 @@ onBeforeUnmount(() => {
 .project-select {
   width: 200px;
 }
-.workflow-snapshot-chip {
-  max-width: min(100%, 360px);
-  overflow-wrap: anywhere;
-}
 .workflow-guide {
   margin: 0 0 10px;
 }
@@ -1709,7 +2016,7 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
-  margin: 0 0 10px;
+  margin: 0 0 4px;
 }
 .status-chip {
   min-height: 28px !important;
@@ -1738,7 +2045,7 @@ onBeforeUnmount(() => {
 }
 .graph-notice,
 .graph-validation {
-  margin-bottom: 10px;
+  margin-bottom: 4px;
 }
 .graph-notice :deep(.el-alert),
 .graph-validation :deep(.el-alert),
@@ -2242,6 +2549,111 @@ onBeforeUnmount(() => {
 .library-head :deep(.el-select__wrapper) {
   min-height: 32px;
 }
+.phase-library {
+  padding: 12px 0 14px;
+  border-bottom: 1px solid var(--app-border);
+}
+.library-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.library-section-head h5 {
+  margin: 0;
+  color: var(--app-text);
+  font-size: var(--type-caption);
+}
+.library-section-head p {
+  margin: 3px 0 0;
+  color: var(--app-muted);
+  font-size: var(--type-micro);
+  line-height: 1.45;
+}
+.phase-library-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 7px;
+  margin-top: 10px;
+}
+.phase-library-item {
+  display: grid;
+  min-width: 0;
+  min-height: 54px;
+  grid-template-columns: 24px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 7px;
+  padding: 7px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--fluent-radius-control);
+  background: var(--app-surface-strong);
+  cursor: grab;
+}
+.phase-library-item.is-present {
+  background: var(--app-surface-soft);
+  cursor: default;
+}
+.phase-library-item.is-selected {
+  border-color: var(--app-accent);
+}
+.phase-library-icon {
+  display: grid;
+  place-items: center;
+  color: var(--app-accent);
+  font-size: 16px;
+}
+.phase-library-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.phase-library-copy strong {
+  overflow: hidden;
+  font-size: var(--type-micro);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.phase-library-copy small {
+  overflow: hidden;
+  color: var(--app-muted);
+  font-size: 10px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.phase-library-action {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--fluent-radius-control);
+  background: transparent;
+  color: var(--app-accent);
+  cursor: pointer;
+}
+.phase-library-action:not(:disabled):hover {
+  background: var(--app-accent-soft);
+}
+.phase-library-action.is-present {
+  color: var(--app-success);
+  cursor: default;
+}
+.capability-library {
+  padding-top: 14px;
+}
+.capability-library-head {
+  align-items: center;
+  margin-bottom: 2px;
+}
+.capability-library-head :deep(.el-select) {
+  width: 132px;
+  flex: none;
+}
+.capability-library-head :deep(.el-select__wrapper) {
+  min-height: 32px;
+}
 .library-item {
   display: grid;
   min-height: 68px;
@@ -2304,29 +2716,27 @@ onBeforeUnmount(() => {
 .library-add:hover {
   background: var(--app-accent-soft);
 }
-.phase-legend {
+.library-empty {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px 12px;
-  margin-top: 18px;
-  padding-top: 14px;
-  border-top: 1px solid var(--app-border);
+  min-height: 132px;
+  place-items: center;
+  align-content: center;
+  gap: 7px;
+  padding: 18px 12px;
   color: var(--app-muted);
-  font-size: var(--type-micro);
+  text-align: center;
 }
-.phase-legend strong {
-  grid-column: 1 / -1;
+.library-empty > svg {
+  width: 24px;
+  height: 24px;
+  color: var(--app-accent);
+}
+.library-empty strong {
   color: var(--app-text);
-  font-size: var(--type-caption);
+  font-size: var(--type-body);
 }
-.phase-legend span {
-  display: flex;
-  min-height: 24px;
-  align-items: center;
-  gap: 6px;
-}
-.phase-legend i {
-  font-style: normal;
+.library-empty small {
+  line-height: 1.5;
 }
 @media (max-width: 1100px) {
   .workflow-editor-layout {
@@ -2346,10 +2756,8 @@ onBeforeUnmount(() => {
   }
   .library-head,
   .suggest-panel,
-  .phase-legend {
-    grid-column: 1 / -1;
-  }
-  .phase-legend {
+  .phase-library,
+  .capability-library {
     grid-column: 1 / -1;
   }
 }
@@ -2383,11 +2791,11 @@ onBeforeUnmount(() => {
   margin-bottom: 8px !important;
 }
 .workflow-page > .workflow-status-row {
-  margin-bottom: 8px !important;
+  margin-bottom: 4px !important;
 }
 .workflow-page > .graph-notice,
 .workflow-page > .graph-validation {
-  margin-bottom: 8px !important;
+  margin-bottom: 4px !important;
 }
 .workflow-editor-layout {
   min-height: calc(100vh - 220px);
@@ -2395,5 +2803,25 @@ onBeforeUnmount(() => {
 .editor-foot {
   padding: 8px 14px !important;
   font-size: 11px !important;
+}
+
+@media (min-width: 1201px) {
+  .workflow-page > .section-head {
+    align-items: center !important;
+    margin-bottom: 6px !important;
+  }
+  .workflow-page > .section-head > .workflow-actions {
+    flex-wrap: nowrap !important;
+  }
+  .workflow-page .project-select {
+    width: clamp(170px, 12vw, 200px);
+  }
+  .workflow-page .preset-select {
+    width: clamp(145px, 10vw, 170px);
+  }
+  .workflow-page > .workflow-status-row {
+    min-height: 28px;
+    margin-bottom: 4px !important;
+  }
 }
 </style>

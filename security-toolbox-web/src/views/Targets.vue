@@ -2,7 +2,7 @@
 import { onMounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Location, MagicStick } from "../components/fluentIcons";
+import { MagicStick } from "../components/fluentIcons";
 import {
   endpoints,
   safeGet,
@@ -25,6 +25,23 @@ const dialog = ref(false);
 const saving = ref(false);
 const saveError = ref("");
 const reporting = ref<number>();
+const editDialog = ref(false);
+const editSaving = ref(false);
+const editingTargetId = ref<number>();
+const originalEditTarget = ref<Target>();
+const editForm = reactive({
+  name: "",
+  targetValue: "",
+  targetType: "domain",
+  authorizationNote: "",
+  allowedPorts: "80,443",
+  enabled: true,
+  authorizationValidFrom: "",
+  authorizationExpiresAt: "",
+});
+const editSelectedPorts = ref<string[]>(["80", "443"]);
+const editCustomPorts = ref("");
+const editFullPortAccess = ref(false);
 const {
   page,
   pageSize,
@@ -184,6 +201,116 @@ async function remove(row: Target) {
   }
 }
 
+function openEditTarget(row: Target) {
+  editingTargetId.value = row.id;
+  originalEditTarget.value = { ...row };
+  editForm.name = row.name || "";
+  editForm.targetValue = row.targetValue || "";
+  editForm.targetType = (row.targetType || "domain").toLowerCase();
+  editForm.authorizationNote = row.authorizationNote || "";
+  editForm.allowedPorts = row.allowedPorts || "80,443";
+  editForm.enabled = row.enabled !== false;
+  editForm.authorizationValidFrom = row.authorizationValidFrom || "";
+  editForm.authorizationExpiresAt = row.authorizationExpiresAt || "";
+  const ports = (row.allowedPorts || "").split(",").map(p => p.trim()).filter(Boolean);
+  editSelectedPorts.value = ports.filter(p => /^\d+$/.test(p) && Number(p) <= 65535);
+  editCustomPorts.value = ports.filter(p => !/^\d+$/.test(p)).join(", ");
+  editFullPortAccess.value = (row.allowedPorts || "") === "1-65535";
+  editDialog.value = true;
+}
+
+function sameInstant(left?: string, right?: string) {
+  if (!left && !right) return true;
+  if (!left || !right) return false;
+  const leftTime = Date.parse(left);
+  const rightTime = Date.parse(right);
+  return Number.isFinite(leftTime) && Number.isFinite(rightTime)
+    ? leftTime === rightTime
+    : left === right;
+}
+
+function targetAuthorizationChanged(ports: string) {
+  const original = originalEditTarget.value;
+  if (!original) return false;
+  return (
+    editForm.targetValue.trim() !== original.targetValue.trim() ||
+    editForm.targetType.toLowerCase() !== original.targetType.toLowerCase() ||
+    editForm.authorizationNote !== original.authorizationNote ||
+    ports !== original.allowedPorts ||
+    editForm.enabled !== original.enabled ||
+    !sameInstant(
+      editForm.authorizationValidFrom,
+      original.authorizationValidFrom,
+    ) ||
+    !sameInstant(
+      editForm.authorizationExpiresAt,
+      original.authorizationExpiresAt,
+    )
+  );
+}
+
+async function saveEditTarget() {
+  if (!editingTargetId.value) return;
+  try {
+    const ports = editFullPortAccess.value ? "1-65535" : normalizeEditPorts();
+    if (targetAuthorizationChanged(ports)) {
+      await ElMessageBox.confirm(
+        "目标地址、类型、端口、授权记录、授权时间窗或启用状态已经变化。保存后会改变可执行的检测范围，请确认变更仍有明确授权。",
+        "确认授权范围变更",
+        {
+          confirmButtonText: "确认并保存",
+          cancelButtonText: "取消",
+          type: "warning",
+        },
+      );
+    }
+    editSaving.value = true;
+    await endpoints.updateTarget(editingTargetId.value, {
+      name: editForm.name,
+      targetValue: editForm.targetValue,
+      targetType: editForm.targetType,
+      authorizationNote: editForm.authorizationNote,
+      allowedPorts: ports,
+      enabled: editForm.enabled,
+      authorizationValidFrom: editForm.authorizationValidFrom
+        ? new Date(editForm.authorizationValidFrom).toISOString()
+        : undefined,
+      authorizationExpiresAt: editForm.authorizationExpiresAt
+        ? new Date(editForm.authorizationExpiresAt).toISOString()
+        : undefined,
+    });
+    editDialog.value = false;
+    await load();
+    ElMessage.success("目标已更新");
+  } catch (error) {
+    if (error === "cancel" || error === "close") return;
+    ElMessage.error(toErrorMessage(error, "更新失败"));
+  } finally {
+    editSaving.value = false;
+  }
+}
+
+function normalizeEditPorts() {
+  const source = [
+    ...editSelectedPorts.value,
+    ...editCustomPorts.value.split(/[\uFF0C,\uFF1B\u3001;\s]+/),
+  ].filter(Boolean);
+  const normalized = new Set<string>();
+  for (const raw of source) {
+    const token = raw.trim().replace(/[\u2014\u2013~\uFF5E]/g, "-");
+    const match = token.match(/^(\d{1,5})(?:-(\d{1,5}))?$/);
+    if (!match) throw new Error(`\u7AEF\u53E3\u683C\u5F0F\u65E0\u6548\uFF1A${raw}`);
+    const start = Number(match[1]);
+    const end = match[2] ? Number(match[2]) : undefined;
+    if (start < 1 || start > 65535 || (end !== undefined && (end < 1 || end > 65535 || end < start))) {
+      throw new Error(`\u7AEF\u53E3\u8303\u56F4\u65E0\u6548\uFF1A${raw}`);
+    }
+    normalized.add(end === undefined ? String(start) : `${start}-${end}`);
+  }
+  if (!normalized.size) throw new Error("\u8BF7\u81F3\u5C11\u9009\u62E9\u6216\u586B\u5199\u4E00\u4E2A\u5141\u8BB8\u7AEF\u53E3");
+  return [...normalized].sort((a, b) => Number(a.split("-")[0]) - Number(b.split("-")[0])).join(",");
+}
+
 function askCopilot(row: Target) {
   copilot.prepare({
     targetId: row.id,
@@ -265,6 +392,12 @@ onMounted(load);
             @click="downloadTargetReport(scope.row)"
             >目标 PDF</el-button
           ><el-button
+            class="target-action-edit"
+            type="primary"
+            link
+            @click="openEditTarget(scope.row)"
+            >编辑</el-button
+          ><el-button
             class="target-action-delete"
             type="danger"
             link
@@ -284,22 +417,14 @@ onMounted(load);
 
   <el-dialog
     v-model="dialog"
-    width="560px"
-    class="app-dialog app-dialog--sm target-dialog"
+    title="新增授权目标"
+    class="app-dialog app-dialog--md target-dialog"
     align-center
     destroy-on-close
   >
-    <template #header>
-      <div class="target-dialog-heading">
-        <span class="target-dialog-icon"
-          ><el-icon><Location /></el-icon
-        ></span>
-        <div>
-          <strong>新增授权目标</strong
-          ><small>登记已获得明确授权的地址和允许检测的端口</small>
-        </div>
-      </div>
-    </template>
+    <p class="app-dialog__intro">
+      登记已获得明确授权的地址和允许检测的端口。
+    </p>
     <el-alert
       v-if="saveError"
       :title="saveError"
@@ -421,6 +546,117 @@ onMounted(load);
         >保存目标</el-button
       ></template
     >
+  </el-dialog>
+  <el-dialog
+    v-model="editDialog"
+    title="编辑授权目标"
+    class="app-dialog app-dialog--md target-dialog"
+    align-center
+    destroy-on-close
+  >
+    <el-form label-position="top" class="target-form">
+      <div class="target-form-row">
+        <el-form-item label="目标名称">
+          <el-input v-model="editForm.name" placeholder="例如：主站" />
+        </el-form-item>
+        <el-form-item label="目标类型">
+          <el-select v-model="editForm.targetType">
+            <el-option label="域名" value="domain" />
+            <el-option label="IP 地址" value="ip" />
+            <el-option label="URL" value="url" />
+            <el-option label="网段" value="cidr" />
+          </el-select>
+        </el-form-item>
+      </div>
+      <el-form-item label="目标地址">
+        <el-input v-model="editForm.targetValue" placeholder="例如：example.com" />
+      </el-form-item>
+      <el-form-item label="授权记录">
+        <el-input
+          v-model="editForm.authorizationNote"
+          type="textarea"
+          :rows="2"
+          placeholder="填写授权来源和范围限制"
+        />
+      </el-form-item>
+      <el-form-item label="允许端口">
+        <div class="port-picker">
+          <div class="full-port-option">
+            <div>
+              <b>全端口 (1-65535)</b>
+              <small>使用 Nmap 扫描全端口，耗时较长</small>
+            </div>
+            <el-switch v-model="editFullPortAccess" />
+          </div>
+          <el-select
+            v-if="!editFullPortAccess"
+            v-model="editSelectedPorts"
+            multiple
+            filterable
+            allow-create
+            placeholder="选择常用端口"
+          >
+            <el-option
+              v-for="opt in commonPortOptions"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
+          <el-input
+            v-if="!editFullPortAccess"
+            v-model="editCustomPorts"
+            placeholder="自定义端口，如 8080, 9000-9100"
+          />
+          <p class="port-hint">
+            {{
+              editFullPortAccess
+                ? "将保存为 1-65535；执行端口检测时会使用 Nmap，普通 TCP 探测仍只适合少量端口。"
+                : "支持单个端口和端口范围，可用逗号、分号或空格分隔，保存时自动合并去重。"
+            }}
+          </p>
+        </div>
+      </el-form-item>
+      <div class="target-form-row">
+        <el-form-item label="授权开始">
+          <el-date-picker
+            v-model="editForm.authorizationValidFrom"
+            type="datetime"
+            value-format="YYYY-MM-DDTHH:mm:ssZ"
+            format="YYYY-MM-DD HH:mm"
+            placeholder="选择开始时间"
+            :editable="false"
+          />
+        </el-form-item>
+        <el-form-item label="授权结束">
+          <el-date-picker
+            v-model="editForm.authorizationExpiresAt"
+            type="datetime"
+            value-format="YYYY-MM-DDTHH:mm:ssZ"
+            format="YYYY-MM-DD HH:mm"
+            placeholder="选择结束时间"
+            :editable="false"
+          />
+        </el-form-item>
+      </div>
+      <div class="target-enabled-row">
+        <div>
+          <strong>启用目标</strong>
+          <small>保存后允许使用该目标创建检测任务</small>
+        </div>
+        <el-switch v-model="editForm.enabled" />
+      </div>
+    </el-form>
+    <template #footer>
+      <el-button @click="editDialog = false">取消</el-button>
+      <el-button
+        type="primary"
+        :loading="editSaving"
+        :disabled="!editForm.name || !editForm.targetValue || !editForm.authorizationNote"
+        @click="saveEditTarget"
+        >保存修改</el-button
+      >
+    </template>
   </el-dialog>
 </template>
 
@@ -584,39 +820,6 @@ onMounted(load);
 .targets-page :deep(.el-table__body tr.current-row .target-action-delete) {
   color: #b42318;
 }
-.target-dialog-heading {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.target-dialog-heading > div {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 4px;
-}
-.target-dialog-heading strong {
-  color: var(--app-text);
-  font-size: 16px;
-  font-weight: 650;
-  line-height: 1.25;
-}
-.target-dialog-heading small {
-  color: var(--app-muted);
-  font-size: 12px;
-  line-height: 1.45;
-}
-.target-dialog-icon {
-  display: grid;
-  width: 36px;
-  height: 36px;
-  flex: none;
-  place-items: center;
-  border-radius: 9px;
-  background: var(--app-accent-soft);
-  color: var(--app-accent);
-  font-size: 18px;
-}
 .target-form {
   margin: 0;
   padding: 0;
@@ -644,41 +847,5 @@ onMounted(load);
   border-top: 1px solid var(--app-border);
   border-radius: 0;
   background: transparent;
-}
-:global(.target-dialog .el-form-item) {
-  margin-bottom: 18px;
-}
-:global(.target-dialog .el-form-item__label) {
-  height: auto;
-  margin-bottom: 7px;
-  padding: 0;
-  color: var(--app-text) !important;
-  font-size: 13px;
-  font-weight: 650;
-  line-height: 1.4;
-}
-:global(.target-dialog .el-input__wrapper),
-:global(.target-dialog .el-select__wrapper),
-:global(.target-dialog .el-textarea__inner) {
-  border-radius: 8px;
-  background: var(--app-surface);
-  font-size: 13px;
-  box-shadow: 0 0 0 1px var(--app-border-strong) inset;
-}
-:global(.target-dialog .el-input__wrapper:hover),
-:global(.target-dialog .el-select__wrapper:hover),
-:global(.target-dialog .el-textarea__inner:hover) {
-  box-shadow: 0 0 0 1px var(--app-muted) inset;
-}
-:global(.target-dialog .el-input__wrapper.is-focus),
-:global(.target-dialog .el-select__wrapper.is-focused),
-:global(.target-dialog .el-textarea__inner:focus) {
-  box-shadow:
-    0 0 0 1px var(--app-accent) inset,
-    0 0 0 3px var(--app-accent-soft);
-}
-:global(.target-dialog .el-textarea__inner) {
-  min-height: 78px !important;
-  padding: 10px 11px;
 }
 </style>

@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref } from "vue";
 import { ElMessage } from "element-plus";
 import { CopyDocument, UploadFilled } from "../fluentIcons";
@@ -56,43 +56,70 @@ function calculateEntropy(bytes: Uint8Array) {
   return entropy;
 }
 
-async function selectFile(event: Event) {
-  const target = event.target as HTMLInputElement;
-  const file = target.files?.[0];
-  if (!file) return;
+const dragOver = ref(false);
+
+function analyzeFile(file: File) {
   if (file.size > 128 * 1024 * 1024) {
-    target.value = "";
     return ElMessage.error("为避免占用过多内存，单个文件最大支持 128 MB");
   }
   loading.value = true;
-  try {
-    const buffer = await file.arrayBuffer();
-    const bytes = new Uint8Array(buffer);
-    const [sha1, sha256, sha512] = await Promise.all([
-      crypto.subtle.digest("SHA-1", buffer),
-      crypto.subtle.digest("SHA-256", buffer),
-      crypto.subtle.digest("SHA-512", buffer),
-    ]);
-    result.value = {
-      name: file.name,
-      size: file.size,
-      mime: file.type || "浏览器未提供",
-      detectedType: detectType(bytes),
-      magic: bytesToHex(bytes.subarray(0, 16)).toUpperCase() || "空文件",
-      entropy: calculateEntropy(bytes),
-      hashes: {
-        MD5: md5Bytes(bytes),
-        "SHA-1": bytesToHex(new Uint8Array(sha1)),
-        "SHA-256": bytesToHex(new Uint8Array(sha256)),
-        "SHA-512": bytesToHex(new Uint8Array(sha512)),
-      },
-    };
-  } catch (error) {
-    ElMessage.error(toErrorMessage(error, "文件分析失败"));
-  } finally {
-    loading.value = false;
-    target.value = "";
-  }
+  file
+    .arrayBuffer()
+    .then((buffer) => {
+      const bytes = new Uint8Array(buffer);
+      return Promise.all([
+        crypto.subtle.digest("SHA-1", buffer),
+        crypto.subtle.digest("SHA-256", buffer),
+        crypto.subtle.digest("SHA-512", buffer),
+        Promise.resolve(bytes),
+      ]);
+    })
+    .then(([sha1, sha256, sha512, bytes]) => {
+      result.value = {
+        name: file.name,
+        size: file.size,
+        mime: file.type || "浏览器未提供",
+        detectedType: detectType(bytes),
+        magic: bytesToHex(bytes.subarray(0, 16)).toUpperCase() || "空文件",
+        entropy: calculateEntropy(bytes),
+        hashes: {
+          MD5: md5Bytes(bytes),
+          "SHA-1": bytesToHex(new Uint8Array(sha1)),
+          "SHA-256": bytesToHex(new Uint8Array(sha256)),
+          "SHA-512": bytesToHex(new Uint8Array(sha512)),
+        },
+      };
+    })
+    .catch((error) => {
+      ElMessage.error(toErrorMessage(error, "文件分析失败"));
+    })
+    .finally(() => {
+      loading.value = false;
+    });
+}
+
+async function selectFile(event: Event) {
+  const target = event.target as HTMLInputElement;
+  const file = target.files?.[0];
+  if (file) analyzeFile(file);
+  target.value = "";
+}
+
+function onDragOver(event: DragEvent) {
+  event.preventDefault();
+  dragOver.value = true;
+}
+
+function onDragLeave(event: DragEvent) {
+  event.preventDefault();
+  dragOver.value = false;
+}
+
+function onDrop(event: DragEvent) {
+  event.preventDefault();
+  dragOver.value = false;
+  const file = event.dataTransfer?.files?.[0];
+  if (file) analyzeFile(file);
 }
 
 async function copy(value: string) {
@@ -116,7 +143,13 @@ function formatSize(value: number) {
     <div class="offline-notice">
       文件只在当前页面内读取，用于魔数、熵和哈希计算；不会上传、执行或解压文件。
     </div>
-    <label class="file-drop" :class="{ loading }">
+    <label
+      class="file-drop"
+      :class="{ loading, 'drag-over': dragOver }"
+      @dragover="onDragOver"
+      @dragleave="onDragLeave"
+      @drop="onDrop"
+    >
       <input type="file" :disabled="loading" @change="selectFile" />
       <el-icon><UploadFilled /></el-icon>
       <strong>{{ loading ? "正在计算文件摘要…" : "选择本地文件" }}</strong>

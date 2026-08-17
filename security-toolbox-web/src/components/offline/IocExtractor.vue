@@ -64,8 +64,10 @@ async function copy(value: string) {
       从告警、日志、邮件或报告文本中提取常见威胁指标；不会查询信誉库或连接这些地址。
     </div>
     <label class="offline-field"
-      >待分析文本<textarea
+      >待分析文本<el-input
         v-model="input"
+        type="textarea"
+        :autosize="{ minRows: 3 }"
         placeholder="粘贴包含 URL、域名、IP、文件哈希或 CVE 编号的文本"
       />
     </label>
@@ -89,7 +91,7 @@ async function copy(value: string) {
             <el-icon><CopyDocument /></el-icon>
           </button>
         </header>
-        <textarea :value="displayValues(section.values)" readonly />
+        <el-input :value="displayValues(section.values)" type="textarea" :autosize="{ minRows: 3 }" readonly />
       </article>
     </div>
   </div>

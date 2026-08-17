@@ -7,12 +7,16 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.ConnectException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.net.URI;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
+import java.security.cert.CertificateException;
 import java.time.Duration;
 import java.util.Locale;
 import java.util.Set;
@@ -24,6 +28,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLException;
+import javax.net.ssl.SSLHandshakeException;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
@@ -153,7 +159,7 @@ final class LocalTrafficProxy implements AutoCloseable {
               elapsed(started),
               "TLS_UPSTREAM_FAILED",
               null,
-              CLIENT_ERROR_MESSAGE));
+              safeErrorMessage(ex)));
       throw ex;
     }
 
@@ -189,7 +195,7 @@ final class LocalTrafficProxy implements AutoCloseable {
                 elapsed(started),
                 "TLS_CLIENT_REJECTED",
                 null,
-                CLIENT_ERROR_MESSAGE));
+                "浏览器未信任本地抓包证书，或拒绝了 TLS 安全连接"));
         return true;
       }
 
@@ -298,7 +304,7 @@ final class LocalTrafficProxy implements AutoCloseable {
               elapsed(started),
               ex instanceof ProxyHttpException ? "UNSUPPORTED" : "DECRYPT_FAILED",
               null,
-              CLIENT_ERROR_MESSAGE));
+              safeErrorMessage(ex)));
     }
   }
 
@@ -814,6 +820,39 @@ final class LocalTrafficProxy implements AutoCloseable {
     if (ex instanceof ProxyHttpException proxyException) return proxyException.status;
     if (ex instanceof ApiException) return 403;
     return 502;
+  }
+
+  static String safeErrorMessage(Throwable error) {
+    if (hasCause(error, CertificateException.class)) return "无法验证上游 HTTPS 服务的证书";
+    if (hasCause(error, SSLHandshakeException.class)) return "与上游 HTTPS 服务的安全连接握手失败";
+    if (hasCause(error, SocketTimeoutException.class)) return "连接上游服务超时";
+    if (hasCause(error, ConnectException.class)) return "无法连接上游服务，连接被拒绝或已关闭";
+    if (hasCause(error, UnknownHostException.class)) return "无法解析上游服务地址";
+
+    for (Throwable current = error; current != null; current = current.getCause()) {
+      if (current instanceof ProxyHttpException proxyException) return proxyException.getMessage();
+      String message = current.getMessage();
+      if (message == null) continue;
+      if (message.startsWith("上游 HTTPS 服务未返回响应")) {
+        return "上游 HTTPS 服务未返回响应，可能不支持 HTTP/1.1 或已关闭连接";
+      }
+      if (message.startsWith("上游 Content-Length 无效")) return "上游返回了无效的响应长度";
+      if (message.startsWith("上游 HTTP 响应状态行无效")) return "上游返回了无效的 HTTP 响应";
+      if (message.startsWith("上游响应头超过")) return "上游返回的响应头超过代理处理限制";
+      if (message.startsWith("上游分块响应")) return "上游返回了无效的分块响应";
+      if (message.startsWith("上游 Upgrade 响应")) return "上游返回了代理无法转换的升级响应";
+      if (message.startsWith("上游服务未提供 HTTP/1.1")) return "上游返回了不兼容的 HTTP 响应";
+    }
+    if (hasCause(error, SSLException.class)) return "与上游 HTTPS 服务的安全连接失败";
+    if (hasCause(error, IOException.class)) return "上游服务连接异常或响应不完整";
+    return CLIENT_ERROR_MESSAGE;
+  }
+
+  private static boolean hasCause(Throwable error, Class<? extends Throwable> type) {
+    for (Throwable current = error; current != null; current = current.getCause()) {
+      if (type.isInstance(current)) return true;
+    }
+    return false;
   }
 
   private long elapsed(long started) {

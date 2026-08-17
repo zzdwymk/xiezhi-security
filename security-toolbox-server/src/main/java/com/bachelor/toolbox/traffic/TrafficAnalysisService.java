@@ -3,6 +3,7 @@ package com.bachelor.toolbox.traffic;
 import com.bachelor.toolbox.ai.AiModelClient;
 import com.bachelor.toolbox.audit.AuditService;
 import com.bachelor.toolbox.common.ApiException;
+import com.bachelor.toolbox.project.ProjectTargetRepository;
 import com.bachelor.toolbox.task.CreateTaskRequest;
 import com.bachelor.toolbox.task.SecurityTask;
 import com.bachelor.toolbox.task.TaskService;
@@ -26,18 +27,21 @@ public class TrafficAnalysisService {
   private final TaskService tasks;
   private final AuditService audit;
   private final AiModelClient modelClient;
+  private final ProjectTargetRepository projectTargets;
 
   public TrafficAnalysisService(
       TrafficPacketRepository packets,
       TrafficSuggestionRepository suggestions,
       TaskService tasks,
       AuditService audit,
-      AiModelClient modelClient) {
+      AiModelClient modelClient,
+      ProjectTargetRepository projectTargets) {
     this.packets = packets;
     this.suggestions = suggestions;
     this.tasks = tasks;
     this.audit = audit;
     this.modelClient = modelClient;
+    this.projectTargets = projectTargets;
   }
 
   public AnalysisResponse analyze(Long packetId, String mode) {
@@ -64,10 +68,12 @@ public class TrafficAnalysisService {
       return response(suggestion);
     }
 
+    Long projectId = resolveProjectId(suggestion.getTargetId());
+
     SecurityTask task =
         tasks.create(
             new CreateTaskRequest(
-                null, suggestion.getTargetId(), suggestion.getToolCode(), Map.of()));
+                projectId, suggestion.getTargetId(), suggestion.getToolCode(), Map.of()));
     suggestion.setTaskId(task.getId());
     suggestion.setStatus("EXECUTED");
     suggestion.setDecidedAt(Instant.now());
@@ -83,6 +89,17 @@ public class TrafficAnalysisService {
         "taskId=" + task.getId(),
         "ACCEPTED");
     return response(suggestion);
+  }
+
+  private Long resolveProjectId(Long targetId) {
+    var links = projectTargets.findByTargetId(targetId);
+    if (links.isEmpty()) {
+      throw new ApiException("该流量目标未绑定到任何评估项目，无法创建检测任务");
+    }
+    if (links.size() > 1) {
+      throw new ApiException("该流量目标绑定了多个评估项目，请在项目页面手动创建检测任务");
+    }
+    return links.get(0).getProjectId();
   }
 
   public void ignore(Long suggestionId) {

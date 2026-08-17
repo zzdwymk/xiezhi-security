@@ -63,6 +63,8 @@ public class SecurityConfig {
                     .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.POST, "/api/vulnerabilities/sync/**")
                     .hasRole("ADMIN")
+                    .requestMatchers(HttpMethod.DELETE, "/api/vulnerabilities/catalog")
+                    .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.POST, "/api/post-scan-paths/*/confirm")
                     .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.POST, "/api/regression/**")

@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -27,9 +28,11 @@ public class SystemDependencyController {
   }
 
   @GetMapping("/dependencies")
-  public SystemDependenciesResponse dependencies(HttpServletRequest request) {
+  public SystemDependenciesResponse dependencies(
+      HttpServletRequest request,
+      @RequestParam(value = "refresh", defaultValue = "false") boolean refresh) {
     requireLoopbackAccess(request, DEPENDENCY_LOCAL_ACCESS_ONLY);
-    return detectionService.detect();
+    return detectionService.detect(refresh);
   }
 
   @GetMapping("/health")

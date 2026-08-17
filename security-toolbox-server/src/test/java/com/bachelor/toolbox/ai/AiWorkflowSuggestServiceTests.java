@@ -98,6 +98,63 @@ class AiWorkflowSuggestServiceTests {
         .doesNotContain("IllegalStateException");
   }
 
+  @Test
+  void acceptsDistinctAfrogAndXraySuggestionActions() throws Exception {
+    AiModelClient client = mock(AiModelClient.class);
+    when(client.enabled()).thenReturn(true);
+    when(client.model()).thenReturn("test-model");
+    when(client.complete(anyString(), anyString()))
+        .thenReturn(
+            """
+            [
+              {
+                "kind": "scanner",
+                "severity": "info",
+                "title": "补充 Afrog",
+                "detail": "增加独立扫描器。",
+                "action": {"type": "add_tool", "tool": "afrog_scan", "phase": "discovery"}
+              },
+              {
+                "kind": "scanner",
+                "severity": "info",
+                "title": "补充 Xray",
+                "detail": "增加独立扫描器。",
+                "action": {"type": "add_tool", "tool": "xray_scan", "phase": "discovery"}
+              }
+            ]
+            """);
+    AiWorkflowSuggestService service = new AiWorkflowSuggestService(client, objectMapper);
+
+    List<Map<String, Object>> suggestions = suggestions(service.suggest(connectedContextWorkflow()));
+
+    assertThat(suggestions).hasSize(2);
+    assertThat(suggestions)
+        .extracting(item -> action(item).get("tool"))
+        .containsExactly("afrog_scan", "xray_scan");
+  }
+
+  @Test
+  void appliesOrderAndApprovalAdviceToEveryScannerTool() {
+    AiModelClient client = mock(AiModelClient.class);
+    when(client.enabled()).thenReturn(false);
+    AiWorkflowSuggestService service = new AiWorkflowSuggestService(client, objectMapper);
+
+    for (String scanner : List.of("nuclei_scan", "afrog_scan", "xray_scan")) {
+      Map<String, Object> result =
+          service.suggest(
+              Map.of(
+                  "graph",
+                  Map.of(
+                      "nodes",
+                      List.of(Map.of("id", scanner, "type", "tool", "tool", scanner)),
+                      "edges",
+                      List.of())));
+      assertThat(suggestions(result))
+          .extracting(item -> item.get("kind"))
+          .contains("order", "risk");
+    }
+  }
+
   private Map<String, Object> connectedContextWorkflow() {
     return Map.of(
         "graph",

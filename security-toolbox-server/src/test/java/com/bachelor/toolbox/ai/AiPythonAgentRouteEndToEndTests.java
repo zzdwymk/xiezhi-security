@@ -97,14 +97,14 @@ class AiPythonAgentRouteEndToEndTests {
     assertThat(tasks.count()).isEqualTo(1);
     assertThat(audits.findAll())
         .extracting(AuditLog::getAction)
-        .contains("CREATE_TASK", "AI_DISPATCH_TASKS", "AI_AGENT_TURN");
+        .contains("CREATE_WORKFLOW_TASK", "AI_DISPATCH_TASKS", "AI_AGENT_TURN");
     AuditLog turnAudit =
         audits.findAll().stream()
             .filter(audit -> "AI_AGENT_TURN".equals(audit.getAction()))
             .findFirst()
             .orElseThrow();
     JsonNode provenance = new ObjectMapper().readTree(turnAudit.getDetail());
-    assertThat(provenance.path("schemaVersion").asInt()).isEqualTo(2);
+    assertThat(provenance.path("schemaVersion").asInt()).isEqualTo(3);
     assertThat(provenance.path("fallback").asBoolean()).isFalse();
     assertThat(provenance.path("retrievalRoundCount").asInt()).isEqualTo(1);
     assertThat(provenance.path("evidenceIds").isEmpty()).isFalse();

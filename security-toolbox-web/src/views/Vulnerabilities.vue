@@ -1,15 +1,19 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
+import { storeToRefs } from "pinia";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   Aim,
+  Delete,
   MagicStick,
   Refresh,
   Search,
   VideoPlay,
 } from "../components/fluentIcons";
 import {
+  CatalogSyncProgress,
+  DependencyStatus,
   DetectionRule,
   endpoints,
   Target,
@@ -17,6 +21,10 @@ import {
   VulnerabilityDefinition,
 } from "../api";
 import { useCopilotStore } from "../stores/copilot";
+import {
+  useCatalogSyncStore,
+  type ScannerSource,
+} from "../stores/catalogSync";
 import { toErrorMessage } from "../utils/errorMessage";
 
 const copilot = useCopilotStore();
@@ -27,6 +35,9 @@ const route = useRoute();
 const rules = ref<DetectionRule[]>([]);
 const targets = ref<Target[]>([]);
 const selected = ref<VulnerabilityDefinition>();
+type CatalogSyncCommand = ScannerSource | "ALL";
+const scannerSources: ScannerSource[] = ["NUCLEI", "AFROG", "XRAY"];
+const scannerTools = new Set(["nuclei_scan", "afrog_scan", "xray_scan"]);
 const query = ref("");
 const severityFilter = ref("");
 const sourceFilter = ref("");
@@ -40,17 +51,52 @@ const total = ref(0);
 const stats = ref<VulnerabilityCatalogStats>();
 const targetId = ref<number>();
 const selectedRuleCodes = ref<string[]>([]);
+const selectedPocCodes = ref<Record<ScannerSource, string[]>>({
+  NUCLEI: [],
+  AFROG: [],
+  XRAY: [],
+});
+const pocSelectionModes = ref<Record<ScannerSource, "ALL" | "MANUAL">>({
+  NUCLEI: "ALL",
+  AFROG: "ALL",
+  XRAY: "ALL",
+});
+const pocOptions = ref<Record<ScannerSource, VulnerabilityDefinition[]>>({
+  NUCLEI: [],
+  AFROG: [],
+  XRAY: [],
+});
+const pocLoading = ref<Record<ScannerSource, boolean>>({
+  NUCLEI: false,
+  AFROG: false,
+  XRAY: false,
+});
 const portSelections = ref<string[]>([]);
 const loading = ref(false);
 const scanning = ref(false);
-const syncingCatalog = ref(false);
+const clearingCatalog = ref(false);
+const catalogSync = useCatalogSyncStore();
+const {
+  running: syncRunning,
+  queue: syncQueue,
+  completedSources: completedSyncSources,
+  localStages: localSyncStages,
+  backendProgress: sourceSyncProgress,
+  failures: catalogSyncFailures,
+  finishedAt: catalogSyncFinishedAt,
+} = storeToRefs(catalogSync);
 const projectIdByTarget = ref<Record<number, number>>({});
+const dependencies = ref<DependencyStatus[]>([]);
+const dependencyLoadFailed = ref(false);
 
 const enabledTargets = computed(() =>
   targets.value.filter((item) => item.enabled),
 );
 const selectedRules = computed(() =>
-  rules.value.filter((item) => selectedRuleCodes.value.includes(item.ruleCode)),
+  rules.value.filter(
+    (item) =>
+      selectedRuleCodes.value.includes(item.ruleCode) && !isRuleDisabled(item),
+  ),
 );
 const includesPortScan = computed(() =>
   selectedRules.value.some((item) =>
@@ -60,6 +106,141 @@ const includesPortScan = computed(() =>
 const includesNucleiScan = computed(() =>
   selectedRules.value.some((item) => item.toolCode === "nuclei_scan"),
 );
+const selectedScannerSources = computed<ScannerSource[]>(() => {
+  const selectedSources = new Set(
+    selectedRules.value
+      .map((item) => scannerSourceForTool(item.toolCode))
+      .filter((item): item is ScannerSource => Boolean(item)),
+  );
+  return scannerSources.filter((source) => selectedSources.has(source));
+});
+const selectedPocDetails = computed(() => {
+  const result: VulnerabilityDefinition[] = [];
+  for (const source of selectedScannerSources.value) {
+    const byCode = new Map(
+      pocOptions.value[source].map((item) => [item.vulnerabilityCode, item]),
+    );
+    for (const code of selectedPocCodes.value[source]) {
+      const item = byCode.get(code);
+      if (item) result.push(item);
+    }
+  }
+  return result;
+});
+const selectedPocCount = computed(() =>
+  selectedScannerSources.value.reduce(
+    (total, source) =>
+      total +
+      (pocSelectionModes.value[source] === "ALL"
+        ? sourceCatalogCount(source)
+        : selectedPocCodes.value[source].length),
+    0,
+  ),
+);
+const allSelectedPocSources = computed(() =>
+  selectedScannerSources.value.filter(
+    (source) => pocSelectionModes.value[source] === "ALL",
+  ),
+);
+const riskySelectedPocs = computed(() =>
+  selectedPocDetails.value.filter((item) => item.scanSafety !== "SAFE"),
+);
+const catalogSyncing = computed(
+  () =>
+    Boolean(clearingCatalog.value) ||
+    syncRunning.value ||
+    Boolean(stats.value?.syncing) ||
+    Boolean(stats.value?.afrogSyncing) ||
+    Boolean(stats.value?.xraySyncing) ||
+    Object.values(sourceSyncProgress.value).some((item) => item?.active),
+);
+
+function backendProgressPercentage(item?: CatalogSyncProgress) {
+  if (!item) return 0;
+  if (item.stage === "COMPLETED") return 100;
+  if (item.stage === "FAILED") return 100;
+  if (item.stage === "PREPARING") return 5;
+  if (item.stage === "DISCOVERING") return 12;
+  if (item.stage === "FINALIZING") return 96;
+  if (item.stage === "IMPORTING" && item.total > 0) {
+    return Math.min(95, 15 + Math.round((item.processed / item.total) * 80));
+  }
+  return 15;
+}
+
+const syncProgressRows = computed(() => {
+  const visibleSources = syncQueue.value.length
+    ? syncQueue.value
+    : scannerSources.filter((source) => sourceSyncProgress.value[source]?.active);
+  return visibleSources.map((source) => {
+    const backend = sourceSyncProgress.value[source];
+    const local = localSyncStages.value[source];
+    const completed = completedSyncSources.value.includes(source);
+    const failure = catalogSyncFailures.value[source];
+    const activeBackend = Boolean(backend?.active);
+    const count =
+      activeBackend && backend && backend.total > 0
+        ? `${backend.processed}/${backend.total}`
+        : "";
+    if (completed) {
+      return {
+        source,
+        message: "同步完成",
+        percentage: 100,
+        indeterminate: false,
+        status: "success" as const,
+        count,
+      };
+    }
+    if (failure) {
+      return {
+        source,
+        message: failure,
+        percentage: 100,
+        indeterminate: false,
+        status: "exception" as const,
+        count: "",
+      };
+    }
+    if (activeBackend && backend) {
+      return {
+        source,
+        message: backend.message,
+        percentage: backendProgressPercentage(backend),
+        indeterminate: backend.total <= 0,
+        status: undefined,
+        count,
+      };
+    }
+    if (local) {
+      return {
+        source,
+        message: local.message,
+        percentage: local.percentage,
+        indeterminate: true,
+        status: undefined,
+        count: "",
+      };
+    }
+    return {
+      source,
+      message: "等待同步",
+      percentage: 0,
+      indeterminate: false,
+      status: undefined,
+      count: "",
+    };
+  });
+});
+const allScannerDependenciesReady = computed(() =>
+  scannerSources.every((source) => sourceDependencyReady(source)),
+);
+const anyScannerDependencyReady = computed(() =>
+  scannerSources.some((source) => sourceDependencyReady(source)),
+);
+const catalogSyncDisabled = computed(
+  () => catalogSyncing.value || !anyScannerDependencyReady.value,
+);
 const selectedTarget = computed(() =>
   targets.value.find((item) => item.id === targetId.value),
 );
@@ -67,7 +248,7 @@ const isFullPortTarget = computed(
   () => selectedTarget.value?.allowedPorts?.replace(/\s/g, "") === "1-65535",
 );
 const compatibleRules = computed(() =>
-  rules.value.filter((rule) => isRuleCompatible(rule, selectedTarget.value)),
+  rules.value.filter((rule) => !isRuleDisabled(rule)),
 );
 
 const commonPorts = [
@@ -119,6 +300,156 @@ function severityType(severity: string) {
   return "success";
 }
 
+function safetyType(safety?: string) {
+  if (safety === "BLOCKED") return "danger";
+  if (safety === "REVIEW_REQUIRED") return "warning";
+  return "success";
+}
+
+function safetyLabel(safety?: string) {
+  if (safety === "BLOCKED") return "高风险";
+  if (safety === "REVIEW_REQUIRED") return "需审查";
+  return "安全";
+}
+
+function sourceLabel(source?: string) {
+  if (source === "NUCLEI") return "Nuclei";
+  if (source === "AFROG") return "Afrog";
+  if (source === "XRAY") return "Xray";
+  return "獬豸内置";
+}
+
+function sourceChipClass(source?: string) {
+  const normalized = (source || "BUILTIN").toLowerCase();
+  return ["source-chip", `source-chip--${normalized}`];
+}
+
+function scannerSourceForTool(toolCode: string): ScannerSource | undefined {
+  if (toolCode === "nuclei_scan") return "NUCLEI";
+  if (toolCode === "afrog_scan") return "AFROG";
+  if (toolCode === "xray_scan") return "XRAY";
+  return undefined;
+}
+
+function dependencyNameForSource(source: ScannerSource) {
+  if (source === "NUCLEI") return "Nuclei";
+  if (source === "AFROG") return "Afrog";
+  return "Xray";
+}
+
+function isDependencyReady(item?: DependencyStatus) {
+  return (
+    item?.installed === true ||
+    ["ready", "installed", "ok", "available"].includes(
+      (item?.status || "").toLowerCase(),
+    )
+  );
+}
+
+function dependencyForSource(source: ScannerSource) {
+  const expected = dependencyNameForSource(source).toLowerCase();
+  return dependencies.value.find(
+    (item) => item.name?.toLowerCase() === expected,
+  );
+}
+
+function sourceDependencyReady(source: ScannerSource) {
+  return isDependencyReady(dependencyForSource(source));
+}
+
+function sourceCatalogReady(source: ScannerSource) {
+  if (source === "NUCLEI") return Boolean(stats.value?.templatesAvailable);
+  if (source === "AFROG") return Boolean(stats.value?.afrogPocsAvailable);
+  return Boolean(stats.value?.xrayPocsAvailable);
+}
+
+function sourceCatalogCount(source: ScannerSource) {
+  if (source === "NUCLEI") return Number(stats.value?.nuclei || 0);
+  if (source === "AFROG") return Number(stats.value?.afrog || 0);
+  return Number(stats.value?.xray || 0);
+}
+
+function sourceSyncDisabled(source: ScannerSource) {
+  return !sourceDependencyReady(source);
+}
+
+function syncMenuLabel(source: ScannerSource) {
+  if (!sourceSyncDisabled(source)) return sourceLabel(source);
+  return dependencyLoadFailed.value
+    ? `${sourceLabel(source)}（依赖未知）`
+    : `${sourceLabel(source)}（未安装依赖）`;
+}
+
+function ruleDisabledReason(rule: DetectionRule) {
+  if (
+    Boolean(selectedTarget.value) &&
+    !isRuleCompatible(rule, selectedTarget.value)
+  ) {
+    if (rule.targetType.toUpperCase() === "HTTPS")
+      return "当前目标不是 HTTPS 地址";
+    if (rule.targetType.toUpperCase() === "WEB") return "当前目标不是 Web 地址";
+    return `仅适用于 ${rule.targetType} 目标`;
+  }
+  if (isFullPortTarget.value && rule.toolCode === "tcp_ports")
+    return "全端口不能使用逐端口 TCP 探测，请改用 Nmap";
+  const source = scannerSourceForTool(rule.toolCode);
+  if (!source) return "";
+  if (!sourceDependencyReady(source))
+    return `未安装 ${sourceLabel(source)}，请先到依赖检测安装`;
+  if (!sourceCatalogReady(source))
+    return `未同步 ${sourceLabel(source)} 模板/PoC，请先同步漏洞库`;
+  return "";
+}
+
+function isRuleDisabled(rule: DetectionRule) {
+  return Boolean(ruleDisabledReason(rule));
+}
+
+function ruleSourceLabel(rule: DetectionRule) {
+  return sourceLabel(scannerSourceForTool(rule.toolCode) || rule.sourceType);
+}
+
+function pocOptionLabel(item: VulnerabilityDefinition) {
+  return `${item.sourceExternalId || item.vulnerabilityCode} · ${item.name}`;
+}
+
+const pocLoadGeneration: Record<ScannerSource, number> = {
+  NUCLEI: 0,
+  AFROG: 0,
+  XRAY: 0,
+};
+
+async function loadPocOptions(source: ScannerSource, search = "") {
+  const generation = ++pocLoadGeneration[source];
+  pocLoading.value[source] = true;
+  try {
+    const { data } = await endpoints.vulnerabilities({
+      page: 0,
+      size: 200,
+      source,
+      query: search.trim() || undefined,
+    });
+    if (generation !== pocLoadGeneration[source]) return;
+    const selectedCodes = new Set(selectedPocCodes.value[source]);
+    const merged = new Map<string, VulnerabilityDefinition>();
+    for (const item of pocOptions.value[source]) {
+      if (selectedCodes.has(item.vulnerabilityCode))
+        merged.set(item.vulnerabilityCode, item);
+    }
+    for (const item of data.content || [])
+      merged.set(item.vulnerabilityCode, item);
+    pocOptions.value[source] = [...merged.values()];
+  } catch (error) {
+    if (generation === pocLoadGeneration[source])
+      ElMessage.error(
+        toErrorMessage(error, `无法加载 ${sourceLabel(source)} PoC`),
+      );
+  } finally {
+    if (generation === pocLoadGeneration[source])
+      pocLoading.value[source] = false;
+  }
+}
+
 function isRuleCompatible(rule: DetectionRule, target?: Target) {
   if (!target || rule.targetType.toUpperCase() === "ANY") return true;
   const type = rule.targetType.toUpperCase();
@@ -135,14 +466,41 @@ function isRuleCompatible(rule: DetectionRule, target?: Target) {
 }
 
 function compatibilityHint(rule: DetectionRule) {
-  if (isFullPortTarget.value && rule.toolCode === "tcp_ports")
-    return "全端口不能使用逐端口 TCP 探测，请改用 Nmap";
-  if (!selectedTarget.value || isRuleCompatible(rule, selectedTarget.value))
-    return "";
-  if (rule.targetType.toUpperCase() === "HTTPS")
-    return "当前目标不是 HTTPS 地址";
-  if (rule.targetType.toUpperCase() === "WEB") return "当前目标不是 Web 地址";
-  return `仅适用于 ${rule.targetType} 目标`;
+  return ruleDisabledReason(rule);
+}
+
+function sanitizeSelectedRuleCodes() {
+  const enabledCodes = new Set(
+    rules.value
+      .filter((rule) => !isRuleDisabled(rule))
+      .map((rule) => rule.ruleCode),
+  );
+  const next = selectedRuleCodes.value.filter((code) => enabledCodes.has(code));
+  if (
+    next.length !== selectedRuleCodes.value.length ||
+    next.some((code, index) => code !== selectedRuleCodes.value[index])
+  ) {
+    selectedRuleCodes.value = next;
+  }
+}
+
+function applyDependencyStatus(data?: {
+  dependencies?: DependencyStatus[];
+  items?: DependencyStatus[];
+}) {
+  dependencies.value = data?.dependencies || data?.items || [];
+  dependencyLoadFailed.value = !data;
+}
+
+async function refreshDependencyStatus(forceRefresh = false) {
+  try {
+    const { data } = await endpoints.dependencies(forceRefresh);
+    applyDependencyStatus(data);
+    return true;
+  } catch {
+    applyDependencyStatus();
+    return false;
+  }
 }
 
 // Monotonic generation token: each load() call bumps this so stale responses (e.g.
@@ -160,6 +518,7 @@ async function load() {
       ruleResponse,
       targetResponse,
       projectResponse,
+      dependencyResponse,
     ] = await Promise.all([
       endpoints.vulnerabilities({
         page: page.value,
@@ -175,6 +534,7 @@ async function load() {
       endpoints.detectionRules(),
       endpoints.targets(),
       endpoints.projects(),
+      endpoints.dependencies().catch(() => undefined),
     ]);
     if (gen !== loadGen) return;
     const content = vulnerabilityResponse.data.content || [];
@@ -204,6 +564,7 @@ async function load() {
     stats.value = statsResponse.data;
     rules.value = ruleResponse.data;
     targets.value = targetResponse.data;
+    applyDependencyStatus(dependencyResponse?.data);
     const activeProjects = projectResponse.data.filter(
       (item) => item.status === "ACTIVE",
     );
@@ -235,8 +596,9 @@ async function load() {
     }
     if (!selectedRuleCodes.value.length)
       selectedRuleCodes.value = rules.value
-        .filter((item) => item.toolCode !== "nuclei_scan")
+        .filter((item) => !scannerTools.has(item.toolCode) && !isRuleDisabled(item))
         .map((item) => item.ruleCode);
+    sanitizeSelectedRuleCodes();
   } catch (error) {
     if (gen === loadGen) ElMessage.error(describeCatalogLoadError(error));
   } finally {
@@ -317,46 +679,94 @@ function askCopilot(item: VulnerabilityDefinition) {
   void router.push("/");
 }
 
-function syncErrorText(error: unknown) {
-  return toErrorMessage(error, "漏洞库同步失败");
+function resetPocSelections() {
+  selectedPocCodes.value = {
+    NUCLEI: [],
+    AFROG: [],
+    XRAY: [],
+  };
+  pocOptions.value = {
+    NUCLEI: [],
+    AFROG: [],
+    XRAY: [],
+  };
 }
 
-async function syncOfficialCatalog() {
+async function clearImportedCatalog() {
   try {
     await ElMessageBox.confirm(
-      "将从 ProjectDiscovery 官方稳定 Release 更新 Nuclei 与模板，校验 SHA-256 后导入漏洞元数据，并使用 CISA KEV 标记已知在野利用漏洞。不会自动执行导入的 PoC。",
-      "更新真实漏洞库",
+      "将删除本地 Nuclei 模板、Afrog PoC、Xray PoC 缓存目录，并清空已导入的漏洞库条目。不会删除扫描器程序；后续点击同步会重新下载并导入。",
+      "清空漏洞库",
       {
-        confirmButtonText: "更新并同步",
+        confirmButtonText: "清空",
+        confirmButtonClass: "catalog-clear-confirm",
         cancelButtonText: "取消",
         type: "warning",
       },
     );
-    syncingCatalog.value = true;
-    if (window.toolboxDesktop?.installDependency) {
-      await window.toolboxDesktop.installDependency("nuclei");
-    }
-    // Only poll backend sync state after local dependency install succeeds.
-    startSyncStatusPoll();
-    const { data } = await endpoints.syncNucleiCatalog();
-    ElMessage.success(
-      `同步完成：发现 ${data.discovered} 个真实模板，新增 ${data.imported}，更新 ${data.updated}`,
-    );
+    clearingCatalog.value = true;
+    const { data } = await endpoints.clearVulnerabilityCatalog();
+    selected.value = undefined;
+    resetPocSelections();
     page.value = 0;
     await load();
+    ElMessage.success(
+      `已清空漏洞库：删除 ${data.removedDefinitions} 条导入记录，清理 ${data.deletedPaths.length} 个本地目录`,
+    );
   } catch (error: any) {
     if (error !== "cancel" && error !== "close") {
-      ElMessage.error(syncErrorText(error));
+      ElMessage.error(toErrorMessage(error, "漏洞库清空失败"));
     }
   } finally {
-    syncingCatalog.value = false;
+    clearingCatalog.value = false;
+  }
+}
+
+async function syncOfficialCatalog(command: CatalogSyncCommand = "NUCLEI") {
+  const sources = command === "ALL" ? scannerSources : [command];
+  await refreshDependencyStatus();
+  const missingDependencies = sources.filter(sourceSyncDisabled);
+  if (missingDependencies.length) {
+    ElMessage.warning(
+      `请先在依赖检测页面安装 ${missingDependencies
+        .map(sourceLabel)
+        .join("、")} 后再同步`,
+    );
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      command === "ALL"
+        ? "将检查 Nuclei、Afrog、Xray 及其漏洞目录的官方稳定版本；仅在发现新版本时下载，随后导入漏洞元数据。不会自动执行任何 PoC。"
+        : `将检查 ${sources.map(sourceLabel).join("、")} 及其漏洞目录的官方稳定版本；仅在发现新版本时下载，随后导入漏洞元数据。不会自动执行任何 PoC。`,
+      "同步漏洞目录",
+      {
+        confirmButtonText: "检查并同步",
+        cancelButtonText: "取消",
+        type: "warning",
+      },
+    );
+    await catalogSync.start(sources);
+  } catch (error: any) {
+    if (error !== "cancel" && error !== "close") {
+      ElMessage.error(toErrorMessage(error, "漏洞库同步失败"));
+    }
   }
 }
 
 async function startScan() {
+  sanitizeSelectedRuleCodes();
   if (!targetId.value) return ElMessage.warning("请先选择一个已授权目标");
   if (!selectedRuleCodes.value.length)
     return ElMessage.warning("请至少选择一条检测规则");
+  const missingPocSource = selectedScannerSources.value.find(
+    (source) =>
+      pocSelectionModes.value[source] === "MANUAL" &&
+      selectedPocCodes.value[source].length === 0,
+  );
+  if (missingPocSource) {
+    return ElMessage.warning(`请为 ${sourceLabel(missingPocSource)} 至少选择一个 PoC`);
+  }
   const target = targets.value.find((item) => item.id === targetId.value);
   if (
     isFullPortTarget.value &&
@@ -375,10 +785,26 @@ async function startScan() {
     }
   }
   try {
+    const scannerText = selectedScannerSources.value.length
+      ? `，其中${allSelectedPocSources.value.length ? ` ${allSelectedPocSources.value.map(sourceLabel).join("、")} 使用全部已同步 PoC` : ""}${selectedPocCount.value && allSelectedPocSources.value.length !== selectedScannerSources.value.length ? `，手动选择后合计约 ${selectedPocCount.value} 个 PoC` : ""}`
+      : "";
+    const allSelectionRiskText = allSelectedPocSources.value.length
+      ? `\n\n风险提示：全部 PoC 中可能包含需审查或高风险条目。系统仍会校验本地文件和授权目标；请确认你已了解 ${allSelectedPocSources.value.map(sourceLabel).join("、")} 全量检测可能产生的请求量与影响。`
+      : "";
+    const manualRiskText = riskySelectedPocs.value.length
+      ? `\n\n风险提示：${riskySelectedPocs.value.length} 个已选 PoC 标记为需审查或高风险：${riskySelectedPocs.value
+          .slice(0, 6)
+          .map(
+            (item) =>
+              `${item.sourceExternalId || item.vulnerabilityCode}（${safetyLabel(item.scanSafety)}）`,
+          )
+          .join("、")}${riskySelectedPocs.value.length > 6 ? "等" : ""}。继续即表示你已确认其潜在影响。`
+      : "";
+    const riskText = `${allSelectionRiskText}${manualRiskText}`;
     await ElMessageBox.confirm(
       includesNucleiScan.value
-        ? `将对“${target?.name || targetId.value}”执行 ${selectedRuleCodes.value.length} 条检测规则，其中包含 Nuclei 通用漏洞模板扫描，可能发送较多请求并耗时较长。所有请求仍受授权范围和端口白名单限制。`
-        : `将对“${target?.name || targetId.value}”执行 ${selectedRuleCodes.value.length} 条低风险检测规则。所有请求仍受授权范围和端口白名单限制。`,
+        ? `将对“${target?.name || targetId.value}”执行 ${selectedRuleCodes.value.length} 条检测规则，其中包含 Nuclei 模板扫描，可能发送较多请求并耗时较长${scannerText}。所有请求仍受授权范围和端口白名单限制。${riskText}`
+        : `将对“${target?.name || targetId.value}”执行 ${selectedRuleCodes.value.length} 条检测规则${scannerText}。所有请求仍受授权范围和端口白名单限制。${riskText}`,
       "确认主动检测",
       {
         confirmButtonText: "开始检测",
@@ -394,6 +820,13 @@ async function startScan() {
       projectId,
       targetId: targetId.value,
       ruleCodes: selectedRuleCodes.value,
+      pocCodes: selectedScannerSources.value.flatMap(
+        (source) =>
+          pocSelectionModes.value[source] === "MANUAL"
+            ? selectedPocCodes.value[source]
+            : [],
+      ),
+      allPocSources: allSelectedPocSources.value,
       ports,
     });
     ElMessage.success(`已创建 ${data.taskCount} 个检测任务`);
@@ -415,34 +848,54 @@ watch(targetId, () => {
     : [];
   selectedRuleCodes.value = isFullPortTarget.value
     ? compatibleRules.value
-        .filter((rule) => !["tcp_ports", "nuclei_scan"].includes(rule.toolCode))
+        .filter((rule) => !scannerTools.has(rule.toolCode) && rule.toolCode !== "tcp_ports")
         .map((rule) => rule.ruleCode)
     : compatibleRules.value
-        .filter((rule) => rule.toolCode !== "nuclei_scan")
+        .filter((rule) => !scannerTools.has(rule.toolCode))
         .map((rule) => rule.ruleCode);
 });
 
-let syncStatusPoll: number | undefined;
-function startSyncStatusPoll() {
-  if (syncStatusPoll) return;
-  // The catalog sync runs on the backend; leaving this page must not lose track of it.
-  // Poll the backend `syncing` flag so returning to the page keeps showing progress and
-  // completion is detected without a manual refresh, instead of the local loading state
-  // silently disappearing on unmount.
-  syncStatusPoll = window.setInterval(async () => {
-    await load();
-    if (!stats.value?.syncing && !syncingCatalog.value) {
-      window.clearInterval(syncStatusPoll);
-      syncStatusPoll = undefined;
+watch(
+  selectedRuleCodes,
+  () => {
+    sanitizeSelectedRuleCodes();
+    const activeSources = new Set(selectedScannerSources.value);
+    for (const source of scannerSources) {
+      if (!activeSources.has(source)) {
+        selectedPocCodes.value[source] = [];
+        pocSelectionModes.value[source] = "ALL";
+      } else if (
+        pocSelectionModes.value[source] === "MANUAL" &&
+        !pocOptions.value[source].length
+      ) {
+        void loadPocOptions(source);
+      }
     }
-  }, 5000);
-}
+  },
+  { deep: true },
+);
+watch(
+  pocSelectionModes,
+  (modes) => {
+    for (const source of selectedScannerSources.value) {
+      if (modes[source] === "ALL") {
+        selectedPocCodes.value[source] = [];
+      } else if (!pocOptions.value[source].length) {
+        void loadPocOptions(source);
+      }
+    }
+  },
+  { deep: true },
+);
+watch([rules, stats, dependencies], () => sanitizeSelectedRuleCodes());
+watch(catalogSyncFinishedAt, (value, previous) => {
+  if (!value || value === previous) return;
+  page.value = 0;
+  void load();
+});
 onMounted(async () => {
   await load();
-  if (stats.value?.syncing) startSyncStatusPoll();
-});
-onUnmounted(() => {
-  if (syncStatusPoll) window.clearInterval(syncStatusPoll);
+  catalogSync.ensureProgressTracking();
 });
 </script>
 
@@ -452,21 +905,94 @@ onUnmounted(() => {
       <header class="pane-title">
         <div>
           <b>漏洞知识库</b
-          ><small>{{
-            stats
-              ? `${stats.total} 条 · ${stats.nuclei} 个 Nuclei 模板 · ${stats.knownExploited} 个 KEV`
-              : `${total} 条`
-          }}</small>
+           ><small>{{
+             stats
+               ? `${stats.total} 条 · Nuclei ${stats.nuclei} · Afrog ${stats.afrog} · Xray ${stats.xray}`
+               : `${total} 条`
+           }}</small>
+         </div>
+        <div class="catalog-actions">
+          <el-button
+            class="catalog-clear-action"
+            link
+            type="danger"
+            :icon="Delete"
+            :loading="clearingCatalog"
+            :disabled="catalogSyncing"
+            @click="clearImportedCatalog"
+            >清空</el-button
+          >
+          <el-dropdown
+            trigger="click"
+            :disabled="catalogSyncDisabled"
+            @command="syncOfficialCatalog"
+          >
+            <el-button
+              link
+              type="primary"
+              :icon="Refresh"
+              :loading="catalogSyncing && !clearingCatalog"
+              :disabled="catalogSyncDisabled"
+              :title="
+                anyScannerDependencyReady
+                  ? ''
+                  : '请先在依赖检测页面安装至少一个扫描器'
+              "
+              >同步</el-button
+            >
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item
+                  command="NUCLEI"
+                  :disabled="sourceSyncDisabled('NUCLEI')"
+                  >{{ syncMenuLabel("NUCLEI") }}</el-dropdown-item
+                >
+                <el-dropdown-item
+                  command="AFROG"
+                  :disabled="sourceSyncDisabled('AFROG')"
+                  >{{ syncMenuLabel("AFROG") }}</el-dropdown-item
+                >
+                <el-dropdown-item
+                  command="XRAY"
+                  :disabled="sourceSyncDisabled('XRAY')"
+                  >{{ syncMenuLabel("XRAY") }}</el-dropdown-item
+                >
+                <el-dropdown-item
+                  divided
+                  command="ALL"
+                  :disabled="!allScannerDependenciesReady"
+                  >{{
+                    allScannerDependenciesReady
+                      ? "同步全部"
+                      : "同步全部（依赖不完整）"
+                  }}</el-dropdown-item
+                >
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </div>
-        <el-button
-          link
-          type="primary"
-          :icon="Refresh"
-          :loading="syncingCatalog || stats?.syncing"
-          @click="syncOfficialCatalog"
-          >同步</el-button
-        >
       </header>
+      <div v-if="syncProgressRows.length" class="catalog-sync-progress">
+        <div
+          v-for="item in syncProgressRows"
+          :key="item.source"
+          class="catalog-sync-row"
+        >
+          <div>
+            <b>{{ sourceLabel(item.source) }}</b>
+            <span>{{ item.message }}</span>
+            <small v-if="item.count">{{ item.count }}</small>
+          </div>
+          <el-progress
+            :percentage="item.percentage"
+            :indeterminate="item.indeterminate"
+            :duration="1.2"
+            :status="item.status"
+            :stroke-width="5"
+            :show-text="false"
+          />
+        </div>
+      </div>
       <div class="catalog-search">
         <el-input
           v-model="query"
@@ -503,8 +1029,9 @@ onUnmounted(() => {
             placeholder="来源"
             @change="searchCatalog"
           >
-            <el-option label="獬豸内置" value="BUILTIN" />
             <el-option label="Nuclei 模板" value="NUCLEI" />
+            <el-option label="Afrog PoC" value="AFROG" />
+            <el-option label="Xray PoC" value="XRAY" />
           </el-select>
           <el-input
             v-model="yearFilter"
@@ -524,7 +1051,7 @@ onUnmounted(() => {
           >
             <el-option label="默认安全" value="SAFE" />
             <el-option label="需人工审查" value="REVIEW_REQUIRED" />
-            <el-option label="默认禁止" value="BLOCKED" />
+            <el-option label="高风险" value="BLOCKED" />
           </el-select>
         </div>
         <el-checkbox
@@ -537,6 +1064,9 @@ onUnmounted(() => {
         </el-checkbox>
       </div>
       <div class="catalog-list">
+        <div v-if="!vulnerabilities.length" class="catalog-empty">
+          漏洞知识库为空，请点击右上角同步导入 Nuclei、Afrog 或 Xray 的官方漏洞库。
+        </div>
         <button
           v-for="item in vulnerabilities"
           :key="item.id"
@@ -544,11 +1074,15 @@ onUnmounted(() => {
           :class="{ active: selected?.id === item.id }"
           @click="selected = item"
         >
-          <span
+          <span class="catalog-item-meta"
             ><el-tag size="small" :type="severityType(item.severity)">{{
               item.severity
             }}</el-tag
-            ><i>{{ item.sourceExternalId || item.vulnerabilityCode }}</i></span
+            ><span :class="sourceChipClass(item.sourceType)">{{
+              sourceLabel(item.sourceType)
+            }}</span
+            ><i>{{ item.sourceExternalId || item.vulnerabilityCode }}</i
+            ></span
           >
           <b>{{ item.name }}</b>
           <small
@@ -599,7 +1133,15 @@ onUnmounted(() => {
           </div>
         </header>
         <div class="source-facts">
-              <span><b>来源</b>{{ selected.sourceName || "獬豸" }}</span>
+          <span
+            ><b>来源扫描器</b
+            ><em :class="sourceChipClass(selected.sourceType)">{{
+              sourceLabel(selected.sourceType)
+            }}</em></span
+          >
+          <span v-if="selected.sourceName"
+            ><b>来源仓库</b>{{ selected.sourceName }}</span
+          >
           <span><b>版本</b>{{ selected.sourceVersion || "内置" }}</span>
           <span><b>真实性</b>{{ verificationLabel(selected) }}</span>
           <span><b>执行分级</b>{{ selected.scanSafety || "SAFE" }}</span>
@@ -695,21 +1237,91 @@ onUnmounted(() => {
             v-for="rule in rules"
             :key="rule.ruleCode"
             :value="rule.ruleCode"
-            :disabled="
-              (Boolean(selectedTarget) &&
-                !isRuleCompatible(rule, selectedTarget)) ||
-              (isFullPortTarget && rule.toolCode === 'tcp_ports')
-            "
+            :disabled="isRuleDisabled(rule)"
+            :class="{ 'rule-disabled': isRuleDisabled(rule) }"
           >
             <span>
               <b>{{ rule.name }}</b>
-              <small>{{
-                compatibilityHint(rule) ||
-                `${rule.ruleCode} · ${rule.targetType} · ${rule.riskLevel}`
-              }}</small>
+              <small
+                ><em
+                  :class="
+                    sourceChipClass(
+                      scannerSourceForTool(rule.toolCode) || rule.sourceType,
+                    )
+                  "
+                  >{{ ruleSourceLabel(rule) }}</em
+                ><span>{{
+                  compatibilityHint(rule) ||
+                  `${rule.ruleCode} · ${rule.targetType} · ${rule.riskLevel}`
+                }}</span></small
+              >
             </span>
           </el-checkbox>
         </el-checkbox-group>
+        <template v-for="source in selectedScannerSources" :key="source">
+          <label>{{ sourceLabel(source) }} PoC</label>
+          <el-segmented
+            v-model="pocSelectionModes[source]"
+            class="poc-selection-mode"
+            :options="[
+              { label: '全部已同步', value: 'ALL' },
+              { label: '手动选择', value: 'MANUAL' },
+            ]"
+          />
+          <p v-if="pocSelectionModes[source] === 'ALL'" class="poc-help">
+            将使用当前已同步且可执行的全部
+            {{ sourceCatalogCount(source) }} 个 {{ sourceLabel(source) }} PoC。
+          </p>
+          <el-select
+            v-else
+            v-model="selectedPocCodes[source]"
+            class="poc-selector"
+            multiple
+            filterable
+            remote
+            reserve-keyword
+            collapse-tags
+            :max-collapse-tags="2"
+            :loading="pocLoading[source]"
+            :placeholder="`搜索并选择 ${sourceLabel(source)} PoC`"
+            style="width: 100%"
+            @remote-method="(value: string) => loadPocOptions(source, value)"
+            @visible-change="(visible: boolean) => visible && loadPocOptions(source)"
+          >
+            <el-option
+              v-for="poc in pocOptions[source]"
+              :key="poc.vulnerabilityCode"
+              :label="pocOptionLabel(poc)"
+              :value="poc.vulnerabilityCode"
+            >
+              <span class="poc-option">
+                <span>
+                  <b>{{ poc.name }}</b>
+                  <small>{{
+                    poc.sourceExternalId || poc.vulnerabilityCode
+                  }}</small>
+                </span>
+                <span class="poc-option-tags">
+                  <el-tag size="small" :type="severityType(poc.severity)">{{
+                    poc.severity
+                  }}</el-tag>
+                  <el-tag size="small" :type="safetyType(poc.scanSafety)">{{
+                    poc.scanSafety || "SAFE"
+                  }}</el-tag>
+                </span>
+              </span>
+            </el-option>
+            <template #empty>
+              <div class="poc-empty">
+                未同步到具体 PoC，请在漏洞知识库右上角同步
+                {{ sourceLabel(source) }}。
+              </div>
+            </template>
+          </el-select>
+          <p class="poc-help">
+            已选 {{ selectedPocCodes[source].length }} 个；执行分级仅作风险提示，不限制明确选择的 PoC。
+          </p>
+        </template>
         <template v-if="includesPortScan">
           <label>扫描端口</label>
           <el-alert
@@ -748,9 +1360,7 @@ onUnmounted(() => {
       </div>
       <div class="scan-summary">
         <span>{{ selectedRules.length }} 条规则</span
-        ><span>{{
-          includesNucleiScan ? "通用漏洞模板扫描" : "低风险探测"
-        }}</span
+        ><span>{{ selectedPocCount }} 个 PoC</span
         ><span>人工确认</span>
       </div>
       <el-button
@@ -803,9 +1413,65 @@ onUnmounted(() => {
   border-bottom: 1px solid #e1e5eb;
   background: #f3f5f8;
 }
-.pane-title div {
+.pane-title > div:first-child {
   display: flex;
   flex-direction: column;
+}
+.catalog-actions {
+  display: flex;
+  flex: none;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.catalog-clear-action {
+  color: var(--el-color-danger) !important;
+}
+.catalog-clear-action:hover,
+.catalog-clear-action:focus-visible {
+  color: var(--el-color-danger-light-3) !important;
+}
+.catalog-sync-progress {
+  display: grid;
+  flex: none;
+  gap: 8px;
+  padding: 9px 12px 10px;
+  border-bottom: 1px solid #e5e9ef;
+  background: #f8fbff;
+}
+.catalog-sync-row > div:first-child {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 5px;
+  font-size: 10px;
+}
+.catalog-sync-row b {
+  flex: none;
+  color: #273142;
+  font-size: 11px;
+}
+.catalog-sync-row span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: #667085;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.catalog-sync-row small {
+  flex: none;
+  margin: 0;
+  color: #667085;
+  font-variant-numeric: tabular-nums;
+}
+.catalog-sync-row :deep(.el-progress-bar__outer) {
+  background: #e6edf5;
+}
+:global(.catalog-clear-confirm) {
+  border-color: var(--el-color-danger) !important;
+  background: var(--el-color-danger) !important;
 }
 .pane-title b {
   color: #273142;
@@ -852,10 +1518,19 @@ onUnmounted(() => {
   align-items: center;
   gap: 7px;
 }
+.catalog-item-meta {
+  min-width: 0;
+}
 .catalog-list i {
   color: #8b95a3;
   font-size: 10px;
   font-style: normal;
+}
+.catalog-empty {
+  padding: 22px 16px;
+  color: #8b95a3;
+  font-size: 12px;
+  line-height: 1.6;
 }
 .catalog-list b {
   color: #334155;
@@ -1036,6 +1711,7 @@ onUnmounted(() => {
 .pane-title small,
 .catalog-list i,
 .catalog-list small,
+.catalog-empty,
 .detail-tabs p,
 .scan-form > label,
 .target-value,
@@ -1068,6 +1744,23 @@ onUnmounted(() => {
 }
 .pane-title {
   height: 48px;
+}
+.vuln-catalog-pane .pane-title {
+  height: auto;
+  min-height: 64px;
+  padding: 10px 18px;
+}
+.vuln-catalog-pane .pane-title > div:first-child {
+  min-width: 0;
+}
+.vuln-catalog-pane .pane-title [data-fluent-tooltip]::after {
+  right: 0;
+  left: auto;
+  transform: translateY(-2px);
+}
+.vuln-catalog-pane .pane-title [data-fluent-tooltip]:hover::after,
+.vuln-catalog-pane .pane-title [data-fluent-tooltip]:focus-visible::after {
+  transform: translateY(0);
 }
 .catalog-search :deep(.el-input__wrapper),
 .scan-form :deep(.el-select__wrapper) {
@@ -1120,6 +1813,34 @@ onUnmounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.source-chip {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px;
+  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  background: var(--app-surface);
+  color: var(--app-muted);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 600;
+  line-height: 18px;
+  white-space: nowrap;
+}
+.source-chip--nuclei,
+.source-chip--afrog,
+.source-chip--xray {
+  border-color: color-mix(in srgb, var(--app-accent) 34%, var(--app-border));
+  background: var(--app-accent-soft);
+  color: var(--app-accent);
+}
+.catalog-item-meta .source-chip {
+  flex: none;
+}
 .catalog-pagination {
   display: flex;
   flex: none;
@@ -1156,6 +1877,9 @@ onUnmounted(() => {
 }
 .source-facts code {
   font-size: 11px;
+}
+.source-facts em {
+  font-style: normal;
 }
 .reference-links {
   display: flex;
@@ -1299,6 +2023,14 @@ onUnmounted(() => {
   width: 100%;
   min-width: 0;
 }
+.catalog-filters :deep(.el-select),
+.catalog-filters :deep(.el-input),
+.catalog-filters :deep(.el-select__wrapper),
+.catalog-filters :deep(.el-input__wrapper) {
+  height: 32px !important;
+  min-height: 32px !important;
+  box-sizing: border-box;
+}
 .catalog-kev {
   margin: 0 !important;
   height: auto !important;
@@ -1346,13 +2078,104 @@ onUnmounted(() => {
   min-height: 48px;
   padding: 11px;
 }
+.rule-list :deep(.rule-disabled) {
+  opacity: 0.58;
+}
+.rule-list :deep(.rule-disabled:hover),
+.rule-list :deep(.rule-disabled.is-checked) {
+  border-color: var(--app-border) !important;
+  background: var(--app-surface) !important;
+  box-shadow: none !important;
+}
+.rule-list
+  :deep(.rule-disabled .el-checkbox__input.is-checked .el-checkbox__inner),
+.rule-list
+  :deep(.rule-disabled .el-checkbox__input.is-disabled.is-checked .el-checkbox__inner) {
+  border-color: var(--app-border) !important;
+  background: var(--app-surface-soft) !important;
+}
+.rule-list
+  :deep(.rule-disabled .el-checkbox__input.is-checked .el-checkbox__inner::after),
+.rule-list
+  :deep(.rule-disabled .el-checkbox__input.is-disabled.is-checked .el-checkbox__inner::after) {
+  display: none !important;
+}
 .rule-list b {
   font-size: 12px;
 }
 .rule-list small,
-.port-help {
+.port-help,
+.poc-help {
   font-size: 11px;
   line-height: 1.5;
+}
+.poc-selection-mode {
+  width: 100%;
+}
+.poc-selection-mode :deep(.el-segmented__item) {
+  min-width: 0;
+  flex: 1;
+}
+.rule-list small {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+.rule-list small > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rule-list .source-chip {
+  height: 18px;
+  padding: 0 7px;
+  font-size: 10px;
+  line-height: 16px;
+}
+.poc-help {
+  margin: 7px 1px 0;
+  color: var(--app-muted);
+}
+.poc-empty {
+  padding: 10px 12px;
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.poc-option {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.poc-option > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.poc-option b {
+  color: var(--app-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.poc-option small {
+  margin-left: 7px;
+  color: var(--app-muted);
+  font-size: 11px;
+}
+.poc-option-tags {
+  display: flex;
+  flex: none;
+  gap: 5px;
+}
+.poc-option-tags :deep(.el-tag) {
+  height: 20px;
+  font-size: 10px;
 }
 .scan-summary {
   gap: 10px;

@@ -38,8 +38,10 @@ Referrer-Policy: strict-origin-when-cross-origin
     </div>
     <label class="offline-field"
       >原始 HTTP 报文
-      <textarea
+      <el-input
         v-model="input"
+        type="textarea"
+        :autosize="{ minRows: 3 }"
         placeholder="GET /api/user HTTP/1.1&#10;Host: example.com&#10;..."
       />
     </label>

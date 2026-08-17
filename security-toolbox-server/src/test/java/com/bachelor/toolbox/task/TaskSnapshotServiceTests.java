@@ -10,6 +10,7 @@ import static org.mockito.Mockito.when;
 import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.dependency.DependencyDetectionService;
 import com.bachelor.toolbox.target.AuthorizedTarget;
+import com.bachelor.toolbox.tool.ScannerPocSelectionService;
 import com.bachelor.toolbox.tool.SecurityTool;
 import com.bachelor.toolbox.vulnerability.DetectionRule;
 import com.bachelor.toolbox.vulnerability.DetectionRuleRepository;
@@ -34,6 +35,7 @@ class TaskSnapshotServiceTests {
             objectMapper,
             mock(DetectionRuleRepository.class),
             mock(DependencyDetectionService.class),
+            mock(ScannerPocSelectionService.class),
             tempDirectory.toString());
     SecurityTask task = new SecurityTask();
     task.setId(42L);
@@ -61,6 +63,7 @@ class TaskSnapshotServiceTests {
             new ObjectMapper(),
             rules,
             mock(DependencyDetectionService.class),
+            mock(ScannerPocSelectionService.class),
             tempDirectory.toString());
 
     String version = ReflectionTestUtils.invokeMethod(service, "resolveRuleVersion", "RULE-HTTP");

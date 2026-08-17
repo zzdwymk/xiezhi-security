@@ -257,6 +257,79 @@ class AgentWorkflowSpecServiceTests {
     assertEquals("red-team-lifecycle", snapshot.spec().get("preset"));
   }
 
+  @Test
+  void newProjectGetsExecutableStandardRuntimeDefault() {
+    AgentWorkflowSpecService.WorkflowSnapshot snapshot = service.freezeSnapshot(303L);
+
+    assertEquals("runtime-default", snapshot.spec().get("preset"));
+    assertEquals(
+        List.of(
+            "retrieve_project_context",
+            "nmap_service_scan",
+            "http_headers",
+            "tls_config",
+            "http_security_check",
+            "nuclei_scan",
+            "afrog_scan",
+            "xray_scan"),
+        snapshot.executableSteps().stream().map(step -> step.get("tool")).toList());
+    assertEquals(1, snapshot.executableSteps().get(1).get("group"));
+    assertEquals(List.of("context"), snapshot.executableSteps().get(1).get("dependsOnNodeIds"));
+    assertEquals("CAUTION", snapshot.executableSteps().get(5).get("risk"));
+    assertEquals(true, snapshot.executableSteps().get(5).get("requiresApproval"));
+    assertEquals(Map.of("allPocs", true), snapshot.executableSteps().get(6).get("parameters"));
+    assertEquals(Map.of("allPocs", true), snapshot.executableSteps().get(7).get("parameters"));
+    assertEquals(5, snapshot.executableSteps().get(7).get("group"));
+  }
+
+  @Test
+  void graphKeepsThreeScannerToolsDistinctAndSequential() {
+    List<Map<String, Object>> nodes =
+        List.of(
+            node("__start__", "start", null, "engagement"),
+            node("nuclei", "tool", "nuclei_scan", "discovery"),
+            node("afrog", "tool", "afrog_scan", "discovery"),
+            node("xray", "tool", "xray_scan", "discovery"),
+            node("__end__", "end", null, "report"));
+    List<Map<String, Object>> steps =
+        List.of(
+            scannerStep("nuclei", "nuclei_scan", Map.of()),
+            scannerStep("afrog", "afrog_scan", Map.of("allPocs", true)),
+            scannerStep(
+                "xray",
+                "xray_scan",
+                Map.of("pocCodes", List.of("XR-AAAAAAAAAAAAAAAAAAAAAAAA"))));
+    Map<String, Object> saved =
+        service.save(
+            101L,
+            Map.of(
+                "version",
+                2,
+                "steps",
+                steps,
+                "graph",
+                Map.of(
+                    "nodes",
+                    nodes,
+                    "edges",
+                    List.of(
+                        edge("__start__", "nuclei"),
+                        edge("nuclei", "afrog"),
+                        edge("afrog", "xray"),
+                        edge("xray", "__end__")))));
+
+    @SuppressWarnings("unchecked")
+    List<Map<String, Object>> savedSteps = (List<Map<String, Object>>) saved.get("steps");
+    assertEquals(
+        List.of("nuclei_scan", "afrog_scan", "xray_scan"),
+        savedSteps.stream().map(step -> step.get("tool")).toList());
+    assertEquals(List.of(0, 1, 2), savedSteps.stream().map(step -> step.get("group")).toList());
+    assertEquals(Map.of("allPocs", true), savedSteps.get(1).get("parameters"));
+    assertEquals(
+        Map.of("pocCodes", List.of("XR-AAAAAAAAAAAAAAAAAAAAAAAA")),
+        savedSteps.get(2).get("parameters"));
+  }
+
   private List<Map<String, Object>> validEdges() {
     return List.of(
         edge("__start__", "engage"),
@@ -316,6 +389,15 @@ class AgentWorkflowSpecServiceTests {
     step.put("risk", "SAFE");
     step.put("requiresApproval", false);
     step.put("group", 0);
+    return step;
+  }
+
+  private Map<String, Object> scannerStep(
+      String nodeId, String tool, Map<String, Object> parameters) {
+    Map<String, Object> step = step(nodeId, tool);
+    step.put("parameters", parameters);
+    step.put("risk", "CAUTION");
+    step.put("requiresApproval", true);
     return step;
   }
 }

@@ -2,9 +2,10 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import "../setup.css";
 import { useRoute, useRouter } from "vue-router";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import {
   Check,
+  Delete,
   Download,
   FolderOpened,
   Refresh,
@@ -38,6 +39,8 @@ interface Dependency {
   paused?: boolean;
   canPause?: boolean;
   controlling?: boolean;
+  uninstalling?: boolean;
+  uninstallSupported?: boolean;
   logs?: string[];
 }
 
@@ -91,11 +94,11 @@ function isReady(item: Dependency) {
   );
 }
 
-async function check() {
+async function check(forceRefresh = false) {
   loading.value = true;
   error.value = "";
   try {
-    const { data } = await loadDependencies();
+    const { data } = await loadDependencies(forceRefresh);
     items.value = Array.isArray(data)
       ? data
       : data.dependencies || data.items || [];
@@ -123,6 +126,11 @@ async function check() {
           ...item,
           packageId,
           installSupported: Boolean(packageId && packages.has(packageId)),
+          uninstallSupported: Boolean(
+            item.required === false &&
+              packageId &&
+              packages.get(packageId)?.uninstallSupported,
+          ),
           manualUrl: manualUrls[item.name],
         };
       });
@@ -140,6 +148,7 @@ async function check() {
     ) {
       proceed();
     }
+    return true;
   } catch (checkError) {
     items.value = [];
     const candidate = checkError as {
@@ -152,17 +161,18 @@ async function check() {
         : candidate.response
           ? `后端依赖检查失败（HTTP ${candidate.response.status || "-"}）。`
           : "无法连接后端依赖检查接口，请确认本地服务已经启动。";
+    return false;
   } finally {
     loading.value = false;
   }
 }
 
-async function loadDependencies() {
+async function loadDependencies(forceRefresh = false) {
   const attempts = startupCheck.value ? 3 : 1;
   let lastError: unknown;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      return await endpoints.dependencies();
+      return await endpoints.dependencies(forceRefresh);
     } catch (requestError) {
       lastError = requestError;
       const candidate = requestError as { response?: unknown; code?: string };
@@ -180,6 +190,7 @@ async function loadDependencies() {
 async function requestInstall(item: Dependency) {
   if (!item.installSupported || !item.packageId || !window.toolboxDesktop)
     return;
+  const dependencyWasReady = isReady(item);
   item.installing = true;
   item.progress = 0;
   item.progressDeterminate = false;
@@ -196,8 +207,23 @@ async function requestInstall(item: Dependency) {
       item.packageId,
     );
     if (result.status === "paused" || result.status === "canceled") return;
-    ElMessage.success(`${item.name} ${result.version} 已安装到程序 tools 目录`);
-    await check();
+    const refreshed = await check(true);
+    const detected = items.value.find(
+      (candidate) => candidate.packageId === item.packageId,
+    );
+    if (refreshed && detected && isReady(detected)) {
+      if (result.status === "up-to-date") {
+        ElMessage.info(`${item.name} ${result.version} 已是最新版本`);
+      } else {
+        ElMessage.success(
+          `${item.name} 已${dependencyWasReady ? "更新" : "安装"}到 ${result.version} 并通过检测`,
+        );
+      }
+    } else {
+      ElMessage.warning(
+        `${item.name} 已写入工具目录，但重新检测尚未确认可用，请再次检测或查看版本输出`,
+      );
+    }
   } catch (installError: any) {
     ElMessage.error(toErrorMessage(installError, `${item.name} 安装失败`));
   } finally {
@@ -218,6 +244,38 @@ async function controlDownload(item: Dependency, action: "pause" | "cancel") {
     ElMessage.error(toErrorMessage(controlError, "下载控制失败"));
   } finally {
     item.controlling = false;
+  }
+}
+
+async function requestUninstall(item: Dependency) {
+  if (
+    item.required !== false ||
+    !item.packageId ||
+    !item.uninstallSupported ||
+    !window.toolboxDesktop?.uninstallDependency
+  )
+    return;
+  try {
+    await ElMessageBox.confirm(
+      `将从当前工具目录卸载 ${item.name}。系统依赖、手动安装版本和已导入的漏洞记录不会被删除。`,
+      `卸载 ${item.name}`,
+      {
+        confirmButtonText: "卸载",
+        cancelButtonText: "取消",
+        confirmButtonClass: "dependency-uninstall-confirm",
+        type: "warning",
+      },
+    );
+    item.uninstalling = true;
+    await window.toolboxDesktop.uninstallDependency(item.packageId);
+    await check(true);
+    ElMessage.success(`${item.name} 已卸载`);
+  } catch (uninstallError: any) {
+    if (uninstallError !== "cancel" && uninstallError !== "close") {
+      ElMessage.error(toErrorMessage(uninstallError, `${item.name} 卸载失败`));
+    }
+  } finally {
+    item.uninstalling = false;
   }
 }
 
@@ -447,7 +505,7 @@ onUnmounted(() => {
               确认安全检测引擎与本地工具均可用，缺失项目可在此安装或查看官方来源。
             </p>
           </div>
-          <el-button :loading="loading" @click="check"
+          <el-button :loading="loading" @click="check(true)"
             ><el-icon><Refresh /></el-icon>重新检测</el-button
           >
         </header>
@@ -552,7 +610,19 @@ onUnmounted(() => {
                   </details>
                 </div>
               </div>
-              <span class="dep-version">{{ item.version || "--" }}</span>
+              <el-tooltip
+                :disabled="!item.version"
+                placement="top"
+                :show-after="350"
+                popper-class="dependency-path-tooltip"
+              >
+                <template #content
+                  ><span class="dependency-path-tooltip-content">{{
+                    item.version
+                  }}</span></template
+                >
+                <span class="dep-version">{{ item.version || "--" }}</span>
+              </el-tooltip>
               <el-tag
                 :type="isReady(item) ? 'success' : 'danger'"
                 size="small"
@@ -593,13 +663,30 @@ onUnmounted(() => {
                   @click="requestInstall(item)"
                   ><el-icon><Download /></el-icon>下载并安装</el-button
                 >
-                <el-button
+                <div
                   v-else-if="isReady(item) && item.installSupported"
-                  plain
-                  :loading="item.installing"
-                  @click="requestInstall(item)"
-                  ><el-icon><Refresh /></el-icon>检查更新</el-button
+                  class="dep-ready-controls"
                 >
+                  <el-button
+                    plain
+                    :loading="item.installing"
+                    :disabled="item.uninstalling"
+                    @click="requestInstall(item)"
+                    ><el-icon><Refresh /></el-icon>检查更新</el-button
+                  >
+                  <el-button
+                    v-if="item.uninstallSupported"
+                    class="dep-uninstall-button"
+                    type="danger"
+                    :icon="Delete"
+                    :loading="item.uninstalling"
+                    :disabled="item.installing"
+                    title="卸载可选依赖"
+                    aria-label="卸载可选依赖"
+                    @click="requestUninstall(item)"
+                    >卸载</el-button
+                  >
+                </div>
                 <span v-else-if="isReady(item)" class="dep-action">已就绪</span>
                 <a
                   v-else-if="item.manualUrl"
@@ -694,7 +781,19 @@ onUnmounted(() => {
                   </details>
                 </div>
               </div>
-              <span class="dep-version">{{ item.version || "--" }}</span>
+              <el-tooltip
+                :disabled="!item.version"
+                placement="top"
+                :show-after="350"
+                popper-class="dependency-path-tooltip"
+              >
+                <template #content
+                  ><span class="dependency-path-tooltip-content">{{
+                    item.version
+                  }}</span></template
+                >
+                <span class="dep-version">{{ item.version || "--" }}</span>
+              </el-tooltip>
               <el-tag :type="isReady(item) ? 'success' : 'info'" size="small">{{
                 isReady(item) ? "可用" : "可选"
               }}</el-tag>
@@ -733,13 +832,30 @@ onUnmounted(() => {
                   @click="requestInstall(item)"
                   ><el-icon><Download /></el-icon>下载并安装</el-button
                 >
-                <el-button
+                <div
                   v-else-if="isReady(item) && item.installSupported"
-                  plain
-                  :loading="item.installing"
-                  @click="requestInstall(item)"
-                  ><el-icon><Refresh /></el-icon>检查更新</el-button
+                  class="dep-ready-controls"
                 >
+                  <el-button
+                    plain
+                    :loading="item.installing"
+                    :disabled="item.uninstalling"
+                    @click="requestInstall(item)"
+                    ><el-icon><Refresh /></el-icon>检查更新</el-button
+                  >
+                  <el-button
+                    v-if="item.uninstallSupported"
+                    class="dep-uninstall-button"
+                    type="danger"
+                    :icon="Delete"
+                    :loading="item.uninstalling"
+                    :disabled="item.installing"
+                    title="卸载可选依赖"
+                    aria-label="卸载可选依赖"
+                    @click="requestUninstall(item)"
+                    >卸载</el-button
+                  >
+                </div>
                 <span v-else-if="isReady(item)" class="dep-action">已就绪</span>
                 <a
                   v-else-if="item.manualUrl"

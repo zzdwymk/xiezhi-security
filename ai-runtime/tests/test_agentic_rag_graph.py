@@ -155,6 +155,13 @@ class FakePlannerApi:
         raise AssertionError("agentic RAG tests must not use the legacy planner API")
 
 
+class ProviderDeniedPlanner(FakePlannerApi):
+    async def route(self, request: dict[str, Any]) -> dict[str, Any]:
+        error = RuntimeError("provider rejected request")
+        error.status_code = 403  # type: ignore[attr-defined]
+        raise error
+
+
 def _request(run_id: str, message: str = "alpha service baseline") -> AgentRequest:
     return AgentRequest(
         projectId=PROJECT_ID,
@@ -656,8 +663,25 @@ def test_llm_timeout_fails_closed_with_a_finish_event(
     assert events[0]["data"]["status"] == "FAILED"
     finish = _assert_v3_envelopes(events, request)
     assert finish["status"] == "FAILED"
-    assert finish["terminationReason"] == "ROUTE_FAILED"
+    assert finish["terminationReason"] == "MODEL_TIMEOUT"
     assert finish["retrievalRoundCount"] == 0
+
+
+def test_provider_access_denied_is_distinguished_from_contract_failure(
+    tmp_path: Any,
+) -> None:
+    runtime = SecurityAgentRuntime(_seed_store(tmp_path))
+    runtime.planner = ProviderDeniedPlanner(_project_route())
+    request = _request("rag-provider-denied-0001")
+
+    events = _collect(runtime, request)
+
+    assert events[0]["type"] == "route"
+    assert events[0]["data"]["status"] == "FAILED"
+    assert events[0]["data"]["failureCode"] == "MODEL_ACCESS_DENIED"
+    finish = _assert_v3_envelopes(events, request)
+    assert finish["status"] == "FAILED"
+    assert finish["terminationReason"] == "MODEL_ACCESS_DENIED"
 
 
 def test_total_turn_timeout_emits_one_fail_closed_terminal_error(

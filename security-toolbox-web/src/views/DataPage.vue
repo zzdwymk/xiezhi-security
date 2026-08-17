@@ -85,18 +85,29 @@ async function load() {
 }
 
 function analyzeAudit(row: any) {
+  const resourceType = String(row.resourceType || "").toUpperCase();
+  const resourceId = Number(row.resourceId);
+  const scopedTargetId =
+    resourceType === "TARGET" && resourceId > 0 ? resourceId : undefined;
+  const scopedProjectId =
+    resourceType === "PROJECT" && resourceId > 0 ? resourceId : undefined;
   copilot.open({
     mode: "analyze",
+    targetId: scopedTargetId,
     prompt:
       "请结合这条审计日志判断操作是否符合预期，并给出需要进一步核查的方向。",
     entity: {
-      type: "audit-log",
+      type: "audit",
       id: row.id,
-      title: `审计日志 #${row.id}`,
+      title: `审计记录 #${row.id}`,
       summary:
-        "仅引用审计日志 ID；请从系统可用上下文中分析，不包含日志正文或敏感配置。",
+        "系统将重新读取并校验这条记录，不会发送页面中的原始详情。",
       source: "audits",
-      data: { auditId: row.id },
+      targetId: scopedTargetId,
+      data: {
+        auditId: row.id,
+        ...(scopedProjectId ? { projectId: scopedProjectId } : {}),
+      },
     },
   });
   void router.push("/");

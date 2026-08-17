@@ -11,6 +11,7 @@ import {
   Connection,
   CopyDocument,
   DataAnalysis,
+  Dismiss,
   Document,
   DocumentChecked,
   EditPen,
@@ -33,6 +34,7 @@ import HttpMessageAnalyzer from "../components/offline/HttpMessageAnalyzer.vue";
 import IocExtractor from "../components/offline/IocExtractor.vue";
 import NetworkCalculator from "../components/offline/NetworkCalculator.vue";
 import { toErrorMessage } from "../utils/errorMessage";
+import { useSelectionIndicator } from "../composables/useSelectionIndicator";
 import {
   bytesToBase64,
   decodeBase64,
@@ -282,6 +284,9 @@ const groups: ToolGroup[] = [
 
 const activeToolId = ref<ToolId>("codec");
 const query = ref("");
+const offlineToolSearchInput = ref<HTMLInputElement | null>(null);
+const offlineToolIndex = ref<HTMLElement | null>(null);
+const offlineToolGroups = ref<HTMLElement | null>(null);
 const activeTool = computed(
   () =>
     groups
@@ -327,6 +332,11 @@ function errorMessage(error: unknown, fallback = "处理失败，请检查输入
 const codecType = ref("base64");
 const codecInput = ref("");
 const codecOutput = ref("");
+const codecFilterChinese = ref(false);
+
+function filterChinese(value: string) {
+  return value.replace(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3000-\u303f\uff00-\uffef]/g, "");
+}
 
 function htmlEncode(value: string) {
   return value.replace(
@@ -348,6 +358,7 @@ function htmlDecode(value: string) {
   return textarea.value;
 }
 
+const urlToolTab = ref<"parse" | "build" | "query">("parse");
 const urlInput = ref("https://example.com/path?id=1&debug=true#top");
 const urlParsed = ref("");
 const urlHost = ref("example.com");
@@ -539,7 +550,9 @@ function runPortLookup() {
 
 function runCodec(direction: "encode" | "decode") {
   try {
-    const value = codecInput.value;
+    let value = codecInput.value;
+    if (direction === "encode" && codecFilterChinese.value)
+      value = filterChinese(value);
     if (codecType.value === "base64")
       codecOutput.value =
         direction === "encode" ? encodeBase64(value) : decodeBase64(value);
@@ -572,6 +585,19 @@ const hashInput = ref("");
 const hmacSecret = ref("");
 const hashResults = ref<Record<string, string>>({});
 const hashing = ref(false);
+
+useSelectionIndicator({
+  container: offlineToolIndex,
+  activeSelector: ".offline-tool-item.active",
+  indicatorSelector: ".offline-tool-indicator",
+  dependencies: [activeToolId, query, filteredGroups],
+  scrollContainers: [offlineToolGroups],
+});
+
+function clearToolQuery() {
+  query.value = "";
+  offlineToolSearchInput.value?.focus();
+}
 
 async function calculateHashes() {
   hashing.value = true;
@@ -841,12 +867,40 @@ function runText() {
     </header>
 
     <div class="offline-tools-layout">
-      <aside class="offline-tool-index">
-        <div class="offline-tool-search">
-          <el-icon><Search /></el-icon>
-          <input v-model="query" type="search" placeholder="搜索工具…" />
+      <aside ref="offlineToolIndex" class="offline-tool-index">
+        <span
+          class="fluent-selection-indicator offline-tool-indicator"
+          aria-hidden="true"
+        />
+        <div class="offline-tool-search" role="search">
+          <el-icon class="offline-tool-search-icon" aria-hidden="true"
+            ><Search
+          /></el-icon>
+          <input
+            ref="offlineToolSearchInput"
+            v-model="query"
+            type="search"
+            aria-label="搜索离线工具"
+            autocomplete="off"
+            placeholder="搜索工具…"
+          />
+          <el-tooltip
+            v-if="query"
+            content="清除搜索"
+            placement="top"
+            :show-after="350"
+          >
+            <button
+              type="button"
+              class="offline-tool-search-clear"
+              aria-label="清除搜索"
+              @click="clearToolQuery"
+            >
+              <el-icon aria-hidden="true"><Dismiss /></el-icon>
+            </button>
+          </el-tooltip>
         </div>
-        <div class="offline-tool-groups">
+        <div ref="offlineToolGroups" class="offline-tool-groups">
           <div v-if="!filteredGroups.length" class="offline-tool-empty">
             没有匹配的工具
           </div>
@@ -893,20 +947,14 @@ function runText() {
                 <el-option label="HTML 实体" value="html" />
               </el-select>
             </label>
+            <el-checkbox v-model="codecFilterChinese">过滤中文字符</el-checkbox>
           </div>
           <div class="offline-editor-grid">
             <label
-              >输入<textarea
-                v-model="codecInput"
-                placeholder="输入要编码或解码的文本"
-              />
+              >输入<el-input v-model="codecInput" type="textarea" :autosize="{ minRows: 3 }" placeholder="输入要编码或解码的文本" />
             </label>
             <label
-              >结果<textarea
-                v-model="codecOutput"
-                readonly
-                placeholder="处理结果会显示在这里"
-              />
+              >结果<el-input v-model="codecOutput" type="textarea" :autosize="{ minRows: 3 }" readonly placeholder="处理结果会显示在这里" />
             </label>
           </div>
           <div class="offline-actions">
@@ -931,10 +979,7 @@ function runText() {
 
         <div v-else-if="activeToolId === 'hash'" class="offline-tool-body">
           <label class="offline-field"
-            >原文<textarea
-              v-model="hashInput"
-              placeholder="输入待计算摘要的文本"
-            />
+            >原文<el-input v-model="hashInput" type="textarea" :autosize="{ minRows: 3 }" placeholder="输入待计算摘要的文本" />
           </label>
           <label class="offline-field compact"
             >HMAC 密钥（可选）<el-input
@@ -983,17 +1028,10 @@ function runText() {
           /></label>
           <div class="offline-editor-grid">
             <label
-              >输入<textarea
-                v-model="aesInput"
-                placeholder="加密时输入原文；解密时粘贴本工具生成的 JSON 加密包"
-              />
+              >输入<el-input v-model="aesInput" type="textarea" :autosize="{ minRows: 3 }" placeholder="加密时输入原文；解密时粘贴本工具生成的 JSON 加密包" />
             </label>
             <label
-              >结果<textarea
-                v-model="aesOutput"
-                readonly
-                placeholder="加密包或解密后的原文"
-              />
+              >结果<el-input v-model="aesOutput" type="textarea" :autosize="{ minRows: 3 }" readonly placeholder="加密包或解密后的原文" />
             </label>
           </div>
           <div class="offline-actions">
@@ -1035,8 +1073,8 @@ function runText() {
             /></label>
           </div>
           <div class="offline-editor-grid">
-            <label>输入<textarea v-model="classicInput" /></label
-            ><label>结果<textarea v-model="classicOutput" readonly /></label>
+            <label>输入<el-input v-model="classicInput" type="textarea" :autosize="{ minRows: 3 }" /></label
+            ><label>结果<el-input v-model="classicOutput" type="textarea" :autosize="{ minRows: 3 }" readonly /></label>
           </div>
           <div class="offline-actions">
             <el-button type="primary" @click="runClassic('encrypt')"
@@ -1054,69 +1092,83 @@ function runText() {
         <EndpointExtractor v-else-if="activeToolId === 'endpoints'" />
         <FileInspector v-else-if="activeToolId === 'file'" />
 
-        <div v-else-if="activeToolId === 'urlparse'" class="offline-tool-body">
+        <div
+          v-else-if="activeToolId === 'urlparse'"
+          class="offline-tool-body url-tool-body"
+        >
           <div class="offline-notice">
             仅在本机解析
             URL，不会发网络请求。适合拆解重定向、钓鱼链接和带签名的回调地址。
           </div>
-          <label class="offline-field"
-            >URL<textarea
-              v-model="urlInput"
-              placeholder="https://host/path?x=1"
-            />
-          </label>
-          <div class="offline-actions">
-            <el-button type="primary" @click="runUrlParse">解析 URL</el-button>
-            <el-button :icon="CopyDocument" @click="copyText(urlParsed)"
-              >复制解析 JSON</el-button
-            >
-          </div>
-          <label class="offline-field"
-            >解析结果<textarea v-model="urlParsed" readonly rows="12" />
-          </label>
-          <div class="offline-editor-grid">
-            <label>协议<input v-model="urlProtocol" /></label>
-            <label>主机<input v-model="urlHost" /></label>
-            <label>路径<input v-model="urlPath" /></label>
-            <label>查询串（不含 ?）<input v-model="urlSearch" /></label>
-          </div>
-          <div class="offline-actions">
-            <el-button type="primary" @click="runUrlBuild">构造 URL</el-button>
-            <el-button :icon="CopyDocument" @click="copyText(urlBuilt)"
-              >复制构造结果</el-button
-            >
-          </div>
-          <label class="offline-field"
-            >构造结果<textarea v-model="urlBuilt" readonly />
-          </label>
-          <label class="offline-field"
-            >Query 字符串<textarea v-model="queryInput" rows="3" />
-          </label>
-          <div class="offline-actions">
-            <el-button type="primary" @click="runQueryParse"
-              >解析参数</el-button
-            >
-            <el-button @click="addQueryRow">新增参数行</el-button>
-            <el-button @click="runQueryBuild">重新拼接</el-button>
-            <el-button :icon="CopyDocument" @click="copyText(queryBuilt)"
-              >复制 Query</el-button
-            >
-          </div>
-          <div
-            v-for="(row, index) in queryRows"
-            :key="index"
-            class="offline-control-row"
-          >
-            <el-input
-              v-model="row.key"
-              placeholder="key"
-              style="max-width: 180px"
-            />
-            <el-input v-model="row.value" placeholder="value" />
-          </div>
-          <label class="offline-field"
-            >拼接结果<textarea v-model="queryBuilt" readonly />
-          </label>
+          <el-tabs v-model="urlToolTab" class="url-tool-tabs">
+            <el-tab-pane label="URL 解析" name="parse">
+              <label class="offline-field"
+                >URL<el-input v-model="urlInput" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" placeholder="https://host/path?x=1" />
+              </label>
+              <div class="offline-actions">
+                <el-button type="primary" @click="runUrlParse"
+                  >解析 URL</el-button
+                >
+                <el-button :icon="CopyDocument" @click="copyText(urlParsed)"
+                  >复制解析 JSON</el-button
+                >
+              </div>
+              <label class="offline-field"
+                >解析结果<el-input v-model="urlParsed" type="textarea" :autosize="{ minRows: 5, maxRows: 8 }" readonly />
+              </label>
+            </el-tab-pane>
+            <el-tab-pane label="URL 构造" name="build">
+              <div class="offline-editor-grid url-build-grid">
+                <label>协议<el-input v-model="urlProtocol" /></label>
+                <label>主机<el-input v-model="urlHost" /></label>
+                <label>路径<el-input v-model="urlPath" /></label>
+                <label>查询串（不含 ?）<el-input v-model="urlSearch" /></label>
+              </div>
+              <div class="offline-actions">
+                <el-button type="primary" @click="runUrlBuild"
+                  >构造 URL</el-button
+                >
+                <el-button :icon="CopyDocument" @click="copyText(urlBuilt)"
+                  >复制构造结果</el-button
+                >
+              </div>
+              <label class="offline-field"
+                >构造结果<el-input v-model="urlBuilt" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" readonly />
+              </label>
+            </el-tab-pane>
+            <el-tab-pane label="Query 参数" name="query">
+              <label class="offline-field"
+                >Query 字符串<el-input v-model="queryInput" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" />
+              </label>
+              <div class="offline-actions">
+                <el-button type="primary" @click="runQueryParse"
+                  >解析参数</el-button
+                >
+                <el-button @click="addQueryRow">新增参数行</el-button>
+                <el-button @click="runQueryBuild">重新拼接</el-button>
+                <el-button :icon="CopyDocument" @click="copyText(queryBuilt)"
+                  >复制 Query</el-button
+                >
+              </div>
+              <div class="query-parameter-list">
+                <div
+                  v-for="(row, index) in queryRows"
+                  :key="index"
+                  class="offline-control-row"
+                >
+                  <el-input
+                    v-model="row.key"
+                    placeholder="key"
+                    style="max-width: 180px"
+                  />
+                  <el-input v-model="row.value" placeholder="value" />
+                </div>
+              </div>
+              <label class="offline-field"
+                >拼接结果<el-input v-model="queryBuilt" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" readonly />
+              </label>
+            </el-tab-pane>
+          </el-tabs>
         </div>
 
         <div v-else-if="activeToolId === 'hashid'" class="offline-tool-body">
@@ -1124,10 +1176,7 @@ function runText() {
             根据长度与前缀做启发式识别，结果仅供授权测试与取证研判参考。
           </div>
           <label class="offline-field"
-            >哈希 / 密文<textarea
-              v-model="hashIdInput"
-              placeholder="粘贴 md5/sha/ntlm/bcrypt 等"
-            />
+            >哈希 / 密文<el-input v-model="hashIdInput" type="textarea" :autosize="{ minRows: 3 }" placeholder="粘贴 md5/sha/ntlm/bcrypt 等" />
           </label>
           <div class="offline-actions">
             <el-button type="primary" @click="runHashId">识别类型</el-button>
@@ -1149,7 +1198,7 @@ function runText() {
         </div>
 
         <div v-else-if="activeToolId === 'payload'" class="offline-tool-body">
-          <div class="offline-notice warning">
+          <div class="offline-notice">
             仅用于授权范围内的安全测试与教学。请勿对未授权目标使用。
           </div>
           <div class="payload-presets">
@@ -1161,16 +1210,16 @@ function runText() {
               >{{ item.name }}</el-button
             >
           </div>
-          <label class="offline-field"
-            >原始 Payload<textarea v-model="payloadInput" rows="5" />
+          <label class="offline-field payload-input-field"
+            >原始 Payload<el-input v-model="payloadInput" type="textarea" :autosize="{ minRows: 4 }" />
           </label>
-          <div class="offline-control-row">
-            <span>编码链（可多选，按顺序执行）</span>
+          <label class="offline-field payload-chain-field">
+            编码链（可多选，按顺序执行）
             <el-select
               v-model="payloadSteps"
               multiple
               collapse-tags
-              style="min-width: 320px"
+              style="width: 100%"
             >
               <el-option label="URL" value="url" />
               <el-option label="双重 URL" value="url2" />
@@ -1181,15 +1230,15 @@ function runText() {
               <el-option label="&amp;#x HTML hex" value="unicode-hex" />
               <el-option label="JS \\x/\\u 转义" value="escape-js" />
             </el-select>
-          </div>
-          <div class="offline-actions">
+          </label>
+          <div class="offline-actions payload-actions">
             <el-button type="primary" @click="runPayload">执行编码链</el-button>
             <el-button :icon="CopyDocument" @click="copyText(payloadFinal)"
               >复制最终结果</el-button
             >
           </div>
-          <label class="offline-field"
-            >最终输出<textarea v-model="payloadFinal" readonly rows="4" />
+          <label class="offline-field payload-output-field"
+            >最终输出<el-input v-model="payloadFinal" type="textarea" :autosize="{ minRows: 3 }" readonly />
           </label>
           <div v-if="payloadTrace.length" class="pentest-hit-list">
             <article
@@ -1208,10 +1257,9 @@ function runText() {
         <div v-else-if="activeToolId === 'regex'" class="offline-tool-body">
           <div class="offline-control-row">
             <label class="grow"
-              >正则<input v-model="regexPattern" placeholder="https?:\/\/\S+"
-            /></label>
+              >正则<el-input v-model="regexPattern" placeholder="https?:\/\/\S+" /></label>
             <label
-              >标志<input
+              >标志<el-input
                 v-model="regexFlags"
                 placeholder="gi"
                 style="width: 100px"
@@ -1219,12 +1267,9 @@ function runText() {
           </div>
           <div class="offline-editor-grid">
             <label
-              >输入文本<textarea
-                v-model="regexInput"
-                placeholder="粘贴日志、HTML 或响应"
-              />
+              >输入文本<el-input v-model="regexInput" type="textarea" :autosize="{ minRows: 3 }" placeholder="粘贴日志、HTML 或响应" />
             </label>
-            <label>匹配结果<textarea v-model="regexOutput" readonly /></label>
+            <label>匹配结果<el-input v-model="regexOutput" type="textarea" :autosize="{ minRows: 3 }" readonly /></label>
           </div>
           <div class="offline-actions">
             <el-button type="primary" @click="runRegex">提取匹配</el-button>
@@ -1257,8 +1302,8 @@ function runText() {
             </label>
           </div>
           <div class="offline-editor-grid">
-            <label>文本<textarea v-model="radixInput" /></label>
-            <label>编码结果<textarea v-model="radixOutput" /></label>
+            <label>文本<el-input v-model="radixInput" type="textarea" :autosize="{ minRows: 3 }" /></label>
+            <label>编码结果<el-input v-model="radixOutput" type="textarea" :autosize="{ minRows: 3 }" /></label>
           </div>
           <div class="offline-actions">
             <el-button type="primary" @click="runRadixEncode"
@@ -1273,50 +1318,58 @@ function runText() {
           </div>
         </div>
 
-        <div v-else-if="activeToolId === 'xor'" class="offline-tool-body">
+        <div
+          v-else-if="activeToolId === 'xor'"
+          class="offline-tool-body xor-tool-body"
+        >
           <div class="offline-notice">
             按密钥字节循环异或。常用于简单混淆分析，不提供密码学强度。
           </div>
-          <label class="offline-field"
-            >明文 / 输入<textarea v-model="xorInput" />
-          </label>
           <label class="offline-field compact"
-            >密钥<input v-model="xorKey" placeholder="xor key"
-          /></label>
-          <div class="offline-actions">
-            <el-button type="primary" @click="runXorEncrypt"
-              >XOR → Hex</el-button
-            >
-            <el-button :icon="CopyDocument" @click="copyText(xorOutput)"
-              >复制 Hex</el-button
-            >
+            >密钥<el-input v-model="xorKey" placeholder="xor key" />
+          </label>
+          <div class="xor-workspace-grid">
+            <section class="offline-tool-section">
+              <h3>文本编码</h3>
+              <label class="offline-field"
+                >明文 / 输入<el-input v-model="xorInput" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" />
+              </label>
+              <div class="offline-actions">
+                <el-button type="primary" @click="runXorEncrypt"
+                  >XOR → Hex</el-button
+                >
+                <el-button :icon="CopyDocument" @click="copyText(xorOutput)"
+                  >复制 Hex</el-button
+                >
+              </div>
+              <label class="offline-field"
+                >Hex 输出<el-input v-model="xorOutput" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" />
+              </label>
+            </section>
+            <section class="offline-tool-section">
+              <h3>Hex 解码</h3>
+              <label class="offline-field"
+                >待解密 Hex<el-input v-model="xorHexInput" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" placeholder="默认可用左侧输出" />
+              </label>
+              <div class="offline-actions">
+                <el-button type="primary" @click="runXorDecrypt"
+                  >Hex → 文本</el-button
+                >
+                <el-button :icon="CopyDocument" @click="copyText(xorDecryptOut)"
+                  >复制明文</el-button
+                >
+              </div>
+              <label class="offline-field"
+                >解密结果<el-input v-model="xorDecryptOut" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" readonly />
+              </label>
+            </section>
           </div>
-          <label class="offline-field"
-            >Hex 输出<textarea v-model="xorOutput" />
-          </label>
-          <label class="offline-field"
-            >待解密 Hex<textarea
-              v-model="xorHexInput"
-              placeholder="默认可用上方输出"
-            />
-          </label>
-          <div class="offline-actions">
-            <el-button type="primary" @click="runXorDecrypt"
-              >Hex → 文本</el-button
-            >
-            <el-button :icon="CopyDocument" @click="copyText(xorDecryptOut)"
-              >复制明文</el-button
-            >
-          </div>
-          <label class="offline-field"
-            >解密结果<textarea v-model="xorDecryptOut" readonly />
-          </label>
         </div>
 
         <div v-else-if="activeToolId === 'ports'" class="offline-tool-body">
           <div class="offline-control-row">
             <label
-              >端口<input
+              >端口<el-input
                 v-model="portQuery"
                 placeholder="445"
                 style="width: 120px"
@@ -1326,7 +1379,7 @@ function runText() {
               >显示全部常见端口</el-button
             >
           </div>
-          <div class="pentest-hit-list">
+          <div class="pentest-hit-list port-hit-list">
             <article
               v-for="item in portHits"
               :key="item.port + item.service"
@@ -1341,21 +1394,18 @@ function runText() {
         </div>
 
         <div v-else-if="activeToolId === 'jwt'" class="offline-tool-body">
-          <div class="offline-notice warning">
+          <div class="offline-notice">
             这里只解析 JWT 内容，不验证签名，也不代表令牌可信。
           </div>
           <label class="offline-field"
-            >JWT<textarea
-              v-model="jwtInput"
-              placeholder="粘贴 eyJ... 格式的令牌"
-            />
+            >JWT<el-input v-model="jwtInput" type="textarea" :autosize="{ minRows: 3 }" placeholder="粘贴 eyJ... 格式的令牌" />
           </label>
           <div class="offline-actions">
             <el-button type="primary" @click="parseJwt">解析</el-button>
           </div>
           <div class="offline-editor-grid">
-            <label>Header<textarea v-model="jwtHeader" readonly /></label
-            ><label>Payload<textarea v-model="jwtPayload" readonly /></label>
+            <label>Header<el-input v-model="jwtHeader" type="textarea" :autosize="{ minRows: 3 }" readonly /></label
+            ><label>Payload<el-input v-model="jwtPayload" type="textarea" :autosize="{ minRows: 3 }" readonly /></label>
           </div>
         </div>
 
@@ -1369,8 +1419,8 @@ function runText() {
             ></label>
           </div>
           <div class="offline-editor-grid">
-            <label>JSON 输入<textarea v-model="jsonInput" /></label
-            ><label>结果<textarea v-model="jsonOutput" readonly /></label>
+            <label>JSON 输入<el-input v-model="jsonInput" type="textarea" :autosize="{ minRows: 3 }" /></label
+            ><label>结果<el-input v-model="jsonOutput" type="textarea" :autosize="{ minRows: 3 }" readonly /></label>
           </div>
           <div class="offline-actions">
             <el-button type="primary" @click="runJson('format')"
@@ -1420,7 +1470,7 @@ function runText() {
             ><el-checkbox v-model="includeSymbols">符号</el-checkbox>
           </div>
           <label class="offline-field"
-            >生成结果<textarea v-model="generatorOutput" readonly />
+            >生成结果<el-input v-model="generatorOutput" type="textarea" :autosize="{ minRows: 3 }" readonly />
           </label>
           <div class="offline-actions">
             <el-button type="primary" @click="generatePassword"
@@ -1467,8 +1517,8 @@ function runText() {
             ></label>
           </div>
           <div class="offline-editor-grid">
-            <label>输入<textarea v-model="textInput" /></label
-            ><label>结果<textarea v-model="textOutput" readonly /></label>
+            <label>输入<el-input v-model="textInput" type="textarea" :autosize="{ minRows: 3 }" /></label
+            ><label>结果<el-input v-model="textOutput" type="textarea" :autosize="{ minRows: 3 }" readonly /></label>
           </div>
           <div class="offline-actions">
             <el-button type="primary" @click="runText">处理文本</el-button
@@ -1486,12 +1536,12 @@ function runText() {
 .pentest-hit-list {
   display: grid;
   gap: 10px;
-  margin-top: 12px;
+  margin-top: 0;
 }
 .pentest-hit-card {
   padding: 12px 14px;
   border: 1px solid var(--app-border);
-  border-radius: 10px;
+  border-radius: 6px;
   background: var(--app-surface-soft);
 }
 </style>

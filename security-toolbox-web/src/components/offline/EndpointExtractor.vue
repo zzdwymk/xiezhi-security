@@ -36,8 +36,10 @@ function extract() {
     </label>
     <label class="offline-field"
       >HTML / JavaScript / 日志文本
-      <textarea
+      <el-input
         v-model="input"
+        type="textarea"
+        :autosize="{ minRows: 3 }"
         placeholder="粘贴源码后提取绝对 URL、相对接口路径和域名"
       />
     </label>
@@ -49,19 +51,19 @@ function extract() {
         <header>
           <strong>完整 URL</strong><span>{{ result.urls.length }}</span>
         </header>
-        <textarea :value="result.urls.join('\n')" readonly />
+        <el-input :value="result.urls.join('\n')" type="textarea" :autosize="{ minRows: 3 }" readonly />
       </article>
       <article>
         <header>
           <strong>相对路径</strong><span>{{ result.paths.length }}</span>
         </header>
-        <textarea :value="result.paths.join('\n')" readonly />
+        <el-input :value="result.paths.join('\n')" type="textarea" :autosize="{ minRows: 3 }" readonly />
       </article>
       <article>
         <header>
           <strong>关联域名</strong><span>{{ result.domains.length }}</span>
         </header>
-        <textarea :value="result.domains.join('\n')" readonly />
+        <el-input :value="result.domains.join('\n')" type="textarea" :autosize="{ minRows: 3 }" readonly />
       </article>
     </div>
   </div>

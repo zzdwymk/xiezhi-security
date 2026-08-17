@@ -264,7 +264,6 @@ public class AiController {
 
   @DeleteMapping("/agent/sessions/{sessionId}")
   public Map<String, Object> clearAgentSession(@PathVariable String sessionId) {
-    agentOrchestrator.clearSession(sessionId);
-    return Map.of("sessionId", sessionId, "cleared", true);
+    return Map.of("sessionId", sessionId, "cleared", agentOrchestrator.clearSession(sessionId));
   }
 }

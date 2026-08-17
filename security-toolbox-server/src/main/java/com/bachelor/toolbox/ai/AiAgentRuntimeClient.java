@@ -52,7 +52,9 @@ public class AiAgentRuntimeClient {
           "http_headers",
           "http_security_check",
           "tls_config",
-          "nuclei_scan");
+          "nuclei_scan",
+          "afrog_scan",
+          "xray_scan");
   private static final List<String> ACTIVE_TASK_STATUSES = List.of("BLOCKED", "PENDING", "RUNNING");
   private static final List<String> PROJECT_INDEX_SOURCES =
       List.of("project", "target", "task", "finding", "recon", "probe", "conversation");
@@ -478,7 +480,7 @@ public class AiAgentRuntimeClient {
     body.put("nodeRunId", request.nodeRunId());
     body.put(
         "budget",
-        Map.of("maxRetrievalRounds", 2, "maxLlmCalls", 4, "timeoutSeconds", 30));
+        Map.of("maxRetrievalRounds", 2, "maxLlmCalls", 4, "timeoutSeconds", 90));
 
     List<Map<String, Object>> workflowSteps = loadWorkflowSteps();
     if (!workflowSteps.isEmpty()) body.put("workflow", workflowSteps);
@@ -524,11 +526,18 @@ public class AiAgentRuntimeClient {
 
     if (!holder.finished) throw new RuntimeProtocolException("AI Runtime 流在终态前中断");
     holder.persistLedger();
-    if (holder.error) throw new RuntimeProtocolException("AI Runtime 返回失败终态");
+    if (holder.error) {
+      throw new RuntimeProtocolException(
+          "AI Runtime 返回失败终态：" + (holder.errorCode.isBlank() ? "UNKNOWN" : holder.errorCode));
+    }
     AiPlanResponse plan = holder.plan;
     if (plan == null) throw new RuntimeProtocolException("AI Runtime 未返回有效计划");
     if (Set.of("DENIED", "FAILED").contains(holder.finishStatus)) {
-      throw new RuntimeProtocolException("AI Runtime Harness 拒绝了本轮计划");
+      String reason = holder.terminationReason;
+      throw new RuntimeProtocolException(
+          reason == null || reason.isBlank()
+              ? "AI Runtime Harness 拒绝了本轮计划"
+              : "AI Runtime 本轮未完成：" + reason);
     }
     if ("APPROVAL_REQUIRED".equals(holder.finishStatus)
         && request.executionRequested()
@@ -570,11 +579,18 @@ public class AiAgentRuntimeClient {
     }
     if (!holder.finished) throw new RuntimeProtocolException("AI Runtime 流在终态前中断");
     holder.persistLedger();
-    if (holder.error) throw new RuntimeProtocolException("AI Runtime 返回失败终态");
+    if (holder.error) {
+      throw new RuntimeProtocolException(
+          "AI Runtime 返回失败终态：" + (holder.errorCode.isBlank() ? "UNKNOWN" : holder.errorCode));
+    }
     AiPlanResponse plan = holder.plan;
     if (plan == null) throw new RuntimeProtocolException("AI Runtime 未返回有效计划");
     if (Set.of("DENIED", "FAILED").contains(holder.finishStatus)) {
-      throw new RuntimeProtocolException("AI Runtime Harness 拒绝了本轮计划");
+      String reason = holder.terminationReason;
+      throw new RuntimeProtocolException(
+          reason == null || reason.isBlank()
+              ? "AI Runtime Harness 拒绝了本轮计划"
+              : "AI Runtime 本轮未完成：" + reason);
     }
     if ("APPROVAL_REQUIRED".equals(holder.finishStatus)
         && request.executionRequested()
@@ -590,6 +606,47 @@ public class AiAgentRuntimeClient {
         POLICY_REVISION,
         holder.stateVersion,
         holder.provenance());
+  }
+
+  /** Persist a bounded continuation tombstone in the local runtime after Java creates tasks. */
+  public void checkpointContinuation(Map<String, Object> body, long projectId) {
+    if (!enabled) return;
+    try {
+      RestClient.RequestBodySpec request =
+          restClient
+              .post()
+              .uri("/agent/checkpoint")
+              .contentType(MediaType.APPLICATION_JSON)
+              .accept(MediaType.APPLICATION_JSON);
+      authorizeProject(request, projectId, "agent-resume");
+      request.body(body).retrieve().toBodilessEntity();
+    } catch (Exception ex) {
+      throw new RuntimeUnavailableException("AI Runtime 续接检查点写入失败", ex);
+    }
+  }
+
+  /** Delivers terminal task summaries to the runtime; duplicate callback IDs are idempotent. */
+  @SuppressWarnings("unchecked")
+  public Map<String, Object> resumeContinuation(Map<String, Object> body, long projectId) {
+    if (!enabled) return Map.of("status", "RUNTIME_DISABLED");
+    try {
+      RestClient.RequestBodySpec request =
+          restClient
+              .post()
+              .uri("/agent/resume")
+              .contentType(MediaType.APPLICATION_JSON)
+              .accept(MediaType.APPLICATION_JSON);
+      authorizeProject(request, projectId, "agent-resume");
+      JsonNode result = request.body(body).retrieve().body(JsonNode.class);
+      if (result == null || !result.isObject()) {
+        throw new RuntimeProtocolException("AI Runtime 续接响应格式无效");
+      }
+      return objectMapper.convertValue(result, Map.class);
+    } catch (RuntimeProtocolException ex) {
+      throw ex;
+    } catch (Exception ex) {
+      throw new RuntimeUnavailableException("AI Runtime 续接请求失败", ex);
+    }
   }
 
   private List<Map<String, Object>> buildPlannerMessages(
@@ -1008,6 +1065,7 @@ public class AiAgentRuntimeClient {
           case "tcp_ports" -> Set.of("ports");
           case "nmap_service_scan" -> Set.of("ports", "mode");
           case "http_security_check" -> Set.of("check");
+          case "afrog_scan", "xray_scan" -> Set.of("pocCodes", "allPocs");
           case "nuclei_scan", "http_headers", "tls_config" -> Set.of();
           default -> throw new RuntimeProtocolException("AI Runtime 工具不在白名单");
         };
@@ -1032,10 +1090,40 @@ public class AiAgentRuntimeClient {
         }
         result.put("check", check);
       }
+      case "afrog_scan", "xray_scan" -> result.putAll(strictPocSelection(raw));
       case "nuclei_scan", "http_headers", "tls_config" -> {}
       default -> throw new RuntimeProtocolException("AI Runtime 工具不在白名单");
     }
     return Map.copyOf(result);
+  }
+
+  private Map<String, Object> strictPocSelection(JsonNode raw) {
+    boolean hasCodes = raw.has("pocCodes");
+    boolean hasAll = raw.has("allPocs");
+    if (hasCodes == hasAll) {
+      throw new RuntimeProtocolException("AI Runtime PoC 选择必须指定具体 PoC 或全部 PoC");
+    }
+    if (hasAll) {
+      if (!raw.path("allPocs").isBoolean() || !raw.path("allPocs").booleanValue()) {
+        throw new RuntimeProtocolException("AI Runtime 全部 PoC 参数无效");
+      }
+      return Map.of("allPocs", true);
+    }
+    JsonNode codes = raw.path("pocCodes");
+    if (!codes.isArray() || codes.isEmpty() || codes.size() > 50) {
+      throw new RuntimeProtocolException("AI Runtime PoC 数量无效");
+    }
+    List<String> result = new ArrayList<>();
+    Set<String> unique = new java.util.LinkedHashSet<>();
+    for (JsonNode code : codes) {
+      if (!code.isTextual()
+          || !code.textValue().matches("[A-Z]{2}-[A-F0-9]{24}")
+          || !unique.add(code.textValue())) {
+        throw new RuntimeProtocolException("AI Runtime PoC 编号无效或重复");
+      }
+      result.add(code.textValue());
+    }
+    return Map.of("pocCodes", List.copyOf(result));
   }
 
   private void copyStrictText(
@@ -1095,6 +1183,8 @@ public class AiAgentRuntimeClient {
     return switch (code) {
       case "nmap_service_scan" -> "Nmap 服务识别";
       case "nuclei_scan" -> "Nuclei 安全模板检测";
+      case "afrog_scan" -> "Afrog PoC 漏洞扫描";
+      case "xray_scan" -> "Xray PoC 漏洞扫描";
       case "tcp_ports" -> "授权端口探测";
       case "http_headers" -> "HTTP 安全响应头检查";
       case "http_security_check" -> "HTTP 常见安全检查";
@@ -1409,6 +1499,7 @@ public class AiAgentRuntimeClient {
     private boolean reviewSeen;
     private boolean lifecycleFailed;
     private boolean error;
+    private String errorCode = "";
     private boolean finished;
     private int stateVersion;
     private int retrievalRoundCount;
@@ -2401,6 +2492,7 @@ public class AiAgentRuntimeClient {
         throw new RuntimeProtocolException("AI Runtime error 终态 status 无效");
       }
       safeProtocolIdentifier(data, "errorCode", 64);
+      errorCode = strictText(data, "errorCode", 64);
       error = true;
       finished = true;
     }

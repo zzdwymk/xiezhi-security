@@ -1,9 +1,31 @@
-param(
+﻿param(
     [switch]$SkipComponentBuild,
     [string]$Python
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Keep Windows PowerShell 5.1 and native build tools on the same UTF-8 channel.
+$utf8 = [System.Text.UTF8Encoding]::new($false)
+[Console]::InputEncoding = $utf8
+[Console]::OutputEncoding = $utf8
+$OutputEncoding = $utf8
+
+function Add-ProcessJvmOptions([string]$Name, [string[]]$Options) {
+    $existing = [Environment]::GetEnvironmentVariable($Name, 'Process')
+    $parts = @()
+    if (-not [string]::IsNullOrWhiteSpace($existing)) { $parts += $existing.Trim() }
+    foreach ($option in $Options) {
+        if ($existing -notlike "*$option*") { $parts += $option }
+    }
+    [Environment]::SetEnvironmentVariable($Name, ($parts -join ' '), 'Process')
+}
+
+Add-ProcessJvmOptions 'MAVEN_OPTS' @(
+    '-Dfile.encoding=UTF-8',
+    '-Dsun.stdout.encoding=UTF-8',
+    '-Dsun.stderr.encoding=UTF-8'
+)
 
 $workspace = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $backend = Join-Path $workspace 'security-toolbox-server'
@@ -123,7 +145,15 @@ try {
         $taskkillOutput = @()
         do {
             $attempts++
-            $taskkillOutput = @(& taskkill.exe /PID $processId /T /F 2>&1 | ForEach-Object { [string]$_ })
+            $previousErrorActionPreference = $ErrorActionPreference
+            try {
+                # A matching process can exit between CIM discovery and taskkill.
+                # Capture that diagnostic and decide from the follow-up liveness check.
+                $ErrorActionPreference = 'Continue'
+                $taskkillOutput = @(& taskkill.exe /PID $processId /T /F 2>&1 | ForEach-Object { [string]$_ })
+            } finally {
+                $ErrorActionPreference = $previousErrorActionPreference
+            }
             $deadline = [DateTime]::UtcNow.AddSeconds(3)
             do {
                 if (-not (Test-WindowsProcessAlive $processId)) { break }

@@ -20,7 +20,7 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class AiTaskDispatchService {
-  private static final int MAX_TASKS_PER_DISPATCH = 4;
+  private static final int MAX_TASKS_PER_DISPATCH = 8;
   private static final Set<String> SAFE_AI_TOOLS =
       Set.of(
           "http_headers",
@@ -28,7 +28,9 @@ public class AiTaskDispatchService {
           "tls_config",
           "tcp_ports",
           "nmap_service_scan",
-          "nuclei_scan");
+          "nuclei_scan",
+          "afrog_scan",
+          "xray_scan");
 
   private final TargetService targetService;
   private final TargetPolicyService targetPolicyService;
@@ -242,6 +244,7 @@ public class AiTaskDispatchService {
         switch (toolCode) {
           case "tcp_ports" -> Set.of("ports");
           case "nmap_service_scan" -> Set.of("ports", "mode");
+          case "afrog_scan", "xray_scan" -> Set.of("pocCodes", "allPocs");
           case "nuclei_scan" -> Set.of();
           case "http_security_check" -> Set.of("check");
           case "http_headers", "tls_config" -> Set.of();
@@ -291,8 +294,40 @@ public class AiTaskDispatchService {
         }
       }
       case "nuclei_scan" -> targetPolicyService.validatedHost(target);
+      case "afrog_scan", "xray_scan" -> {
+        targetPolicyService.validatedHttpUri(target);
+        normalizePocSelection(parameters);
+      }
       default -> throw new ApiException("AI 工具不在安全白名单内");
     }
     return parameters;
+  }
+
+  private void normalizePocSelection(Map<String, Object> parameters) {
+    boolean hasCodes = parameters.containsKey("pocCodes");
+    boolean hasAll = parameters.containsKey("allPocs");
+    if (hasCodes == hasAll) throw new ApiException("PoC 选择必须指定具体 PoC 或全部 PoC");
+    if (hasAll) {
+      if (!Boolean.TRUE.equals(parameters.get("allPocs"))) {
+        throw new ApiException("全部 PoC 参数必须为 true");
+      }
+      return;
+    }
+    Object rawCodes = parameters.get("pocCodes");
+    if (!(rawCodes instanceof java.util.Collection<?> values)
+        || values.isEmpty()
+        || values.size() > 50) {
+      throw new ApiException("PoC 数量必须在 1 到 50 之间");
+    }
+    List<String> codes = new ArrayList<>();
+    Set<String> unique = new LinkedHashSet<>();
+    for (Object value : values) {
+      String code = Objects.toString(value, "");
+      if (!code.matches("[A-Z]{2}-[A-F0-9]{24}") || !unique.add(code)) {
+        throw new ApiException("PoC 编号无效或重复");
+      }
+      codes.add(code);
+    }
+    parameters.put("pocCodes", List.copyOf(codes));
   }
 }

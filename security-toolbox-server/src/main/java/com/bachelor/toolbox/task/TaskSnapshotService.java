@@ -4,6 +4,7 @@ import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.dependency.DependencyDetectionService;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.tool.SecurityTool;
+import com.bachelor.toolbox.tool.ScannerPocSelectionService;
 import com.bachelor.toolbox.vulnerability.DetectionRule;
 import com.bachelor.toolbox.vulnerability.DetectionRuleRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -31,17 +32,20 @@ public class TaskSnapshotService {
   private final ObjectMapper objectMapper;
   private final DetectionRuleRepository rules;
   private final DependencyDetectionService dependencies;
+  private final ScannerPocSelectionService scannerPocs;
   private final Path nucleiTemplatesPath;
 
   public TaskSnapshotService(
       ObjectMapper objectMapper,
       DetectionRuleRepository rules,
       DependencyDetectionService dependencies,
+      ScannerPocSelectionService scannerPocs,
       @Value("${toolbox.execution.nuclei-templates-path:${user.home}/nuclei-templates}")
           String path) {
     this.objectMapper = objectMapper;
     this.rules = rules;
     this.dependencies = dependencies;
+    this.scannerPocs = scannerPocs;
     this.nucleiTemplatesPath = Path.of(path).toAbsolutePath().normalize();
   }
 
@@ -60,9 +64,8 @@ public class TaskSnapshotService {
             task.getAuthorizationExpiresAtSnapshot(), current.getAuthorizationExpiresAtSnapshot())
         || !Objects.equals(task.getToolVersionSnapshot(), current.getToolVersionSnapshot())
         || !Objects.equals(task.getRuleVersionSnapshot(), current.getRuleVersionSnapshot())
-        || !Objects.equals(
-            task.getNucleiTemplateHashSnapshot(), current.getNucleiTemplateHashSnapshot())) {
-      throw new ApiException("任务创建后的授权、工具、规则或 Nuclei 模板已发生变化，请重新创建任务");
+        || !Objects.equals(task.getNucleiTemplateHashSnapshot(), current.getNucleiTemplateHashSnapshot())) {
+      throw new ApiException("任务创建后的授权、工具、规则或扫描器 PoC 已发生变化，请重新创建任务");
     }
   }
 
@@ -103,8 +106,11 @@ public class TaskSnapshotService {
       task.setAuthorizationExpiresAtSnapshot(target.getAuthorizationExpiresAt());
       task.setToolVersionSnapshot(resolveToolVersion(tool));
       task.setRuleVersionSnapshot(resolveRuleVersion(task.getRuleCode()));
+      String selectedPocHash = scannerPocs.selectionHash(task.getToolCode(), task.getRequestJson());
       task.setNucleiTemplateHashSnapshot(
-          "nuclei_scan".equals(task.getToolCode()) ? nucleiTemplateSetHash() : null);
+          selectedPocHash != null
+              ? selectedPocHash
+              : "nuclei_scan".equals(task.getToolCode()) ? nucleiTemplateSetHash() : null);
       task.setSnapshotCapturedAt(capturedAt);
       task.setSnapshotSchemaVersion("1");
       String integrity =
@@ -124,7 +130,7 @@ public class TaskSnapshotService {
                   String.valueOf(task.getToolVersionSnapshot()),
                   "ruleVersion",
                   String.valueOf(task.getRuleVersionSnapshot()),
-                  "nucleiHash",
+                  "scannerPocHash",
                   String.valueOf(task.getNucleiTemplateHashSnapshot()),
                   "schema",
                   "1"));
@@ -140,6 +146,8 @@ public class TaskSnapshotService {
         switch (tool.code()) {
           case "nmap_service_scan" -> "Nmap";
           case "nuclei_scan" -> "Nuclei";
+          case "afrog_scan" -> "Afrog";
+          case "xray_scan" -> "Xray";
           default -> null;
         };
     if (dependencyName != null) {
