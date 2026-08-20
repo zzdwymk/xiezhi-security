@@ -1,6 +1,7 @@
 package com.bachelor.toolbox.operation;
 
 import com.bachelor.toolbox.audit.AuditService;
+import com.bachelor.toolbox.auth.UserRepository;
 import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.common.PageRequests;
 import com.bachelor.toolbox.finding.Finding;
@@ -67,12 +68,17 @@ public class SecurityActionService {
   private final SecurityActionRepository repository;
   private final AssessmentProjectService projects;
   private final AuditService audit;
+  private final UserRepository users;
 
   public SecurityActionService(
-      SecurityActionRepository repository, AssessmentProjectService projects, AuditService audit) {
+      SecurityActionRepository repository,
+      AssessmentProjectService projects,
+      AuditService audit,
+      UserRepository users) {
     this.repository = repository;
     this.projects = projects;
     this.audit = audit;
+    this.users = users;
   }
 
   public List<SecurityAction> list(Long projectId) {
@@ -310,12 +316,23 @@ public class SecurityActionService {
   }
 
   private String requireIndependentApprover(SecurityAction action, Authentication authentication) {
-    if (authentication == null
-        || authentication.getName() == null
-        || authentication.getName().equals(action.getRequestedBy())) {
+    if (authentication == null || authentication.getName() == null) {
+      throw new ApiException("无法识别审批人");
+    }
+    if (authentication.getName().equals(action.getRequestedBy())
+        && !(isSingleAdminMode() && isAdministrator(authentication))) {
       throw new ApiException("申请人与审批人必须分离");
     }
     return authentication.getName();
+  }
+
+  private boolean isSingleAdminMode() {
+    return users.count() <= 1;
+  }
+
+  private boolean isAdministrator(Authentication authentication) {
+    return authentication.getAuthorities().stream()
+        .anyMatch(authority -> "ROLE_ADMIN".equals(authority.getAuthority()));
   }
 
   private String normalizeDecision(String decision) {

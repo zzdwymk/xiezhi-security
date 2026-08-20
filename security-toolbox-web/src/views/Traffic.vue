@@ -3213,6 +3213,9 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
 }
+.codex-toolbar-actions :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
 .codex-traffic-page :deep(.el-button) {
   min-height: var(--traffic-control-height);
   padding: 0 12px;

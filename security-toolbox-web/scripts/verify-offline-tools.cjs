@@ -30,6 +30,7 @@ async function verify() {
   const cryptoTools = loadTypescriptModule("src/utils/offlineCrypto.ts");
   const pentest = loadTypescriptModule("src/utils/offlinePentest.ts");
   const network = loadTypescriptModule("src/utils/networkSecurity.ts");
+  const hexViewer = loadTypescriptModule("src/utils/fileHexViewer.ts");
   const pagination = loadTypescriptModule(
     "src/composables/useClientPagination.ts",
   );
@@ -92,6 +93,21 @@ async function verify() {
     network.refangIoc("hxxps://example[.]com/a"),
     "https://example.com/a",
   );
+
+  assert.equal(hexViewer.parseHexOffset("0x200"), 512);
+  assert.equal(hexViewer.parseHexOffset("512"), 512);
+  assert.throws(() => hexViewer.parseHexOffset("12xz"), /偏移量/);
+  assert.equal(hexViewer.clampHexOffset(900, 1000, 256), 744);
+  assert.equal(hexViewer.formatHexOffset(0x2a, 0x100), "0000002A");
+  const hexRows = hexViewer.buildHexRows(
+    new Uint8Array([0x41, 0x00, 0x7e, 0x7f, 0xff]),
+    0x20,
+    0x100,
+  );
+  assert.equal(hexRows[0].offsetLabel, "00000020");
+  assert.deepEqual(hexRows[0].hexCells.slice(0, 5), ["41", "00", "7E", "7F", "FF"]);
+  assert.equal(hexRows[0].ascii, "A.~..");
+  assert.equal(hexRows[0].hexCells.length, 16);
 
   const parsedUrl = pentest.parseUrlDetailed("example.com:8443/a?x=1");
   assert.deepEqual(
@@ -201,6 +217,23 @@ async function verify() {
   assert.match(offlineToolsStyles, /\.offline-tool-search:focus-within/);
   assert.match(offlineToolsStyles, /inset 0 -2px 0 0 var\(--app-accent\)/);
   assert.match(offlineToolsStyles, /\.offline-tool-search-clear/);
+  assert.match(offlineToolsSource, /FileHexViewer/);
+  assert.match(offlineToolsSource, /activeToolId === 'hexfile'/);
+  assert.match(offlineToolsSource, /文件十六进制查看/);
+
+  const hexViewerSource = fs.readFileSync(
+    path.resolve(__dirname, "../src/components/offline/FileHexViewer.vue"),
+    "utf8",
+  );
+  const networkOfflineStyles = fs.readFileSync(
+    path.resolve(__dirname, "../src/network-offline-tools.css"),
+    "utf8",
+  );
+  assert.match(hexViewerSource, /\.slice\(safeOffset,/);
+  assert.match(hexViewerSource, /上一页/);
+  assert.match(hexViewerSource, /下一页/);
+  assert.match(hexViewerSource, /跳转偏移/);
+  assert.match(networkOfflineStyles, /\.hex-viewer-table/);
 
   console.log("Offline tools and shared frontend verification passed.");
 }

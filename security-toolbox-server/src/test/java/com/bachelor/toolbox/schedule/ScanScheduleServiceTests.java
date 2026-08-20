@@ -7,9 +7,11 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -21,6 +23,10 @@ import com.bachelor.toolbox.target.TargetService;
 import com.bachelor.toolbox.task.CreateTaskRequest;
 import com.bachelor.toolbox.task.SecurityTask;
 import com.bachelor.toolbox.task.TaskService;
+import com.bachelor.toolbox.tool.ScannerPocSelectionService;
+import com.bachelor.toolbox.tool.SecurityToolRegistry;
+import com.bachelor.toolbox.vulnerability.NucleiTemplateCatalogService;
+import com.bachelor.toolbox.vulnerability.ScannerPocCatalogService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
@@ -41,13 +47,22 @@ class ScanScheduleServiceTests {
   private final TargetService targets = mock(TargetService.class);
   private final AssessmentProjectService projects = mock(AssessmentProjectService.class);
   private final ProjectAuthorizationService authorization = mock(ProjectAuthorizationService.class);
+  private final SecurityToolRegistry toolRegistry = mock(SecurityToolRegistry.class);
+  private final ScannerPocSelectionService scannerPocs = mock(ScannerPocSelectionService.class);
   private ScanScheduleService service;
 
   @BeforeEach
   void setUp() throws Exception {
     service =
         new ScanScheduleService(
-            repository, tasks, targets, projects, authorization, new ObjectMapper());
+            repository,
+            tasks,
+            targets,
+            projects,
+            authorization,
+            new ObjectMapper(),
+            toolRegistry,
+            scannerPocs);
     when(authorization.isAdmin()).thenReturn(true);
     when(authorization.callWithSystemAccess(any()))
         .thenAnswer(
@@ -152,12 +167,265 @@ class ScanScheduleServiceTests {
   }
 
   @Test
+  void acceptsHttpSecurityCheckWithSupportedCheckParameter() {
+    CreateScheduleRequest request =
+        new CreateScheduleRequest(
+            5L,
+            7L,
+            "http_security_check",
+            Map.of("check", "cors"),
+            null,
+            3600L,
+            true);
+
+    ScanSchedule created = service.create(request);
+
+    assertEquals("http_security_check", created.getToolCode());
+    assertEquals("{\"check\":\"cors\"}", created.getParametersJson());
+    verify(toolRegistry).require("http_security_check");
+  }
+
+  @Test
+  void rejectsHttpSecurityCheckWithoutExactlyOneSupportedCheck() {
+    for (Map<String, Object> parameters :
+        List.<Map<String, Object>>of(
+            Map.of(),
+            Map.of("check", "cookies", "extra", true),
+            Map.of("check", "unknown"))) {
+      CreateScheduleRequest request =
+          new CreateScheduleRequest(
+              5L, 7L, "http_security_check", parameters, null, 3600L, true);
+
+      assertThrows(ApiException.class, () -> service.create(request));
+    }
+
+    verify(repository, never()).save(any());
+  }
+
+  @Test
+  void validatesScannerSelectionsUsingEachExecutorsSelectionContract() {
+    service.create(
+        new CreateScheduleRequest(
+            5L,
+            7L,
+            "nuclei_scan",
+            Map.of("pocCodes", List.of("NU-0123456789ABCDEF01234567")),
+            null,
+            3600L,
+            true));
+    service.create(
+        new CreateScheduleRequest(
+            5L,
+            7L,
+            "afrog_scan",
+            Map.of("pocCodes", List.of("AF-0123456789ABCDEF01234567")),
+            null,
+            3600L,
+            true));
+    service.create(
+        new CreateScheduleRequest(
+            5L,
+            7L,
+            "xray_scan",
+            Map.of("pocCodes", List.of("XR-0123456789ABCDEF01234567")),
+            null,
+            3600L,
+            true));
+
+    verify(scannerPocs)
+        .resolve(
+            NucleiTemplateCatalogService.SOURCE_TYPE,
+            Map.of(
+                "pocCodes",
+                List.of("NU-0123456789ABCDEF01234567"),
+                ScannerPocSelectionService.SAFE_ONLY_PARAMETER,
+                true),
+            false);
+    verify(scannerPocs)
+        .resolve(
+            ScannerPocCatalogService.AFROG,
+            Map.of(
+                "pocCodes",
+                List.of("AF-0123456789ABCDEF01234567"),
+                ScannerPocSelectionService.SAFE_ONLY_PARAMETER,
+                true),
+            false);
+    verify(scannerPocs)
+        .resolve(
+            ScannerPocCatalogService.XRAY,
+            Map.of(
+                "pocCodes",
+                List.of("XR-0123456789ABCDEF01234567"),
+                ScannerPocSelectionService.SAFE_ONLY_PARAMETER,
+                true),
+            false);
+  }
+
+  @Test
+  void rejectsDynamicAllPocsForUnattendedSchedules() {
+    CreateScheduleRequest request =
+        new CreateScheduleRequest(
+            5L, 7L, "afrog_scan", Map.of("allPocs", true), null, 3600L, true);
+
+    ApiException exception = assertThrows(ApiException.class, () -> service.create(request));
+
+    assertEquals("定时扫描不支持动态全部 PoC，请明确选择 SAFE PoC", exception.getMessage());
+    verify(scannerPocs, never()).resolve(any(), any(), eq(false));
+    verify(repository, never()).save(any());
+  }
+
+  @Test
+  void rejectsEmptyNucleiSelectionForUnattendedSchedules() {
+    doThrow(new ApiException("请至少选择一个 NUCLEI PoC"))
+        .when(scannerPocs)
+        .resolve(
+            eq(NucleiTemplateCatalogService.SOURCE_TYPE),
+            eq(Map.of(ScannerPocSelectionService.SAFE_ONLY_PARAMETER, true)),
+            eq(false));
+    CreateScheduleRequest request =
+        new CreateScheduleRequest(5L, 7L, "nuclei_scan", Map.of(), null, 3600L, true);
+
+    ApiException exception = assertThrows(ApiException.class, () -> service.create(request));
+
+    assertEquals("请至少选择一个 NUCLEI PoC", exception.getMessage());
+    verify(repository, never()).save(any());
+  }
+
+  @Test
+  void rejectsScannerScheduleWhenPocSelectionValidationFails() {
+    doThrow(new ApiException("请至少选择一个 AFROG PoC"))
+        .when(scannerPocs)
+        .resolve(
+            eq(ScannerPocCatalogService.AFROG),
+            eq(Map.of(ScannerPocSelectionService.SAFE_ONLY_PARAMETER, true)),
+            eq(false));
+    CreateScheduleRequest request =
+        new CreateScheduleRequest(5L, 7L, "afrog_scan", Map.of(), null, 3600L, true);
+
+    ApiException exception = assertThrows(ApiException.class, () -> service.create(request));
+
+    assertEquals("请至少选择一个 AFROG PoC", exception.getMessage());
+    verify(repository, never()).save(any());
+  }
+
+  @Test
+  void rejectsToolsOutsideScheduledExecutionAllowlist() {
+    CreateScheduleRequest request =
+        new CreateScheduleRequest(
+            5L, 7L, "retrieve_project_context", Map.of(), null, 3600L, true);
+
+    ApiException exception = assertThrows(ApiException.class, () -> service.create(request));
+
+    assertEquals("该工具不支持定时执行: retrieve_project_context", exception.getMessage());
+    verify(toolRegistry, never()).require(any());
+    verify(repository, never()).save(any());
+  }
+
+  @Test
+  void enablingScannerScheduleRevalidatesPersistedPocSelection() {
+    ScanSchedule schedule = intervalSchedule(11L);
+    schedule.setEnabled(false);
+    schedule.setToolCode("xray_scan");
+    schedule.setParametersJson("{\"pocCodes\":[\"XR-0123456789ABCDEF01234567\"]}");
+    when(repository.findById(11L)).thenReturn(Optional.of(schedule));
+
+    ScanSchedule enabled = service.toggle(11L, true);
+
+    assertTrue(enabled.isEnabled());
+    assertEquals(
+        "{\"pocCodes\":[\"XR-0123456789ABCDEF01234567\"],\"scheduledSafeOnly\":true}",
+        enabled.getParametersJson());
+    verify(toolRegistry).require("xray_scan");
+    verify(scannerPocs)
+        .resolve(
+            ScannerPocCatalogService.XRAY,
+            Map.of(
+                "pocCodes",
+                List.of("XR-0123456789ABCDEF01234567"),
+                ScannerPocSelectionService.SAFE_ONLY_PARAMETER,
+                true),
+            false);
+  }
+
+  @Test
+  void refusesToEnableScheduleAfterTargetIsRemovedFromProject() {
+    ScanSchedule schedule = intervalSchedule(11L);
+    schedule.setEnabled(false);
+    when(repository.findById(11L)).thenReturn(Optional.of(schedule));
+    doThrow(new ApiException("目标不属于该评估项目"))
+        .when(projects)
+        .validateProjectTarget(5L, 7L);
+
+    ApiException exception =
+        assertThrows(ApiException.class, () -> service.toggle(11L, true));
+
+    assertEquals("目标不属于该评估项目", exception.getMessage());
+    assertFalse(schedule.isEnabled());
+    verify(targets, never()).getCurrentlyAuthorized(7L);
+    verify(repository, never()).save(schedule);
+  }
+
+  @Test
+  void refusesToEnableScheduleAfterTargetAuthorizationExpires() {
+    ScanSchedule schedule = intervalSchedule(11L);
+    schedule.setEnabled(false);
+    when(repository.findById(11L)).thenReturn(Optional.of(schedule));
+    doThrow(new ApiException("授权已过期"))
+        .when(targets)
+        .getCurrentlyAuthorized(7L);
+
+    ApiException exception =
+        assertThrows(ApiException.class, () -> service.toggle(11L, true));
+
+    assertEquals("授权已过期", exception.getMessage());
+    assertFalse(schedule.isEnabled());
+    verify(projects).validateProjectTarget(5L, 7L);
+    verify(toolRegistry, never()).require(any());
+    verify(repository, never()).save(schedule);
+  }
+
+  @Test
+  void refusesToEnableScannerScheduleAfterItsPocSelectionBecomesInvalid() {
+    ScanSchedule schedule = intervalSchedule(11L);
+    schedule.setEnabled(false);
+    schedule.setToolCode("afrog_scan");
+    schedule.setParametersJson("{\"pocCodes\":[\"AF-0123456789ABCDEF01234567\"]}");
+    when(repository.findById(11L)).thenReturn(Optional.of(schedule));
+    doThrow(new ApiException("PoC 文件已变化，请重新同步漏洞库"))
+        .when(scannerPocs)
+        .resolve(
+            eq(ScannerPocCatalogService.AFROG),
+            eq(
+                Map.of(
+                    "pocCodes",
+                    List.of("AF-0123456789ABCDEF01234567"),
+                    ScannerPocSelectionService.SAFE_ONLY_PARAMETER,
+                    true)),
+            eq(false));
+
+    ApiException exception =
+        assertThrows(ApiException.class, () -> service.toggle(11L, true));
+
+    assertEquals("PoC 文件已变化，请重新同步漏洞库", exception.getMessage());
+    assertFalse(schedule.isEnabled());
+    verify(repository, never()).save(schedule);
+  }
+
+  @Test
   void reportsParameterSerializationFailureInChinese() throws Exception {
     ObjectMapper failingMapper = mock(ObjectMapper.class);
     when(failingMapper.writeValueAsString(any()))
         .thenThrow(new JsonProcessingException("serialization failed") {});
     ScanScheduleService failingService =
-        new ScanScheduleService(repository, tasks, targets, projects, authorization, failingMapper);
+        new ScanScheduleService(
+            repository,
+            tasks,
+            targets,
+            projects,
+            authorization,
+            failingMapper,
+            toolRegistry,
+            scannerPocs);
 
     ApiException exception =
         assertThrows(
@@ -228,7 +496,8 @@ class ScanScheduleServiceTests {
   @Test
   void dispatchCreatesTaskAndRecordsSuccessfulRun() throws Exception {
     ScanSchedule schedule = intervalSchedule(11L);
-    schedule.setParametersJson("{\"depth\":2}");
+    schedule.setToolCode("xray_scan");
+    schedule.setParametersJson("{\"pocCodes\":[\"XR-0123456789ABCDEF01234567\"]}");
     when(repository.findByEnabledTrueAndNextRunAtLessThanEqual(
             any(Instant.class), any(Pageable.class)))
         .thenReturn(List.of(schedule));
@@ -243,12 +512,18 @@ class ScanScheduleServiceTests {
     ArgumentCaptor<CreateTaskRequest> requestCaptor =
         ArgumentCaptor.forClass(CreateTaskRequest.class);
     verify(tasks).create(requestCaptor.capture());
-    verify(authorization).callWithSystemAccess(any());
+    verify(authorization, times(2)).callWithSystemAccess(any());
     CreateTaskRequest request = requestCaptor.getValue();
     assertEquals(5L, request.projectId());
     assertEquals(7L, request.targetId());
-    assertEquals("http_headers", request.toolCode());
-    assertEquals(Map.of("depth", 2), request.parameters());
+    assertEquals("xray_scan", request.toolCode());
+    assertEquals(
+        Map.of(
+            "pocCodes",
+            List.of("XR-0123456789ABCDEF01234567"),
+            ScannerPocSelectionService.SAFE_ONLY_PARAMETER,
+            true),
+        request.parameters());
     assertEquals(91L, schedule.getLastTaskId());
     assertNotNull(schedule.getLastRunAt());
     assertFalse(schedule.getLastRunAt().isBefore(before));
@@ -285,6 +560,8 @@ class ScanScheduleServiceTests {
     Instant after = Instant.now();
     assertNull(schedule.getLastRunAt());
     assertNull(schedule.getLastTaskId());
+    assertEquals("任务创建失败", schedule.getLastError());
+    assertTrue(schedule.isEnabled());
     assertFalse(schedule.getNextRunAt().isBefore(before.plusSeconds(3600)));
     assertFalse(schedule.getNextRunAt().isAfter(after.plusSeconds(3600)));
     verify(repository).save(schedule);
@@ -305,12 +582,59 @@ class ScanScheduleServiceTests {
     service.dispatch();
 
     assertNull(malformed.getLastRunAt());
-    assertNotNull(malformed.getNextRunAt());
+    assertNull(malformed.getNextRunAt());
+    assertFalse(malformed.isEnabled());
+    assertEquals("扫描参数无效", malformed.getLastError());
     assertNotNull(valid.getLastRunAt());
     assertEquals(92L, valid.getLastTaskId());
     verify(tasks).create(any(CreateTaskRequest.class));
     verify(repository).save(malformed);
     verify(repository).save(valid);
+  }
+
+  @Test
+  void dispatchDisablesScheduleWhenPersistedHttpParametersAreInvalid() throws Exception {
+    ScanSchedule invalid = intervalSchedule(11L);
+    invalid.setToolCode("http_security_check");
+    invalid.setParametersJson("{\"check\":\"unknown\"}");
+    when(repository.findByEnabledTrueAndNextRunAtLessThanEqual(
+            any(Instant.class), any(Pageable.class)))
+        .thenReturn(List.of(invalid));
+
+    service.dispatch();
+
+    assertFalse(invalid.isEnabled());
+    assertNull(invalid.getNextRunAt());
+    assertEquals("不支持的 HTTP 检查类型: unknown", invalid.getLastError());
+    verify(tasks, never()).create(any());
+    verify(repository).save(invalid);
+  }
+
+  @Test
+  void dispatchDisablesScannerScheduleWhenSafePocRevalidationFails() throws Exception {
+    ScanSchedule invalid = intervalSchedule(11L);
+    invalid.setToolCode("xray_scan");
+    invalid.setParametersJson("{\"pocCodes\":[\"XR-0123456789ABCDEF01234567\"]}");
+    Map<String, Object> normalized =
+        Map.of(
+            "pocCodes",
+            List.of("XR-0123456789ABCDEF01234567"),
+            ScannerPocSelectionService.SAFE_ONLY_PARAMETER,
+            true);
+    doThrow(new ApiException("定时扫描仅允许执行标记为 SAFE 的 PoC"))
+        .when(scannerPocs)
+        .resolve(ScannerPocCatalogService.XRAY, normalized, false);
+    when(repository.findByEnabledTrueAndNextRunAtLessThanEqual(
+            any(Instant.class), any(Pageable.class)))
+        .thenReturn(List.of(invalid));
+
+    service.dispatch();
+
+    assertFalse(invalid.isEnabled());
+    assertNull(invalid.getNextRunAt());
+    assertEquals("定时扫描仅允许执行标记为 SAFE 的 PoC", invalid.getLastError());
+    verify(tasks, never()).create(any());
+    verify(repository).save(invalid);
   }
 
   @Test

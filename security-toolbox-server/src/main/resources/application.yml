@@ -104,6 +104,11 @@ toolbox:
       max-poc-bytes: 2097152
     cisa-kev-enabled: ${CISA_KEV_ENABLED:true}
     cisa-kev-url: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
+  fingerprints:
+    # The built-in catalog is read-only; administrator updates are persisted here and take
+    # effect immediately. Set rules-file to an explicitly managed external file when required.
+    managed-rules-file: ${FINGERPRINT_MANAGED_RULES_FILE:./data/fingerprints/rules.json}
+    rules-file: ${FINGERPRINT_RULES_FILE:}
   traffic:
     mitm-enabled: ${TRAFFIC_MITM_ENABLED:true}
     mitm-ca-path: ${TRAFFIC_MITM_CA_PATH:./data/traffic-mitm-ca.p12}

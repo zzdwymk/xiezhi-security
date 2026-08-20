@@ -36,6 +36,7 @@ const pwdSaving = ref(false);
 const pwdForm = reactive({ current: "", next: "", confirm: "" });
 async function changeLoginPassword() {
   if (pwdSaving.value) return;
+  if (!pwdForm.current.trim()) return ElMessage.warning("请输入当前密码");
   if (pwdForm.next.length < 8) return ElMessage.warning("新密码至少 8 位");
   if (pwdForm.next !== pwdForm.confirm)
     return ElMessage.warning("两次输入的新密码不一致");
@@ -45,15 +46,18 @@ async function changeLoginPassword() {
       currentPassword: pwdForm.current,
       newPassword: pwdForm.next,
     });
+    let desktopSyncFailed = false;
     if (isDesktop && window.toolboxDesktop?.setDesktopAdminPassword) {
       try {
         await window.toolboxDesktop.setDesktopAdminPassword(pwdForm.next);
       } catch {
-        /* 本机凭据同步失败不阻断改密 */
+        desktopSyncFailed = true;
       }
     }
     ElMessage.success(
-      "登录密码已修改；账号密码 / 本机凭据 / Windows Hello 均已同步为新密码",
+      desktopSyncFailed
+        ? "登录密码已修改，但本机凭据同步失败；请重新登录或重试同步"
+        : "登录密码已修改；账号密码 / 本机凭据 / Windows Hello 均已同步为新密码",
     );
     pwdVisible.value = false;
     pwdForm.current = "";
@@ -789,13 +793,13 @@ watch(
       destroy-on-close
     >
       <el-form label-position="top" @keyup.enter="changeLoginPassword">
-        <el-form-item label="当前密码（桌面版首次可留空）"
+        <el-form-item label="当前密码"
           ><el-input
             v-model="pwdForm.current"
             type="password"
             show-password
             autocomplete="current-password"
-            placeholder="已通过本机凭据 / Hello 登录可留空"
+            placeholder="请输入当前登录密码"
             :disabled="pwdSaving"
         /></el-form-item>
         <el-form-item label="新密码（至少 8 位）"

@@ -80,9 +80,17 @@ public class ProjectReportSummaryService {
         f ->
             severities.compute(
                 f.getSeverity().toUpperCase(Locale.ROOT), (k, v) -> v == null ? 1 : v + 1));
+    Set<Long> explicitlyRetestedFindingIds =
+        projectTasks.stream()
+            .map(SecurityTask::getSourceFindingId)
+            .filter(java.util.Objects::nonNull)
+            .collect(java.util.stream.Collectors.toSet());
     long retested =
         projectFindings.stream()
-            .filter(f -> Set.of("VERIFIED", "FIXED", "REOPENED").contains(f.getStatus()))
+            .filter(
+                f ->
+                    explicitlyRetestedFindingIds.contains(f.getId())
+                        || Set.of("VERIFIED", "FIXED", "REOPENED").contains(f.getStatus()))
             .count();
     long controlledPostExploitation =
         projectTasks.stream()

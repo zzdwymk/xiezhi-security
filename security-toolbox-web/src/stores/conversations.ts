@@ -164,6 +164,7 @@ export interface ConversationMessage {
   reference?: ConversationReference;
   references?: ConversationReference[];
   copilotMode?: CopilotMode;
+  executionRequested?: boolean;
   replyToId?: string;
   quote?: {
     messageId: string;

@@ -2,6 +2,7 @@ package com.bachelor.toolbox.task;
 
 import com.bachelor.toolbox.audit.AuditService;
 import com.bachelor.toolbox.project.AssessmentProjectService;
+import com.bachelor.toolbox.project.ProjectAuthorizationService;
 import com.bachelor.toolbox.target.TargetService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -9,8 +10,11 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.event.EventListener;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 /** Unlocks persisted workflow tasks only after every predecessor completed successfully. */
@@ -23,11 +27,38 @@ public class WorkflowTaskDependencyScheduler {
   private final TaskExecutionService execution;
   private final AssessmentProjectService projects;
   private final TargetService targets;
+  private final ProjectAuthorizationService authorization;
   private final TaskProgressEventService progressEvents;
   private final AuditService audit;
   private final ObjectMapper objectMapper;
+  private final WorkflowRunRepository runs;
+  private final ApplicationEventPublisher events;
 
+  @Autowired
   public WorkflowTaskDependencyScheduler(
+      SecurityTaskRepository tasks,
+      TaskExecutionService execution,
+      AssessmentProjectService projects,
+      TargetService targets,
+      ProjectAuthorizationService authorization,
+      TaskProgressEventService progressEvents,
+      AuditService audit,
+      ObjectMapper objectMapper,
+      WorkflowRunRepository runs,
+      ApplicationEventPublisher events) {
+    this.tasks = tasks;
+    this.execution = execution;
+    this.projects = projects;
+    this.targets = targets;
+    this.authorization = authorization;
+    this.progressEvents = progressEvents;
+    this.audit = audit;
+    this.objectMapper = objectMapper;
+    this.runs = runs;
+    this.events = events;
+  }
+
+  WorkflowTaskDependencyScheduler(
       SecurityTaskRepository tasks,
       TaskExecutionService execution,
       AssessmentProjectService projects,
@@ -35,16 +66,44 @@ public class WorkflowTaskDependencyScheduler {
       TaskProgressEventService progressEvents,
       AuditService audit,
       ObjectMapper objectMapper) {
-    this.tasks = tasks;
-    this.execution = execution;
-    this.projects = projects;
-    this.targets = targets;
-    this.progressEvents = progressEvents;
-    this.audit = audit;
-    this.objectMapper = objectMapper;
+    this(
+        tasks,
+        execution,
+        projects,
+        targets,
+        null,
+        progressEvents,
+        audit,
+        objectMapper,
+        null,
+        event -> {});
+  }
+
+  WorkflowTaskDependencyScheduler(
+      SecurityTaskRepository tasks,
+      TaskExecutionService execution,
+      AssessmentProjectService projects,
+      TargetService targets,
+      TaskProgressEventService progressEvents,
+      AuditService audit,
+      ObjectMapper objectMapper,
+      WorkflowRunRepository runs,
+      ApplicationEventPublisher events) {
+    this(
+        tasks,
+        execution,
+        projects,
+        targets,
+        null,
+        progressEvents,
+        audit,
+        objectMapper,
+        runs,
+        events);
   }
 
   @EventListener
+  @Async
   public void onTerminal(TaskTerminalEvent ignored) {
     drainBlockedTasks();
   }
@@ -55,10 +114,33 @@ public class WorkflowTaskDependencyScheduler {
   }
 
   synchronized void drainBlockedTasks() {
+    if (authorization == null) {
+      drainBlockedTasksWithSystemAccess();
+      return;
+    }
+    try {
+      authorization.callWithSystemAccess(
+          () -> {
+            drainBlockedTasksWithSystemAccess();
+            return null;
+          });
+    } catch (RuntimeException exception) {
+      throw exception;
+    } catch (Exception exception) {
+      throw new IllegalStateException("工作流依赖调度授权上下文初始化失败", exception);
+    }
+  }
+
+  private void drainBlockedTasksWithSystemAccess() {
     boolean changed;
     do {
       changed = false;
       for (SecurityTask task : tasks.findAllByStatusOrderByCreatedAtAsc("BLOCKED")) {
+        if (!runCanExecute(task)) {
+          cancelStopped(task);
+          changed = true;
+          continue;
+        }
         List<Long> dependencyIds = dependencyIds(task);
         Map<Long, SecurityTask> dependencies =
             tasks.findAllById(dependencyIds).stream()
@@ -83,6 +165,10 @@ public class WorkflowTaskDependencyScheduler {
   }
 
   private void activate(SecurityTask task) {
+    if (!runCanExecute(task)) {
+      cancelStopped(task);
+      return;
+    }
     try {
       projects.validateProjectTarget(task.getProjectId(), task.getTargetId());
       targets.getCurrentlyAuthorized(task.getTargetId(), task.getProjectId());
@@ -103,6 +189,31 @@ public class WorkflowTaskDependencyScheduler {
     }
   }
 
+  private boolean runCanExecute(SecurityTask task) {
+    if (task.getWorkflowRunId() == null || runs == null) return true;
+    return runs
+        .findById(task.getWorkflowRunId())
+        .map(run -> "RUNNING".equals(run.getStatus()))
+        .orElse(false);
+  }
+
+  private void cancelStopped(SecurityTask task) {
+    task.setStatus("CANCELLED");
+    task.setProgressMessage("工作流已停止，任务未执行");
+    task.setProgressUpdatedAt(Instant.now());
+    task.setTerminationReason("WORKFLOW_STOPPED");
+    task.setFinishedAt(Instant.now());
+    tasks.save(task);
+    progressEvents.publish(task, "工作流已停止，任务未执行");
+    audit.record(
+        "CANCEL_WORKFLOW_TASK",
+        "TASK",
+        task.getId(),
+        "workflowNodeId=" + task.getWorkflowNodeId(),
+        "CANCELLED");
+    events.publishEvent(new TaskTerminalEvent(task.getId()));
+  }
+
   private void skip(SecurityTask task, String message, String reason) {
     task.setStatus("SKIPPED");
     task.setProgressMessage(message);
@@ -117,6 +228,7 @@ public class WorkflowTaskDependencyScheduler {
         task.getId(),
         "workflowNodeId=" + task.getWorkflowNodeId() + "; reason=" + reason,
         "SKIPPED");
+    events.publishEvent(new TaskTerminalEvent(task.getId()));
   }
 
   private List<Long> dependencyIds(SecurityTask task) {

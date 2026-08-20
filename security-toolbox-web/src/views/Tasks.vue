@@ -13,6 +13,7 @@ import {
   type Target,
   type TaskProgressEvent,
   type TaskControlStatus,
+  type VulnerabilityDefinition,
 } from "../api";
 import AppPagination from "../components/AppPagination.vue";
 import OfflineState from "../components/OfflineState.vue";
@@ -93,10 +94,29 @@ const scheduleTargets = ref<Target[]>([]);
 const scheduleProjectLinks = ref<ProjectTarget[]>([]);
 type ScheduleMode = "daily" | "weekly" | "monthly" | "interval";
 type ScheduleIntervalUnit = "minutes" | "hours" | "days";
+type ScheduleScannerSource = "NUCLEI" | "AFROG" | "XRAY";
+const SCHEDULE_TOOL_OPTIONS = [
+  { value: "tcp_ports", label: "TCP 端口探测" },
+  { value: "http_headers", label: "HTTP 响应头" },
+  { value: "tls_config", label: "TLS 配置" },
+  { value: "nmap_service_scan", label: "Nmap 服务识别" },
+  { value: "http_security_check", label: "HTTP 常见安全检查" },
+  { value: "nuclei_scan", label: "Nuclei 漏洞扫描" },
+  { value: "afrog_scan", label: "Afrog PoC 扫描" },
+  { value: "xray_scan", label: "Xray PoC 扫描" },
+] as const;
+const HTTP_SECURITY_CHECK_OPTIONS = [
+  { value: "cookies", label: "Cookie 安全属性" },
+  { value: "cors", label: "CORS 跨域策略" },
+  { value: "methods", label: "危险 HTTP 方法" },
+  { value: "disclosure", label: "技术栈信息泄露" },
+] as const;
 const scheduleForm = ref<{
   projectId: number | "";
   targetId: number | "";
   toolCode: string;
+  httpCheck: string;
+  pocCodes: string[];
   mode: ScheduleMode;
   runTime: string;
   weekday: number;
@@ -107,6 +127,8 @@ const scheduleForm = ref<{
   projectId: "",
   targetId: "",
   toolCode: "tcp_ports",
+  httpCheck: "cookies",
+  pocCodes: [],
   mode: "daily",
   runTime: "03:00",
   weekday: 1,
@@ -127,9 +149,15 @@ const availableScheduleTargets = computed(() => {
       targetDisplayName(left).localeCompare(targetDisplayName(right), "zh-CN"),
     );
 });
+const scheduleScannerSource = computed<ScheduleScannerSource | undefined>(() =>
+  scannerSourceForScheduleTool(scheduleForm.value.toolCode),
+);
+const schedulePocOptions = ref<VulnerabilityDefinition[]>([]);
+const schedulePocLoading = ref(false);
 let timer: number | undefined;
 let stopTaskFeed: (() => void) | undefined;
 let scheduleTargetRequest = 0;
+let schedulePocLoadGeneration = 0;
 const logOutput = ref<HTMLElement>();
 
 function applyTaskEvent(event: TaskProgressEvent) {
@@ -225,6 +253,125 @@ async function load() {
   }
 }
 
+function scannerSourceForScheduleTool(
+  toolCode: string,
+): ScheduleScannerSource | undefined {
+  if (toolCode === "nuclei_scan") return "NUCLEI";
+  if (toolCode === "afrog_scan") return "AFROG";
+  if (toolCode === "xray_scan") return "XRAY";
+  return undefined;
+}
+
+function schedulePocOptionLabel(item: VulnerabilityDefinition) {
+  return `${item.sourceExternalId || item.vulnerabilityCode} · ${item.name}`;
+}
+
+function scheduleSeverityType(severity: string) {
+  if (severity === "CRITICAL" || severity === "HIGH") return "danger";
+  if (severity === "MEDIUM") return "warning";
+  if (severity === "LOW") return "info";
+  return "success";
+}
+
+function scheduleSafetyType(safety?: string) {
+  if (safety === "BLOCKED") return "danger";
+  if (safety === "REVIEW_REQUIRED") return "warning";
+  return "success";
+}
+
+async function loadSchedulePocOptions(search = "") {
+  const source = scheduleScannerSource.value;
+  if (!source) return;
+  const generation = ++schedulePocLoadGeneration;
+  schedulePocLoading.value = true;
+  try {
+    const { data } = await endpoints.vulnerabilities({
+      page: 0,
+      size: 200,
+      source,
+      scanSafety: "SAFE",
+      query: search.trim() || undefined,
+    });
+    if (
+      generation !== schedulePocLoadGeneration ||
+      source !== scheduleScannerSource.value
+    )
+      return;
+    const selectedCodes = new Set(scheduleForm.value.pocCodes);
+    const merged = new Map<string, VulnerabilityDefinition>();
+    for (const item of schedulePocOptions.value) {
+      if (selectedCodes.has(item.vulnerabilityCode))
+        merged.set(item.vulnerabilityCode, item);
+    }
+    for (const item of data.content || []) {
+      if (item.scanSafety === "SAFE") merged.set(item.vulnerabilityCode, item);
+    }
+    schedulePocOptions.value = [...merged.values()];
+  } catch (error) {
+    if (generation === schedulePocLoadGeneration)
+      ElMessage.error(
+        toErrorMessage(error, `无法加载 ${source} PoC`),
+      );
+  } finally {
+    if (generation === schedulePocLoadGeneration)
+      schedulePocLoading.value = false;
+  }
+}
+
+function onScheduleToolChange(toolCode: string) {
+  schedulePocLoadGeneration += 1;
+  schedulePocLoading.value = false;
+  schedulePocOptions.value = [];
+  scheduleForm.value.httpCheck = "cookies";
+  scheduleForm.value.pocCodes = [];
+}
+
+function buildScheduleParameters(): Record<string, unknown> | undefined {
+  if (scheduleForm.value.toolCode === "http_security_check") {
+    const check = scheduleForm.value.httpCheck;
+    if (!HTTP_SECURITY_CHECK_OPTIONS.some((item) => item.value === check)) {
+      ElMessage.warning("请选择有效的 HTTP 检查类型");
+      return undefined;
+    }
+    return { check };
+  }
+
+  const source = scheduleScannerSource.value;
+  if (!source) return {};
+  const pocCodes = [...new Set(scheduleForm.value.pocCodes.map((code) => code.trim()))]
+    .filter(Boolean);
+  if (!pocCodes.length) {
+    ElMessage.warning(`请为 ${source} 至少选择一个 PoC`);
+    return undefined;
+  }
+  if (pocCodes.length > 50) {
+    ElMessage.warning("单个定时任务最多选择 50 个 PoC");
+    return undefined;
+  }
+  return { pocCodes };
+}
+
+async function confirmScannerSchedule() {
+  const source = scheduleScannerSource.value;
+  if (!source) return true;
+  const target = scheduleTargets.value.find(
+    (item) => item.id === Number(scheduleForm.value.targetId),
+  );
+  const scope = `${scheduleForm.value.pocCodes.length} 个指定 SAFE PoC`;
+  const risk =
+    "无人值守任务不会执行需审查或高影响 PoC；系统会在每次派发和实际执行前复验项目授权、SAFE 分级及本地文件哈希。";
+  const confirmed = await ElMessageBox.confirm(
+    `将为“${target ? targetDisplayName(target) : `目标 #${scheduleForm.value.targetId}`}”创建 ${scheduleToolLabel(scheduleForm.value.toolCode)} 定时任务。\n\nPoC 范围：${scope}\n${risk}\n\n该检测会按所选时间规则重复执行，直到任务被停用或删除。`,
+    "确认扫描器定时任务",
+    {
+      type: "warning",
+      confirmButtonText: "创建定时任务",
+      cancelButtonText: "取消",
+    },
+  ).catch(() => false);
+  return confirmed === "confirm";
+}
+
 async function createSchedule() {
   const projectId = Number(scheduleForm.value.projectId);
   const targetId = Number(scheduleForm.value.targetId);
@@ -238,6 +385,8 @@ async function createSchedule() {
     )
   )
     return ElMessage.warning("所选目标不属于当前项目，请重新选择");
+  const parameters = buildScheduleParameters();
+  if (!parameters) return;
   const [hourText, minuteText] = scheduleForm.value.runTime.split(":");
   const hour = Number(hourText);
   const minute = Number(minuteText);
@@ -275,12 +424,14 @@ async function createSchedule() {
   } else {
     cronExpression = `0 ${minute} ${hour} ${scheduleForm.value.monthDay} * *`;
   }
+  if (!(await confirmScannerSchedule())) return;
   scheduleSaving.value = true;
   try {
     await endpoints.createScanSchedule({
       projectId,
       targetId,
       toolCode: scheduleForm.value.toolCode,
+      parameters,
       cronExpression,
       intervalSeconds,
       enabled: true,
@@ -360,15 +511,33 @@ function scheduleTargetName(targetId: number) {
 
 function scheduleToolLabel(toolCode: string) {
   return (
-    (
-      {
-        tcp_ports: "TCP 端口探测",
-        http_headers: "HTTP 响应头",
-        tls_config: "TLS 配置",
-        nmap_service_scan: "Nmap 服务识别",
-      } as Record<string, string>
-    )[toolCode] || toolCode
+    SCHEDULE_TOOL_OPTIONS.find((item) => item.value === toolCode)?.label ||
+    toolCode
   );
+}
+
+function scheduleParameterSummary(schedule: ScanSchedule) {
+  let parameters: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(schedule.parametersJson || "{}");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+      parameters = parsed;
+  } catch {
+    return "参数记录不可读";
+  }
+  if (schedule.toolCode === "http_security_check") {
+    const check = String(parameters.check || "");
+    return (
+      HTTP_SECURITY_CHECK_OPTIONS.find((item) => item.value === check)?.label ||
+      "未指定检查类型"
+    );
+  }
+  const source = scannerSourceForScheduleTool(schedule.toolCode);
+  if (!source) return "";
+  if (parameters.allPocs === true) return "动态全部 PoC（不再支持）";
+  if (Array.isArray(parameters.pocCodes))
+    return `指定 ${parameters.pocCodes.length} 个 SAFE PoC`;
+  return "未选择 PoC";
 }
 
 function scheduleTime(value?: string) {
@@ -442,6 +611,8 @@ async function openScheduleDialog() {
     projectId: "",
     targetId: "",
     toolCode: "tcp_ports",
+    httpCheck: "cookies",
+    pocCodes: [],
     mode: "daily",
     runTime: "03:00",
     weekday: 1,
@@ -449,6 +620,9 @@ async function openScheduleDialog() {
     intervalValue: 1,
     intervalUnit: "hours",
   };
+  schedulePocLoadGeneration += 1;
+  schedulePocLoading.value = false;
+  schedulePocOptions.value = [];
   scheduleProjectLinks.value = [];
   try {
     const [projectResponse, targetResponse] = await Promise.all([
@@ -723,6 +897,7 @@ onUnmounted(() => {
       <el-form-item label="安全评估项目">
         <el-select
           v-model="scheduleForm.projectId"
+          aria-label="安全评估项目"
           placeholder="选择 ACTIVE 项目"
           filterable
           :disabled="scheduleContextLoading"
@@ -739,6 +914,7 @@ onUnmounted(() => {
       <el-form-item label="项目授权目标">
         <el-select
           v-model="scheduleForm.targetId"
+          aria-label="项目授权目标"
           placeholder="选择当前项目内的目标"
           filterable
           :loading="scheduleTargetsLoading"
@@ -757,15 +933,107 @@ onUnmounted(() => {
         </el-select>
       </el-form-item>
       <el-form-item label="检测工具"
-        ><el-select v-model="scheduleForm.toolCode"
-          ><el-option label="TCP 端口探测" value="tcp_ports" /><el-option
-            label="HTTP 响应头"
-            value="http_headers" /><el-option
-            label="TLS 配置"
-            value="tls_config" /><el-option
-            label="Nmap 服务识别"
-            value="nmap_service_scan" /></el-select
+        ><el-select
+          v-model="scheduleForm.toolCode"
+          aria-label="检测工具"
+          @change="onScheduleToolChange"
+          ><el-option
+            v-for="tool in SCHEDULE_TOOL_OPTIONS"
+            :key="tool.value"
+            :label="tool.label"
+            :value="tool.value"
+          /></el-select
       ></el-form-item>
+      <section
+        v-if="
+          scheduleForm.toolCode === 'http_security_check' ||
+          scheduleScannerSource
+        "
+        class="schedule-parameter-panel"
+        aria-label="检测参数"
+      >
+        <el-form-item
+          v-if="scheduleForm.toolCode === 'http_security_check'"
+          label="检查类型"
+        >
+          <el-select v-model="scheduleForm.httpCheck" aria-label="HTTP 检查类型">
+            <el-option
+              v-for="check in HTTP_SECURITY_CHECK_OPTIONS"
+              :key="check.value"
+              :label="check.label"
+              :value="check.value"
+            />
+          </el-select>
+        </el-form-item>
+        <template v-if="scheduleScannerSource">
+          <el-form-item label="PoC 范围">
+            <div class="schedule-poc-policy">
+              <el-tag size="small" type="success">指定安全 PoC</el-tag>
+              <p class="schedule-parameter-help">
+                仅重复执行下方明确选择且标记为 SAFE 的 PoC，最多 50 个。
+                分级或文件变化时任务会自动停用。
+              </p>
+            </div>
+          </el-form-item>
+          <el-form-item label="指定 PoC">
+            <el-select
+              v-model="scheduleForm.pocCodes"
+              class="schedule-poc-selector"
+              aria-label="指定 PoC"
+              multiple
+              filterable
+              remote
+              reserve-keyword
+              collapse-tags
+              :max-collapse-tags="2"
+              :multiple-limit="50"
+              :loading="schedulePocLoading"
+              :placeholder="`搜索并选择 ${scheduleScannerSource} PoC`"
+              @remote-method="loadSchedulePocOptions"
+              @visible-change="
+                (visible: boolean) =>
+                  visible && !schedulePocOptions.length && loadSchedulePocOptions()
+              "
+            >
+              <el-option
+                v-for="poc in schedulePocOptions"
+                :key="poc.vulnerabilityCode"
+                :label="schedulePocOptionLabel(poc)"
+                :value="poc.vulnerabilityCode"
+              >
+                <span class="schedule-poc-option">
+                  <span>
+                    <b>{{ poc.name }}</b>
+                    <small>{{
+                      poc.sourceExternalId || poc.vulnerabilityCode
+                    }}</small>
+                  </span>
+                  <span class="schedule-poc-option-tags">
+                    <el-tag
+                      size="small"
+                      :type="scheduleSeverityType(poc.severity)"
+                      >{{ poc.severity }}</el-tag
+                    >
+                    <el-tag
+                      size="small"
+                      :type="scheduleSafetyType(poc.scanSafety)"
+                      >{{ poc.scanSafety || "SAFE" }}</el-tag
+                    >
+                  </span>
+                </span>
+              </el-option>
+              <template #empty>
+                <div class="schedule-poc-empty">
+                  未检索到 SAFE PoC，请先在漏洞知识库同步并复核对应扫描器目录。
+                </div>
+              </template>
+            </el-select>
+            <p class="schedule-parameter-help">
+              已选择 {{ scheduleForm.pocCodes.length }} / 50 个。
+            </p>
+          </el-form-item>
+        </template>
+      </section>
       <el-form-item label="执行方式">
         <el-radio-group
           v-model="scheduleForm.mode"
@@ -855,10 +1123,14 @@ onUnmounted(() => {
             </div></template
           >
         </el-table-column>
-        <el-table-column label="工具" min-width="118"
-          ><template #default="scope">{{
-            scheduleToolLabel(scope.row.toolCode)
-          }}</template></el-table-column
+        <el-table-column label="工具 / 参数" min-width="155"
+          ><template #default="scope"
+            ><div class="schedule-tool-context">
+              <strong>{{ scheduleToolLabel(scope.row.toolCode) }}</strong>
+              <small v-if="scheduleParameterSummary(scope.row)">{{
+                scheduleParameterSummary(scope.row)
+              }}</small>
+            </div></template></el-table-column
         >
         <el-table-column label="规则" min-width="115"
           ><template #default="scope">{{
@@ -870,13 +1142,18 @@ onUnmounted(() => {
             scheduleTime(scope.row.nextRunAt)
           }}</template></el-table-column
         >
-        <el-table-column label="状态" width="78"
+        <el-table-column label="状态 / 最近错误" min-width="170"
           ><template #default="scope"
-            ><el-tag
-              size="small"
-              :type="scope.row.enabled ? 'success' : 'info'"
-              >{{ scope.row.enabled ? "已启用" : "已停用" }}</el-tag
-            ></template
+            ><div class="schedule-status-context">
+              <el-tag
+                size="small"
+                :type="scope.row.enabled ? 'success' : 'info'"
+                >{{ scope.row.enabled ? "已启用" : "已停用" }}</el-tag
+              >
+              <small v-if="scope.row.lastError" :title="scope.row.lastError">{{
+                scope.row.lastError
+              }}</small>
+            </div></template
           ></el-table-column
         >
         <el-table-column label="操作" width="178" fixed="right">
@@ -1167,13 +1444,81 @@ onUnmounted(() => {
   background: var(--app-accent);
   box-shadow: -1px 0 0 0 var(--app-accent);
 }
+.schedule-parameter-panel {
+  margin: 0 0 18px;
+  padding: 14px 0 2px;
+  border-top: 1px solid var(--app-border);
+  border-bottom: 1px solid var(--app-border);
+}
+.schedule-parameter-panel :deep(.el-form-item:last-child) {
+  margin-bottom: 12px;
+}
+.schedule-poc-policy {
+  display: flex;
+  width: 100%;
+  align-items: flex-start;
+  flex-direction: column;
+}
+.schedule-parameter-help {
+  width: 100%;
+  margin: 7px 1px 0;
+  color: var(--app-muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.schedule-poc-selector {
+  width: 100%;
+}
+.schedule-poc-option {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.schedule-poc-option > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.schedule-poc-option b {
+  color: var(--app-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.schedule-poc-option small {
+  margin-left: 7px;
+  color: var(--app-muted);
+  font-size: 11px;
+}
+.schedule-poc-option-tags {
+  display: flex;
+  flex: none;
+  gap: 5px;
+}
+.schedule-poc-option-tags :deep(.el-tag) {
+  height: 20px;
+  font-size: 10px;
+}
+.schedule-poc-empty {
+  padding: 10px 12px;
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
 .schedule-rule-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  column-gap: 14px;
 }
 .schedule-rule-row :deep(.el-form-item) {
   min-width: 0;
+  margin-bottom: 8px;
+}
+.schedule-rule-row :deep(.el-form-item:last-child) {
+  margin-bottom: 8px;
 }
 .schedule-rule-row :deep(.el-time-editor),
 .schedule-rule-row :deep(.el-input-number),
@@ -1181,10 +1526,12 @@ onUnmounted(() => {
   width: 100%;
 }
 .interval-rule-row {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(120px, 160px) minmax(130px, 180px);
+  justify-content: start;
 }
 .schedule-rule-preview {
-  margin: -2px 0 14px;
+  margin: 4px 0 18px;
+  padding-top: 2px;
   color: var(--app-muted);
   font-size: 12px;
   line-height: 1.5;
@@ -1211,6 +1558,43 @@ onUnmounted(() => {
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.schedule-tool-context {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.schedule-tool-context strong {
+  overflow: hidden;
+  color: var(--app-text);
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.schedule-tool-context small {
+  overflow: hidden;
+  color: var(--app-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.schedule-status-context {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 4px;
+}
+.schedule-status-context small {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--el-color-danger);
+  font-size: 10px;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 .task-output {
   max-height: 280px;

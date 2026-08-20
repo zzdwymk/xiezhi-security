@@ -12,6 +12,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.bachelor.toolbox.audit.AuditService;
+import com.bachelor.toolbox.auth.UserRepository;
 import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.finding.Finding;
 import com.bachelor.toolbox.project.AssessmentProject;
@@ -31,6 +32,7 @@ class SecurityActionServiceTests {
   private final SecurityActionRepository repository = mock(SecurityActionRepository.class);
   private final AssessmentProjectService projects = mock(AssessmentProjectService.class);
   private final AuditService audit = mock(AuditService.class);
+  private final UserRepository users = mock(UserRepository.class);
   private final Authentication applicant = mock(Authentication.class);
 
   private SecurityActionService service;
@@ -39,7 +41,7 @@ class SecurityActionServiceTests {
 
   @BeforeEach
   void setUp() {
-    service = new SecurityActionService(repository, projects, audit);
+    service = new SecurityActionService(repository, projects, audit, users);
     Instant authorizationFrom = Instant.now().minusSeconds(3600);
     authorizationTo = Instant.now().plusSeconds(4 * 3600L);
 
@@ -50,6 +52,7 @@ class SecurityActionServiceTests {
     project.setAuthorizationExpiresAt(authorizationTo);
 
     when(applicant.getName()).thenReturn("alice");
+    when(users.count()).thenReturn(1L);
     when(projects.get(1L)).thenReturn(project);
     doNothing().when(projects).validateProjectTarget(1L, 7L);
     when(repository.save(any(SecurityAction.class)))
@@ -243,8 +246,26 @@ class SecurityActionServiceTests {
   }
 
   @Test
+  void allowsSingleAdministratorToApproveOwnActionWithExplicitConfirmation() {
+    SecurityAction action = action("PENDING_APPROVAL");
+    org.springframework.security.authentication.UsernamePasswordAuthenticationToken admin =
+        new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
+            "alice",
+            null,
+            List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ADMIN")));
+    when(repository.findById(42L)).thenReturn(Optional.of(action));
+
+    SecurityAction approved =
+        service.decide(1L, 42L, new SecurityActionDtos.Decision("APPROVED", "管理员已二次确认"), admin);
+
+    assertThat(approved.getStatus()).isEqualTo("APPROVED");
+    assertThat(approved.getApprovedBy()).isEqualTo("alice");
+  }
+
+  @Test
   void rejectsApprovalByOriginalApplicant() {
     SecurityAction action = action("PENDING_APPROVAL");
+    when(users.count()).thenReturn(2L);
     when(repository.findById(42L)).thenReturn(Optional.of(action));
 
     assertThatThrownBy(

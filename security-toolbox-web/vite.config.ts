@@ -3,10 +3,11 @@ import vue from '@vitejs/plugin-vue'
 import Components from 'unplugin-vue-components/vite'
 import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 
-export default defineConfig({
-  // Electron loads the production renderer through file://, so bundled assets
-  // must be relative to dist/index.html instead of rooted at /assets.
-  base: './',
+export default defineConfig(({ mode }) => ({
+  // Browser history routes need root-relative assets when a nested URL is
+  // opened or refreshed. Electron loads dist/index.html through file:// and
+  // therefore keeps a dedicated relative-asset build.
+  base: mode === 'desktop' ? './' : '/',
   plugins: [
     vue(),
     Components({
@@ -28,4 +29,4 @@ export default defineConfig({
       },
     },
   },
-})
+}))

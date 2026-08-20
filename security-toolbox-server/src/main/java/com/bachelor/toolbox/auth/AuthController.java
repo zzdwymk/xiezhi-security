@@ -53,10 +53,7 @@ public class AuthController {
         users.findByUsername(principal.getUsername()).orElseThrow(() -> new ApiException("用户不存在"));
     String currentPassword = request.currentPassword();
 
-    // 桌面端首次改密时用户不知道自动生成的初始口令，已认证管理员可留空。
-    if (currentPassword != null
-        && !currentPassword.isBlank()
-        && !encoder.matches(currentPassword, user.getPasswordHash())) {
+    if (!encoder.matches(currentPassword, user.getPasswordHash())) {
       throw new ApiException("当前密码不正确");
     }
     if ("admin123".equals(request.newPassword())) {

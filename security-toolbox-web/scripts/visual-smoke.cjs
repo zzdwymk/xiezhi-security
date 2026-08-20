@@ -48,6 +48,20 @@ function vulnerability(index) {
   };
 }
 
+function scannerVulnerability(index, source) {
+  const prefix = { NUCLEI: "NU", AFROG: "AF", XRAY: "XR" }[source];
+  const code = `${prefix}-${index.toString(16).toUpperCase().padStart(24, "0")}`;
+  return {
+    ...vulnerability(index),
+    vulnerabilityCode: code,
+    sourceExternalId: `${source.toLowerCase()}-safe-${index}`,
+    name: `${source} 安全 PoC ${index}`,
+    sourceType: source,
+    sourceName: `${source} 本地已复核目录`,
+    scanSafety: "SAFE",
+  };
+}
+
 function audit(index) {
   return {
     id: index,
@@ -204,6 +218,11 @@ function projectReport(id) {
       projectId: id,
     })),
     verification: { retestedFindings: 0, awaitingRetest: 41 },
+    controlledPostExploitation: {
+      recordedTasks: 0,
+      safetyBoundary:
+        "高影响动作仅允许在审批通过的授权窗口内执行，并必须保留完整审计证据。",
+    },
     approvalAndAudit: { totalApprovals: 41, approved: 41, rejected: 0 },
     generatedAt: "2026-07-31T10:00:00",
   };
@@ -212,9 +231,16 @@ function projectReport(id) {
 const fixtureProjects = Array.from({ length: 41 }, (_, index) =>
   project(index + 1),
 );
-const fixtureTargets = Array.from({ length: 41 }, (_, index) =>
-  target(index + 1),
-);
+const fixtureTargets = Array.from({ length: 41 }, (_, index) => {
+  const item = target(index + 1);
+  if (index !== 1) return item;
+  const {
+    authorizationValidFrom: _authorizationValidFrom,
+    authorizationExpiresAt: _authorizationExpiresAt,
+    ...withoutTargetWindow
+  } = item;
+  return withoutTargetWindow;
+});
 const fixtureTasks = Array.from({ length: 41 }, (_, index) =>
   task(index + 1),
 );
@@ -250,14 +276,20 @@ function trafficSession(index) {
   };
 }
 
-async function installApiMock(page) {
+async function installApiMock(page, role = "ADMIN") {
+  let fingerprintCatalog = {
+    version: "visual-smoke",
+    sha256: "0".repeat(64),
+    ruleCount: 409,
+    source: "BUILTIN",
+  };
   await page.route("**/api/**", async (route) => {
     const requestUrl = new URL(route.request().url());
     const endpoint = requestUrl.pathname.replace(/^\/api/, "");
     let body = [];
 
     if (endpoint === "/auth/me") {
-      body = { id: 1, username: "admin", role: "ADMIN" };
+      body = { id: 1, username: role === "ADMIN" ? "admin" : "analyst", role };
     } else if (endpoint === "/system/health") {
       body = { status: "UP" };
     } else if (endpoint === "/projects") {
@@ -296,7 +328,18 @@ async function installApiMock(page) {
         { length: Math.max(0, Math.min(size, total - start)) },
         (_, offset) =>
           requestUrl.searchParams.has("projectId")
-            ? { ...audit(start + offset + 1), action: `项目审计 ${start + offset + 1}` }
+            ? start + offset === 0
+              ? {
+                  ...audit(1),
+                  action: "AI_AGENT_TURN",
+                  resourceType: "PROJECT",
+                  resourceId: "1",
+                  detail: JSON.stringify({ executed: false, taskIds: [] }),
+                }
+              : {
+                  ...audit(start + offset + 1),
+                  action: `项目审计 ${start + offset + 1}`,
+                }
             : audit(start + offset + 1),
       );
       body = pageResponse(content, pageNumber, size, total);
@@ -316,12 +359,20 @@ async function installApiMock(page) {
     } else if (endpoint === "/vulnerabilities") {
       const pageNumber = Number(requestUrl.searchParams.get("page") || 0);
       const size = Number(requestUrl.searchParams.get("size") || 20);
-      const start = pageNumber * size;
-      const content = Array.from(
-        { length: Math.max(0, Math.min(size, 41 - start)) },
-        (_, offset) => vulnerability(start + offset + 1),
-      );
-      body = pageResponse(content, pageNumber, size, 41);
+      const source = requestUrl.searchParams.get("source");
+      if (["NUCLEI", "AFROG", "XRAY"].includes(source)) {
+        const content = Array.from({ length: 3 }, (_, index) =>
+          scannerVulnerability(index + 1, source),
+        );
+        body = pageResponse(content, 0, size, content.length);
+      } else {
+        const start = pageNumber * size;
+        const content = Array.from(
+          { length: Math.max(0, Math.min(size, 41 - start)) },
+          (_, offset) => vulnerability(start + offset + 1),
+        );
+        body = pageResponse(content, pageNumber, size, 41);
+      }
     } else if (endpoint === "/vulnerabilities/stats") {
       body = {
         total: showCatalogSyncProgress ? 13550 : 41,
@@ -475,9 +526,28 @@ async function installApiMock(page) {
     } else if (/^\/ai\/memories$/.test(endpoint)) {
       body = fixtureMemories;
     } else if (/^\/fingerprints\/catalog$/.test(endpoint)) {
-      body = { version: "visual-smoke", sha256: "smoke", ruleCount: 0 };
+      if (route.request().method() === "PUT") {
+        fingerprintCatalog = {
+          version: "visual-upload",
+          sha256: "a".repeat(64),
+          ruleCount: 1,
+          source: "MANAGED",
+        };
+      }
+      body = fingerprintCatalog;
     } else if (endpoint === "/scan-schedules") {
-      body = [];
+      if (route.request().method() === "POST") {
+        const payload = route.request().postDataJSON();
+        body = {
+          id: 99,
+          ...payload,
+          parametersJson: JSON.stringify(payload.parameters || {}),
+          enabled: true,
+          nextRunAt: "2026-08-21T03:00:00Z",
+        };
+      } else {
+        body = [];
+      }
     }
 
     await route.fulfill({
@@ -488,14 +558,19 @@ async function installApiMock(page) {
   });
 }
 
-async function createPage(browser, viewport, reducedMotion = "reduce") {
+async function createPage(
+  browser,
+  viewport,
+  reducedMotion = "reduce",
+  role = "ADMIN",
+) {
   const context = await browser.newContext({
     viewport,
     colorScheme: "light",
     reducedMotion,
   });
   const page = await context.newPage();
-  await installApiMock(page);
+  await installApiMock(page, role);
   await page.addInitScript(() => {
     localStorage.setItem("security_toolbox_setup_complete_v2", "true");
     localStorage.setItem("security_toolbox_token", "visual-smoke-token");
@@ -504,6 +579,11 @@ async function createPage(browser, viewport, reducedMotion = "reduce") {
 }
 
 async function verifyNavigationMotion(browser) {
+  // During a grid height transition the active row continues moving between
+  // requestAnimationFrame and Playwright's geometry read. Allow the resulting
+  // subpixel/one-frame sampling delta while still rejecting a visibly detached
+  // Fluent selection indicator.
+  const movingAlignmentTolerance = 2;
   const { context, page } = await createPage(
     browser,
     { width: 1280, height: 800 },
@@ -552,7 +632,7 @@ async function verifyNavigationMotion(browser) {
   const movingAlignment = await readNavigationAlignment();
   assert.ok(
     Math.abs(movingAlignment.indicatorCenter - movingAlignment.activeCenter) <=
-      1,
+      movingAlignmentTolerance,
     `其他分组折叠过程中滑块应持续居中：${JSON.stringify(movingAlignment)}`,
   );
   await page.waitForTimeout(180);
@@ -567,7 +647,7 @@ async function verifyNavigationMotion(browser) {
     Math.abs(
       routeExpandedAlignment.indicatorCenter -
         routeExpandedAlignment.activeCenter,
-    ) <= 1,
+    ) <= movingAlignmentTolerance,
     `路由自动展开分组时滑块应持续居中：${JSON.stringify(routeExpandedAlignment)}`,
   );
   await page.waitForTimeout(180);
@@ -758,7 +838,7 @@ async function verifyWorkflowStatusSummary(browser) {
   const { context, page } = await createPage(browser, {
     width: 1440,
     height: 900,
-  });
+  }, "no-preference");
   await page.goto(`${baseUrl}/workflow`, { waitUntil: "networkidle" });
   await page.locator(".workflow-status-row").waitFor();
   const chips = await page.locator(".workflow-status-row .status-chip").allTextContents();
@@ -778,6 +858,89 @@ async function verifyWorkflowStatusSummary(browser) {
     1,
     `桌面工作流操作区不应换行撑高页头：${actionRows.join(", ")}`,
   );
+  assert.equal(
+    await page.locator(".workflow-actions .el-select").count(),
+    0,
+    "项目、目标和模板选择器应移入拓扑配置面板",
+  );
+  assert.deepEqual(
+    (await page.locator(".workflow-actions .el-button").allTextContents()).map((text) =>
+      text.trim(),
+    ),
+    ["保存工作流", "执行工作流"],
+    "页头只应保留工作流主操作",
+  );
+  const headerDescription = page.locator(".workflow-head-copy > p");
+  assert.match(
+    (await headerDescription.textContent()) || "",
+    /从任务启动到报告交付的完整闭环[\s\S]*汇合表示等待上游全部完成/,
+    "工作流页头说明应完整显示",
+  );
+  const headerDescriptionMetrics = await headerDescription.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      overflow: style.overflow,
+      lineClamp: style.webkitLineClamp,
+    };
+  });
+  assert.ok(
+    headerDescriptionMetrics.scrollHeight <= headerDescriptionMetrics.clientHeight + 1,
+    `工作流页头说明不应被裁切：${JSON.stringify(headerDescriptionMetrics)}`,
+  );
+  assert.equal(headerDescriptionMetrics.overflow, "visible");
+  assert.match(headerDescriptionMetrics.lineClamp, /^(none|unset)$/);
+  const workflowSummary = page.locator(".workflow-context-summary");
+  const workflowSummaryText = (await workflowSummary.textContent()) || "";
+  assert.match(workflowSummaryText, /项目\s*评估项目 1/);
+  assert.match(
+    workflowSummaryText,
+    /授权目标\s*授权目标 1 · target-1\.authorized\.test/,
+  );
+  assert.match(workflowSummaryText, /模板\s*标准红队评估/);
+  const summaryOverflow = await workflowSummary.locator("span").evaluateAll((items) =>
+    items.map((item) => ({
+      width: item.clientWidth,
+      scrollWidth: item.scrollWidth,
+      height: item.clientHeight,
+      scrollHeight: item.scrollHeight,
+    })),
+  );
+  assert.ok(
+    summaryOverflow.every(
+      (item) =>
+        item.scrollWidth <= item.width + 1 && item.scrollHeight <= item.height + 1,
+    ),
+    `工作流配置摘要不应截断：${JSON.stringify(summaryOverflow)}`,
+  );
+  const workflowConfigButton = page
+    .locator(".editor-head-actions")
+    .getByRole("button", { name: "工作流配置", exact: true });
+  await workflowConfigButton.click();
+  const workflowConfigPanel = page.locator(".workflow-config-panel");
+  await workflowConfigPanel.waitFor();
+  assert.equal(await workflowConfigPanel.locator(".project-select").count(), 1);
+  assert.equal(await workflowConfigPanel.locator(".target-select").count(), 1);
+  assert.equal(await workflowConfigPanel.locator(".preset-select").count(), 1);
+  const [configCanvasBox, configPanelBox] = await Promise.all([
+    page.locator(".flow-canvas").boundingBox(),
+    workflowConfigPanel.boundingBox(),
+  ]);
+  assert.ok(configCanvasBox && configPanelBox, "工作流配置面板应可见");
+  assert.ok(
+    configPanelBox.x >= configCanvasBox.x - 1 &&
+      configPanelBox.y >= configCanvasBox.y - 1 &&
+      configPanelBox.x + configPanelBox.width <=
+        configCanvasBox.x + configCanvasBox.width + 1 &&
+      configPanelBox.y + configPanelBox.height <=
+        configCanvasBox.y + configCanvasBox.height + 1,
+    `工作流配置面板应完整位于画布内：${JSON.stringify({ configCanvasBox, configPanelBox })}`,
+  );
+  await workflowConfigPanel
+    .getByRole("button", { name: "关闭工作流配置", exact: true })
+    .click();
+  await assert.doesNotReject(workflowConfigPanel.waitFor({ state: "hidden" }));
   const verticalGaps = await page.evaluate(() => {
     const status = document.querySelector(".workflow-status-row")?.getBoundingClientRect();
     const notice = document.querySelector(".graph-notice")?.getBoundingClientRect();
@@ -886,6 +1049,216 @@ async function verifyWorkflowStatusSummary(browser) {
     ["项目情报检索"],
     "被动侦察阶段只应显示项目情报检索",
   );
+  const phaseToggle = page.locator(".phase-library .library-section-toggle");
+  const capabilityToggle = page.locator(
+    ".capability-library .library-section-toggle",
+  );
+  const toggleChevronBoxes = [];
+  for (const [name, toggle] of [
+    ["流程阶段", phaseToggle],
+    ["受控能力", capabilityToggle],
+  ]) {
+    const titleBox = await toggle.locator("h5").boundingBox();
+    const chevronBox = await toggle
+      .locator(".library-section-chevron")
+      .boundingBox();
+    assert.ok(titleBox && chevronBox, `${name}折叠标题和箭头应可见`);
+    assert.ok(
+      chevronBox.x < titleBox.x && titleBox.x - (chevronBox.x + chevronBox.width) <= 12,
+      `${name}折叠箭头应紧邻标题左侧：${JSON.stringify({ titleBox, chevronBox })}`,
+    );
+    toggleChevronBoxes.push(chevronBox);
+  }
+  assert.ok(
+    Math.abs(toggleChevronBoxes[0].x - toggleChevronBoxes[1].x) <= 2,
+    `两个折叠箭头应纵向对齐：${JSON.stringify(toggleChevronBoxes)}`,
+  );
+  const capabilitySelectBox = await page
+    .locator(".capability-library-head .el-select")
+    .boundingBox();
+  assert.ok(capabilitySelectBox, "受控能力阶段选择器应可见");
+  assert.ok(
+    toggleChevronBoxes[1].x + toggleChevronBoxes[1].width < capabilitySelectBox.x,
+    `受控能力折叠箭头不应与阶段选择器重叠：${JSON.stringify({
+      chevronBox: toggleChevronBoxes[1],
+      capabilitySelectBox,
+    })}`,
+  );
+  assert.equal(await phaseToggle.getAttribute("aria-expanded"), "true");
+  assert.equal(await capabilityToggle.getAttribute("aria-expanded"), "true");
+  await phaseToggle.click();
+  await capabilityToggle.click();
+  await page.waitForTimeout(180);
+  assert.equal(await phaseToggle.getAttribute("aria-expanded"), "false");
+  assert.equal(await capabilityToggle.getAttribute("aria-expanded"), "false");
+  assert.equal(
+    await page
+      .locator("#workflow-phase-library-body")
+      .getAttribute("aria-hidden"),
+    "true",
+  );
+  assert.equal(
+    await page
+      .locator("#workflow-capability-library-body")
+      .getAttribute("aria-hidden"),
+    "true",
+  );
+  await page.screenshot({
+    path: path.join(outputDir, "workflow-libraries-collapsed.png"),
+  });
+  const libraryScroll = page.locator(".library-scroll");
+  await libraryScroll.evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await discoveryNode.evaluate((node) =>
+    node.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }),
+    ),
+  );
+  await page.waitForTimeout(520);
+  assert.equal(
+    await phaseToggle.getAttribute("aria-expanded"),
+    "false",
+    "点击阶段节点不应改变用户手动收起的流程阶段区",
+  );
+  assert.equal(
+    await capabilityToggle.getAttribute("aria-expanded"),
+    "true",
+    "点击阶段节点应只展开受控能力区",
+  );
+  assert.ok(
+    await discoveryPhaseEntry.evaluate((element) =>
+      element.classList.contains("is-selected"),
+    ),
+    "点击阶段节点仍应同步受控能力的阶段筛选",
+  );
+  const firstDiscoveryCapability = page.locator(
+    '.capability-library .library-item[data-tool="http_security_check"]',
+  );
+  await firstDiscoveryCapability.waitFor();
+  assert.ok(
+    await firstDiscoveryCapability.isVisible(),
+    "点击阶段节点后应定位到该阶段的首个受控能力",
+  );
+  const xrayToolNode = page
+    .locator(".workflow-node--tool")
+    .filter({ hasText: "Xray PoC 漏洞扫描" })
+    .first();
+  await libraryScroll.evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await xrayToolNode.evaluate((node) =>
+    node.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }),
+    ),
+  );
+  await page.waitForTimeout(520);
+  assert.equal(
+    await capabilityToggle.getAttribute("aria-expanded"),
+    "true",
+    "点击工具节点应自动展开受控能力区",
+  );
+  assert.equal(
+    await phaseToggle.getAttribute("aria-expanded"),
+    "false",
+    "点击工具节点也不应展开流程阶段区",
+  );
+  const nodeInputSpacing = await page.locator(".node-input-editor").evaluate((editor) => {
+    const editorBox = editor.getBoundingClientRect();
+    const titleBox = editor.querySelector("h5")?.getBoundingClientRect();
+    return titleBox ? titleBox.top - editorBox.top : null;
+  });
+  assert.ok(
+    nodeInputSpacing !== null && nodeInputSpacing >= 10 && nodeInputSpacing <= 16,
+    `节点输入标题与上方分隔线应保留适度留白：${nodeInputSpacing}`,
+  );
+  const selectedXrayCapability = page.locator(
+    '.library-item.is-selected[data-tool="xray_scan"]',
+  );
+  await selectedXrayCapability.waitFor();
+  const selectedCapabilityIndicator = await selectedXrayCapability.evaluate(
+    (element) => {
+      const itemBox = element.getBoundingClientRect();
+      const itemStyle = getComputedStyle(element);
+      const indicatorStyle = getComputedStyle(element, "::before");
+      const indicatorHeight = Number.parseFloat(indicatorStyle.height);
+      const indicatorTop =
+        itemBox.top + itemBox.height / 2 - indicatorHeight / 2;
+      return {
+        content: indicatorStyle.content,
+        width: Number.parseFloat(indicatorStyle.width),
+        height: indicatorHeight,
+        radius: indicatorStyle.borderRadius,
+        centerDelta:
+          indicatorTop + indicatorHeight / 2 -
+          (itemBox.top + itemBox.height / 2),
+        boxShadow: itemStyle.boxShadow,
+      };
+    },
+  );
+  assert.notEqual(
+    selectedCapabilityIndicator.content,
+    "none",
+    "选中能力卡应显示 Fluent 左侧指示条",
+  );
+  assert.equal(
+    selectedCapabilityIndicator.width,
+    3,
+    `选中能力卡指示条应使用 Fluent 3px 宽度：${JSON.stringify(selectedCapabilityIndicator)}`,
+  );
+  assert.equal(
+    selectedCapabilityIndicator.height,
+    24,
+    `选中能力卡指示条应使用与其他列表一致的 24px 短条：${JSON.stringify(selectedCapabilityIndicator)}`,
+  );
+  assert.ok(
+    Math.abs(selectedCapabilityIndicator.centerDelta) <= 1,
+    `选中能力卡指示条应垂直居中：${JSON.stringify(selectedCapabilityIndicator)}`,
+  );
+  assert.equal(selectedCapabilityIndicator.radius, "999px");
+  assert.equal(
+    selectedCapabilityIndicator.boxShadow,
+    "none",
+    "选中能力卡不应继续使用贯穿整高的 inset 蓝边",
+  );
+  const [selectedCapabilityBox, selectedLibraryBox, libraryMetrics] = await Promise.all([
+    selectedXrayCapability.boundingBox(),
+    libraryScroll.boundingBox(),
+    libraryScroll.evaluate((element) => ({
+      scrollTop: element.scrollTop,
+      scrollHeight: element.scrollHeight,
+      clientHeight: element.clientHeight,
+    })),
+  ]);
+  assert.ok(
+    libraryMetrics.scrollHeight > libraryMetrics.clientHeight,
+    `工作流能力库应具有真实溢出内容：${JSON.stringify(libraryMetrics)}`,
+  );
+  assert.ok(
+    libraryMetrics.scrollTop > 1,
+    `点击低位工具节点后能力库应发生滚动：${JSON.stringify(libraryMetrics)}`,
+  );
+  assert.ok(
+    selectedCapabilityBox &&
+      selectedLibraryBox &&
+      selectedCapabilityBox.y >= selectedLibraryBox.y - 1 &&
+      selectedCapabilityBox.y + selectedCapabilityBox.height <=
+        selectedLibraryBox.y + selectedLibraryBox.height + 1,
+    `点击工具节点后对应能力卡应定位到右侧可视区：${JSON.stringify({
+      selectedCapabilityBox,
+      selectedLibraryBox,
+    })}`,
+  );
+  assert.deepEqual(
+    await page.locator(".library-copy strong").allTextContents(),
+    [
+      "Web 风险检查",
+      "Nuclei 漏洞模板扫描",
+      "Afrog PoC 漏洞扫描",
+      "Xray PoC 漏洞扫描",
+    ],
+    "折叠并重新展开后应保留所选阶段和能力列表",
+  );
   for (let first = 0; first < nodeBoxes.length; first += 1) {
     for (let second = first + 1; second < nodeBoxes.length; second += 1) {
       const a = nodeBoxes[first];
@@ -901,6 +1274,93 @@ async function verifyWorkflowStatusSummary(browser) {
   await page.screenshot({
     path: path.join(outputDir, "workflow-default-layout.png"),
   });
+
+  const flowPane = page.locator(".vue-flow__pane");
+  const flowPaneBox = await flowPane.boundingBox();
+  assert.ok(flowPaneBox, "工作流画布交互层应可见");
+  await flowPane.click({
+    button: "right",
+    position: { x: Math.max(2, flowPaneBox.width - 4), y: Math.max(2, flowPaneBox.height - 4) },
+  });
+  const workflowContextMenu = page.locator(".workflow-context-menu");
+  await workflowContextMenu.waitFor();
+  assert.deepEqual(
+    (await workflowContextMenu.getByRole("menuitem").allTextContents()).map((text) =>
+      text.trim(),
+    ),
+    ["工作流配置", "新增授权输入", "载入所选模板", "使用说明", "适应画布"],
+    "空白画布右键菜单应提供完整配置入口",
+  );
+  const [menuCanvasBox, contextMenuBox] = await Promise.all([
+    page.locator(".flow-canvas").boundingBox(),
+    workflowContextMenu.boundingBox(),
+  ]);
+  assert.ok(menuCanvasBox && contextMenuBox, "画布右键菜单应可见");
+  assert.ok(
+    contextMenuBox.x >= menuCanvasBox.x - 1 &&
+      contextMenuBox.y >= menuCanvasBox.y - 1 &&
+      contextMenuBox.x + contextMenuBox.width <= menuCanvasBox.x + menuCanvasBox.width + 1 &&
+      contextMenuBox.y + contextMenuBox.height <= menuCanvasBox.y + menuCanvasBox.height + 1,
+    `画布右键菜单应保持在画布边界内：${JSON.stringify({ menuCanvasBox, contextMenuBox })}`,
+  );
+  await page.keyboard.press("Escape");
+  await assert.doesNotReject(workflowContextMenu.waitFor({ state: "hidden" }));
+
+  const startNode = page.locator(".workflow-node--system").filter({ hasText: "开始" });
+  await startNode.click({ button: "right" });
+  await workflowContextMenu.waitFor();
+  assert.deepEqual(
+    (await workflowContextMenu.getByRole("menuitem").allTextContents()).map((text) =>
+      text.trim(),
+    ),
+    ["配置运行范围"],
+    "开始节点右键应直接配置运行范围",
+  );
+  await workflowContextMenu.getByRole("menuitem", { name: "配置运行范围" }).click();
+  await workflowConfigPanel.waitFor();
+  await workflowConfigPanel
+    .getByRole("button", { name: "关闭工作流配置", exact: true })
+    .click();
+
+  const firstToolNode = page.locator(".workflow-node--tool").first();
+  await firstToolNode.evaluate((element) => {
+    const canvas = element.closest(".flow-canvas")?.getBoundingClientRect();
+    if (!canvas) throw new Error("未找到工作流画布");
+    element.dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        button: 2,
+        buttons: 2,
+        clientX: canvas.left + canvas.width / 2,
+        clientY: canvas.top + canvas.height / 2,
+      }),
+    );
+  });
+  await workflowContextMenu.waitFor();
+  assert.ok(
+    await workflowContextMenu.getByRole("menuitem", { name: "配置节点参数" }).isVisible(),
+    "工具节点右键应提供参数配置",
+  );
+  assert.ok(
+    await workflowContextMenu.getByRole("menuitem", { name: "删除节点" }).isVisible(),
+    "可编辑节点右键应提供删除入口",
+  );
+  await workflowContextMenu.getByRole("menuitem", { name: "配置节点参数" }).click();
+  const nodeInputEditor = page.locator(".node-input-editor");
+  await nodeInputEditor.waitFor();
+  await page.waitForTimeout(240);
+  const [nodeEditorBox, libraryBox] = await Promise.all([
+    nodeInputEditor.boundingBox(),
+    page.locator(".library-scroll").boundingBox(),
+  ]);
+  assert.ok(nodeEditorBox && libraryBox, "工具节点参数编辑区应可见");
+  assert.ok(
+    nodeEditorBox.y < libraryBox.y + libraryBox.height &&
+      nodeEditorBox.y + nodeEditorBox.height > libraryBox.y,
+    `右键配置节点后应将参数编辑区滚入视口：${JSON.stringify({ nodeEditorBox, libraryBox })}`,
+  );
 
   await page.locator(".suggest-toggle").click();
   const suggestionTags = page.locator(".suggest-card .el-tag");
@@ -940,13 +1400,64 @@ async function verifyWorkflowStatusSummary(browser) {
   );
 
   await editableNodes.first().click();
-  await page.locator(".project-select input").focus();
+  await workflowConfigButton.click();
+  await workflowConfigPanel.locator(".project-select input").focus();
   await page.keyboard.press("Delete");
   assert.equal(
     await page.locator(".workflow-node").count(),
     afterDeleteCount,
     "输入框聚焦时按 Delete 不应误删节点",
   );
+  await workflowConfigPanel
+    .getByRole("button", { name: "关闭工作流配置", exact: true })
+    .click();
+  await page.setViewportSize({ width: 760, height: 900 });
+  await page.waitForTimeout(180);
+  const narrowHeaderMetrics = await headerDescription.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+  }));
+  assert.ok(
+    narrowHeaderMetrics.scrollHeight <= narrowHeaderMetrics.clientHeight + 1 &&
+      narrowHeaderMetrics.scrollWidth <= narrowHeaderMetrics.clientWidth + 1,
+    `窄屏工作流说明应完整换行：${JSON.stringify(narrowHeaderMetrics)}`,
+  );
+  const narrowSummaryOverflow = await workflowSummary.locator("span").evaluateAll((items) =>
+    items.map((item) => ({
+      width: item.clientWidth,
+      scrollWidth: item.scrollWidth,
+      height: item.clientHeight,
+      scrollHeight: item.scrollHeight,
+    })),
+  );
+  assert.ok(
+    narrowSummaryOverflow.every(
+      (item) =>
+        item.scrollWidth <= item.width + 1 && item.scrollHeight <= item.height + 1,
+    ),
+    `窄屏工作流摘要不应截断：${JSON.stringify(narrowSummaryOverflow)}`,
+  );
+  await workflowConfigButton.click();
+  await workflowConfigPanel.waitFor();
+  const [narrowCanvasBox, narrowPanelBox] = await Promise.all([
+    page.locator(".flow-canvas").boundingBox(),
+    workflowConfigPanel.boundingBox(),
+  ]);
+  assert.ok(narrowCanvasBox && narrowPanelBox, "窄屏工作流配置面板应可见");
+  assert.ok(
+    narrowCanvasBox.height >= 400 &&
+    narrowPanelBox.x >= narrowCanvasBox.x - 1 &&
+      narrowPanelBox.y >= narrowCanvasBox.y - 1 &&
+      narrowPanelBox.x + narrowPanelBox.width <= narrowCanvasBox.x + narrowCanvasBox.width + 1 &&
+      narrowPanelBox.y + narrowPanelBox.height <= narrowCanvasBox.y + narrowCanvasBox.height + 1,
+    `窄屏工作流画布和配置面板尺寸应稳定：${JSON.stringify({ narrowCanvasBox, narrowPanelBox })}`,
+  );
+  await page.screenshot({
+    path: path.join(outputDir, "workflow-config-narrow.png"),
+    fullPage: true,
+  });
   await context.close();
 }
 
@@ -1161,6 +1672,149 @@ async function assertVisibleTabLastPage(page, tabName, marker, label) {
     marker,
     label,
   );
+}
+
+async function verifyDashboardComposer(browser) {
+  const viewports = [
+    { width: 1000, height: 700 },
+    { width: 1440, height: 900 },
+    { width: 1920, height: 1080 },
+  ];
+
+  for (const viewport of viewports) {
+    const size = `${viewport.width}x${viewport.height}`;
+    const { context, page } = await createPage(browser, viewport);
+    await gotoDesktopPage(page, "/", ".welcome-composer");
+
+    const refreshGeometry = await page
+      .locator(".chat-header-actions .header-icon-button")
+      .evaluate((button) => {
+        const icon = button.querySelector(".el-icon");
+        const glyph = button.querySelector(".fluent-system-icon");
+        if (!icon || !glyph) return null;
+        const geometry = (element) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            width: rect.width,
+            height: rect.height,
+            centerX: rect.x + rect.width / 2,
+            centerY: rect.y + rect.height / 2,
+          };
+        };
+        const style = getComputedStyle(button);
+        return {
+          button: geometry(button),
+          icon: geometry(icon),
+          glyph: geometry(glyph),
+          boxSizing: style.boxSizing,
+          padding: [
+            style.paddingTop,
+            style.paddingRight,
+            style.paddingBottom,
+            style.paddingLeft,
+          ],
+        };
+      });
+    assert.ok(refreshGeometry, `${size} 无法读取刷新按钮图标几何信息`);
+    assert.ok(
+      Math.abs(refreshGeometry.button.width - 36) <= 0.5 &&
+        Math.abs(refreshGeometry.button.height - 36) <= 0.5,
+      `${size} 刷新按钮应为 36x36：${JSON.stringify(refreshGeometry.button)}`,
+    );
+    assert.equal(refreshGeometry.boxSizing, "border-box");
+    assert.deepEqual(refreshGeometry.padding, ["0px", "0px", "0px", "0px"]);
+    assert.ok(
+      Math.abs(refreshGeometry.icon.width - 18) <= 0.5 &&
+        Math.abs(refreshGeometry.icon.height - 18) <= 0.5,
+      `${size} 刷新按钮图标容器应为 18x18：${JSON.stringify(refreshGeometry.icon)}`,
+    );
+    assert.ok(
+      Math.abs(refreshGeometry.glyph.width - 16) <= 0.5 &&
+        Math.abs(refreshGeometry.glyph.height - 16) <= 0.5,
+      `${size} 刷新按钮 Fluent 图标应为 16x16：${JSON.stringify(refreshGeometry.glyph)}`,
+    );
+    for (const [name, box] of [
+      ["图标容器", refreshGeometry.icon],
+      ["Fluent 图标", refreshGeometry.glyph],
+    ]) {
+      assert.ok(
+        Math.abs(box.centerX - refreshGeometry.button.centerX) <= 0.5 &&
+          Math.abs(box.centerY - refreshGeometry.button.centerY) <= 0.5,
+        `${size} 刷新按钮${name}未居中：${JSON.stringify({
+          button: refreshGeometry.button,
+          box,
+        })}`,
+      );
+    }
+
+    const welcomeGeometry = await page.evaluate(() => {
+      const selectors = [
+        ".composer-footer > .target-picker",
+        ".composer-footer > .el-switch",
+        ".composer-footer > .composer-shortcut",
+        ".composer-footer > .send-button",
+      ];
+      const elements = selectors.map((selector) => document.querySelector(selector));
+      if (elements.some((element) => !element)) return null;
+      const boxes = elements.map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          x: rect.x,
+          width: rect.width,
+          height: rect.height,
+          centerY: rect.y + rect.height / 2,
+        };
+      });
+      return {
+        boxes,
+        shortcutWhiteSpace: getComputedStyle(elements[2]).whiteSpace,
+      };
+    });
+    assert.ok(welcomeGeometry, `${size} 无法读取欢迎页输入区`);
+    const welcomeCenters = welcomeGeometry.boxes.map((box) => box.centerY);
+    assert.ok(
+      Math.max(...welcomeCenters) - Math.min(...welcomeCenters) <= 1,
+      `${size} 欢迎页输入区控件未保持同一行：${JSON.stringify(welcomeGeometry.boxes)}`,
+    );
+    assert.equal(
+      welcomeGeometry.shortcutWhiteSpace,
+      "nowrap",
+      `${size} 快捷键提示不应换行`,
+    );
+    assert.ok(
+      welcomeGeometry.boxes[3].x >
+        welcomeGeometry.boxes[2].x + welcomeGeometry.boxes[2].width,
+      `${size} 发送按钮应位于快捷键提示右侧`,
+    );
+
+    await page.locator(".welcome-composer textarea").fill("检查当前授权目标");
+    await page.locator(".welcome-composer .send-button").click();
+    await page.locator(".thread-composer").waitFor();
+    const threadBoxes = await page
+      .locator(
+        ".thread-composer > .el-switch, .thread-composer > textarea, .thread-composer > button",
+      )
+      .evaluateAll((elements) =>
+        elements.map((element) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            width: rect.width,
+            bottom: rect.bottom,
+          };
+        }),
+      );
+    assert.equal(threadBoxes.length, 3, `${size} 对话输入区应包含三个主控件`);
+    const threadBottoms = threadBoxes.map((box) => box.bottom);
+    assert.ok(
+      Math.max(...threadBottoms) - Math.min(...threadBottoms) <= 1,
+      `${size} 对话输入区控件未对齐：${JSON.stringify(threadBoxes)}`,
+    );
+    assert.ok(threadBoxes[1].width >= 200, `${size} 对话输入框过窄`);
+    await page.screenshot({
+      path: path.join(outputDir, `dashboard-composer-${size}.png`),
+    });
+    await context.close();
+  }
 }
 
 async function verifyResponsiveMatrix(browser) {
@@ -1415,6 +2069,11 @@ async function verifyTraffic(browser) {
     width: 1440,
     height: 900,
   });
+  await page.addInitScript(() => {
+    window.toolboxDesktop = {
+      launchCaptureBrowser: async () => ({ running: true }),
+    };
+  });
   await page.goto(`${baseUrl}/traffic`, { waitUntil: "networkidle" });
   await page.locator(".traffic-row").first().waitFor();
   await assertLastPage(
@@ -1473,6 +2132,26 @@ async function verifyTraffic(browser) {
     toolbarStyle.titleOffsetY,
     toolbarStyle.pagePaddingTop,
     "流量工作区标题应与页面顶部基线对齐",
+  );
+  const toolbarActionGaps = await page.evaluate(() => {
+    const selectors = [
+      ".capture-browser-reopen",
+      ".capture-filter-button",
+      ".traffic-refresh",
+      ".capture-toggle",
+    ];
+    const boxes = selectors.map((selector) =>
+      document.querySelector(selector)?.getBoundingClientRect(),
+    );
+    if (boxes.some((box) => !box)) return null;
+    return boxes.slice(1).map((box, index) =>
+      Number((box.left - boxes[index].right).toFixed(2)),
+    );
+  });
+  assert.ok(toolbarActionGaps, "流量工具栏的四个操作按钮应全部可见");
+  assert.ok(
+    toolbarActionGaps.every((gap) => Math.abs(gap - 8) <= 1),
+    `流量工具栏按钮间距应统一为 8px：${JSON.stringify(toolbarActionGaps)}`,
   );
   const trafficControlStyle = await page.evaluate(() => {
     const filter = document.querySelector(
@@ -1620,6 +2299,167 @@ async function verifyTraffic(browser) {
   await context.close();
 }
 
+async function verifyTargetAuthorizationTimeDisplay(browser) {
+  const { context, page } = await createPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  await page.goto(`${baseUrl}/targets`, { waitUntil: "networkidle" });
+  await page.locator(".targets-page").waitFor();
+  const inheritedAuthorizationWindow = page
+    .locator(".target-authorization-window")
+    .nth(1);
+  await inheritedAuthorizationWindow.waitFor();
+  assert.match(
+    await inheritedAuthorizationWindow.innerText(),
+    /随项目\s+起\s*2026-07-01 00:00\s+止\s*2026-12-31 23:59/,
+    "目标未设置独立时间时，列表应显示所属项目的实际授权有效期",
+  );
+  const deleteButton = page.locator(".target-action-delete").first();
+  const deleteColor = await deleteButton.evaluate(
+    (element) => getComputedStyle(element).color,
+  );
+  assert.equal(deleteColor, "rgb(180, 35, 24)", "删除链接应使用 Fluent danger 红");
+  await page.locator(".target-action-edit").first().click();
+  const editDialog = page.getByRole("dialog", { name: "编辑授权目标" });
+  await editDialog.waitFor();
+  const editDateValues = await editDialog
+    .locator(".el-date-editor input")
+    .evaluateAll((inputs) => inputs.map((input) => input.value));
+  assert.deepEqual(
+    editDateValues,
+    ["2026-07-01 00:00", "2026-12-31 23:59"],
+    `旧的无时区授权时间也应在编辑弹窗回填：${JSON.stringify(editDateValues)}`,
+  );
+  await editDialog
+    .getByText("未单独设置的时间将沿用所属项目", { exact: false })
+    .waitFor({ state: "hidden" });
+  await page.screenshot({
+    path: path.join(outputDir, "target-authorization-time-edit.png"),
+  });
+  await editDialog.getByRole("button", { name: "取消", exact: true }).click();
+
+  await page.locator(".target-action-edit").nth(1).click();
+  await editDialog.waitFor();
+  const inheritedDateValues = await editDialog
+    .locator(".el-date-editor input")
+    .evaluateAll((inputs) =>
+      inputs.map((input) => ({
+        value: input.value,
+        placeholder: input.placeholder,
+      })),
+    );
+  assert.deepEqual(
+    inheritedDateValues,
+    [
+      { value: "", placeholder: "项目：2026-07-01 00:00" },
+      { value: "", placeholder: "项目：2026-12-31 23:59" },
+    ],
+    `继承项目时间应显示实际值，但不能写入目标级字段：${JSON.stringify(inheritedDateValues)}`,
+  );
+  assert.match(
+    await editDialog.locator(".target-inherited-time").innerText(),
+    /评估项目 1\s+开始 2026-07-01 00:00 · 结束 2026-12-31 23:59/,
+    "编辑弹窗应明确显示所属项目的完整授权时间",
+  );
+  await page.screenshot({
+    path: path.join(outputDir, "target-authorization-time-inherited.png"),
+  });
+  await editDialog.getByRole("button", { name: "取消", exact: true }).click();
+
+  await page.getByRole("button", { name: "新增目标", exact: true }).click();
+  const createDialog = page.getByRole("dialog", { name: "新增授权目标" });
+  await createDialog.waitFor();
+  const createDateValues = await createDialog
+    .locator(".el-date-editor input")
+    .evaluateAll((inputs) => inputs.map((input) => input.value));
+  assert.deepEqual(
+    createDateValues,
+    ["2026-07-01 00:00", "2026-12-31 23:59"],
+    `新增目标应默认带入所属项目授权时间：${JSON.stringify(createDateValues)}`,
+  );
+  await context.close();
+}
+
+async function verifyProjectReportLayout(browser) {
+  const { context, page } = await createPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  await page.goto(`${baseUrl}/projects`, { waitUntil: "networkidle" });
+  await page.getByText("进入项目", { exact: true }).first().click();
+  await page.locator(".project-detail-page").waitFor();
+  await page.getByRole("tab", { name: "项目报告", exact: true }).click();
+  await page.locator(".report-severity-chip").first().waitFor();
+
+  const severityInsets = await page
+    .locator(".report-severity-chip")
+    .evaluateAll((chips) =>
+      chips.map((chip) => {
+        const tag = chip.querySelector(".el-tag");
+        if (!tag) return null;
+        const chipBox = chip.getBoundingClientRect();
+        const tagBox = tag.getBoundingClientRect();
+        return {
+          top: tagBox.top - chipBox.top,
+          bottom: chipBox.bottom - tagBox.bottom,
+          left: tagBox.left - chipBox.left,
+        };
+      }),
+    );
+  assert.ok(
+    severityInsets.every((insets) => {
+      if (!insets) return false;
+      const values = Object.values(insets);
+      return (
+        Math.max(...values) - Math.min(...values) <= 1 &&
+        values.every((value) => value >= 4.5 && value <= 5.5)
+      );
+    }),
+    `风险等级胶囊的上、下、左内距应等距：${JSON.stringify(severityInsets)}`,
+  );
+
+  const reportSpacing = await page.evaluate(() => {
+    const alert = document.querySelector(".report-safety-alert");
+    const head = document.querySelector(".report-recent-head");
+    const title = head?.querySelector(".project-subtitle");
+    const selects = [...(head?.querySelectorAll(".el-select") || [])];
+    if (!alert || !head || !title || selects.length !== 2) return null;
+    const alertBox = alert.getBoundingClientRect();
+    const headBox = head.getBoundingClientRect();
+    const titleBox = title.getBoundingClientRect();
+    const selectBoxes = selects.map((select) => select.getBoundingClientRect());
+    return {
+      verticalGap: headBox.top - alertBox.bottom,
+      centerDeltas: selectBoxes.map(
+        (box) =>
+          box.top + box.height / 2 - (titleBox.top + titleBox.height / 2),
+      ),
+    };
+  });
+  assert.ok(reportSpacing, "项目报告安全提示和最近任务筛选器应可测量");
+  assert.ok(
+    reportSpacing.verticalGap >= 15 && reportSpacing.verticalGap <= 17,
+    `安全提示与最近任务筛选区应保留 16px 间距：${JSON.stringify(reportSpacing)}`,
+  );
+  assert.ok(
+    reportSpacing.centerDeltas.every((delta) => Math.abs(delta) <= 2),
+    `最近任务标题与筛选器应垂直居中：${JSON.stringify(reportSpacing)}`,
+  );
+  await page.screenshot({
+    path: path.join(outputDir, "project-report-spacing.png"),
+    fullPage: true,
+  });
+
+  await page.getByRole("tab", { name: "审批与审计", exact: true }).click();
+  await page.getByText("不适用（未生成任务）", { exact: true }).waitFor();
+  await page.screenshot({
+    path: path.join(outputDir, "project-audit-snapshot-placeholder.png"),
+    fullPage: true,
+  });
+  await context.close();
+}
+
 async function verifyPagination(browser) {
   const { context, page } = await createPage(browser, {
     width: 1280,
@@ -1642,6 +2482,18 @@ async function verifyPagination(browser) {
   });
 
   await page.goto(`${baseUrl}/vulnerabilities`, { waitUntil: "networkidle" });
+  const [pagerButtonBox, jumperBox] = await Promise.all([
+    page.locator(".catalog-pagination .btn-prev").boundingBox(),
+    page
+      .locator(".catalog-pagination .el-pagination__editor .el-input__wrapper")
+      .boundingBox(),
+  ]);
+  assert.ok(pagerButtonBox && jumperBox, "无法读取漏洞库分页控件尺寸");
+  assert.ok(
+    jumperBox.height <= pagerButtonBox.height + 1,
+    `跳页输入框不应高于分页按钮：${jumperBox.height}px / ${pagerButtonBox.height}px`,
+  );
+  assert.ok(jumperBox.width <= 44, `跳页输入框仍然过宽：${jumperBox.width}px`);
   const lastPage = page
     .locator(".catalog-pagination .el-pager li.number")
     .last();
@@ -1761,6 +2613,309 @@ async function verifyFunctionalPagination(browser) {
   await context.close();
 }
 
+async function verifyFingerprintCatalogUpdate(browser) {
+  const { context, page } = await createPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  await page.goto(`${baseUrl}/projects`, { waitUntil: "networkidle" });
+  await page.locator(".projects-page").waitFor();
+  await page.getByText("进入项目", { exact: true }).first().click();
+  await page.locator(".project-detail-page").waitFor();
+  await page.getByRole("tab", { name: "探测服务", exact: true }).click();
+  const panel = page.locator(".fingerprint-catalog-panel");
+  await panel.waitFor();
+  assert.match(await panel.innerText(), /visual-smoke/);
+  assert.match(await panel.innerText(), /409 条/);
+  const catalogToggle = panel.locator(".fingerprint-catalog-toggle");
+  const catalogDetails = panel.locator("#project-fingerprint-catalog-body");
+  assert.equal(
+    await catalogToggle.getAttribute("aria-expanded"),
+    "false",
+    "指纹规则库默认应保持收起",
+  );
+  assert.equal(await catalogDetails.getAttribute("aria-hidden"), "true");
+  assert.equal(
+    await catalogDetails.evaluate((element) => element.inert),
+    true,
+    "收起的指纹规则详情应禁止交互",
+  );
+  const [collapsedPanelBox, collapsedHeadingBox] = await Promise.all([
+    panel.boundingBox(),
+    panel.locator(".fingerprint-catalog-heading").boundingBox(),
+  ]);
+  assert.ok(collapsedPanelBox && collapsedHeadingBox, "指纹规则库摘要应可见");
+  assert.ok(
+    collapsedPanelBox.height <= collapsedHeadingBox.height + 2,
+    `收起后的指纹规则库不应保留详情占位：${JSON.stringify({
+      collapsedPanelBox,
+      collapsedHeadingBox,
+    })}`,
+  );
+  const sourceTagAlignment = await panel
+    .locator(".fingerprint-catalog-source-tag")
+    .evaluate((tag) => {
+      const content = tag.querySelector(".el-tag__content");
+      if (!content) return null;
+      const tagBox = tag.getBoundingClientRect();
+      const contentBox = content.getBoundingClientRect();
+      const style = getComputedStyle(tag);
+      return {
+        centerDelta:
+          contentBox.top + contentBox.height / 2 -
+          (tagBox.top + tagBox.height / 2),
+        display: style.display,
+        alignItems: style.alignItems,
+        marginTop: style.marginTop,
+      };
+    });
+  assert.ok(sourceTagAlignment, "指纹来源标签应可测量");
+  assert.match(sourceTagAlignment.display, /flex/);
+  assert.equal(sourceTagAlignment.alignItems, "center");
+  assert.equal(sourceTagAlignment.marginTop, "0px");
+  assert.ok(
+    Math.abs(sourceTagAlignment.centerDelta) <= 1,
+    `指纹来源标签文字应垂直居中：${JSON.stringify(sourceTagAlignment)}`,
+  );
+  assert.equal(
+    await panel.getByRole("button", { name: "重新读取" }).isVisible(),
+    false,
+    "收起时不应显示指纹库维护操作",
+  );
+  await page.screenshot({
+    path: path.join(outputDir, "project-fingerprint-catalog-collapsed.png"),
+  });
+  await catalogToggle.click();
+  assert.equal(await catalogToggle.getAttribute("aria-expanded"), "true");
+  assert.equal(await catalogDetails.getAttribute("aria-hidden"), "false");
+  assert.equal(
+    await catalogDetails.evaluate((element) => element.inert),
+    false,
+  );
+  await panel.getByRole("button", { name: "重新读取" }).waitFor();
+  await panel.getByRole("button", { name: "更新指纹库" }).waitFor();
+
+  await panel.locator('input[type="file"]').setInputFiles({
+    name: "broken-fingerprints.json",
+    mimeType: "application/json",
+    buffer: Buffer.from("{not-json", "utf8"),
+  });
+  await panel.getByText("更新失败", { exact: true }).waitFor();
+  assert.match(await panel.innerText(), /文件不是有效的 JSON 指纹规则库/);
+
+  const catalogJson = JSON.stringify({
+    version: "visual-upload",
+    rules: [
+      {
+        id: "visual-rule",
+        name: "视觉回归规则",
+        category: "FRAMEWORK",
+        confidence: 90,
+      },
+    ],
+  });
+  await panel.locator('input[type="file"]').setInputFiles({
+    name: "visual-fingerprints.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(catalogJson, "utf8"),
+  });
+  const confirmation = page.locator("body > .el-overlay.is-message-box");
+  await confirmation.waitFor();
+  assert.match(await confirmation.innerText(), /visual-fingerprints\.json/);
+
+  const updateRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return (
+      request.method() === "PUT" &&
+      url.pathname === "/api/fingerprints/catalog"
+    );
+  });
+  await confirmation
+    .getByRole("button", { name: "上传并更新", exact: true })
+    .click();
+  const request = await updateRequest;
+  assert.match(request.headers()["content-type"] || "", /^application\/json/i);
+  assert.equal(request.postDataBuffer()?.toString("utf8"), catalogJson);
+
+  await panel.getByText("更新成功", { exact: true }).waitFor();
+  assert.match(await panel.innerText(), /visual-fingerprints\.json/);
+  assert.match(await panel.innerText(), /visual-upload/);
+  assert.match(await panel.innerText(), /1 条规则/);
+  assert.match(await panel.innerText(), /a{64}/);
+  await confirmation.waitFor({ state: "hidden" });
+  await page.screenshot({
+    path: path.join(outputDir, "project-fingerprint-catalog-update.png"),
+  });
+  await context.close();
+
+  const ordinary = await createPage(
+    browser,
+    { width: 1280, height: 800 },
+    "reduce",
+    "USER",
+  );
+  await ordinary.page.goto(`${baseUrl}/projects`, { waitUntil: "networkidle" });
+  await ordinary.page.getByText("进入项目", { exact: true }).first().click();
+  await ordinary.page.getByRole("tab", { name: "探测服务", exact: true }).click();
+  const readOnlyPanel = ordinary.page.locator(".fingerprint-catalog-panel");
+  await readOnlyPanel.waitFor();
+  assert.match(await readOnlyPanel.innerText(), /visual-smoke/);
+  assert.equal(
+    await readOnlyPanel.getByRole("button", { name: "重新读取" }).count(),
+    0,
+    "普通用户不应看到指纹规则重载动作",
+  );
+  assert.equal(
+    await readOnlyPanel.getByRole("button", { name: "更新指纹库" }).count(),
+    0,
+    "普通用户不应看到指纹库更新动作",
+  );
+  await ordinary.context.close();
+}
+
+async function verifyScheduledScannerConfiguration(browser) {
+  const { context, page } = await createPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  await page.goto(`${baseUrl}/tasks`, { waitUntil: "networkidle" });
+  await page.locator(".schedule-trigger").click();
+  const dialog = page.locator(".el-dialog:visible").filter({
+    hasText: "定时任务管理",
+  });
+  await dialog.waitFor();
+
+  const ruleGaps = [];
+  for (const modeLabel of ["每天", "每周", "每月", "按间隔"]) {
+    await dialog.getByText(modeLabel, { exact: true }).click();
+    const metrics = await dialog.evaluate((element) => {
+      const row = element.querySelector(".schedule-rule-row");
+      const preview = element.querySelector(".schedule-rule-preview");
+      const items = row ? [...row.querySelectorAll(".el-form-item")] : [];
+      if (!row || !preview || !items.length) return null;
+      const controlBottom = Math.max(
+        ...items.map((item) => item.getBoundingClientRect().bottom),
+      );
+      return {
+        gap: preview.getBoundingClientRect().top - controlBottom,
+        margins: items.map((item) => getComputedStyle(item).marginBottom),
+      };
+    });
+    assert.ok(metrics, `${modeLabel}执行规则控件和说明文字应可见`);
+    assert.ok(
+      metrics.margins.every((margin) => margin === "8px"),
+      `${modeLabel}执行规则的表单项底部间距应统一为 8px：${JSON.stringify(metrics)}`,
+    );
+    ruleGaps.push({ modeLabel, gap: metrics.gap });
+  }
+  const ruleGapValues = ruleGaps.map((item) => item.gap);
+  assert.ok(
+    Math.max(...ruleGapValues) - Math.min(...ruleGapValues) <= 1,
+    `四种执行方式的控件与说明文字间距应一致：${JSON.stringify(ruleGaps)}`,
+  );
+  assert.ok(
+    ruleGapValues.every((gap) => gap >= 11 && gap <= 13),
+    `执行规则说明应与控件保持约 12px 间距：${JSON.stringify(ruleGaps)}`,
+  );
+  await dialog.getByText("每天", { exact: true }).click();
+  await page.screenshot({
+    path: path.join(outputDir, "tasks-schedule-rule-spacing.png"),
+  });
+
+  const formSelect = (label) =>
+    dialog
+      .locator(".el-form-item")
+      .filter({ hasText: label })
+      .locator(".el-select")
+      .first();
+  await formSelect("项目授权目标").click();
+  const targetDropdown = page.locator(".el-select-dropdown:visible");
+  await targetDropdown
+    .getByText("授权目标 1 · target-1.authorized.test", { exact: true })
+    .click();
+  await targetDropdown.waitFor({ state: "hidden" });
+  await formSelect("检测工具").click();
+  await page
+    .locator(".el-select-dropdown:visible")
+    .getByText("Nuclei 漏洞扫描", { exact: true })
+    .click();
+  assert.equal(
+    await dialog.getByText("默认安全模板", { exact: true }).count(),
+    0,
+    "Nuclei 无人值守任务不得回退到未逐项复核的默认模板目录",
+  );
+  await dialog.getByRole("button", { name: "创建", exact: true }).click();
+  await page
+    .locator(".el-message--warning")
+    .filter({ hasText: "请为 NUCLEI 至少选择一个 PoC" })
+    .waitFor();
+
+  await formSelect("检测工具").click();
+  await page
+    .locator(".el-select-dropdown:visible")
+    .getByText("Xray PoC 扫描", { exact: true })
+    .click();
+
+  assert.equal(
+    await dialog.getByText("全部已同步", { exact: true }).count(),
+    0,
+    "无人值守扫描不应再提供动态全部 PoC",
+  );
+  await dialog.getByText("指定安全 PoC", { exact: true }).waitFor();
+  const pocSelect = formSelect("指定 PoC");
+  const pocRequestPromise = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return (
+      url.pathname === "/api/vulnerabilities" &&
+      url.searchParams.get("source") === "XRAY"
+    );
+  });
+  await pocSelect.click();
+  const pocRequest = await pocRequestPromise;
+  assert.equal(
+    new URL(pocRequest.url()).searchParams.get("scanSafety"),
+    "SAFE",
+    "定时扫描器 PoC 检索必须限制为 SAFE",
+  );
+  await page
+    .locator(".el-select-dropdown:visible")
+    .getByText("XRAY 安全 PoC 1", { exact: true })
+    .click();
+  assert.match(
+    await dialog.locator(".schedule-parameter-help").allTextContents().then((items) =>
+      items.join(" "),
+    ),
+    /SAFE/,
+  );
+
+  const scheduleRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/api/scan-schedules",
+  );
+  await dialog.getByRole("button", { name: "创建", exact: true }).click();
+  const confirmation = page.locator("body > .el-overlay.is-message-box");
+  await confirmation.waitFor();
+  assert.match(
+    await confirmation.innerText(),
+    /不会执行需审查或高影响 PoC.*SAFE 分级/s,
+  );
+  await confirmation
+    .getByRole("button", { name: "创建定时任务", exact: true })
+    .click();
+  const request = await scheduleRequest;
+  const payload = request.postDataJSON();
+  assert.equal(payload.toolCode, "xray_scan");
+  assert.deepEqual(payload.parameters, {
+    pocCodes: ["XR-000000000000000000000001"],
+  });
+  assert.equal("allPocs" in payload.parameters, false);
+  await page.screenshot({
+    path: path.join(outputDir, "tasks-scheduled-safe-poc.png"),
+  });
+  await context.close();
+}
+
 async function main() {
   assert.ok(fs.existsSync(edgePath), `未找到 Edge：${edgePath}`);
   fs.mkdirSync(outputDir, { recursive: true });
@@ -1769,19 +2924,34 @@ async function main() {
     headless: true,
   });
   try {
-    if (process.env.VISUAL_WORKFLOW_ONLY === "1") {
+    if (process.env.VISUAL_DASHBOARD_ONLY === "1") {
+      await verifyDashboardComposer(browser);
+    } else if (process.env.VISUAL_WORKFLOW_ONLY === "1") {
       await verifyWorkflowStatusSummary(browser);
+    } else if (process.env.VISUAL_TASKS_ONLY === "1") {
+      await verifyScheduledScannerConfiguration(browser);
+    } else if (process.env.VISUAL_FINGERPRINT_ONLY === "1") {
+      await verifyFingerprintCatalogUpdate(browser);
+    } else if (process.env.VISUAL_LAYOUT_FIXES_ONLY === "1") {
+      await verifyTargetAuthorizationTimeDisplay(browser);
+      await verifyProjectReportLayout(browser);
+      await verifyTraffic(browser);
     } else {
+      await verifyDashboardComposer(browser);
       await verifyNavigationMotion(browser);
       await verifyOfflineToolIndicator(browser);
       await verifySharedSelectionIndicators(browser);
       await verifyWorkflowStatusSummary(browser);
+      await verifyScheduledScannerConfiguration(browser);
       await verifyDatePickerCorners(browser);
       await verifySettings(browser);
       await verifyCatalogSyncProgress(browser);
       await verifyTraffic(browser);
+      await verifyTargetAuthorizationTimeDisplay(browser);
+      await verifyProjectReportLayout(browser);
       await verifyPagination(browser);
       await verifyFunctionalPagination(browser);
+      await verifyFingerprintCatalogUpdate(browser);
       await verifyResponsiveMatrix(browser);
     }
   } finally {

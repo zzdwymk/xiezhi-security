@@ -6,8 +6,10 @@ import com.bachelor.toolbox.dependency.CommandRunner.CommandResult;
 import com.bachelor.toolbox.dependency.SystemDependenciesResponse.DependencyStatus;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 class DependencyDetectionServiceTests {
@@ -33,7 +35,7 @@ class DependencyDetectionServiceTests {
           return CommandResult.completed(0, "httpx 0.28.1 - The next generation HTTP client\n");
         };
 
-    SystemDependenciesResponse response = new DependencyDetectionService(locator, runner).detect();
+    SystemDependenciesResponse response = service(locator, runner).detect();
     DependencyStatus nmap = find(response, "Nmap");
     DependencyStatus httpx = find(response, "ProjectDiscovery httpx");
 
@@ -65,12 +67,46 @@ class DependencyDetectionServiceTests {
   }
 
   @Test
+  void usesConfiguredNmapExecutableForPreflight() {
+    String configuredExecutable = "D:/portable/Nmap/nmap.exe";
+    Path resolvedExecutable = Path.of(configuredExecutable).toAbsolutePath().normalize();
+    AtomicReference<List<String>> receivedCandidates = new AtomicReference<>();
+    ExecutableLocator locator =
+        candidates -> {
+          if (candidates.contains(configuredExecutable)) {
+            receivedCandidates.set(candidates);
+            return Optional.of(resolvedExecutable);
+          }
+          return Optional.empty();
+        };
+    CommandRunner runner =
+        (executable, arguments, timeout) -> {
+          assertThat(executable).isEqualTo(resolvedExecutable);
+          return CommandResult.completed(0, "Nmap version 7.99");
+        };
+    NmapExecutableResolver resolver =
+        new NmapExecutableResolver(locator, configuredExecutable);
+
+    DependencyStatus nmap =
+        find(new DependencyDetectionService(locator, runner, resolver).detect(), "Nmap");
+
+    assertThat(receivedCandidates.get())
+        .containsExactly(
+            configuredExecutable,
+            "nmap",
+            "C:/Program Files/Nmap/nmap.exe",
+            "C:/Program Files (x86)/Nmap/nmap.exe");
+    assertThat(nmap.status()).isEqualTo("AVAILABLE");
+    assertThat(nmap.path()).isEqualTo(resolvedExecutable.toString());
+  }
+
+  @Test
   void reportsTimeoutWithoutWaitingBeyondRunnerContract() {
     ExecutableLocator locator = locateCandidate("nuclei", Path.of("C:/tools/nuclei.exe"));
     CommandRunner runner = (executable, arguments, timeout) -> CommandResult.timeout("");
 
     DependencyStatus nuclei =
-        find(new DependencyDetectionService(locator, runner).detect(), "Nuclei");
+        find(service(locator, runner).detect(), "Nuclei");
 
     assertThat(nuclei.status()).isEqualTo("TIMEOUT");
     assertThat(nuclei.version()).isEqualTo("unknown");
@@ -86,8 +122,7 @@ class DependencyDetectionServiceTests {
           return Optional.empty();
         };
     DependencyDetectionService service =
-        new DependencyDetectionService(
-            locator, (executable, arguments, timeout) -> CommandResult.completed(0, "unused"));
+        service(locator, (executable, arguments, timeout) -> CommandResult.completed(0, "unused"));
 
     SystemDependenciesResponse first = service.detect();
     SystemDependenciesResponse second = service.detect();
@@ -105,8 +140,7 @@ class DependencyDetectionServiceTests {
           return Optional.empty();
         };
     DependencyDetectionService service =
-        new DependencyDetectionService(
-            locator, (executable, arguments, timeout) -> CommandResult.completed(0, "unused"));
+        service(locator, (executable, arguments, timeout) -> CommandResult.completed(0, "unused"));
 
     SystemDependenciesResponse first = service.detect();
     SystemDependenciesResponse refreshed = service.detect(true);
@@ -125,7 +159,7 @@ class DependencyDetectionServiceTests {
         };
 
     DependencyStatus afrog =
-        find(new DependencyDetectionService(locator, runner).detect(), "Afrog");
+        find(service(locator, runner).detect(), "Afrog");
 
     assertThat(afrog.status()).isEqualTo("AVAILABLE");
     assertThat(afrog.version()).isEqualTo("Afrog 3.5.6");
@@ -147,7 +181,7 @@ class DependencyDetectionServiceTests {
               : CommandResult.completed(0, "Current Version: v1.7.1 httpx");
         };
 
-    SystemDependenciesResponse response = new DependencyDetectionService(locator, runner).detect();
+    SystemDependenciesResponse response = service(locator, runner).detect();
 
     assertThat(find(response, "Nuclei").status()).isEqualTo("AVAILABLE");
     assertThat(find(response, "ProjectDiscovery httpx").status()).isEqualTo("AVAILABLE");
@@ -160,7 +194,7 @@ class DependencyDetectionServiceTests {
         (executable, arguments, timeout) ->
             CommandResult.failed("CreateProcess failed for C:/secret/tool.exe");
 
-    DependencyStatus nmap = find(new DependencyDetectionService(locator, runner).detect(), "Nmap");
+    DependencyStatus nmap = find(service(locator, runner).detect(), "Nmap");
 
     assertThat(nmap.status()).isEqualTo("ERROR");
     assertThat(nmap.version()).isNull();
@@ -180,8 +214,7 @@ class DependencyDetectionServiceTests {
         };
 
     SystemDependenciesResponse response =
-        new DependencyDetectionService(
-                locator, (executable, arguments, timeout) -> CommandResult.completed(0, "unused"))
+        service(locator, (executable, arguments, timeout) -> CommandResult.completed(0, "unused"))
             .detect();
 
     DependencyStatus nmap = find(response, "Nmap");
@@ -207,7 +240,7 @@ class DependencyDetectionServiceTests {
         };
 
     DependencyStatus npcap =
-        find(new DependencyDetectionService(locator, runner).detect(), "Npcap");
+        find(service(locator, runner).detect(), "Npcap");
 
     assertThat(commandCalls).hasValue(0);
     assertThat(npcap.status()).isEqualTo("AVAILABLE");
@@ -223,7 +256,7 @@ class DependencyDetectionServiceTests {
             CommandResult.completed(7, "\u001B[31mNuclei v3.2.0\u001B[0m\r\nextra output");
 
     DependencyStatus nuclei =
-        find(new DependencyDetectionService(locator, runner).detect(), "Nuclei");
+        find(service(locator, runner).detect(), "Nuclei");
 
     assertThat(nuclei.status()).isEqualTo("ERROR");
     assertThat(nuclei.version()).isEqualTo("Nuclei v3.2.0");
@@ -237,7 +270,7 @@ class DependencyDetectionServiceTests {
         (executable, arguments, timeout) -> CommandResult.completed(2, "generic HTTP client 1.0");
 
     DependencyStatus httpx =
-        find(new DependencyDetectionService(locator, runner).detect(), "ProjectDiscovery httpx");
+        find(service(locator, runner).detect(), "ProjectDiscovery httpx");
 
     assertThat(httpx.status()).isEqualTo("INCOMPATIBLE");
     assertThat(httpx.version()).isEqualTo("generic HTTP client 1.0");
@@ -247,6 +280,11 @@ class DependencyDetectionServiceTests {
   private ExecutableLocator locateCandidate(String expectedCandidate, Path executable) {
     return candidates ->
         candidates.contains(expectedCandidate) ? Optional.of(executable) : Optional.empty();
+  }
+
+  private DependencyDetectionService service(ExecutableLocator locator, CommandRunner runner) {
+    return new DependencyDetectionService(
+        locator, runner, new NmapExecutableResolver(locator, "nmap"));
   }
 
   private DependencyStatus find(SystemDependenciesResponse response, String name) {

@@ -34,6 +34,8 @@ public class SecurityTask {
   @Column(length = 71)
   private String workflowDigest;
 
+  private Long workflowRunId;
+
   @Column(length = 80)
   private String workflowNodeId;
 
@@ -102,6 +104,9 @@ public class SecurityTask {
   private String authorizationSnapshotHash;
 
   private Long sourceTaskId;
+
+  /** Finding that explicitly initiated this regression task, if any. */
+  private Long sourceFindingId;
 
   @Column(length = 32)
   private String terminationReason;

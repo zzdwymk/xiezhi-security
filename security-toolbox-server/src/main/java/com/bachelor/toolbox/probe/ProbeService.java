@@ -1,5 +1,6 @@
 package com.bachelor.toolbox.probe;
 
+import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.fingerprint.FingerprintMatcher;
 import com.bachelor.toolbox.project.AssessmentProject;
 import com.bachelor.toolbox.project.AssessmentProjectRepository;
@@ -117,7 +118,7 @@ public class ProbeService {
             || now.isBefore(project.getAuthorizationValidFrom())
             || now.isAfter(project.getAuthorizationExpiresAt());
     if (authorizationInactive) {
-      throw new IllegalStateException("项目授权当前未生效");
+      throw new ApiException("项目授权已过期或尚未生效");
     }
   }
 

@@ -76,6 +76,71 @@ body,
   display: none !important;
 }
 
+/* Reusable Fluent disclosure body. Keep the wrapper mounted so both opening
+   and closing can animate; aria-hidden/inert remain owned by the component. */
+.fluent-collapsible {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  opacity: 1;
+  transition:
+    grid-template-rows var(--fluent-collapse-motion),
+    opacity var(--fluent-collapse-fade-motion);
+}
+
+.fluent-collapsible > .fluent-collapsible-inner {
+  min-height: 0;
+  overflow: hidden;
+  transform: translateY(0);
+  transition: transform var(--fluent-collapse-motion);
+}
+
+.fluent-collapsible:is(.is-collapsed, [aria-hidden="true"]) {
+  grid-template-rows: minmax(0, 0fr);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.fluent-collapsible:is(.is-collapsed, [aria-hidden="true"])
+  > .fluent-collapsible-inner {
+  transform: translateY(-4px);
+}
+
+/* Chromium exposes the native disclosure body as ::details-content. This
+   progressively enhances existing <details> blocks without template changes;
+   older engines keep their normal instant disclosure behavior. */
+@supports selector(details::details-content) {
+  details {
+    interpolate-size: allow-keywords;
+  }
+
+  details::details-content {
+    block-size: 0;
+    overflow: clip;
+    opacity: 0;
+    transition:
+      content-visibility var(--fluent-collapse-motion) allow-discrete,
+      block-size var(--fluent-collapse-motion),
+      opacity var(--fluent-collapse-fade-motion);
+  }
+
+  details[open]::details-content {
+    block-size: auto;
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fluent-collapsible,
+  .fluent-collapsible > .fluent-collapsible-inner,
+  details::details-content {
+    transition-duration: 0.01ms !important;
+  }
+
+  .fluent-collapsible > .fluent-collapsible-inner {
+    transform: none !important;
+  }
+}
+
 /* The navigation is grouped without changing any route.  It can scroll on
    short windows so the new group labels never hide the safety/status footer. */
 .desktop-v2-nav {
@@ -170,8 +235,8 @@ body,
   overflow: hidden;
   opacity: 1;
   transition:
-    grid-template-rows 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    opacity 160ms ease;
+    grid-template-rows var(--fluent-collapse-motion),
+    opacity var(--fluent-collapse-fade-motion);
 }
 
 .desktop-v2-nav-group-items-inner {
@@ -180,7 +245,7 @@ body,
   gap: 2px;
   overflow: hidden;
   transform: translateY(0);
-  transition: transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition: transform var(--fluent-collapse-motion);
 }
 
 .desktop-v2-nav-group.collapsed .desktop-v2-nav-group-items {

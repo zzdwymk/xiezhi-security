@@ -271,9 +271,10 @@ public class AssessmentProjectService {
       List<Finding> projectFindings) {
     long vulnerabilityCount = FindingClassification.vulnerabilityCount(projectFindings);
     long informationalCount = FindingClassification.informationalCount(projectFindings);
-    long retestCount = projectTasks.stream().filter(task -> task.getSourceTaskId() != null).count();
+    long retestCount =
+        projectTasks.stream().filter(task -> task.getSourceFindingId() != null).count();
     long auditCount =
-        auditRepository.countByResourceTypeAndResourceId("PROJECT", String.valueOf(projectId));
+        auditRepository.countByProjectId(projectId, String.valueOf(projectId));
 
     return new ProjectDtos.Summary(
         project,

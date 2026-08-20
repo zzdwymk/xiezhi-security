@@ -29,6 +29,7 @@ import {
   Warning,
 } from "../components/fluentIcons";
 import EndpointExtractor from "../components/offline/EndpointExtractor.vue";
+import FileHexViewer from "../components/offline/FileHexViewer.vue";
 import FileInspector from "../components/offline/FileInspector.vue";
 import HttpMessageAnalyzer from "../components/offline/HttpMessageAnalyzer.vue";
 import IocExtractor from "../components/offline/IocExtractor.vue";
@@ -76,6 +77,7 @@ type ToolId =
   | "ioc"
   | "endpoints"
   | "file"
+  | "hexfile"
   | "jwt"
   | "json"
   | "timestamp"
@@ -178,6 +180,13 @@ const groups: ToolGroup[] = [
         description: "魔数、熵、MD5 与 SHA 文件摘要",
         icon: markRaw(Files),
         tags: "file hash md5 sha magic entropy 文件 类型 熵",
+      },
+      {
+        id: "hexfile",
+        name: "文件十六进制查看",
+        description: "Offset、Hex 与 ASCII 分块对照",
+        icon: markRaw(Document),
+        tags: "file hex viewer offset ascii binary 文件 十六进制 偏移",
       },
     ],
   },
@@ -1091,6 +1100,7 @@ function runText() {
         <IocExtractor v-else-if="activeToolId === 'ioc'" />
         <EndpointExtractor v-else-if="activeToolId === 'endpoints'" />
         <FileInspector v-else-if="activeToolId === 'file'" />
+        <FileHexViewer v-else-if="activeToolId === 'hexfile'" />
 
         <div
           v-else-if="activeToolId === 'urlparse'"

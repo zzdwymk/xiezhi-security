@@ -39,6 +39,7 @@ public class BusinessDataResetService {
           "recon_results",
           "probe_results",
           "audit_logs",
+          "workflow_runs",
           "security_tasks",
           "assessment_project_targets",
           "assessment_projects",
@@ -108,7 +109,10 @@ public class BusinessDataResetService {
       throw new ApiException("请输入 CLEAR 确认清空数据");
     }
 
-    return operationGate.withReset(this::clearExclusively);
+    // Reject known long-running operations before requesting the exclusive lock. A queued fair
+    // write lock would otherwise block the cancellation request needed to stop that operation.
+    assertIdle();
+    return operationGate.withImmediateReset(this::clearExclusively);
   }
 
   private ResetResult clearExclusively() {

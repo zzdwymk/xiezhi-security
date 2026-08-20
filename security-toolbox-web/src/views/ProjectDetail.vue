@@ -25,8 +25,9 @@ import {
   type SecurityActionCategory,
   type Target,
   type TaskProgressEvent,
+  type WorkflowRunDetail,
+  type WorkflowSpecV2,
 } from "../api";
-import { streamTaskEvents } from "../api";
 import { formatDateTime, formatExecutionLog } from "../utils/dateTime";
 import {
   taskProgressIndeterminate,
@@ -37,7 +38,12 @@ import {
 import { useAuthStore } from "../stores/auth";
 import { useCopilotStore } from "../stores/copilot";
 import AppPagination from "../components/AppPagination.vue";
-import { MagicStick } from "../components/fluentIcons";
+import {
+  ArrowDown,
+  MagicStick,
+  Refresh,
+  UploadFilled,
+} from "../components/fluentIcons";
 import { useClientPagination } from "../composables/useClientPagination";
 import { toErrorMessage } from "../utils/errorMessage";
 
@@ -81,7 +87,17 @@ const {
 } = useClientPagination(discoveryRows);
 const probing = ref(false);
 const fingerprintCatalog = ref<FingerprintCatalogInfo>();
+const fingerprintCatalogExpanded = ref(false);
 const fingerprintCatalogLoading = ref(false);
+const fingerprintCatalogReloading = ref(false);
+const fingerprintCatalogUpdating = ref(false);
+const fingerprintCatalogFileInput = ref<HTMLInputElement>();
+const fingerprintCatalogUpdateFile = ref<{ name: string; size: number }>();
+const fingerprintCatalogUpdateState = ref<
+  "idle" | "updating" | "success" | "error" | "cancelled"
+>("idle");
+const fingerprintCatalogUpdateError = ref("");
+const fingerprintCatalogUpdateResult = ref<FingerprintCatalogInfo>();
 const pocRecommendationVisible = ref(false);
 const pocRecommendationLoading = ref(false);
 const pocRecommendationTarget = ref<DiscoveryResult>();
@@ -201,7 +217,9 @@ const workflowProgress = ref(0);
 const workflowIndeterminate = ref(false);
 const workflowStatus = ref("待执行");
 const workflowTaskIds = ref<number[]>([]);
-let workflowAbort: AbortController | undefined;
+const workflowRunId = ref<number>();
+const workflowStopping = ref(false);
+let workflowPollGeneration = 0;
 let stopTaskFeed: (() => void) | undefined;
 
 interface SecurityActionPreset {
@@ -358,6 +376,14 @@ const filteredRecentTasks = computed(() =>
     .slice(-8)
     .reverse(),
 );
+
+function auditSnapshotLabel(row: AuditLogRecord) {
+  if (row.authorizationSnapshotHash) return row.authorizationSnapshotHash;
+  if (row.action === "AI_AGENT_TURN" && !row.relatedTaskId) {
+    return "不适用（未生成任务）";
+  }
+  return "未记录";
+}
 const reportTarget = computed(
   () =>
     reportTargetId.value === "ALL"
@@ -378,6 +404,9 @@ const securityActionFindings = computed(() =>
   ),
 );
 const canManageSecurityActions = computed(() => auth.user?.role === "ADMIN");
+const canUpdateFingerprintCatalog = computed(
+  () => auth.user?.role === "ADMIN",
+);
 const pendingSecurityActionCount = computed(
   () =>
     securityActions.value.filter((item) => item.status === "PENDING_APPROVAL")
@@ -742,7 +771,7 @@ async function createSecurityAction() {
     });
     mergeSecurityAction(data);
     securityActionDialog.value = false;
-    ElMessage.success(`安全行动 #${data.id} 已提交独立审批`);
+  ElMessage.success(`安全行动 #${data.id} 已提交审批申请`);
     await loadProjectAudits();
   } catch (error: any) {
     ElMessage.error(errorMessage(error, "安全行动申请失败"));
@@ -761,7 +790,7 @@ async function decideSecurityAction(
   try {
     result = (await ElMessageBox.prompt(
       decision === "APPROVED"
-        ? "批准后仍需等待执行时间窗，并在开始时再次校验项目授权。申请人与审批人必须为不同账号。"
+      ? "批准后仍需等待执行时间窗，并在开始时再次校验项目授权。单管理员模式需要管理员再次确认，多账号模式下申请人与审批人必须不同。"
         : "拒绝后该行动不能启动，请填写拒绝依据。",
       decision === "APPROVED" ? "批准高风险安全行动" : "拒绝高风险安全行动",
       {
@@ -1609,7 +1638,7 @@ async function loadFingerprintCatalog() {
 }
 
 async function reloadFingerprintCatalog() {
-  fingerprintCatalogLoading.value = true;
+  fingerprintCatalogReloading.value = true;
   try {
     fingerprintCatalog.value = (
       await endpoints.reloadFingerprintCatalog()
@@ -1620,7 +1649,122 @@ async function reloadFingerprintCatalog() {
   } catch (error: any) {
     ElMessage.error(errorMessage(error, "指纹规则重载失败"));
   } finally {
-    fingerprintCatalogLoading.value = false;
+    fingerprintCatalogReloading.value = false;
+  }
+}
+
+const FINGERPRINT_CATALOG_MAX_BYTES = 2 * 1024 * 1024;
+
+function fingerprintCatalogSourceLabel(source?: FingerprintCatalogInfo["source"]) {
+  const labels: Record<string, string> = {
+    BUILTIN: "内置规则",
+    MANAGED: "本机更新",
+    EXTERNAL: "外部配置",
+  };
+  return source ? labels[source] || source : "当前来源";
+}
+
+function fingerprintCatalogFileSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  return `${(bytes / 1024).toFixed(bytes < 1024 * 100 ? 1 : 0)} KB`;
+}
+
+function openFingerprintCatalogFilePicker() {
+  if (!canUpdateFingerprintCatalog.value) {
+    ElMessage.warning("仅管理员可以更新指纹库");
+    return;
+  }
+  if (fingerprintCatalogUpdating.value) return;
+  fingerprintCatalogFileInput.value?.click();
+}
+
+function setFingerprintCatalogUpdateError(message: string) {
+  fingerprintCatalogUpdateState.value = "error";
+  fingerprintCatalogUpdateError.value = message;
+  fingerprintCatalogUpdateResult.value = undefined;
+  ElMessage.error(message);
+}
+
+async function updateFingerprintCatalogFromFile(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+
+  fingerprintCatalogUpdateFile.value = { name: file.name, size: file.size };
+  fingerprintCatalogUpdateState.value = "idle";
+  fingerprintCatalogUpdateError.value = "";
+  fingerprintCatalogUpdateResult.value = undefined;
+
+  const isJsonFile =
+    /\.json$/i.test(file.name) ||
+    ["application/json", "text/json"].includes(file.type.toLowerCase());
+  if (!isJsonFile) {
+    setFingerprintCatalogUpdateError("请选择扩展名为 .json 的指纹规则文件");
+    return;
+  }
+  if (!file.size) {
+    setFingerprintCatalogUpdateError("指纹规则文件不能为空");
+    return;
+  }
+  if (file.size > FINGERPRINT_CATALOG_MAX_BYTES) {
+    setFingerprintCatalogUpdateError("指纹规则文件不能超过 2 MB");
+    return;
+  }
+
+  let catalogBytes: ArrayBuffer;
+  try {
+    catalogBytes = await file.arrayBuffer();
+    const catalogJson = new TextDecoder("utf-8", { fatal: true })
+      .decode(catalogBytes)
+      .replace(/^\uFEFF/, "");
+    const document = JSON.parse(catalogJson);
+    if (!document || typeof document !== "object" || Array.isArray(document)) {
+      throw new Error("JSON 根节点必须是对象");
+    }
+  } catch {
+    setFingerprintCatalogUpdateError("文件不是有效的 JSON 指纹规则库");
+    return;
+  }
+
+  const confirmed = await ElMessageBox.confirm(
+    `将使用“${file.name}”更新服务器管理的指纹库。服务端会完整校验内容，校验失败时保留当前版本。`,
+    "更新指纹库",
+    {
+      type: "warning",
+      confirmButtonText: "上传并更新",
+      cancelButtonText: "取消",
+    },
+  ).catch(() => false);
+  if (confirmed !== "confirm") {
+    fingerprintCatalogUpdateState.value = "cancelled";
+    return;
+  }
+
+  fingerprintCatalogUpdating.value = true;
+  fingerprintCatalogUpdateState.value = "updating";
+  try {
+    const updated = (
+      await endpoints.updateFingerprintCatalog(catalogBytes)
+    ).data;
+    let refreshed = updated;
+    try {
+      refreshed = (await endpoints.fingerprintCatalog()).data;
+    } catch {
+      // The update response already contains the committed catalog metadata.
+    }
+    fingerprintCatalog.value = refreshed;
+    fingerprintCatalogUpdateResult.value = refreshed;
+    fingerprintCatalogUpdateState.value = "success";
+    ElMessage.success(
+      `指纹库已更新至 v${refreshed.version}，共 ${refreshed.ruleCount} 条规则`,
+    );
+  } catch (error: any) {
+    setFingerprintCatalogUpdateError(
+      errorMessage(error, "指纹库更新失败，当前版本未更改"),
+    );
+  } finally {
+    fingerprintCatalogUpdating.value = false;
   }
 }
 
@@ -1660,6 +1804,7 @@ async function load() {
       loadProjectApprovals(),
       loadSecurityActions(),
       loadProjectAudits(),
+      loadProjectWorkflowRun(),
     ]);
   } catch (error: any) {
     ElMessage.error(errorMessage(error, "项目加载失败"));
@@ -1935,152 +2080,232 @@ function exportRecon(format: "json" | "csv" | "html" = "json") {
   URL.revokeObjectURL(url);
 }
 
+const PROJECT_WORKFLOW_TERMINALS = new Set([
+  "COMPLETED",
+  "PARTIAL_FAILED",
+  "STOPPED",
+  "FAILED",
+]);
+
+function projectWorkflowStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    PREPARING: "准备中",
+    RUNNING: "执行中",
+    STOPPING: "停止中",
+    COMPLETED: "工作流完成",
+    PARTIAL_FAILED: "部分任务失败",
+    STOPPED: "已停止",
+    FAILED: "执行失败",
+  };
+  return labels[status] || status;
+}
+
+function projectWorkflowTaskStatus(status: string) {
+  const labels: Record<string, string> = {
+    PENDING: "排队中",
+    BLOCKED: "等待前置节点",
+    RUNNING: "执行中",
+    SUCCESS: "成功",
+    FAILED: "失败",
+    TIMEOUT: "超时",
+    REJECTED: "被拒绝",
+    CANCELLED: "已取消",
+    SKIPPED: "已跳过",
+  };
+  return labels[status] || status;
+}
+
+function workflowTaskSummary(task: ProjectTaskRecord) {
+  if (task.resultJson) {
+    try {
+      const result = JSON.parse(task.resultJson);
+      if (typeof result?.summary === "string") return result.summary;
+    } catch {
+      /* Fall back to persisted progress or error text. */
+    }
+  }
+  return task.errorMessage || task.progressMessage || "";
+}
+
+function applyProjectWorkflowRun(detail: WorkflowRunDetail) {
+  workflowRunId.value = detail.run.id;
+  workflowProgress.value = Math.max(0, Math.min(100, detail.run.progress || 0));
+  workflowStatus.value = projectWorkflowStatusLabel(detail.run.status);
+  workflowTaskIds.value = detail.tasks.map((task) => task.id);
+  workflowLog.value = [
+    `[运行 #${detail.run.id}] ${detail.run.message || workflowStatus.value}`,
+    ...detail.tasks.map((task) => {
+      const summary = workflowTaskSummary(task);
+      return `[#${task.id}] ${task.toolCode} · ${projectWorkflowTaskStatus(task.status)}${summary ? ` · ${summary}` : ""}`;
+    }),
+  ];
+  workflowIndeterminate.value =
+    !PROJECT_WORKFLOW_TERMINALS.has(detail.run.status) &&
+    detail.tasks.some(
+      (task) =>
+        ["PENDING", "BLOCKED", "RUNNING"].includes(task.status) &&
+        !task.progressDeterminate,
+    );
+  workflowRunning.value = !PROJECT_WORKFLOW_TERMINALS.has(detail.run.status);
+}
+
+async function pollProjectWorkflowRun(runId: number) {
+  const generation = ++workflowPollGeneration;
+  while (generation === workflowPollGeneration) {
+    try {
+      const { data } = await endpoints.workflowRun(runId);
+      if (generation !== workflowPollGeneration) return;
+      applyProjectWorkflowRun(data);
+      if (PROJECT_WORKFLOW_TERMINALS.has(data.run.status)) {
+        await refreshProjectData();
+        return;
+      }
+    } catch {
+      if (generation !== workflowPollGeneration) return;
+      workflowStatus.value = "运行状态读取失败，正在重试";
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 750));
+  }
+}
+
+async function loadProjectWorkflowRun() {
+  workflowPollGeneration += 1;
+  try {
+    const { data } = await endpoints.workflowRuns(id);
+    const run = (data || []).find((item) => !PROJECT_WORKFLOW_TERMINALS.has(item.status)) || data?.[0];
+    if (!run) return;
+    const detail = (await endpoints.workflowRun(run.id)).data;
+    applyProjectWorkflowRun(detail);
+    if (!PROJECT_WORKFLOW_TERMINALS.has(detail.run.status)) {
+      void pollProjectWorkflowRun(detail.run.id);
+    }
+  } catch (error) {
+    ElMessage.warning(errorMessage(error, "工作流运行状态加载失败"));
+  }
+}
+
 async function runWorkflow() {
   const target =
     reconTarget.value || discoveryTarget.value || linkedTargets.value[0]?.id;
   if (!target) return ElMessage.warning("请先选择项目内授权目标");
+
+  let spec: WorkflowSpecV2 | undefined;
+  try {
+    const result = await endpoints.getWorkflowSpec(id);
+    spec = result.data;
+  } catch (error: any) {
+    return ElMessage.error(errorMessage(error, "读取工作流配置失败"));
+  }
+
+  const steps = spec?.steps || [];
+  if (!steps.length) {
+    return ElMessage.warning(
+      "当前项目尚未保存红队工作流，请先前往“红队工作流”页面编排并保存",
+    );
+  }
+
   try {
     await ElMessageBox.confirm(
-      "将依次执行信息收集、指纹/WAF 探测、端口服务识别和安全漏洞检测。仅限当前项目授权目标。",
+      `将按已保存工作流执行 ${steps.length} 个步骤。高风险步骤会逐次确认，仅限当前项目授权目标。`,
       "启动项目联动工作流",
       { type: "warning" },
     );
   } catch {
     return;
   }
-  reconTarget.value = target;
-  discoveryTarget.value = target;
-  workflowRunning.value = true;
-  workflowProgress.value = 0;
-  workflowIndeterminate.value = true;
-  workflowStatus.value = "信息收集中";
-  workflowLog.value = ["[工作流] 开始：信息收集"];
-  workflowTaskIds.value = [];
+
   try {
-    const reconComplete = await collectRecon({
-      notify: false,
-      rethrow: true,
-      confirmActive: false,
-    });
-    workflowProgress.value = 25;
-    workflowIndeterminate.value = false;
-    workflowLog.value.push(
-      reconComplete
-        ? "[工作流] 信息收集完成"
-        : "[工作流] 信息收集部分完成：已记录不可用的来源",
-    );
-    discoveryTarget.value = target;
-    workflowStatus.value = "指纹识别中";
-    workflowIndeterminate.value = true;
-    workflowLog.value.push("[工作流] 指纹识别：指纹 + WAF");
-    const probeComplete = await probe({ notify: false, rethrow: true });
-    workflowProgress.value = 50;
-    workflowIndeterminate.value = false;
-    workflowLog.value.push(
-      probeComplete
-        ? "[工作流] 指纹识别完成"
-        : "[工作流] 指纹识别不可用：已记录原因，继续执行",
-    );
-    workflowStatus.value = "创建端口/漏洞检测任务";
-    const created: any[] = [];
-    for (const [toolCode, parameters] of [
-      [
-        "nmap_service_scan",
-        {
-          mode: "service",
-          ports:
-            linkedTargets.value.find((t) => t.id === target)?.allowedPorts ||
-            "80,443",
-        },
-      ],
-      ["nuclei_scan", {}],
-    ] as const) {
-      const result = await endpoints.createTask({
-        projectId: id,
-        targetId: target,
-        toolCode,
-        parameters,
-      });
-      created.push(result.data);
-      workflowTaskIds.value.push(Number(result.data.id));
-      workflowLog.value.push(
-        `[工作流] 已创建任务 #${result.data.id}：${toolCode}`,
-      );
+    if (!spec.workflowId || !spec.revision || !spec.specDigest) {
+      throw new Error("工作流快照缺少版本标识，请重新保存工作流");
     }
-    workflowStatus.value = "检测任务执行中";
-    workflowAbort?.abort();
-    workflowAbort = new AbortController();
-    const live = new Map<number, TaskProgressEvent>();
-    const updateWorkflowProgress = (
-      taskId: number,
-      event: TaskProgressEvent,
-    ) => {
-      live.set(taskId, { ...live.get(taskId), ...event, taskId });
-      if (event.logLine) workflowLog.value.push(`#${taskId} ${event.logLine}`);
-      if (event.status)
-        workflowStatus.value = `任务 #${taskId}: ${event.status}`;
-      const snapshots = workflowTaskIds.value
-        .map((task) => live.get(task))
-        .filter(Boolean) as TaskProgressEvent[];
-      const average =
-        snapshots.reduce(
-          (sum, item) =>
-            sum +
-            (item.status === "SUCCESS" ? 100 : Number(item.progress || 0)),
-          0,
-        ) / workflowTaskIds.value.length;
-      workflowProgress.value = 50 + average * 0.5;
-      workflowIndeterminate.value =
-        snapshots.length < workflowTaskIds.value.length ||
-        snapshots.some(
-          (item) =>
-            ["PENDING", "QUEUED", "RUNNING"].includes(item.status || "") &&
-            !item.progressDeterminate,
-        );
+    const identity = {
+      projectId: id,
+      targetId: target,
+      workflowId: spec.workflowId,
+      workflowRevision: spec.revision,
+      workflowDigest: spec.specDigest,
     };
-    const monitor = async (taskId: number) => {
-      const signal = workflowAbort!.signal;
-      while (!signal.aborted) {
-        try {
-          await streamTaskEvents(
-            taskId,
-            (event) => updateWorkflowProgress(taskId, event),
-            signal,
-          );
-        } catch {
-          /* Poll below before reconnecting. */
-        }
-        if (signal.aborted) return;
-        const snapshot = (await endpoints.task(taskId)).data;
-        updateWorkflowProgress(taskId, { ...snapshot, taskId });
-        if (
-          ["SUCCESS", "FAILED", "TIMEOUT", "REJECTED", "CANCELLED"].includes(
-            snapshot.status,
-          )
-        )
-          return;
-        await new Promise((resolve) => window.setTimeout(resolve, 750));
+    const { data: preflight } = await endpoints.preflightWorkflowRun(identity);
+    const skippedNodeIds = preflight.issues.map((issue) => issue.nodeId);
+    if (preflight.issues.length) {
+      const issueText = preflight.issues
+        .map((issue) => `${issue.label}：${issue.reason}`)
+        .join("；");
+      const skipConfirmed = await ElMessageBox.confirm(
+        `${issueText}。是否明确跳过这些节点并继续？依赖它们的后继步骤也会跳过。`,
+        "工作流预检发现不可用节点",
+        {
+          type: "warning",
+          confirmButtonText: "跳过并继续",
+          cancelButtonText: "取消执行",
+        },
+      ).catch(() => false);
+      if (skipConfirmed !== "confirm") return;
+    }
+
+    const approvedNodeIds: string[] = [];
+    for (const step of steps) {
+      const nodeId = step.nodeId || step.tool;
+      if (
+        step.requiresApproval &&
+        step.tool !== "retrieve_project_context" &&
+        !skippedNodeIds.includes(nodeId)
+      ) {
+        const approved = await ElMessageBox.confirm(
+          `步骤“${step.label || step.tool}”风险级别为 ${step.risk || "CAUTION"}，确认对当前授权目标执行？`,
+          "确认高风险步骤",
+          { type: "warning", confirmButtonText: "确认执行" },
+        ).catch(() => false);
+        if (approved !== "confirm") return;
+        approvedNodeIds.push(nodeId);
       }
-    };
-    await Promise.all(workflowTaskIds.value.map(monitor));
-    const failed =
-      !reconComplete ||
-      !probeComplete ||
-      [...live.values()].some((item) => item.status !== "SUCCESS");
-    if (!failed) workflowProgress.value = 100;
-    workflowIndeterminate.value = false;
-    workflowStatus.value = failed ? "部分任务失败" : "工作流完成";
-    workflowLog.value.push(
-      failed ? "[工作流] 部分任务执行失败" : "[工作流] 执行完成",
-    );
-    await load();
+    }
+
+    reconTarget.value = target;
+    discoveryTarget.value = target;
+    workflowRunId.value = undefined;
+    workflowRunning.value = true;
+    workflowProgress.value = 0;
+    workflowIndeterminate.value = true;
+    workflowStatus.value = "准备执行";
+    workflowLog.value = [`[工作流] 已预检版本 ${spec.revision}，正在创建后端运行`];
+    workflowTaskIds.value = [];
+    const { data: detail } = await endpoints.startWorkflowRun({
+      ...identity,
+      approvedNodeIds,
+      skippedNodeIds,
+    });
+    applyProjectWorkflowRun(detail);
+    await pollProjectWorkflowRun(detail.run.id);
   } catch (error: any) {
     workflowStatus.value = "执行失败";
-    workflowLog.value.push(`[工作流] 错误：${errorMessage(error, "执行失败")}`);
+    workflowLog.value.push(
+      `[工作流] 错误：${errorMessage(error, "执行失败")}`,
+    );
     ElMessage.error(errorMessage(error, "联动工作流失败"));
   } finally {
-    workflowRunning.value = false;
-    workflowIndeterminate.value = false;
+    if (!workflowRunId.value) {
+      workflowRunning.value = false;
+      workflowIndeterminate.value = false;
+    }
+  }
+}
+
+async function stopProjectWorkflow() {
+  const runId = workflowRunId.value;
+  if (!runId || !workflowRunning.value || workflowStopping.value) return;
+  workflowStopping.value = true;
+  workflowStatus.value = "正在停止";
+  try {
+    const { data } = await endpoints.stopWorkflowRun(runId);
+    applyProjectWorkflowRun(data);
+    if (PROJECT_WORKFLOW_TERMINALS.has(data.run.status)) {
+      workflowPollGeneration += 1;
+    }
+  } catch (error) {
+    ElMessage.error(errorMessage(error, "停止工作流失败"));
+  } finally {
+    workflowStopping.value = false;
   }
 }
 
@@ -2112,7 +2337,7 @@ onMounted(() => {
   }, 15_000);
 });
 onUnmounted(() => {
-  workflowAbort?.abort();
+  workflowPollGeneration += 1;
   stopTaskFeed?.();
   clearTimeout(summaryRefreshTimer);
   if (overviewPollTimer) window.clearInterval(overviewPollTimer);
@@ -2294,18 +2519,169 @@ onUnmounted(() => {
             >开始指纹/WAF识别</el-button
           >
           <el-button @click="loadDiscovery">刷新</el-button>
-          <el-tag v-if="fingerprintCatalog" size="small" effect="plain"
-            >规则 {{ fingerprintCatalog.ruleCount }} 条 · v{{
-              fingerprintCatalog.version
-            }}</el-tag
-          >
-          <el-button
-            size="small"
-            :loading="fingerprintCatalogLoading"
-            @click="reloadFingerprintCatalog"
-            >重载指纹规则</el-button
-          >
         </div>
+        <section
+          class="fingerprint-catalog-panel"
+          :class="{ collapsed: !fingerprintCatalogExpanded }"
+        >
+          <header class="fingerprint-catalog-heading">
+            <button
+              type="button"
+              class="fingerprint-catalog-toggle"
+              :aria-expanded="fingerprintCatalogExpanded"
+              aria-controls="project-fingerprint-catalog-body"
+              :aria-label="
+                fingerprintCatalogExpanded
+                  ? '收起指纹规则库'
+                  : '展开指纹规则库'
+              "
+              @click="fingerprintCatalogExpanded = !fingerprintCatalogExpanded"
+            >
+              <el-icon class="fingerprint-catalog-chevron">
+                <ArrowDown />
+              </el-icon>
+              <span class="fingerprint-catalog-heading-copy">
+                <strong>指纹规则库</strong>
+                <span v-if="fingerprintCatalog">
+                  v{{ fingerprintCatalog.version }} ·
+                  {{ fingerprintCatalog.ruleCount }} 条规则
+                </span>
+                <span v-else-if="fingerprintCatalogLoading">正在读取规则信息</span>
+                <span v-else>暂时无法读取指纹规则信息</span>
+              </span>
+            </button>
+            <el-tag
+              v-if="fingerprintCatalog"
+              class="fingerprint-catalog-source-tag"
+              size="small"
+              effect="plain"
+              >{{
+                fingerprintCatalogSourceLabel(fingerprintCatalog.source)
+              }}</el-tag
+            >
+          </header>
+          <div
+            id="project-fingerprint-catalog-body"
+            class="fluent-collapsible fingerprint-catalog-collapse"
+            :class="{ 'is-collapsed': !fingerprintCatalogExpanded }"
+            :aria-hidden="!fingerprintCatalogExpanded"
+            :inert="!fingerprintCatalogExpanded"
+          >
+            <div class="fluent-collapsible-inner">
+              <div class="fingerprint-catalog-details">
+            <div class="fingerprint-catalog-content">
+              <div v-if="fingerprintCatalog" class="fingerprint-catalog-meta">
+                <div>
+                  <small>当前版本</small>
+                  <strong>v{{ fingerprintCatalog.version }}</strong>
+                </div>
+                <div>
+                  <small>规则数量</small>
+                  <strong>{{ fingerprintCatalog.ruleCount }} 条</strong>
+                </div>
+                <div class="fingerprint-catalog-sha">
+                  <small>SHA-256</small>
+                  <code>{{ fingerprintCatalog.sha256 }}</code>
+                </div>
+              </div>
+              <el-skeleton
+                v-else-if="fingerprintCatalogLoading"
+                :rows="1"
+                animated
+              />
+              <span v-else class="muted-text">暂时无法读取指纹规则信息</span>
+            </div>
+            <div
+              v-if="canUpdateFingerprintCatalog"
+              class="fingerprint-catalog-actions"
+            >
+              <input
+                ref="fingerprintCatalogFileInput"
+                class="fingerprint-catalog-file-input"
+                type="file"
+                accept=".json,application/json"
+                @change="updateFingerprintCatalogFromFile"
+              />
+              <el-button
+                size="small"
+                :loading="fingerprintCatalogReloading"
+                :disabled="
+                  fingerprintCatalogLoading || fingerprintCatalogUpdating
+                "
+                @click="reloadFingerprintCatalog"
+              >
+                <el-icon><Refresh /></el-icon>
+                重新读取
+              </el-button>
+              <el-button
+                type="primary"
+                plain
+                size="small"
+                :loading="fingerprintCatalogUpdating"
+                :disabled="
+                  fingerprintCatalogLoading || fingerprintCatalogReloading
+                "
+                @click="openFingerprintCatalogFilePicker"
+              >
+                <el-icon><UploadFilled /></el-icon>
+                {{ fingerprintCatalogUpdating ? "正在更新" : "更新指纹库" }}
+              </el-button>
+            </div>
+            <div
+              v-if="fingerprintCatalogUpdateFile"
+              class="fingerprint-catalog-update"
+              :class="`is-${fingerprintCatalogUpdateState}`"
+            >
+              <div class="fingerprint-catalog-update-file">
+                <small>本地 JSON 文件</small>
+                <strong :title="fingerprintCatalogUpdateFile.name">{{
+                  fingerprintCatalogUpdateFile.name
+                }}</strong>
+                <span>{{
+                  fingerprintCatalogFileSize(fingerprintCatalogUpdateFile.size)
+                }}</span>
+              </div>
+              <div
+                class="fingerprint-catalog-update-result"
+                role="status"
+                aria-live="polite"
+              >
+                <template v-if="fingerprintCatalogUpdateState === 'updating'">
+                  <el-tag size="small" type="info">更新中</el-tag>
+                  <span>正在上传并由服务器校验，校验完成前继续使用当前版本。</span>
+                </template>
+                <template
+                  v-else-if="
+                    fingerprintCatalogUpdateState === 'success' &&
+                    fingerprintCatalogUpdateResult
+                  "
+                >
+                  <el-tag size="small" type="success">更新成功</el-tag>
+                  <span
+                    >v{{ fingerprintCatalogUpdateResult.version }} ·
+                    {{ fingerprintCatalogUpdateResult.ruleCount }} 条规则</span
+                  >
+                  <code
+                    >SHA-256
+                    {{ fingerprintCatalogUpdateResult.sha256 }}</code
+                  >
+                </template>
+                <template v-else-if="fingerprintCatalogUpdateState === 'error'">
+                  <el-tag size="small" type="danger">更新失败</el-tag>
+                  <span>{{ fingerprintCatalogUpdateError }}</span>
+                </template>
+                <template
+                  v-else-if="fingerprintCatalogUpdateState === 'cancelled'"
+                >
+                  <el-tag size="small" type="info">已取消</el-tag>
+                  <span>当前指纹规则未更改。</span>
+                </template>
+              </div>
+            </div>
+              </div>
+            </div>
+          </div>
+        </section>
         <el-empty v-if="!discoveryRows.length" description="暂无探测结果" />
         <el-table v-else :data="pagedDiscoveryRows" stripe>
           <el-table-column label="目标" min-width="170"
@@ -2580,8 +2956,16 @@ onUnmounted(() => {
             <el-button
               type="success"
               :loading="workflowRunning"
+              :disabled="workflowRunning"
               @click="runWorkflow"
               >一键联动工作流</el-button
+            >
+            <el-button
+              v-if="workflowRunning"
+              type="danger"
+              :loading="workflowStopping"
+              @click="stopProjectWorkflow"
+              >停止工作流</el-button
             >
             <el-button type="primary" plain @click="openProjectCopilot('recon')"
               ><el-icon><MagicStick /></el-icon>AI 解读结果</el-button
@@ -2630,8 +3014,8 @@ onUnmounted(() => {
         <div v-if="workflowRunning || workflowLog.length" class="workflow-box">
           <div class="workflow-head">
             <strong
-              >项目任务流：信息收集 → 指纹识别 → 端口服务 → 漏洞检测</strong
-            ><span>{{ workflowStatus }}</span>
+              >项目任务流：按已保存红队工作流执行</strong
+            ><span>{{ workflowRunId ? `运行 #${workflowRunId} · ` : "" }}{{ workflowStatus }}</span>
           </div>
           <el-progress
             :percentage="Math.round(workflowProgress)"
@@ -2974,7 +3358,7 @@ onUnmounted(() => {
         </div>
         <el-empty
           v-if="!securityActionLoading && !securityActions.length"
-          description="暂无高风险安全行动；申请后必须由不同账号独立审批才能开始"
+        description="暂无高风险安全行动；单管理员模式需要二次确认，多账号模式需要不同账号审批后才能开始"
         />
         <el-table
           v-else
@@ -3241,12 +3625,19 @@ onUnmounted(() => {
             prop="operator"
             label="操作人"
             width="120"
-          /><el-table-column
-            prop="authorizationSnapshotHash"
-            label="授权快照哈希"
-            min-width="180"
-            show-overflow-tooltip
-          /><el-table-column
+          /><el-table-column label="授权快照哈希" min-width="180">
+            <template #default="scope">
+              <span
+                :class="{
+                  'muted-text': !scope.row.authorizationSnapshotHash,
+                }"
+                :title="auditSnapshotLabel(scope.row)"
+              >
+                {{ auditSnapshotLabel(scope.row) }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column
             prop="detail"
             label="详情"
             min-width="220"
@@ -3470,16 +3861,8 @@ onUnmounted(() => {
             show-icon
             :title="reportSummary.controlledPostExploitation.safetyBoundary"
           />
-          <div
-            style="
-              display: flex;
-              align-items: center;
-              justify-content: space-between;
-              gap: 10px;
-              flex-wrap: wrap;
-            "
-          >
-            <h4 class="project-subtitle" style="margin: 0">最近任务</h4>
+          <div class="report-recent-head">
+            <h4 class="project-subtitle">最近任务</h4>
             <div class="toolbar-inline">
               <el-select
                 v-model="recentToolFilter"
@@ -3815,7 +4198,7 @@ onUnmounted(() => {
       destroy-on-close
     >
       <el-alert
-        title="这是项目级受控行动申请，不是命令执行器。只能选择服务端已登记的安全行动类型；申请后必须由不同账号独立审批。"
+      title="这是项目级受控行动申请，不是命令执行器。只能选择服务端已登记的安全行动类型；单管理员模式由管理员二次确认，多账号模式必须由不同账号审批。"
         type="warning"
         :closable="false"
         show-icon
@@ -3935,7 +4318,7 @@ onUnmounted(() => {
           :loading="securityActionSaving"
           :disabled="!projectAuthorizationGuard.active"
           @click="createSecurityAction"
-          >提交独立审批</el-button
+          >提交审批申请</el-button
         ></template
       >
     </el-dialog>
@@ -4370,6 +4753,19 @@ onUnmounted(() => {
 .report-safety-alert {
   margin: 12px 0 18px;
 }
+.report-recent-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.report-recent-head .project-subtitle {
+  margin: 0;
+}
+.report-safety-alert + .report-recent-head {
+  margin-top: 16px;
+}
 .diff-form {
   display: flex;
   align-items: flex-end;
@@ -4435,6 +4831,216 @@ onUnmounted(() => {
 @media (max-width: 760px) {
   .subdomain-dictionary {
     width: 100%;
+  }
+}
+.fingerprint-catalog-panel {
+  display: block;
+  margin: 0 0 14px;
+  overflow: hidden;
+  border: 1px solid var(--app-border, var(--el-border-color));
+  border-radius: 10px;
+  background: var(--app-surface-soft, var(--el-fill-color-light));
+}
+.fingerprint-catalog-heading {
+  display: flex;
+  min-height: 52px;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 14px;
+}
+.fingerprint-catalog-toggle {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 9px;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.fingerprint-catalog-toggle:focus-visible {
+  border-radius: var(--fluent-radius-control, 4px);
+  box-shadow: 0 0 0 2px var(--app-accent-soft);
+}
+.fingerprint-catalog-chevron {
+  flex: 0 0 auto;
+  color: var(--app-muted, var(--el-text-color-secondary));
+  transition: transform var(--fluent-collapse-motion);
+}
+.fingerprint-catalog-panel.collapsed .fingerprint-catalog-chevron {
+  transform: rotate(-90deg);
+}
+.fingerprint-catalog-heading-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+.fingerprint-catalog-heading-copy strong {
+  overflow: hidden;
+  color: var(--app-text, var(--el-text-color-primary));
+  font-size: 13px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fingerprint-catalog-heading-copy > span {
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--app-muted, var(--el-text-color-secondary));
+  font-size: 11px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fingerprint-catalog-source-tag {
+  display: inline-flex !important;
+  flex: 0 0 auto;
+  align-items: center;
+  align-self: center;
+  justify-content: center;
+  margin: 0 !important;
+  line-height: 1 !important;
+}
+.fingerprint-catalog-source-tag :deep(.el-tag__content) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  line-height: 1;
+}
+.fingerprint-catalog-details {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px 20px;
+  padding: 12px 16px 14px;
+  border-top: 1px solid var(--app-border, var(--el-border-color));
+}
+.fingerprint-catalog-content {
+  min-width: 0;
+}
+.fingerprint-catalog-meta {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(110px, 0.7fr);
+  gap: 8px 18px;
+}
+.fingerprint-catalog-meta > div {
+  min-width: 0;
+}
+.fingerprint-catalog-meta small,
+.fingerprint-catalog-meta strong,
+.fingerprint-catalog-meta code {
+  display: block;
+}
+.fingerprint-catalog-meta small,
+.fingerprint-catalog-update small {
+  margin-bottom: 3px;
+  color: var(--app-muted, var(--el-text-color-secondary));
+  font-size: 10px;
+}
+.fingerprint-catalog-meta strong {
+  overflow: hidden;
+  color: var(--app-text, var(--el-text-color-primary));
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fingerprint-catalog-sha {
+  grid-column: 1 / -1;
+}
+.fingerprint-catalog-meta code,
+.fingerprint-catalog-update-result code {
+  color: var(--app-muted, var(--el-text-color-secondary));
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.fingerprint-catalog-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.fingerprint-catalog-actions :deep(.el-button) {
+  margin: 0 !important;
+}
+.fingerprint-catalog-file-input {
+  display: none;
+}
+.fingerprint-catalog-update {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(180px, 0.55fr) minmax(260px, 1.45fr);
+  gap: 12px 20px;
+  padding-top: 12px;
+  border-top: 1px solid
+    color-mix(
+      in srgb,
+      var(--app-border, var(--el-border-color)) 82%,
+      transparent
+    );
+}
+.fingerprint-catalog-update-file,
+.fingerprint-catalog-update-result {
+  min-width: 0;
+}
+.fingerprint-catalog-update-file small,
+.fingerprint-catalog-update-file strong,
+.fingerprint-catalog-update-file span {
+  display: block;
+}
+.fingerprint-catalog-update-file strong {
+  overflow: hidden;
+  color: var(--app-text, var(--el-text-color-primary));
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fingerprint-catalog-update-file span {
+  margin-top: 3px;
+  color: var(--app-muted, var(--el-text-color-secondary));
+  font-size: 10px;
+}
+.fingerprint-catalog-update-result {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  color: var(--app-text, var(--el-text-color-primary));
+  font-size: 11px;
+  line-height: 1.5;
+}
+.fingerprint-catalog-update-result code {
+  flex-basis: 100%;
+}
+.fingerprint-catalog-update.is-error .fingerprint-catalog-update-result span {
+  color: var(--el-color-danger);
+}
+@media (max-width: 900px) {
+  .fingerprint-catalog-details {
+    grid-template-columns: 1fr;
+  }
+  .fingerprint-catalog-actions {
+    justify-content: flex-start;
+  }
+}
+@media (max-width: 600px) {
+  .fingerprint-catalog-meta,
+  .fingerprint-catalog-update {
+    grid-template-columns: 1fr;
+  }
+  .fingerprint-catalog-sha {
+    grid-column: auto;
+  }
+  .fingerprint-catalog-actions :deep(.el-button) {
+    flex: 1 1 150px;
   }
 }
 .fingerprint-cell {
@@ -4647,6 +5253,9 @@ onUnmounted(() => {
   margin: 24px 0 12px;
   font-size: 14px;
 }
+.project-tabs .report-recent-head .project-subtitle {
+  margin: 0;
+}
 .project-tabs .recon-alert {
   display: inline-flex;
   width: auto;
@@ -4802,7 +5411,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   min-height: 34px;
-  padding: 4px 10px 4px 6px;
+  padding: 4px 10px 4px 4px;
   border: 1px solid var(--app-border, var(--el-border-color));
   border-radius: 999px;
   background: var(--app-surface, #fff);

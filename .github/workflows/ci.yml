@@ -294,3 +294,7 @@ jobs:
       - name: Build Vue renderer
         working-directory: security-toolbox-web
         run: npm run build
+
+      - name: Test browser and Electron asset paths
+        working-directory: security-toolbox-web
+        run: node scripts/test-build-paths.cjs --web-dist=dist

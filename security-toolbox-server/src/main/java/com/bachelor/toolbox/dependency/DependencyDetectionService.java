@@ -32,11 +32,16 @@ public class DependencyDetectionService {
 
   private final ExecutableLocator locator;
   private final CommandRunner commandRunner;
+  private final NmapExecutableResolver nmapExecutableResolver;
   private volatile CachedDetection cachedDetection;
 
-  public DependencyDetectionService(ExecutableLocator locator, CommandRunner commandRunner) {
+  public DependencyDetectionService(
+      ExecutableLocator locator,
+      CommandRunner commandRunner,
+      NmapExecutableResolver nmapExecutableResolver) {
     this.locator = locator;
     this.commandRunner = commandRunner;
+    this.nmapExecutableResolver = nmapExecutableResolver;
   }
 
   public SystemDependenciesResponse detect() {
@@ -208,7 +213,7 @@ public class DependencyDetectionService {
             "检测到的 Java 无法识别。"),
         descriptor(
             "Nmap",
-            paths("nmap", "C:/Program Files/Nmap/nmap.exe", "C:/Program Files (x86)/Nmap/nmap.exe"),
+            nmapExecutableResolver.candidates(),
             List.of("--version"),
             false,
             "SCANNER",

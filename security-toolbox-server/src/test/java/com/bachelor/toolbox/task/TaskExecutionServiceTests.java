@@ -10,6 +10,8 @@ import static org.mockito.Mockito.when;
 
 import com.bachelor.toolbox.audit.AuditService;
 import com.bachelor.toolbox.finding.FindingRepository;
+import com.bachelor.toolbox.project.AssessmentProjectService;
+import com.bachelor.toolbox.project.ProjectAuthorizationService;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.TargetService;
 import com.bachelor.toolbox.tool.SecurityTool;
@@ -17,6 +19,7 @@ import com.bachelor.toolbox.tool.SecurityToolRegistry;
 import com.bachelor.toolbox.tool.ToolExecutionObserver;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.Optional;
+import java.util.concurrent.Callable;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
@@ -40,11 +43,15 @@ class TaskExecutionServiceTests {
     SecurityTaskRepository taskRepository = mock(SecurityTaskRepository.class);
     FindingRepository findingRepository = mock(FindingRepository.class);
     TargetService targetService = mock(TargetService.class);
+    AssessmentProjectService projectService = mock(AssessmentProjectService.class);
     SecurityToolRegistry registry = mock(SecurityToolRegistry.class);
     AuditService auditService = mock(AuditService.class);
     TaskSnapshotService snapshotService = mock(TaskSnapshotService.class);
     TaskProgressEventService progressEvents = mock(TaskProgressEventService.class);
+    ProjectAuthorizationService authorization = mock(ProjectAuthorizationService.class);
     TaskExecutionControlService executionControl = new TaskExecutionControlService(1, 1);
+    when(authorization.callWithSystemAccess(any(Callable.class)))
+        .thenAnswer(invocation -> ((Callable<?>) invocation.getArgument(0)).call());
 
     SecurityTask task = task();
     AuthorizedTarget target = new AuthorizedTarget();
@@ -64,12 +71,14 @@ class TaskExecutionServiceTests {
             taskRepository,
             findingRepository,
             targetService,
+            projectService,
             registry,
             auditService,
             new ObjectMapper(),
             snapshotService,
             executionControl,
-            progressEvents);
+            progressEvents,
+            authorization);
 
     service.executeAsync(42L);
 
@@ -92,6 +101,8 @@ class TaskExecutionServiceTests {
             eq("FAILED"),
             eq(42L),
             eq("authorization-hash"));
+    verify(projectService).validateProjectTarget(1L, 7L);
+    verify(authorization).callWithSystemAccess(any(Callable.class));
     assertThat(auditDetail.getValue())
         .isEqualTo(expectedErrorMessage)
         .doesNotContain(internalMessage)
@@ -102,6 +113,7 @@ class TaskExecutionServiceTests {
     SecurityTask task = new SecurityTask();
     task.setId(42L);
     task.setTargetId(7L);
+    task.setProjectId(1L);
     task.setToolCode("TEST_TOOL");
     task.setStatus("PENDING");
     task.setRequestJson("{}");

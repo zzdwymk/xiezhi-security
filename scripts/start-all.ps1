@@ -1,4 +1,8 @@
-param([switch]$NoBrowser)
+param(
+    [switch]$NoBrowser,
+    [ValidateRange(1, 3600)]
+    [int]$BackendStartupTimeoutSeconds = 90
+)
 
 $ErrorActionPreference = 'Stop'
 
@@ -36,12 +40,27 @@ $jar = Join-Path $backendDir 'target\security-toolbox-server-0.1.0.jar'
 New-Item -ItemType Directory -Force -Path $runDir, $logDir | Out-Null
 
 function Test-PortListening([int]$Port) {
-    return [bool](Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
+    $listeners = [Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners()
+    return [bool]($listeners | Where-Object { $_.Port -eq $Port } | Select-Object -First 1)
 }
 
 function Wait-Port([int]$Port, [int]$TimeoutSeconds) {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
+        if (Test-PortListening $Port) { return $true }
+        Start-Sleep -Milliseconds 500
+    }
+    return $false
+}
+
+function Wait-ProcessPort(
+        [System.Diagnostics.Process]$Process,
+        [int]$Port,
+        [int]$TimeoutSeconds) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $Process.Refresh()
+        if ($Process.HasExited) { return $false }
         if (Test-PortListening $Port) { return $true }
         Start-Sleep -Milliseconds 500
     }
@@ -253,6 +272,8 @@ $previousJwtSecret = [Environment]::GetEnvironmentVariable('JWT_SECRET', 'Proces
 $previousMitmPassword = [Environment]::GetEnvironmentVariable('TRAFFIC_MITM_CA_PASSWORD', 'Process')
 $previousInsecureGate = [Environment]::GetEnvironmentVariable('ALLOW_INSECURE_DEVELOPMENT_CREDENTIALS', 'Process')
 $previousLegacyMigration = [Environment]::GetEnvironmentVariable('MIGRATE_LEGACY_DEVELOPMENT_CREDENTIALS', 'Process')
+$backendOutLog = Join-Path $logDir 'backend.out.log'
+$backendErrLog = Join-Path $logDir 'backend.err.log'
 try {
     [Environment]::SetEnvironmentVariable('ADMIN_PASSWORD', $developmentSecrets.adminPassword, 'Process')
     [Environment]::SetEnvironmentVariable('JWT_SECRET', $developmentSecrets.jwtSecret, 'Process')
@@ -268,8 +289,8 @@ try {
     $backend = Start-Process -FilePath $java `
         -ArgumentList $backendJavaArguments `
         -WorkingDirectory $backendDir `
-        -RedirectStandardOutput (Join-Path $logDir 'backend.out.log') `
-        -RedirectStandardError (Join-Path $logDir 'backend.err.log') `
+        -RedirectStandardOutput $backendOutLog `
+        -RedirectStandardError $backendErrLog `
         -WindowStyle Hidden `
         -PassThru
 } finally {
@@ -280,16 +301,24 @@ try {
     [Environment]::SetEnvironmentVariable('MIGRATE_LEGACY_DEVELOPMENT_CREDENTIALS', $previousLegacyMigration, 'Process')
 }
 
-$backendReady = Wait-Port 8080 35
+$backendReady = Wait-ProcessPort $backend 8080 $BackendStartupTimeoutSeconds
 if (-not $backendReady) {
+    $backend.Refresh()
+    if ($backend.HasExited) {
+        throw "Backend process exited before port 8080 became ready (exit code $($backend.ExitCode)). Logs: $backendOutLog and $backendErrLog."
+    }
     Stop-Process -Id $backend.Id -Force -ErrorAction SilentlyContinue
-    throw "Backend startup timed out. Check $logDir."
+    throw "Backend startup timed out after $BackendStartupTimeoutSeconds seconds. Logs: $backendOutLog and $backendErrLog."
 }
 
 if ($developmentSecrets.legacyMigrationPending) {
-    if (-not (Wait-BackendAdminLogin $backend $developmentSecrets.adminPassword 35)) {
+    if (-not (Wait-BackendAdminLogin $backend $developmentSecrets.adminPassword $BackendStartupTimeoutSeconds)) {
+        $backend.Refresh()
+        if ($backend.HasExited) {
+            throw "Backend process exited during legacy credential migration (exit code $($backend.ExitCode)). Existing data was retained. Logs: $backendOutLog and $backendErrLog."
+        }
         Stop-Process -Id $backend.Id -Force -ErrorAction SilentlyContinue
-        throw "Legacy credential migration did not authenticate with the generated admin password. Existing data was retained; check $logDir."
+        throw "Legacy credential migration did not authenticate within $BackendStartupTimeoutSeconds seconds. Existing data was retained. Logs: $backendOutLog and $backendErrLog."
     }
     try {
         $developmentSecrets['legacyMigrationPending'] = $false

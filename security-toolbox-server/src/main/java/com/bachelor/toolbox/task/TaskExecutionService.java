@@ -4,6 +4,8 @@ import com.bachelor.toolbox.audit.AuditService;
 import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.finding.Finding;
 import com.bachelor.toolbox.finding.FindingRepository;
+import com.bachelor.toolbox.project.AssessmentProjectService;
+import com.bachelor.toolbox.project.ProjectAuthorizationService;
 import com.bachelor.toolbox.settings.BusinessDataOperationGate;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.TargetService;
@@ -31,12 +33,14 @@ public class TaskExecutionService {
   private final SecurityTaskRepository taskRepository;
   private final FindingRepository findingRepository;
   private final TargetService targetService;
+  private final AssessmentProjectService projectService;
   private final SecurityToolRegistry registry;
   private final AuditService auditService;
   private final ObjectMapper objectMapper;
   private final TaskSnapshotService snapshotService;
   private final TaskExecutionControlService executionControl;
   private final TaskProgressEventService progressEvents;
+  private final ProjectAuthorizationService authorization;
   private final BusinessDataOperationGate operationGate;
   private final ApplicationEventPublisher eventPublisher;
 
@@ -45,23 +49,27 @@ public class TaskExecutionService {
       SecurityTaskRepository taskRepository,
       FindingRepository findingRepository,
       TargetService targetService,
+      AssessmentProjectService projectService,
       SecurityToolRegistry registry,
       AuditService auditService,
       ObjectMapper objectMapper,
       TaskSnapshotService snapshotService,
       TaskExecutionControlService executionControl,
       TaskProgressEventService progressEvents,
+      ProjectAuthorizationService authorization,
       BusinessDataOperationGate operationGate,
       ApplicationEventPublisher eventPublisher) {
     this.taskRepository = taskRepository;
     this.findingRepository = findingRepository;
     this.targetService = targetService;
+    this.projectService = projectService;
     this.registry = registry;
     this.auditService = auditService;
     this.objectMapper = objectMapper;
     this.snapshotService = snapshotService;
     this.executionControl = executionControl;
     this.progressEvents = progressEvents;
+    this.authorization = authorization;
     this.operationGate = operationGate;
     this.eventPublisher = eventPublisher;
   }
@@ -70,6 +78,7 @@ public class TaskExecutionService {
       SecurityTaskRepository taskRepository,
       FindingRepository findingRepository,
       TargetService targetService,
+      AssessmentProjectService projectService,
       SecurityToolRegistry registry,
       AuditService auditService,
       ObjectMapper objectMapper,
@@ -80,19 +89,65 @@ public class TaskExecutionService {
         taskRepository,
         findingRepository,
         targetService,
+        projectService,
         registry,
         auditService,
         objectMapper,
         snapshotService,
         executionControl,
         progressEvents,
+        null);
+  }
+
+  TaskExecutionService(
+      SecurityTaskRepository taskRepository,
+      FindingRepository findingRepository,
+      TargetService targetService,
+      AssessmentProjectService projectService,
+      SecurityToolRegistry registry,
+      AuditService auditService,
+      ObjectMapper objectMapper,
+      TaskSnapshotService snapshotService,
+      TaskExecutionControlService executionControl,
+      TaskProgressEventService progressEvents,
+      ProjectAuthorizationService authorization) {
+    this(
+        taskRepository,
+        findingRepository,
+        targetService,
+        projectService,
+        registry,
+        auditService,
+        objectMapper,
+        snapshotService,
+        executionControl,
+        progressEvents,
+        authorization,
         new BusinessDataOperationGate(),
         event -> {});
   }
 
   @Async
   public void executeAsync(Long taskId) {
-    operationGate.withMutation(() -> executeUnderGate(taskId));
+    operationGate.withMutation(() -> executeWithSystemAccess(taskId));
+  }
+
+  private void executeWithSystemAccess(Long taskId) {
+    if (authorization == null) {
+      executeUnderGate(taskId);
+      return;
+    }
+    try {
+      authorization.callWithSystemAccess(
+          () -> {
+            executeUnderGate(taskId);
+            return null;
+          });
+    } catch (RuntimeException exception) {
+      throw exception;
+    } catch (Exception exception) {
+      throw new IllegalStateException("后台任务授权上下文初始化失败", exception);
+    }
   }
 
   private void executeUnderGate(Long taskId) {
@@ -118,10 +173,17 @@ public class TaskExecutionService {
         }
         markFailed(taskId, task, exception);
       } finally {
-        task.setFinishedAt(Instant.now());
-        taskRepository.save(task);
-        progressEvents.publish(task, null);
-        eventPublisher.publishEvent(new TaskTerminalEvent(task.getId()));
+        SecurityTask terminalTask = task;
+        if (executionControl.isCancellationRequested(taskId)) {
+          terminalTask = taskRepository.findById(taskId).orElse(task);
+          if (!"CANCELLED".equals(terminalTask.getStatus())) {
+            markCancelled(taskId, terminalTask);
+          }
+        }
+        terminalTask.setFinishedAt(Instant.now());
+        taskRepository.save(terminalTask);
+        progressEvents.publish(terminalTask, null);
+        eventPublisher.publishEvent(new TaskTerminalEvent(terminalTask.getId()));
       }
     } finally {
       executionControl.clear(taskId);
@@ -145,6 +207,10 @@ public class TaskExecutionService {
   }
 
   private void executeTask(Long taskId, SecurityTask task) throws Exception {
+    if (task.getProjectId() == null) {
+      throw new ApiException("任务缺少项目授权上下文");
+    }
+    projectService.validateProjectTarget(task.getProjectId(), task.getTargetId());
     AuthorizedTarget target = targetService.getCurrentlyAuthorized(task.getTargetId());
     SecurityTool tool = registry.require(task.getToolCode());
     snapshotService.assertCurrentMatches(task, target, tool);

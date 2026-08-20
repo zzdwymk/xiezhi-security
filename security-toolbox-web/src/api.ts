@@ -244,6 +244,7 @@ export interface ScanSchedule {
   nextRunAt?: string;
   lastRunAt?: string;
   lastTaskId?: number;
+  lastError?: string;
 }
 export interface TaskControlStatus {
   maxConcurrentTasks: number;
@@ -333,6 +334,42 @@ export interface WorkflowSpecV2 {
   graph?: { nodes: WorkflowGraphNodeSpec[]; edges: WorkflowGraphEdgeSpec[] };
 }
 
+export interface WorkflowRunNodeIssue {
+  nodeId: string;
+  toolCode: string;
+  label: string;
+  reason: string;
+}
+
+export interface WorkflowRunPreflight {
+  workflowId: string;
+  workflowRevision: number;
+  workflowDigest: string;
+  issues: WorkflowRunNodeIssue[];
+}
+
+export interface WorkflowRunSummary {
+  id: number;
+  projectId: number;
+  targetId: number;
+  workflowId: string;
+  workflowRevision: number;
+  workflowDigest: string;
+  status: string;
+  progress: number;
+  message?: string;
+  taskCount: number;
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+}
+
+export interface WorkflowRunDetail {
+  run: WorkflowRunSummary;
+  spec: WorkflowSpecV2;
+  tasks: ProjectTaskRecord[];
+}
+
 export interface WorkflowSuggestionAction {
   type: "add_tool" | "focus_node" | string;
   tool?: string;
@@ -393,6 +430,7 @@ export interface FingerprintCatalogInfo {
   version: string;
   sha256: string;
   ruleCount: number;
+  source?: "BUILTIN" | "MANAGED" | "EXTERNAL";
 }
 export interface SafePocRecommendation {
   vulnerabilityCode: string;
@@ -533,6 +571,12 @@ export interface ProjectTaskRecord {
   toolCode: string;
   ruleCode?: string;
   vulnerabilityCode?: string;
+  workflowRunId?: number;
+  workflowDigest?: string;
+  workflowNodeId?: string;
+  nodeRunId?: string;
+  workflowGroup?: number;
+  dependencyTaskIds?: string;
   status: string;
   progress: number;
   progressDeterminate?: boolean;
@@ -882,7 +926,8 @@ export const endpoints = {
     targetId: number;
     prompt: string;
     taskIds: number[];
-  }) => api.post<AiAnswer>("/ai/answers", payload, { timeout: 210000 }),  createTask: (payload: {
+  }) => api.post<AiAnswer>("/ai/answers", payload, { timeout: 210000 }),
+  createTask: (payload: {
     projectId?: number;
     targetId: number;
     toolCode: string;
@@ -890,6 +935,37 @@ export const endpoints = {
   }) => api.post("/tasks", payload),
   retryTask: (id: number) => api.post(`/tasks/${id}/retry`),
   cancelTask: (id: number) => api.post(`/tasks/${id}/cancel`),
+  workflowRuns: (projectId: number) =>
+    api.get<WorkflowRunSummary[]>("/workflow-runs", { params: { projectId } }),
+  workflowRun: (id: number) =>
+    api.get<WorkflowRunDetail>(`/workflow-runs/${id}`),
+  preflightWorkflowRun: (payload: {
+    projectId: number;
+    targetId: number;
+    workflowId?: string;
+    workflowRevision?: number;
+    workflowDigest?: string;
+  }) =>
+    api.post<WorkflowRunPreflight>("/workflow-runs/preflight", payload, {
+      timeout: 180_000,
+    }),
+  startWorkflowRun: (payload: {
+    projectId: number;
+    targetId: number;
+    workflowId: string;
+    workflowRevision: number;
+    workflowDigest: string;
+    approvedNodeIds?: string[];
+    skippedNodeIds?: string[];
+  }) =>
+    api.post<WorkflowRunDetail>("/workflow-runs", payload, {
+      timeout: 180_000,
+    }),
+  stopWorkflowRun: (id: number) =>
+    api.post<WorkflowRunDetail>(`/workflow-runs/${id}/stop`, undefined, {
+      timeout: 180_000,
+    }),
+  clearWorkflowRun: (id: number) => api.delete(`/workflow-runs/${id}`),
   vulnerabilities: (
     params: {
       page?: number;
@@ -1126,6 +1202,12 @@ export const endpoints = {
     api.get<FingerprintCatalogInfo>("/fingerprints/catalog"),
   reloadFingerprintCatalog: () =>
     api.post<FingerprintCatalogInfo>("/fingerprints/catalog/reload"),
+  updateFingerprintCatalog: (catalogBytes: ArrayBuffer) =>
+    api.put<FingerprintCatalogInfo>("/fingerprints/catalog", catalogBytes, {
+      headers: { "Content-Type": "application/json" },
+      timeout: 30_000,
+      transformRequest: [(data) => data],
+    }),
   pocRecommendations: (fingerprintIds: string[]) =>
     api.post<SafePocRecommendation[]>("/fingerprints/poc-recommendations", {
       fingerprintIds,

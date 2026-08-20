@@ -8,14 +8,16 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
+    "build:desktop": "vue-tsc -b && vite build --mode desktop",
+    "test:build-paths": "node scripts/test-build-paths.cjs",
     "test:json-file": "node scripts/test-json-file.cjs",
     "test:ai-settings": "node scripts/test-ai-settings.cjs",
     "test:offline": "node scripts/verify-offline-tools.cjs",
     "test:visual": "node scripts/visual-smoke.cjs",
     "preview": "vite preview",
     "desktop:dev": "node electron/dev-runner.cjs",
-    "desktop:pack": "npm run build && electron-builder --dir",
-    "desktop:build": "npm run build && electron-builder --win nsis"
+    "desktop:pack": "npm run build:desktop && electron-builder --dir",
+    "desktop:build": "npm run build:desktop && electron-builder --win nsis"
   },
   "dependencies": {
     "adm-zip": "^0.6.0"

@@ -52,6 +52,7 @@ scripts/generate_technical_function_doc.py
 scripts/generate_thesis_docx.py
 scripts/update_strict_proposal.py
 scripts/update_thesis_documents.py
+scripts/apply_proposal_comments.py
 **/.venv/
 
 # Temporary dev servers and test helpers
@@ -77,6 +78,34 @@ coverage/
 # Xray scanner runtime configs generated at repo root
 xray.yaml
 *.xray.yaml
+
+# Local reports, test output and browser automation artifacts
+reports/
+test-results/
+playwright-report/
+blob-report/
+
+# Local certificates, keys and database files
+*.pem
+*.key
+*.pfx
+*.crt
+*.cer
+*.sqlite
+*.sqlite3
+*.db
+
+# Machine-local configuration and process/cache files
+application-local.yml
+application-*.local.yml
+*.local
+*.pid
+*.cache
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
 
 # Internal working/analysis documents (kept local)
 BUSINESS_SOURCE_ANALYSIS.md

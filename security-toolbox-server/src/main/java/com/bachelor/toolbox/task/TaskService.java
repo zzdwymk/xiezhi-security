@@ -15,6 +15,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
@@ -112,6 +114,36 @@ public class TaskService {
 
   public SecurityTask create(CreateTaskRequest request, String ruleCode, String vulnerabilityCode)
       throws JsonProcessingException {
+    return create(request, ruleCode, vulnerabilityCode, null, null, "CREATE_TASK");
+  }
+
+  public SecurityTask createRetest(
+      CreateTaskRequest request,
+      String ruleCode,
+      String vulnerabilityCode,
+      Long sourceTaskId,
+      Long sourceFindingId)
+      throws JsonProcessingException {
+    if (sourceTaskId == null || sourceFindingId == null) {
+      throw new ApiException("漏洞复测缺少原始任务或漏洞记录");
+    }
+    return create(
+        request,
+        ruleCode,
+        vulnerabilityCode,
+        sourceTaskId,
+        sourceFindingId,
+        "RETEST_TASK");
+  }
+
+  private SecurityTask create(
+      CreateTaskRequest request,
+      String ruleCode,
+      String vulnerabilityCode,
+      Long sourceTaskId,
+      Long sourceFindingId,
+      String auditAction)
+      throws JsonProcessingException {
     projectService.validateProjectTarget(request.projectId(), request.targetId());
     var target = targetService.getCurrentlyAuthorized(request.targetId(), request.projectId());
     var tool = registry.require(request.toolCode());
@@ -122,6 +154,8 @@ public class TaskService {
     task.setToolCode(request.toolCode());
     task.setRuleCode(ruleCode);
     task.setVulnerabilityCode(vulnerabilityCode);
+    task.setSourceTaskId(sourceTaskId);
+    task.setSourceFindingId(sourceFindingId);
     task.setStatus("PENDING");
     task.setProgress(0);
     task.setProgressDeterminate(false);
@@ -130,7 +164,7 @@ public class TaskService {
     task.setQueueEnteredAt(java.time.Instant.now());
     task.setRequestJson(objectMapper.writeValueAsString(parameters));
     snapshotService.capture(task, target, tool);
-    return saveAndExecute(task, "CREATE_TASK", null);
+    return saveAndExecute(task, auditAction, sourceTaskId);
   }
 
   /**
@@ -146,6 +180,29 @@ public class TaskService {
       String effectiveRisk,
       boolean approvalRequired,
       List<Long> dependencyTaskIds)
+      throws JsonProcessingException {
+    return createWorkflowTask(
+        request,
+        workflowDigest,
+        workflowNodeId,
+        nodeRunId,
+        workflowGroup,
+        effectiveRisk,
+        approvalRequired,
+        dependencyTaskIds,
+        null);
+  }
+
+  public SecurityTask createWorkflowTask(
+      CreateTaskRequest request,
+      String workflowDigest,
+      String workflowNodeId,
+      String nodeRunId,
+      int workflowGroup,
+      String effectiveRisk,
+      boolean approvalRequired,
+      List<Long> dependencyTaskIds,
+      Long workflowRunId)
       throws JsonProcessingException {
     if (workflowDigest == null || !workflowDigest.matches("sha256:[0-9a-f]{64}")) {
       throw new ApiException("工作流摘要格式无效");
@@ -188,6 +245,7 @@ public class TaskService {
         objectMapper.writeValueAsString(
             request.parameters() == null ? Map.of() : request.parameters()));
     task.setWorkflowDigest(workflowDigest);
+    task.setWorkflowRunId(workflowRunId);
     task.setWorkflowNodeId(workflowNodeId);
     task.setNodeRunId(nodeRunId);
     task.setWorkflowGroup(Math.max(0, workflowGroup));
@@ -196,6 +254,49 @@ public class TaskService {
     task.setWorkflowApprovalRequired(approvalRequired);
     snapshotService.capture(task, target, tool);
     return saveTask(task, "CREATE_WORKFLOW_TASK", null, dependencies.isEmpty());
+  }
+
+  public SecurityTask createSkippedWorkflowTask(
+      CreateTaskRequest request,
+      String workflowDigest,
+      String workflowNodeId,
+      String nodeRunId,
+      int workflowGroup,
+      String effectiveRisk,
+      boolean approvalRequired,
+      List<Long> dependencyTaskIds,
+      Long workflowRunId,
+      String reason)
+      throws JsonProcessingException {
+    projectService.validateProjectTarget(request.projectId(), request.targetId());
+    SecurityTask task = new SecurityTask();
+    task.setTargetId(request.targetId());
+    task.setProjectId(request.projectId());
+    task.setToolCode(request.toolCode());
+    task.setStatus("SKIPPED");
+    task.setProgress(100);
+    task.setProgressDeterminate(true);
+    task.setProgressMessage(reason);
+    task.setProgressUpdatedAt(java.time.Instant.now());
+    task.setFinishedAt(java.time.Instant.now());
+    task.setTerminationReason("UNAVAILABLE_TOOL");
+    task.setErrorMessage(reason);
+    task.setRequestJson(
+        objectMapper.writeValueAsString(
+            request.parameters() == null ? Map.of() : request.parameters()));
+    task.setWorkflowDigest(workflowDigest);
+    task.setWorkflowRunId(workflowRunId);
+    task.setWorkflowNodeId(workflowNodeId);
+    task.setNodeRunId(nodeRunId);
+    task.setWorkflowGroup(Math.max(0, workflowGroup));
+    task.setDependencyTaskIds(
+        objectMapper.writeValueAsString(
+            dependencyTaskIds == null ? List.of() : dependencyTaskIds.stream().distinct().toList()));
+    task.setEffectiveRisk(effectiveRisk == null ? "SAFE" : effectiveRisk);
+    task.setWorkflowApprovalRequired(approvalRequired);
+    SecurityTask saved = saveTask(task, "SKIP_UNAVAILABLE_WORKFLOW_TASK", null, false);
+    publishTerminalAfterCommit(saved.getId());
+    return saved;
   }
 
   public SecurityTask retry(Long id) {
@@ -226,9 +327,11 @@ public class TaskService {
     return saveAndExecute(retry, "RETRY_TASK", original.getId());
   }
 
+  @Transactional(propagation = Propagation.REQUIRES_NEW)
   public SecurityTask cancel(Long id) {
     SecurityTask task = get(id);
-    if (Set.of("SUCCESS", "FAILED", "TIMEOUT", "REJECTED", "CANCELLED").contains(task.getStatus()))
+    if (Set.of("SUCCESS", "FAILED", "TIMEOUT", "REJECTED", "CANCELLED", "SKIPPED")
+        .contains(task.getStatus()))
       throw new ApiException("已结束的任务不能取消");
     String previous = task.getStatus();
     // Interrupt the worker and flip status immediately so the control center
@@ -242,7 +345,7 @@ public class TaskService {
     task.setErrorMessage("用户取消任务");
     repository.save(task);
     progressEvents.publish(task, "用户取消任务");
-    eventPublisher.publishEvent(new TaskTerminalEvent(task.getId()));
+    publishTerminalAfterCommit(task.getId());
     auditService.record("CANCEL_TASK", "TASK", id, task.getToolCode(), "CANCELLED");
     return task;
   }
@@ -288,6 +391,21 @@ public class TaskService {
 
   private void enqueueAfterCommit(Long taskId) {
     repository.findById(taskId).ifPresent(task -> enqueue(task, false));
+  }
+
+  private void publishTerminalAfterCommit(Long taskId) {
+    if (TransactionSynchronizationManager.isActualTransactionActive()
+        && TransactionSynchronizationManager.isSynchronizationActive()) {
+      TransactionSynchronizationManager.registerSynchronization(
+          new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+              eventPublisher.publishEvent(new TaskTerminalEvent(taskId));
+            }
+          });
+      return;
+    }
+    eventPublisher.publishEvent(new TaskTerminalEvent(taskId));
   }
 
   private void enqueue(SecurityTask task, boolean propagateFailure) {

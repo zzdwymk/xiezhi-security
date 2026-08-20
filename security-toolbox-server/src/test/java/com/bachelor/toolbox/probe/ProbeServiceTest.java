@@ -9,6 +9,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.fingerprint.FingerprintMatcher;
 import com.bachelor.toolbox.project.AssessmentProject;
 import com.bachelor.toolbox.project.AssessmentProjectRepository;
@@ -69,6 +70,32 @@ class ProbeServiceTest {
         .hasMessage("未找到目标");
 
     verifyNoInteractions(results, fingerprints);
+  }
+
+  @Test
+  void rejectsInactiveProjectAuthorizationAsBusinessError() {
+    AssessmentProject project = activeProject();
+    project.setAuthorizationExpiresAt(Instant.now().minusSeconds(1));
+    when(projects.findById(1L)).thenReturn(Optional.of(project));
+
+    assertThatThrownBy(() -> service().probe(requestFor(7L, null)))
+        .isInstanceOf(ApiException.class)
+        .hasMessage("项目授权已过期或尚未生效");
+
+    verifyNoInteractions(projectTargets, targets, results, fingerprints);
+  }
+
+  @Test
+  void rejectsProjectAuthorizationThatHasNotStartedAsBusinessError() {
+    AssessmentProject project = activeProject();
+    project.setAuthorizationValidFrom(Instant.now().plusSeconds(3_600));
+    when(projects.findById(1L)).thenReturn(Optional.of(project));
+
+    assertThatThrownBy(() -> service().probe(requestFor(7L, null)))
+        .isInstanceOf(ApiException.class)
+        .hasMessage("项目授权已过期或尚未生效");
+
+    verifyNoInteractions(projectTargets, targets, results, fingerprints);
   }
 
   @Test

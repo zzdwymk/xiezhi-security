@@ -11,6 +11,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.common.GlobalExceptionHandler;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -67,6 +68,20 @@ class ProbeControllerTests {
         .andExpect(jsonPath("$.message").value("目标 ID 不能为空"));
 
     verify(service, never()).probe(any());
+  }
+
+  @Test
+  void returnsBadRequestWhenProjectAuthorizationIsInactive() throws Exception {
+    when(service.probe(any(ProbeRequest.class)))
+        .thenThrow(new ApiException("项目授权已过期或尚未生效"));
+
+    mockMvc
+        .perform(
+            post("/api/projects/{projectId}/discovery/probe", 5L)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"targetId\":7}"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.message").value("项目授权已过期或尚未生效"));
   }
 
   @Test

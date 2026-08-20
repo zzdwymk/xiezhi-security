@@ -8,11 +8,13 @@ import {
   safeGet,
   type Target,
   type AssessmentProject,
+  type ProjectTarget,
 } from "../api";
 import AppPagination from "../components/AppPagination.vue";
 import OfflineState from "../components/OfflineState.vue";
 import { useClientPagination } from "../composables/useClientPagination";
 import { useCopilotStore } from "../stores/copilot";
+import { formatDateTime } from "../utils/dateTime";
 import { toErrorMessage } from "../utils/errorMessage";
 
 const copilot = useCopilotStore();
@@ -20,6 +22,8 @@ const router = useRouter();
 
 const rows = ref<Target[]>([]);
 const projects = ref<AssessmentProject[]>([]);
+const projectIdsByTarget = ref<Record<number, number[]>>({});
+const editingProjects = ref<AssessmentProject[]>([]);
 const offline = ref(false);
 const dialog = ref(false);
 const saving = ref(false);
@@ -110,6 +114,124 @@ function normalizePorts() {
     .join(",");
 }
 
+function validateTargetValue(value: string, targetType: string) {
+  if (targetType.toLowerCase() !== "domain") return;
+  const domain = value.trim();
+  const valid =
+    /^(?=.{1,253}$)(?:[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?\.)*[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?$/i.test(
+      domain,
+    );
+  if (!valid) {
+    throw new Error("域名格式不正确：请填写不含空格、协议或路径的主机名");
+  }
+}
+
+function normalizeDatePickerValue(value?: string) {
+  if (!value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return parsed.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+function applyProjectAuthorizationDefaults(projectId?: number) {
+  const selectedProject = projects.value.find(
+    (project) => project.id === projectId,
+  );
+  form.authorizationValidFrom = normalizeDatePickerValue(
+    selectedProject?.authorizationValidFrom,
+  );
+  form.authorizationExpiresAt = normalizeDatePickerValue(
+    selectedProject?.authorizationExpiresAt,
+  );
+}
+
+function projectsForTarget(row: Target) {
+  if (row.projectId) {
+    const directProject = projects.value.find(
+      (project) => project.id === row.projectId,
+    );
+    if (directProject) return [directProject];
+  }
+  const projectIds = new Set<number>();
+  for (const projectId of projectIdsByTarget.value[row.id] || []) {
+    projectIds.add(projectId);
+  }
+  return [...projectIds]
+    .map((projectId) =>
+      projects.value.find((project) => project.id === projectId),
+    )
+    .filter((project): project is AssessmentProject => Boolean(project));
+}
+
+function preferredProjectForTarget(row: Target) {
+  const linkedProjects = projectsForTarget(row);
+  return (
+    linkedProjects.find((project) => project.status === "ACTIVE") ||
+    linkedProjects[0]
+  );
+}
+
+function targetAuthorizationWindow(row: Target) {
+  const project = preferredProjectForTarget(row);
+  const validFrom =
+    row.authorizationValidFrom || project?.authorizationValidFrom || "";
+  const expiresAt =
+    row.authorizationExpiresAt || project?.authorizationExpiresAt || "";
+  const usesTargetWindow = Boolean(
+    row.authorizationValidFrom || row.authorizationExpiresAt,
+  );
+  return {
+    validFrom,
+    expiresAt,
+    project,
+    sourceLabel: usesTargetWindow
+      ? row.authorizationValidFrom && row.authorizationExpiresAt
+        ? "目标级"
+        : "目标 / 项目"
+      : project
+        ? "随项目"
+        : "未设置",
+  };
+}
+
+function compactDateTime(value?: string) {
+  const formatted = formatDateTime(value);
+  return formatted ? formatted.slice(0, 16) : "未设置";
+}
+
+function targetAuthorizationTitle(row: Target) {
+  const window = targetAuthorizationWindow(row);
+  const linkedProjects = projectsForTarget(row);
+  const source = window.project
+    ? `${window.sourceLabel} · ${window.project.name}`
+    : window.sourceLabel;
+  const otherProjects = linkedProjects
+    .filter((project) => project.id !== window.project?.id)
+    .map(
+      (project) =>
+        `${project.name}：${compactDateTime(project.authorizationValidFrom)} 至 ${compactDateTime(project.authorizationExpiresAt)}`,
+    );
+  return [
+    `${source}：${compactDateTime(window.validFrom)} 至 ${compactDateTime(window.expiresAt)}`,
+    ...otherProjects,
+  ].join("\n");
+}
+
+function inheritedTimePlaceholder(boundary: "start" | "end") {
+  const project =
+    editingProjects.value.find((item) => item.status === "ACTIVE") ||
+    editingProjects.value[0];
+  const value =
+    boundary === "start"
+      ? project?.authorizationValidFrom
+      : project?.authorizationExpiresAt;
+  return value
+    ? `项目：${compactDateTime(value)}`
+    : boundary === "start"
+      ? "选择开始时间"
+      : "选择结束时间";
+}
+
 async function load() {
   const [targetResult, projectResult] = await Promise.all([
     safeGet(endpoints.targets, [] as Target[]),
@@ -117,6 +239,24 @@ async function load() {
   ]);
   rows.value = targetResult.data;
   projects.value = projectResult.data;
+  const linkResults = await Promise.all(
+    projects.value.map(async (project) => ({
+      projectId: project.id,
+      result: await safeGet(
+        () => endpoints.projectTargets(project.id),
+        [] as ProjectTarget[],
+      ),
+    })),
+  );
+  const linkedProjectIds: Record<number, number[]> = {};
+  for (const { projectId, result } of linkResults) {
+    for (const link of result.data) {
+      const targetProjectIds = linkedProjectIds[link.targetId] || [];
+      if (!targetProjectIds.includes(projectId)) targetProjectIds.push(projectId);
+      linkedProjectIds[link.targetId] = targetProjectIds;
+    }
+  }
+  projectIdsByTarget.value = linkedProjectIds;
   offline.value = targetResult.offline;
 }
 
@@ -145,8 +285,12 @@ function openCreate() {
     authorizationNote: "",
     allowedPorts: "80,443",
     enabled: true,
-    authorizationValidFrom: "",
-    authorizationExpiresAt: "",
+    authorizationValidFrom: normalizeDatePickerValue(
+      active?.authorizationValidFrom,
+    ),
+    authorizationExpiresAt: normalizeDatePickerValue(
+      active?.authorizationExpiresAt,
+    ),
   });
   selectedPorts.value = ["80", "443"];
   customPorts.value = "";
@@ -163,6 +307,7 @@ async function create() {
     return;
   }
   try {
+    validateTargetValue(form.targetValue, form.targetType);
     form.allowedPorts = normalizePorts();
     saving.value = true;
     await endpoints.createTarget({
@@ -204,14 +349,19 @@ async function remove(row: Target) {
 function openEditTarget(row: Target) {
   editingTargetId.value = row.id;
   originalEditTarget.value = { ...row };
+  editingProjects.value = projectsForTarget(row);
   editForm.name = row.name || "";
   editForm.targetValue = row.targetValue || "";
   editForm.targetType = (row.targetType || "domain").toLowerCase();
   editForm.authorizationNote = row.authorizationNote || "";
   editForm.allowedPorts = row.allowedPorts || "80,443";
   editForm.enabled = row.enabled !== false;
-  editForm.authorizationValidFrom = row.authorizationValidFrom || "";
-  editForm.authorizationExpiresAt = row.authorizationExpiresAt || "";
+  editForm.authorizationValidFrom = normalizeDatePickerValue(
+    row.authorizationValidFrom,
+  );
+  editForm.authorizationExpiresAt = normalizeDatePickerValue(
+    row.authorizationExpiresAt,
+  );
   const ports = (row.allowedPorts || "").split(",").map(p => p.trim()).filter(Boolean);
   editSelectedPorts.value = ports.filter(p => /^\d+$/.test(p) && Number(p) <= 65535);
   editCustomPorts.value = ports.filter(p => !/^\d+$/.test(p)).join(", ");
@@ -252,6 +402,7 @@ function targetAuthorizationChanged(ports: string) {
 async function saveEditTarget() {
   if (!editingTargetId.value) return;
   try {
+    validateTargetValue(editForm.targetValue, editForm.targetType);
     const ports = editFullPortAccess.value ? "1-65535" : normalizeEditPorts();
     if (targetAuthorizationChanged(ports)) {
       await ElMessageBox.confirm(
@@ -369,6 +520,26 @@ onMounted(load);
         min-width="220"
         show-overflow-tooltip
       />
+      <el-table-column label="授权有效期" min-width="176">
+        <template #default="scope">
+          <div
+            class="target-authorization-window"
+            :title="targetAuthorizationTitle(scope.row)"
+          >
+            <span class="target-authorization-source">
+              {{ targetAuthorizationWindow(scope.row).sourceLabel }}
+            </span>
+            <span>
+              <small>起</small>
+              {{ compactDateTime(targetAuthorizationWindow(scope.row).validFrom) }}
+            </span>
+            <span>
+              <small>止</small>
+              {{ compactDateTime(targetAuthorizationWindow(scope.row).expiresAt) }}
+            </span>
+          </div>
+        </template>
+      </el-table-column>
       <el-table-column label="状态" width="90"
         ><template #default="scope"
           ><el-tag
@@ -439,6 +610,7 @@ onMounted(load);
           v-model="form.projectId"
           placeholder="选择该目标归属的评估项目"
           style="width: 100%"
+          @change="applyProjectAuthorizationDefaults"
         >
           <el-option
             v-for="p in projects"
@@ -472,21 +644,26 @@ onMounted(load);
           placeholder="填写授权来源、允许测试的范围和有效期"
       /></el-form-item>
       <div class="target-form-row">
-        <el-form-item label="授权生效时间"
+        <el-form-item label="目标授权生效时间"
           ><el-date-picker
             v-model="form.authorizationValidFrom"
             type="datetime"
-            value-format="YYYY-MM-DDTHH:mm:ss"
-            placeholder="立即生效"
+            value-format="YYYY-MM-DDTHH:mm:ssZ"
+            format="YYYY-MM-DD HH:mm"
+            placeholder="跟随项目授权开始"
         /></el-form-item>
-        <el-form-item label="授权到期时间"
+        <el-form-item label="目标授权到期时间"
           ><el-date-picker
             v-model="form.authorizationExpiresAt"
             type="datetime"
-            value-format="YYYY-MM-DDTHH:mm:ss"
-            placeholder="长期有效"
+            value-format="YYYY-MM-DDTHH:mm:ssZ"
+            format="YYYY-MM-DD HH:mm"
+            placeholder="跟随项目授权结束"
         /></el-form-item>
       </div>
+      <p class="target-time-hint">
+        默认带入所选项目的授权时间；如单独修改，将作为该目标的额外授权时间限制。
+      </p>
       <el-form-item label="端口授权" class="port-form-item">
         <div class="port-picker">
           <div class="full-port-option">
@@ -564,7 +741,6 @@ onMounted(load);
             <el-option label="域名" value="domain" />
             <el-option label="IP 地址" value="ip" />
             <el-option label="URL" value="url" />
-            <el-option label="网段" value="cidr" />
           </el-select>
         </el-form-item>
       </div>
@@ -618,27 +794,53 @@ onMounted(load);
         </div>
       </el-form-item>
       <div class="target-form-row">
-        <el-form-item label="授权开始">
+        <el-form-item label="目标授权开始">
           <el-date-picker
             v-model="editForm.authorizationValidFrom"
             type="datetime"
             value-format="YYYY-MM-DDTHH:mm:ssZ"
             format="YYYY-MM-DD HH:mm"
-            placeholder="选择开始时间"
+            :placeholder="inheritedTimePlaceholder('start')"
             :editable="false"
           />
         </el-form-item>
-        <el-form-item label="授权结束">
+        <el-form-item label="目标授权结束">
           <el-date-picker
             v-model="editForm.authorizationExpiresAt"
             type="datetime"
             value-format="YYYY-MM-DDTHH:mm:ssZ"
             format="YYYY-MM-DD HH:mm"
-            placeholder="选择结束时间"
+            :placeholder="inheritedTimePlaceholder('end')"
             :editable="false"
           />
         </el-form-item>
       </div>
+      <div
+        v-if="
+          (!editForm.authorizationValidFrom ||
+            !editForm.authorizationExpiresAt) &&
+          editingProjects.length
+        "
+        class="target-inherited-time"
+      >
+        <strong>未单独设置的时间将沿用所属项目，不会保存为目标级时间</strong>
+        <span v-for="project in editingProjects" :key="project.id">
+          <b>{{ project.name }}</b>
+          <span>
+            开始 {{ compactDateTime(project.authorizationValidFrom) }} · 结束
+            {{ compactDateTime(project.authorizationExpiresAt) }}
+          </span>
+        </span>
+      </div>
+      <p
+        v-else-if="
+          !editForm.authorizationValidFrom &&
+          !editForm.authorizationExpiresAt
+        "
+        class="target-time-hint"
+      >
+        当前目标没有单独保存授权时间，也没有读取到所属项目的授权时间。
+      </p>
       <div class="target-enabled-row">
         <div>
           <strong>启用目标</strong>
@@ -729,6 +931,73 @@ onMounted(load);
   font-size: 12px;
   line-height: 1.55;
 }
+.target-time-hint {
+  margin: -6px 2px 14px;
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.target-inherited-time {
+  display: grid;
+  gap: 6px;
+  margin: -6px 2px 14px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--app-accent);
+  border-radius: 0 5px 5px 0;
+  background: var(--app-accent-soft);
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.target-inherited-time > strong {
+  color: var(--app-text);
+  font-weight: 600;
+}
+.target-inherited-time > span {
+  display: flex;
+  min-width: 0;
+  justify-content: space-between;
+  gap: 12px;
+}
+.target-inherited-time > span > b {
+  overflow: hidden;
+  color: var(--app-text);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.target-inherited-time > span > span {
+  flex: none;
+}
+.target-authorization-window {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  color: var(--app-text);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.target-authorization-window > span:not(.target-authorization-source) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.target-authorization-window small {
+  display: inline-block;
+  width: 14px;
+  color: var(--app-muted);
+  font-size: 11px;
+}
+.target-authorization-source {
+  width: max-content;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--app-muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .target-enabled-row {
   display: flex;
   align-items: center;
@@ -810,15 +1079,47 @@ onMounted(load);
   background: #eef4f8;
   color: #172a3d;
 }
-.targets-page :deep(.target-action-delete) {
+.targets-page :deep(.target-action-delete.el-button--danger.is-link),
+.targets-page
+  :deep(.el-table__body tr.current-row .target-action-delete.el-button--danger.is-link) {
+  --el-button-text-color: var(--fluent-danger-bg);
+  --el-button-hover-text-color: var(--fluent-danger-hover-bg);
+  --el-button-active-text-color: var(--fluent-danger-hover-bg);
+  color: var(--fluent-danger-bg) !important;
   font-size: 12px;
   font-weight: 600;
 }
+.targets-page :deep(.target-action-delete.el-button--danger.is-link > span),
+.targets-page
+  :deep(
+    .el-table__body
+      tr.current-row
+      .target-action-delete.el-button--danger.is-link
+      > span
+  ) {
+  color: inherit !important;
+}
+.targets-page :deep(.target-action-delete.el-button--danger.is-link:hover),
+.targets-page :deep(.target-action-delete.el-button--danger.is-link:focus),
+.targets-page
+  :deep(.target-action-delete.el-button--danger.is-link:focus-visible),
+.targets-page :deep(.target-action-delete.el-button--danger.is-link:active),
+.targets-page
+  :deep(
+    .el-table__body
+      tr.current-row
+      .target-action-delete.el-button--danger.is-link:hover
+  ),
+.targets-page
+  :deep(
+    .el-table__body
+      tr.current-row
+      .target-action-delete.el-button--danger.is-link:focus-visible
+  ) {
+  color: var(--fluent-danger-hover-bg) !important;
+}
 .targets-page :deep(.el-table__body tr.current-row .target-action-report) {
   color: #263647;
-}
-.targets-page :deep(.el-table__body tr.current-row .target-action-delete) {
-  color: #b42318;
 }
 .target-form {
   margin: 0;

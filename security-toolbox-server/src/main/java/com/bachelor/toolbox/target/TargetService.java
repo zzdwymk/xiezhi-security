@@ -9,6 +9,7 @@ import com.bachelor.toolbox.project.ProjectTargetRepository;
 import com.bachelor.toolbox.project.ProjectAuthorizationService;
 import java.time.Instant;
 import java.util.List;
+import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
@@ -16,6 +17,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class TargetService {
+  private static final Pattern DOMAIN_PATTERN =
+      Pattern.compile(
+          "(?i)^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$");
   private static final Sort LIST_SORT =
       Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id"));
 
@@ -126,9 +130,11 @@ public class TargetService {
     return saved;
   }
 
+  @Transactional
   public void delete(Long id) {
     AuthorizedTarget target = get(id);
     requireTargetManage(target);
+    projectTargets.deleteAll(projectTargets.findByTargetId(id));
     repository.delete(target);
     auditService.record("DELETE_TARGET", "TARGET", id, target.getTargetValue(), "SUCCESS");
   }
@@ -167,8 +173,11 @@ public class TargetService {
 
   private void apply(AuthorizedTarget target, TargetRequest request) {
     target.setName(request.name().trim());
-    target.setTargetValue(request.targetValue().trim());
-    target.setTargetType(request.targetType().trim().toUpperCase());
+    String targetValue = request.targetValue().trim();
+    String targetType = request.targetType().trim().toUpperCase();
+    validateTargetValue(targetType, targetValue);
+    target.setTargetValue(targetValue);
+    target.setTargetType(targetType);
     target.setAuthorizationNote(request.authorizationNote().trim());
     String allowedPorts =
         request.allowedPorts() == null || request.allowedPorts().isBlank()
@@ -182,5 +191,11 @@ public class TargetService {
       throw new ApiException("授权开始时间必须早于授权到期时间");
     target.setAuthorizationValidFrom(request.authorizationValidFrom());
     target.setAuthorizationExpiresAt(request.authorizationExpiresAt());
+  }
+
+  private void validateTargetValue(String targetType, String targetValue) {
+    if ("DOMAIN".equals(targetType) && !DOMAIN_PATTERN.matcher(targetValue).matches()) {
+      throw new ApiException("域名格式不正确：请填写不含空格、协议或路径的主机名");
+    }
   }
 }

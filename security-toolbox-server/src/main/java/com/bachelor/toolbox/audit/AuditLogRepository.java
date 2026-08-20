@@ -30,4 +30,15 @@ public interface AuditLogRepository extends JpaRepository<AuditLog, Long> {
       @Param("projectId") Long projectId,
       @Param("projectIdText") String projectIdText,
       Pageable pageable);
+
+  @Query(
+      """
+      select count(audit) from AuditLog audit
+      where (audit.resourceType = 'PROJECT' and audit.resourceId = :projectIdText)
+         or audit.relatedTaskId in (
+              select task.id from SecurityTask task where task.projectId = :projectId
+         )
+      """)
+  long countByProjectId(
+      @Param("projectId") Long projectId, @Param("projectIdText") String projectIdText);
 }

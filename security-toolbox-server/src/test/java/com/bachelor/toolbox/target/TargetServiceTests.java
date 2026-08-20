@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 import com.bachelor.toolbox.audit.AuditService;
 import com.bachelor.toolbox.project.AssessmentProjectRepository;
 import com.bachelor.toolbox.project.ProjectTargetRepository;
+import com.bachelor.toolbox.project.ProjectTarget;
 import com.bachelor.toolbox.project.ProjectAuthorizationService;
 import com.bachelor.toolbox.project.AssessmentProject;
 import java.util.List;
@@ -141,6 +142,45 @@ class TargetServiceTests {
   }
 
   @Test
+  void rejectsMalformedDomainBeforePersistingAuthorizationScope() {
+    AuthorizedTargetRepository repository = mock(AuthorizedTargetRepository.class);
+    AuditService auditService = mock(AuditService.class);
+    AssessmentProjectRepository projects = mock(AssessmentProjectRepository.class);
+    ProjectTargetRepository projectTargets = mock(ProjectTargetRepository.class);
+    AssessmentProject project = new AssessmentProject();
+    project.setId(1L);
+    project.setOwner("admin");
+    when(projects.findById(1L)).thenReturn(Optional.of(project));
+    authenticateAsAdmin();
+    TargetService service =
+        new TargetService(
+            repository,
+            auditService,
+            new PortRangeParser(),
+            projects,
+            projectTargets,
+            new ProjectAuthorizationService(projects),
+            65535);
+
+    assertThatThrownBy(
+            () ->
+                service.create(
+                    new TargetRequest(
+                        "bad",
+                        "not a valid host",
+                        "DOMAIN",
+                        "written authorization",
+                        "80",
+                        true,
+                        null,
+                        null,
+                        1L)))
+        .isInstanceOf(com.bachelor.toolbox.common.ApiException.class)
+        .hasMessage("域名格式不正确：请填写不含空格、协议或路径的主机名");
+    verify(repository, never()).save(any(AuthorizedTarget.class));
+  }
+
+  @Test
   void rejectsCreatingTargetForAnotherOwnersProject() {
     AuthorizedTargetRepository repository = mock(AuthorizedTargetRepository.class);
     AuditService auditService = mock(AuditService.class);
@@ -180,10 +220,49 @@ class TargetServiceTests {
         .save(any(AuthorizedTarget.class));
   }
 
+  @Test
+  void deletesProjectLinksTogetherWithTarget() {
+    AuthorizedTargetRepository repository = mock(AuthorizedTargetRepository.class);
+    AuditService auditService = mock(AuditService.class);
+    AssessmentProjectRepository projects = mock(AssessmentProjectRepository.class);
+    ProjectTargetRepository projectTargets = mock(ProjectTargetRepository.class);
+    ProjectAuthorizationService authorization = mock(ProjectAuthorizationService.class);
+    AuthorizedTarget target = new AuthorizedTarget();
+    target.setId(7L);
+    target.setTargetValue("127.0.0.1");
+    ProjectTarget first = new ProjectTarget(1L, 7L);
+    ProjectTarget second = new ProjectTarget(2L, 7L);
+    when(repository.findById(7L)).thenReturn(Optional.of(target));
+    when(authorization.isAdmin()).thenReturn(true);
+    when(projectTargets.findByTargetId(7L)).thenReturn(List.of(first, second));
+    TargetService service =
+        new TargetService(
+            repository,
+            auditService,
+            new PortRangeParser(),
+            projects,
+            projectTargets,
+            authorization,
+            65535);
+
+    service.delete(7L);
+
+    verify(projectTargets).deleteAll(List.of(first, second));
+    verify(repository).delete(target);
+    verify(auditService).record("DELETE_TARGET", "TARGET", 7L, "127.0.0.1", "SUCCESS");
+  }
+
   private void authenticateAs(String username) {
     SecurityContextHolder.getContext()
         .setAuthentication(
+        new UsernamePasswordAuthenticationToken(
+            username, null, List.of(new SimpleGrantedAuthority("ROLE_USER"))));
+  }
+
+  private void authenticateAsAdmin() {
+    SecurityContextHolder.getContext()
+        .setAuthentication(
             new UsernamePasswordAuthenticationToken(
-                username, null, List.of(new SimpleGrantedAuthority("ROLE_USER"))));
+                "admin", null, List.of(new SimpleGrantedAuthority("ROLE_ADMIN"))));
   }
 }

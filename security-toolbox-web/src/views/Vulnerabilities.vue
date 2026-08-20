@@ -2062,7 +2062,12 @@ onMounted(async () => {
   font-size: 12px;
 }
 .catalog-pagination :deep(.el-pagination__editor.el-input) {
-  width: 52px;
+  width: 44px;
+  --el-input-height: var(--el-pagination-button-height-small);
+}
+.catalog-pagination :deep(.el-pagination__editor .el-input__wrapper) {
+  min-height: var(--el-pagination-button-height-small);
+  padding-inline: 5px;
 }
 .pane-title :deep(.el-button) {
   font-size: 12px;

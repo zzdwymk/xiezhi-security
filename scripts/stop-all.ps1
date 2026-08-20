@@ -15,7 +15,9 @@ function Test-StoredProcess($Stored) {
     if (-not $process) { return $false }
     try {
         $actual = $process.StartTime.ToUniversalTime()
-        $expected = [DateTime]::Parse($Stored.startTime).ToUniversalTime()
+        # ConvertFrom-Json may already materialize ISO timestamps as DateTime values.
+        # DateTime.Parse would stringify them first and lose the UTC kind in local time zones.
+        $expected = ([DateTimeOffset]$Stored.startTime).UtcDateTime
         return [math]::Abs(($actual - $expected).TotalSeconds) -lt 2
     } catch {
         return $false

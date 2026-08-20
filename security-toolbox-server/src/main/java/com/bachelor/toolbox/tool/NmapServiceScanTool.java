@@ -2,6 +2,7 @@ package com.bachelor.toolbox.tool;
 
 import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.common.ProcessEnvironmentSanitizer;
+import com.bachelor.toolbox.dependency.NmapExecutableResolver;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.PortRangeParser;
 import com.bachelor.toolbox.target.TargetPolicyService;
@@ -34,7 +35,7 @@ public class NmapServiceScanTool implements SecurityTool {
 
   private final TargetPolicyService policy;
   private final PortRangeParser portRangeParser;
-  private final Path executable;
+  private final NmapExecutableResolver executableResolver;
   private final int maxPorts;
   private final long timeoutSeconds;
   private final long fullTimeoutSeconds;
@@ -43,13 +44,13 @@ public class NmapServiceScanTool implements SecurityTool {
   public NmapServiceScanTool(
       TargetPolicyService policy,
       PortRangeParser portRangeParser,
-      @Value("${toolbox.execution.nmap-path:D:/software/Nmap/nmap.exe}") String executable,
+      NmapExecutableResolver executableResolver,
       @Value("${toolbox.execution.max-nmap-ports-per-task:65535}") int maxPorts,
       @Value("${toolbox.execution.nmap-timeout-seconds:60}") long timeoutSeconds,
       @Value("${toolbox.execution.nmap-full-timeout-seconds:600}") long fullTimeoutSeconds) {
     this.policy = policy;
     this.portRangeParser = portRangeParser;
-    this.executable = Path.of(executable).toAbsolutePath().normalize();
+    this.executableResolver = executableResolver;
     this.maxPorts = maxPorts;
     this.timeoutSeconds = timeoutSeconds;
     this.fullTimeoutSeconds = fullTimeoutSeconds;
@@ -90,9 +91,9 @@ public class NmapServiceScanTool implements SecurityTool {
     String mode = Objects.toString(parameters.getOrDefault("mode", "quick"), "");
     if (!Set.of("quick", "service").contains(mode))
       throw new ApiException("Nmap mode 仅支持 quick 或 service");
-    if (!Files.isRegularFile(executable)) throw new ApiException("未找到已配置的 Nmap 可执行文件");
+    Path executable = requireExecutable();
 
-    List<String> command = buildCommand(host, canonicalPorts, mode);
+    List<String> command = buildCommand(executable, host, canonicalPorts, mode);
     observer.command(command);
     observer.heartbeat("Nmap 已启动，等待原生扫描进度");
     long effectiveTimeoutSeconds =
@@ -161,6 +162,11 @@ public class NmapServiceScanTool implements SecurityTool {
   }
 
   List<String> buildCommand(String host, String canonicalPorts, String mode) {
+    return buildCommand(requireExecutable(), host, canonicalPorts, mode);
+  }
+
+  private List<String> buildCommand(
+      Path executable, String host, String canonicalPorts, String mode) {
     List<String> command = new ArrayList<>();
     command.add(executable.toString());
     command.addAll(List.of("-sT", "-n", "-Pn", "--stats-every", "1s"));
@@ -169,6 +175,17 @@ public class NmapServiceScanTool implements SecurityTool {
     else command.addAll(List.of("-p", canonicalPorts));
     command.addAll(List.of("-oX", "-", host));
     return List.copyOf(command);
+  }
+
+  private Path requireExecutable() {
+    Path executable =
+        executableResolver
+            .find()
+            .orElseThrow(() -> new ApiException("未找到已配置的 Nmap 可执行文件"));
+    if (!Files.isRegularFile(executable)) {
+      throw new ApiException("未找到已配置的 Nmap 可执行文件");
+    }
+    return executable.toAbsolutePath().normalize();
   }
 
   private String readLimited(InputStream input) throws Exception {

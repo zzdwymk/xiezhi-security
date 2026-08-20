@@ -92,6 +92,7 @@ const targets = ref<Target[]>([]);
 const projectByTarget = ref<Record<number, number>>({});
 const selectedTargetId = ref<number>();
 const prompt = ref("");
+const executionRequested = ref(false);
 const composerInputRef = ref<HTMLTextAreaElement | null>(null);
 const quotedMessage = ref<ConversationMessage>();
 const loading = ref(false);
@@ -1142,7 +1143,7 @@ async function dispatchConversationMessage(
       turnId: userMessage.id,
       ...workflow,
       prompt: requestPrompt,
-      execute: true,
+      execute: userMessage.executionRequested === true,
       mode: userMessage.copilotMode,
       refs: agentContextReferences(refs),
     },
@@ -1319,6 +1320,7 @@ async function sendPrompt() {
     steps: [],
     references: activeDraft.value?.refs,
     copilotMode: activeDraft.value?.mode,
+    executionRequested: executionRequested.value,
     quote: quotedMessage.value
       ? {
           messageId: quotedMessage.value.id,
@@ -1333,7 +1335,9 @@ async function sendPrompt() {
   const assistantMessage = conversations.appendMessage(thread.id, {
     role: "assistant",
     content:
-      "我正在理解你的要求。明确需要执行检测时，我会先生成真实计划；普通问题会直接回答。",
+      executionRequested.value
+        ? "我正在理解你的要求。执行检测前，我会先核对授权范围并生成计划。"
+        : "我正在理解你的要求。当前为仅规划模式，不会启动检测任务。",
     status: "running",
     taskIds: [],
     steps: [],
@@ -1342,6 +1346,7 @@ async function sendPrompt() {
   if (!assistantMessage) return;
 
   prompt.value = "";
+  executionRequested.value = false;
   sending.value = true;
   void scrollToBottom();
   try {
@@ -1882,7 +1887,14 @@ onBeforeUnmount(() => {
               <el-icon><Plus /></el-icon>新增授权目标
             </button>
           </div>
-          <span>Enter 发送，Shift + Enter 换行</span>
+          <el-switch
+            v-model="executionRequested"
+            :disabled="sending"
+            active-text="执行检测"
+            inactive-text="仅规划"
+            aria-label="AI 执行模式"
+          />
+          <span class="composer-shortcut">Enter 发送，Shift + Enter 换行</span>
           <el-tooltip content="发送" placement="top" :show-after="350"
             ><button
               type="button"
@@ -2215,6 +2227,13 @@ onBeforeUnmount(() => {
               >{{ reference.title || reference.label || reference.type }}</span
             >
           </div>
+          <el-switch
+            v-model="executionRequested"
+            :disabled="sending"
+            active-text="执行检测"
+            inactive-text="仅规划"
+            aria-label="AI 执行模式"
+          />
           <textarea
             ref="composerInputRef"
             v-model="prompt"
@@ -2394,7 +2413,8 @@ onBeforeUnmount(() => {
 }
 .composer-footer {
   display: grid;
-  grid-template-columns: minmax(210px, 280px) minmax(0, 1fr) 36px;
+  grid-template-columns:
+    minmax(210px, 280px) max-content minmax(0, 1fr) 36px;
   align-items: center;
   gap: 12px;
   padding: 8px 10px 11px 18px;
@@ -2406,7 +2426,7 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 .target-picker > span,
-.composer-footer > span {
+.composer-shortcut {
   color: var(--app-muted);
   font-size: 10px;
 }
@@ -2415,7 +2435,10 @@ onBeforeUnmount(() => {
   margin-left: 10px;
   color: var(--app-muted);
 }
-.composer-footer > span {
+.composer-shortcut {
+  min-width: max-content;
+  justify-self: end;
+  white-space: nowrap;
   text-align: right;
 }
 .send-button,
@@ -2668,7 +2691,7 @@ onBeforeUnmount(() => {
 }
 .thread-composer {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 38px;
+  grid-template-columns: max-content minmax(0, 1fr) 38px;
   align-items: end;
   gap: 8px;
   padding: 8px 8px 8px 14px;
@@ -2713,7 +2736,10 @@ onBeforeUnmount(() => {
   .composer-footer {
     grid-template-columns: 1fr 36px;
   }
-  .composer-footer > span {
+  .composer-footer .target-picker {
+    grid-column: 1 / -1;
+  }
+  .composer-shortcut {
     display: none;
   }
   .quick-actions {
@@ -3634,11 +3660,12 @@ a.agent-citation-bubble {
   padding: 18px 20px 8px;
 }
 .composer-footer {
-  grid-template-columns: minmax(220px, 290px) minmax(0, 1fr) 36px;
+  grid-template-columns:
+    minmax(220px, 290px) max-content minmax(0, 1fr) 36px;
   padding: 8px 10px 10px 18px;
 }
 .target-picker > span,
-.composer-footer > span {
+.composer-shortcut {
   font-size: 11px;
 }
 .send-button,
@@ -4019,8 +4046,13 @@ a.agent-citation-bubble {
 
 /* Icon-only controls use an explicit square box so the SVG optical centre and
    the hover/focus surface stay aligned at every Windows DPI scale. */
-.chat-header-actions .header-icon-button {
+.chat-header-actions .header-icon-button,
+.desktop-v2-native-frame
+  .chat-page
+  .chat-header-actions
+  .header-icon-button {
   display: inline-grid;
+  box-sizing: border-box;
   width: 36px;
   min-width: 36px;
   height: 36px;
@@ -4037,8 +4069,17 @@ a.agent-citation-bubble {
   font-size: 16px;
   line-height: 0;
 }
-.chat-header-actions .header-icon-button :deep(.fluent-system-icon) {
+.chat-header-actions .header-icon-button :deep(.fluent-system-icon),
+.desktop-v2-native-frame
+  .chat-page
+  .chat-header-actions
+  .header-icon-button
+  :deep(.fluent-system-icon) {
   display: block;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  font-size: 16px;
   vertical-align: 0;
 }
 .chat-welcome .welcome-mark {
@@ -4072,5 +4113,28 @@ a.agent-citation-bubble {
 
 .welcome-composer {
   background: color-mix(in srgb, var(--app-surface-strong) 84%, transparent);
+}
+
+@media (max-width: 760px) {
+  .composer-footer {
+    grid-template-columns: minmax(0, 1fr) 36px;
+  }
+
+  .composer-footer .target-picker {
+    grid-column: 1 / -1;
+  }
+
+  .composer-footer > .el-switch {
+    grid-column: 1;
+    justify-self: start;
+  }
+
+  .composer-shortcut {
+    display: none;
+  }
+
+  .composer-footer .send-button {
+    grid-column: 2;
+  }
 }
 </style>

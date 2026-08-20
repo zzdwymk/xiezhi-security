@@ -102,6 +102,12 @@
   --fluent-duration-slow: 300ms;
   --fluent-fast: var(--fluent-duration-faster) var(--fluent-curve-standard);
   --fluent-normal: var(--fluent-duration-normal) var(--fluent-curve-standard);
+  /* Shared disclosure motion. Expanding content decelerates into place while
+     its supporting fade stays slightly shorter, matching Fluent's hierarchy. */
+  --fluent-collapse-motion: var(--fluent-duration-normal)
+    var(--fluent-curve-decelerate);
+  --fluent-collapse-fade-motion: var(--fluent-duration-fast)
+    var(--fluent-curve-standard);
   --system-accent: AccentColor;
   --system-caption-color: AccentColor;
   --system-theme-accent: var(--system-accent);

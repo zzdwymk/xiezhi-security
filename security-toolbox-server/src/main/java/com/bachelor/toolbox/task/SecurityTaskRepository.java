@@ -18,6 +18,8 @@ public interface SecurityTaskRepository extends JpaRepository<SecurityTask, Long
 
   List<SecurityTask> findAllByProjectId(Long projectId, Pageable pageable);
 
+  List<SecurityTask> findAllByWorkflowRunIdOrderByCreatedAtAsc(Long workflowRunId);
+
   List<SecurityTask> findAllByStatusOrderByCreatedAtAsc(String status);
 
   long countByStatus(String status);

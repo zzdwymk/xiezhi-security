@@ -1,4 +1,4 @@
-package com.bachelor.toolbox.schedule;
+package com.bachelor.toolbox.task;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -19,41 +19,50 @@ import lombok.Setter;
 @NoArgsConstructor
 @Entity
 @Table(
-    name = "scan_schedules",
-    indexes = @Index(name = "idx_scan_schedules_due", columnList = "enabled, next_run_at, id"))
-public class ScanSchedule {
+    name = "workflow_runs",
+    indexes = {
+      @Index(name = "idx_workflow_runs_project_created", columnList = "project_id, created_at"),
+      @Index(name = "idx_workflow_runs_status", columnList = "status, id")
+    })
+public class WorkflowRun {
   @Id
   @GeneratedValue(strategy = GenerationType.IDENTITY)
   private Long id;
 
   @Column(nullable = false)
-  private Long targetId;
-
-  @Column(nullable = false)
   private Long projectId;
 
-  @Column(nullable = false, length = 50)
-  private String toolCode;
+  @Column(nullable = false)
+  private Long targetId;
 
-  @Lob private String parametersJson;
-
-  @Column(length = 120)
-  private String cronExpression;
-
-  private Long intervalSeconds;
+  @Column(nullable = false, length = 36)
+  private String workflowId;
 
   @Column(nullable = false)
-  private boolean enabled = true;
+  private Long workflowRevision;
 
-  private Instant nextRunAt;
-  private Instant lastRunAt;
-  private Long lastTaskId;
+  @Column(nullable = false, length = 71)
+  private String workflowDigest;
+
+  @Lob
+  @Column(nullable = false)
+  private String specJson;
+
+  @Column(nullable = false, length = 24)
+  private String status;
+
+  @Column(nullable = false)
+  private int progress;
 
   @Column(length = 1000)
-  private String lastError;
+  private String message;
 
   @Column(nullable = false, updatable = false)
   private Instant createdAt;
+
+  private Instant startedAt;
+  private Instant finishedAt;
+  private Instant clearedAt;
 
   @PrePersist
   void init() {

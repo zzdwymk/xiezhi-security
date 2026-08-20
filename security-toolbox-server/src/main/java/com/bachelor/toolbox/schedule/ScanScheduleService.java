@@ -9,6 +9,8 @@ import com.bachelor.toolbox.target.TargetService;
 import com.bachelor.toolbox.task.CreateTaskRequest;
 import com.bachelor.toolbox.task.SecurityTask;
 import com.bachelor.toolbox.task.TaskService;
+import com.bachelor.toolbox.tool.ScannerPocSelectionService;
+import com.bachelor.toolbox.tool.SecurityToolRegistry;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
@@ -16,8 +18,12 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,6 +42,18 @@ public class ScanScheduleService {
       Sort.by(Sort.Order.asc("nextRunAt"), Sort.Order.asc("id"));
   private static final long MINIMUM_INTERVAL_SECONDS = 60;
   private static final int CRON_INTERVAL_CHECK_COUNT = 64;
+  private static final Set<String> SCHEDULED_TOOL_CODES =
+      Set.of(
+          "tcp_ports",
+          "http_headers",
+          "tls_config",
+          "nmap_service_scan",
+          "http_security_check",
+          "nuclei_scan",
+          "afrog_scan",
+          "xray_scan");
+  private static final Set<String> HTTP_SECURITY_CHECKS =
+      Set.of("cookies", "cors", "methods", "disclosure");
   private static final TypeReference<Map<String, Object>> PARAMETERS_TYPE =
       new TypeReference<>() {};
 
@@ -45,6 +63,8 @@ public class ScanScheduleService {
   private final AssessmentProjectService projectService;
   private final ProjectAuthorizationService authorization;
   private final ObjectMapper objectMapper;
+  private final SecurityToolRegistry toolRegistry;
+  private final ScannerPocSelectionService scannerPocs;
   private final BusinessDataOperationGate operationGate;
 
   @Autowired
@@ -55,6 +75,8 @@ public class ScanScheduleService {
       AssessmentProjectService projectService,
       ProjectAuthorizationService authorization,
       ObjectMapper objectMapper,
+      SecurityToolRegistry toolRegistry,
+      ScannerPocSelectionService scannerPocs,
       BusinessDataOperationGate operationGate) {
     this.repository = repository;
     this.taskService = taskService;
@@ -62,6 +84,8 @@ public class ScanScheduleService {
     this.projectService = projectService;
     this.authorization = authorization;
     this.objectMapper = objectMapper;
+    this.toolRegistry = toolRegistry;
+    this.scannerPocs = scannerPocs;
     this.operationGate = operationGate;
   }
 
@@ -71,7 +95,9 @@ public class ScanScheduleService {
       TargetService targetService,
       AssessmentProjectService projectService,
       ProjectAuthorizationService authorization,
-      ObjectMapper objectMapper) {
+      ObjectMapper objectMapper,
+      SecurityToolRegistry toolRegistry,
+      ScannerPocSelectionService scannerPocs) {
     this(
         repository,
         taskService,
@@ -79,6 +105,8 @@ public class ScanScheduleService {
         projectService,
         authorization,
         objectMapper,
+        toolRegistry,
+        scannerPocs,
         new BusinessDataOperationGate());
   }
 
@@ -103,8 +131,11 @@ public class ScanScheduleService {
     validateCreateRequest(request);
     projectService.validateProjectTarget(request.projectId(), request.targetId());
     targetService.getCurrentlyAuthorized(request.targetId());
+    Map<String, Object> parameters =
+        normalizeScheduledParameters(request.toolCode(), request.parameters());
+    validateScheduledTool(request.toolCode(), parameters);
 
-    ScanSchedule schedule = buildSchedule(request);
+    ScanSchedule schedule = buildSchedule(request, parameters);
     return repository.save(schedule);
   }
 
@@ -112,6 +143,16 @@ public class ScanScheduleService {
   public ScanSchedule toggle(Long id, boolean enabled) {
     ScanSchedule schedule = load(id);
     authorization.requireManage(schedule.getProjectId());
+    if (enabled) {
+      projectService.validateProjectTarget(schedule.getProjectId(), schedule.getTargetId());
+      targetService.getCurrentlyAuthorized(schedule.getTargetId());
+      Map<String, Object> parameters =
+          normalizeScheduledParameters(
+              schedule.getToolCode(), deserializeStoredParameters(schedule.getParametersJson()));
+      validateScheduledTool(schedule.getToolCode(), parameters);
+      schedule.setParametersJson(serializeParameters(parameters));
+      schedule.setLastError(null);
+    }
     schedule.setEnabled(enabled);
     schedule.setNextRunAt(enabled ? calculateNextRun(schedule, Instant.now()) : null);
     return repository.save(schedule);
@@ -147,12 +188,13 @@ public class ScanScheduleService {
     validateScheduleExpression(request.cronExpression(), request.intervalSeconds());
   }
 
-  private ScanSchedule buildSchedule(CreateScheduleRequest request) {
+  private ScanSchedule buildSchedule(
+      CreateScheduleRequest request, Map<String, Object> normalizedParameters) {
     ScanSchedule schedule = new ScanSchedule();
     schedule.setProjectId(request.projectId());
     schedule.setTargetId(request.targetId());
     schedule.setToolCode(request.toolCode());
-    schedule.setParametersJson(serializeParameters(request.parameters()));
+    schedule.setParametersJson(serializeParameters(normalizedParameters));
     schedule.setCronExpression(request.cronExpression());
     schedule.setIntervalSeconds(request.intervalSeconds());
     schedule.setEnabled(request.enabled() == null || request.enabled());
@@ -168,9 +210,77 @@ public class ScanScheduleService {
     }
   }
 
-  private void dispatchSchedule(ScanSchedule schedule, Instant dispatchTime) {
+  private Map<String, Object> deserializeStoredParameters(String parametersJson) {
     try {
-      Map<String, Object> parameters = deserializeParameters(schedule.getParametersJson());
+      return deserializeParameters(parametersJson);
+    } catch (Exception exception) {
+      throw new ApiException("扫描参数无效");
+    }
+  }
+
+  private void validateScheduledTool(String toolCode, Map<String, Object> parameters) {
+    if (!SCHEDULED_TOOL_CODES.contains(toolCode)) {
+      throw new ApiException("该工具不支持定时执行: " + toolCode);
+    }
+    toolRegistry.require(toolCode);
+
+    Map<String, Object> safeParameters = parameters == null ? Map.of() : parameters;
+    if ("http_security_check".equals(toolCode)) {
+      validateHttpSecurityParameters(safeParameters);
+      return;
+    }
+
+    String scannerSource = ScannerPocSelectionService.sourceForTool(toolCode);
+    if (scannerSource != null) {
+      scannerPocs.resolve(scannerSource, safeParameters, false);
+    }
+  }
+
+  private Map<String, Object> normalizeScheduledParameters(
+      String toolCode, Map<String, Object> parameters) {
+    Map<String, Object> normalized =
+        new LinkedHashMap<>(parameters == null ? Map.of() : parameters);
+    if (ScannerPocSelectionService.sourceForTool(toolCode) == null) {
+      return normalized;
+    }
+    if (normalized.containsKey(ScannerPocSelectionService.ALL_PARAMETER)) {
+      throw new ApiException("定时扫描不支持动态全部 PoC，请明确选择 SAFE PoC");
+    }
+    normalized.put(ScannerPocSelectionService.SAFE_ONLY_PARAMETER, true);
+    return normalized;
+  }
+
+  private void validateHttpSecurityParameters(Map<String, Object> parameters) {
+    if (parameters.size() != 1 || !parameters.containsKey("check")) {
+      throw new ApiException("HTTP 漏洞检查要求且仅允许 check 参数");
+    }
+    String check =
+        Objects.toString(parameters.get("check"), "").trim().toLowerCase(Locale.ROOT);
+    if (!HTTP_SECURITY_CHECKS.contains(check)) {
+      throw new ApiException("不支持的 HTTP 检查类型: " + check);
+    }
+  }
+
+  private void dispatchSchedule(ScanSchedule schedule, Instant dispatchTime) {
+    Map<String, Object> parameters;
+    try {
+      parameters =
+          normalizeScheduledParameters(
+              schedule.getToolCode(), deserializeStoredParameters(schedule.getParametersJson()));
+      authorization.callWithSystemAccess(
+          () -> {
+            projectService.validateProjectTarget(schedule.getProjectId(), schedule.getTargetId());
+            targetService.getCurrentlyAuthorized(schedule.getTargetId());
+            validateScheduledTool(schedule.getToolCode(), parameters);
+            return null;
+          });
+      schedule.setParametersJson(serializeParameters(parameters));
+    } catch (Exception exception) {
+      disableInvalidSchedule(schedule, exception);
+      return;
+    }
+
+    try {
       SecurityTask task =
           authorization.callWithSystemAccess(
               () ->
@@ -182,11 +292,27 @@ public class ScanScheduleService {
                           parameters)));
       schedule.setLastRunAt(dispatchTime);
       schedule.setLastTaskId(task.getId());
+      schedule.setLastError(null);
       advanceSchedule(schedule, dispatchTime);
     } catch (Exception exception) {
+      schedule.setLastError(scheduleErrorMessage(exception));
       advanceSchedule(schedule, dispatchTime);
       log.warn("扫描计划调度失败，已推进到下次执行时间：scheduleId={}", schedule.getId(), exception);
     }
+  }
+
+  private void disableInvalidSchedule(ScanSchedule schedule, Exception exception) {
+    schedule.setEnabled(false);
+    schedule.setNextRunAt(null);
+    schedule.setLastError(scheduleErrorMessage(exception));
+    repository.save(schedule);
+    log.warn("扫描计划复验失败，已自动停用：scheduleId={}", schedule.getId(), exception);
+  }
+
+  private String scheduleErrorMessage(Exception exception) {
+    String message = exception.getMessage();
+    if (message == null || message.isBlank()) message = "定时任务执行失败，请查看服务日志";
+    return message.length() <= 1000 ? message : message.substring(0, 1000);
   }
 
   private Map<String, Object> deserializeParameters(String parametersJson) throws Exception {

@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -63,6 +64,11 @@ public class GlobalExceptionHandler {
   @ExceptionHandler(ResponseStatusException.class)
   public ResponseEntity<ApiErrorResponse> handleResponseStatus(ResponseStatusException ex) {
     return error(ex.getStatusCode(), localizedMessage(ex.getReason(), "请求处理失败"));
+  }
+
+  @ExceptionHandler(NoResourceFoundException.class)
+  public ResponseEntity<ApiErrorResponse> handleNoResource(NoResourceFoundException ex) {
+    return error(HttpStatus.NOT_FOUND, "请求资源不存在");
   }
 
   @ExceptionHandler(Exception.class)

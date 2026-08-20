@@ -4,7 +4,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpMethod;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 class GlobalExceptionHandlerTests {
   private final GlobalExceptionHandler handler = new GlobalExceptionHandler();
@@ -40,5 +42,13 @@ class GlobalExceptionHandlerTests {
 
     assertEquals(HttpStatus.FORBIDDEN, response.getStatusCode());
     assertEquals("仅允许从本机访问", response.getBody().message());
+  }
+
+  @Test
+  void mapsMissingStaticResourcesToNotFoundWithoutLeakingAsServerError() {
+    var response = handler.handleNoResource(new NoResourceFoundException(HttpMethod.GET, ""));
+
+    assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
+    assertEquals("请求资源不存在", response.getBody().message());
   }
 }

@@ -63,7 +63,7 @@ if (-not $SkipComponentBuild) {
 Push-Location $frontend
 try {
     Write-Host 'Building Vue renderer...' -ForegroundColor Cyan
-    & $npmCommand.Source run build
+    & $npmCommand.Source run build:desktop
     if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed.' }
 
     $buildOutput = Join-Path $env:LOCALAPPDATA ('Temp\security-toolbox-build-' + [Guid]::NewGuid().ToString('N'))

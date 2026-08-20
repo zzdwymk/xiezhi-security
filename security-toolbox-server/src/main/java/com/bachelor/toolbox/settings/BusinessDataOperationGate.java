@@ -1,5 +1,6 @@
 package com.bachelor.toolbox.settings;
 
+import com.bachelor.toolbox.common.ApiException;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Supplier;
 import org.springframework.stereotype.Component;
@@ -30,6 +31,18 @@ public class BusinessDataOperationGate {
   public <T> T withReset(Supplier<T> operation) {
     var writeLock = lock.writeLock();
     writeLock.lock();
+    try {
+      return operation.get();
+    } finally {
+      writeLock.unlock();
+    }
+  }
+
+  public <T> T withImmediateReset(Supplier<T> operation) {
+    var writeLock = lock.writeLock();
+    if (!writeLock.tryLock()) {
+      throw new ApiException("系统正在处理业务操作，请稍后重试");
+    }
     try {
       return operation.get();
     } finally {

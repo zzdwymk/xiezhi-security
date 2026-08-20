@@ -161,6 +161,25 @@ class ProjectReportSummaryServiceTests {
             });
   }
 
+  @Test
+  void countsExplicitRegressionRequestsAsRetestedFindings() {
+    SecurityTask baseline = task(10L, Instant.parse("2026-01-01T00:00:00Z"));
+    SecurityTask retest = task(11L, Instant.parse("2026-01-02T00:00:00Z"));
+    retest.setSourceTaskId(10L);
+    retest.setSourceFindingId(21L);
+    Finding requested = finding(21L, 10L, Instant.parse("2026-01-01T01:00:00Z"));
+    Finding awaiting = finding(22L, 10L, Instant.parse("2026-01-01T02:00:00Z"));
+    when(tasks.findAllByProjectId(eq(PROJECT_ID), any(Pageable.class)))
+        .thenAnswer(pages(List.of(baseline, retest)));
+    when(findings.findAllByTaskIdIn(any(), any(Pageable.class)))
+        .thenReturn(List.of(requested, awaiting));
+
+    ProjectReportSummaryService.Summary summary = service.load(PROJECT_ID);
+
+    assertThat(summary.verification().retestedFindings()).isEqualTo(1);
+    assertThat(summary.verification().awaitingRetest()).isEqualTo(1);
+  }
+
   private void assertTwoFixedPagesForTargets() {
     ArgumentCaptor<Pageable> pages = ArgumentCaptor.forClass(Pageable.class);
     verify(projectTargets, times(2)).findByProjectId(eq(PROJECT_ID), pages.capture());

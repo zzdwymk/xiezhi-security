@@ -150,6 +150,13 @@ git push origin "v$version"
 powershell -ExecutionPolicy Bypass -File scripts\start-all.ps1
 ```
 
+后端冷启动默认等待最多 90 秒；较慢的开发环境可通过
+`-BackendStartupTimeoutSeconds` 调整，例如等待 180 秒：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\start-all.ps1 -BackendStartupTimeoutSeconds 180
+```
+
 脚本会同时启动 Spring Boot 后端和 Vue 3 前端，等待 8080、5173 端口就绪后自动打开浏览器。
 
 首次启动时，脚本会生成随机管理员口令、JWT 密钥和 HTTPS MITM CA 口令，并使用当前 Windows 用户的 DPAPI 加密保存到 `.run/development-secrets.json`；该文件仅允许当前用户访问。
@@ -183,7 +190,7 @@ powershell -ExecutionPolicy Bypass -File scripts\status-all.ps1
 
 1. JWT 登录鉴权、BCrypt 密码存储、角色限制和默认管理员初始化。
 2. 安全评估项目管理：授权声明、负责人、有效期、状态和项目目标关联。
-3. 授权目标登记、端口范围、单目标有效期与启停管理；任务创建时同时校验项目和目标授权。
+3. 授权目标登记、端口范围、单目标有效期与启停管理；列表和编辑界面显示目标独立授权时间，未单独设置时明确继承项目授权窗口；任务创建时同时校验项目和目标授权。
 4. 被动/受控信息收集、HTTP 指纹识别、框架识别、WAF 判断和证据留存。
 5. AI 或本地规则先检索项目证据，再生成可引用 Evidence ID 的回答或受控检测计划，支持一次查询改写、连续对话、NDJSON 实时 Plan 和结果总结。
 6. 白名单工具注册、异步任务、取消/失败重试、SSE 进度事件、实际命令日志和并发控制。
@@ -192,7 +199,7 @@ powershell -ExecutionPolicy Bypass -File scripts\status-all.ps1
 9. 漏洞知识库、CVE/CWE/CVSS/EPSS/CISA KEV 元数据、主动检测、扫描后路径、复测和扫描 Diff。
 10. HTTP/HTTPS MITM、HTTP/2 抓包、黑白名单过滤、标记/删除、AI 分析与对话、受控报文重放和独立抓包浏览器。
 11. 任务 HTML、目标聚合 PDF、项目结构化摘要、审计日志、项目审批、定时扫描和受控安全动作数据模型。
-12. 离线编码、哈希、AES、网络计算、HTTP/IOC/端点/文件分析、JWT/JSON/时间戳和随机生成工具。
+12. 离线编码、哈希、AES、网络计算、HTTP/IOC/端点/文件分析、文件十六进制/ASCII 分块查看、JWT/JSON/时间戳和随机生成工具。
 13. 默认禁止公网目标、任意 Shell、密码爆破、横向移动和破坏性自动利用。
 
 ## 安全评估项目与信息收集
@@ -251,6 +258,8 @@ mvn -f .\security-toolbox-server\pom.xml spring-boot:run
 Nuclei 模板从 ProjectDiscovery 官方稳定版本同步并校验 checksums；Afrog 与 Xray 使用各自官方发布及 PoC 目录。三个目录会并行检查本地版本、展示下载和导入进度，并在切换页面后继续同步。默认扫描只允许经过审核的低风险模板/PoC，排除侵入式利用、RCE、注入、OAST、反连和爆破等高影响行为；应用不会下载执行任意脚本，也不会让 AI 生成可执行 PoC。
 
 主动检测页默认选择当前目标兼容的安全规则，按 Nuclei、Afrog、Xray 分别创建受控扫描任务。每个任务只执行用户选择且文件摘要核验通过的模板/PoC，解析结果后还会再次核对目标主机和端口，再统一生成漏洞记录。
+
+定时扫描可以选择 Nuclei、Afrog 或 Xray，并明确指定 1–50 个已核验的 `SAFE` PoC；无人值守派发不会接受需审查或高影响 PoC，每次派发和实际执行前都会重新校验授权、SAFE 分级、本地文件路径与 SHA-256。指纹规则库在项目详情中由管理员导入本地 JSON，服务端校验版本、规则数量和摘要后原子替换，更新失败保留旧版本；当前指纹库更新不是自动联网更新。
 
 ## 扫描后的 AI 路径与安全自动化
 

@@ -29,6 +29,7 @@ import org.springframework.stereotype.Service;
 public class ScannerPocSelectionService {
   public static final String PARAMETER = "pocCodes";
   public static final String ALL_PARAMETER = "allPocs";
+  public static final String SAFE_ONLY_PARAMETER = "scheduledSafeOnly";
   private static final int MAX_SELECTED_POCS = 50;
 
   private final VulnerabilityDefinitionRepository repository;
@@ -59,9 +60,11 @@ public class ScannerPocSelectionService {
       String requestedSource, Map<String, Object> parameters, boolean allowEmpty) {
     String source = normalizeSource(requestedSource);
     Map<String, Object> safeParameters = parameters == null ? Map.of() : parameters;
-    if (!Set.of(PARAMETER, ALL_PARAMETER).containsAll(safeParameters.keySet())) {
+    if (!Set.of(PARAMETER, ALL_PARAMETER, SAFE_ONLY_PARAMETER)
+        .containsAll(safeParameters.keySet())) {
       throw new ApiException(source + " 扫描包含未允许的参数");
     }
+    boolean safeOnly = selectsSafeOnly(safeParameters);
     boolean all = selectsAll(safeParameters);
     List<String> requested = pocCodes(safeParameters.get(PARAMETER));
     List<VulnerabilityDefinition> selectedDefinitions = List.of();
@@ -98,6 +101,9 @@ public class ScannerPocSelectionService {
           || !Boolean.TRUE.equals(item.getSourceActive())) {
         throw new ApiException("PoC " + code + " 不允许由 " + source + " 自动执行");
       }
+      if (safeOnly && !"SAFE".equalsIgnoreCase(item.getScanSafety())) {
+        throw new ApiException("定时扫描仅允许执行标记为 SAFE 的 PoC: " + code);
+      }
       String relative = item.getTemplateRelativePath();
       String expectedHash = item.getTemplateSha256();
       if (relative == null
@@ -129,6 +135,14 @@ public class ScannerPocSelectionService {
     Object value = parameters.get(ALL_PARAMETER);
     if (value == null) return false;
     if (!(value instanceof Boolean selected)) throw new ApiException("全部 PoC 参数格式无效");
+    return selected;
+  }
+
+  public boolean selectsSafeOnly(Map<String, Object> parameters) {
+    if (parameters == null) return false;
+    Object value = parameters.get(SAFE_ONLY_PARAMETER);
+    if (value == null) return false;
+    if (!(value instanceof Boolean selected)) throw new ApiException("定时安全参数格式无效");
     return selected;
   }
 

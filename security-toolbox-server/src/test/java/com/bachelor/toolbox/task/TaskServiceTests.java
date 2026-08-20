@@ -1,6 +1,7 @@
 package com.bachelor.toolbox.task;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -25,6 +26,8 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 class TaskServiceTests {
   private final SecurityTaskRepository repository = mock(SecurityTaskRepository.class);
@@ -82,6 +85,40 @@ class TaskServiceTests {
     assertEquals("FAILED", original.getStatus());
     verify(executionService).executeAsync(8L);
     verify(auditService).record("RETRY_TASK", "TASK", 8L, "tcp_ports; sourceTaskId=7", "ACCEPTED");
+  }
+
+  @Test
+  void cancelCommitsInAnIndependentTransaction() throws Exception {
+    Transactional transactional =
+        TaskService.class.getDeclaredMethod("cancel", Long.class).getAnnotation(Transactional.class);
+
+    assertNotNull(transactional);
+    assertEquals(Propagation.REQUIRES_NEW, transactional.propagation());
+  }
+
+  @Test
+  void createRetestPersistsItsSourceTaskAndFinding() throws Exception {
+    when(repository.save(any(SecurityTask.class)))
+        .thenAnswer(
+            invocation -> {
+              SecurityTask saved = invocation.getArgument(0);
+              saved.setId(12L);
+              return saved;
+            });
+
+    SecurityTask retest =
+        service.createRetest(
+            new CreateTaskRequest(1L, 3L, "tcp_ports", java.util.Map.of("ports", "80")),
+            "RULE-1",
+            "VULN-1",
+            7L,
+            9L);
+
+    assertEquals(7L, retest.getSourceTaskId());
+    assertEquals(9L, retest.getSourceFindingId());
+    verify(executionService).executeAsync(12L);
+    verify(auditService)
+        .record("RETEST_TASK", "TASK", 12L, "tcp_ports; sourceTaskId=7", "ACCEPTED");
   }
 
   @Test

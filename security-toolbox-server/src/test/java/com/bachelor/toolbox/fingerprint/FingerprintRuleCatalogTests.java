@@ -11,7 +11,11 @@ import java.security.MessageDigest;
 import java.util.HexFormat;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 
+@ExtendWith(OutputCaptureExtension.class)
 class FingerprintRuleCatalogTests {
   @TempDir Path tempDirectory;
 
@@ -127,6 +131,111 @@ class FingerprintRuleCatalogTests {
     assertThat(catalog.rules())
         .extracting(FingerprintRuleCatalog.Rule::id)
         .containsExactly("stable");
+  }
+
+  @Test
+  void updatesConfiguredCatalogAtomicallyAndReloadsItAfterRestart() throws Exception {
+    String initial =
+        """
+        {"version":"old","rules":[{"id":"old","name":"Old","confidence":70}]}
+        """;
+    String updated =
+        """
+        {"version":"new","rules":[{"id":"new","name":"New","confidence":90}]}
+        """;
+    Path rulesFile = tempDirectory.resolve("external-rules.json");
+    Files.writeString(rulesFile, initial);
+    FingerprintRuleCatalog catalog =
+        new FingerprintRuleCatalog(new ObjectMapper(), rulesFile.toString());
+    catalog.reload();
+
+    FingerprintRuleCatalog.CatalogInfo info = catalog.update(updated.getBytes());
+
+    assertThat(info.version()).isEqualTo("new");
+    assertThat(info.ruleCount()).isEqualTo(1);
+    assertThat(info.source()).isEqualTo(FingerprintRuleCatalog.CatalogSource.EXTERNAL);
+    assertThat(info.sha256()).isEqualTo(sha256(updated));
+    assertThat(Files.readString(rulesFile)).isEqualTo(updated);
+    assertThat(catalog.rules()).extracting(FingerprintRuleCatalog.Rule::id).containsExactly("new");
+
+    FingerprintRuleCatalog restarted =
+        new FingerprintRuleCatalog(new ObjectMapper(), rulesFile.toString());
+    assertThat(restarted.reload()).isEqualTo(info);
+    assertThat(restarted.rules())
+        .extracting(FingerprintRuleCatalog.Rule::id)
+        .containsExactly("new");
+  }
+
+  @Test
+  void persistsManagedOverrideWhenBuiltInCatalogIsTheInitialSource() throws Exception {
+    Path managedFile = tempDirectory.resolve("managed").resolve("rules.json");
+    String updated =
+        """
+        {"version":"managed-v1","rules":[{"id":"managed","name":"Managed","confidence":85}]}
+        """;
+    FingerprintRuleCatalog catalog =
+        new FingerprintRuleCatalog(new ObjectMapper(), "", managedFile.toString());
+    assertThat(catalog.reload().source()).isEqualTo(FingerprintRuleCatalog.CatalogSource.BUILTIN);
+
+    FingerprintRuleCatalog.CatalogInfo info = catalog.update(updated.getBytes());
+
+    assertThat(info.source()).isEqualTo(FingerprintRuleCatalog.CatalogSource.MANAGED);
+    assertThat(Files.readString(managedFile)).isEqualTo(updated);
+
+    FingerprintRuleCatalog restarted =
+        new FingerprintRuleCatalog(new ObjectMapper(), "", managedFile.toString());
+    assertThat(restarted.reload()).isEqualTo(info);
+    assertThat(restarted.rules())
+        .extracting(FingerprintRuleCatalog.Rule::id)
+        .containsExactly("managed");
+  }
+
+  @Test
+  void invalidUpdateKeepsPreviousCatalogAndFileUntouched(CapturedOutput output) throws Exception {
+    String initial =
+        """
+        {"version":"stable","rules":[{"id":"stable","name":"Stable","confidence":80}]}
+        """;
+    Path rulesFile = tempDirectory.resolve("stable-rules.json");
+    Files.writeString(rulesFile, initial);
+    FingerprintRuleCatalog catalog =
+        new FingerprintRuleCatalog(new ObjectMapper(), rulesFile.toString());
+    FingerprintRuleCatalog.CatalogInfo previous = catalog.reload();
+
+    assertThatThrownBy(() -> catalog.update("{not-json".getBytes()))
+        .isInstanceOf(ApiException.class)
+        .hasMessage("指纹规则更新失败，原有规则已保留")
+        .hasMessageNotContaining("JsonParseException");
+
+    assertThat(catalog.info()).isEqualTo(previous);
+    assertThat(Files.readString(rulesFile)).isEqualTo(initial);
+    assertThat(catalog.rules())
+        .extracting(FingerprintRuleCatalog.Rule::id)
+        .containsExactly("stable");
+    assertThat(output).doesNotContain("not-json");
+  }
+
+  @Test
+  void rejectsEmptyAndOversizedUpdatesWithoutChangingTheCatalog() throws Exception {
+    String initial =
+        """
+        {"version":"stable","rules":[{"id":"stable","name":"Stable","confidence":80}]}
+        """;
+    Path rulesFile = tempDirectory.resolve("bounded-rules.json");
+    Files.writeString(rulesFile, initial);
+    FingerprintRuleCatalog catalog =
+        new FingerprintRuleCatalog(new ObjectMapper(), rulesFile.toString());
+    FingerprintRuleCatalog.CatalogInfo previous = catalog.reload();
+
+    assertThatThrownBy(() -> catalog.update(new byte[0]))
+        .isInstanceOf(ApiException.class)
+        .hasMessage("指纹规则文件不能为空");
+    assertThatThrownBy(() -> catalog.update(new byte[FingerprintRuleCatalog.MAX_BYTES + 1]))
+        .isInstanceOf(ApiException.class)
+        .hasMessage("指纹规则文件超过 2MB 限制");
+
+    assertThat(catalog.info()).isEqualTo(previous);
+    assertThat(Files.readString(rulesFile)).isEqualTo(initial);
   }
 
   private String sha256(String value) throws Exception {

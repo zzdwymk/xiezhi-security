@@ -356,7 +356,7 @@ class AssessmentProjectServiceTests {
     when(findings.findAllByTaskIdInOrderByCreatedAtAsc(List.of(10L, 11L)))
         .thenReturn(List.of(vulnerability, information));
     when(links.countByProjectId(1L)).thenReturn(3L);
-    when(auditLogs.countByResourceTypeAndResourceId("PROJECT", "1")).thenReturn(4L);
+    when(auditLogs.countByProjectId(1L, "1")).thenReturn(4L);
 
     ProjectDtos.Summary summary = service.summary(1L);
 
@@ -405,6 +405,7 @@ class AssessmentProjectServiceTests {
     SecurityTask task = new SecurityTask();
     task.setId(id);
     task.setSourceTaskId(sourceTaskId);
+    task.setSourceFindingId(sourceTaskId == null ? null : 100L + id);
     return task;
   }
 
