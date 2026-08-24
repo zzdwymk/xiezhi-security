@@ -264,7 +264,7 @@ try {
   assert.match(appSource, /class="desktop-v2-recents-head"/);
   assert.match(
     appSource,
-    /class="desktop-v2-recents-clear"[\s\S]*?<span>清空<\/span>/,
+    /class="[^"]*\bdesktop-v2-recents-clear\b[^"]*"[\s\S]*?<span>清空<\/span>/,
     "the compact clear action must live beside the recent conversation heading",
   );
   assert.doesNotMatch(appSource, /<span>清空最近对话<\/span>/);
