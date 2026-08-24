@@ -626,17 +626,19 @@ onBeforeUnmount(() => {
     class="app-dialog app-dialog--lg"
     align-center
   >
-    <el-form label-position="top" inline>
-      <el-form-item label="基线任务 ID"
-        ><el-input v-model="diffForm.baselineTaskId" placeholder="例如 12"
-      /></el-form-item>
-      <el-form-item label="当前任务 ID"
-        ><el-input v-model="diffForm.currentTaskId" placeholder="例如 18"
-      /></el-form-item>
-      <el-button type="primary" :loading="diffLoading" @click="loadDiff"
-        >比较</el-button
-      >
-    </el-form>
+      <el-form label-position="top" inline>
+        <el-form-item label="基线任务 ID"
+          ><el-input v-model="diffForm.baselineTaskId" placeholder="例如 12"
+        /></el-form-item>
+        <el-form-item label="当前任务 ID"
+          ><el-input v-model="diffForm.currentTaskId" placeholder="例如 18"
+        /></el-form-item>
+        <el-form-item class="diff-compare-action" label=" ">
+          <el-button type="primary" :loading="diffLoading" @click="loadDiff"
+            >比较</el-button
+          >
+        </el-form-item>
+      </el-form>
     <template v-if="diff">
       <el-alert
         :title="`新增 ${diff.summary.added} · 持续 ${diff.summary.persistent} · 已修复 ${diff.summary.resolved} · 等级变化 ${diff.summary.severityChanged}`"
@@ -669,6 +671,9 @@ onBeforeUnmount(() => {
 <style scoped>
 .findings-page .section-head h3 {
   font-size: var(--type-section-title);
+}
+.diff-compare-action :deep(.el-form-item__content) {
+  align-items: flex-end;
 }
 .findings-page .section-head p {
   font-size: var(--type-section-desc);

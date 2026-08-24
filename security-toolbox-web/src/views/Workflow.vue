@@ -4615,21 +4615,6 @@ onBeforeUnmount(() => {
   );
   box-shadow: none;
 }
-.library-item.is-selected::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 50%;
-  width: var(--fluent3-slider-width, 3px);
-  height: 24px;
-  transform: translateY(-50%);
-  border-radius: 999px;
-  background: var(--fluent3-slider-accent, var(--app-accent));
-  pointer-events: none;
-  transition:
-    height var(--fluent3-slider-ease, 220ms cubic-bezier(0.2, 0.8, 0.2, 1)),
-    opacity var(--fluent-fast);
-}
 .library-icon {
   display: grid;
   place-items: center;

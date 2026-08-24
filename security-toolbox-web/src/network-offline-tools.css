@@ -512,6 +512,9 @@
   grid-template-columns: repeat(16, 2ch);
   gap: 0 1ch;
 }
+.hex-viewer-hex-heading {
+  font-size: 12px;
+}
 .hex-viewer-hex-heading span:nth-child(8),
 .hex-viewer-hex-cells span:nth-child(8) {
   margin-right: 1ch;

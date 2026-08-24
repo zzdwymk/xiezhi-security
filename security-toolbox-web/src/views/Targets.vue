@@ -190,7 +190,7 @@ function targetAuthorizationWindow(row: Target) {
         ? "目标级"
         : "目标 / 项目"
       : project
-        ? "随项目"
+        ? ""
         : "未设置",
   };
 }
@@ -884,10 +884,13 @@ onMounted(load);
 }
 .target-form-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 150px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
 }
 .target-form-row :deep(.el-select) {
+  width: 100%;
+}
+.target-form-row :deep(.el-date-picker) {
   width: 100%;
 }
 .port-picker {
@@ -940,8 +943,7 @@ onMounted(load);
   gap: 6px;
   margin: -6px 2px 14px;
   padding: 10px 12px;
-  border-left: 3px solid var(--app-accent);
-  border-radius: 0 5px 5px 0;
+  border-radius: 5px;
   background: var(--app-accent-soft);
   color: var(--app-muted);
   font-size: 12px;

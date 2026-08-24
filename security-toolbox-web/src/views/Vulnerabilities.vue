@@ -1495,6 +1495,7 @@ onMounted(async () => {
   overflow: auto;
 }
 .catalog-list button {
+  position: relative;
   display: flex;
   width: 100%;
   flex-direction: column;
@@ -1510,8 +1511,19 @@ onMounted(async () => {
   background: #f1f5f9;
 }
 .catalog-list button.active {
-  box-shadow: inset 3px 0 #2563eb;
   background: #eaf1fd;
+}
+.catalog-list button.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 24px;
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background: var(--app-accent, #2563eb);
+  pointer-events: none;
 }
 .catalog-list button > span {
   display: flex;

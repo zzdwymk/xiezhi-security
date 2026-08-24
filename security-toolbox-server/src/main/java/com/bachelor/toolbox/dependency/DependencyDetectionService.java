@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.LinkedHashSet;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -221,7 +222,7 @@ public class DependencyDetectionService {
             "检测到的命令不是受支持的 Nmap。"),
         descriptor(
             "Npcap",
-            paths("NPFInstall.exe", "npcap.sys", "Npcap"),
+            npcapCandidates(),
             List.of(),
             false,
             "DRIVER",
@@ -351,6 +352,28 @@ public class DependencyDetectionService {
 
   private List<String> paths(String... values) {
     return List.of(values);
+  }
+
+  private List<String> npcapCandidates() {
+    LinkedHashSet<String> candidates = new LinkedHashSet<>();
+    candidates.add("NPFInstall.exe");
+    candidates.add("npcap.sys");
+    candidates.add("Npcap");
+    String programFiles = System.getenv("ProgramFiles");
+    if (programFiles != null && !programFiles.isBlank()) {
+      candidates.add(Path.of(programFiles, "Npcap", "NPFInstall.exe").toString());
+      candidates.add(Path.of(programFiles, "Npcap", "npcap.sys").toString());
+    }
+    String programFilesX86 = System.getenv("ProgramFiles(x86)");
+    if (programFilesX86 != null && !programFilesX86.isBlank()) {
+      candidates.add(Path.of(programFilesX86, "Npcap", "NPFInstall.exe").toString());
+      candidates.add(Path.of(programFilesX86, "Npcap", "npcap.sys").toString());
+    }
+    String systemRoot = System.getenv("SystemRoot");
+    if (systemRoot != null && !systemRoot.isBlank()) {
+      candidates.add(Path.of(systemRoot, "System32", "drivers", "npcap.sys").toString());
+    }
+    return List.copyOf(candidates);
   }
 
   private boolean isProjectDiscoveryHttpx(String output) {
