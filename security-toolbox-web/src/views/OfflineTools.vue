@@ -976,7 +976,8 @@ function runText() {
               >复制结果</el-button
             >
             <el-button
-              text
+              type="danger"
+              plain
               @click="
                 codecInput = '';
                 codecOutput = '';

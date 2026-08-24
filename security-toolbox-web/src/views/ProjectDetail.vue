@@ -2457,7 +2457,7 @@ onUnmounted(() => {
           align-center
           destroy-on-close
         >
-          <el-form label-position="top">
+          <el-form label-position="top" class="project-target-create-form">
             <div class="project-form-row">
               <el-form-item label="名称" required
                 ><el-input v-model="targetForm.name" placeholder="用于内部识别"
@@ -4464,6 +4464,16 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.project-target-create-form :deep(.el-form-item__label) {
+  position: relative;
+  padding-left: 13px;
+}
+.project-target-create-form
+  :deep(.el-form-item.is-required:not(.is-no-asterisk).asterisk-left > .el-form-item__label::before) {
+  position: absolute;
+  left: 0;
+  margin-right: 0;
+}
 .json-view {
   max-height: 180px;
   overflow: auto;

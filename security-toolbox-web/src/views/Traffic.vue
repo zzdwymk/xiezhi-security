@@ -1372,6 +1372,7 @@ onUnmounted(() => {
                 >
                 <el-dropdown-item
                   command="delete"
+                  class="is-danger"
                   :disabled="deletingId === item.id || clearingSessions"
                   >删除这条流量</el-dropdown-item
                 >
@@ -1484,6 +1485,7 @@ onUnmounted(() => {
                 @click="activeReplayTabId = tab.id"
               >
                 <i
+                  class="replay-tab-status"
                   :class="
                     tab.sending
                       ? 'sending'
@@ -2395,21 +2397,21 @@ onUnmounted(() => {
   color: var(--app-text);
   box-shadow: 0 1px 2px color-mix(in srgb, var(--app-text) 6%, transparent);
 }
-.replay-document-tabs button > i {
+.replay-document-tabs button > .replay-tab-status {
   width: 6px;
   height: 6px;
   flex: none;
   border-radius: 50%;
   background: var(--app-border-strong);
 }
-.replay-document-tabs button > i.sending {
+.replay-document-tabs button > .replay-tab-status.sending {
   background: var(--app-accent);
   animation: thinking 1.2s infinite;
 }
-.replay-document-tabs button > i.success {
+.replay-document-tabs button > .replay-tab-status.success {
   background: #39a36d;
 }
-.replay-document-tabs button > i.failed {
+.replay-document-tabs button > .replay-tab-status.failed {
   background: #c84f4f;
 }
 .replay-document-tabs button > span {
@@ -2433,9 +2435,20 @@ onUnmounted(() => {
 }
 .replay-document-tabs > .replay-tab-add {
   width: 32px;
+  min-width: 32px;
   padding: 0;
   justify-content: center;
+  color: var(--app-muted);
   font-size: 16px;
+}
+.replay-document-tabs > .replay-tab-add > .el-icon {
+  width: 16px;
+  height: 16px;
+  background: transparent;
+  color: inherit;
+}
+.replay-document-tabs > .replay-tab-add:hover {
+  color: var(--app-accent);
 }
 .inline-replay-editor .replay-request-line {
   grid-template-columns: 110px minmax(0, 1fr);
@@ -2630,24 +2643,34 @@ onUnmounted(() => {
   list-style: none;
 }
 .traffic-points-list li {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 9px 11px;
+  padding: 9px 11px 9px 15px;
   border: 1px solid var(--app-border);
-  border-left-width: 3px;
   border-radius: var(--fluent-radius-control);
-  background: var(--app-surface-soft);
+  background: var(--app-surface-strong);
 }
-.traffic-points-list li.ok {
-  border-left-color: #2e9d67;
+.traffic-points-list li::before {
+  position: absolute;
+  top: 50%;
+  left: 5px;
+  width: 3px;
+  height: 20px;
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background: var(--app-accent);
+  content: "";
+}
+.traffic-points-list li.ok::before {
+  background: #2e9d67;
 }
 .traffic-points-list li.warn {
-  border-left-color: #c8801a;
-  background: color-mix(in srgb, #d69a2b 8%, var(--app-surface-soft));
+  background: var(--app-surface-strong);
 }
-.traffic-points-list li.info {
-  border-left-color: var(--app-accent);
+.traffic-points-list li.warn::before {
+  background: #c8801a;
 }
 .traffic-points-list .tp-label {
   color: var(--app-muted);
@@ -3304,6 +3327,18 @@ onUnmounted(() => {
   border-radius: var(--traffic-card-radius);
   background: var(--app-bg);
   box-shadow: none;
+}
+.codex-traffic-page :deep(.el-button--danger),
+.codex-traffic-page :deep(.el-button--danger.is-link) {
+  border-color: var(--fluent-danger-bg, #c50f1f);
+  background: var(--fluent-danger-bg, #c50f1f);
+  color: #fff;
+}
+.codex-traffic-page :deep(.el-button--danger:hover),
+.codex-traffic-page :deep(.el-button--danger.is-link:hover) {
+  border-color: var(--fluent-danger-hover-bg, #a80000);
+  background: var(--fluent-danger-hover-bg, #a80000);
+  color: #fff;
 }
 .traffic-session-rail,
 .packet-editor-pane,

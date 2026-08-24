@@ -641,7 +641,7 @@ onMounted(load);
           :rows="2"
           placeholder="填写授权来源、允许测试的范围和有效期"
       /></el-form-item>
-      <div class="target-form-row">
+      <div class="target-form-row target-form-row--authorization">
         <el-form-item label="目标授权生效时间"
           ><el-date-picker
             v-model="form.authorizationValidFrom"
@@ -791,7 +791,7 @@ onMounted(load);
           </p>
         </div>
       </el-form-item>
-      <div class="target-form-row">
+      <div class="target-form-row target-form-row--authorization">
         <el-form-item label="目标授权开始">
           <el-date-picker
             v-model="editForm.authorizationValidFrom"
@@ -892,6 +892,9 @@ onMounted(load);
 }
 .target-form-row :deep(.el-date-picker) {
   width: 100%;
+}
+.target-form-row--authorization > .el-form-item:nth-child(2) {
+  padding-left: 12px;
 }
 .port-picker {
   display: grid;
@@ -1026,6 +1029,9 @@ onMounted(load);
 @media (max-width: 600px) {
   .target-form-row {
     grid-template-columns: 1fr;
+  }
+  .target-form-row--authorization > .el-form-item:nth-child(2) {
+    padding-left: 0;
   }
 }
 .targets-page :deep(.el-table) {

@@ -549,7 +549,7 @@ onBeforeUnmount(() => {
               <button
                 v-if="conversations.recent.length"
                 type="button"
-                class="desktop-v2-recents-clear"
+                class="desktop-v2-recents-clear is-danger"
                 aria-label="清空最近对话"
                 @click="clearRecentConversations"
               >
@@ -612,7 +612,7 @@ onBeforeUnmount(() => {
                 >
                   <button
                     type="button"
-                    class="desktop-v2-recent-delete"
+                    class="desktop-v2-recent-delete is-danger"
                     aria-label="删除对话"
                     @click="removeConversation(conversation.id)"
                   >

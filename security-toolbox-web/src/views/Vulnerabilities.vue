@@ -1785,7 +1785,7 @@ onMounted(async () => {
   transition: background-color 0.12s ease;
 }
 .catalog-list button.active {
-  box-shadow: inset 3px 0 var(--app-accent);
+  box-shadow: none;
 }
 .detail-tabs section {
   border-radius: 6px;

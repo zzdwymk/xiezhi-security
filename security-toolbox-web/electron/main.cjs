@@ -585,7 +585,7 @@ function decryptStoredApiKey(settings = readDesktopSettings()) {
 function resolvedAiSettings(settings = readDesktopSettings()) {
   const stored =
     settings.ai && typeof settings.ai === "object" ? settings.ai : undefined;
-  const apiKey = stored?.apiKeyCleared
+  const storedApiKey = stored?.apiKeyCleared
     ? ""
     : stored?.encryptedApiKey
       ? decryptStoredApiKey(settings)
@@ -594,7 +594,11 @@ function resolvedAiSettings(settings = readDesktopSettings()) {
     String(process.env.AI_ENABLED || "").toLowerCase() === "true";
   const proxyMode = stored
     ? Boolean(stored.proxyMode)
-    : environmentEnabled && !apiKey;
+    : environmentEnabled && !storedApiKey;
+  // The local CCS/OpenAI-compatible proxy is intentionally passwordless from
+  // this app's perspective. Keep the encrypted direct-provider key at rest so
+  // it can be restored when proxy mode is disabled, but never send it locally.
+  const apiKey = proxyMode ? "" : storedApiKey;
   const environmentEmbeddingConfigured = Boolean(
     process.env.AI_RUNTIME_EMBEDDING_BASE_URL ||
       process.env.AI_RUNTIME_EMBEDDING_API_KEY,
@@ -637,6 +641,7 @@ function resolvedAiSettings(settings = readDesktopSettings()) {
       embeddingConnectionMode === "shared" ? baseUrl : embeddingBaseUrl,
     effectiveEmbeddingApiKey:
       embeddingConnectionMode === "shared" ? apiKey : customEmbeddingApiKey,
+    storedApiKey,
     apiKey,
     proxyMode,
     enabled: Boolean(apiKey || proxyMode || environmentEnabled),
@@ -691,7 +696,7 @@ function updatedAiSettings(
     !clearApiKey &&
     !proxyMode &&
     !apiKey &&
-    previousResolved.apiKey &&
+    previousResolved.storedApiKey &&
     baseUrl !== previousResolved.baseUrl
   ) {
     throw new UserFacingError(
@@ -732,7 +737,7 @@ function updatedAiSettings(
     delete nextAi.apiKeyCleared;
   } else if (
     proxyMode &&
-    previousResolved.apiKey &&
+    previousResolved.storedApiKey &&
     baseUrl !== previousResolved.baseUrl
   ) {
     delete nextAi.encryptedApiKey;

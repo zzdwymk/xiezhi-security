@@ -49,7 +49,8 @@ Referrer-Policy: strict-origin-when-cross-origin
       <el-button type="primary" @click="analyze">解析报文</el-button>
       <el-button @click="loadResponseExample">载入响应示例</el-button>
       <el-button
-        text
+        type="danger"
+        plain
         @click="
           input = '';
           result = undefined;

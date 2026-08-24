@@ -209,8 +209,7 @@ body,
   transform: rotate(-90deg);
 }
 
-/* Collapse/expand chevrons stay hidden until the group is hovered or focused (or is
-   already collapsed, so the state stays discoverable), fading + rotating smoothly. */
+/* Collapse/expand chevrons appear only while the group is hovered or focused. */
 .desktop-v2-nav-group-toggle > .el-icon,
 .desktop-v2-recents-toggle > .el-icon:last-child {
   opacity: 0;
@@ -221,11 +220,10 @@ body,
 .desktop-v2-nav-group:hover .desktop-v2-nav-group-toggle > .el-icon,
 .desktop-v2-nav-group-toggle:hover > .el-icon,
 .desktop-v2-nav-group-toggle:focus-visible > .el-icon,
-.desktop-v2-nav-group.collapsed .desktop-v2-nav-group-toggle > .el-icon,
 .desktop-v2-recents:hover .desktop-v2-recents-toggle > .el-icon:last-child,
 .desktop-v2-recents-toggle:hover > .el-icon:last-child,
 .desktop-v2-recents-toggle:focus-visible > .el-icon:last-child,
-.desktop-v2-recents.collapsed .desktop-v2-recents-toggle > .el-icon:last-child {
+.desktop-v2-recents-toggle:focus-within > .el-icon:last-child {
   opacity: 1;
 }
 
@@ -1967,7 +1965,7 @@ html
 .desktop-v2-app-frame .desktop-v2-recents-toggle > .el-icon:last-child {
   color: color-mix(in srgb, var(--app-text) 58%, transparent);
   font-size: 13px;
-  opacity: 0.52;
+  opacity: 0;
 }
 
 .desktop-v2-app-frame
@@ -1977,20 +1975,12 @@ html
 .desktop-v2-app-frame .desktop-v2-nav-group-toggle:hover > .el-icon,
 .desktop-v2-app-frame .desktop-v2-nav-group-toggle:focus-visible > .el-icon,
 .desktop-v2-app-frame
-  .desktop-v2-nav-group.collapsed
-  .desktop-v2-nav-group-toggle
-  > .el-icon,
-.desktop-v2-app-frame
   .desktop-v2-recents:hover
   .desktop-v2-recents-toggle
   > .el-icon:last-child,
 .desktop-v2-app-frame .desktop-v2-recents-toggle:hover > .el-icon:last-child,
 .desktop-v2-app-frame
   .desktop-v2-recents-toggle:focus-visible
-  > .el-icon:last-child,
-.desktop-v2-app-frame
-  .desktop-v2-recents.collapsed
-  .desktop-v2-recents-toggle
   > .el-icon:last-child {
   opacity: 1;
 }

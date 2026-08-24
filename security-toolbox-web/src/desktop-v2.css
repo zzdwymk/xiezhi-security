@@ -398,7 +398,7 @@ body.sidebar-resizing * {
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: #9a9b95;
+  color: var(--color-danger, #b42318);
   cursor: pointer;
   opacity: 0;
 }
@@ -417,7 +417,7 @@ body.sidebar-resizing * {
   border: 0;
   border-radius: 4px;
   background: transparent;
-  color: var(--color-text-secondary, #5f6368);
+  color: var(--color-danger, #b42318);
   display: flex;
   align-items: center;
   justify-content: center;

@@ -113,6 +113,16 @@ function analyzeAudit(row: any) {
   void router.push("/");
 }
 
+function canAnalyzeAudit(row: any) {
+  const resourceType = String(row.resourceType || "").toUpperCase();
+  const resourceId = Number(row.resourceId);
+  return (
+    Number.isSafeInteger(resourceId) &&
+    resourceId > 0 &&
+    (resourceType === "TARGET" || resourceType === "PROJECT")
+  );
+}
+
 onMounted(load);
 watch(() => props.kind, load);
 </script>
@@ -147,6 +157,7 @@ watch(() => props.kind, load);
       ><el-table-column v-if="kind === 'audits'" label="操作" width="120"
         ><template #default="scope"
           ><el-button
+            v-if="canAnalyzeAudit(scope.row)"
             link
             type="primary"
             :icon="MagicStick"

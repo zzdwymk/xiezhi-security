@@ -1040,7 +1040,7 @@ watch(
               设置了访问令牌，仍可在下方填写。
             </p>
           </el-form-item>
-          <el-form-item label="API Key">
+          <el-form-item v-if="!aiForm.proxyMode" label="API Key">
             <el-input
               v-model="aiForm.apiKey"
               type="password"
@@ -1053,10 +1053,7 @@ watch(
               "
               :disabled="!isDesktop"
             />
-            <p>
-              密钥使用 Windows 安全存储加密，不会写入浏览器 localStorage。CCS
-              不校验密钥时可以留空。
-            </p>
+            <p>密钥使用 Windows 安全存储加密，不会写入浏览器 localStorage。</p>
           </el-form-item>
           <el-form-item label="模型名称">
             <el-input
