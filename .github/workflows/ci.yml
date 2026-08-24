@@ -180,12 +180,15 @@ jobs:
       AI_RUNTIME_API_KEY: ci-mock-openai-key
       AI_RUNTIME_BASE_URL: http://127.0.0.1:8091/v1
       AI_RUNTIME_MODEL: mock-harness-model
-      AI_RUNTIME_DATA_DIR: ${{ runner.temp }}/security-toolbox-ai-e2e
     steps:
       - name: Check out source
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Configure runtime data directory
+        shell: bash
+        run: echo "AI_RUNTIME_DATA_DIR=${RUNNER_TEMP}/security-toolbox-ai-e2e" >> "$GITHUB_ENV"
 
       - name: Set up Java
         uses: actions/setup-java@v4
