@@ -169,7 +169,7 @@ class FingerprintCatalogUpdateSecurityTests {
 
   private static Path createInitialRulesFile() {
     try {
-      Path targetDirectory = Path.of("target", "test-data").toAbsolutePath().normalize();
+      Path targetDirectory = Path.of("target", "test-data").normalize();
       Files.createDirectories(targetDirectory);
       Path rulesFile =
           targetDirectory.resolve("fingerprint-update-security-" + UUID.randomUUID() + ".json");

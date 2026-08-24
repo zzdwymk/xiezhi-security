@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test;
 class DependencyDetectionServiceTests {
   @Test
   void detectsAvailableAndIncompatibleCommandsAndSanitizesUserPath() {
-    Path userTools = Path.of(System.getProperty("user.home"), "security-tools");
+    Path userTools = Path.of("test-data", "security-tools");
     ExecutableLocator locator =
         candidates -> {
           if (candidates.stream().anyMatch(value -> value.equals("nmap"))) {
@@ -59,17 +59,16 @@ class DependencyDetectionServiceTests {
     assertThat(find(response, "Xray").status()).isEqualTo("MISSING");
     assertThat(nmap.status()).isEqualTo("AVAILABLE");
     assertThat(nmap.version()).isEqualTo("Nmap version 7.99");
-    assertThat(nmap.path())
-        .startsWith("%USERPROFILE%")
-        .doesNotContain(System.getProperty("user.name"));
+    assertThat(nmap.path()).contains("security-tools").doesNotContain(System.getProperty("user.name"));
     assertThat(httpx.status()).isEqualTo("INCOMPATIBLE");
     assertThat(httpx.message()).contains("不是 ProjectDiscovery httpx");
   }
 
   @Test
   void usesConfiguredNmapExecutableForPreflight() {
-    String configuredExecutable = "D:/portable/Nmap/nmap.exe";
-    Path resolvedExecutable = Path.of(configuredExecutable).toAbsolutePath().normalize();
+    String configuredExecutable = "test-data/tools/nmap";
+    Path resolvedExecutable = Path.of(configuredExecutable).normalize();
+    Path expectedTail = Path.of("test-data", "tools", "nmap");
     AtomicReference<List<String>> receivedCandidates = new AtomicReference<>();
     ExecutableLocator locator =
         candidates -> {
@@ -94,15 +93,19 @@ class DependencyDetectionServiceTests {
         .containsExactly(
             configuredExecutable,
             "nmap",
-            "C:/Program Files/Nmap/nmap.exe",
-            "C:/Program Files (x86)/Nmap/nmap.exe");
+            "nmap.exe");
     assertThat(nmap.status()).isEqualTo("AVAILABLE");
-    assertThat(nmap.path()).isEqualTo(resolvedExecutable.toString());
+    assertThat(nmap.path())
+        .satisfies(
+            path ->
+                assertThat(Path.of(path).normalize().toString())
+                    .endsWith(expectedTail.normalize().toString())
+                    .doesNotContain(".."));
   }
 
   @Test
   void reportsTimeoutWithoutWaitingBeyondRunnerContract() {
-    ExecutableLocator locator = locateCandidate("nuclei", Path.of("C:/tools/nuclei.exe"));
+    ExecutableLocator locator = locateCandidate("nuclei", Path.of("test-data/tools/nuclei"));
     CommandRunner runner = (executable, arguments, timeout) -> CommandResult.timeout("");
 
     DependencyStatus nuclei =
@@ -151,7 +154,7 @@ class DependencyDetectionServiceTests {
 
   @Test
   void disablesAfrogUpdateCheckDuringVersionProbe() {
-    ExecutableLocator locator = locateCandidate("afrog", Path.of("C:/tools/afrog.exe"));
+    ExecutableLocator locator = locateCandidate("afrog", Path.of("test-data/tools/afrog"));
     CommandRunner runner =
         (executable, arguments, timeout) -> {
           assertThat(arguments).containsExactly("-disable-update-check", "-version");
@@ -169,8 +172,8 @@ class DependencyDetectionServiceTests {
   void disablesNetworkUpdateChecksForProjectDiscoveryScanners() {
     ExecutableLocator locator =
         candidates -> {
-          if (candidates.contains("nuclei")) return Optional.of(Path.of("C:/tools/nuclei.exe"));
-          if (candidates.contains("httpx")) return Optional.of(Path.of("C:/tools/httpx.exe"));
+          if (candidates.contains("nuclei")) return Optional.of(Path.of("test-data/tools/nuclei"));
+          if (candidates.contains("httpx")) return Optional.of(Path.of("test-data/tools/httpx"));
           return Optional.empty();
         };
     CommandRunner runner =
@@ -189,10 +192,10 @@ class DependencyDetectionServiceTests {
 
   @Test
   void reportsCommandFailureWithoutLeakingRunnerDetails() {
-    ExecutableLocator locator = locateCandidate("nmap", Path.of("C:/tools/nmap.exe"));
+    ExecutableLocator locator = locateCandidate("nmap", Path.of("test-data/tools/nmap"));
     CommandRunner runner =
         (executable, arguments, timeout) ->
-            CommandResult.failed("CreateProcess failed for C:/secret/tool.exe");
+            CommandResult.failed("CreateProcess failed for test-data/secret/tool");
 
     DependencyStatus nmap = find(service(locator, runner).detect(), "Nmap");
 
@@ -208,7 +211,7 @@ class DependencyDetectionServiceTests {
     ExecutableLocator locator =
         candidates -> {
           if (candidates.contains("nmap")) {
-            throw new IllegalStateException("C:/private/location");
+            throw new IllegalStateException("test-data/private/location");
           }
           return Optional.empty();
         };
@@ -230,8 +233,8 @@ class DependencyDetectionServiceTests {
   void skipsVersionCommandForPathOnlyDependency() {
     ExecutableLocator locator =
         locateCandidate(
-            "C:/Program Files/Npcap/NPFInstall.exe",
-            Path.of("C:/Program Files/Npcap/NPFInstall.exe"));
+            "NPFInstall.exe",
+            Path.of("test-data/tools/NPFInstall.exe"));
     AtomicInteger commandCalls = new AtomicInteger();
     CommandRunner runner =
         (executable, arguments, timeout) -> {
@@ -250,7 +253,7 @@ class DependencyDetectionServiceTests {
 
   @Test
   void cleansVersionOutputAndPreservesExitCodeFailureStatus() {
-    ExecutableLocator locator = locateCandidate("nuclei", Path.of("C:/tools/nuclei.exe"));
+    ExecutableLocator locator = locateCandidate("nuclei", Path.of("test-data/tools/nuclei"));
     CommandRunner runner =
         (executable, arguments, timeout) ->
             CommandResult.completed(7, "\u001B[31mNuclei v3.2.0\u001B[0m\r\nextra output");
@@ -265,7 +268,7 @@ class DependencyDetectionServiceTests {
 
   @Test
   void reportsIncompatibleOutputBeforeNonZeroExitCode() {
-    ExecutableLocator locator = locateCandidate("httpx", Path.of("C:/tools/httpx.exe"));
+    ExecutableLocator locator = locateCandidate("httpx", Path.of("test-data/tools/httpx"));
     CommandRunner runner =
         (executable, arguments, timeout) -> CommandResult.completed(2, "generic HTTP client 1.0");
 

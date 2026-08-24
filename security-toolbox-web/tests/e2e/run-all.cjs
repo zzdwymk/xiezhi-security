@@ -17,8 +17,6 @@ const { Harness, loadCredentials } = require("./lib/harness.cjs");
 const BASE_URL = process.env.E2E_BASE_URL || "http://127.0.0.1:5173";
 const TARGET_IP = process.env.E2E_TARGET || "192.168.136.131";
 const TARGET_WEB_PORT = process.env.E2E_TARGET_WEB_PORT || "8000";
-const EDGE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
-const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 
 // 执行顺序按业务依赖排列：先建项目/目标，再发起检测并等待完成，
 // 之后才检查项目详情、漏洞结果与报告；授权边界负向用例放在最后，
@@ -41,8 +39,16 @@ const STAGES = [
 
 function browserPath() {
   if (process.env.E2E_BROWSER && fs.existsSync(process.env.E2E_BROWSER)) return process.env.E2E_BROWSER;
-  if (fs.existsSync(EDGE)) return EDGE;
-  if (fs.existsSync(CHROME)) return CHROME;
+  const names = process.platform === "win32"
+    ? ["msedge.exe", "chrome.exe"]
+    : ["microsoft-edge", "google-chrome", "chromium", "chromium-browser"];
+  for (const directory of (process.env.PATH || "").split(path.delimiter)) {
+    if (!directory) continue;
+    for (const name of names) {
+      const candidate = path.join(directory, name);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
   throw new Error("未找到 Edge 或 Chrome 可执行文件");
 }
 

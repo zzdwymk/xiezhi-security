@@ -13,8 +13,7 @@ public class NmapExecutableResolver {
   private static final List<String> FALLBACK_CANDIDATES =
       List.of(
           "nmap",
-          "C:/Program Files/Nmap/nmap.exe",
-          "C:/Program Files (x86)/Nmap/nmap.exe");
+          "nmap.exe");
 
   private final ExecutableLocator locator;
   private final String configuredExecutable;

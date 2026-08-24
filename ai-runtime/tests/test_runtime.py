@@ -943,7 +943,7 @@ def test_http_error_does_not_expose_python_exception(
     monkeypatch, runtime_headers
 ):
     def broken_index(*_args, **_kwargs):
-        raise RuntimeError("private-index-detail C:\\sensitive\\index")
+        raise RuntimeError("private-index-detail test-data/sensitive/index")
 
     monkeypatch.setattr(main_module.index_store, "index_project", broken_index)
     with TestClient(main_module.app, raise_server_exceptions=False) as client:

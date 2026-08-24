@@ -221,10 +221,7 @@ public class DependencyDetectionService {
             "检测到的命令不是受支持的 Nmap。"),
         descriptor(
             "Npcap",
-            paths(
-                "C:/Program Files/Npcap/NPFInstall.exe",
-                "C:/Program Files/Npcap",
-                "C:/Windows/System32/drivers/npcap.sys"),
+            paths("NPFInstall.exe", "npcap.sys", "Npcap"),
             List.of(),
             false,
             "DRIVER",
@@ -310,18 +307,13 @@ public class DependencyDetectionService {
   }
 
   private List<String> curlCandidates(boolean windows) {
-    return paths(windows ? "C:/Windows/System32/curl.exe" : "curl", "curl.exe", "curl");
+    return paths(windows ? "curl.exe" : "curl", "curl");
   }
 
   private List<String> postgresqlCandidates(boolean windows) {
     List<String> candidates = new ArrayList<>();
     candidates.add(windows ? "psql.exe" : "psql");
-    if (windows) {
-      for (int version = 18; version >= 13; version--) {
-        candidates.add("C:/Program Files/PostgreSQL/" + version + "/bin/psql.exe");
-        candidates.add("D:/software/PostgreSQL/" + version + "/bin/psql.exe");
-      }
-    }
+    candidates.add("psql");
     return candidates;
   }
 
@@ -341,9 +333,8 @@ public class DependencyDetectionService {
     }
     return paths(
         "zap.exe",
-        "C:/Program Files/ZAP/Zed Attack Proxy/zap.exe",
-        "C:/Program Files/ZAP/Zed Attack Proxy/zap.bat",
-        "C:/Program Files/OWASP/Zed Attack Proxy/zap.bat");
+        "zap.bat",
+        "zaproxy");
   }
 
   private DependencyDescriptor descriptor(

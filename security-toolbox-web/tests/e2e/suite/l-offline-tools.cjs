@@ -15,7 +15,7 @@ const {
   sleep, settle, navigate, pageTitle, selectOn, lastMessage, clearMessages, escapeRe,
 } = require("../lib/ui.cjs");
 
-const TMP_DIR = "C:\\Users\\Wymk\\.claude\\jobs\\7734f603\\tmp";
+const TMP_DIR = "test-data/tmp";
 
 /* ------------------------------------------------------------------ */
 /* 断言与小工具                                                        */

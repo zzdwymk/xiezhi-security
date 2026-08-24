@@ -83,9 +83,9 @@ try {
       /^\.\/assets\//,
       `Electron asset must remain relative: ${reference}`,
     );
-    const resolved = new URL(
-      reference,
-      "file:///C:/Program%20Files/Xiezhi/resources/app.asar/dist/index.html",
+   const resolved = new URL(
+     reference,
+      "file:///app/resources/app.asar/dist/index.html",
     );
     assert.match(
       resolved.pathname,

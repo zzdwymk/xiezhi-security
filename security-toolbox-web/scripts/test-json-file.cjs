@@ -86,7 +86,7 @@ try {
     },
   );
 
-  const privateError = new Error("private-node-detail C:\\sensitive\\file");
+  const privateError = new Error("private-node-detail test-data\\private\\file");
   assert.equal(
     publicErrorMessage(privateError, "操作失败，请稍后重试"),
     "操作失败，请稍后重试",
@@ -95,10 +95,10 @@ try {
     publicErrorMessage(new UserFacingError("参数格式不正确"), "操作失败"),
     "参数格式不正确",
   );
-  assert.equal(
-    diagnosticError(privateError),
-    "Error: private-node-detail C:\\sensitive\\file",
-  );
+ assert.equal(
+   diagnosticError(privateError),
+    "Error: private-node-detail test-data\\private\\file",
+ );
 
   const electronDirectory = path.resolve(__dirname, "..", "electron");
   const packageManifest = JSON.parse(

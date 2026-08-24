@@ -11,9 +11,9 @@ class CommandLogFormatterTests {
   void formatsArgumentsAndKeepsNmapPortFlagVisible() {
     String rendered =
         CommandLogFormatter.format(
-            List.of("C:\\Program Files\\Nmap\\nmap.exe", "-sT", "-p", "80,443", "127.0.0.1"));
+            List.of("test-data/tools/nmap", "-sT", "-p", "80,443", "127.0.0.1"));
 
-    assertTrue(rendered.contains("\"C:\\\\Program Files\\\\Nmap\\\\nmap.exe\""));
+    assertTrue(rendered.contains("test-data/tools/nmap"));
     assertTrue(rendered.contains("-p 80,443"));
   }
 

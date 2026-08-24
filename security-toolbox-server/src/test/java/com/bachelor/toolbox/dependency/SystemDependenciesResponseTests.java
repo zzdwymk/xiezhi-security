@@ -18,7 +18,7 @@ class SystemDependenciesResponseTests {
             "Nmap",
             "AVAILABLE",
             "Nmap version 7.99",
-            "C:\\tools\\nmap.exe",
+            "test-data/tools/nmap",
             false,
             "SCANNER",
             "可用。");
@@ -36,7 +36,7 @@ class SystemDependenciesResponseTests {
     assertThat(item.path("name").asText()).isEqualTo("Nmap");
     assertThat(item.path("status").asText()).isEqualTo("AVAILABLE");
     assertThat(item.path("version").asText()).isEqualTo("Nmap version 7.99");
-    assertThat(item.path("path").asText()).isEqualTo("C:\\tools\\nmap.exe");
+    assertThat(item.path("path").asText()).isEqualTo("test-data/tools/nmap");
     assertThat(item.path("required").asBoolean()).isFalse();
     assertThat(item.path("category").asText()).isEqualTo("SCANNER");
     assertThat(item.path("message").asText()).isEqualTo("可用。");

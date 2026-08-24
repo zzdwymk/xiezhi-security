@@ -50,12 +50,9 @@ class NmapServiceScanToolTests {
 
     List<String> command = tool.buildCommand("127.0.0.1", "443", "quick");
 
-    assertThat(receivedCandidates.get())
-        .containsExactly(
-            "nmap",
-            "C:/Program Files/Nmap/nmap.exe",
-            "C:/Program Files (x86)/Nmap/nmap.exe");
-    assertThat(command.get(0)).isEqualTo(resolvedExecutable.toAbsolutePath().normalize().toString());
+    // configured "nmap" duplicates the first fallback, so the resolver deduplicates it.
+    assertThat(receivedCandidates.get()).containsExactly("nmap", "nmap.exe");
+    assertThat(command.get(0)).isEqualTo(resolvedExecutable.normalize().toString());
   }
 
   private NmapServiceScanTool toolWithExecutable(Path executable) {

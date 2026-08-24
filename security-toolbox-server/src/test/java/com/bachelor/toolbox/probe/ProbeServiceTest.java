@@ -133,7 +133,7 @@ class ProbeServiceTest {
         org.springframework.test.util.ReflectionTestUtils.invokeMethod(
             service(),
             "friendlyNetworkError",
-            new IOException("C:\\private\\credential.txt"));
+            new IOException("test-data/private/credential.txt"));
 
     assertThat(message)
         .isEqualTo("网络请求失败，请检查目标地址和网络状态")

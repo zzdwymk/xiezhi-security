@@ -4,9 +4,25 @@ const path = require("node:path");
 const { chromium } = require("playwright-core");
 
 const baseUrl = process.env.VISUAL_BASE_URL || "http://127.0.0.1:4173";
-const edgePath =
-  process.env.EDGE_PATH ||
-  "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
+function findBrowser() {
+  if (process.env.EDGE_PATH && fs.existsSync(process.env.EDGE_PATH)) {
+    return process.env.EDGE_PATH;
+  }
+  const names =
+    process.platform === "win32"
+      ? ["msedge.exe", "chrome.exe"]
+      : ["microsoft-edge", "google-chrome", "chromium", "chromium-browser"];
+  for (const directory of (process.env.PATH || "").split(path.delimiter)) {
+    if (!directory) continue;
+    for (const name of names) {
+      const candidate = path.join(directory, name);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+const edgePath = findBrowser();
 const outputDir = path.resolve(__dirname, "..", "..", ".run", "visual-smoke");
 const desktopViewports = [
   { width: 1000, height: 700 },
@@ -2917,7 +2933,7 @@ async function verifyScheduledScannerConfiguration(browser) {
 }
 
 async function main() {
-  assert.ok(fs.existsSync(edgePath), `未找到 Edge：${edgePath}`);
+  assert.ok(edgePath, "未找到 Edge 或 Chrome 可执行文件，请设置 EDGE_PATH 环境变量");
   fs.mkdirSync(outputDir, { recursive: true });
   const browser = await chromium.launch({
     executablePath: edgePath,
