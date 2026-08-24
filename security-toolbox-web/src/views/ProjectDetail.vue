@@ -46,6 +46,7 @@ import {
 } from "../components/fluentIcons";
 import { useClientPagination } from "../composables/useClientPagination";
 import { toErrorMessage } from "../utils/errorMessage";
+import { downloadBlob, downloadText, EmptyDownloadError } from "../utils/download";
 
 const route = useRoute();
 const router = useRouter();
@@ -1178,14 +1179,13 @@ async function downloadProjectSummaryPdf() {
   projectReportPdfLoading.value = true;
   try {
     const blob = (await endpoints.downloadProjectReportPdf(id)).data;
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `project-${id}-security-report.pdf`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(blob, `project-${id}-security-report.pdf`);
   } catch (error: any) {
-    ElMessage.error(errorMessage(error, "项目总结 PDF 下载失败"));
+    ElMessage.error(
+      error instanceof EmptyDownloadError
+        ? error.message
+        : errorMessage(error, "项目总结 PDF 下载失败"),
+    );
   } finally {
     projectReportPdfLoading.value = false;
   }
@@ -1329,14 +1329,13 @@ async function downloadTargetPdfReport() {
   targetReportPdfLoading.value = true;
   try {
     const blob = (await endpoints.downloadTargetReportPdf(target.id)).data;
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `target-${target.id}-security-report.pdf`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(blob, `target-${target.id}-security-report.pdf`);
   } catch (error: any) {
-    ElMessage.error(errorMessage(error, "目标 PDF 下载失败"));
+    ElMessage.error(
+      error instanceof EmptyDownloadError
+        ? error.message
+        : errorMessage(error, "目标 PDF 下载失败"),
+    );
   } finally {
     targetReportPdfLoading.value = false;
   }
@@ -2072,12 +2071,13 @@ function exportRecon(format: "json" | "csv" | "html" = "json") {
     content = `<html><meta charset="utf-8"><body><h1>项目 ${id} 信息收集</h1><pre>${JSON.stringify(rows, null, 2).replace(/</g, "&lt;")}</pre></body></html>`;
     type = "text/html;charset=utf-8";
   }
-  const url = URL.createObjectURL(new Blob([content], { type }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `project-${id}-recon.${ext}`;
-  a.click();
-  URL.revokeObjectURL(url);
+  try {
+    downloadText(content, `project-${id}-recon.${ext}`, type);
+  } catch (error) {
+    ElMessage.error(
+      error instanceof EmptyDownloadError ? error.message : "导出失败",
+    );
+  }
 }
 
 const PROJECT_WORKFLOW_TERMINALS = new Set([

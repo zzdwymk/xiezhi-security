@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -30,6 +31,7 @@ class TaskExecutionServiceTests {
       value = {
         "数据库连接失败：jdbc:secret|FAILED|FAILED|任务执行失败，请稍后重试|任务执行失败",
         "外部工具执行超时：token=secret|TIMEOUT|TIMEOUT|任务执行超时，请稍后重试|任务执行超时",
+        "请求端口超出授权目标的允许端口范围|FAILED|FAILED|任务执行失败，请稍后重试|任务执行失败",
         "授权快照不一致：hash=secret|FAILED|AUTHORIZATION_CHANGED|任务授权状态已变更，请重新确认授权后再试|任务授权状态已变更"
       },
       delimiter = '|')
@@ -63,8 +65,15 @@ class TaskExecutionServiceTests {
     when(targetService.getCurrentlyAuthorized(7L)).thenReturn(target);
     when(registry.require("TEST_TOOL")).thenReturn(tool);
     when(tool.code()).thenReturn("TEST_TOOL");
-    when(tool.execute(any(AuthorizedTarget.class), anyMap(), any(ToolExecutionObserver.class)))
-        .thenThrow(new IllegalStateException(internalMessage));
+    if ("AUTHORIZATION_CHANGED".equals(expectedTerminationReason)) {
+      doThrow(new TaskAuthorizationChangedException(internalMessage))
+          .when(snapshotService)
+          .assertCurrentMatches(
+              any(SecurityTask.class), any(AuthorizedTarget.class), any(SecurityTool.class));
+    } else {
+      when(tool.execute(any(AuthorizedTarget.class), anyMap(), any(ToolExecutionObserver.class)))
+          .thenThrow(new IllegalStateException(internalMessage));
+    }
 
     TaskExecutionService service =
         new TaskExecutionService(

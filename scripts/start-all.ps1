@@ -1,7 +1,9 @@
 param(
     [switch]$NoBrowser,
     [ValidateRange(1, 3600)]
-    [int]$BackendStartupTimeoutSeconds = 90
+    [int]$BackendStartupTimeoutSeconds = 90,
+    [ValidateRange(1, 3600)]
+    [int]$FrontendStartupTimeoutSeconds = 60
 )
 
 $ErrorActionPreference = 'Stop'
@@ -44,13 +46,20 @@ function Test-PortListening([int]$Port) {
     return [bool]($listeners | Where-Object { $_.Port -eq $Port } | Select-Object -First 1)
 }
 
-function Wait-Port([int]$Port, [int]$TimeoutSeconds) {
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    while ((Get-Date) -lt $deadline) {
-        if (Test-PortListening $Port) { return $true }
-        Start-Sleep -Milliseconds 500
+function Stop-StartedProcessTree([System.Diagnostics.Process]$Process) {
+    if (-not $Process) { return }
+    $Process.Refresh()
+    if ($Process.HasExited) { return }
+
+    function Stop-ProcessTreeById([int]$RootPid) {
+        $children = Get-CimInstance Win32_Process -Filter "ParentProcessId=$RootPid" -ErrorAction SilentlyContinue
+        foreach ($child in $children) {
+            Stop-ProcessTreeById ([int]$child.ProcessId)
+        }
+        Stop-Process -Id $RootPid -Force -ErrorAction SilentlyContinue
     }
-    return $false
+
+    Stop-ProcessTreeById $Process.Id
 }
 
 function Wait-ProcessPort(
@@ -168,7 +177,7 @@ function Save-DevelopmentSecrets($Secrets) {
 function Get-DevelopmentSecrets {
     if (Test-Path -LiteralPath $developmentSecretsFile) {
         try {
-            $saved = Get-Content -Raw -LiteralPath $developmentSecretsFile | ConvertFrom-Json
+            $saved = Get-Content -Raw -LiteralPath $developmentSecretsFile -Encoding UTF8 | ConvertFrom-Json
             if ($saved.schemaVersion -ne 1 -and $saved.schemaVersion -ne 2) { throw 'unsupported schema' }
             if ($saved.schemaVersion -eq 2 -and $saved.legacyMigrationPending -isnot [bool]) {
                 throw 'invalid migration state'
@@ -239,6 +248,7 @@ foreach ($port in @(8080, 5173)) {
 }
 
 $java = (Get-Command java -ErrorAction Stop).Source
+$node = (Get-Command node -ErrorAction Stop).Source
 $maven = (Get-Command mvn -ErrorAction Stop).Source
 $npmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
 if (-not $npmCommand) { $npmCommand = Get-Command npm -ErrorAction Stop }
@@ -307,7 +317,7 @@ if (-not $backendReady) {
     if ($backend.HasExited) {
         throw "Backend process exited before port 8080 became ready (exit code $($backend.ExitCode)). Logs: $backendOutLog and $backendErrLog."
     }
-    Stop-Process -Id $backend.Id -Force -ErrorAction SilentlyContinue
+    Stop-StartedProcessTree $backend
     throw "Backend startup timed out after $BackendStartupTimeoutSeconds seconds. Logs: $backendOutLog and $backendErrLog."
 }
 
@@ -317,48 +327,68 @@ if ($developmentSecrets.legacyMigrationPending) {
         if ($backend.HasExited) {
             throw "Backend process exited during legacy credential migration (exit code $($backend.ExitCode)). Existing data was retained. Logs: $backendOutLog and $backendErrLog."
         }
-        Stop-Process -Id $backend.Id -Force -ErrorAction SilentlyContinue
+        Stop-StartedProcessTree $backend
         throw "Legacy credential migration did not authenticate within $BackendStartupTimeoutSeconds seconds. Existing data was retained. Logs: $backendOutLog and $backendErrLog."
     }
     try {
         $developmentSecrets['legacyMigrationPending'] = $false
         Save-DevelopmentSecrets $developmentSecrets
     } catch {
-        Stop-Process -Id $backend.Id -Force -ErrorAction SilentlyContinue
+        Stop-StartedProcessTree $backend
         throw
     }
     Write-Host 'Legacy development credentials migrated successfully.' -ForegroundColor Green
 }
 
-$npmInvocation = ('"{0}" run dev -- --host 127.0.0.1' -f $npm)
-$frontend = Start-Process -FilePath 'cmd.exe' `
-    -ArgumentList '/d', '/c', $npmInvocation `
-    -WorkingDirectory $frontendDir `
-    -RedirectStandardOutput (Join-Path $logDir 'frontend.out.log') `
-    -RedirectStandardError (Join-Path $logDir 'frontend.err.log') `
-    -WindowStyle Hidden `
-    -PassThru
+$frontendOutLog = Join-Path $logDir 'frontend.out.log'
+$frontendErrLog = Join-Path $logDir 'frontend.err.log'
+$viteCli = Join-Path $frontendDir 'node_modules\vite\bin\vite.js'
+$frontend = $null
+try {
+    $frontend = Start-Process -FilePath $node `
+        -ArgumentList ('"{0}" --host 127.0.0.1 --port 5173 --strictPort' -f $viteCli) `
+        -WorkingDirectory $frontendDir `
+        -RedirectStandardOutput $frontendOutLog `
+        -RedirectStandardError $frontendErrLog `
+        -WindowStyle Hidden `
+        -PassThru
 
-$state = [ordered]@{
-    workspace = $workspace
-    startedAt = (Get-Date).ToUniversalTime().ToString('o')
-    backend = [ordered]@{
-        pid = $backend.Id
-        startTime = $backend.StartTime.ToUniversalTime().ToString('o')
-        port = 8080
+    $state = [ordered]@{
+        workspace = $workspace
+        startedAt = (Get-Date).ToUniversalTime().ToString('o')
+        backend = [ordered]@{
+            pid = $backend.Id
+            startTime = $backend.StartTime.ToUniversalTime().ToString('o')
+            port = 8080
+        }
+        frontend = [ordered]@{
+            pid = $frontend.Id
+            startTime = $frontend.StartTime.ToUniversalTime().ToString('o')
+            port = 5173
+        }
     }
-    frontend = [ordered]@{
-        pid = $frontend.Id
-        startTime = $frontend.StartTime.ToUniversalTime().ToString('o')
-        port = 5173
-    }
+    $state | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $pidFile -Encoding UTF8
+} catch {
+    Stop-StartedProcessTree $frontend
+    Stop-StartedProcessTree $backend
+    Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
+    throw
 }
-$state | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $pidFile -Encoding UTF8
 
-$frontendReady = Wait-Port 5173 35
-if (-not $frontendReady) {
+$frontendReady = $false
+try {
+    $frontendReady = Wait-ProcessPort $frontend 5173 $FrontendStartupTimeoutSeconds
+    if (-not $frontendReady) {
+        $frontend.Refresh()
+        $frontendExitCode = if ($frontend.HasExited) { $frontend.ExitCode } else { $null }
+        if ($null -ne $frontendExitCode) {
+            throw "Frontend process exited before port 5173 became ready (exit code $frontendExitCode). Logs: $frontendOutLog and $frontendErrLog."
+        }
+        throw "Frontend startup timed out after $FrontendStartupTimeoutSeconds seconds. Logs: $frontendOutLog and $frontendErrLog."
+    }
+} catch {
     & (Join-Path $PSScriptRoot 'stop-all.ps1')
-    throw "Frontend startup timed out. Check $logDir."
+    throw
 }
 
 Write-Host 'Backend and frontend started successfully.' -ForegroundColor Green

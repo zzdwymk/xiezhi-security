@@ -92,6 +92,9 @@ public class SecurityConfig {
                     .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.DELETE, "/api/settings/data")
                     .hasRole("ADMIN")
+                    // 清空全部漏洞结果属破坏性操作，与其它清空类操作保持一致的管理员限制
+                    .requestMatchers(HttpMethod.DELETE, "/api/findings")
+                    .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.GET, "/api/reports/projects/**")
                     .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.POST, "/api/scan-schedules/**")

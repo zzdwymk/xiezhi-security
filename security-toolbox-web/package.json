@@ -14,6 +14,8 @@
     "test:ai-settings": "node scripts/test-ai-settings.cjs",
     "test:offline": "node scripts/verify-offline-tools.cjs",
     "test:visual": "node scripts/visual-smoke.cjs",
+    "test:e2e": "node tests/e2e/run-all.cjs",
+    "test:e2e:report": "node tests/e2e/gen-report.cjs",
     "preview": "vite preview",
     "desktop:dev": "node electron/dev-runner.cjs",
     "desktop:pack": "npm run build:desktop && electron-builder --dir",

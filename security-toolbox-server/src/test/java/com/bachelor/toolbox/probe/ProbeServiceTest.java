@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 
 import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.fingerprint.FingerprintMatcher;
+import com.bachelor.toolbox.fingerprint.FingerprintRuleCatalog;
 import com.bachelor.toolbox.project.AssessmentProject;
 import com.bachelor.toolbox.project.AssessmentProjectRepository;
 import com.bachelor.toolbox.project.ProjectTarget;
@@ -18,11 +19,15 @@ import com.bachelor.toolbox.project.ProjectTargetRepository;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.AuthorizedTargetRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -150,6 +155,45 @@ class ProbeServiceTest {
 
     assertThat(result.getEvidence()).contains("\"status\":\"UNAVAILABLE\"").contains("连接被拒绝");
     assertThat(result.getWaf()).isEqualTo("未识别");
+  }
+
+  @Test
+  void usesHttp11ForSuccessfulLocalProbe() throws Exception {
+    AtomicReference<String> upgrade = new AtomicReference<>();
+    AtomicReference<String> http2Settings = new AtomicReference<>();
+    HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext(
+        "/",
+        exchange -> {
+          upgrade.set(exchange.getRequestHeaders().getFirst("Upgrade"));
+          http2Settings.set(exchange.getRequestHeaders().getFirst("HTTP2-Settings"));
+          byte[] body = "<title>Local probe</title>".getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(200, body.length);
+          exchange.getResponseBody().write(body);
+          exchange.close();
+        });
+    server.start();
+
+    try {
+      int port = server.getAddress().getPort();
+      AuthorizedTarget target = authorizedTarget("http://127.0.0.1:" + port, port);
+      stubAuthorizedProject(target);
+      when(fingerprints.match(any(), any()))
+          .thenReturn(
+              new FingerprintMatcher.Result(
+                  new FingerprintRuleCatalog.CatalogInfo("test", "sha256:test", 0),
+                  "Local probe",
+                  List.of()));
+      when(results.save(any(ProbeResult.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+      ProbeResult result = service().probe(requestFor(target.getId(), null));
+
+      assertThat(result.getEvidence()).contains("\"status\":200").contains("Local probe");
+      assertThat(upgrade.get()).isNull();
+      assertThat(http2Settings.get()).isNull();
+    } finally {
+      server.stop(0);
+    }
   }
 
   @Test

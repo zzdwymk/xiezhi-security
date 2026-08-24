@@ -27,6 +27,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -147,7 +148,9 @@ class ReconServiceTest {
 
   @Test
   void usesDeclaredHttpPortAndKeepsPartialResultWhenThatServiceStops() throws Exception {
-    HttpServer server = startHttpServer();
+    AtomicReference<String> upgrade = new AtomicReference<>();
+    AtomicReference<String> http2Settings = new AtomicReference<>();
+    HttpServer server = startHttpServer(upgrade, http2Settings);
     int port = server.getAddress().getPort();
     AuthorizedTarget target = authorizedTarget("http://127.0.0.1:" + port, String.valueOf(port));
     stubSavedTarget(target);
@@ -161,6 +164,8 @@ class ReconServiceTest {
           .contains("\"status\":200")
           .contains(":" + port + "/")
           .contains("Recon test");
+      assertThat(upgrade.get()).isNull();
+      assertThat(http2Settings.get()).isNull();
     } finally {
       server.stop(0);
     }
@@ -276,11 +281,14 @@ class ReconServiceTest {
     assertThat(cache.size()).isLessThanOrEqualTo(16);
   }
 
-  private HttpServer startHttpServer() throws Exception {
+  private HttpServer startHttpServer(
+      AtomicReference<String> upgrade, AtomicReference<String> http2Settings) throws Exception {
     HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
     server.createContext(
         "/",
         exchange -> {
+          upgrade.set(exchange.getRequestHeaders().getFirst("Upgrade"));
+          http2Settings.set(exchange.getRequestHeaders().getFirst("HTTP2-Settings"));
           byte[] body = "<title>Recon test</title>".getBytes(StandardCharsets.UTF_8);
           exchange.getResponseHeaders().add("Server", "recon-test");
           exchange.sendResponseHeaders(200, body.length);

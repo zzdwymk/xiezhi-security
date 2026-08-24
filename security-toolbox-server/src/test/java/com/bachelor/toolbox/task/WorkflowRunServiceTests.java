@@ -77,6 +77,7 @@ class WorkflowRunServiceTests {
             stopTransactions);
     AuthorizedTarget target = new AuthorizedTarget();
     target.setId(TARGET_ID);
+    target.setTargetValue("http://127.0.0.1:8000");
     target.setAllowedPorts("80,443,8000-8002");
     when(targets.getCurrentlyAuthorized(TARGET_ID, PROJECT_ID)).thenReturn(target);
     when(dependencies.detect()).thenReturn(availableDependencies());
@@ -177,6 +178,79 @@ class WorkflowRunServiceTests {
     assertThat(detail.tasks()).extracting(SecurityTask::getStatus).containsExactly("SKIPPED");
     verify(taskService).createSkippedWorkflowTask(
         any(), anyString(), eq("scan"), anyString(), anyInt(), anyString(), anyBoolean(), anyList(), eq(42L), anyString());
+  }
+
+  @Test
+  void httpTargetReportsTlsNodeDuringPreflight() {
+    List<Map<String, Object>> steps =
+        List.of(step("tls", "tls_config", 0, false, List.of(), Map.of()));
+    stubSnapshot(steps);
+
+    WorkflowRunDtos.PreflightResponse response =
+        service.preflight(
+            new WorkflowRunDtos.SnapshotRequest(
+                PROJECT_ID, TARGET_ID, "workflow-1", 3L, DIGEST));
+
+    assertThat(response.issues())
+        .singleElement()
+        .satisfies(
+            issue -> {
+              assertThat(issue.nodeId()).isEqualTo("tls");
+              assertThat(issue.toolCode()).isEqualTo("tls_config");
+              assertThat(issue.reason()).isEqualTo("目标不是 HTTPS，TLS 检查不可用");
+            });
+  }
+
+  @Test
+  void httpTargetTlsNodeMustBeExplicitlySkipped() throws Exception {
+    List<Map<String, Object>> steps =
+        List.of(
+            step("headers", "http_headers", 0, false, List.of(), Map.of()),
+            step("tls", "tls_config", 1, false, List.of("headers"), Map.of()));
+    stubSnapshot(steps);
+
+    assertThatThrownBy(() -> service.start(startRequest(List.of(), List.of())))
+        .isInstanceOf(ApiException.class)
+        .hasMessageContaining("目标不是 HTTPS，TLS 检查不可用");
+    assertThat(createdTasks).isEmpty();
+
+    SecurityTask skipped = workflowTask(12L, "tls", "tls_config");
+    skipped.setStatus("SKIPPED");
+    when(taskService.createSkippedWorkflowTask(
+            any(), anyString(), eq("tls"), anyString(), anyInt(), anyString(), anyBoolean(), anyList(), eq(42L), anyString()))
+        .thenAnswer(
+            invocation -> {
+              createdTasks.add(skipped);
+              return skipped;
+            });
+
+    WorkflowRunDtos.Detail detail = service.start(startRequest(List.of(), List.of("tls")));
+
+    assertThat(detail.tasks())
+        .extracting(SecurityTask::getStatus)
+        .containsExactly("PENDING", "SKIPPED");
+    assertThat(createdRequests)
+        .extracting(CreateTaskRequest::toolCode)
+        .containsExactly("http_headers");
+  }
+
+  @Test
+  void httpsTargetDoesNotReportTlsNodeDuringPreflight() {
+    AuthorizedTarget target = new AuthorizedTarget();
+    target.setId(TARGET_ID);
+    target.setTargetValue("https://127.0.0.1:8443");
+    target.setAllowedPorts("8443");
+    when(targets.getCurrentlyAuthorized(TARGET_ID, PROJECT_ID)).thenReturn(target);
+    List<Map<String, Object>> steps =
+        List.of(step("tls", "tls_config", 0, false, List.of(), Map.of()));
+    stubSnapshot(steps);
+
+    WorkflowRunDtos.PreflightResponse response =
+        service.preflight(
+            new WorkflowRunDtos.SnapshotRequest(
+                PROJECT_ID, TARGET_ID, "workflow-1", 3L, DIGEST));
+
+    assertThat(response.issues()).isEmpty();
   }
 
   @Test

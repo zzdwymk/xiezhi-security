@@ -63,7 +63,7 @@ jobs:
             esac
 
             case "${file}" in
-              *.log|*.tsbuildinfo|*.p12|*.jks|*.keystore|*.mv.db|*.lock.db|*.key|*.doc|*.docx|*.pdf|*.ppt|*.pptx|*.xls|*.xlsx|*/development-secrets.json|*/runtime-token.txt|*/runtime-project-signing-secret.txt|.env|*/.env|.env.local|*/.env.local|.env.development|*/.env.development|.env.production|*/.env.production)
+              *.log|*.tsbuildinfo|*.p12|*.jks|*.keystore|*.mv.db|*.lock.db|*.key|*.doc|*.docx|*.pdf|*.ppt|*.pptx|*.xls|*.xlsx|*/development-secrets.json|*/runtime-token.txt|*/project-signing-secret.txt|*/runtime-project-signing-secret.txt|.env|*/.env|.env.local|*/.env.local|.env.development|*/.env.development|.env.production|*/.env.production)
                 violations+=("sensitive or generated file: ${file}")
                 ;;
             esac

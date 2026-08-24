@@ -23,6 +23,7 @@ import { useClientPagination } from "../composables/useClientPagination";
 import { formatDateTime } from "../utils/dateTime";
 import { toErrorMessage } from "../utils/errorMessage";
 import { useCopilotStore } from "../stores/copilot";
+import { downloadBlob, EmptyDownloadError } from "../utils/download";
 
 const copilot = useCopilotStore();
 const router = useRouter();
@@ -130,14 +131,11 @@ async function downloadReport(taskId: number) {
   downloading.value = taskId;
   try {
     const { data } = await endpoints.downloadReport(taskId);
-    const url = URL.createObjectURL(data);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `security-report-task-${taskId}.html`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-  } catch {
-    ElMessage.error("报告下载失败");
+    downloadBlob(data, `security-report-task-${taskId}.html`);
+  } catch (error) {
+    ElMessage.error(
+      error instanceof EmptyDownloadError ? error.message : "报告下载失败",
+    );
   } finally {
     downloading.value = undefined;
   }

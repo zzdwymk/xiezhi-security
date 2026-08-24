@@ -28,7 +28,8 @@ class SystemDependencyControllerTests {
     when(request.getRemoteAddr()).thenReturn("127.0.0.1");
     when(detectionService.detect(false)).thenReturn(expected);
 
-    assertThat(controller.dependencies(request, false)).isSameAs(expected);
+    // 未认证调用方得到的是抹去可执行文件路径的副本，而非同一对象
+    assertThat(controller.dependencies(request, false)).isEqualTo(expected);
   }
 
   @Test
@@ -38,7 +39,7 @@ class SystemDependencyControllerTests {
     when(request.getRemoteAddr()).thenReturn("127.0.0.1");
     when(detectionService.detect(true)).thenReturn(expected);
 
-    assertThat(controller.dependencies(request, true)).isSameAs(expected);
+    assertThat(controller.dependencies(request, true)).isEqualTo(expected);
   }
 
   @Test

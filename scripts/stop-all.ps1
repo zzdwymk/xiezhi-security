@@ -29,7 +29,7 @@ if (-not (Test-Path -LiteralPath $pidFile)) {
     exit 0
 }
 
-$state = Get-Content -LiteralPath $pidFile -Raw | ConvertFrom-Json
+$state = Get-Content -LiteralPath $pidFile -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($state.workspace -ne $workspace) {
     throw 'The run record belongs to a different workspace.'
 }

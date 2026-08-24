@@ -1,6 +1,7 @@
 package com.bachelor.toolbox.project;
 
 import com.bachelor.toolbox.common.ApiException;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.Callable;
 import org.springframework.security.authentication.AnonymousAuthenticationToken;
@@ -64,6 +65,17 @@ public class ProjectAuthorizationService {
 
   public boolean canAccess(AssessmentProject project) {
     return isAdmin() || Objects.equals(project.getOwner(), currentUsername());
+  }
+
+  /**
+   * 当前主体可访问的全部项目 ID。管理员为全部项目，普通用户为其拥有的项目。
+   *
+   * <p>供需要按归属过滤列表的调用方使用，避免各处重复实现归属判断。
+   */
+  public List<Long> accessibleProjectIds() {
+    List<AssessmentProject> visible =
+        isAdmin() ? projects.findAll() : projects.findByOwner(currentUsername());
+    return visible.stream().map(AssessmentProject::getId).toList();
   }
 
   /** Runs trusted background work through normal project checks without requiring an HTTP user. */

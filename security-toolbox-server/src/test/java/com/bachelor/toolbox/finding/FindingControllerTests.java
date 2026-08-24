@@ -7,6 +7,7 @@ import static org.mockito.Mockito.when;
 
 import com.bachelor.toolbox.audit.AuditService;
 import com.bachelor.toolbox.common.ApiException;
+import com.bachelor.toolbox.project.ProjectAuthorizationService;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
@@ -15,8 +16,15 @@ class FindingControllerTests {
   private final com.bachelor.toolbox.task.SecurityTaskRepository taskRepository =
       mock(com.bachelor.toolbox.task.SecurityTaskRepository.class);
   private final AuditService auditService = mock(AuditService.class);
+  private final ProjectAuthorizationService authorization = mock(ProjectAuthorizationService.class);
   private final FindingController controller =
-      new FindingController(repository, taskRepository, auditService);
+      new FindingController(repository, taskRepository, auditService, authorization);
+
+  {
+    // 既有用例以管理员身份运行，行为与改造前一致；
+    // 归属过滤与清空限制的专项覆盖见 FindingControllerAuthorizationTests。
+    when(authorization.isAdmin()).thenReturn(true);
+  }
   @Test
   void deletesSingleFinding() {
     Finding finding = new Finding();

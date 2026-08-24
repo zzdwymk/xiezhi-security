@@ -216,6 +216,7 @@ public class ProbeService {
     HttpClient client =
         HttpClient.newBuilder()
             .connectTimeout(CONNECT_TIMEOUT)
+            .version(HttpClient.Version.HTTP_1_1)
             .followRedirects(HttpClient.Redirect.NEVER)
             .build();
     HttpRequest request =

@@ -4,6 +4,10 @@ import jakarta.servlet.http.HttpServletRequest;
 import java.net.InetAddress;
 import java.util.Map;
 import java.util.Objects;
+import java.util.List;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -32,8 +36,38 @@ public class SystemDependencyController {
       HttpServletRequest request,
       @RequestParam(value = "refresh", defaultValue = "false") boolean refresh) {
     requireLoopbackAccess(request, DEPENDENCY_LOCAL_ACCESS_ONLY);
-    return detectionService.detect(refresh);
+    SystemDependenciesResponse response = detectionService.detect(refresh);
+    // 该接口在登录前（环境依赖检查页）即需可用，因此不能要求鉴权。
+    // 但未认证调用方无需知道可执行文件的绝对路径——它会暴露用户目录与安装布局，
+    // 故仅对已认证调用方返回完整信息，未认证时抹去 path。
+    return isAuthenticated() ? response : withoutExecutablePaths(response);
   }
+
+  /** 去除依赖项的绝对路径，保留名称、状态、版本等页面必需信息 */
+  private SystemDependenciesResponse withoutExecutablePaths(SystemDependenciesResponse response) {
+    List<SystemDependenciesResponse.DependencyStatus> sanitized =
+        response.dependencies().stream()
+            .map(
+                dependency ->
+                    new SystemDependenciesResponse.DependencyStatus(
+                        dependency.name(),
+                        dependency.status(),
+                        dependency.version(),
+                        null,
+                        dependency.required(),
+                        dependency.category(),
+                        dependency.message()))
+            .toList();
+    return new SystemDependenciesResponse(response.os(), response.arch(), sanitized);
+  }
+
+  private boolean isAuthenticated() {
+    Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+    return authentication != null
+        && authentication.isAuthenticated()
+        && !(authentication instanceof AnonymousAuthenticationToken);
+  }
+
 
   @GetMapping("/health")
   public Map<String, String> health(HttpServletRequest request) {

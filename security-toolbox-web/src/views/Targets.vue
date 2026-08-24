@@ -16,6 +16,7 @@ import { useClientPagination } from "../composables/useClientPagination";
 import { useCopilotStore } from "../stores/copilot";
 import { formatDateTime } from "../utils/dateTime";
 import { toErrorMessage } from "../utils/errorMessage";
+import { downloadBlob, EmptyDownloadError } from "../utils/download";
 
 const copilot = useCopilotStore();
 const router = useRouter();
@@ -477,14 +478,11 @@ async function downloadTargetReport(row: Target) {
   reporting.value = row.id;
   try {
     const { data } = await endpoints.downloadTargetReportPdf(row.id);
-    const url = URL.createObjectURL(data);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `target-${row.id}-security-report.pdf`;
-    a.click();
-    URL.revokeObjectURL(url);
-  } catch {
-    ElMessage.error("目标 PDF 报告生成失败");
+    downloadBlob(data, `target-${row.id}-security-report.pdf`);
+  } catch (error) {
+    ElMessage.error(
+      error instanceof EmptyDownloadError ? error.message : "目标 PDF 报告生成失败",
+    );
   } finally {
     reporting.value = undefined;
   }

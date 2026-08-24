@@ -34,9 +34,10 @@ security-toolbox-web/.run/
 security-toolbox-web/data/
 data/
 
-# Public repository scope: keep all project documents local.
+# Local documentation and thesis materials.
 docs/
-ai-runtime/README.md
+**/*.md
+!/README.md
 *.doc
 *.docx
 *.pdf
@@ -58,6 +59,24 @@ scripts/apply_proposal_comments.py
 # Temporary dev servers and test helpers
 security-toolbox-web/spa-server.cjs
 
+# Ad-hoc browser test scripts superseded by security-toolbox-web/tests/e2e/.
+# Kept locally for reference; not part of the published test suite.
+security-toolbox-web/scripts/debug-scan.cjs
+security-toolbox-web/scripts/e2e-full-chain.cjs
+security-toolbox-web/scripts/ui-e2e-test.cjs
+security-toolbox-web/scripts/ui-full-flow-test.cjs
+security-toolbox-web/scripts/ui-scanner-test.cjs
+security-toolbox-web/scripts/ui-target-verify.cjs
+
+# End-to-end test evidence, artifacts and runtime credentials.
+# Already covered by .run/, listed explicitly so they stay ignored
+# even when a run writes outside that directory.
+**/e2e-evidence/
+**/e2e-artifacts/
+**/e2e-credentials.json
+**/test-report-artifact.html
+**/test-report-section-*.md
+
 # OS generated files
 Thumbs.db
 ehthumbs.db
@@ -74,16 +93,34 @@ $RECYCLE.BIN/
 # Generated coverage files
 coverage/
 *.lcov
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.tox/
+**/.nox/
+**/.pytest-of-*/
 
 # Xray scanner runtime configs generated at repo root
 xray.yaml
 *.xray.yaml
 
 # Local reports, test output and browser automation artifacts
-reports/
-test-results/
-playwright-report/
-blob-report/
+/reports/
+/test-results/
+/playwright-report/
+/blob-report/
+/security-toolbox-web/screenshots/
+/qa-artifacts/
+/e2e-artifacts/
+/test-output/
+**/.downloads/
+**/.uat-browser.*.tmpdir/
+*.har
+*.pcap
+*.pcapng
 
 # Local certificates, keys and database files
 *.pem
@@ -106,6 +143,20 @@ application-*.local.yml
 *.user
 *.userosscache
 *.sln.docstates
+
+# Runtime credentials copied outside their normal ignored directories
+**/development-secrets.json
+**/runtime-token.txt
+**/project-signing-secret.txt
+**/runtime-project-signing-secret.txt
+**/test-credentials*.json
+**/test-admin-pw.txt
+**/test-admin-token.txt
+
+# Root-level local release packages and checksum manifests
+/xiezhi-*-portable.zip
+/xiezhi-*-setup.exe
+/SHA256SUMS*.txt
 
 # Internal working/analysis documents (kept local)
 BUSINESS_SOURCE_ANALYSIS.md

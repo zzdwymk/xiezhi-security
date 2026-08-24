@@ -65,7 +65,8 @@ public class TaskSnapshotService {
         || !Objects.equals(task.getToolVersionSnapshot(), current.getToolVersionSnapshot())
         || !Objects.equals(task.getRuleVersionSnapshot(), current.getRuleVersionSnapshot())
         || !Objects.equals(task.getNucleiTemplateHashSnapshot(), current.getNucleiTemplateHashSnapshot())) {
-      throw new ApiException("任务创建后的授权、工具、规则或扫描器 PoC 已发生变化，请重新创建任务");
+      throw new TaskAuthorizationChangedException(
+          "任务创建后的授权、工具、规则或扫描器 PoC 已发生变化，请重新创建任务");
     }
   }
 

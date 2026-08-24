@@ -26,6 +26,7 @@ public class HttpHeaderTool implements SecurityTool {
   private final HttpClient httpClient =
       HttpClient.newBuilder()
           .connectTimeout(Duration.ofSeconds(5))
+          .version(HttpClient.Version.HTTP_1_1)
           // Never follow redirects automatically: a private authorized URL must not
           // be able to redirect the scanner to an unapproved public or metadata host.
           .followRedirects(HttpClient.Redirect.NEVER)

@@ -210,8 +210,7 @@ public class TaskExecutionService {
     if (task.getProjectId() == null) {
       throw new ApiException("任务缺少项目授权上下文");
     }
-    projectService.validateProjectTarget(task.getProjectId(), task.getTargetId());
-    AuthorizedTarget target = targetService.getCurrentlyAuthorized(task.getTargetId());
+    AuthorizedTarget target = validateCurrentAuthorization(task);
     SecurityTool tool = registry.require(task.getToolCode());
     snapshotService.assertCurrentMatches(task, target, tool);
     updateProgress(task, 10, false, null, null, "授权快照与工具配置已校验");
@@ -250,6 +249,15 @@ public class TaskExecutionService {
         "SUCCESS",
         taskId,
         task.getAuthorizationSnapshotHash());
+  }
+
+  private AuthorizedTarget validateCurrentAuthorization(SecurityTask task) {
+    try {
+      projectService.validateProjectTarget(task.getProjectId(), task.getTargetId());
+      return targetService.getCurrentlyAuthorized(task.getTargetId());
+    } catch (ApiException exception) {
+      throw new TaskAuthorizationChangedException(exception.getMessage(), exception);
+    }
   }
 
   private ToolExecutionObserver createObserver(Long taskId, SecurityTask task) {
@@ -395,7 +403,7 @@ public class TaskExecutionService {
 
     boolean timeout = isTimeout(exception);
     boolean authorizationChanged = !timeout && isAuthorizationChanged(exception);
-    String userMessage = failureMessage(timeout, authorizationChanged);
+    String userMessage = failureMessage(timeout, authorizationChanged, exception);
 
     task.setStatus(timeout ? "TIMEOUT" : "FAILED");
     task.setTerminationReason(terminationReason(timeout, authorizationChanged));
@@ -422,18 +430,48 @@ public class TaskExecutionService {
   }
 
   private boolean isAuthorizationChanged(Exception exception) {
-    String message = exception.getMessage();
-    return message != null && message.contains("授权");
+    Throwable current = exception;
+    while (current != null) {
+      if (current instanceof TaskAuthorizationChangedException) {
+        return true;
+      }
+      current = current.getCause();
+    }
+    return false;
   }
 
-  private String failureMessage(boolean timeout, boolean authorizationChanged) {
+  private String failureMessage(
+      boolean timeout, boolean authorizationChanged, Exception exception) {
     if (timeout) {
       return EXECUTION_TIMEOUT_MESSAGE;
     }
     if (authorizationChanged) {
       return AUTHORIZATION_CHANGED_MESSAGE;
     }
+    // 业务规则拒绝（如授权边界、端口越界）应如实透出原因，
+    // 否则用户只看到“任务执行失败”，无法区分是被拦截还是系统故障。
+    String businessMessage = businessRuleMessage(exception);
+    if (businessMessage != null) {
+      return businessMessage;
+    }
     return EXECUTION_FAILED_MESSAGE;
+  }
+
+  /**
+   * 提取 ApiException 的消息。ApiException 是本系统面向用户的业务异常类型，
+   * 其消息在其它接口上同样直接展示，可安全透出，不会泄露内部实现细节。
+   */
+  private String businessRuleMessage(Exception exception) {
+    Throwable current = exception;
+    while (current != null) {
+      if (current instanceof ApiException
+          && current.getMessage() != null
+          && !current.getMessage().isBlank()) {
+        return current.getMessage();
+      }
+      current = current.getCause();
+    }
+    return null;
   }
 
   private String terminationReason(boolean timeout, boolean authorizationChanged) {

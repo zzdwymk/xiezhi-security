@@ -8,7 +8,7 @@ function Get-PortStatus([int]$Port) {
 }
 
 if (Test-Path -LiteralPath $pidFile) {
-    $state = Get-Content -LiteralPath $pidFile -Raw | ConvertFrom-Json
+    $state = Get-Content -LiteralPath $pidFile -Raw -Encoding UTF8 | ConvertFrom-Json
     Write-Host "Run record: $($state.startedAt)"
 } else {
     Write-Host 'No run record.'

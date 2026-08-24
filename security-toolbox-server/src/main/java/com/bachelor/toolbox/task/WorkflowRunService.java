@@ -6,11 +6,13 @@ import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.common.PageRequests;
 import com.bachelor.toolbox.dependency.DependencyDetectionService;
 import com.bachelor.toolbox.project.AssessmentProjectService;
+import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.TargetService;
 import com.bachelor.toolbox.tool.ScannerPocSelectionService;
 import com.bachelor.toolbox.vulnerability.ScannerPocCatalogService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.net.URI;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -99,27 +101,28 @@ public class WorkflowRunService {
   @Transactional(readOnly = true)
   public WorkflowRunDtos.PreflightResponse preflight(WorkflowRunDtos.SnapshotRequest request) {
     projects.validateProjectTarget(request.projectId(), request.targetId());
-    String allowedPorts =
-        targets.getCurrentlyAuthorized(request.targetId(), request.projectId()).getAllowedPorts();
+    AuthorizedTarget target =
+        targets.getCurrentlyAuthorized(request.targetId(), request.projectId());
     AgentWorkflowSpecService.WorkflowSnapshot snapshot = snapshot(request);
     return new WorkflowRunDtos.PreflightResponse(
         snapshot.workflowId(),
         snapshot.revision(),
         snapshot.specDigest(),
-        preflightIssues(snapshot, allowedPorts));
+        preflightIssues(snapshot, target));
   }
 
   @Transactional
   public WorkflowRunDtos.Detail start(WorkflowRunDtos.StartRequest request) throws Exception {
     projects.validateProjectTarget(request.projectId(), request.targetId());
-    String allowedPorts =
-        targets.getCurrentlyAuthorized(request.targetId(), request.projectId()).getAllowedPorts();
+    AuthorizedTarget target =
+        targets.getCurrentlyAuthorized(request.targetId(), request.projectId());
+    String allowedPorts = target.getAllowedPorts();
     AgentWorkflowSpecService.WorkflowSnapshot snapshot = snapshot(request);
     List<Map<String, Object>> steps = workflowSpecs.executableSteps(snapshot);
     if (steps.isEmpty()) throw new ApiException("工作流没有可执行步骤");
 
     Map<String, WorkflowRunDtos.NodeIssue> issues =
-        preflightIssues(snapshot, allowedPorts).stream()
+        preflightIssues(snapshot, target).stream()
             .collect(
                 Collectors.toMap(
                     WorkflowRunDtos.NodeIssue::nodeId,
@@ -302,7 +305,8 @@ public class WorkflowRunService {
   }
 
   private List<WorkflowRunDtos.NodeIssue> preflightIssues(
-      AgentWorkflowSpecService.WorkflowSnapshot snapshot, String allowedPorts) {
+      AgentWorkflowSpecService.WorkflowSnapshot snapshot, AuthorizedTarget target) {
+    String allowedPorts = target.getAllowedPorts();
     Map<String, String> dependencyStatus =
         dependencies.detect().dependencies().stream()
             .collect(
@@ -315,6 +319,15 @@ public class WorkflowRunService {
     for (Map<String, Object> step : workflowSpecs.executableSteps(snapshot)) {
       String toolCode = requiredText(step, "tool");
       if ("retrieve_project_context".equals(toolCode)) continue;
+      if ("tls_config".equals(toolCode) && !isHttpsTarget(target)) {
+        issues.add(
+            new WorkflowRunDtos.NodeIssue(
+                requiredText(step, "nodeId"),
+                toolCode,
+                label(step),
+                "目标不是 HTTPS，TLS 检查不可用"));
+        continue;
+      }
       String dependencyName = dependencyName(toolCode);
       if (dependencyName != null
           && !"AVAILABLE".equals(dependencyStatus.getOrDefault(dependencyName, "MISSING"))) {
@@ -342,6 +355,14 @@ public class WorkflowRunService {
       }
     }
     return List.copyOf(issues);
+  }
+
+  private boolean isHttpsTarget(AuthorizedTarget target) {
+    try {
+      return "https".equalsIgnoreCase(URI.create(target.getTargetValue()).getScheme());
+    } catch (IllegalArgumentException | NullPointerException ignored) {
+      return false;
+    }
   }
 
   private void refresh(WorkflowRun run, List<SecurityTask> runTasks) {

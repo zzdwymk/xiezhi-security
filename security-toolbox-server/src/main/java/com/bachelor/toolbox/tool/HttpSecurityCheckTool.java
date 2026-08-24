@@ -42,6 +42,7 @@ public class HttpSecurityCheckTool implements SecurityTool {
   private final HttpClient httpClient =
       HttpClient.newBuilder()
           .connectTimeout(Duration.ofSeconds(5))
+          .version(HttpClient.Version.HTTP_1_1)
           .followRedirects(HttpClient.Redirect.NEVER)
           .build();
 
