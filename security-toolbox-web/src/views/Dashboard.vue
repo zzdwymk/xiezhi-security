@@ -2227,13 +2227,6 @@ onBeforeUnmount(() => {
               >{{ reference.title || reference.label || reference.type }}</span
             >
           </div>
-          <el-switch
-            v-model="executionRequested"
-            :disabled="sending"
-            active-text="执行检测"
-            inactive-text="仅规划"
-            aria-label="AI 执行模式"
-          />
           <textarea
             ref="composerInputRef"
             v-model="prompt"
@@ -2242,17 +2235,28 @@ onBeforeUnmount(() => {
             placeholder="继续提问，或告诉我下一步要执行什么"
             @keydown="handlePromptKeydown"
           />
-          <el-tooltip content="发送" placement="top" :show-after="350"
-            ><button
-              type="button"
-              aria-label="发送"
-              :disabled="sending || !prompt.trim()"
-              @click="sendPrompt"
-            >
-              <el-icon :class="{ rotating: sending }"
-                ><Refresh v-if="sending" /><Promotion v-else
-              /></el-icon></button
-          ></el-tooltip>
+          <div class="thread-composer-footer">
+            <el-switch
+              v-model="executionRequested"
+              :disabled="sending"
+              active-text="执行检测"
+              inactive-text="仅规划"
+              aria-label="AI 执行模式"
+            />
+            <span class="composer-shortcut">Enter 发送，Shift + Enter 换行</span>
+            <el-tooltip content="发送" placement="top" :show-after="350"
+              ><button
+                type="button"
+                class="send-button"
+                aria-label="发送"
+                :disabled="sending || !prompt.trim()"
+                @click="sendPrompt"
+              >
+                <el-icon :class="{ rotating: sending }"
+                  ><Refresh v-if="sending" /><Promotion v-else
+                /></el-icon></button
+            ></el-tooltip>
+          </div>
         </div>
         <span class="composer-hint"
           >仅调用白名单工具，并严格遵守该目标的授权范围</span
@@ -2690,15 +2694,30 @@ onBeforeUnmount(() => {
   margin-left: auto;
 }
 .thread-composer {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr) 38px;
-  align-items: end;
-  gap: 8px;
-  padding: 8px 8px 8px 14px;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 12px 8px 14px;
   border: 1px solid var(--app-border);
-  border-radius: 13px;
+  border-radius: 12px;
   background: var(--app-surface-strong);
   box-shadow: 0 4px 16px var(--app-shadow);
+}
+.thread-composer-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+.thread-composer-footer .composer-shortcut {
+  margin-left: auto;
+  color: var(--app-muted);
+  font-size: 11px;
+}
+.thread-composer-footer .send-button {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  flex-shrink: 0;
 }
 .thread-composer textarea {
   max-height: 130px;

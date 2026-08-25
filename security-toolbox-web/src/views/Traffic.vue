@@ -3409,15 +3409,23 @@ onUnmounted(() => {
   background: var(--app-accent-soft);
   color: var(--app-text);
 }
-.traffic-row.active::before {
-  position: absolute;
-  top: 12px;
-  bottom: 12px;
-  left: 0;
-  width: 3px;
-  border-radius: 2px;
-  background: var(--app-accent);
+.traffic-row::before {
   content: "";
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  width: 3px;
+  height: 44px;
+  transform: translateY(-50%) scaleY(0.3);
+  opacity: 0;
+  border-radius: 999px;
+  background: var(--app-accent, #2563eb);
+  transition: transform 0.22s cubic-bezier(0.1, 0.9, 0.2, 1), opacity 0.16s ease;
+  pointer-events: none;
+}
+.traffic-row.active::before {
+  opacity: 1;
+  transform: translateY(-50%) scaleY(1);
 }
 .traffic-row-wrap.marked:not(.active) .traffic-row {
   background: var(--app-surface-soft);
