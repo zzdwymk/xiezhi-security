@@ -17,6 +17,11 @@ import { useCopilotStore } from "../stores/copilot";
 import { formatDateTime } from "../utils/dateTime";
 import { toErrorMessage } from "../utils/errorMessage";
 import { downloadBlob, EmptyDownloadError } from "../utils/download";
+import {
+  COMMON_PORT_OPTIONS,
+  normalizeAllowedPorts,
+  validateDomainTarget,
+} from "../utils/ports";
 
 const copilot = useCopilotStore();
 const router = useRouter();
@@ -67,65 +72,8 @@ const form = reactive({
 const selectedPorts = ref<string[]>(["80", "443"]);
 const customPorts = ref("");
 const fullPortAccess = ref(false);
-const commonPortOptions = [
-  { label: "HTTP · 80", value: "80" },
-  { label: "HTTPS · 443", value: "443" },
-  { label: "SSH · 22", value: "22" },
-  { label: "FTP · 21", value: "21" },
-  { label: "SMTP · 25", value: "25" },
-  { label: "DNS · 53", value: "53" },
-  { label: "POP3 · 110", value: "110" },
-  { label: "IMAP · 143", value: "143" },
-  { label: "SMB · 445", value: "445" },
-  { label: "MySQL · 3306", value: "3306" },
-  { label: "RDP · 3389", value: "3389" },
-  { label: "PostgreSQL · 5432", value: "5432" },
-  { label: "Redis · 6379", value: "6379" },
-  { label: "HTTP 备用 · 8080", value: "8080" },
-  { label: "HTTPS 备用 · 8443", value: "8443" },
-];
 
-function normalizePorts() {
-  if (fullPortAccess.value) return "1-65535";
-  const source = [
-    ...selectedPorts.value,
-    ...customPorts.value.split(/[，,;；\s]+/),
-  ].filter(Boolean);
-  const normalized = new Set<string>();
 
-  for (const raw of source) {
-    const token = raw.trim().replace(/[—–~～]/g, "-");
-    const match = token.match(/^(\d{1,5})(?:-(\d{1,5}))?$/);
-    if (!match) throw new Error(`端口格式无效：${raw}`);
-    const start = Number(match[1]);
-    const end = match[2] ? Number(match[2]) : undefined;
-    if (
-      start < 1 ||
-      start > 65535 ||
-      (end !== undefined && (end < 1 || end > 65535 || end < start))
-    ) {
-      throw new Error(`端口范围无效：${raw}`);
-    }
-    normalized.add(end === undefined ? String(start) : `${start}-${end}`);
-  }
-
-  if (!normalized.size) throw new Error("请至少选择或填写一个允许端口");
-  return [...normalized]
-    .sort((a, b) => Number(a.split("-")[0]) - Number(b.split("-")[0]))
-    .join(",");
-}
-
-function validateTargetValue(value: string, targetType: string) {
-  if (targetType.toLowerCase() !== "domain") return;
-  const domain = value.trim();
-  const valid =
-    /^(?=.{1,253}$)(?:[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?\.)*[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?$/i.test(
-      domain,
-    );
-  if (!valid) {
-    throw new Error("域名格式不正确：请填写不含空格、协议或路径的主机名");
-  }
-}
 
 function normalizeDatePickerValue(value?: string) {
   if (!value) return "";
@@ -308,8 +256,12 @@ async function create() {
     return;
   }
   try {
-    validateTargetValue(form.targetValue, form.targetType);
-    form.allowedPorts = normalizePorts();
+    validateDomainTarget(form.targetValue, form.targetType);
+    form.allowedPorts = normalizeAllowedPorts(
+      selectedPorts.value,
+      customPorts.value,
+      fullPortAccess.value,
+    );
     saving.value = true;
     await endpoints.createTarget({
       ...form,
@@ -403,8 +355,12 @@ function targetAuthorizationChanged(ports: string) {
 async function saveEditTarget() {
   if (!editingTargetId.value) return;
   try {
-    validateTargetValue(editForm.targetValue, editForm.targetType);
-    const ports = editFullPortAccess.value ? "1-65535" : normalizeEditPorts();
+    validateDomainTarget(editForm.targetValue, editForm.targetType);
+    const ports = normalizeAllowedPorts(
+      editSelectedPorts.value,
+      editCustomPorts.value,
+      editFullPortAccess.value,
+    );
     if (targetAuthorizationChanged(ports)) {
       await ElMessageBox.confirm(
         "目标地址、类型、端口、授权记录、授权时间窗或启用状态已经变化。保存后会改变可执行的检测范围，请确认变更仍有明确授权。",
@@ -442,26 +398,6 @@ async function saveEditTarget() {
   }
 }
 
-function normalizeEditPorts() {
-  const source = [
-    ...editSelectedPorts.value,
-    ...editCustomPorts.value.split(/[\uFF0C,\uFF1B\u3001;\s]+/),
-  ].filter(Boolean);
-  const normalized = new Set<string>();
-  for (const raw of source) {
-    const token = raw.trim().replace(/[\u2014\u2013~\uFF5E]/g, "-");
-    const match = token.match(/^(\d{1,5})(?:-(\d{1,5}))?$/);
-    if (!match) throw new Error(`\u7AEF\u53E3\u683C\u5F0F\u65E0\u6548\uFF1A${raw}`);
-    const start = Number(match[1]);
-    const end = match[2] ? Number(match[2]) : undefined;
-    if (start < 1 || start > 65535 || (end !== undefined && (end < 1 || end > 65535 || end < start))) {
-      throw new Error(`\u7AEF\u53E3\u8303\u56F4\u65E0\u6548\uFF1A${raw}`);
-    }
-    normalized.add(end === undefined ? String(start) : `${start}-${end}`);
-  }
-  if (!normalized.size) throw new Error("\u8BF7\u81F3\u5C11\u9009\u62E9\u6216\u586B\u5199\u4E00\u4E2A\u5141\u8BB8\u7AEF\u53E3");
-  return [...normalized].sort((a, b) => Number(a.split("-")[0]) - Number(b.split("-")[0])).join(",");
-}
 
 function askCopilot(row: Target) {
   copilot.prepare({
@@ -641,7 +577,7 @@ onMounted(load);
           :rows="2"
           placeholder="填写授权来源、允许测试的范围和有效期"
       /></el-form-item>
-      <div class="target-form-row target-form-row--authorization">
+      <div class="target-form-row">
         <el-form-item label="目标授权生效时间"
           ><el-date-picker
             v-model="form.authorizationValidFrom"
@@ -680,7 +616,7 @@ onMounted(load);
             placeholder="选择常用端口"
           >
             <el-option
-              v-for="port in commonPortOptions"
+            v-for="port in COMMON_PORT_OPTIONS"
               :key="port.value"
               :label="port.label"
               :value="port.value"
@@ -771,7 +707,7 @@ onMounted(load);
             placeholder="选择常用端口"
           >
             <el-option
-              v-for="opt in commonPortOptions"
+            v-for="opt in COMMON_PORT_OPTIONS"
               :key="opt.value"
               :label="opt.label"
               :value="opt.value"
@@ -791,7 +727,7 @@ onMounted(load);
           </p>
         </div>
       </el-form-item>
-      <div class="target-form-row target-form-row--authorization">
+      <div class="target-form-row">
         <el-form-item label="目标授权开始">
           <el-date-picker
             v-model="editForm.authorizationValidFrom"
@@ -890,11 +826,9 @@ onMounted(load);
 .target-form-row :deep(.el-select) {
   width: 100%;
 }
+.target-form-row :deep(.el-date-editor),
 .target-form-row :deep(.el-date-picker) {
-  width: 100%;
-}
-.target-form-row--authorization > .el-form-item:nth-child(2) {
-  padding-left: 12px;
+  width: 100% !important;
 }
 .port-picker {
   display: grid;
@@ -1030,9 +964,6 @@ onMounted(load);
   .target-form-row {
     grid-template-columns: 1fr;
   }
-  .target-form-row--authorization > .el-form-item:nth-child(2) {
-    padding-left: 0;
-  }
 }
 .targets-page :deep(.el-table) {
   font-size: 14px;
@@ -1156,3 +1087,7 @@ onMounted(load);
   background: transparent;
 }
 </style>
+              v-for="port in COMMON_PORT_OPTIONS"
+              v-for="opt in COMMON_PORT_OPTIONS"
+              v-for="port in COMMON_PORT_OPTIONS"
+              v-for="opt in COMMON_PORT_OPTIONS"

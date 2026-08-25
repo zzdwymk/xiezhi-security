@@ -47,6 +47,10 @@ import {
 import { useClientPagination } from "../composables/useClientPagination";
 import { toErrorMessage } from "../utils/errorMessage";
 import { downloadBlob, downloadText, EmptyDownloadError } from "../utils/download";
+import {
+  COMMON_PORT_OPTIONS,
+  normalizeAllowedPorts,
+} from "../utils/ports";
 
 const route = useRoute();
 const router = useRouter();
@@ -422,7 +426,7 @@ const projectAuthorizationGuard = computed(() => {
   if (project.value.status !== "ACTIVE")
     return {
       active: false,
-      text: `项目当前为 ${project.value.status}，必须切换为 ACTIVE 后才能申请或启动安全行动`,
+      text: `项目当前为「${projectStatusLabel(project.value.status)}」，必须切换为「进行中」后才能申请或启动安全行动`,
     };
   const now = Date.now();
   const start = Date.parse(project.value.authorizationValidFrom);
@@ -471,12 +475,72 @@ function displayTaskError(message?: string) {
     : "无";
 }
 
+function projectStatusLabel(status?: string) {
+  const labels: Record<string, string> = {
+    ACTIVE: "进行中",
+    DRAFT: "草稿",
+    PAUSED: "已暂停",
+    COMPLETED: "已完成",
+    ARCHIVED: "已归档",
+  };
+  return (status && labels[status]) || status || "未知";
+}
+
+function projectStatusType(
+  status?: string,
+): "success" | "warning" | "info" | "primary" | "danger" | "" {
+  const types: Record<
+    string,
+    "success" | "warning" | "info" | "primary" | "danger"
+  > = {
+    ACTIVE: "success",
+    DRAFT: "info",
+    PAUSED: "warning",
+    COMPLETED: "primary",
+    ARCHIVED: "info",
+  };
+  return (status && types[status]) || "info";
+}
+
 function taskStatusType(status: string) {
   if (status === "SUCCESS") return "success";
   if (["FAILED", "TIMEOUT", "REJECTED", "CANCELLED"].includes(status))
     return "danger";
   if (status === "RUNNING") return "warning";
   return "info";
+}
+
+function taskStatusLabel(status?: string) {
+  const labels: Record<string, string> = {
+    PENDING: "待执行",
+    QUEUED: "排队中",
+    RUNNING: "执行中",
+    SUCCESS: "成功",
+    FAILED: "失败",
+    TIMEOUT: "超时",
+    CANCELLED: "已取消",
+    REJECTED: "已拒绝",
+  };
+  return (status && labels[status]) || status || "未知";
+}
+
+function approvalStatusLabel(status?: string) {
+  const labels: Record<string, string> = {
+    PENDING: "待审批",
+    APPROVED: "已通过",
+    REJECTED: "已拒绝",
+  };
+  return (status && labels[status]) || status || "未知";
+}
+
+function findingStatusLabel(status?: string) {
+  const labels: Record<string, string> = {
+    OPEN: "待确认",
+    CONFIRMED: "已确认",
+    FALSE_POSITIVE: "误报",
+    FIXED: "已修复",
+  };
+  return (status && labels[status]) || status || "未知";
 }
 
 function findingSeverityType(severity: string) {
@@ -1384,17 +1448,21 @@ const targetForm = ref({
   name: "",
   targetValue: "",
   targetType: "domain",
-  allowedPorts: "80,443",
   authorizationNote: "",
 });
+const targetSelectedPorts = ref<string[]>(["80", "443"]);
+const targetCustomPorts = ref("");
+const targetFullPortAccess = ref(false);
 function openTargetCreate() {
   targetForm.value = {
     name: "",
     targetValue: "",
     targetType: "domain",
-    allowedPorts: "80,443",
     authorizationNote: "",
   };
+  targetSelectedPorts.value = ["80", "443"];
+  targetCustomPorts.value = "";
+  targetFullPortAccess.value = false;
   targetDialog.value = true;
 }
 async function createTargetInProject() {
@@ -1403,13 +1471,24 @@ async function createTargetInProject() {
     ElMessage.warning("请填写名称、地址和授权记录");
     return;
   }
+  let allowedPorts: string;
+  try {
+    allowedPorts = normalizeAllowedPorts(
+      targetSelectedPorts.value,
+      targetCustomPorts.value,
+      targetFullPortAccess.value,
+    );
+  } catch (error: any) {
+    ElMessage.warning(error?.message || "端口格式不正确");
+    return;
+  }
   targetSaving.value = true;
   try {
     await endpoints.createTarget({
       name: f.name.trim(),
       targetValue: f.targetValue.trim(),
       targetType: f.targetType,
-      allowedPorts: f.allowedPorts.trim() || "80,443",
+      allowedPorts,
       authorizationNote: f.authorizationNote.trim(),
       enabled: true,
       projectId: id,
@@ -2379,9 +2458,15 @@ onUnmounted(() => {
     <el-tabs v-model="tab" class="project-tabs" @tab-change="handleTabChange">
       <el-tab-pane label="概览" name="overview">
         <el-descriptions v-if="summary" :column="3" border>
-          <el-descriptions-item label="状态">{{
-            summary.project.status
-          }}</el-descriptions-item>
+          <el-descriptions-item label="状态">
+            <el-tag
+              size="small"
+              :type="projectStatusType(summary.project.status)"
+              effect="light"
+            >
+              {{ projectStatusLabel(summary.project.status) }}
+            </el-tag>
+          </el-descriptions-item>
           <el-descriptions-item label="目标">{{
             summary.targetCount
           }}</el-descriptions-item>
@@ -2477,10 +2562,47 @@ onUnmounted(() => {
                 placeholder="example.com 或 192.0.2.10"
             /></el-form-item>
             <el-form-item label="允许端口"
-              ><el-input
-                v-model="targetForm.allowedPorts"
-                placeholder="如 80,443 或 1-1000，逗号分隔"
-            /></el-form-item>
+              ><div class="port-picker">
+                <div class="full-port-option">
+                  <div>
+                    <b>全端口授权（1-65535）</b>
+                    <small>允许使用 Nmap 执行全端口扫描，扫描时间可能较长。</small>
+                  </div>
+                  <el-switch v-model="targetFullPortAccess" />
+                </div>
+                <el-select
+                  v-model="targetSelectedPorts"
+                  :disabled="targetFullPortAccess"
+                  multiple
+                  filterable
+                  allow-create
+                  collapse-tags
+                  collapse-tags-tooltip
+                  placeholder="选择常用端口"
+                >
+                  <el-option
+                    v-for="port in COMMON_PORT_OPTIONS"
+                    :key="port.value"
+                    :label="port.label"
+                    :value="port.value"
+                  />
+                </el-select>
+                <el-input
+                  v-model="targetCustomPorts"
+                  :disabled="targetFullPortAccess"
+                  clearable
+                  placeholder="自定义端口，如 8080, 9000-9100"
+                >
+                  <template #prefix>自定义</template>
+                </el-input>
+                <p class="port-hint">
+                  {{
+                    targetFullPortAccess
+                      ? "将保存为 1-65535；执行端口检测时会使用 Nmap，普通 TCP 探测仍只适合少量端口。"
+                      : "支持单个端口和端口范围，可用逗号、分号或空格分隔，保存时自动合并去重。"
+                  }}
+                </p>
+              </div></el-form-item>
             <el-form-item label="授权记录" required
               ><el-input
                 v-model="targetForm.authorizationNote"
@@ -3148,7 +3270,7 @@ onUnmounted(() => {
           <el-table-column label="状态" width="110"
             ><template #default="scope"
               ><el-tag size="small" :type="taskStatusType(scope.row.status)">{{
-                scope.row.status
+                taskStatusLabel(scope.row.status)
               }}</el-tag></template
             ></el-table-column
           >
@@ -3545,7 +3667,7 @@ onUnmounted(() => {
               ><el-tag
                 size="small"
                 :type="approvalStatusType(scope.row.status)"
-                >{{ scope.row.status }}</el-tag
+                >{{ approvalStatusLabel(scope.row.status) }}</el-tag
               ></template
             ></el-table-column
           ><el-table-column
@@ -3762,7 +3884,7 @@ onUnmounted(() => {
               aria-label="报告目标范围"
               style="width: 260px"
             >
-              <el-option label="全部目标（项目汇总）" value="ALL" />
+              <el-option label="全部目标" value="ALL" />
               <el-option
                 v-for="target in linkedTargets"
                 :key="target.id"
@@ -3982,7 +4104,7 @@ onUnmounted(() => {
         }}</el-descriptions-item
         ><el-descriptions-item label="状态"
           ><el-tag size="small" :type="taskStatusType(taskDetail.status)">{{
-            taskDetail.status
+            taskStatusLabel(taskDetail.status)
           }}</el-tag></el-descriptions-item
         >
         <el-descriptions-item label="进度"
@@ -4061,7 +4183,7 @@ onUnmounted(() => {
             >{{ findingDetail.severity }}</el-tag
           >
           <el-tag size="small">{{
-            findingDetail.status
+            findingStatusLabel(findingDetail.status)
           }}</el-tag></el-descriptions-item
         ><el-descriptions-item label="说明">{{
           findingDetail.description || "未提供"
@@ -4484,6 +4606,50 @@ onUnmounted(() => {
   border-radius: 5px;
 }
 .project-target-create-form :deep(.el-textarea__inner) {
+  line-height: 1.55;
+}
+@media (max-width: 600px) {
+  .port-picker {
+    gap: 10px;
+  }
+}
+.port-picker {
+  display: grid;
+  width: 100%;
+  gap: 10px;
+}
+.port-picker :deep(.el-select) {
+  width: 100%;
+}
+.full-port-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface-soft);
+}
+.full-port-option div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+.full-port-option b {
+  color: var(--app-text);
+  font-size: 13px;
+}
+.full-port-option small {
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.port-hint {
+  margin: 0 2px;
+  color: var(--app-muted);
+  font-size: 12px;
   line-height: 1.55;
 }
 @media (max-width: 600px) {

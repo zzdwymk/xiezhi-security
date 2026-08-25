@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fluent UI 2 流量安全要点卡片演示 (方案一)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Segoe+UI:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      /* Fluent 2 Design Tokens */
+      --colorNeutralBackground1: #ffffff;
+      --colorNeutralBackground2: #fafafa;
+      --colorNeutralBackground3: #f5f5f5;
+      --colorNeutralStroke1: #e0e0e0;
+      --colorNeutralStroke2: #ebebeb;
+      --colorNeutralStrokeSubtle: #f0f0f0;
+      
+      --colorNeutralForeground1: #242424;
+      --colorNeutralForeground2: #424242;
+      --colorNeutralForeground3: #616161;
+      --colorNeutralForeground4: #707070;
+
+      /* Brand & Status Colors (Fluent 2) */
+      --colorBrandForeground1: #0f6cbd;
+      --colorBrandBackground2: #ebf3fc;
+      
+      --colorStatusSuccessForeground: #0e700e;
+      --colorStatusSuccessBackground: #dff6dd;
+      --colorStatusSuccessBorder: #9bdba4;
+
+      --colorStatusInfoForeground: #0f6cbd;
+      --colorStatusInfoBackground: #ebf3fc;
+      --colorStatusInfoBorder: #9ecbed;
+
+      --colorStatusWarningForeground: #bc4b09;
+      --colorStatusWarningBackground: #fff4ce;
+      --colorStatusWarningBorder: #fed99b;
+
+      --colorStatusDangerForeground: #c50f1f;
+      --colorStatusDangerBackground: #fdf3f4;
+      --colorStatusDangerBorder: #f7b2b7;
+
+      --borderRadiusMedium: 6px;
+      --borderRadiusLarge: 8px;
+      --shadowRest: 0 1.2px 3.6px rgba(0,0,0,0.06), 0 0.6px 1.8px rgba(0,0,0,0.04);
+      --shadowHover: 0 3.2px 7.2px rgba(0,0,0,0.1), 0 0.6px 1.8px rgba(0,0,0,0.06);
+      
+      --fontFamily: 'Segoe UI', -apple-system, BlinkMacSystemFont, "Segoe UI Emoji", system-ui, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--fontFamily);
+      background-color: #f3f4f6;
+      color: var(--colorNeutralForeground1);
+      padding: 40px 24px;
+      display: flex;
+      justify-content: center;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 900px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 32px;
+    }
+
+    .panel-wrapper {
+      background: var(--colorNeutralBackground1);
+      border: 1px solid var(--colorNeutralStroke1);
+      border-radius: var(--borderRadiusLarge);
+      padding: 20px;
+      box-shadow: var(--shadowRest);
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--colorNeutralStroke2);
+    }
+
+    .panel-icon-badge {
+      width: 32px;
+      height: 32px;
+      border-radius: 6px;
+      background: var(--colorBrandBackground2);
+      color: var(--colorBrandForeground1);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .panel-title-wrap h2 {
+      font-size: 14px;
+      font-weight: 600;
+      line-height: 20px;
+      color: var(--colorNeutralForeground1);
+    }
+
+    .panel-title-wrap p {
+      font-size: 12px;
+      color: var(--colorNeutralForeground3);
+      line-height: 16px;
+    }
+
+    .card-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    /* 方案一：Fluent 标准卡片 (标准版：Icon + Title + Description + Subtle Badge) */
+    .fluent-card {
+      position: relative;
+      background: var(--colorNeutralBackground1);
+      border: 1px solid var(--colorNeutralStroke1);
+      border-radius: var(--borderRadiusMedium);
+      padding: 12px 14px;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      transition: all 0.15s ease-in-out;
+    }
+
+    .fluent-card:hover {
+      border-color: #c7c7c7;
+      box-shadow: var(--shadowRest);
+    }
+
+    .status-icon-box {
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      border-radius: 4px;
+    }
+
+    .status-icon-box.success {
+      color: var(--colorStatusSuccessForeground);
+      background-color: var(--colorStatusSuccessBackground);
+    }
+
+    .status-icon-box.info {
+      color: var(--colorStatusInfoForeground);
+      background-color: var(--colorStatusInfoBackground);
+    }
+
+    .status-icon-box.warning {
+      color: var(--colorStatusWarningForeground);
+      background-color: var(--colorStatusWarningBackground);
+    }
+
+    .status-icon-box.danger {
+      color: var(--colorStatusDangerForeground);
+      background-color: var(--colorStatusDangerBackground);
+    }
+
+    .card-body {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .card-title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 3px;
+    }
+
+    .card-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--colorNeutralForeground1);
+      line-height: 18px;
+    }
+
+    .fluent-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 4px;
+      line-height: 16px;
+      white-space: nowrap;
+    }
+    .fluent-badge.success {
+      background: var(--colorStatusSuccessBackground);
+      color: var(--colorStatusSuccessForeground);
+    }
+    .fluent-badge.info {
+      background: var(--colorStatusInfoBackground);
+      color: var(--colorStatusInfoForeground);
+    }
+    .fluent-badge.warning {
+      background: var(--colorStatusWarningBackground);
+      color: var(--colorStatusWarningForeground);
+    }
+
+    .card-desc {
+      font-size: 12px;
+      color: var(--colorNeutralForeground3);
+      line-height: 17px;
+      word-break: break-word;
+    }
+
+    .code-tag {
+      font-family: Consolas, monospace;
+      font-size: 11px;
+      background: var(--colorNeutralBackground3);
+      padding: 1px 4px;
+      border-radius: 3px;
+      color: var(--colorNeutralForeground2);
+    }
+
+    /* 原版样式的模拟对比 */
+    .original-card {
+      border: 1px solid #d9d9d9;
+      border-radius: 6px;
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: #fff;
+    }
+    .original-stripe {
+      width: 4px;
+      height: 32px;
+      border-radius: 2px;
+      flex-shrink: 0;
+    }
+    .stripe-green { background-color: #22c55e; }
+    .stripe-blue { background-color: #3b82f6; }
+    .stripe-orange { background-color: #f97316; }
+
+    .original-text .title {
+      font-size: 12px;
+      color: #666;
+      margin-bottom: 2px;
+    }
+    .original-text .desc {
+      font-size: 13px;
+      color: #111;
+      font-weight: 500;
+    }
+
+    .section-tag {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .tag-bad { color: #d83b01; }
+    .tag-good { color: #107c10; }
+
+  </style>
+</head>
+<body>
+
+  <div class="container">
+
+    <!-- 原设计 (问题) -->
+    <div>
+      <div class="section-tag tag-bad">
+        <span>❌ 现有设计 (竖条非 Fluent 规范 / 无图标)</span>
+      </div>
+      <div class="panel-wrapper">
+        <div class="panel-header">
+          <div class="panel-icon-badge" style="background:#e0e7ff; color:#4f46e5;">⚡</div>
+          <div class="panel-title-wrap">
+            <h2>本条流量安全要点</h2>
+            <p>基于所选报文的本地快速研判</p>
+          </div>
+        </div>
+
+        <div class="card-list">
+          <div class="original-card">
+            <div class="original-stripe stripe-green"></div>
+            <div class="original-text">
+              <div class="title">传输加密</div>
+              <div class="desc">HTTPS（通道已加密）</div>
+            </div>
+          </div>
+
+          <div class="original-card">
+            <div class="original-stripe stripe-blue"></div>
+            <div class="original-text">
+              <div class="title">请求方法</div>
+              <div class="desc">GET</div>
+            </div>
+          </div>
+
+          <div class="original-card">
+            <div class="original-stripe stripe-green"></div>
+            <div class="original-text">
+              <div class="title">响应状态</div>
+              <div class="desc">HTTP 200</div>
+            </div>
+          </div>
+
+          <div class="original-card">
+            <div class="original-stripe stripe-orange"></div>
+            <div class="original-text">
+              <div class="title">会话凭证</div>
+              <div class="desc">请求携带 Cookie（关注会话固定与越权）</div>
+            </div>
+          </div>
+
+          <div class="original-card">
+            <div class="original-stripe stripe-orange"></div>
+            <div class="original-text">
+              <div class="title">安全响应头</div>
+              <div class="desc">缺失: content-security-policy, x-frame-options...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 方案一：Fluent 2 规范重构 -->
+    <div>
+      <div class="section-tag tag-good">
+        <span>✨ 方案一：Fluent 2 标准 Card + 语义图标</span>
+      </div>
+      <div class="panel-wrapper">
+        <div class="panel-header">
+          <div class="panel-icon-badge">
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M9.5 2.5a.5.5 0 0 1 1 0v1.1a6.5 6.5 0 0 1 5.9 5.9h1.1a.5.5 0 0 1 0 1h-1.1a6.5 6.5 0 0 1-5.9 5.9v1.1a.5.5 0 0 1-1 0v-1.1a6.5 6.5 0 0 1-5.9-5.9H2.5a.5.5 0 0 1 0-1h1.1a6.5 6.5 0 0 1 5.9-5.9V2.5zm0 2.11A5.5 5.5 0 1 0 15.39 10 5.51 5.51 0 0 0 9.5 4.61zM10 7a3 3 0 1 1 0 6 3 3 0 0 1 0-6z"/>
+            </svg>
+          </div>
+          <div class="panel-title-wrap">
+            <h2>本条流量安全要点</h2>
+            <p>基于所选报文的本地快速研判，不派发任务</p>
+          </div>
+        </div>
+
+        <div class="card-list">
+          <!-- 1. 传输加密 (Pass / Success) -->
+          <div class="fluent-card">
+            <div class="status-icon-box success">
+              <!-- CheckmarkCircle20 -->
+              <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M10 2a8 8 0 1 1 0 16 8 8 0 0 1 0-16zm3.36 5.65a.75.75 0 0 0-1.06-.01L9 10.94l-1.3-1.3a.75.75 0 0 0-1.06 1.06l1.83 1.83a.75.75 0 0 0 1.06 0l3.83-4.88z"/>
+              </svg>
+            </div>
+            <div class="card-body">
+              <div class="card-title-row">
+                <span class="card-title">传输加密</span>
+                <span class="fluent-badge success">已加密</span>
+              </div>
+              <div class="card-desc">HTTPS 通道已建立安全加密连接</div>
+            </div>
+          </div>
+
+          <!-- 2. 请求方法 (Info / Normal) -->
+          <div class="fluent-card">
+            <div class="status-icon-box info">
+              <!-- Info20 -->
+              <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M10 2a8 8 0 1 1 0 16 8 8 0 0 1 0-16zm0 4a1 1 0 1 0 0 2 1 1 0 0 0 0-2zm1 4H9.5a.5.5 0 0 0 0 1h.5v3.5a.5.5 0 0 0 1 0V10z"/>
+              </svg>
+            </div>
+            <div class="card-body">
+              <div class="card-title-row">
+                <span class="card-title">请求方式与状态</span>
+                <span class="fluent-badge info">HTTP 200</span>
+              </div>
+              <div class="card-desc"><span class="code-tag">GET</span> 方法，服务端响应正常</div>
+            </div>
+          </div>
+
+          <!-- 3. 会话凭证 (Warning) -->
+          <div class="fluent-card">
+            <div class="status-icon-box warning">
+              <!-- Warning20 -->
+              <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M9.13 3.63a1 1 0 0 1 1.74 0l6.5 12A1 1 0 0 1 16.5 17h-13a1 1 0 0 1-.87-1.37l6.5-12zM10 6.5a.75.75 0 0 0-.75.75v4a.75.75 0 0 0 1.5 0v-4A.75.75 0 0 0 10 6.5zm0 7a.88.88 0 1 0 0-1.75.88.88 0 0 0 0 1.75z"/>
+              </svg>
+            </div>
+            <div class="card-body">
+              <div class="card-title-row">
+                <span class="card-title">会话凭证</span>
+                <span class="fluent-badge warning">需关注</span>
+              </div>
+              <div class="card-desc">请求携带 Cookie，建议排查会话固定与越权风险</div>
+            </div>
+          </div>
+
+          <!-- 4. 安全响应头 (Warning / Danger) -->
+          <div class="fluent-card">
+            <div class="status-icon-box warning">
+              <!-- ShieldAlert / Warning -->
+              <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M10 2a.75.75 0 0 1 .3.06l6 2.5a.75.75 0 0 1 .45.69v5.25c0 4.28-3.08 7.9-6.52 8.48a.75.75 0 0 1-.46 0C6.33 18.4 3.25 14.78 3.25 10.5V5.25c0-.3.18-.57.45-.69l6-2.5A.75.75 0 0 1 10 2zm0 4.5a.75.75 0 0 0-.75.75v3a.75.75 0 0 0 1.5 0v-3A.75.75 0 0 0 10 6.5zm0 6a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5z"/>
+              </svg>
+            </div>
+            <div class="card-body">
+              <div class="card-title-row">
+                <span class="card-title">安全响应头缺失</span>
+                <span class="fluent-badge warning">4 项缺失</span>
+              </div>
+              <div class="card-desc">缺失: <span class="code-tag">CSP</span>, <span class="code-tag">X-Frame-Options</span>, <span class="code-tag">HSTS</span></div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+</body>
+</html>

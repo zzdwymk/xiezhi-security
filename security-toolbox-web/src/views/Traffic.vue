@@ -4,6 +4,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
+  CircleCheck,
   Connection,
   Delete,
   Dismiss,
@@ -11,12 +12,14 @@ import {
   MagicStick,
   Plus,
   Promotion,
+  QuestionFilled,
   Refresh,
   Search,
   Star,
   StarFilled,
   VideoPause,
   VideoPlay,
+  Warning,
 } from "../components/fluentIcons";
 import { api, type Target } from "../api";
 import AppPagination from "../components/AppPagination.vue";
@@ -460,34 +463,43 @@ const DANGEROUS_METHODS = new Set([
 ]);
 const trafficSecurityPoints = computed(() => {
   const packet = selected.value as any;
-  if (!packet) return [] as { label: string; value: string; level: string }[];
-  const points: { label: string; value: string; level: string }[] = [];
+  if (!packet) return [] as { label: string; value: string; level: string; badge?: string }[];
+  const points: { label: string; value: string; level: string; badge?: string }[] = [];
   const url = String(packet.url || `${packet.host || ""}${packet.path || ""}`);
   const https =
     url.toLowerCase().startsWith("https") || Number(packet.port) === 443;
   points.push({
     label: "传输加密",
+    badge: https ? "已加密" : "明文传输",
     value: https ? "HTTPS（通道已加密）" : "HTTP（明文，易被窃听或篡改）",
     level: https ? "ok" : "warn",
   });
   const method = String(packet.method || "GET").toUpperCase();
+  const isDangerous = DANGEROUS_METHODS.has(method);
   points.push({
     label: "请求方法",
-    value: DANGEROUS_METHODS.has(method)
+    badge: method,
+    value: isDangerous
       ? `${method}（敏感/写操作，需确认授权）`
       : method,
-    level: DANGEROUS_METHODS.has(method) ? "warn" : "info",
+    level: isDangerous ? "warn" : "info",
   });
-  if (packet.statusCode)
+  if (packet.statusCode) {
+    const code = Number(packet.statusCode);
+    const isError = code >= 500;
+    const isClientError = code >= 400 && code < 500;
     points.push({
       label: "响应状态",
+      badge: `HTTP ${packet.statusCode}`,
       value: `HTTP ${packet.statusCode}`,
-      level: Number(packet.statusCode) >= 500 ? "warn" : "info",
+      level: isError ? "warn" : isClientError ? "warn" : "info",
     });
+  }
   const reqHeaders = String(packet.requestHeaders || "").toLowerCase();
   const hasCookie = reqHeaders.includes("cookie:");
   points.push({
     label: "会话凭证",
+    badge: hasCookie ? "携带Cookie" : "无Cookie",
     value: hasCookie ? "请求携带 Cookie（关注会话固定与越权）" : "未见 Cookie",
     level: hasCookie ? "warn" : "info",
   });
@@ -500,6 +512,7 @@ const trafficSecurityPoints = computed(() => {
     ].filter((h) => !respHeaders.includes(h));
     points.push({
       label: "安全响应头",
+      badge: missing.length ? `${missing.length}项缺失` : "配置齐全",
       value: missing.length ? `缺失：${missing.join("、")}` : "常见安全头齐全",
       level: missing.length ? "warn" : "ok",
     });
@@ -1651,10 +1664,21 @@ onUnmounted(() => {
             <li
               v-for="point in trafficSecurityPoints"
               :key="point.label"
+              class="fluent-point-card"
               :class="point.level"
             >
-              <span class="tp-label">{{ point.label }}</span>
-              <span class="tp-value">{{ point.value }}</span>
+              <div class="status-icon-box" :class="point.level">
+                <el-icon v-if="point.level === 'ok'"><CircleCheck /></el-icon>
+                <el-icon v-else-if="point.level === 'warn'"><Warning /></el-icon>
+                <el-icon v-else><QuestionFilled /></el-icon>
+              </div>
+              <div class="card-body">
+                <div class="card-title-row">
+                  <span class="tp-label">{{ point.label }}</span>
+                  <span v-if="point.badge" class="fluent-badge" :class="point.level">{{ point.badge }}</span>
+                </div>
+                <div class="tp-value">{{ point.value }}</div>
+              </div>
             </li>
           </ul>
         </div>
@@ -2640,44 +2664,89 @@ onUnmounted(() => {
   padding: 0;
   list-style: none;
 }
-.traffic-points-list li {
+.traffic-points-list li.fluent-point-card {
   position: relative;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 9px 11px 9px 15px;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
   border: 1px solid var(--app-border);
-  border-radius: var(--fluent-radius-control);
+  border-radius: var(--fluent-radius-control, 6px);
   background: var(--app-surface-strong);
+  transition: border-color var(--fluent-fast, 150ms) ease,
+    box-shadow var(--fluent-fast, 150ms) ease,
+    background-color var(--fluent-fast, 150ms) ease;
 }
-.traffic-points-list li::before {
-  position: absolute;
-  top: 50%;
-  left: 5px;
-  width: 3px;
-  height: 20px;
-  transform: translateY(-50%);
-  border-radius: 999px;
-  background: var(--app-accent);
-  content: "";
+.traffic-points-list li.fluent-point-card:hover {
+  border-color: var(--app-border-hover, color-mix(in srgb, var(--app-border) 75%, var(--app-accent) 25%));
+  box-shadow: var(--fluent-shadow-2, 0 1.2px 3.6px rgba(0, 0, 0, 0.06));
 }
-.traffic-points-list li.ok::before {
-  background: #2e9d67;
+.traffic-points-list .status-icon-box {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 4px;
+  font-size: 13px;
+  margin-top: 1px;
 }
-.traffic-points-list li.warn {
-  background: var(--app-surface-strong);
+.traffic-points-list .status-icon-box.ok {
+  color: light-dark(#0e700e, #54b054);
+  background-color: light-dark(#dff6dd, rgba(14, 112, 14, 0.22));
 }
-.traffic-points-list li.warn::before {
-  background: #c8801a;
+.traffic-points-list .status-icon-box.info {
+  color: light-dark(#0f6cbd, #479ef5);
+  background-color: light-dark(#ebf3fc, rgba(15, 108, 189, 0.22));
+}
+.traffic-points-list .status-icon-box.warn {
+  color: light-dark(#bc4b09, #f7823b);
+  background-color: light-dark(#fff4ce, rgba(188, 75, 9, 0.22));
+}
+.traffic-points-list .card-body {
+  flex: 1;
+  min-width: 0;
+}
+.traffic-points-list .card-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 3px;
 }
 .traffic-points-list .tp-label {
-  color: var(--app-muted);
-  font-size: var(--type-micro);
+  font-size: var(--type-caption, 12px);
+  font-weight: 600;
+  color: var(--app-text);
+  line-height: 1.4;
+}
+.traffic-points-list .fluent-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.traffic-points-list .fluent-badge.ok {
+  background-color: light-dark(#dff6dd, rgba(14, 112, 14, 0.22));
+  color: light-dark(#0e700e, #54b054);
+}
+.traffic-points-list .fluent-badge.info {
+  background-color: light-dark(#ebf3fc, rgba(15, 108, 189, 0.22));
+  color: light-dark(#0f6cbd, #479ef5);
+}
+.traffic-points-list .fluent-badge.warn {
+  background-color: light-dark(#fff4ce, rgba(188, 75, 9, 0.22));
+  color: light-dark(#bc4b09, #f7823b);
 }
 .traffic-points-list .tp-value {
-  color: var(--app-text);
-  font-size: var(--type-caption);
-  line-height: 1.5;
+  color: var(--app-muted);
+  font-size: var(--type-micro, 12px);
+  line-height: 1.45;
+  word-break: break-word;
 }
 .traffic-points-foot {
   padding: 10px 14px;

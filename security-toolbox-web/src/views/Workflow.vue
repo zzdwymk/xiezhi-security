@@ -58,6 +58,10 @@ import {
 } from "../api";
 import { toErrorMessage } from "../utils/errorMessage";
 import WorkflowEdge from "./WorkflowEdge.vue";
+import {
+  COMMON_PORT_OPTIONS,
+  normalizeAllowedPorts,
+} from "../utils/ports";
 
 type PhaseCode =
   | "engagement"
@@ -357,9 +361,11 @@ const targetInput = ref({
   name: "",
   targetValue: "",
   targetType: "domain",
-  allowedPorts: "80,443",
   authorizationNote: "",
 });
+const targetInputSelectedPorts = ref<string[]>(["80", "443"]);
+const targetInputCustomPorts = ref("");
+const targetInputFullPortAccess = ref(false);
 const executing = ref(false);
 const executeProgress = ref(0);
 const executeIndeterminate = ref(false);
@@ -2152,9 +2158,11 @@ function openTargetInput() {
     name: "",
     targetValue: "",
     targetType: "domain",
-    allowedPorts: "80,443",
     authorizationNote: "",
   };
+  targetInputSelectedPorts.value = ["80", "443"];
+  targetInputCustomPorts.value = "";
+  targetInputFullPortAccess.value = false;
   targetInputVisible.value = true;
 }
 
@@ -2169,13 +2177,23 @@ async function createTargetInput() {
   ) {
     return ElMessage.warning("请填写名称、目标地址和授权记录");
   }
+  let allowedPorts: string;
+  try {
+    allowedPorts = normalizeAllowedPorts(
+      targetInputSelectedPorts.value,
+      targetInputCustomPorts.value,
+      targetInputFullPortAccess.value,
+    );
+  } catch (error: any) {
+    return ElMessage.warning(error?.message || "端口格式不正确");
+  }
   targetInputSaving.value = true;
   try {
     const { data } = await endpoints.createTarget({
       name: input.name.trim(),
       targetValue: input.targetValue.trim(),
       targetType: input.targetType,
-      allowedPorts: input.allowedPorts.trim() || "80,443",
+      allowedPorts,
       authorizationNote: input.authorizationNote.trim(),
       enabled: true,
       projectId,
@@ -3336,10 +3354,47 @@ onBeforeUnmount(() => {
           />
         </el-form-item>
         <el-form-item label="允许端口">
-          <el-input
-            v-model="targetInput.allowedPorts"
-            placeholder="例如 80,443,8000-8100"
-          />
+          <div class="port-picker">
+            <div class="full-port-option">
+              <div>
+                <b>全端口授权（1-65535）</b>
+                <small>允许使用 Nmap 执行全端口扫描，扫描时间可能较长。</small>
+              </div>
+              <el-switch v-model="targetInputFullPortAccess" />
+            </div>
+            <el-select
+              v-model="targetInputSelectedPorts"
+              :disabled="targetInputFullPortAccess"
+              multiple
+              filterable
+              allow-create
+              collapse-tags
+              collapse-tags-tooltip
+              placeholder="选择常用端口"
+            >
+              <el-option
+                v-for="port in COMMON_PORT_OPTIONS"
+                :key="port.value"
+                :label="port.label"
+                :value="port.value"
+              />
+            </el-select>
+            <el-input
+              v-model="targetInputCustomPorts"
+              :disabled="targetInputFullPortAccess"
+              clearable
+              placeholder="自定义端口，如 8080, 9000-9100"
+            >
+              <template #prefix>自定义</template>
+            </el-input>
+            <p class="port-hint">
+              {{
+                targetInputFullPortAccess
+                  ? "将保存为 1-65535；执行端口检测时会使用 Nmap，普通 TCP 探测仍只适合少量端口。"
+                  : "支持单个端口和端口范围，可用逗号、分号或空格分隔，保存时自动合并去重。"
+              }}
+            </p>
+          </div>
         </el-form-item>
         <el-form-item label="授权记录">
           <el-input
@@ -4783,6 +4838,45 @@ onBeforeUnmount(() => {
 .editor-foot {
   padding: 8px 14px !important;
   font-size: 11px !important;
+}
+.port-picker {
+  display: grid;
+  width: 100%;
+  gap: 10px;
+}
+.port-picker :deep(.el-select) {
+  width: 100%;
+}
+.full-port-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface-soft);
+}
+.full-port-option div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+.full-port-option b {
+  color: var(--app-text);
+  font-size: 13px;
+}
+.full-port-option small {
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.port-hint {
+  margin: 0 2px;
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 @media (min-width: 1201px) {

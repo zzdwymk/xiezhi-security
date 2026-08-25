@@ -26,6 +26,33 @@ const projectStatusOptions = [
   { label: "已完成", value: "COMPLETED" },
   { label: "已归档", value: "ARCHIVED" },
 ];
+
+function projectStatusLabel(status?: string) {
+  const map: Record<string, string> = {
+    ACTIVE: "进行中",
+    DRAFT: "草稿",
+    PAUSED: "已暂停",
+    COMPLETED: "已完成",
+    ARCHIVED: "已归档",
+  };
+  return (status && map[status]) || status || "未知";
+}
+
+function projectStatusType(
+  status?: string,
+): "success" | "warning" | "info" | "primary" | "danger" | "" {
+  const types: Record<
+    string,
+    "success" | "warning" | "info" | "primary" | "danger"
+  > = {
+    ACTIVE: "success",
+    DRAFT: "info",
+    PAUSED: "warning",
+    COMPLETED: "primary",
+    ARCHIVED: "info",
+  };
+  return (status && types[status]) || "info";
+}
 const editForm = ref({
   name: "",
   description: "",
@@ -201,7 +228,17 @@ onMounted(load);
     <el-table v-else v-loading="loading" :data="pagedRows">
       <el-table-column prop="name" label="项目名称" />
       <el-table-column prop="owner" label="负责人" width="130" />
-      <el-table-column prop="status" label="状态" width="130" />
+      <el-table-column label="状态" width="130">
+        <template #default="scope">
+          <el-tag
+            size="small"
+            :type="projectStatusType(scope.row.status)"
+            effect="light"
+          >
+            {{ projectStatusLabel(scope.row.status) }}
+          </el-tag>
+        </template>
+      </el-table-column>
       <el-table-column label="授权有效期" min-width="230">
         <template #default="scope">
           {{ formatDateTime(scope.row.authorizationValidFrom) }} 至

@@ -723,6 +723,20 @@ function statusType(status: string) {
   return "info";
 }
 
+function statusLabel(status?: string) {
+  const labels: Record<string, string> = {
+    PENDING: "待执行",
+    QUEUED: "排队中",
+    RUNNING: "执行中",
+    SUCCESS: "成功",
+    FAILED: "失败",
+    TIMEOUT: "超时",
+    CANCELLED: "已取消",
+    REJECTED: "已拒绝",
+  };
+  return (status && labels[status]) || status || "未知";
+}
+
 function askCopilot(row: TaskRow) {
   copilot.prepare({
     targetId: row.targetId,
@@ -814,7 +828,7 @@ onUnmounted(() => {
       <el-table-column label="状态" width="105"
         ><template #default="scope"
           ><el-tag size="small" :type="statusType(scope.row.status)">{{
-            scope.row.status
+            statusLabel(scope.row.status)
           }}</el-tag></template
         ></el-table-column
       >

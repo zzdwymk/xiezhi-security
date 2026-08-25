@@ -200,8 +200,8 @@ async function run(page, H, ctx) {
     if (!(await toolbar.count())) throw new Error("未渲染单目标附录工具条");
     const sel = toolbar.locator(".el-select").first();
     const text = ((await sel.textContent()) || "").replace(/\s+/g, " ").trim();
-    if (!/全部目标|项目汇总/.test(text)) {
-      throw new Error(`默认范围非「全部目标（项目汇总）」，实际: ${text}`);
+    if (!/全部目标/.test(text)) {
+      throw new Error(`默认范围非「全部目标」，实际: ${text}`);
     }
     return `默认范围: ${text}`;
   }, { page });
