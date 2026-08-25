@@ -2787,15 +2787,12 @@ onUnmounted(() => {
 }
 .traffic-points-list .fluent-infobar__badge.ok {
   color: light-dark(#107c10, #a5e6a5);
-  background: light-dark(rgba(16, 124, 16, 0.12), rgba(74, 222, 74, 0.16));
 }
 .traffic-points-list .fluent-infobar__badge.info {
   color: light-dark(#0f6cbd, #93c9f7);
-  background: light-dark(rgba(0, 90, 158, 0.10), rgba(96, 169, 246, 0.14));
 }
 .traffic-points-list .fluent-infobar__badge.warn {
   color: light-dark(#bc4b09, #ffbf7a);
-  background: light-dark(rgba(255, 193, 7, 0.14), rgba(255, 183, 77, 0.18));
 }
 .traffic-points-list .fluent-infobar__message {
   color: var(--app-muted);

@@ -90,6 +90,14 @@ function applyProjectAuthorizationDefaults(projectId?: number) {
   );
 }
 
+function projectStatusLabel(status?: string) {
+  const labels: Record<string, string> = {
+    ACTIVE: '进行中',
+    ARCHIVED: '已归档',
+  };
+  return status ? labels[status] || status : '';
+}
+
 function projectsForTarget(row: Target) {
   if (row.projectId) {
     const directProject = projects.value.find(
@@ -550,7 +558,7 @@ onMounted(load);
           <el-option
             v-for="p in projects"
             :key="p.id"
-            :label="`${p.name}（${p.status}）`"
+            :label="`${p.name}（${projectStatusLabel(p.status)}）`"
             :value="p.id"
           />
         </el-select>
@@ -754,9 +762,8 @@ onMounted(load);
         "
         class="target-inherited-time"
       >
-        <strong>未单独设置的时间将沿用所属项目，不会保存为目标级时间</strong>
         <span v-for="project in editingProjects" :key="project.id">
-          <b>{{ project.name }}</b>
+          未单独设置的时间将沿用项目 <b>{{ project.name }}</b>
           <span>
             开始 {{ compactDateTime(project.authorizationValidFrom) }} · 结束
             {{ compactDateTime(project.authorizationExpiresAt) }}
@@ -874,15 +881,23 @@ onMounted(load);
   line-height: 1.55;
 }
 .target-inherited-time {
-  display: grid;
-  gap: 6px;
   margin: -6px 2px 14px;
-  padding: 10px 12px;
-  border-radius: 5px;
-  background: var(--app-accent-soft);
   color: var(--app-muted);
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.55;
+}
+.target-inherited-time > span {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: baseline;
+}
+.target-inherited-time > span > b {
+  color: var(--app-text);
+  font-weight: 600;
+}
+.target-inherited-time > span > span {
+  flex: none;
 }
 .target-inherited-time > strong {
   color: var(--app-text);

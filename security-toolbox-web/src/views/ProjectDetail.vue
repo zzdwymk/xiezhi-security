@@ -1525,6 +1525,12 @@ async function loadMemories() {
     memoryLoading.value = false;
   }
 }
+function memorySourceLabel(source?: string) {
+  const labels: Record<string, string> = {
+    conversation: '对话',
+  };
+  return source ? labels[source] || source : '-';
+}
 async function deleteMemory(docId: string) {
   try {
     await ElMessageBox.confirm(
@@ -3832,11 +3838,11 @@ onUnmounted(() => {
             label="摘要"
             min-width="260"
             show-overflow-tooltip
-          /><el-table-column
-            prop="source"
-            label="来源"
-            width="160"
-          /><el-table-column
+          /><el-table-column label="来源" width="160"
+            ><template #default="scope">{{
+              memorySourceLabel(scope.row.source)
+            }}</template></el-table-column
+          ><el-table-column
             prop="chars"
             label="字符数"
             width="90"
@@ -4242,8 +4248,10 @@ onUnmounted(() => {
               :key="`current-${task.id}`"
               :label="`#${task.id} · ${task.toolCode} · ${formatDateTime(task.createdAt)}`"
               :value="task.id" /></el-select></el-form-item
-        ><el-button type="primary" :loading="diffLoading" @click="loadDiff"
-          >比较</el-button
+        ><el-form-item class="diff-compare-item"
+          ><el-button type="primary" :loading="diffLoading" @click="loadDiff"
+            >比较</el-button
+          ></el-form-item
         ></el-form
       >
       <template v-if="diff">
@@ -4979,6 +4987,9 @@ onUnmounted(() => {
 }
 .diff-form :deep(.el-select) {
   width: 290px;
+}
+.diff-compare-item {
+  align-self: flex-end;
 }
 @media (max-width: 900px) {
   .project-tab-toolbar,

@@ -812,17 +812,33 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
   text-shadow: none !important;
 }
 
-.el-popper[role="tooltip"]:not(.el-select__popper):not(
-    .el-dropdown__popper
-  ):not(.el-picker__popper):not(.el-cascader__dropdown):not(
-    .el-autocomplete__popper
-  ):not(.el-popover)
-  .el-popper__content {
-  color: var(--app-hover-popup-text) !important;
-}
+ .el-popper[role="tooltip"]:not(.el-select__popper):not(
+     .el-dropdown__popper
+   ):not(.el-picker__popper):not(.el-cascader__dropdown):not(
+     .el-autocomplete__popper
+   ):not(.el-popover)
+   .el-popper__content {
+   color: var(--app-hover-popup-text) !important;
+ }
 
-/* Element Plus draws its arrow as a rotated square; remove it everywhere. */
-.el-popper__arrow,
+  /* Tags that appear inside inverted hover tooltips (e.g. el-select
+     collapse-tags-tooltip) keep their background/border transparent so the
+     inverted popup text remains readable. */
+  .el-popper[role="tooltip"]:not(.el-select__popper):not(
+      .el-dropdown__popper
+    ):not(.el-picker__popper):not(.el-cascader__dropdown):not(
+      .el-autocomplete__popper
+    ):not(.el-popover)
+    .el-tag {
+    --el-tag-bg-color: transparent;
+    --el-tag-border-color: transparent;
+    --el-tag-text-color: var(--app-hover-popup-text);
+    background-color: transparent !important;
+    border-color: transparent !important;
+  }
+ 
+ /* Element Plus draws its arrow as a rotated square; remove it everywhere. */
+ .el-popper__arrow,
 .el-popper__arrow::before {
   display: none !important;
 }

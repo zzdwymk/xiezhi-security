@@ -675,12 +675,12 @@ onBeforeUnmount(() => {
           />
         </el-select>
       </el-form-item>
+      <el-form-item class="diff-compare-item">
+        <el-button type="primary" :loading="diffLoading" @click="loadDiff"
+          >比较</el-button
+        >
+      </el-form-item>
     </el-form>
-    <div class="diff-compare-row">
-      <el-button type="primary" :loading="diffLoading" @click="loadDiff"
-        >比较</el-button
-      >
-    </div>
     <template v-if="diff">
       <el-alert
         :title="`新增 ${diff.summary.added} · 持续 ${diff.summary.persistent} · 已修复 ${diff.summary.resolved} · 等级变化 ${diff.summary.severityChanged}`"
@@ -714,10 +714,8 @@ onBeforeUnmount(() => {
 .findings-page .section-head h3 {
   font-size: var(--type-section-title);
 }
-.diff-compare-row {
-  display: flex;
-  justify-content: center;
-  margin-top: 12px;
+.diff-compare-item {
+  align-self: flex-end;
 }
 .findings-page .section-head p {
   font-size: var(--type-section-desc);
