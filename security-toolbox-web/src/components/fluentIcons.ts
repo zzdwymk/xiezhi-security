@@ -42,6 +42,7 @@ export const List = fluentIcon("clipboard-task");
 export const Location = fluentIcon("location");
 export const Lock = fluentIcon("lock");
 export const MagicStick = fluentIcon("sparkle");
+export const InfoCircle = fluentIcon("info");
 export const Plus = fluentIcon("add");
 export const Promotion = fluentIcon("send");
 export const QuestionFilled = fluentIcon("question");

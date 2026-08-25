@@ -58,10 +58,7 @@ import {
 } from "../api";
 import { toErrorMessage } from "../utils/errorMessage";
 import WorkflowEdge from "./WorkflowEdge.vue";
-import {
-  COMMON_PORT_OPTIONS,
-  normalizeAllowedPorts,
-} from "../utils/ports";
+import { COMMON_PORT_OPTIONS, normalizeAllowedPorts } from "../utils/ports";
 
 type PhaseCode =
   | "engagement"
@@ -95,12 +92,7 @@ interface EditorNodeData {
 
 interface NodeRunState {
   status:
-    | "pending"
-    | "running"
-    | "success"
-    | "failed"
-    | "skipped"
-    | "cancelled";
+    "pending" | "running" | "success" | "failed" | "skipped" | "cancelled";
   taskId?: number;
   log?: string;
   summary?: string;
@@ -295,7 +287,9 @@ const SUGGESTION_TERM_LABELS: Record<string, string> = {
 };
 
 function suggestionKindLabel(kind?: string) {
-  return SUGGESTION_KIND_LABELS[String(kind || "").toLowerCase()] || "工作流建议";
+  return (
+    SUGGESTION_KIND_LABELS[String(kind || "").toLowerCase()] || "工作流建议"
+  );
 }
 
 function localizeSuggestionText(value?: string) {
@@ -364,7 +358,6 @@ const targetInput = ref({
   authorizationNote: "",
 });
 const targetInputSelectedPorts = ref<string[]>(["80", "443"]);
-const targetInputCustomPorts = ref("");
 const targetInputFullPortAccess = ref(false);
 const executing = ref(false);
 const executeProgress = ref(0);
@@ -453,8 +446,7 @@ const phaseNodes = computed(() =>
 );
 const hasCanonicalPhaseNode = (phase: PhaseCode) =>
   nodes.value.some(
-    (node) =>
-      node.id === phaseNodeId(phase) && node.data.nodeKind === "phase",
+    (node) => node.id === phaseNodeId(phase) && node.data.nodeKind === "phase",
   );
 const connectedEdgeCount = computed(() => edges.value.length);
 const graphReady = computed(
@@ -472,7 +464,8 @@ const selectedProject = computed(() =>
   projects.value.find((project) => project.id === selectedProjectId.value),
 );
 const selectedPresetLabel = computed(
-  () => PRESETS.find((item) => item.value === preset.value)?.label || "未选择模板",
+  () =>
+    PRESETS.find((item) => item.value === preset.value)?.label || "未选择模板",
 );
 const contextMenuNode = computed(() =>
   nodes.value.find((node) => node.id === workflowContextMenu.value.nodeId),
@@ -570,8 +563,7 @@ const selectedPortsInput = computed({
 });
 
 const selectedNmapMode = computed({
-  get: () =>
-    String(selectedToolNode.value?.data.parameters?.mode || "quick"),
+  get: () => String(selectedToolNode.value?.data.parameters?.mode || "quick"),
   set: (value: string) => updateSelectedToolParameters({ mode: value }),
 });
 
@@ -683,12 +675,7 @@ function phaseToolMap(code: PresetCode): Record<PhaseCode, string[]> {
       discovery: [],
       validation: ["http_security_check"],
       impact: [],
-      retest: [
-        "http_security_check",
-        "nuclei_scan",
-        "afrog_scan",
-        "xray_scan",
-      ],
+      retest: ["http_security_check", "nuclei_scan", "afrog_scan", "xray_scan"],
       report: [],
     };
   return {
@@ -749,8 +736,7 @@ function buildPreset(code: PresetCode, retainedSteps?: WorkflowStepSpec[]) {
     ),
   );
   PHASES.forEach((phase, index) => {
-    const x =
-      WORKFLOW_LAYOUT.phaseStartX + index * WORKFLOW_LAYOUT.phaseStepX;
+    const x = WORKFLOW_LAYOUT.phaseStartX + index * WORKFLOW_LAYOUT.phaseStepX;
     resultNodes.push(
       makeNode(phaseNodeId(phase.code), "phase", phase.code, {
         x,
@@ -813,9 +799,7 @@ function buildPreset(code: PresetCode, retainedSteps?: WorkflowStepSpec[]) {
     });
     if (!phaseToolNodeIds.length) {
       resultEdges.push(makeEdge(milestone, next));
-    } else if (
-      phaseTools.some((tool) => agentOf(tool)?.risk === "CAUTION")
-    ) {
+    } else if (phaseTools.some((tool) => agentOf(tool)?.risk === "CAUTION")) {
       let upstream = milestone;
       phaseToolNodeIds.forEach((id) => {
         resultEdges.push(makeEdge(upstream, id));
@@ -1049,7 +1033,9 @@ async function waitForLibrarySectionLayout(sectionId: string) {
   if (animations.length) {
     await Promise.race([
       Promise.all(
-        animations.map((animation) => animation.finished.catch(() => undefined)),
+        animations.map((animation) =>
+          animation.finished.catch(() => undefined),
+        ),
       ),
       new Promise<void>((resolve) => window.setTimeout(resolve, 260)),
     ]);
@@ -1096,7 +1082,8 @@ async function selectCanvasNode(id: string) {
       const targetTop =
         library.scrollTop + targetBounds.top - libraryBounds.top;
       const centeredTop =
-        targetTop - Math.max(0, (library.clientHeight - targetBounds.height) / 2);
+        targetTop -
+        Math.max(0, (library.clientHeight - targetBounds.height) / 2);
       library.scrollTo({
         top: Math.max(0, centeredTop),
         behavior: "auto",
@@ -1369,7 +1356,10 @@ function onLibraryDragStart(event: DragEvent, tool: string) {
   event.dataTransfer?.setData("application/x-workflow-tool", tool);
 }
 function onCanvasDrop(event: DragEvent) {
-  const position = screenToFlowCoordinate({ x: event.clientX, y: event.clientY });
+  const position = screenToFlowCoordinate({
+    x: event.clientX,
+    y: event.clientY,
+  });
   const encoded = event.dataTransfer?.getData(
     "application/x-workflow-library-item",
   );
@@ -1414,10 +1404,7 @@ function serializeGraph(): WorkflowSpecV2 {
     nodeId: node.id,
     tool: node.data.tool || "",
     label: node.data.label,
-    parameters: workflowToolParameters(
-      node.data.tool,
-      node.data.parameters,
-    ),
+    parameters: workflowToolParameters(node.data.tool, node.data.parameters),
     risk: node.data.risk || "SAFE",
     requiresApproval: (node.data.risk || "SAFE") !== "SAFE",
     group: Math.max((topo.level.get(node.id) || 0) - firstToolLevel, 0),
@@ -1520,9 +1507,7 @@ function nodeStatusType(status: string): string {
 }
 
 const nodeDetailRun = computed(() =>
-  nodeDetailNodeId.value
-    ? nodeRuns.value[nodeDetailNodeId.value]
-    : undefined,
+  nodeDetailNodeId.value ? nodeRuns.value[nodeDetailNodeId.value] : undefined,
 );
 const nodeDetailTitle = computed(() => {
   const node = nodes.value.find((item) => item.id === nodeDetailNodeId.value);
@@ -1583,7 +1568,9 @@ function nodeStatusFromTask(status: string): NodeRunState["status"] {
   return "failed";
 }
 
-function parseTaskResult(task: ProjectTaskRecord): Record<string, any> | undefined {
+function parseTaskResult(
+  task: ProjectTaskRecord,
+): Record<string, any> | undefined {
   if (!task.resultJson) return undefined;
   try {
     const parsed = JSON.parse(task.resultJson);
@@ -1593,7 +1580,9 @@ function parseTaskResult(task: ProjectTaskRecord): Record<string, any> | undefin
   }
 }
 
-function structuredResultCount(result?: Record<string, any>): number | undefined {
+function structuredResultCount(
+  result?: Record<string, any>,
+): number | undefined {
   if (!result) return undefined;
   const candidates = [
     result.findings,
@@ -1668,7 +1657,10 @@ function applyWorkflowRunDetail(detail: WorkflowRunDetail) {
     ? Object.fromEntries(
         detail.tasks
           .filter((task) => task.workflowNodeId)
-          .map((task) => [task.workflowNodeId as string, nodeRunFromTask(task)]),
+          .map((task) => [
+            task.workflowNodeId as string,
+            nodeRunFromTask(task),
+          ]),
       )
     : {};
 }
@@ -1711,7 +1703,9 @@ async function loadWorkflowRuns() {
     const active = workflowRuns.value.find((run) => !isRunTerminal(run.status));
     activeRunId.value = active?.id;
     executing.value = Boolean(active);
-    const retained = workflowRuns.value.some((run) => run.id === selectedRunId.value)
+    const retained = workflowRuns.value.some(
+      (run) => run.id === selectedRunId.value,
+    )
       ? selectedRunId.value
       : undefined;
     const nextId = active?.id || retained || workflowRuns.value[0]?.id;
@@ -1758,7 +1752,8 @@ async function pollWorkflowRun(runId: number) {
 async function clearSelectedRun() {
   const run = selectedRunDetail.value?.run;
   if (!run) return;
-  if (!isRunTerminal(run.status)) return ElMessage.warning("运行中的工作流不能清空");
+  if (!isRunTerminal(run.status))
+    return ElMessage.warning("运行中的工作流不能清空");
   const confirmed = await ElMessageBox.confirm(
     `仅隐藏运行 #${run.id} 的工作流历史；关联任务和审计记录仍会保留。`,
     "清空本次运行",
@@ -1844,9 +1839,7 @@ function validateExecutionInputs(steps: WorkflowStepSpec[]) {
           return `步骤“${step.label || step.tool}”需要选择 1 到 50 个 PoC`;
         }
         if (
-          codes.some(
-            (code) => !/^[A-Z]{2}-[A-F0-9]{24}$/.test(String(code)),
-          )
+          codes.some((code) => !/^[A-Z]{2}-[A-F0-9]{24}$/.test(String(code)))
         ) {
           return `步骤“${step.label || step.tool}”包含无效 PoC 编号`;
         }
@@ -1954,7 +1947,9 @@ async function executeWorkflow() {
     await pollWorkflowRun(detail.run.id);
   } catch (error: any) {
     executeStatus.value = "执行失败";
-    executeLogs.value.push(`[工作流] 错误：${toErrorMessage(error, "执行失败")}`);
+    executeLogs.value.push(
+      `[工作流] 错误：${toErrorMessage(error, "执行失败")}`,
+    );
     ElMessage.error(toErrorMessage(error, "工作流执行失败"));
   } finally {
     saving.value = false;
@@ -2134,7 +2129,9 @@ async function loadProjectTargets() {
       endpoints.targets(),
     ]);
     projectTargetLinks.value = linksResult.data || [];
-    targets.value = (targetsResult.data || []).filter((target) => target.enabled);
+    targets.value = (targetsResult.data || []).filter(
+      (target) => target.enabled,
+    );
     selectedTargetId.value = linkedTargets.value[0]?.id;
   } catch {
     ElMessage.warning("项目目标列表加载失败");
@@ -2161,7 +2158,6 @@ function openTargetInput() {
     authorizationNote: "",
   };
   targetInputSelectedPorts.value = ["80", "443"];
-  targetInputCustomPorts.value = "";
   targetInputFullPortAccess.value = false;
   targetInputVisible.value = true;
 }
@@ -2181,7 +2177,7 @@ async function createTargetInput() {
   try {
     allowedPorts = normalizeAllowedPorts(
       targetInputSelectedPorts.value,
-      targetInputCustomPorts.value,
+      "",
       targetInputFullPortAccess.value,
     );
   } catch (error: any) {
@@ -2244,7 +2240,8 @@ async function refit(mode: "overview" | "start" = "overview") {
       void setViewport(
         {
           x: 24 - WORKFLOW_LAYOUT.startX * zoom,
-          y: Math.max(24, (height - graphHeight * zoom) / 2) - firstToolY * zoom,
+          y:
+            Math.max(24, (height - graphHeight * zoom) / 2) - firstToolY * zoom,
           zoom,
         },
         { duration: 180 },
@@ -2436,7 +2433,8 @@ onBeforeUnmount(() => {
         <div class="workflow-context-summary" aria-label="当前工作流配置">
           <span><b>项目</b>{{ selectedProject?.name || "未选择" }}</span>
           <span
-            ><b>授权目标</b>{{
+            ><b>授权目标</b
+            >{{
               selectedTarget
                 ? `${selectedTarget.name} · ${selectedTarget.targetValue}`
                 : "未选择"
@@ -2446,13 +2444,19 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div class="workflow-actions">
-        <el-button type="primary" :loading="saving" @click="save" :disabled="executing || viewingRunSnapshot"
+        <el-button
+          type="primary"
+          :loading="saving"
+          @click="save"
+          :disabled="executing || viewingRunSnapshot"
           ><el-icon><Check /></el-icon>保存工作流</el-button
         >
         <el-button
           type="success"
           :loading="executing"
-          :disabled="!selectedTargetId || saving || viewingRunSnapshot || executing"
+          :disabled="
+            !selectedTargetId || saving || viewingRunSnapshot || executing
+          "
           @click="executeWorkflow"
         >
           <el-icon><VideoPlay /></el-icon>执行工作流
@@ -2480,8 +2484,8 @@ onBeforeUnmount(() => {
         <template #title>五步完成一次评估</template>
         <ol class="guide-list">
           <li>
-            <b>从开始出发</b>：默认模板已经连好“启动与范围 → 侦察 → 发现 → 验证 →
-            复测 → 报告 → 结束”。
+            <b>从开始出发</b>：默认模板已经连好“启动与范围 → 侦察 → 发现 → 验证
+            → 复测 → 报告 → 结束”。
           </li>
           <li>
             <b>调整节点</b
@@ -2540,7 +2544,12 @@ onBeforeUnmount(() => {
     </el-alert>
 
     <div
-      v-if="workflowRuns.length || selectedRunDetail || executing || executeLogs.length"
+      v-if="
+        workflowRuns.length ||
+        selectedRunDetail ||
+        executing ||
+        executeLogs.length
+      "
       class="execute-panel"
       aria-label="工作流执行状态"
     >
@@ -2573,7 +2582,12 @@ onBeforeUnmount(() => {
             清空结果
           </el-button>
           <el-button
-            v-if="selectedRunDetail && selectedRunDetail.run.workflowDigest !== workflowSnapshot.specDigest && !viewingRunSnapshot"
+            v-if="
+              selectedRunDetail &&
+              selectedRunDetail.run.workflowDigest !==
+                workflowSnapshot.specDigest &&
+              !viewingRunSnapshot
+            "
             size="small"
             type="primary"
             plain
@@ -2592,7 +2606,12 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <el-alert
-        v-if="selectedRunDetail && selectedRunDetail.run.workflowDigest !== workflowSnapshot.specDigest && !viewingRunSnapshot"
+        v-if="
+          selectedRunDetail &&
+          selectedRunDetail.run.workflowDigest !==
+            workflowSnapshot.specDigest &&
+          !viewingRunSnapshot
+        "
         type="warning"
         :closable="false"
         title="当前画布版本与该次运行不同，节点结果暂不映射到当前拓扑。"
@@ -2607,7 +2626,7 @@ onBeforeUnmount(() => {
         :indeterminate="executeIndeterminate"
         :duration="1.2"
       />
-      <pre class="execute-log">{{ executeLogs.join('\n') }}</pre>
+      <pre class="execute-log">{{ executeLogs.join("\n") }}</pre>
     </div>
 
     <div class="workflow-editor-layout">
@@ -2625,7 +2644,11 @@ onBeforeUnmount(() => {
               :type="workflowConfigVisible ? 'primary' : 'default'"
               :aria-expanded="workflowConfigVisible"
               aria-controls="workflow-config-panel"
-              @click="workflowConfigVisible ? (workflowConfigVisible = false) : openWorkflowConfig()"
+              @click="
+                workflowConfigVisible
+                  ? (workflowConfigVisible = false)
+                  : openWorkflowConfig()
+              "
             >
               <el-icon><Setting /></el-icon>工作流配置
             </el-button>
@@ -2645,8 +2668,8 @@ onBeforeUnmount(() => {
             id="red-team-workflow"
             v-model:nodes="nodes"
             v-model:edges="edges"
-             :nodes-draggable="!viewingRunSnapshot"
-             :nodes-connectable="!viewingRunSnapshot"
+            :nodes-draggable="!viewingRunSnapshot"
+            :nodes-connectable="!viewingRunSnapshot"
             :elements-selectable="true"
             :delete-key-code="null"
             :min-zoom="0.2"
@@ -2695,9 +2718,12 @@ onBeforeUnmount(() => {
                       :aria-label="`查看${data.label}任务详情`"
                       title="查看任务详情"
                       @click.stop="openNodeDetail(id)"
-                      ><FluentIcon :name="workflowStatusIcon(nodeRuns[id].status)"
-                    /></button><button
-                       v-if="data.nodeKind !== 'system' && !viewingRunSnapshot"
+                    >
+                      <FluentIcon
+                        :name="workflowStatusIcon(nodeRuns[id].status)"
+                      /></button
+                    ><button
+                      v-if="data.nodeKind !== 'system' && !viewingRunSnapshot"
                       type="button"
                       class="node-remove"
                       aria-label="删除节点"
@@ -2777,94 +2803,98 @@ onBeforeUnmount(() => {
               @wheel.stop
               @contextmenu.stop.prevent
             >
-            <header class="workflow-config-head">
-              <div>
-                <strong>工作流配置</strong>
-                <span>运行范围与拓扑模板</span>
+              <header class="workflow-config-head">
+                <div>
+                  <strong>工作流配置</strong>
+                  <span>运行范围与拓扑模板</span>
+                </div>
+                <button
+                  type="button"
+                  aria-label="关闭工作流配置"
+                  title="关闭"
+                  @click="workflowConfigVisible = false"
+                >
+                  <el-icon><Dismiss /></el-icon>
+                </button>
+              </header>
+              <div class="workflow-config-body">
+                <label class="workflow-config-field">
+                  <span>评估项目</span>
+                  <el-select
+                    v-model="selectedProjectId"
+                    class="project-select"
+                    aria-label="评估项目"
+                    placeholder="选择评估项目"
+                    :loading="loading"
+                    :disabled="saving || executing || viewingRunSnapshot"
+                    @change="changeProject"
+                  >
+                    <template #prefix
+                      ><el-icon><FolderOpened /></el-icon
+                    ></template>
+                    <el-option
+                      v-for="project in projects"
+                      :key="project.id"
+                      :value="project.id"
+                      :label="project.name"
+                    />
+                  </el-select>
+                </label>
+                <label class="workflow-config-field">
+                  <span>授权目标</span>
+                  <el-select
+                    v-model="selectedTargetId"
+                    class="target-select"
+                    aria-label="授权目标"
+                    placeholder="选择授权目标"
+                    :disabled="
+                      !selectedProjectId || executing || viewingRunSnapshot
+                    "
+                  >
+                    <el-option
+                      v-for="target in linkedTargets"
+                      :key="target.id"
+                      :value="target.id"
+                      :label="`${target.name} · ${target.targetValue}`"
+                    />
+                  </el-select>
+                </label>
+                <label class="workflow-config-field">
+                  <span>工作流模板</span>
+                  <el-select
+                    v-model="preset"
+                    class="preset-select"
+                    aria-label="工作流模板"
+                    :disabled="executing || viewingRunSnapshot"
+                  >
+                    <el-option
+                      v-for="item in PRESETS"
+                      :key="item.value"
+                      :value="item.value"
+                      :label="item.label"
+                    />
+                  </el-select>
+                </label>
               </div>
-              <button
-                type="button"
-                aria-label="关闭工作流配置"
-                title="关闭"
-                @click="workflowConfigVisible = false"
-              >
-                <el-icon><Dismiss /></el-icon>
-              </button>
-            </header>
-            <div class="workflow-config-body">
-              <label class="workflow-config-field">
-                <span>评估项目</span>
-                <el-select
-                  v-model="selectedProjectId"
-                  class="project-select"
-                  aria-label="评估项目"
-                  placeholder="选择评估项目"
-                  :loading="loading"
-                  :disabled="saving || executing || viewingRunSnapshot"
-                  @change="changeProject"
+              <footer class="workflow-config-actions">
+                <el-button
+                  :disabled="
+                    !selectedProjectId || executing || viewingRunSnapshot
+                  "
+                  @click="openTargetInput"
                 >
-                  <template #prefix
-                    ><el-icon><FolderOpened /></el-icon
-                  ></template>
-                  <el-option
-                    v-for="project in projects"
-                    :key="project.id"
-                    :value="project.id"
-                    :label="project.name"
-                  />
-                </el-select>
-              </label>
-              <label class="workflow-config-field">
-                <span>授权目标</span>
-                <el-select
-                  v-model="selectedTargetId"
-                  class="target-select"
-                  aria-label="授权目标"
-                  placeholder="选择授权目标"
-                  :disabled="!selectedProjectId || executing || viewingRunSnapshot"
-                >
-                  <el-option
-                    v-for="target in linkedTargets"
-                    :key="target.id"
-                    :value="target.id"
-                    :label="`${target.name} · ${target.targetValue}`"
-                  />
-                </el-select>
-              </label>
-              <label class="workflow-config-field">
-                <span>工作流模板</span>
-                <el-select
-                  v-model="preset"
-                  class="preset-select"
-                  aria-label="工作流模板"
+                  <el-icon><Plus /></el-icon>新增授权输入
+                </el-button>
+                <el-button
                   :disabled="executing || viewingRunSnapshot"
+                  @click="resetPreset"
                 >
-                  <el-option
-                    v-for="item in PRESETS"
-                    :key="item.value"
-                    :value="item.value"
-                    :label="item.label"
-                  />
-                </el-select>
-              </label>
-            </div>
-            <footer class="workflow-config-actions">
-              <el-button
-                :disabled="!selectedProjectId || executing || viewingRunSnapshot"
-                @click="openTargetInput"
-              >
-                <el-icon><Plus /></el-icon>新增授权输入
-              </el-button>
-              <el-button
-                :disabled="executing || viewingRunSnapshot"
-                @click="resetPreset"
-              >
-                <el-icon><Refresh /></el-icon>载入所选模板
-              </el-button>
-              <el-button @click="showGuide = !showGuide">
-                <el-icon><QuestionFilled /></el-icon>使用说明
-              </el-button>
-            </footer>
+                  <el-icon><Refresh /></el-icon>载入所选模板
+                </el-button>
+                <el-button @click="showGuide = !showGuide">
+                  <el-icon><QuestionFilled /></el-icon>使用说明
+                </el-button>
+              </footer>
             </aside>
           </Transition>
           <Transition name="workflow-menu">
@@ -2883,84 +2913,104 @@ onBeforeUnmount(() => {
               @wheel.stop
               @contextmenu.stop.prevent
             >
-            <template v-if="!contextMenuNode">
-              <button type="button" role="menuitem" @click="openWorkflowConfig">
-                <el-icon><Setting /></el-icon><span>工作流配置</span>
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                :disabled="!selectedProjectId || executing || viewingRunSnapshot"
-                @click="openTargetInputFromCanvas"
-              >
-                <el-icon><Plus /></el-icon><span>新增授权输入</span>
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                :disabled="executing || viewingRunSnapshot"
-                @click="loadPresetFromContextMenu"
-              >
-                <el-icon><Refresh /></el-icon><span>载入所选模板</span>
-              </button>
-              <button type="button" role="menuitem" @click="showGuideFromCanvas">
-                <el-icon><QuestionFilled /></el-icon><span>使用说明</span>
-              </button>
-              <button type="button" role="menuitem" @click="fitWorkflowFromContextMenu">
-                <FluentIcon name="fit" /><span>适应画布</span>
-              </button>
-            </template>
-            <template v-else>
-              <button
-                v-if="contextMenuNode.id === '__start__'"
-                type="button"
-                role="menuitem"
-                @click="configureContextNode"
-              >
-                <el-icon><Setting /></el-icon><span>配置运行范围</span>
-              </button>
-              <button
-                v-else-if="contextMenuNode.data.nodeKind === 'tool'"
-                type="button"
-                role="menuitem"
-                @click="configureContextNode"
-              >
-                <el-icon><Setting /></el-icon><span>配置节点参数</span>
-              </button>
-              <button
-                v-if="nodeRuns[contextMenuNode.id]"
-                type="button"
-                role="menuitem"
-                @click="openContextNodeDetail"
-              >
-                <el-icon><CircleCheck /></el-icon><span>查看任务详情</span>
-              </button>
-              <button
-                v-if="contextMenuNode.data.nodeKind !== 'system' && !viewingRunSnapshot"
-                type="button"
-                role="menuitem"
-                class="is-danger"
-                @click="deleteContextNode"
-              >
-                <el-icon><Delete /></el-icon><span>删除节点</span>
-              </button>
-              <span
-                v-if="
-                  contextMenuNode.id === '__end__' &&
-                  !nodeRuns[contextMenuNode.id]
-                "
-                class="workflow-context-menu-note"
-              >固定结束节点</span>
-            </template>
+              <template v-if="!contextMenuNode">
+                <button
+                  type="button"
+                  role="menuitem"
+                  @click="openWorkflowConfig"
+                >
+                  <el-icon><Setting /></el-icon><span>工作流配置</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  :disabled="
+                    !selectedProjectId || executing || viewingRunSnapshot
+                  "
+                  @click="openTargetInputFromCanvas"
+                >
+                  <el-icon><Plus /></el-icon><span>新增授权输入</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  :disabled="executing || viewingRunSnapshot"
+                  @click="loadPresetFromContextMenu"
+                >
+                  <el-icon><Refresh /></el-icon><span>载入所选模板</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  @click="showGuideFromCanvas"
+                >
+                  <el-icon><QuestionFilled /></el-icon><span>使用说明</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  @click="fitWorkflowFromContextMenu"
+                >
+                  <FluentIcon name="fit" /><span>适应画布</span>
+                </button>
+              </template>
+              <template v-else>
+                <button
+                  v-if="contextMenuNode.id === '__start__'"
+                  type="button"
+                  role="menuitem"
+                  @click="configureContextNode"
+                >
+                  <el-icon><Setting /></el-icon><span>配置运行范围</span>
+                </button>
+                <button
+                  v-else-if="contextMenuNode.data.nodeKind === 'tool'"
+                  type="button"
+                  role="menuitem"
+                  @click="configureContextNode"
+                >
+                  <el-icon><Setting /></el-icon><span>配置节点参数</span>
+                </button>
+                <button
+                  v-if="nodeRuns[contextMenuNode.id]"
+                  type="button"
+                  role="menuitem"
+                  @click="openContextNodeDetail"
+                >
+                  <el-icon><CircleCheck /></el-icon><span>查看任务详情</span>
+                </button>
+                <button
+                  v-if="
+                    contextMenuNode.data.nodeKind !== 'system' &&
+                    !viewingRunSnapshot
+                  "
+                  type="button"
+                  role="menuitem"
+                  class="is-danger"
+                  @click="deleteContextNode"
+                >
+                  <el-icon><Delete /></el-icon><span>删除节点</span>
+                </button>
+                <span
+                  v-if="
+                    contextMenuNode.id === '__end__' &&
+                    !nodeRuns[contextMenuNode.id]
+                  "
+                  class="workflow-context-menu-note"
+                  >固定结束节点</span
+                >
+              </template>
             </div>
           </Transition>
         </div>
         <footer class="editor-foot">
           <span
-            >提示：单击可删除节点或连线后按 Delete 键；也可点击节点垃圾桶或连线上的
-            ✕ 删除。拖动节点只改变布局，不会改变执行顺序。</span
+            >提示：单击可删除节点或连线后按 Delete
+            键；也可点击节点垃圾桶或连线上的 ✕
+            删除。拖动节点只改变布局，不会改变执行顺序。</span
           ><span v-if="selectedNode"
-            >已选节点：{{ selectedNode.data.label }}{{
+            >已选节点：{{ selectedNode.data.label
+            }}{{
               selectedNode.data.nodeKind === "system"
                 ? "（固定保留）"
                 : "，按 Delete 删除"
@@ -2999,7 +3049,11 @@ onBeforeUnmount(() => {
               :disabled="executing || viewingRunSnapshot"
             >
               <el-form-item
-                v-if="['tcp_ports', 'nmap_service_scan'].includes(selectedToolNode.data.tool || '')"
+                v-if="
+                  ['tcp_ports', 'nmap_service_scan'].includes(
+                    selectedToolNode.data.tool || '',
+                  )
+                "
                 label="扫描端口"
               >
                 <el-input
@@ -3034,7 +3088,11 @@ onBeforeUnmount(() => {
               </el-form-item>
 
               <template
-                v-if="['afrog_scan', 'xray_scan'].includes(selectedToolNode.data.tool || '')"
+                v-if="
+                  ['afrog_scan', 'xray_scan'].includes(
+                    selectedToolNode.data.tool || '',
+                  )
+                "
               >
                 <el-form-item label="PoC 范围">
                   <el-checkbox v-model="selectedAllPocs">
@@ -3052,12 +3110,14 @@ onBeforeUnmount(() => {
               </template>
 
               <div
-                v-if="[
-                  'retrieve_project_context',
-                  'http_headers',
-                  'tls_config',
-                  'nuclei_scan',
-                ].includes(selectedToolNode.data.tool || '')"
+                v-if="
+                  [
+                    'retrieve_project_context',
+                    'http_headers',
+                    'tls_config',
+                    'nuclei_scan',
+                  ].includes(selectedToolNode.data.tool || '')
+                "
                 class="node-input-empty"
               >
                 此节点直接使用工作流配置中的授权目标，无额外参数。
@@ -3076,7 +3136,9 @@ onBeforeUnmount(() => {
                 class="library-section-toggle"
                 :aria-expanded="phaseLibraryExpanded"
                 aria-controls="workflow-phase-library-body"
-                :aria-label="phaseLibraryExpanded ? '收起流程阶段' : '展开流程阶段'"
+                :aria-label="
+                  phaseLibraryExpanded ? '收起流程阶段' : '展开流程阶段'
+                "
                 @click="phaseLibraryExpanded = !phaseLibraryExpanded"
               >
                 <el-icon class="library-section-chevron"><ArrowDown /></el-icon>
@@ -3210,8 +3272,8 @@ onBeforeUnmount(() => {
                     ><strong>{{ agent.name }}</strong
                     ><small>{{ agent.desc }}</small
                     ><em
-                      >{{ phaseOf(agent.phase).shortLabel }}
-                      · {{ agent.risk === "SAFE" ? "低影响" : "需人工确认" }}</em
+                      >{{ phaseOf(agent.phase).shortLabel }} ·
+                      {{ agent.risk === "SAFE" ? "低影响" : "需人工确认" }}</em
                     ></span
                   >
                   <el-tooltip
@@ -3230,7 +3292,9 @@ onBeforeUnmount(() => {
                 <div v-if="!filteredAgents.length" class="library-empty">
                   <FluentIcon :name="phaseOf(selectedPhase).icon" />
                   <strong
-                    >{{ phaseOf(selectedPhase).shortLabel }}暂无可添加的受控能力</strong
+                    >{{
+                      phaseOf(selectedPhase).shortLabel
+                    }}暂无可添加的受控能力</strong
                   >
                   <small>该阶段用于组织流程、确认结论或交付结果。</small>
                 </div>
@@ -3370,7 +3434,8 @@ onBeforeUnmount(() => {
               allow-create
               collapse-tags
               collapse-tags-tooltip
-              placeholder="选择常用端口"
+              default-first-option
+              placeholder="选择常用端口或手动输入，如 8000, 8080-8090"
             >
               <el-option
                 v-for="port in COMMON_PORT_OPTIONS"
@@ -3379,14 +3444,6 @@ onBeforeUnmount(() => {
                 :value="port.value"
               />
             </el-select>
-            <el-input
-              v-model="targetInputCustomPorts"
-              :disabled="targetInputFullPortAccess"
-              clearable
-              placeholder="自定义端口，如 8080, 9000-9100"
-            >
-              <template #prefix>自定义</template>
-            </el-input>
             <p class="port-hint">
               {{
                 targetInputFullPortAccess
@@ -3428,16 +3485,28 @@ onBeforeUnmount(() => {
           <el-tag :type="nodeStatusType(nodeDetailRun.status)" effect="dark">
             {{ statusLabel(nodeDetailRun.status) }}
           </el-tag>
-          <span v-if="nodeDetailRun.taskId">任务 #{{ nodeDetailRun.taskId }}</span>
-          <span v-if="nodeDetailRun.resultCount">{{ nodeDetailRun.resultCount }} 项结果</span>
+          <span v-if="nodeDetailRun.taskId"
+            >任务 #{{ nodeDetailRun.taskId }}</span
+          >
+          <span v-if="nodeDetailRun.resultCount"
+            >{{ nodeDetailRun.resultCount }} 项结果</span
+          >
         </p>
         <p v-if="nodeDetailRun.summary" class="node-detail-summary">
           {{ nodeDetailRun.summary }}
         </p>
-        <pre v-if="nodeDetailRun.output" class="node-detail-log">{{ JSON.stringify(nodeDetailRun.output, null, 2) }}</pre>
-        <pre v-if="nodeDetailRun.log" class="node-detail-log">{{ nodeDetailRun.log }}</pre>
+        <pre v-if="nodeDetailRun.output" class="node-detail-log">{{
+          JSON.stringify(nodeDetailRun.output, null, 2)
+        }}</pre>
+        <pre v-if="nodeDetailRun.log" class="node-detail-log">{{
+          nodeDetailRun.log
+        }}</pre>
         <el-empty
-          v-if="!nodeDetailRun.summary && !nodeDetailRun.output && !nodeDetailRun.log"
+          v-if="
+            !nodeDetailRun.summary &&
+            !nodeDetailRun.output &&
+            !nodeDetailRun.log
+          "
           description="暂无结构化输出"
         />
       </div>
@@ -3780,8 +3849,10 @@ onBeforeUnmount(() => {
 .workflow-popover-leave-active {
   transform-origin: top right;
   transition:
-    opacity var(--fluent-duration-fast, 150ms) var(--fluent-curve-standard, ease),
-    transform var(--fluent-collapse-motion, 220ms cubic-bezier(0.1, 0.9, 0.2, 1));
+    opacity var(--fluent-duration-fast, 150ms)
+      var(--fluent-curve-standard, ease),
+    transform
+      var(--fluent-collapse-motion, 220ms cubic-bezier(0.1, 0.9, 0.2, 1));
 }
 .workflow-popover-enter-from,
 .workflow-popover-leave-to {
@@ -3883,8 +3954,10 @@ onBeforeUnmount(() => {
 .workflow-menu-leave-active {
   transform-origin: top left;
   transition:
-    opacity var(--fluent-duration-fast, 150ms) var(--fluent-curve-standard, ease),
-    transform var(--fluent-collapse-motion, 220ms cubic-bezier(0.1, 0.9, 0.2, 1));
+    opacity var(--fluent-duration-fast, 150ms)
+      var(--fluent-curve-standard, ease),
+    transform
+      var(--fluent-collapse-motion, 220ms cubic-bezier(0.1, 0.9, 0.2, 1));
 }
 .workflow-menu-enter-from,
 .workflow-menu-leave-to {
@@ -4361,8 +4434,10 @@ onBeforeUnmount(() => {
   grid-template-rows: minmax(0, 1fr);
   opacity: 1;
   transition:
-    grid-template-rows var(--fluent-collapse-motion, 220ms cubic-bezier(0.1, 0.9, 0.2, 1)),
-    opacity var(--fluent-duration-fast, 150ms) var(--fluent-curve-standard, ease);
+    grid-template-rows
+      var(--fluent-collapse-motion, 220ms cubic-bezier(0.1, 0.9, 0.2, 1)),
+    opacity var(--fluent-duration-fast, 150ms)
+      var(--fluent-curve-standard, ease);
 }
 .suggest-content-inner {
   display: grid;
@@ -4370,7 +4445,8 @@ onBeforeUnmount(() => {
   gap: 8px;
   overflow: hidden;
   transform: translateY(0);
-  transition: transform var(--fluent-collapse-motion, 220ms cubic-bezier(0.1, 0.9, 0.2, 1));
+  transition: transform
+    var(--fluent-collapse-motion, 220ms cubic-bezier(0.1, 0.9, 0.2, 1));
 }
 .suggest-panel.collapsed .suggest-content {
   grid-template-rows: minmax(0, 0fr);
@@ -4515,21 +4591,25 @@ onBeforeUnmount(() => {
   flex: none;
   margin-top: 1px;
   color: var(--app-muted);
-  transition: transform var(--fluent-collapse-motion, 220ms cubic-bezier(0.1, 0.9, 0.2, 1));
+  transition: transform
+    var(--fluent-collapse-motion, 220ms cubic-bezier(0.1, 0.9, 0.2, 1));
 }
 .library-section-body {
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   opacity: 1;
   transition:
-    grid-template-rows var(--fluent-collapse-motion, 220ms cubic-bezier(0.1, 0.9, 0.2, 1)),
-    opacity var(--fluent-duration-fast, 150ms) var(--fluent-curve-standard, ease);
+    grid-template-rows
+      var(--fluent-collapse-motion, 220ms cubic-bezier(0.1, 0.9, 0.2, 1)),
+    opacity var(--fluent-duration-fast, 150ms)
+      var(--fluent-curve-standard, ease);
 }
 .library-section-body-inner {
   min-height: 0;
   overflow: hidden;
   transform: translateY(0);
-  transition: transform var(--fluent-collapse-motion, 220ms cubic-bezier(0.1, 0.9, 0.2, 1));
+  transition: transform
+    var(--fluent-collapse-motion, 220ms cubic-bezier(0.1, 0.9, 0.2, 1));
 }
 .phase-library.collapsed .library-section-body,
 .capability-library.collapsed .library-section-body {
@@ -4739,8 +4819,10 @@ onBeforeUnmount(() => {
   overflow: hidden;
   transform-origin: top;
   transition:
-    opacity var(--fluent-duration-fast, 150ms) var(--fluent-curve-standard, ease),
-    transform var(--fluent-collapse-motion, 220ms cubic-bezier(0.1, 0.9, 0.2, 1));
+    opacity var(--fluent-duration-fast, 150ms)
+      var(--fluent-curve-standard, ease),
+    transform
+      var(--fluent-collapse-motion, 220ms cubic-bezier(0.1, 0.9, 0.2, 1));
 }
 .workflow-reveal-enter-from,
 .workflow-reveal-leave-to {

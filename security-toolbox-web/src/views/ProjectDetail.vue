@@ -46,11 +46,12 @@ import {
 } from "../components/fluentIcons";
 import { useClientPagination } from "../composables/useClientPagination";
 import { toErrorMessage } from "../utils/errorMessage";
-import { downloadBlob, downloadText, EmptyDownloadError } from "../utils/download";
 import {
-  COMMON_PORT_OPTIONS,
-  normalizeAllowedPorts,
-} from "../utils/ports";
+  downloadBlob,
+  downloadText,
+  EmptyDownloadError,
+} from "../utils/download";
+import { COMMON_PORT_OPTIONS, normalizeAllowedPorts } from "../utils/ports";
 
 const route = useRoute();
 const router = useRouter();
@@ -389,11 +390,10 @@ function auditSnapshotLabel(row: AuditLogRecord) {
   }
   return "未记录";
 }
-const reportTarget = computed(
-  () =>
-    reportTargetId.value === "ALL"
-      ? undefined
-      : linkedTargets.value.find((target) => target.id === reportTargetId.value),
+const reportTarget = computed(() =>
+  reportTargetId.value === "ALL"
+    ? undefined
+    : linkedTargets.value.find((target) => target.id === reportTargetId.value),
 );
 const selectedSecurityActionPreset = computed(
   () =>
@@ -409,9 +409,7 @@ const securityActionFindings = computed(() =>
   ),
 );
 const canManageSecurityActions = computed(() => auth.user?.role === "ADMIN");
-const canUpdateFingerprintCatalog = computed(
-  () => auth.user?.role === "ADMIN",
-);
+const canUpdateFingerprintCatalog = computed(() => auth.user?.role === "ADMIN");
 const pendingSecurityActionCount = computed(
   () =>
     securityActions.value.filter((item) => item.status === "PENDING_APPROVAL")
@@ -836,7 +834,7 @@ async function createSecurityAction() {
     });
     mergeSecurityAction(data);
     securityActionDialog.value = false;
-  ElMessage.success(`安全行动 #${data.id} 已提交审批申请`);
+    ElMessage.success(`安全行动 #${data.id} 已提交审批申请`);
     await loadProjectAudits();
   } catch (error: any) {
     ElMessage.error(errorMessage(error, "安全行动申请失败"));
@@ -855,7 +853,7 @@ async function decideSecurityAction(
   try {
     result = (await ElMessageBox.prompt(
       decision === "APPROVED"
-      ? "批准后仍需等待执行时间窗，并在开始时再次校验项目授权。单管理员模式需要管理员再次确认，多账号模式下申请人与审批人必须不同。"
+        ? "批准后仍需等待执行时间窗，并在开始时再次校验项目授权。单管理员模式需要管理员再次确认，多账号模式下申请人与审批人必须不同。"
         : "拒绝后该行动不能启动，请填写拒绝依据。",
       decision === "APPROVED" ? "批准高风险安全行动" : "拒绝高风险安全行动",
       {
@@ -1451,7 +1449,6 @@ const targetForm = ref({
   authorizationNote: "",
 });
 const targetSelectedPorts = ref<string[]>(["80", "443"]);
-const targetCustomPorts = ref("");
 const targetFullPortAccess = ref(false);
 function openTargetCreate() {
   targetForm.value = {
@@ -1461,7 +1458,6 @@ function openTargetCreate() {
     authorizationNote: "",
   };
   targetSelectedPorts.value = ["80", "443"];
-  targetCustomPorts.value = "";
   targetFullPortAccess.value = false;
   targetDialog.value = true;
 }
@@ -1475,7 +1471,7 @@ async function createTargetInProject() {
   try {
     allowedPorts = normalizeAllowedPorts(
       targetSelectedPorts.value,
-      targetCustomPorts.value,
+      "",
       targetFullPortAccess.value,
     );
   } catch (error: any) {
@@ -1733,7 +1729,9 @@ async function reloadFingerprintCatalog() {
 
 const FINGERPRINT_CATALOG_MAX_BYTES = 2 * 1024 * 1024;
 
-function fingerprintCatalogSourceLabel(source?: FingerprintCatalogInfo["source"]) {
+function fingerprintCatalogSourceLabel(
+  source?: FingerprintCatalogInfo["source"],
+) {
   const labels: Record<string, string> = {
     BUILTIN: "内置规则",
     MANAGED: "本机更新",
@@ -1822,9 +1820,8 @@ async function updateFingerprintCatalogFromFile(event: Event) {
   fingerprintCatalogUpdating.value = true;
   fingerprintCatalogUpdateState.value = "updating";
   try {
-    const updated = (
-      await endpoints.updateFingerprintCatalog(catalogBytes)
-    ).data;
+    const updated = (await endpoints.updateFingerprintCatalog(catalogBytes))
+      .data;
     let refreshed = updated;
     try {
       refreshed = (await endpoints.fingerprintCatalog()).data;
@@ -1921,11 +1918,11 @@ async function probe(options: LinkedStepOptions = {}): Promise<boolean> {
     const evidence = parseDiscoveryJson(result.data.evidence);
     const unavailable = Boolean(
       evidence &&
-        typeof evidence === "object" &&
-        !Array.isArray(evidence) &&
-        String(
-          (evidence as Record<string, unknown>).status || "",
-        ).toUpperCase() === "UNAVAILABLE",
+      typeof evidence === "object" &&
+      !Array.isArray(evidence) &&
+      String(
+        (evidence as Record<string, unknown>).status || "",
+      ).toUpperCase() === "UNAVAILABLE",
     );
     if (notify) {
       if (unavailable)
@@ -2251,7 +2248,10 @@ async function loadProjectWorkflowRun() {
   workflowPollGeneration += 1;
   try {
     const { data } = await endpoints.workflowRuns(id);
-    const run = (data || []).find((item) => !PROJECT_WORKFLOW_TERMINALS.has(item.status)) || data?.[0];
+    const run =
+      (data || []).find(
+        (item) => !PROJECT_WORKFLOW_TERMINALS.has(item.status),
+      ) || data?.[0];
     if (!run) return;
     const detail = (await endpoints.workflowRun(run.id)).data;
     applyProjectWorkflowRun(detail);
@@ -2347,7 +2347,9 @@ async function runWorkflow() {
     workflowProgress.value = 0;
     workflowIndeterminate.value = true;
     workflowStatus.value = "准备执行";
-    workflowLog.value = [`[工作流] 已预检版本 ${spec.revision}，正在创建后端运行`];
+    workflowLog.value = [
+      `[工作流] 已预检版本 ${spec.revision}，正在创建后端运行`,
+    ];
     workflowTaskIds.value = [];
     const { data: detail } = await endpoints.startWorkflowRun({
       ...identity,
@@ -2358,9 +2360,7 @@ async function runWorkflow() {
     await pollProjectWorkflowRun(detail.run.id);
   } catch (error: any) {
     workflowStatus.value = "执行失败";
-    workflowLog.value.push(
-      `[工作流] 错误：${errorMessage(error, "执行失败")}`,
-    );
+    workflowLog.value.push(`[工作流] 错误：${errorMessage(error, "执行失败")}`);
     ElMessage.error(errorMessage(error, "联动工作流失败"));
   } finally {
     if (!workflowRunId.value) {
@@ -2566,7 +2566,9 @@ onUnmounted(() => {
                 <div class="full-port-option">
                   <div>
                     <b>全端口授权（1-65535）</b>
-                    <small>允许使用 Nmap 执行全端口扫描，扫描时间可能较长。</small>
+                    <small
+                      >允许使用 Nmap 执行全端口扫描，扫描时间可能较长。</small
+                    >
                   </div>
                   <el-switch v-model="targetFullPortAccess" />
                 </div>
@@ -2578,7 +2580,8 @@ onUnmounted(() => {
                   allow-create
                   collapse-tags
                   collapse-tags-tooltip
-                  placeholder="选择常用端口"
+                  default-first-option
+                  placeholder="选择常用端口或手动输入，如 8000, 8080-8090"
                 >
                   <el-option
                     v-for="port in COMMON_PORT_OPTIONS"
@@ -2587,14 +2590,6 @@ onUnmounted(() => {
                     :value="port.value"
                   />
                 </el-select>
-                <el-input
-                  v-model="targetCustomPorts"
-                  :disabled="targetFullPortAccess"
-                  clearable
-                  placeholder="自定义端口，如 8080, 9000-9100"
-                >
-                  <template #prefix>自定义</template>
-                </el-input>
                 <p class="port-hint">
                   {{
                     targetFullPortAccess
@@ -2602,7 +2597,8 @@ onUnmounted(() => {
                       : "支持单个端口和端口范围，可用逗号、分号或空格分隔，保存时自动合并去重。"
                   }}
                 </p>
-              </div></el-form-item>
+              </div></el-form-item
+            >
             <el-form-item label="授权记录" required
               ><el-input
                 v-model="targetForm.authorizationNote"
@@ -2653,9 +2649,7 @@ onUnmounted(() => {
               :aria-expanded="fingerprintCatalogExpanded"
               aria-controls="project-fingerprint-catalog-body"
               :aria-label="
-                fingerprintCatalogExpanded
-                  ? '收起指纹规则库'
-                  : '展开指纹规则库'
+                fingerprintCatalogExpanded ? '收起指纹规则库' : '展开指纹规则库'
               "
               @click="fingerprintCatalogExpanded = !fingerprintCatalogExpanded"
             >
@@ -2668,7 +2662,9 @@ onUnmounted(() => {
                   v{{ fingerprintCatalog.version }} ·
                   {{ fingerprintCatalog.ruleCount }} 条规则
                 </span>
-                <span v-else-if="fingerprintCatalogLoading">正在读取规则信息</span>
+                <span v-else-if="fingerprintCatalogLoading"
+                  >正在读取规则信息</span
+                >
                 <span v-else>暂时无法读取指纹规则信息</span>
               </span>
             </button>
@@ -2691,115 +2687,131 @@ onUnmounted(() => {
           >
             <div class="fluent-collapsible-inner">
               <div class="fingerprint-catalog-details">
-            <div class="fingerprint-catalog-content">
-              <div v-if="fingerprintCatalog" class="fingerprint-catalog-meta">
-                <div>
-                  <small>当前版本</small>
-                  <strong>v{{ fingerprintCatalog.version }}</strong>
-                </div>
-                <div>
-                  <small>规则数量</small>
-                  <strong>{{ fingerprintCatalog.ruleCount }} 条</strong>
-                </div>
-                <div class="fingerprint-catalog-sha">
-                  <small>SHA-256</small>
-                  <code>{{ fingerprintCatalog.sha256 }}</code>
-                </div>
-              </div>
-              <el-skeleton
-                v-else-if="fingerprintCatalogLoading"
-                :rows="1"
-                animated
-              />
-              <span v-else class="muted-text">暂时无法读取指纹规则信息</span>
-            </div>
-            <div
-              v-if="canUpdateFingerprintCatalog"
-              class="fingerprint-catalog-actions"
-            >
-              <input
-                ref="fingerprintCatalogFileInput"
-                class="fingerprint-catalog-file-input"
-                type="file"
-                accept=".json,application/json"
-                @change="updateFingerprintCatalogFromFile"
-              />
-              <el-button
-                size="small"
-                :loading="fingerprintCatalogReloading"
-                :disabled="
-                  fingerprintCatalogLoading || fingerprintCatalogUpdating
-                "
-                @click="reloadFingerprintCatalog"
-              >
-                <el-icon><Refresh /></el-icon>
-                重新读取
-              </el-button>
-              <el-button
-                type="primary"
-                plain
-                size="small"
-                :loading="fingerprintCatalogUpdating"
-                :disabled="
-                  fingerprintCatalogLoading || fingerprintCatalogReloading
-                "
-                @click="openFingerprintCatalogFilePicker"
-              >
-                <el-icon><UploadFilled /></el-icon>
-                {{ fingerprintCatalogUpdating ? "正在更新" : "更新指纹库" }}
-              </el-button>
-            </div>
-            <div
-              v-if="fingerprintCatalogUpdateFile"
-              class="fingerprint-catalog-update"
-              :class="`is-${fingerprintCatalogUpdateState}`"
-            >
-              <div class="fingerprint-catalog-update-file">
-                <small>本地 JSON 文件</small>
-                <strong :title="fingerprintCatalogUpdateFile.name">{{
-                  fingerprintCatalogUpdateFile.name
-                }}</strong>
-                <span>{{
-                  fingerprintCatalogFileSize(fingerprintCatalogUpdateFile.size)
-                }}</span>
-              </div>
-              <div
-                class="fingerprint-catalog-update-result"
-                role="status"
-                aria-live="polite"
-              >
-                <template v-if="fingerprintCatalogUpdateState === 'updating'">
-                  <el-tag size="small" type="info">更新中</el-tag>
-                  <span>正在上传并由服务器校验，校验完成前继续使用当前版本。</span>
-                </template>
-                <template
-                  v-else-if="
-                    fingerprintCatalogUpdateState === 'success' &&
-                    fingerprintCatalogUpdateResult
-                  "
-                >
-                  <el-tag size="small" type="success">更新成功</el-tag>
-                  <span
-                    >v{{ fingerprintCatalogUpdateResult.version }} ·
-                    {{ fingerprintCatalogUpdateResult.ruleCount }} 条规则</span
+                <div class="fingerprint-catalog-content">
+                  <div
+                    v-if="fingerprintCatalog"
+                    class="fingerprint-catalog-meta"
                   >
-                  <code
-                    >SHA-256
-                    {{ fingerprintCatalogUpdateResult.sha256 }}</code
+                    <div>
+                      <small>当前版本</small>
+                      <strong>v{{ fingerprintCatalog.version }}</strong>
+                    </div>
+                    <div>
+                      <small>规则数量</small>
+                      <strong>{{ fingerprintCatalog.ruleCount }} 条</strong>
+                    </div>
+                    <div class="fingerprint-catalog-sha">
+                      <small>SHA-256</small>
+                      <code>{{ fingerprintCatalog.sha256 }}</code>
+                    </div>
+                  </div>
+                  <el-skeleton
+                    v-else-if="fingerprintCatalogLoading"
+                    :rows="1"
+                    animated
+                  />
+                  <span v-else class="muted-text"
+                    >暂时无法读取指纹规则信息</span
                   >
-                </template>
-                <template v-else-if="fingerprintCatalogUpdateState === 'error'">
-                  <el-tag size="small" type="danger">更新失败</el-tag>
-                  <span>{{ fingerprintCatalogUpdateError }}</span>
-                </template>
-                <template
-                  v-else-if="fingerprintCatalogUpdateState === 'cancelled'"
+                </div>
+                <div
+                  v-if="canUpdateFingerprintCatalog"
+                  class="fingerprint-catalog-actions"
                 >
-                  <el-tag size="small" type="info">已取消</el-tag>
-                  <span>当前指纹规则未更改。</span>
-                </template>
-              </div>
-            </div>
+                  <input
+                    ref="fingerprintCatalogFileInput"
+                    class="fingerprint-catalog-file-input"
+                    type="file"
+                    accept=".json,application/json"
+                    @change="updateFingerprintCatalogFromFile"
+                  />
+                  <el-button
+                    size="small"
+                    :loading="fingerprintCatalogReloading"
+                    :disabled="
+                      fingerprintCatalogLoading || fingerprintCatalogUpdating
+                    "
+                    @click="reloadFingerprintCatalog"
+                  >
+                    <el-icon><Refresh /></el-icon>
+                    重新读取
+                  </el-button>
+                  <el-button
+                    type="primary"
+                    plain
+                    size="small"
+                    :loading="fingerprintCatalogUpdating"
+                    :disabled="
+                      fingerprintCatalogLoading || fingerprintCatalogReloading
+                    "
+                    @click="openFingerprintCatalogFilePicker"
+                  >
+                    <el-icon><UploadFilled /></el-icon>
+                    {{ fingerprintCatalogUpdating ? "正在更新" : "更新指纹库" }}
+                  </el-button>
+                </div>
+                <div
+                  v-if="fingerprintCatalogUpdateFile"
+                  class="fingerprint-catalog-update"
+                  :class="`is-${fingerprintCatalogUpdateState}`"
+                >
+                  <div class="fingerprint-catalog-update-file">
+                    <small>本地 JSON 文件</small>
+                    <strong :title="fingerprintCatalogUpdateFile.name">{{
+                      fingerprintCatalogUpdateFile.name
+                    }}</strong>
+                    <span>{{
+                      fingerprintCatalogFileSize(
+                        fingerprintCatalogUpdateFile.size,
+                      )
+                    }}</span>
+                  </div>
+                  <div
+                    class="fingerprint-catalog-update-result"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    <template
+                      v-if="fingerprintCatalogUpdateState === 'updating'"
+                    >
+                      <el-tag size="small" type="info">更新中</el-tag>
+                      <span
+                        >正在上传并由服务器校验，校验完成前继续使用当前版本。</span
+                      >
+                    </template>
+                    <template
+                      v-else-if="
+                        fingerprintCatalogUpdateState === 'success' &&
+                        fingerprintCatalogUpdateResult
+                      "
+                    >
+                      <el-tag size="small" type="success">更新成功</el-tag>
+                      <span
+                        >v{{ fingerprintCatalogUpdateResult.version }} ·
+                        {{
+                          fingerprintCatalogUpdateResult.ruleCount
+                        }}
+                        条规则</span
+                      >
+                      <code
+                        >SHA-256
+                        {{ fingerprintCatalogUpdateResult.sha256 }}</code
+                      >
+                    </template>
+                    <template
+                      v-else-if="fingerprintCatalogUpdateState === 'error'"
+                    >
+                      <el-tag size="small" type="danger">更新失败</el-tag>
+                      <span>{{ fingerprintCatalogUpdateError }}</span>
+                    </template>
+                    <template
+                      v-else-if="fingerprintCatalogUpdateState === 'cancelled'"
+                    >
+                      <el-tag size="small" type="info">已取消</el-tag>
+                      <span>当前指纹规则未更改。</span>
+                    </template>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -3135,9 +3147,11 @@ onUnmounted(() => {
         />
         <div v-if="workflowRunning || workflowLog.length" class="workflow-box">
           <div class="workflow-head">
-            <strong
-              >项目任务流：按已保存红队工作流执行</strong
-            ><span>{{ workflowRunId ? `运行 #${workflowRunId} · ` : "" }}{{ workflowStatus }}</span>
+            <strong>项目任务流：按已保存红队工作流执行</strong
+            ><span
+              >{{ workflowRunId ? `运行 #${workflowRunId} · ` : ""
+              }}{{ workflowStatus }}</span
+            >
           </div>
           <el-progress
             :percentage="Math.round(workflowProgress)"
@@ -3203,8 +3217,7 @@ onUnmounted(() => {
                   <pre
                     v-for="(item, itemIndex) in group.data"
                     :key="itemIndex"
-                    >{{ itemText(item) }}</pre
-                  >
+                    >{{ itemText(item) }}</pre>
                 </div>
                 <span v-else class="empty-text">未收集到</span>
               </article>
@@ -3480,7 +3493,7 @@ onUnmounted(() => {
         </div>
         <el-empty
           v-if="!securityActionLoading && !securityActions.length"
-        description="暂无高风险安全行动；单管理员模式需要二次确认，多账号模式需要不同账号审批后才能开始"
+          description="暂无高风险安全行动；单管理员模式需要二次确认，多账号模式需要不同账号审批后才能开始"
         />
         <el-table
           v-else
@@ -4320,7 +4333,7 @@ onUnmounted(() => {
       destroy-on-close
     >
       <el-alert
-      title="这是项目级受控行动申请，不是命令执行器。只能选择服务端已登记的安全行动类型；单管理员模式由管理员二次确认，多账号模式必须由不同账号审批。"
+        title="这是项目级受控行动申请，不是命令执行器。只能选择服务端已登记的安全行动类型；单管理员模式由管理员二次确认，多账号模式必须由不同账号审批。"
         type="warning"
         :closable="false"
         show-icon

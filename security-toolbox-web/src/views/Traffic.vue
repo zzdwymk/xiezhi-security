@@ -9,6 +9,7 @@ import {
   Delete,
   Dismiss,
   Filter,
+  InfoCircle,
   MagicStick,
   Plus,
   Promotion,
@@ -118,6 +119,18 @@ interface CaptureFilterRule {
   enabled: boolean;
   createdAt?: string;
 }
+
+const HTTP_METHODS = [
+  "GET",
+  "POST",
+  "PUT",
+  "DELETE",
+  "PATCH",
+  "HEAD",
+  "OPTIONS",
+  "TRACE",
+  "CONNECT",
+];
 
 interface TrafficChatMessage {
   id: string;
@@ -463,8 +476,19 @@ const DANGEROUS_METHODS = new Set([
 ]);
 const trafficSecurityPoints = computed(() => {
   const packet = selected.value as any;
-  if (!packet) return [] as { label: string; value: string; level: string; badge?: string }[];
-  const points: { label: string; value: string; level: string; badge?: string }[] = [];
+  if (!packet)
+    return [] as {
+      label: string;
+      value: string;
+      level: string;
+      badge?: string;
+    }[];
+  const points: {
+    label: string;
+    value: string;
+    level: string;
+    badge?: string;
+  }[] = [];
   const url = String(packet.url || `${packet.host || ""}${packet.path || ""}`);
   const https =
     url.toLowerCase().startsWith("https") || Number(packet.port) === 443;
@@ -479,9 +503,7 @@ const trafficSecurityPoints = computed(() => {
   points.push({
     label: "请求方法",
     badge: method,
-    value: isDangerous
-      ? `${method}（敏感/写操作，需确认授权）`
-      : method,
+    value: isDangerous ? `${method}（敏感/写操作，需确认授权）` : method,
     level: isDangerous ? "warn" : "info",
   });
   if (packet.statusCode) {
@@ -1328,38 +1350,38 @@ onUnmounted(() => {
           <el-icon><Connection /></el-icon><strong>等待流量</strong>
           <p>启动代理，让浏览器或其他客户端流量经过本机。</p>
         </div>
-          <el-dropdown
-            v-for="item in pagedSessions"
-            v-else
-            :key="item.id"
-            trigger="contextmenu"
-            @command="
-              (cmd: 'mark' | 'delete') =>
-                cmd === 'mark' ? toggleSessionMarked(item) : deleteSession(item)
-            "
+        <el-dropdown
+          v-for="item in pagedSessions"
+          v-else
+          :key="item.id"
+          trigger="contextmenu"
+          @command="
+            (cmd: 'mark' | 'delete') =>
+              cmd === 'mark' ? toggleSessionMarked(item) : deleteSession(item)
+          "
+        >
+          <div
+            class="traffic-row-wrap"
+            :class="{ active: selectedId === item.id, marked: item.marked }"
           >
-            <div
-              class="traffic-row-wrap"
-              :class="{ active: selectedId === item.id, marked: item.marked }"
+            <button
+              type="button"
+              class="traffic-row"
+              :class="{ active: selectedId === item.id }"
+              @click="selectSession(item)"
             >
-           <button
-             type="button"
-             class="traffic-row"
-             :class="{ active: selectedId === item.id }"
-             @click="selectSession(item)"
-           >
-             <span class="session-row-main">
-               <span class="session-row-title"
-                 ><b :class="(item.method || 'GET').toLowerCase()">{{
-                   item.method || "GET"
-                 }}</b
-                 ><strong>{{
-                   item.host || item.url || "未知地址"
-                 }}</strong></span
-               >
-               <small>{{ item.path || item.url || "/" }}</small>
-             </span>
-             <span class="session-row-meta"
+              <span class="session-row-main">
+                <span class="session-row-title"
+                  ><b :class="(item.method || 'GET').toLowerCase()">{{
+                    item.method || "GET"
+                  }}</b
+                  ><strong>{{
+                    item.host || item.url || "未知地址"
+                  }}</strong></span
+                >
+                <small>{{ item.path || item.url || "/" }}</small>
+              </span>
+              <span class="session-row-meta"
                 ><el-icon
                   v-if="item.marked"
                   class="session-marked-flag"
@@ -1370,29 +1392,29 @@ onUnmounted(() => {
                   class="packet-protocol h2"
                   >HTTP/2</span
                 ><code>{{ item.statusCode || "-" }}</code
-               ><i :class="(item.riskLevel || 'NONE').toLowerCase()">{{
-                 item.riskLevel || "—"
-               }}</i></span
-             >
-           </button>
-            </div>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item
-                  command="mark"
-                  :disabled="markingId === item.id || clearingSessions"
-                  >{{ item.marked ? "取消标记" : "标记会话" }}</el-dropdown-item
-                >
-                <el-dropdown-item
-                  command="delete"
-                  class="is-danger"
-                  :disabled="deletingId === item.id || clearingSessions"
-                  >删除这条流量</el-dropdown-item
-                >
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-         <AppPagination
+                ><i :class="(item.riskLevel || 'NONE').toLowerCase()">{{
+                  item.riskLevel || "—"
+                }}</i></span
+              >
+            </button>
+          </div>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item
+                command="mark"
+                :disabled="markingId === item.id || clearingSessions"
+                >{{ item.marked ? "取消标记" : "标记会话" }}</el-dropdown-item
+              >
+              <el-dropdown-item
+                command="delete"
+                class="is-danger"
+                :disabled="deletingId === item.id || clearingSessions"
+                >删除这条流量</el-dropdown-item
+              >
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+        <AppPagination
           v-model:page="sessionPage"
           v-model:page-size="sessionPageSize"
           :total="filteredSessions.length"
@@ -1446,8 +1468,15 @@ onUnmounted(() => {
               >
             </div>
           </header>
-          <nav ref="packetTabsElement" class="packet-tabs" aria-label="报文内容">
-            <span class="fluent-selection-indicator packet-tabs-indicator" aria-hidden="true" />
+          <nav
+            ref="packetTabsElement"
+            class="packet-tabs"
+            aria-label="报文内容"
+          >
+            <span
+              class="fluent-selection-indicator packet-tabs-indicator"
+              aria-hidden="true"
+            />
             <button
               type="button"
               :class="{ active: packetTab === 'request' }"
@@ -1486,8 +1515,15 @@ onUnmounted(() => {
                 >
               </div>
             </header>
-            <nav ref="replayDocumentTabsElement" class="replay-document-tabs" aria-label="重放请求标签">
-              <span class="fluent-selection-indicator replay-document-tabs-indicator" aria-hidden="true" />
+            <nav
+              ref="replayDocumentTabsElement"
+              class="replay-document-tabs"
+              aria-label="重放请求标签"
+            >
+              <span
+                class="fluent-selection-indicator replay-document-tabs-indicator"
+                aria-hidden="true"
+              />
               <button
                 v-for="tab in replayTabs"
                 :key="tab.id"
@@ -1541,11 +1577,22 @@ onUnmounted(() => {
             </nav>
             <template v-if="activeReplayTab">
               <div class="replay-request-line">
-                <el-input
+                <el-select
                   v-model="activeReplayTab.form.method"
                   :disabled="activeReplayTab.sending"
+                  filterable
+                  allow-create
+                  default-first-option
                   placeholder="GET"
-                /><el-input
+                >
+                  <el-option
+                    v-for="m in HTTP_METHODS"
+                    :key="m"
+                    :label="m"
+                    :value="m"
+                  />
+                </el-select>
+                <el-input
                   v-model="activeReplayTab.form.url"
                   :disabled="activeReplayTab.sending"
                   placeholder="https://example.com/path"
@@ -1664,20 +1711,27 @@ onUnmounted(() => {
             <li
               v-for="point in trafficSecurityPoints"
               :key="point.label"
-              class="fluent-point-card"
+              class="fluent-point-card fluent-infobar"
               :class="point.level"
             >
-              <div class="status-icon-box" :class="point.level">
+              <div class="fluent-infobar__icon" :class="point.level">
                 <el-icon v-if="point.level === 'ok'"><CircleCheck /></el-icon>
-                <el-icon v-else-if="point.level === 'warn'"><Warning /></el-icon>
-                <el-icon v-else><QuestionFilled /></el-icon>
+                <el-icon v-else-if="point.level === 'warn'"
+                  ><Warning
+                /></el-icon>
+                <el-icon v-else><InfoCircle /></el-icon>
               </div>
-              <div class="card-body">
-                <div class="card-title-row">
-                  <span class="tp-label">{{ point.label }}</span>
-                  <span v-if="point.badge" class="fluent-badge" :class="point.level">{{ point.badge }}</span>
+              <div class="fluent-infobar__content">
+                <div class="fluent-infobar__title-row">
+                  <span class="fluent-infobar__title">{{ point.label }}</span>
+                  <span
+                    v-if="point.badge"
+                    class="fluent-infobar__badge"
+                    :class="point.level"
+                    >{{ point.badge }}</span
+                  >
                 </div>
-                <div class="tp-value">{{ point.value }}</div>
+                <div class="fluent-infobar__message">{{ point.value }}</div>
               </div>
             </li>
           </ul>
@@ -2156,9 +2210,9 @@ onUnmounted(() => {
 .traffic-row {
   grid-template-columns: minmax(0, 1fr) auto;
   min-height: 64px;
-   gap: 10px;
-    padding: 8px 10px;
-   border: 0;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 0;
   border-radius: 8px;
   background: transparent;
   transition:
@@ -2260,17 +2314,17 @@ onUnmounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
- .session-row-meta {
-   display: flex;
-   flex-direction: column;
-   align-items: flex-end;
-   gap: 8px;
- }
-  .session-marked-flag {
-    color: var(--app-accent);
-    font-size: 13px;
-  }
- .packet-protocol {
+.session-row-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+.session-marked-flag {
+  color: var(--app-accent);
+  font-size: 13px;
+}
+.packet-protocol {
   padding: 2px 6px;
   border: 1px solid var(--app-border);
   border-radius: 8px;
@@ -2605,13 +2659,13 @@ onUnmounted(() => {
   padding: 14px;
   background: var(--app-bg);
 }
- .packet-editor article {
-    border: none;
-    border-radius: 0;
-    background: transparent;
-    box-shadow: none;
-    margin-bottom: 0;
- }
+.packet-editor article {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  margin-bottom: 0;
+}
 .packet-editor .raw-packet-card {
   min-height: 100%;
 }
@@ -2659,92 +2713,93 @@ onUnmounted(() => {
 .traffic-points-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
-.traffic-points-list li.fluent-point-card {
-  position: relative;
+.traffic-points-list li.fluent-point-card.fluent-infobar {
   display: flex;
   flex-direction: row;
   align-items: flex-start;
-  gap: 10px;
-  padding: 10px 12px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--fluent-radius-control, 6px);
-  background: var(--app-surface-strong);
-  transition: border-color var(--fluent-fast, 150ms) ease,
-    box-shadow var(--fluent-fast, 150ms) ease,
-    background-color var(--fluent-fast, 150ms) ease;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--app-surface);
+  transition: background-color 120ms ease, border-color 120ms ease;
 }
-.traffic-points-list li.fluent-point-card:hover {
-  border-color: var(--app-border-hover, color-mix(in srgb, var(--app-border) 75%, var(--app-accent) 25%));
-  box-shadow: var(--fluent-shadow-2, 0 1.2px 3.6px rgba(0, 0, 0, 0.06));
+.traffic-points-list li.fluent-point-card.fluent-infobar.ok {
+  background: light-dark(rgba(16, 124, 16, 0.07), rgba(74, 222, 74, 0.09));
+  border-color: light-dark(rgba(16, 124, 16, 0.16), rgba(74, 222, 74, 0.18));
 }
-.traffic-points-list .status-icon-box {
-  width: 22px;
-  height: 22px;
+.traffic-points-list li.fluent-point-card.fluent-infobar.info {
+  background: light-dark(rgba(0, 90, 158, 0.06), rgba(96, 169, 246, 0.08));
+  border-color: light-dark(rgba(0, 90, 158, 0.14), rgba(96, 169, 246, 0.16));
+}
+.traffic-points-list li.fluent-point-card.fluent-infobar.warn {
+  background: light-dark(rgba(255, 193, 7, 0.10), rgba(255, 183, 77, 0.12));
+  border-color: light-dark(rgba(255, 193, 7, 0.18), rgba(255, 183, 77, 0.20));
+}
+.traffic-points-list .fluent-infobar__icon {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0;
-  border-radius: 4px;
-  font-size: 13px;
+  width: 20px;
+  height: 20px;
   margin-top: 1px;
+  font-size: 18px;
 }
-.traffic-points-list .status-icon-box.ok {
-  color: light-dark(#0e700e, #54b054);
-  background-color: light-dark(#dff6dd, rgba(14, 112, 14, 0.22));
+.traffic-points-list .fluent-infobar__icon.ok {
+  color: light-dark(#107c10, #54b054);
 }
-.traffic-points-list .status-icon-box.info {
+.traffic-points-list .fluent-infobar__icon.info {
   color: light-dark(#0f6cbd, #479ef5);
-  background-color: light-dark(#ebf3fc, rgba(15, 108, 189, 0.22));
 }
-.traffic-points-list .status-icon-box.warn {
+.traffic-points-list .fluent-infobar__icon.warn {
   color: light-dark(#bc4b09, #f7823b);
-  background-color: light-dark(#fff4ce, rgba(188, 75, 9, 0.22));
 }
-.traffic-points-list .card-body {
+.traffic-points-list .fluent-infobar__content {
   flex: 1;
   min-width: 0;
 }
-.traffic-points-list .card-title-row {
+.traffic-points-list .fluent-infobar__title-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 3px;
+  gap: 10px;
+  margin-bottom: 4px;
 }
-.traffic-points-list .tp-label {
-  font-size: var(--type-caption, 12px);
+.traffic-points-list .fluent-infobar__title {
+  font-size: 13px;
   font-weight: 600;
   color: var(--app-text);
-  line-height: 1.4;
+  line-height: 1.35;
 }
-.traffic-points-list .fluent-badge {
+.traffic-points-list .fluent-infobar__badge {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 4px;
   font-size: 11px;
   font-weight: 600;
-  padding: 1px 6px;
-  border-radius: 4px;
-  line-height: 16px;
   white-space: nowrap;
 }
-.traffic-points-list .fluent-badge.ok {
-  background-color: light-dark(#dff6dd, rgba(14, 112, 14, 0.22));
-  color: light-dark(#0e700e, #54b054);
+.traffic-points-list .fluent-infobar__badge.ok {
+  color: light-dark(#107c10, #a5e6a5);
+  background: light-dark(rgba(16, 124, 16, 0.12), rgba(74, 222, 74, 0.16));
 }
-.traffic-points-list .fluent-badge.info {
-  background-color: light-dark(#ebf3fc, rgba(15, 108, 189, 0.22));
-  color: light-dark(#0f6cbd, #479ef5);
+.traffic-points-list .fluent-infobar__badge.info {
+  color: light-dark(#0f6cbd, #93c9f7);
+  background: light-dark(rgba(0, 90, 158, 0.10), rgba(96, 169, 246, 0.14));
 }
-.traffic-points-list .fluent-badge.warn {
-  background-color: light-dark(#fff4ce, rgba(188, 75, 9, 0.22));
-  color: light-dark(#bc4b09, #f7823b);
+.traffic-points-list .fluent-infobar__badge.warn {
+  color: light-dark(#bc4b09, #ffbf7a);
+  background: light-dark(rgba(255, 193, 7, 0.14), rgba(255, 183, 77, 0.18));
 }
-.traffic-points-list .tp-value {
+.traffic-points-list .fluent-infobar__message {
   color: var(--app-muted);
-  font-size: var(--type-micro, 12px);
+  font-size: 12px;
   line-height: 1.45;
   word-break: break-word;
 }
@@ -3073,10 +3128,8 @@ onUnmounted(() => {
 }
 .replay-packet-editor :deep(.el-textarea__inner:focus),
 .replay-packet-editor :deep(.el-textarea__inner:focus-visible) {
-  /* Keep one clear focus stroke; the global Fluent outline plus the local
-     inset shadow previously rendered as two nested blue borders. */
-  outline: none !important;
-  box-shadow: 0 0 0 2px var(--app-accent) inset !important;
+  /* Let the global Fluent focus ring (bottom accent stroke + border) apply. */
+  outline: none;
 }
 .replay-response {
   overflow: hidden;
@@ -3341,9 +3394,9 @@ onUnmounted(() => {
   color: var(--fluent-action-fg) !important;
 }
 .codex-traffic-page :deep(.packet-copilot-button:hover) {
-  border-color: var(--fluent-action-bg-hover) !important;
-  background: var(--fluent-action-bg-hover) !important;
-  color: var(--fluent-action-fg) !important;
+  border-color: var(--app-accent) !important;
+  background: color-mix(in srgb, var(--app-accent) 88%, white) !important;
+  color: #fff !important;
 }
 .codex-traffic-page :deep(.packet-copilot-button .el-icon),
 .codex-traffic-page :deep(.packet-copilot-button span) {
@@ -3407,6 +3460,20 @@ onUnmounted(() => {
   background: var(--fluent-danger-hover-bg, #a80000);
   color: #fff;
 }
+
+/* text/link 风格 danger 按钮保持透明背景，避免 hover 时一片全红 */
+.codex-traffic-page :deep(.el-button--danger.is-text),
+.codex-traffic-page :deep(.el-button--danger.is-link) {
+  border-color: transparent;
+  background: transparent;
+  color: var(--fluent-danger-bg, #c50f1f);
+}
+.codex-traffic-page :deep(.el-button--danger.is-text:hover),
+.codex-traffic-page :deep(.el-button--danger.is-link:hover) {
+  border-color: transparent;
+  background: rgba(197, 15, 31, 0.1);
+  color: var(--fluent-danger-hover-bg, #a80000);
+}
 .traffic-session-rail,
 .packet-editor-pane,
 .ai-thread-pane {
@@ -3441,7 +3508,8 @@ onUnmounted(() => {
 .session-rail-header :deep(.traffic-session-filter .el-input__wrapper:hover) {
   box-shadow: 0 0 0 1px var(--app-border-strong) inset !important;
 }
-.session-rail-header :deep(.traffic-session-filter .el-input__wrapper.is-focus) {
+.session-rail-header
+  :deep(.traffic-session-filter .el-input__wrapper.is-focus) {
   box-shadow:
     inset 0 0 0 1px var(--app-border),
     inset 0 -2px 0 var(--app-accent) !important;
@@ -3487,7 +3555,9 @@ onUnmounted(() => {
   opacity: 0;
   border-radius: 999px;
   background: var(--app-accent, #2563eb);
-  transition: transform 0.22s cubic-bezier(0.1, 0.9, 0.2, 1), opacity 0.16s ease;
+  transition:
+    transform 0.22s cubic-bezier(0.1, 0.9, 0.2, 1),
+    opacity 0.16s ease;
   pointer-events: none;
 }
 .traffic-row.active::before {

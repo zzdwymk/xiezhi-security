@@ -50,7 +50,6 @@ const editForm = reactive({
   authorizationExpiresAt: "",
 });
 const editSelectedPorts = ref<string[]>(["80", "443"]);
-const editCustomPorts = ref("");
 const editFullPortAccess = ref(false);
 const {
   page,
@@ -70,10 +69,7 @@ const form = reactive({
   authorizationExpiresAt: "",
 });
 const selectedPorts = ref<string[]>(["80", "443"]);
-const customPorts = ref("");
 const fullPortAccess = ref(false);
-
-
 
 function normalizeDatePickerValue(value?: string) {
   if (!value) return "";
@@ -201,7 +197,8 @@ async function load() {
   for (const { projectId, result } of linkResults) {
     for (const link of result.data) {
       const targetProjectIds = linkedProjectIds[link.targetId] || [];
-      if (!targetProjectIds.includes(projectId)) targetProjectIds.push(projectId);
+      if (!targetProjectIds.includes(projectId))
+        targetProjectIds.push(projectId);
       linkedProjectIds[link.targetId] = targetProjectIds;
     }
   }
@@ -242,7 +239,6 @@ function openCreate() {
     ),
   });
   selectedPorts.value = ["80", "443"];
-  customPorts.value = "";
   fullPortAccess.value = false;
   saveError.value = "";
   dialog.value = true;
@@ -259,7 +255,7 @@ async function create() {
     validateDomainTarget(form.targetValue, form.targetType);
     form.allowedPorts = normalizeAllowedPorts(
       selectedPorts.value,
-      customPorts.value,
+      "",
       fullPortAccess.value,
     );
     saving.value = true;
@@ -315,9 +311,11 @@ function openEditTarget(row: Target) {
   editForm.authorizationExpiresAt = normalizeDatePickerValue(
     row.authorizationExpiresAt,
   );
-  const ports = (row.allowedPorts || "").split(",").map(p => p.trim()).filter(Boolean);
-  editSelectedPorts.value = ports.filter(p => /^\d+$/.test(p) && Number(p) <= 65535);
-  editCustomPorts.value = ports.filter(p => !/^\d+$/.test(p)).join(", ");
+  const ports = (row.allowedPorts || "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  editSelectedPorts.value = ports;
   editFullPortAccess.value = (row.allowedPorts || "") === "1-65535";
   editDialog.value = true;
 }
@@ -358,7 +356,7 @@ async function saveEditTarget() {
     validateDomainTarget(editForm.targetValue, editForm.targetType);
     const ports = normalizeAllowedPorts(
       editSelectedPorts.value,
-      editCustomPorts.value,
+      "",
       editFullPortAccess.value,
     );
     if (targetAuthorizationChanged(ports)) {
@@ -398,7 +396,6 @@ async function saveEditTarget() {
   }
 }
 
-
 function askCopilot(row: Target) {
   copilot.prepare({
     targetId: row.id,
@@ -417,7 +414,9 @@ async function downloadTargetReport(row: Target) {
     downloadBlob(data, `target-${row.id}-security-report.pdf`);
   } catch (error) {
     ElMessage.error(
-      error instanceof EmptyDownloadError ? error.message : "目标 PDF 报告生成失败",
+      error instanceof EmptyDownloadError
+        ? error.message
+        : "目标 PDF 报告生成失败",
     );
   } finally {
     reporting.value = undefined;
@@ -465,11 +464,15 @@ onMounted(load);
             </span>
             <span>
               <small>起</small>
-              {{ compactDateTime(targetAuthorizationWindow(scope.row).validFrom) }}
+              {{
+                compactDateTime(targetAuthorizationWindow(scope.row).validFrom)
+              }}
             </span>
             <span>
               <small>止</small>
-              {{ compactDateTime(targetAuthorizationWindow(scope.row).expiresAt) }}
+              {{
+                compactDateTime(targetAuthorizationWindow(scope.row).expiresAt)
+              }}
             </span>
           </div>
         </template>
@@ -527,9 +530,7 @@ onMounted(load);
     align-center
     destroy-on-close
   >
-    <p class="app-dialog__intro">
-      登记已获得明确授权的地址和允许检测的端口。
-    </p>
+    <p class="app-dialog__intro">登记已获得明确授权的地址和允许检测的端口。</p>
     <el-alert
       v-if="saveError"
       :title="saveError"
@@ -611,25 +612,20 @@ onMounted(load);
             v-model="selectedPorts"
             :disabled="fullPortAccess"
             multiple
+            filterable
+            allow-create
             collapse-tags
             collapse-tags-tooltip
-            placeholder="选择常用端口"
+            default-first-option
+            placeholder="选择常用端口或手动输入，如 8000, 8080-8090"
           >
             <el-option
-            v-for="port in COMMON_PORT_OPTIONS"
+              v-for="port in COMMON_PORT_OPTIONS"
               :key="port.value"
               :label="port.label"
               :value="port.value"
             />
           </el-select>
-          <el-input
-            v-model="customPorts"
-            :disabled="fullPortAccess"
-            clearable
-            placeholder="手动填写，如 8000, 8080-8090"
-          >
-            <template #prefix>自定义</template>
-          </el-input>
           <p class="port-hint">
             {{
               fullPortAccess
@@ -679,7 +675,10 @@ onMounted(load);
         </el-form-item>
       </div>
       <el-form-item label="目标地址">
-        <el-input v-model="editForm.targetValue" placeholder="例如：example.com" />
+        <el-input
+          v-model="editForm.targetValue"
+          placeholder="例如：example.com"
+        />
       </el-form-item>
       <el-form-item label="授权记录">
         <el-input
@@ -704,20 +703,18 @@ onMounted(load);
             multiple
             filterable
             allow-create
+            collapse-tags
+            collapse-tags-tooltip
+            default-first-option
             placeholder="选择常用端口"
           >
             <el-option
-            v-for="opt in COMMON_PORT_OPTIONS"
+              v-for="opt in COMMON_PORT_OPTIONS"
               :key="opt.value"
               :label="opt.label"
               :value="opt.value"
             />
           </el-select>
-          <el-input
-            v-if="!editFullPortAccess"
-            v-model="editCustomPorts"
-            placeholder="自定义端口，如 8080, 9000-9100"
-          />
           <p class="port-hint">
             {{
               editFullPortAccess
@@ -768,8 +765,7 @@ onMounted(load);
       </div>
       <p
         v-else-if="
-          !editForm.authorizationValidFrom &&
-          !editForm.authorizationExpiresAt
+          !editForm.authorizationValidFrom && !editForm.authorizationExpiresAt
         "
         class="target-time-hint"
       >
@@ -788,7 +784,9 @@ onMounted(load);
       <el-button
         type="primary"
         :loading="editSaving"
-        :disabled="!editForm.name || !editForm.targetValue || !editForm.authorizationNote"
+        :disabled="
+          !editForm.name || !editForm.targetValue || !editForm.authorizationNote
+        "
         @click="saveEditTarget"
         >保存修改</el-button
       >
@@ -1018,7 +1016,11 @@ onMounted(load);
 }
 .targets-page :deep(.target-action-delete.el-button--danger.is-link),
 .targets-page
-  :deep(.el-table__body tr.current-row .target-action-delete.el-button--danger.is-link) {
+  :deep(
+    .el-table__body
+      tr.current-row
+      .target-action-delete.el-button--danger.is-link
+  ) {
   --el-button-text-color: var(--fluent-danger-bg);
   --el-button-hover-text-color: var(--fluent-danger-hover-bg);
   --el-button-active-text-color: var(--fluent-danger-hover-bg);
@@ -1087,7 +1089,5 @@ onMounted(load);
   background: transparent;
 }
 </style>
-              v-for="port in COMMON_PORT_OPTIONS"
-              v-for="opt in COMMON_PORT_OPTIONS"
-              v-for="port in COMMON_PORT_OPTIONS"
-              v-for="opt in COMMON_PORT_OPTIONS"
+v-for="port in COMMON_PORT_OPTIONS" v-for="opt in COMMON_PORT_OPTIONS"
+v-for="port in COMMON_PORT_OPTIONS" v-for="opt in COMMON_PORT_OPTIONS"

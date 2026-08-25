@@ -15,6 +15,7 @@ import {
   safeGet,
   type PostScanPath,
   type ProjectFindingRecord,
+  type ProjectTaskRecord,
   type ScanDiff,
 } from "../api";
 import AppPagination from "../components/AppPagination.vue";
@@ -34,7 +35,8 @@ interface FindingRow {
   taskId: number;
   targetId: number;
   projectId?: number;
-  title: string;  severity: string;
+  title: string;
+  severity: string;
   status: string;
   sourceTool: string;
   description: string;
@@ -61,8 +63,21 @@ const {
   pagedItems: pagedDiffItems,
   resetPage: resetDiffPage,
 } = useClientPagination(diffItems);
-const diffForm = ref({ baselineTaskId: "", currentTaskId: "" });
+const diffForm = ref<{ baselineTaskId?: number; currentTaskId?: number }>({});
+const taskOptions = ref<ProjectTaskRecord[]>([]);
+const taskOptionsLoading = ref(false);
 const clearing = ref(false);
+
+async function loadTaskOptions() {
+  taskOptionsLoading.value = true;
+  const result = await safeGet(endpoints.tasks, [] as ProjectTaskRecord[]);
+  taskOptions.value = result.data;
+  taskOptionsLoading.value = false;
+}
+
+watch(diffVisible, (visible) => {
+  if (visible) loadTaskOptions();
+});
 const postScanVisible = ref(false);
 const postScanLoading = ref(false);
 const postScanExecuting = ref(false);
@@ -282,7 +297,8 @@ async function generatePostScanPath(row: FindingRow) {
       findingIds: [row.id],
       objective:
         "根据当前扫描发现生成下一步授权渗透验证路径，并编排可自动执行的低风险步骤。",
-    });    postScanPlan.value = data;
+    });
+    postScanPlan.value = data;
     selectedPostScanSteps.value = data.steps
       .filter((step) => step.automated && step.riskLevel === "SAFE")
       .map((step) => step.id);
@@ -626,19 +642,45 @@ onBeforeUnmount(() => {
     class="app-dialog app-dialog--lg"
     align-center
   >
-      <el-form label-position="top" inline>
-        <el-form-item label="基线任务 ID"
-          ><el-input v-model="diffForm.baselineTaskId" placeholder="例如 12"
-        /></el-form-item>
-        <el-form-item label="当前任务 ID"
-          ><el-input v-model="diffForm.currentTaskId" placeholder="例如 18"
-        /></el-form-item>
-        <el-form-item class="diff-compare-action" label=" ">
-          <el-button type="primary" :loading="diffLoading" @click="loadDiff"
-            >比较</el-button
-          >
-        </el-form-item>
-      </el-form>
+    <el-form label-position="top" inline>
+      <el-form-item label="基线任务 ID">
+        <el-select
+          v-model="diffForm.baselineTaskId"
+          :loading="taskOptionsLoading"
+          filterable
+          clearable
+          placeholder="选择基线任务"
+        >
+          <el-option
+            v-for="task in taskOptions"
+            :key="task.id"
+            :label="`#${task.id} · ${task.toolCode} · ${task.status}`"
+            :value="task.id"
+          />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="当前任务 ID">
+        <el-select
+          v-model="diffForm.currentTaskId"
+          :loading="taskOptionsLoading"
+          filterable
+          clearable
+          placeholder="选择当前任务"
+        >
+          <el-option
+            v-for="task in taskOptions"
+            :key="task.id"
+            :label="`#${task.id} · ${task.toolCode} · ${task.status}`"
+            :value="task.id"
+          />
+        </el-select>
+      </el-form-item>
+    </el-form>
+    <div class="diff-compare-row">
+      <el-button type="primary" :loading="diffLoading" @click="loadDiff"
+        >比较</el-button
+      >
+    </div>
     <template v-if="diff">
       <el-alert
         :title="`新增 ${diff.summary.added} · 持续 ${diff.summary.persistent} · 已修复 ${diff.summary.resolved} · 等级变化 ${diff.summary.severityChanged}`"
@@ -672,8 +714,10 @@ onBeforeUnmount(() => {
 .findings-page .section-head h3 {
   font-size: var(--type-section-title);
 }
-.diff-compare-action :deep(.el-form-item__content) {
-  align-items: flex-end;
+.diff-compare-row {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
 }
 .findings-page .section-head p {
   font-size: var(--type-section-desc);

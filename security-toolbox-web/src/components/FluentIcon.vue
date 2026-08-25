@@ -38,6 +38,7 @@ import folderOpen from "@fluentui/svg-icons/icons/folder_open_24_regular.svg?url
 import globe from "@fluentui/svg-icons/icons/globe_24_regular.svg?url";
 import globeSearch from "@fluentui/svg-icons/icons/globe_search_24_regular.svg?url";
 import homeFilled from "@fluentui/svg-icons/icons/home_24_filled.svg?url";
+import info from "@fluentui/svg-icons/icons/info_24_regular.svg?url";
 import key from "@fluentui/svg-icons/icons/key_24_regular.svg?url";
 import location from "@fluentui/svg-icons/icons/location_24_regular.svg?url";
 import lockClosed from "@fluentui/svg-icons/icons/lock_closed_24_regular.svg?url";
@@ -105,6 +106,7 @@ const iconUrls: Record<string, string> = {
   globe,
   "globe-search": globeSearch,
   home: homeFilled,
+  info,
   key,
   location,
   lock: lockClosed,
