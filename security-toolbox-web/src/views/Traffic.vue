@@ -1461,9 +1461,7 @@ onUnmounted(() => {
             <header>
               <strong>请求重放器</strong>
               <div>
-                <el-button size="small" @click="resetReplayRequest"
-                  >新建请求</el-button
-                ><el-button
+                <el-button
                   type="primary"
                   size="small"
                   :loading="replaying"
@@ -3413,7 +3411,7 @@ onUnmounted(() => {
   content: "";
   position: absolute;
   top: 50%;
-  left: 3px;
+  left: 0;
   width: 3px;
   height: 44px;
   transform: translateY(-50%) scaleY(0.3);

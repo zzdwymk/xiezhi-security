@@ -4464,15 +4464,32 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.project-target-create-form :deep(.el-form-item__label) {
-  position: relative;
-  padding-left: 13px;
+.project-form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
 }
-.project-target-create-form
-  :deep(.el-form-item.is-required:not(.is-no-asterisk).asterisk-left > .el-form-item__label::before) {
-  position: absolute;
-  left: 0;
-  margin-right: 0;
+.project-target-create-form :deep(.el-form-item) {
+  margin-bottom: 16px;
+}
+.project-target-create-form :deep(.el-form-item__label) {
+  padding-bottom: 6px;
+  color: var(--app-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.project-target-create-form :deep(.el-input__wrapper),
+.project-target-create-form :deep(.el-textarea__inner),
+.project-target-create-form :deep(.el-select__wrapper) {
+  border-radius: 5px;
+}
+.project-target-create-form :deep(.el-textarea__inner) {
+  line-height: 1.55;
+}
+@media (max-width: 600px) {
+  .project-form-row {
+    grid-template-columns: 1fr;
+  }
 }
 .json-view {
   max-height: 180px;

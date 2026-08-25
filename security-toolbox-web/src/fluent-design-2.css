@@ -2032,19 +2032,20 @@ html
 
 .desktop-v2-app-frame .desktop-v2-recents-label {
   flex: none;
-  gap: 7px;
+  gap: 6px;
 }
 
 .desktop-v2-app-frame .desktop-v2-recents-label > .desktop-v2-recents-title {
   min-width: 0;
-  flex: 1;
+  flex: none;
 }
 
 .desktop-v2-app-frame .desktop-v2-recents-label > .desktop-v2-recents-count {
-  display: grid;
-  width: 20px;
+  display: inline-grid;
+  min-width: 18px;
   height: 18px;
-  flex: 0 0 20px;
+  padding: 0 4px;
+  flex: none;
   place-items: center;
   border-radius: 999px;
   background: color-mix(in srgb, var(--app-text) 8%, transparent);
@@ -2052,6 +2053,10 @@ html
   font-size: 10px;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0;
+}
+
+.desktop-v2-app-frame .desktop-v2-recents-toggle > .el-icon:last-child {
+  margin-left: auto;
 }
 
 .desktop-v2-app-frame .desktop-v2-recents-list {

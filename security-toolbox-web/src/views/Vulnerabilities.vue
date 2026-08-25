@@ -1516,7 +1516,7 @@ onMounted(async () => {
 .catalog-list button::before {
   content: "";
   position: absolute;
-  left: 3px;
+  left: 0;
   top: 50%;
   width: 3px;
   height: 44px;
