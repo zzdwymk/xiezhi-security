@@ -1,6 +1,10 @@
 ﻿param(
     [switch]$SkipComponentBuild,
-    [string]$Python
+    [string]$Python,
+    # 'Fastest' cuts archive time roughly in half at the cost of a larger zip;
+    # pass -ZipCompressionLevel Optimal for the smallest artifact.
+    [ValidateSet('Optimal', 'Fastest')]
+    [string]$ZipCompressionLevel = 'Fastest'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,7 +39,8 @@ $releaseRoot = Join-Path $frontend 'desktop-release'
 $maven = (Get-Command mvn -ErrorAction Stop).Source
 $npmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
 if (-not $npmCommand) { $npmCommand = Get-Command npm -ErrorAction Stop }
-$buildOutput = $null
+$staging = $null
+$resolvedReleaseRoot = $null
 
 if (-not $SkipComponentBuild) {
     Write-Host 'Building and validating local AI Runtime...' -ForegroundColor Cyan
@@ -66,12 +71,24 @@ try {
     & $npmCommand.Source run build:desktop
     if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed.' }
 
-    $buildOutput = Join-Path $env:LOCALAPPDATA ('Temp\security-toolbox-build-' + [Guid]::NewGuid().ToString('N'))
-    Write-Host 'Packaging Electron unpacked application...' -ForegroundColor Cyan
-    & $npmCommand.Source exec -- electron-builder --dir "--config.directories.output=$buildOutput"
-    if ($LASTEXITCODE -ne 0) { throw 'Electron packaging failed.' }
+    # Stage inside the release directory so electron-builder writes the
+    # unpacked app exactly where it will ship, instead of building in %TEMP%
+    # and copying the whole tree a second time.
+    New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
+    $resolvedReleaseRoot = (Resolve-Path -LiteralPath $releaseRoot).Path.TrimEnd('\')
+    if (-not $resolvedReleaseRoot.StartsWith($workspace, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Release directory is outside the workspace: $resolvedReleaseRoot"
+    }
+    $staging = Join-Path $resolvedReleaseRoot ('.next-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $staging -Force | Out-Null
 
-    $source = Join-Path $buildOutput 'win-unpacked'
+    Write-Host 'Packaging Electron unpacked application...' -ForegroundColor Cyan
+    & $npmCommand.Source exec -- electron-builder --dir "--config.directories.output=$staging"
+    if ($LASTEXITCODE -ne 0) { throw 'Electron packaging failed.' }
+    # electron-builder drops its debug log next to win-unpacked; it is not a release artifact.
+    Remove-Item -LiteralPath (Join-Path $staging 'builder-debug.yml') -Force -ErrorAction SilentlyContinue
+
+    $source = Join-Path $staging 'win-unpacked'
     $packagedExe = Get-ChildItem -LiteralPath $source -Filter '*.exe' -File | Sort-Object Length -Descending | Select-Object -First 1
     if (-not $packagedExe -or $packagedExe.Length -lt 100MB) {
         throw 'Packaged executable was not created.'
@@ -83,12 +100,6 @@ try {
     }
     if (-not (Test-Path -LiteralPath $packagedAiRuntime -PathType Leaf)) {
         throw 'AI Runtime is missing from the unpacked application.'
-    }
-
-    New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
-    $resolvedReleaseRoot = (Resolve-Path -LiteralPath $releaseRoot).Path.TrimEnd('\')
-    if (-not $resolvedReleaseRoot.StartsWith($workspace, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Release directory is outside the workspace: $resolvedReleaseRoot"
     }
 
     function ConvertTo-NormalizedPath([string]$value) {
@@ -175,28 +186,33 @@ try {
     $projectRoot = (ConvertTo-NormalizedPath $workspace).TrimEnd('\')
     $releaseDirectory = (ConvertTo-NormalizedPath $resolvedReleaseRoot).TrimEnd('\')
     $serverProjectRoot = Join-Path $projectRoot 'security-toolbox-server'
+    # Only the build output and the packaged resources can hold the JAR; the
+    # regex fallback in Test-ToolboxServerJarProcess still covers other paths.
     $knownServerJarPaths = @(
-        Get-ChildItem -LiteralPath $serverProjectRoot -Filter 'security-toolbox-server*.jar' -File -Recurse -ErrorAction SilentlyContinue
-        Get-ChildItem -LiteralPath $releaseDirectory -Filter 'security-toolbox-server*.jar' -File -Recurse -ErrorAction SilentlyContinue
+        Get-ChildItem -LiteralPath (Join-Path $serverProjectRoot 'target') -Filter 'security-toolbox-server*.jar' -File -ErrorAction SilentlyContinue
+        Get-ChildItem -LiteralPath (Join-Path $releaseDirectory 'win-unpacked\resources\server') -Filter 'security-toolbox-server*.jar' -File -ErrorAction SilentlyContinue
     ) | ForEach-Object { ConvertTo-NormalizedPath $_.FullName }
-    Get-CimInstance Win32_Process | Where-Object {
+
+    # Snapshot the process table once and reuse it for both sweeps.
+    $runningProcesses = @(Get-CimInstance Win32_Process -Property ProcessId, ExecutablePath, CommandLine)
+    $runningProcesses | Where-Object {
         Test-ToolboxServerJarProcess $_ $projectRoot $releaseDirectory $knownServerJarPaths
     } | Sort-Object ProcessId -Unique | ForEach-Object {
         Stop-ProcessTreeAndVerify ([int]$_.ProcessId) "security-toolbox-server Java process"
     }
 
     # Stop any process still running from the previous release directory so its files can be replaced.
-    Get-CimInstance Win32_Process | Where-Object {
+    $runningProcesses | Where-Object {
         $exePath = ConvertTo-NormalizedPath ([string]$_.ExecutablePath)
         $exePath -and $exePath.StartsWith($releaseDirectory + '\', [StringComparison]::OrdinalIgnoreCase)
     } | Sort-Object ProcessId -Unique | ForEach-Object {
-        Stop-ProcessTreeAndVerify ([int]$_.ProcessId) 'desktop release process'
+        # The Java sweep above may have already killed some of these.
+        if (Test-WindowsProcessAlive ([int]$_.ProcessId)) {
+            Stop-ProcessTreeAndVerify ([int]$_.ProcessId) 'desktop release process'
+        }
     }
 
-    $staging = Join-Path $resolvedReleaseRoot ('.next-' + [Guid]::NewGuid().ToString('N'))
     $unpackedStaging = Join-Path $staging 'win-unpacked'
-    New-Item -ItemType Directory -Path $staging -Force | Out-Null
-    Copy-Item -LiteralPath $source -Destination $unpackedStaging -Recurse
 
     # Preserve portable tools installed beside the previous executable.
     $previousTools = Get-ChildItem -Directory -LiteralPath $resolvedReleaseRoot | Where-Object {
@@ -205,21 +221,24 @@ try {
     if ($previousTools) {
         $toolsSource = Join-Path $previousTools.FullName 'tools'
         $toolsTarget = Join-Path $unpackedStaging 'tools'
-        Copy-Item -LiteralPath $toolsSource -Destination $toolsTarget -Recurse -Force
-        Remove-Item -LiteralPath (Join-Path $toolsTarget '.downloads') -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath (Join-Path $toolsTarget '.staging') -Recurse -Force -ErrorAction SilentlyContinue
+        # robocopy's multi-threaded copy is several times faster than Copy-Item
+        # for the many small files under tools; /XD skips transient state dirs.
+        & robocopy.exe $toolsSource $toolsTarget /E /MT:16 /NFL /NDL /NJH /NJS /NP /R:2 /W:1 `
+            /XD (Join-Path $toolsSource '.downloads') (Join-Path $toolsSource '.staging') | Out-Null
+        if ($LASTEXITCODE -ge 8) { throw "Failed to preserve portable tools (robocopy exit code $LASTEXITCODE)." }
+        $global:LASTEXITCODE = 0
     }
 
     $packageJsonPath = Join-Path $frontend 'package.json'
     $packageVersion = ([IO.File]::ReadAllText($packageJsonPath, [Text.Encoding]::UTF8) | ConvertFrom-Json).version
     $portableArchiveName = "xiezhi-$packageVersion-portable.zip"
     $portableArchive = Join-Path $staging $portableArchiveName
-    Write-Host 'Creating portable archive...' -ForegroundColor Cyan
+    Write-Host "Creating portable archive ($ZipCompressionLevel compression)..." -ForegroundColor Cyan
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [IO.Compression.ZipFile]::CreateFromDirectory(
         $unpackedStaging,
         $portableArchive,
-        [IO.Compression.CompressionLevel]::Optimal,
+        [IO.Compression.CompressionLevel]::$ZipCompressionLevel,
         $false
     )
     $portableArchiveFile = Get-Item -LiteralPath $portableArchive
@@ -227,18 +246,30 @@ try {
         throw 'Portable archive was not created.'
     }
 
+    # Release files are immutable during a run, so each path is hashed once and
+    # the verification and SHA256SUMS passes share the cached digests.
+    $script:sha256Cache = @{}
     function Get-FileSha256([string]$path) {
+        $key = [IO.Path]::GetFullPath($path)
+        if ($script:sha256Cache.ContainsKey($key)) { return $script:sha256Cache[$key] }
         $sha256 = [Security.Cryptography.SHA256]::Create()
         try {
             $stream = [IO.File]::OpenRead($path)
             try {
-                return ([BitConverter]::ToString($sha256.ComputeHash($stream)) -replace '-', '').ToLowerInvariant()
+                $buffered = [IO.BufferedStream]::new($stream, 4MB)
+                try {
+                    $hash = ([BitConverter]::ToString($sha256.ComputeHash($buffered)) -replace '-', '').ToLowerInvariant()
+                } finally {
+                    $buffered.Dispose()
+                }
             } finally {
                 $stream.Dispose()
             }
         } finally {
             $sha256.Dispose()
         }
+        $script:sha256Cache[$key] = $hash
+        return $hash
     }
 
     # Verify the packaged backend JAR is byte-identical to the freshly built JAR.
@@ -308,17 +339,16 @@ try {
     }
 
     Remove-Item -LiteralPath $backupDir -Recurse -Force
-    Remove-Item -LiteralPath $buildOutput -Recurse -Force
     Write-Host "Desktop unpacked release ready: $(Join-Path $resolvedReleaseRoot ('win-unpacked\' + $packagedExe.Name))" -ForegroundColor Green
     Write-Host "Desktop portable archive ready: $(Join-Path $resolvedReleaseRoot $portableArchiveName)" -ForegroundColor Green
     Write-Host "Release checksums ready: $(Join-Path $resolvedReleaseRoot 'SHA256SUMS.txt')" -ForegroundColor Green
 } finally {
-    if ($buildOutput -and (Test-Path -LiteralPath $buildOutput)) {
-        $tempRoot = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'Temp')).TrimEnd('\')
-        $resolvedBuildOutput = [IO.Path]::GetFullPath($buildOutput)
-        if ($resolvedBuildOutput.StartsWith($tempRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
-            Remove-Item -LiteralPath $resolvedBuildOutput -Recurse -Force -ErrorAction SilentlyContinue
-        }
+    # A failed run leaves the staging tree behind; only ever remove the GUID
+    # directory this run created inside the validated release root.
+    if ($staging -and $resolvedReleaseRoot -and
+        $staging.StartsWith($resolvedReleaseRoot + '\', [StringComparison]::OrdinalIgnoreCase) -and
+        (Test-Path -LiteralPath $staging)) {
+        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
     }
     Pop-Location
 }
