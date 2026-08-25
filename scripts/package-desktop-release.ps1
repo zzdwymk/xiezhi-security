@@ -41,8 +41,32 @@ $npmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
 if (-not $npmCommand) { $npmCommand = Get-Command npm -ErrorAction Stop }
 $staging = $null
 $resolvedReleaseRoot = $null
+$releaseSucceeded = $false
+
+# Per-stage timing: each stage logs its own duration as it finishes, and a
+# summary table with the total is printed at the end of a successful run.
+$stageTimings = [System.Collections.Generic.List[pscustomobject]]::new()
+$totalStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+function Format-StageDuration([TimeSpan]$Duration) {
+    if ($Duration.TotalMinutes -ge 1) {
+        return ('{0}m {1:D2}s' -f [int]$Duration.TotalMinutes, $Duration.Seconds)
+    }
+    return ('{0:N1}s' -f $Duration.TotalSeconds)
+}
+
+function Start-Stage {
+    return [System.Diagnostics.Stopwatch]::StartNew()
+}
+
+function Stop-Stage([string]$Name, [System.Diagnostics.Stopwatch]$Watch) {
+    $Watch.Stop()
+    $stageTimings.Add([pscustomobject]@{ Stage = $Name; Elapsed = $Watch.Elapsed })
+    Write-Host ("{0} took {1}." -f $Name, (Format-StageDuration $Watch.Elapsed)) -ForegroundColor DarkGray
+}
 
 if (-not $SkipComponentBuild) {
+    $stageWatch = Start-Stage
     Write-Host 'Building and validating local AI Runtime...' -ForegroundColor Cyan
     $aiBuildArguments = @{ SkipInstall = $true }
     if ($Python) { $aiBuildArguments.Python = $Python }
@@ -57,19 +81,24 @@ if (-not $SkipComponentBuild) {
     if (Test-Path -LiteralPath $runtimeServerPy -PathType Leaf) { $aiSourcePyFiles += Get-Item -LiteralPath $runtimeServerPy }
     $staleAiSource = $aiSourcePyFiles | Where-Object { $_.LastWriteTime -gt $aiBuiltExeTime } | Select-Object -First 1
     if ($staleAiSource) { throw ('AI Runtime 源码比已打包程序新，请重新构建：' + $staleAiSource.FullName) }
+    Stop-Stage 'AI Runtime build' $stageWatch
 
+    $stageWatch = Start-Stage
     Write-Host 'Building Spring Boot engine...' -ForegroundColor Cyan
     & $maven -B -ntp clean package -f (Join-Path $backend 'pom.xml')
     if ($LASTEXITCODE -ne 0) { throw 'Backend build failed.' }
     if (-not (Test-Path -LiteralPath (Join-Path $backend 'target\security-toolbox-server-0.1.0.jar') -PathType Leaf)) {
         throw 'Backend JAR was not produced by the build.'
     }
+    Stop-Stage 'Spring Boot backend build' $stageWatch
 }
 Push-Location $frontend
 try {
+    $stageWatch = Start-Stage
     Write-Host 'Building Vue renderer...' -ForegroundColor Cyan
     & $npmCommand.Source run build:desktop
     if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed.' }
+    Stop-Stage 'Vue renderer build' $stageWatch
 
     # Stage inside the release directory so electron-builder writes the
     # unpacked app exactly where it will ship, instead of building in %TEMP%
@@ -82,6 +111,7 @@ try {
     $staging = Join-Path $resolvedReleaseRoot ('.next-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $staging -Force | Out-Null
 
+    $stageWatch = Start-Stage
     Write-Host 'Packaging Electron unpacked application...' -ForegroundColor Cyan
     & $npmCommand.Source exec -- electron-builder --dir "--config.directories.output=$staging"
     if ($LASTEXITCODE -ne 0) { throw 'Electron packaging failed.' }
@@ -101,6 +131,7 @@ try {
     if (-not (Test-Path -LiteralPath $packagedAiRuntime -PathType Leaf)) {
         throw 'AI Runtime is missing from the unpacked application.'
     }
+    Stop-Stage 'Electron packaging' $stageWatch
 
     function ConvertTo-NormalizedPath([string]$value) {
         if ([string]::IsNullOrWhiteSpace($value)) { return $null }
@@ -183,6 +214,7 @@ try {
     }
 
     # Match only Java processes whose command line references this project's server JAR.
+    $stageWatch = Start-Stage
     $projectRoot = (ConvertTo-NormalizedPath $workspace).TrimEnd('\')
     $releaseDirectory = (ConvertTo-NormalizedPath $resolvedReleaseRoot).TrimEnd('\')
     $serverProjectRoot = Join-Path $projectRoot 'security-toolbox-server'
@@ -211,6 +243,7 @@ try {
             Stop-ProcessTreeAndVerify ([int]$_.ProcessId) 'desktop release process'
         }
     }
+    Stop-Stage 'Stop running release processes' $stageWatch
 
     $unpackedStaging = Join-Path $staging 'win-unpacked'
 
@@ -219,6 +252,7 @@ try {
         $_.FullName -ne $staging -and (Test-Path -LiteralPath (Join-Path $_.FullName 'tools'))
     } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($previousTools) {
+        $stageWatch = Start-Stage
         $toolsSource = Join-Path $previousTools.FullName 'tools'
         $toolsTarget = Join-Path $unpackedStaging 'tools'
         # robocopy's multi-threaded copy is several times faster than Copy-Item
@@ -227,12 +261,14 @@ try {
             /XD (Join-Path $toolsSource '.downloads') (Join-Path $toolsSource '.staging') | Out-Null
         if ($LASTEXITCODE -ge 8) { throw "Failed to preserve portable tools (robocopy exit code $LASTEXITCODE)." }
         $global:LASTEXITCODE = 0
+        Stop-Stage 'Preserve portable tools' $stageWatch
     }
 
     $packageJsonPath = Join-Path $frontend 'package.json'
     $packageVersion = ([IO.File]::ReadAllText($packageJsonPath, [Text.Encoding]::UTF8) | ConvertFrom-Json).version
     $portableArchiveName = "xiezhi-$packageVersion-portable.zip"
     $portableArchive = Join-Path $staging $portableArchiveName
+    $stageWatch = Start-Stage
     Write-Host "Creating portable archive ($ZipCompressionLevel compression)..." -ForegroundColor Cyan
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [IO.Compression.ZipFile]::CreateFromDirectory(
@@ -245,6 +281,7 @@ try {
     if ($portableArchiveFile.Length -lt 100MB) {
         throw 'Portable archive was not created.'
     }
+    Stop-Stage 'Portable archive (zip)' $stageWatch
 
     # Release files are immutable during a run, so each path is hashed once and
     # the verification and SHA256SUMS passes share the cached digests.
@@ -273,6 +310,7 @@ try {
     }
 
     # Verify the packaged backend JAR is byte-identical to the freshly built JAR.
+    $stageWatch = Start-Stage
     $sourceBackendJar = Join-Path $backend 'target\security-toolbox-server-0.1.0.jar'
     $packagedJar = Join-Path $unpackedStaging 'resources\server\security-toolbox-server.jar'
     if (-not (Test-Path -LiteralPath $packagedJar -PathType Leaf)) { throw 'Packaged backend JAR is missing.' }
@@ -296,7 +334,9 @@ try {
             throw 'Packaged AI runtime file mismatch: ' + $aiRelative
         }
     }
+    Stop-Stage 'Verify packaged artifacts (SHA256)' $stageWatch
 
+    $stageWatch = Start-Stage
     $checksumEntries = @(
         @{ Path = $portableArchive; Name = $portableArchiveName },
         @{ Path = (Join-Path $unpackedStaging $packagedExe.Name); Name = ('win-unpacked/' + $packagedExe.Name) },
@@ -315,6 +355,9 @@ try {
         "$(Get-FileSha256 $entry.Path)  $($entry.Name)"
     }
     [IO.File]::WriteAllLines((Join-Path $staging 'SHA256SUMS.txt'), $checksumLines, [Text.UTF8Encoding]::new($false))
+    Stop-Stage 'Write SHA256SUMS' $stageWatch
+
+    $stageWatch = Start-Stage
     Write-Host 'Swapping desktop release with rollback...' -ForegroundColor Cyan
     $backupDir = Join-Path $resolvedReleaseRoot ('.previous-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
@@ -339,9 +382,19 @@ try {
     }
 
     Remove-Item -LiteralPath $backupDir -Recurse -Force
+    Stop-Stage 'Swap release with rollback' $stageWatch
     Write-Host "Desktop unpacked release ready: $(Join-Path $resolvedReleaseRoot ('win-unpacked\' + $packagedExe.Name))" -ForegroundColor Green
     Write-Host "Desktop portable archive ready: $(Join-Path $resolvedReleaseRoot $portableArchiveName)" -ForegroundColor Green
     Write-Host "Release checksums ready: $(Join-Path $resolvedReleaseRoot 'SHA256SUMS.txt')" -ForegroundColor Green
+
+    $totalStopwatch.Stop()
+    Write-Host ''
+    Write-Host 'Release timing summary:' -ForegroundColor Cyan
+    foreach ($timing in $stageTimings) {
+        Write-Host ('  {0,-36} {1,10}' -f $timing.Stage, (Format-StageDuration $timing.Elapsed))
+    }
+    Write-Host ('  {0,-36} {1,10}' -f 'Total', (Format-StageDuration $totalStopwatch.Elapsed)) -ForegroundColor Cyan
+    $releaseSucceeded = $true
 } finally {
     # A failed run leaves the staging tree behind; only ever remove the GUID
     # directory this run created inside the validated release root.
@@ -349,6 +402,9 @@ try {
         $staging.StartsWith($resolvedReleaseRoot + '\', [StringComparison]::OrdinalIgnoreCase) -and
         (Test-Path -LiteralPath $staging)) {
         Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if (-not $releaseSucceeded) {
+        Write-Host ("Release run aborted after {0}." -f (Format-StageDuration $totalStopwatch.Elapsed)) -ForegroundColor Yellow
     }
     Pop-Location
 }
