@@ -1513,17 +1513,23 @@ onMounted(async () => {
 .catalog-list button.active {
   background: #eaf1fd;
 }
-.catalog-list button.active::before {
+.catalog-list button::before {
   content: "";
   position: absolute;
-  left: 0;
+  left: 3px;
   top: 50%;
   width: 3px;
-  height: 24px;
-  transform: translateY(-50%);
+  height: 44px;
+  transform: translateY(-50%) scaleY(0.3);
+  opacity: 0;
   border-radius: 999px;
   background: var(--app-accent, #2563eb);
+  transition: transform 0.22s cubic-bezier(0.1, 0.9, 0.2, 1), opacity 0.16s ease;
   pointer-events: none;
+}
+.catalog-list button.active::before {
+  opacity: 1;
+  transform: translateY(-50%) scaleY(1);
 }
 .catalog-list button > span {
   display: flex;
@@ -1737,7 +1743,7 @@ onMounted(async () => {
 }
 .catalog-list button.active {
   background: var(--app-accent-soft-strong);
-  box-shadow: inset 3px 0 var(--app-accent);
+  box-shadow: none;
 }
 .detail-header span {
   color: var(--app-accent);

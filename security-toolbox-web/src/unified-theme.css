@@ -1350,7 +1350,7 @@ html .desktop-v2-native-frame .vuln-workbench {
 
 .catalog-list button.active {
   background: var(--app-accent-soft) !important;
-  box-shadow: inset 3px 0 var(--app-accent) !important;
+  box-shadow: none !important;
 }
 
 .detail-header span {

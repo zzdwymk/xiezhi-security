@@ -3377,7 +3377,7 @@ body,
 
 .desktop-v2-app-frame :where(.catalog-list button.active) {
   background: var(--app-accent-soft) !important;
-  box-shadow: inset 3px 0 var(--app-accent) !important;
+  box-shadow: none !important;
 }
 
 .desktop-v2-app-frame
