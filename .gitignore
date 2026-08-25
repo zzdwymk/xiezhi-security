@@ -162,3 +162,8 @@ application-*.local.yml
 BUSINESS_SOURCE_ANALYSIS.md
 PROJECT_PROGRESS.md
 *参考文献核查报告.md
+
+# UI design preview artifacts (kept local, not part of the shipped tool)
+/fluent_ui_card_preview.html
+/fluent_ui_card_preview.png
+/fluent_ui_scheme2_preview.png
