@@ -5,15 +5,21 @@ import com.bachelor.toolbox.dependency.SystemDependenciesResponse.DependencyStat
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,6 +72,56 @@ public class DependencyDetectionService {
             dependencies);
     cachedDetection = new CachedDetection(System.nanoTime(), response);
     return response;
+  }
+
+  public void detectStreaming(
+      Consumer<DependencyStatus> onEach, Consumer<List<DependencyStatus>> onComplete) {
+    List<DependencyDescriptor> descriptors = dependencyDescriptors();
+    int workerCount = Math.min(MAX_DETECTION_WORKERS, descriptors.size());
+    ExecutorService workers = Executors.newFixedThreadPool(workerCount);
+    List<DependencyStatus> results = Collections.synchronizedList(new ArrayList<>());
+    AtomicInteger remaining = new AtomicInteger(descriptors.size());
+
+    for (DependencyDescriptor descriptor : descriptors) {
+      workers.submit(
+          () -> {
+            DependencyStatus status = detectSafely(descriptor);
+            results.add(status);
+            try {
+              onEach.accept(status);
+            } catch (Exception ignored) {
+              // SSE 连接可能已断开，检测继续执行并写入缓存。
+            }
+            if (remaining.decrementAndGet() == 0) {
+              List<DependencyStatus> sorted = sortInDescriptorOrder(results, descriptors);
+              SystemDependenciesResponse response =
+                  new SystemDependenciesResponse(
+                      System.getProperty("os.name", "unknown"),
+                      System.getProperty("os.arch", "unknown"),
+                      sorted);
+              cachedDetection = new CachedDetection(System.nanoTime(), response);
+              try {
+                onComplete.accept(sorted);
+              } catch (Exception ignored) {
+                // 连接已断开，忽略。
+              }
+              workers.shutdown();
+            }
+          });
+    }
+  }
+
+  private List<DependencyStatus> sortInDescriptorOrder(
+      List<DependencyStatus> results, List<DependencyDescriptor> descriptors) {
+    Map<String, DependencyStatus> byName =
+        results.stream()
+            .collect(
+                Collectors.toMap(
+                    DependencyStatus::name, status -> status, (first, second) -> first));
+    return descriptors.stream()
+        .map(descriptor -> byName.get(descriptor.name()))
+        .filter(Objects::nonNull)
+        .toList();
   }
 
   private SystemDependenciesResponse findCachedResponse(long nowNanos) {

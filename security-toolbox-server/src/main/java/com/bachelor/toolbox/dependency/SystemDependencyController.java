@@ -2,19 +2,21 @@ package com.bachelor.toolbox.dependency;
 
 import jakarta.servlet.http.HttpServletRequest;
 import java.net.InetAddress;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.List;
 import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.web.server.ResponseStatusException;
 
 @RestController
@@ -41,6 +43,50 @@ public class SystemDependencyController {
     // 但未认证调用方无需知道可执行文件的绝对路径——它会暴露用户目录与安装布局，
     // 故仅对已认证调用方返回完整信息，未认证时抹去 path。
     return isAuthenticated() ? response : withoutExecutablePaths(response);
+  }
+
+  @GetMapping(value = "/dependencies/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+  public SseEmitter dependenciesStream(
+      HttpServletRequest request,
+      @RequestParam(value = "refresh", defaultValue = "false") boolean refresh) {
+    requireLoopbackAccess(request, DEPENDENCY_LOCAL_ACCESS_ONLY);
+    boolean authenticated = isAuthenticated();
+    SseEmitter emitter = new SseEmitter(30_000L);
+
+    detectionService.detectStreaming(
+        status -> {
+          try {
+            SystemDependenciesResponse.DependencyStatus sanitized =
+                authenticated ? status : withoutExecutablePath(status);
+            emitter.send(SseEmitter.event().data(sanitized));
+          } catch (Exception ignored) {
+            // 连接断开时由 detectStreaming 内部继续完成检测并写缓存。
+          }
+        },
+        allResults -> {
+          try {
+            emitter.send(SseEmitter.event().name("complete").data("done"));
+            emitter.complete();
+          } catch (Exception ignored) {
+            // 连接已断开。
+          }
+        });
+
+    emitter.onTimeout(emitter::complete);
+    emitter.onError(e -> emitter.complete());
+    return emitter;
+  }
+
+  private SystemDependenciesResponse.DependencyStatus withoutExecutablePath(
+      SystemDependenciesResponse.DependencyStatus dependency) {
+    return new SystemDependenciesResponse.DependencyStatus(
+        dependency.name(),
+        dependency.status(),
+        dependency.version(),
+        null,
+        dependency.required(),
+        dependency.category(),
+        dependency.message());
   }
 
   /** 去除依赖项的绝对路径，保留名称、状态、版本等页面必需信息 */

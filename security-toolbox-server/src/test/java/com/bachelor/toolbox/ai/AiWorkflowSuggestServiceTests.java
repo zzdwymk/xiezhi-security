@@ -21,7 +21,7 @@ class AiWorkflowSuggestServiceTests {
 
     Map<String, Object> result = service.suggest(null);
 
-    assertThat(result).containsEntry("source", "local-rules").containsEntry("model", "local-rules");
+    assertThat(result).containsEntry("source", "本地规则").containsEntry("model", "本地规则");
     assertThat(result.get("note").toString()).contains("未启用大模型");
     assertThat(suggestions(result))
         .extracting(suggestion -> suggestion.get("kind"))
@@ -66,7 +66,7 @@ class AiWorkflowSuggestServiceTests {
     Map<String, Object> result = service.suggest(connectedContextWorkflow());
 
     assertThat(result)
-        .containsEntry("source", "llm+local")
+        .containsEntry("source", "大模型+本地规则")
         .containsEntry("model", "test-model")
         .containsEntry("note", "");
     List<Map<String, Object>> suggestions = suggestions(result);
@@ -90,8 +90,8 @@ class AiWorkflowSuggestServiceTests {
     Map<String, Object> result = service.suggest(connectedContextWorkflow());
 
     assertThat(result)
-        .containsEntry("source", "local-rules")
-        .containsEntry("model", "local-rules")
+        .containsEntry("source", "本地规则")
+        .containsEntry("model", "本地规则")
         .containsEntry("note", "大模型暂时不可用，已提供结构建议");
     assertThat(result.toString())
         .doesNotContain("sk-private")

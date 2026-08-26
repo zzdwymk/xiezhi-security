@@ -480,12 +480,14 @@ const trafficSecurityPoints = computed(() => {
     return [] as {
       label: string;
       value: string;
+      items?: string[];
       level: string;
       badge?: string;
     }[];
   const points: {
     label: string;
     value: string;
+    items?: string[];
     level: string;
     badge?: string;
   }[] = [];
@@ -535,7 +537,8 @@ const trafficSecurityPoints = computed(() => {
     points.push({
       label: "安全响应头",
       badge: missing.length ? `${missing.length}项缺失` : "配置齐全",
-      value: missing.length ? `缺失：${missing.join("、")}` : "常见安全头齐全",
+      value: missing.length ? "缺失：" : "常见安全头齐全",
+      items: missing.length ? missing : undefined,
       level: missing.length ? "warn" : "ok",
     });
   }
@@ -1679,13 +1682,13 @@ onUnmounted(() => {
           <div v-else class="packet-sections packet-editor">
             <template v-if="packetTab === 'request'">
               <article class="raw-packet-card">
-                <h3>Request Packet</h3>
+                <h3>请求报文</h3>
                 <pre>{{ formatRequestPacket(selected) }}</pre>
               </article>
             </template>
             <template v-else-if="packetTab === 'response'">
               <article class="raw-packet-card">
-                <h3>Response Packet</h3>
+                <h3>响应报文</h3>
                 <pre>{{ formatResponsePacket(selected) }}</pre>
               </article>
             </template>
@@ -1731,7 +1734,12 @@ onUnmounted(() => {
                     >{{ point.badge }}</span
                   >
                 </div>
-                <div class="fluent-infobar__message">{{ point.value }}</div>
+                <div class="fluent-infobar__message">
+                  <template v-if="point.items">
+                    <div v-for="item in point.items" :key="item">{{ item }}</div>
+                  </template>
+                  <template v-else>{{ point.value }}</template>
+                </div>
               </div>
             </li>
           </ul>
@@ -2660,23 +2668,36 @@ onUnmounted(() => {
   background: var(--app-bg);
 }
 .packet-editor article {
-  border: none;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
+  border: 1px solid var(--app-border);
+  border-radius: var(--traffic-card-radius);
+  background: var(--app-surface-strong);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--app-text) 5%, transparent);
   margin-bottom: 0;
+  transition: border-color 120ms ease;
+}
+.packet-editor article:hover {
+  border-color: var(--app-border-strong);
 }
 .packet-editor .raw-packet-card {
   min-height: 100%;
 }
 .packet-editor h3 {
+  margin: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--app-border);
   color: var(--app-muted);
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0;
 }
 .packet-editor pre {
   max-height: none;
   min-height: 82px;
+  margin: 0;
+  padding: 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--app-text);
   font-size: 12px;
   line-height: 1.65;
@@ -2713,7 +2734,7 @@ onUnmounted(() => {
 .traffic-points-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -2722,8 +2743,8 @@ onUnmounted(() => {
   display: flex;
   flex-direction: row;
   align-items: flex-start;
-  gap: 12px;
-  padding: 12px;
+  gap: 10px;
+  padding: 10px;
   border: 1px solid transparent;
   border-radius: 8px;
   background: var(--app-surface);
@@ -2746,10 +2767,10 @@ onUnmounted(() => {
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
   margin-top: 1px;
-  font-size: 18px;
+  font-size: 15px;
 }
 .traffic-points-list .fluent-infobar__icon.ok {
   color: light-dark(#107c10, #54b054);
@@ -2772,16 +2793,16 @@ onUnmounted(() => {
   margin-bottom: 4px;
 }
 .traffic-points-list .fluent-infobar__title {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--app-text);
   line-height: 1.35;
 }
 .traffic-points-list .fluent-infobar__badge {
   flex-shrink: 0;
-  padding: 1px 8px;
+  padding: 1px 6px;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -2796,8 +2817,8 @@ onUnmounted(() => {
 }
 .traffic-points-list .fluent-infobar__message {
   color: var(--app-muted);
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: 11px;
+  line-height: 1.5;
   word-break: break-word;
 }
 .traffic-points-foot {
@@ -3612,7 +3633,6 @@ onUnmounted(() => {
   padding: 12px;
   background: var(--app-bg);
 }
-.packet-editor article,
 .reference-packet-preview,
 .replay-response,
 .replay-response-grid article {
@@ -3624,7 +3644,6 @@ onUnmounted(() => {
     border-color 120ms ease,
     background-color 120ms ease;
 }
-.packet-editor article:hover,
 .reference-packet-preview:hover {
   border-color: var(--app-border-strong);
 }

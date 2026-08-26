@@ -383,9 +383,6 @@ try {
 
     Remove-Item -LiteralPath $backupDir -Recurse -Force
     Stop-Stage 'Swap release with rollback' $stageWatch
-    Write-Host "Desktop unpacked release ready: $(Join-Path $resolvedReleaseRoot ('win-unpacked\' + $packagedExe.Name))" -ForegroundColor Green
-    Write-Host "Desktop portable archive ready: $(Join-Path $resolvedReleaseRoot $portableArchiveName)" -ForegroundColor Green
-    Write-Host "Release checksums ready: $(Join-Path $resolvedReleaseRoot 'SHA256SUMS.txt')" -ForegroundColor Green
 
     $totalStopwatch.Stop()
     Write-Host ''
@@ -394,6 +391,11 @@ try {
         Write-Host ('  {0,-36} {1,10}' -f $timing.Stage, (Format-StageDuration $timing.Elapsed))
     }
     Write-Host ('  {0,-36} {1,10}' -f 'Total', (Format-StageDuration $totalStopwatch.Elapsed)) -ForegroundColor Cyan
+    Write-Host ''
+
+    Write-Host "Desktop unpacked release ready: $(Join-Path $resolvedReleaseRoot ('win-unpacked\' + $packagedExe.Name))" -ForegroundColor Green
+    Write-Host "Desktop portable archive ready: $(Join-Path $resolvedReleaseRoot $portableArchiveName)" -ForegroundColor Green
+    Write-Host "Release checksums ready: $(Join-Path $resolvedReleaseRoot 'SHA256SUMS.txt')" -ForegroundColor Green
     $releaseSucceeded = $true
 } finally {
     # A failed run leaves the staging tree behind; only ever remove the GUID

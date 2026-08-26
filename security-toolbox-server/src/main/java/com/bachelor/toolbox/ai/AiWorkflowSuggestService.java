@@ -18,7 +18,7 @@ import org.springframework.stereotype.Service;
 public class AiWorkflowSuggestService {
   private static final int MAX_SUGGESTIONS = 8;
   private static final int MAX_MODEL_SUGGESTIONS = 5;
-  private static final String LOCAL_SOURCE = "local-rules";
+  private static final String LOCAL_SOURCE = "本地规则";
   private static final Set<String> KNOWN_TOOLS =
       Set.of(
           "retrieve_project_context",
@@ -65,7 +65,7 @@ public class AiWorkflowSuggestService {
       emit.accept(statusEvent("llm", "大模型正在审阅拓扑并生成编排建议"));
       try {
         int modelCount = suggestions.emitAll(modelSuggestions(input), "llm");
-        source = modelCount > 0 ? "llm+local" : LOCAL_SOURCE;
+        source = modelCount > 0 ? "大模型+本地规则" : LOCAL_SOURCE;
         modelName = modelClient.model();
         if (modelCount == 0) {
           note = "大模型未给出额外建议，已保留结构建议";

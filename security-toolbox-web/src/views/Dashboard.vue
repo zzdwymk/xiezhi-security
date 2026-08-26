@@ -2014,25 +2014,25 @@ onBeforeUnmount(() => {
                   <summary>查看引用报文</summary>
                   <div class="traffic-reference-packets">
                     <article>
-                      <h4>Request Headers</h4>
+                      <h4>请求头</h4>
                       <pre>{{
                         formatReferenceValue(message.reference.requestHeaders)
                       }}</pre>
                     </article>
                     <article>
-                      <h4>Request Body</h4>
+                      <h4>请求体</h4>
                       <pre>{{
                         formatReferenceValue(message.reference.requestBody)
                       }}</pre>
                     </article>
                     <article>
-                      <h4>Response Headers</h4>
+                      <h4>响应头</h4>
                       <pre>{{
                         formatReferenceValue(message.reference.responseHeaders)
                       }}</pre>
                     </article>
                     <article>
-                      <h4>Response Body</h4>
+                      <h4>响应体</h4>
                       <pre>{{
                         formatReferenceValue(message.reference.responseBody)
                       }}</pre>

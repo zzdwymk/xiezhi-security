@@ -30,6 +30,12 @@ import {
 } from "../api";
 import { formatDateTime, formatExecutionLog } from "../utils/dateTime";
 import {
+  formatAuditAction,
+  formatAuditResource,
+  formatAuditResult,
+  auditResultTagType,
+} from "../utils/auditFormat";
+import {
   taskProgressIndeterminate,
   taskProgressPercentage,
   taskProgressStatus,
@@ -3753,16 +3759,34 @@ onUnmounted(() => {
           ><el-table-column
             prop="action"
             label="操作"
-            min-width="190"
-          /><el-table-column
+            min-width="160"
+            show-overflow-tooltip
+          >
+            <template #default="scope">
+              <strong>{{ formatAuditAction(scope.row.action) }}</strong>
+            </template>
+          </el-table-column
+          ><el-table-column
             prop="resourceType"
             label="资源"
-            width="100"
-          /><el-table-column
+            width="120"
+          >
+            <template #default="scope">
+              {{ formatAuditResource(scope.row.resourceType) }}
+            </template>
+          </el-table-column
+          ><el-table-column
             prop="result"
             label="结果"
             width="100"
-          /><el-table-column
+          >
+            <template #default="scope">
+              <el-tag size="small" :type="auditResultTagType(scope.row.result)" effect="light">
+                {{ formatAuditResult(scope.row.result) }}
+              </el-tag>
+            </template>
+          </el-table-column
+          ><el-table-column
             prop="operator"
             label="操作人"
             width="120"
@@ -4983,7 +5007,12 @@ onUnmounted(() => {
 .diff-form {
   display: flex;
   align-items: flex-end;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+.app-dialog .diff-form :deep(.el-form-item) {
+  margin-right: 0;
+  margin-bottom: 0;
 }
 .diff-form :deep(.el-select) {
   width: 290px;

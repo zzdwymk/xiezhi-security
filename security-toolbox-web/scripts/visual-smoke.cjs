@@ -1186,7 +1186,7 @@ async function verifyWorkflowStatusSummary(browser) {
   });
   assert.ok(
     nodeInputSpacing !== null && nodeInputSpacing >= 10 && nodeInputSpacing <= 16,
-    `节点输入标题与上方分隔线应保留适度留白：${nodeInputSpacing}`,
+    `已选节点标题与区块上边缘应保留适度留白：${nodeInputSpacing}`,
   );
   const selectedXrayCapability = page.locator(
     '.library-item.is-selected[data-tool="xray_scan"]',

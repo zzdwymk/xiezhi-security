@@ -6,6 +6,12 @@ import { endpoints, safeGet, type PageResponse } from "../api";
 import AppPagination from "../components/AppPagination.vue";
 import OfflineState from "../components/OfflineState.vue";
 import { formatDateTime } from "../utils/dateTime";
+import {
+  formatAuditAction,
+  formatAuditResource,
+  formatAuditResult,
+  auditResultTagType,
+} from "../utils/auditFormat";
 import { useCopilotStore } from "../stores/copilot";
 
 const props = defineProps<{ kind: "tasks" | "findings" | "audits" }>();
@@ -141,32 +147,62 @@ watch(() => props.kind, load);
       :title="config.empty"
       :description="offline ? '无法连接后端服务。' : '当前没有可显示的记录。'"
     />
-    <el-table v-else :data="rows"
-      ><el-table-column
-        v-for="column in config.cols"
-        :key="column[0]"
-        :prop="column[0]"
-        :label="column[1]"
-        min-width="140"
-        show-overflow-tooltip
-        ><template #default="scope">{{
-          column[0] === "createdAt"
-            ? formatDateTime(scope.row[column[0]])
-            : scope.row[column[0]]
-        }}</template></el-table-column
-      ><el-table-column v-if="kind === 'audits'" label="操作" width="120"
-        ><template #default="scope"
-          ><el-button
+    <el-table v-else :data="rows">
+      <template v-if="kind === 'audits'">
+        <el-table-column prop="action" label="操作" min-width="160" show-overflow-tooltip>
+          <template #default="scope">
+            <strong>{{ formatAuditAction(scope.row.action) }}</strong>
+          </template>
+        </el-table-column>
+        <el-table-column prop="resourceType" label="资源类型" width="130">
+          <template #default="scope">
+            {{ formatAuditResource(scope.row.resourceType) }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="result" label="结果" width="110">
+          <template #default="scope">
+            <el-tag size="small" :type="auditResultTagType(scope.row.result)" effect="light">
+              {{ formatAuditResult(scope.row.result) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="operator" label="操作人" width="120" show-overflow-tooltip />
+        <el-table-column prop="detail" label="详情" min-width="200" show-overflow-tooltip />
+        <el-table-column prop="createdAt" label="时间" min-width="170">
+          <template #default="scope">
+            {{ formatDateTime(scope.row.createdAt) }}
+          </template>
+        </el-table-column>
+      </template>
+      <template v-else>
+        <el-table-column
+          v-for="column in config.cols"
+          :key="column[0]"
+          :prop="column[0]"
+          :label="column[1]"
+          min-width="140"
+          show-overflow-tooltip
+        >
+          <template #default="scope">{{
+            column[0] === "createdAt"
+              ? formatDateTime(scope.row[column[0]])
+              : scope.row[column[0]]
+          }}</template>
+        </el-table-column>
+      </template>
+      <el-table-column v-if="kind === 'audits'" label="操作" width="120">
+        <template #default="scope">
+          <el-button
             v-if="canAnalyzeAudit(scope.row)"
             link
             type="primary"
             :icon="MagicStick"
             @click="analyzeAudit(scope.row)"
             >AI 核查</el-button
-          ></template
-        ></el-table-column
-      ></el-table
-    >
+          >
+        </template>
+      </el-table-column>
+    </el-table>
     <AppPagination
       v-if="kind === 'audits'"
       v-model:page="page"

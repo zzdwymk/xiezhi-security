@@ -8,6 +8,7 @@ import {
   shallowRef,
   watch,
 } from "vue";
+import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   Check,
@@ -300,6 +301,17 @@ function localizeSuggestionText(value?: string) {
   return text;
 }
 
+function suggestSourceLabel(source?: string) {
+  const map: Record<string, string> = {
+    "llm+local": "大模型+本地规则",
+    "local-rules": "本地规则",
+    local: "本地规则",
+    llm: "大模型",
+  };
+  const key = String(source || "").trim().toLowerCase();
+  return map[key] || String(source || "");
+}
+
 const PRESETS = [
   {
     value: "standard",
@@ -351,6 +363,9 @@ const workflowContextMenu = ref({
   y: 0,
   nodeId: "",
 });
+const clipboardNode = shallowRef<EditorNode | null>(null);
+const pasteOffset = ref(0);
+const lastPaneContextPoint = ref<{ x: number; y: number } | null>(null);
 const targetInput = ref({
   name: "",
   targetValue: "",
@@ -359,6 +374,7 @@ const targetInput = ref({
 });
 const targetInputSelectedPorts = ref<string[]>(["80", "443"]);
 const targetInputFullPortAccess = ref(false);
+const router = useRouter();
 const executing = ref(false);
 const executeProgress = ref(0);
 const executeIndeterminate = ref(false);
@@ -385,6 +401,7 @@ const hoveredEdgeId = ref("");
 const selectedPhase = ref<PhaseCode>("mapping");
 const phaseLibraryExpanded = ref(true);
 const capabilityLibraryExpanded = ref(true);
+const rightSidebarTab = ref<"library" | "node">("library");
 const graphValidation = ref<string[]>([]);
 const graphNotice = ref("");
 const suggestLoading = ref(false);
@@ -1061,6 +1078,7 @@ async function selectCanvasNode(id: string) {
   // when a phase node is clicked.
   capabilityLibraryExpanded.value = true;
 
+  if (rightSidebarTab.value === "library") {
   await waitForLibrarySectionLayout("workflow-capability-library-body");
   if (selectedNodeId.value !== id) return;
   const library = libraryScroll.value;
@@ -1100,6 +1118,10 @@ async function selectCanvasNode(id: string) {
       scrollTargetIntoLibrary();
     }
   }
+  } else {
+    await nextTick();
+    libraryScroll.value?.scrollTo({ top: 0, behavior: "auto" });
+  }
 }
 function onEdgeClick(event: { edge: Edge }) {
   closeWorkflowContextMenu();
@@ -1133,7 +1155,9 @@ function showWorkflowContextMenu(event: MouseEvent, nodeId = "") {
   if (!canvas) return;
   const bounds = canvas.getBoundingClientRect();
   const menuWidth = 208;
-  const menuHeight = nodeId ? 132 : 196;
+  const hasClipboard = !!clipboardNode.value;
+  // 节点菜单：复制 + 配置/详情/删除；空白菜单：粘贴 + 配置等
+  const menuHeight = nodeId ? (hasClipboard ? 176 : 144) + (nodeRuns.value[nodeId] ? 36 : 0) : hasClipboard ? 232 : 196;
   workflowConfigVisible.value = false;
   workflowContextMenu.value = {
     visible: true,
@@ -1147,11 +1171,15 @@ function showWorkflowContextMenu(event: MouseEvent, nodeId = "") {
     ),
     nodeId,
   };
+  if (!nodeId) {
+    lastPaneContextPoint.value = { x: event.clientX, y: event.clientY };
+  }
 }
 
 function onPaneContextMenu(event: MouseEvent) {
   selectedNodeId.value = "";
   setSelectedEdge("");
+  lastPaneContextPoint.value = { x: event.clientX, y: event.clientY };
   showWorkflowContextMenu(event);
 }
 
@@ -1174,6 +1202,7 @@ async function configureContextNode() {
   }
   selectNode(node.id);
   selectedPhase.value = node.data.phase;
+  rightSidebarTab.value = "node";
   closeWorkflowContextMenu();
   if (node.data.nodeKind !== "tool") return;
   await nextTick();
@@ -1217,6 +1246,121 @@ function deleteContextNode() {
   closeWorkflowContextMenu();
   if (nodeId) removeNode(nodeId);
 }
+
+function canCopyNode(node?: EditorNode | null) {
+  const target = node || (selectedNodeId.value ? nodes.value.find((n) => n.id === selectedNodeId.value) || null : null);
+  if (!target) return false;
+  if (target.id === "__start__" || target.id === "__end__") return false;
+  if (viewingRunSnapshot.value || executing.value) return false;
+  return true;
+}
+
+function copyAndPasteNode(
+  nodeId?: string,
+  atFlowPosition?: { x: number; y: number },
+) {
+  const sourceId = nodeId || selectedNodeId.value || contextMenuNode.value?.id;
+  const source = nodes.value.find((n) => n.id === sourceId);
+  if (!source) {
+    ElMessage.warning("请先选择要复制的节点");
+    return null;
+  }
+  if (source.id === "__start__" || source.id === "__end__") {
+    ElMessage.warning("开始和结束节点不可复制");
+    return null;
+  }
+  if (viewingRunSnapshot.value) {
+    ElMessage.warning("历史拓扑不可复制");
+    return null;
+  }
+  if (
+    source.data.nodeKind === "phase" &&
+    hasCanonicalPhaseNode(source.data.phase as PhaseCode)
+  ) {
+    ElMessage.warning(
+      `${phaseOf(source.data.phase as PhaseCode).shortLabel}阶段已在画布中，无法重复创建`,
+    );
+    return null;
+  }
+  clipboardNode.value = {
+    ...source,
+    data: JSON.parse(JSON.stringify(source.data)),
+    position: { ...source.position },
+  } as EditorNode;
+  const newNode = pasteNode(atFlowPosition);
+  if (newNode) {
+    ElMessage.success(`已复制并创建“${newNode.data.label}”`);
+  }
+  return newNode;
+}
+
+function copyNode(nodeId?: string) {
+  return copyAndPasteNode(nodeId);
+}
+
+function copyContextNode() {
+  const nodeId = contextMenuNode.value?.id;
+  if (nodeId) copyAndPasteNode(nodeId);
+  closeWorkflowContextMenu();
+}
+
+function pasteNode(atFlowPosition?: { x: number; y: number }) {
+  const source = clipboardNode.value;
+  if (!source) {
+    ElMessage.warning("剪贴板为空，请先复制节点");
+    return null;
+  }
+  if (viewingRunSnapshot.value) {
+    ElMessage.warning("历史拓扑不可粘贴");
+    return null;
+  }
+  if (source.data.nodeKind === "phase") {
+    const phase = source.data.phase as PhaseCode;
+    if (hasCanonicalPhaseNode(phase)) {
+      ElMessage.warning(`${phaseOf(phase).shortLabel}阶段已在画布中，无法重复粘贴`);
+      return null;
+    }
+  }
+  let newId: string;
+  if (source.data.nodeKind === "tool" && source.data.tool) {
+    newId = uniqueId(`tool-${safeId(source.data.tool)}-${source.data.phase}`);
+  } else if (source.data.nodeKind === "phase") {
+    newId = phaseNodeId(source.data.phase as PhaseCode);
+  } else {
+    newId = uniqueId(`node-${safeId(source.data.label)}`);
+  }
+  const offset = 36 + pasteOffset.value * 18;
+  const basePos = atFlowPosition
+    ? { x: atFlowPosition.x, y: atFlowPosition.y }
+    : { x: source.position.x + offset, y: source.position.y + offset };
+  pasteOffset.value = (pasteOffset.value + 1) % 8;
+  const parameters = source.data.parameters ? JSON.parse(JSON.stringify(source.data.parameters)) : undefined;
+  const newNode = makeNode(
+    newId,
+    source.data.nodeKind,
+    source.data.phase,
+    basePos,
+    source.data.label,
+    source.data.tool,
+    parameters,
+  );
+  nodes.value = [...nodes.value, newNode];
+  selectedNodeId.value = newId;
+  selectedPhase.value = newNode.data.phase as PhaseCode;
+  setSelectedEdge("");
+  validateGraph();
+  graphNotice.value = `已复制并创建“${newNode.data.label}”`;
+  return newNode;
+}
+
+function pasteFromContextMenu() {
+  const point = lastPaneContextPoint.value
+    ? screenToFlowCoordinate({ x: lastPaneContextPoint.value.x, y: lastPaneContextPoint.value.y })
+    : undefined;
+  closeWorkflowContextMenu();
+  pasteNode(point || undefined);
+}
+
 function onNodeDragStop(event: NodeDragEvent) {
   const current = nodes.value.find((node) => node.id === event.node.id);
   if (current)
@@ -2392,6 +2536,23 @@ function onWorkflowKeydown(event: KeyboardEvent) {
     setSelectedEdge("");
     return;
   }
+  if ((event.ctrlKey || event.metaKey) && !isTypingTarget(event.target)) {
+    const key = event.key.toLowerCase();
+    if (key === "c" && selectedNodeId.value) {
+      if (canCopyNode()) {
+        event.preventDefault();
+        copyNode(selectedNodeId.value);
+      }
+      return;
+    }
+    if (key === "v" && clipboardNode.value) {
+      if (!viewingRunSnapshot.value && !executing.value) {
+        event.preventDefault();
+        pasteNode();
+      }
+      return;
+    }
+  }
   if (
     (event.key !== "Delete" && event.key !== "Backspace") ||
     isTypingTarget(event.target)
@@ -2580,6 +2741,14 @@ onBeforeUnmount(() => {
             @click="clearSelectedRun"
           >
             清空结果
+          </el-button>
+          <el-button
+            size="small"
+            type="primary"
+            plain
+            @click="router.push('/findings')"
+          >
+            查看结果中心
           </el-button>
           <el-button
             v-if="
@@ -2934,6 +3103,15 @@ onBeforeUnmount(() => {
                 <button
                   type="button"
                   role="menuitem"
+                  :disabled="!clipboardNode || viewingRunSnapshot || executing"
+                  @click="pasteFromContextMenu"
+                >
+                  <FluentIcon name="clipboard-paste" /><span>粘贴节点</span>
+                  <small class="menu-shortcut">Ctrl+V</small>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
                   :disabled="executing || viewingRunSnapshot"
                   @click="loadPresetFromContextMenu"
                 >
@@ -2972,6 +3150,19 @@ onBeforeUnmount(() => {
                   <el-icon><Setting /></el-icon><span>配置节点参数</span>
                 </button>
                 <button
+                  v-if="
+                    contextMenuNode.data.nodeKind !== 'system' &&
+                    !viewingRunSnapshot &&
+                    !executing
+                  "
+                  type="button"
+                  role="menuitem"
+                  @click="copyContextNode"
+                >
+                  <FluentIcon name="copy" /><span>复制节点</span>
+                  <small class="menu-shortcut">Ctrl+C</small>
+                </button>
+                <button
                   v-if="nodeRuns[contextMenuNode.id]"
                   type="button"
                   role="menuitem"
@@ -3005,15 +3196,15 @@ onBeforeUnmount(() => {
         </div>
         <footer class="editor-foot">
           <span
-            >提示：单击可删除节点或连线后按 Delete
-            键；也可点击节点垃圾桶或连线上的 ✕
-            删除。拖动节点只改变布局，不会改变执行顺序。</span
+            >提示：选中节点后按 Ctrl+C 直接复制节点；Delete
+            删除节点/连线。也可点击节点垃圾桶或连线上的 ✕
+            删除。拖动只改布局，不改执行顺序。</span
           ><span v-if="selectedNode"
             >已选节点：{{ selectedNode.data.label
             }}{{
               selectedNode.data.nodeKind === "system"
                 ? "（固定保留）"
-                : "，按 Delete 删除"
+                : "，Ctrl+C 直接复制 / Delete 删除"
             }}</span
           ><span v-else-if="selectedEdgeId"
             >已选连线：按 Delete 或点击连线上的 ✕ 删除</span
@@ -3022,27 +3213,56 @@ onBeforeUnmount(() => {
       </section>
 
       <aside class="workflow-library">
-        <div class="library-head">
-          <div>
-            <h4>阶段与受控能力库</h4>
-            <p>阶段用于组织流程；能力是在授权范围内执行的具体检查。</p>
-          </div>
-        </div>
-
-        <div ref="libraryScroll" class="library-scroll">
-          <section
-            v-if="selectedToolNode"
-            ref="nodeInputEditor"
-            class="node-input-editor"
-            aria-label="节点输入参数"
+        <div class="workflow-library-nav">
+          <el-segmented
+            v-model="rightSidebarTab"
+            class="workflow-library-tabs"
+            :options="[
+              { label: '阶段与能力库', value: 'library' },
+              { label: '节点配置', value: 'node' },
+            ]"
           >
-            <div class="library-section-head">
-              <div>
-                <h5>节点输入</h5>
-                <p>{{ selectedToolNode.data.label }}</p>
+            <template #default="{ item }">
+              <span class="workflow-tab-label">
+                <FluentIcon
+                  :name="item.value === 'library' ? 'branch-fork' : 'edit'"
+                />
+                <span>{{ item.label }}</span>
+                <span
+                  v-if="item.value === 'node' && selectedNode"
+                  class="tab-node-badge"
+                  title="已选中节点"
+                />
+              </span>
+            </template>
+          </el-segmented>
+        </div>
+        <div ref="libraryScroll" class="library-scroll">
+         <div v-show="rightSidebarTab === 'node'" class="node-tab-pane">
+         <section
+           v-if="selectedToolNode"
+           ref="nodeInputEditor"
+           class="node-input-editor"
+           aria-label="已选节点参数"
+         >
+            <div class="node-editor-header">
+              <div class="node-editor-title-row">
+                <h5 class="node-editor-title">已选节点 · {{ selectedToolNode.data.label }}</h5>
+                <el-tag
+                  size="small"
+                  :type="agentOf(selectedToolNode.data.tool)?.risk === 'SAFE' ? 'info' : 'warning'"
+                  effect="plain"
+                  class="node-risk-tag"
+                >
+                  {{ phaseOf(selectedToolNode.data.phase).shortLabel }}
+                </el-tag>
               </div>
+              <p class="node-editor-desc">
+                {{ agentOf(selectedToolNode.data.tool)?.desc || '在授权目标范围内执行具体的检测与分析任务。' }}
+              </p>
             </div>
 
+            <div class="node-editor-body">
             <el-form
               label-position="top"
               size="small"
@@ -3118,12 +3338,74 @@ onBeforeUnmount(() => {
                     'nuclei_scan',
                   ].includes(selectedToolNode.data.tool || '')
                 "
-                class="node-input-empty"
-              >
-                此节点直接使用工作流配置中的授权目标，无额外参数。
+               class="node-input-empty"
+             >
+                <div class="node-empty-icon-wrap">
+                  <FluentIcon name="info" />
+                </div>
+                <div class="node-empty-text">
+                  <span class="node-empty-title">继承全局授权配置</span>
+                  <p class="node-empty-desc">
+                    此节点直接使用工作流配置中的授权目标与边界，无额外独立参数。
+                  </p>
+                </div>
               </div>
             </el-form>
+            </div>
           </section>
+            <section
+              v-else-if="selectedNode"
+              class="node-input-editor"
+              aria-label="已选节点属性"
+            >
+              <div class="node-editor-header">
+                <div class="node-editor-title-row">
+                  <h5 class="node-editor-title">已选节点 · {{ selectedNode.data.label }}</h5>
+                  <el-tag size="small" type="info" effect="plain" class="node-risk-tag">
+                    {{ selectedNode.data.nodeKind === "phase" ? "流程阶段" : "全局起点" }}
+                  </el-tag>
+                </div>
+                <p class="node-editor-desc">
+                  {{ selectedNode.data.nodeKind === "phase" ? "用于组织能力依赖与执行流向，不直接发送网络请求。" : "定义项目评估范围与全局授权目标边界。" }}
+                </p>
+              </div>
+              <div class="node-editor-body">
+              <div class="node-info-list">
+                <div class="node-info-item">
+                  <span>节点类型</span>
+                  <span>{{ selectedNode.data.nodeKind === "phase" ? "流程阶段分组节点" : "工作流起点（运行范围输入）" }}</span>
+                </div>
+                <div class="node-info-item">
+                  <span>执行角色</span>
+                  <span>{{ selectedNode.data.nodeKind === "phase" ? "固定阶段节点，用于组织能力流向与依赖关系，不直接发送网络请求。" : "定义评估项目的授权目标、端口范围及全局请求上下文。" }}</span>
+                </div>
+                <el-button
+                  v-if="selectedNode.data.nodeKind === 'system'"
+                  size="small"
+                  type="primary"
+                  plain
+                  class="node-config-action"
+                  @click="openWorkflowConfig"
+                >
+                  配置全局运行范围
+                </el-button>
+              </div>
+              </div>
+            </section>
+            <div v-else class="node-tab-empty">
+              <FluentIcon name="edit" />
+              <strong>未选择节点</strong>
+              <p>在左侧画布中点击任意节点，即可在此查看或修改其输入参数与运行属性。</p>
+            </div>
+          </div>
+
+          <div v-show="rightSidebarTab === 'library'" class="library-tab-pane">
+          <div class="library-head">
+            <div>
+              <h4>能力库</h4>
+              <p>阶段用于组织流程；能力是在授权范围内执行的具体检查。</p>
+            </div>
+          </div>
 
           <section
             class="phase-library"
@@ -3301,6 +3583,7 @@ onBeforeUnmount(() => {
               </div>
             </div>
           </section>
+          </div>
         </div>
 
         <div
@@ -3325,7 +3608,7 @@ onBeforeUnmount(() => {
                       : "点击展开建议面板"
                   }}
                 </p>
-                <p v-else-if="suggestSource">来源：{{ suggestSource }}</p>
+                <p v-else-if="suggestSource">来源：{{ suggestSourceLabel(suggestSource) }}</p>
                 <p v-else>编辑工作流时自动刷新</p>
               </div>
               <span class="suggest-chevron" aria-hidden="true">{{
@@ -3966,7 +4249,7 @@ onBeforeUnmount(() => {
 }
 .workflow-context-menu button {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr);
+  grid-template-columns: 22px minmax(0, 1fr) auto;
   min-height: 32px;
   align-items: center;
   gap: 6px;
@@ -3980,6 +4263,12 @@ onBeforeUnmount(() => {
   font-size: 12px;
   line-height: 1.4;
   text-align: left;
+}
+.workflow-context-menu .menu-shortcut {
+  margin-left: 8px;
+  color: var(--app-muted);
+  font-size: 11px;
+  white-space: nowrap;
 }
 .workflow-context-menu button:hover:not(:disabled) {
   background: var(--app-accent-soft);
@@ -4374,13 +4663,141 @@ onBeforeUnmount(() => {
   font-size: var(--type-caption);
   line-height: 1.6;
 }
+.workflow-library-nav {
+  flex: none;
+  margin-bottom: 16px;
+}
+.workflow-library-tabs {
+  width: 100%;
+}
+.workflow-library-tabs :deep(.el-segmented) {
+  --el-segmented-color: var(--app-muted);
+  --el-segmented-bg-color: var(--app-surface-soft);
+  --el-segmented-item-selected-color: var(--app-text);
+  --el-segmented-item-selected-bg-color: var(--app-surface-strong);
+  --el-segmented-item-hover-color: var(--app-text);
+  --el-segmented-item-hover-bg-color: transparent;
+  --el-segmented-item-active-bg-color: transparent;
+  --el-border-radius-base: var(--fluent-radius-control);
+  min-height: 32px;
+  padding: 2px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--fluent-radius-control);
+  background: var(--el-segmented-bg-color);
+}
+.workflow-library-tabs :deep(.el-segmented__group) {
+  display: flex;
+  gap: 2px;
+  width: 100%;
+}
+.workflow-library-tabs :deep(.el-segmented__item) {
+  min-width: 0;
+  flex: 1;
+  min-height: 28px;
+  border-radius: calc(var(--fluent-radius-control) - 2px);
+  color: var(--app-muted);
+  font-weight: 500;
+  transition: color var(--fluent-duration-fast, 150ms)
+    var(--fluent-curve-standard, ease);
+}
+.workflow-library-tabs :deep(.el-segmented__item:hover) {
+  color: var(--app-text);
+}
+.workflow-library-tabs :deep(.el-segmented__item.is-selected) {
+  color: var(--el-segmented-item-selected-color);
+  font-weight: 600;
+}
+.workflow-library-tabs :deep(.el-segmented__item-selected) {
+  background: var(--el-segmented-item-selected-bg-color);
+  border: 1px solid var(--app-border);
+  border-radius: calc(var(--fluent-radius-control) - 2px);
+  box-shadow: var(--fluent-shadow-2);
+  box-sizing: border-box;
+}
+.workflow-tab-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: var(--type-caption);
+  font-weight: inherit;
+  line-height: 1.2;
+}
+.workflow-tab-label :deep(.fluent-icon) {
+  font-size: 14px;
+}
+.tab-node-badge {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--app-accent);
+}
+.node-info-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 0;
+}
+.node-info-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--type-caption);
+  color: var(--app-text);
+}
+.node-info-item > span:first-child {
+  font-size: var(--type-micro);
+  color: var(--app-muted);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.node-info-item > span:last-child {
+  line-height: 1.6;
+}
+.node-config-action {
+  margin-top: 16px;
+  width: 100%;
+}
+.node-tab-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 36px 16px;
+  border: 1px dashed var(--app-border);
+  border-radius: var(--fluent-radius-control);
+  background: var(--app-surface-subtle);
+  color: var(--app-muted);
+  gap: 8px;
+}
+.node-tab-empty .fluent-system-icon {
+  font-size: 28px;
+  color: var(--app-muted);
+  opacity: 0.6;
+  margin-bottom: 2px;
+}
+.node-tab-empty strong {
+  font-size: var(--type-body);
+  color: var(--app-text);
+  font-weight: 600;
+}
+.node-tab-empty p {
+  margin: 0;
+  font-size: var(--type-caption);
+  line-height: 1.5;
+  max-width: 240px;
+}
 .node-input-editor {
-  margin-bottom: 14px;
-  padding: 12px 0 14px;
-  border-bottom: 1px solid var(--app-border);
+  margin-bottom: 16px;
+  padding: 12px 16px 16px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--fluent-radius-control);
+  background: var(--app-surface-soft);
 }
 .node-input-editor :deep(.el-form-item) {
-  margin-bottom: 12px;
+  margin-bottom: 16px;
 }
 .node-input-editor :deep(.el-select),
 .node-input-editor :deep(.el-radio-group) {
@@ -4394,18 +4811,81 @@ onBeforeUnmount(() => {
 }
 .input-hint {
   display: block;
-  margin-top: 5px;
+  margin-top: 8px;
   color: var(--app-muted);
   font-size: var(--type-micro);
+  line-height: 1.5;
+}
+.node-editor-header {
+  margin-bottom: 16px;
+}
+.node-editor-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.node-editor-title {
+  margin: 0;
+  color: var(--app-text);
+  font-size: var(--type-caption);
+  font-weight: 600;
   line-height: 1.4;
+  letter-spacing: -0.01em;
+}
+.node-editor-desc {
+  margin: 8px 0 0;
+  color: var(--app-muted);
+  font-size: var(--type-micro);
+  line-height: 1.6;
+}
+.node-risk-tag {
+  flex: none;
+}
+.node-editor-body {
+  border-top: 1px solid var(--app-border-subtle, var(--app-border));
+  padding-top: 16px;
 }
 .node-input-empty {
-  padding: 10px 12px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
   border: 1px solid var(--app-border);
   border-radius: var(--fluent-radius-control);
   background: var(--app-surface-subtle);
-  color: var(--app-muted);
+  line-height: 1.6;
+}
+.node-empty-icon-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--app-accent) 12%, transparent);
+  color: var(--app-accent);
+  font-size: 14px;
+  margin-top: 2px;
+}
+.node-empty-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.node-empty-title {
   font-size: var(--type-caption);
+  font-weight: 600;
+  color: var(--app-text);
+  line-height: 1.4;
+  letter-spacing: -0.005em;
+}
+.node-empty-desc {
+  margin: 0;
+  font-size: var(--type-micro);
+  color: var(--app-muted);
+  line-height: 1.6;
 }
 .target-input-grid {
   display: grid;

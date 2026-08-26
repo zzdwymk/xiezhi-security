@@ -476,10 +476,12 @@ body,
   font-size: var(--fluent-caption1-size);
   font-weight: var(--fluent-weight-semibold);
   letter-spacing: 0;
+  border-right: 1px solid var(--app-border);
 }
 
 .desktop-v2-app-frame :where(.el-table td.el-table__cell) {
   border-bottom-color: var(--app-border);
+  border-right: 1px solid color-mix(in srgb, var(--app-border) 40%, transparent);
   color: var(--app-text);
 }
 

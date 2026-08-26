@@ -97,57 +97,24 @@ function isReady(item: Dependency) {
 async function check(forceRefresh = false) {
   loading.value = true;
   error.value = "";
+  items.value = [];
   try {
+    if (typeof EventSource !== "undefined") {
+      const streamed = await streamDependencies(forceRefresh);
+      if (streamed) {
+        await decorateItems();
+        developmentMode.value = import.meta.env.DEV;
+        maybeAutoContinue();
+        return true;
+      }
+    }
     const { data } = await loadDependencies(forceRefresh);
     items.value = Array.isArray(data)
       ? data
       : data.dependencies || data.items || [];
-    if (window.toolboxDesktop) {
-      const [directory, installable] = await Promise.all([
-        window.toolboxDesktop.getToolsDirectory(),
-        window.toolboxDesktop.listInstallableDependencies(),
-      ]);
-      toolsDirectory.value = directory;
-      const packages = new Map(
-        installable.map((item) => [item.packageId, item]),
-      );
-      items.value = items.value.map((item) => {
-        const packageId =
-          item.name === "Nuclei"
-            ? "nuclei"
-            : item.name === "ProjectDiscovery httpx"
-              ? "httpx"
-              : item.name === "Afrog"
-                ? "afrog"
-                : item.name === "Xray"
-                  ? "xray"
-                  : undefined;
-        return {
-          ...item,
-          packageId,
-          installSupported: Boolean(packageId && packages.has(packageId)),
-          uninstallSupported: Boolean(
-            item.required === false &&
-              packageId &&
-              packages.get(packageId)?.uninstallSupported,
-          ),
-          manualUrl: manualUrls[item.name],
-        };
-      });
-    } else {
-      items.value = items.value.map((item) => ({
-        ...item,
-        manualUrl: manualUrls[item.name],
-      }));
-    }
+    await decorateItems();
     developmentMode.value = data.developmentMode ?? import.meta.env.DEV;
-    if (
-      startupCheck.value &&
-      autoContinue.value &&
-      !missingRequired.value.length
-    ) {
-      proceed();
-    }
+    maybeAutoContinue();
     return true;
   } catch (checkError) {
     items.value = [];
@@ -165,6 +132,98 @@ async function check(forceRefresh = false) {
   } finally {
     loading.value = false;
   }
+}
+
+function maybeAutoContinue() {
+  if (
+    startupCheck.value &&
+    autoContinue.value &&
+    !missingRequired.value.length
+  ) {
+    proceed();
+  }
+}
+
+async function decorateItems() {
+  if (window.toolboxDesktop) {
+    const [directory, installable] = await Promise.all([
+      window.toolboxDesktop.getToolsDirectory(),
+      window.toolboxDesktop.listInstallableDependencies(),
+    ]);
+    toolsDirectory.value = directory;
+    const packages = new Map(
+      installable.map((item) => [item.packageId, item]),
+    );
+    items.value = items.value.map((item) => {
+      const packageId =
+        item.name === "Nuclei"
+          ? "nuclei"
+          : item.name === "ProjectDiscovery httpx"
+            ? "httpx"
+            : item.name === "Afrog"
+              ? "afrog"
+              : item.name === "Xray"
+                ? "xray"
+                : undefined;
+      return {
+        ...item,
+        packageId,
+        installSupported: Boolean(packageId && packages.has(packageId)),
+        uninstallSupported: Boolean(
+          item.required === false &&
+            packageId &&
+            packages.get(packageId)?.uninstallSupported,
+        ),
+        manualUrl: manualUrls[item.name],
+      };
+    });
+  } else {
+    items.value = items.value.map((item) => ({
+      ...item,
+      manualUrl: manualUrls[item.name],
+    }));
+  }
+}
+
+function upsertDependency(dep: Dependency) {
+  const index = items.value.findIndex((item) => item.name === dep.name);
+  if (index >= 0) {
+    items.value[index] = dep;
+  } else {
+    items.value.push(dep);
+  }
+}
+
+function streamDependencies(forceRefresh: boolean): Promise<boolean> {
+  return new Promise((resolve) => {
+    let received = 0;
+    let source: EventSource;
+    let timer: ReturnType<typeof setTimeout>;
+    try {
+      source = new EventSource(
+        `/api/system/dependencies/stream?refresh=${forceRefresh}`,
+      );
+    } catch {
+      resolve(false);
+      return;
+    }
+    const close = (success: boolean) => {
+      clearTimeout(timer);
+      source.close();
+      resolve(success);
+    };
+    timer = setTimeout(() => close(received > 0), 20_000);
+    source.onmessage = (event) => {
+      received += 1;
+      try {
+        upsertDependency(JSON.parse(event.data) as Dependency);
+      } catch {
+        // 忽略无法解析的事件。
+      }
+    };
+    source.addEventListener("complete", () => close(true));
+    source.onerror = () => close(received > 0);
+  });
 }
 
 async function loadDependencies(forceRefresh = false) {

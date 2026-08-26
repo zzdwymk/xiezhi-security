@@ -56,6 +56,7 @@ public class SecurityConfig {
                         "/api/auth/login",
                         "/api/system/health",
                         "/api/system/dependencies",
+                        "/api/system/dependencies/stream",
                         "/api/system/shutdown",
                         "/error")
                     .permitAll()

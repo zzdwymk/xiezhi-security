@@ -237,7 +237,13 @@ const navigationGroups = [
 ];
 
 const activeNavigation = computed(() => {
-  if (route.path === "/") return "/";
+  if (route.path === "/") {
+    const conversationId = route.query.conversation;
+    const conversationOpen =
+      typeof conversationId === "string" &&
+      conversations.recent.some((item) => item.id === conversationId);
+    return conversationOpen ? "" : "/";
+  }
   if (route.path.startsWith("/workflow")) return "/workflow";
   if (route.path.startsWith("/targets")) return "/targets";
   if (route.path.startsWith("/projects") && route.query.tab === "recon")

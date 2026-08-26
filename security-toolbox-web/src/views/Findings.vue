@@ -642,7 +642,7 @@ onBeforeUnmount(() => {
     class="app-dialog app-dialog--lg"
     align-center
   >
-    <el-form label-position="top" inline>
+    <el-form label-position="top" inline class="diff-form">
       <el-form-item label="基线任务 ID">
         <el-select
           v-model="diffForm.baselineTaskId"
@@ -713,6 +713,16 @@ onBeforeUnmount(() => {
 <style scoped>
 .findings-page .section-head h3 {
   font-size: var(--type-section-title);
+}
+.diff-form {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+.app-dialog .diff-form :deep(.el-form-item) {
+  margin-right: 0;
+  margin-bottom: 0;
 }
 .diff-compare-item {
   align-self: flex-end;
