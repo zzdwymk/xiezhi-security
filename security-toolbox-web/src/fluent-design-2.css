@@ -477,10 +477,11 @@ body,
   font-weight: var(--fluent-weight-semibold);
   letter-spacing: 0;
   border-right: none !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--app-border) 85%, transparent) !important;
 }
 
 .desktop-v2-app-frame :where(.el-table td.el-table__cell) {
-  border-bottom-color: var(--app-border);
+  border-bottom: 1px solid color-mix(in srgb, var(--app-border) 68%, transparent);
   border-right: none !important;
   color: var(--app-text);
 }

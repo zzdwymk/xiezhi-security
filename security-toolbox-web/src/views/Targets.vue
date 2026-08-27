@@ -92,7 +92,10 @@ function applyProjectAuthorizationDefaults(projectId?: number) {
 
 function projectStatusLabel(status?: string) {
   const labels: Record<string, string> = {
+    DRAFT: '草稿',
     ACTIVE: '进行中',
+    PAUSED: '已暂停',
+    COMPLETED: '已完成',
     ARCHIVED: '已归档',
   };
   return status ? labels[status] || status : '';

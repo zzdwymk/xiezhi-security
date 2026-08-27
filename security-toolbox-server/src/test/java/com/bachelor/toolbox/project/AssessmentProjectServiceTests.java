@@ -326,7 +326,7 @@ class AssessmentProjectServiceTests {
 
     assertThatThrownBy(() -> service.validateProjectTarget(1L, 2L))
         .isInstanceOf(ApiException.class)
-        .hasMessage("项目未处于ACTIVE状态");
+        .hasMessage("项目未处于进行中状态");
     verify(links, never()).findByProjectIdAndTargetId(1L, 2L);
   }
 

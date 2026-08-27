@@ -634,7 +634,7 @@ async function openScheduleDialog() {
     scheduleTargets.value = targetResponse.data;
     const firstProject = activeScheduleProjects.value[0];
     if (!firstProject) {
-      ElMessage.warning("暂无 ACTIVE 状态的安全评估项目，请先启用项目");
+      ElMessage.warning("暂无“进行中”状态的安全评估项目，请先启用项目");
       return;
     }
     scheduleForm.value.projectId = firstProject.id;
@@ -910,7 +910,7 @@ onUnmounted(() => {
         <el-select
           v-model="scheduleForm.projectId"
           aria-label="安全评估项目"
-          placeholder="选择 ACTIVE 项目"
+          placeholder="选择进行中项目"
           filterable
           :disabled="scheduleContextLoading"
           @change="loadScheduleProjectTargets"

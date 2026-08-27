@@ -44,7 +44,7 @@
   height: 31px;
   place-items: center;
   border: 1px solid #d6d6d1;
-  border-radius: 9px;
+  border-radius: 8px;
   background: #fff;
   color: #246b5a;
   font-size: 16px;
@@ -133,7 +133,7 @@
   margin: auto 4px 0;
   padding: 13px;
   border: 1px solid #deded9;
-  border-radius: 9px;
+  border-radius: 8px;
   background: #fff;
 }
 .setup-storage-title {
@@ -566,7 +566,7 @@
 }
 .setup-steps li {
   min-height: 44px;
-  border-radius: 4px;
+  border-radius: 8px;
 }
 .setup-steps li.active {
   background: var(--app-accent-soft-strong);

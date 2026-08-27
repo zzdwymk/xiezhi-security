@@ -761,19 +761,21 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
   z-index: 10;
 }
 
-/* Keep Fluent single-card outer border; disable Element Plus grid vertical lines */
-.el-table.el-table--border {
-  border: none;
-}
-
+/* Fluent: single outer card border; keep only horizontal dividers, hide Element Plus grid pseudos */
 .el-table--border th.el-table__cell,
 .el-table--border td.el-table__cell {
   border-right: none !important;
 }
 
 .el-table--border::before,
-.el-table--border .el-table__inner-wrapper::before {
-  display: none;
+.el-table--border::after,
+.el-table--border .el-table__inner-wrapper::before,
+.el-table--border .el-table__inner-wrapper::after,
+.el-table__inner-wrapper::before,
+.el-table__border-left-patch,
+.el-table__border-right-patch,
+.el-table__border-bottom-patch {
+  display: none !important;
 }
 
 .el-table__inner-wrapper {

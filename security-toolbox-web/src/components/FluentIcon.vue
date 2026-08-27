@@ -32,7 +32,9 @@ import edit from "@fluentui/svg-icons/icons/edit_24_regular.svg?url";
 import eye from "@fluentui/svg-icons/icons/eye_24_regular.svg?url";
 import filter from "@fluentui/svg-icons/icons/filter_24_regular.svg?url";
 import flag from "@fluentui/svg-icons/icons/flag_24_regular.svg?url";
-import fit from "@fluentui/svg-icons/icons/full_screen_maximize_24_regular.svg?url";
+import fit from "@fluentui/svg-icons/icons/zoom_fit_24_regular.svg?url";
+import fullscreenMaximize from "@fluentui/svg-icons/icons/full_screen_maximize_24_regular.svg?url";
+import fullscreenMinimize from "@fluentui/svg-icons/icons/full_screen_minimize_24_regular.svg?url";
 import folder from "@fluentui/svg-icons/icons/folder_24_regular.svg?url";
 import folderOpen from "@fluentui/svg-icons/icons/folder_open_24_regular.svg?url";
 import globe from "@fluentui/svg-icons/icons/globe_24_regular.svg?url";
@@ -101,6 +103,8 @@ const iconUrls: Record<string, string> = {
   filter,
   flag,
   fit,
+  fullscreen: fullscreenMaximize,
+  "fullscreen-exit": fullscreenMinimize,
   folder,
   "folder-open": folderOpen,
   globe,

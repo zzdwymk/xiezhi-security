@@ -241,7 +241,7 @@ public class AssessmentProjectService {
 
   private void validateActiveProject(AssessmentProject project) {
     if (!"ACTIVE".equals(project.getStatus())) {
-      throw new ApiException("项目未处于ACTIVE状态");
+      throw new ApiException("项目未处于进行中状态");
     }
   }
 

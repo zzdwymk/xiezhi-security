@@ -416,6 +416,8 @@ let suggestAbort: AbortController | undefined;
 const { fitView, setViewport, zoomIn, zoomOut, screenToFlowCoordinate } =
   useVueFlow("red-team-workflow");
 const flowCanvas = ref<HTMLElement | null>(null);
+const workflowEditorLayoutRef = ref<HTMLElement | null>(null);
+const isFullscreen = ref(false);
 const libraryScroll = ref<HTMLElement | null>(null);
 const nodeInputEditor = ref<HTMLElement | null>(null);
 
@@ -436,6 +438,62 @@ function zoomCanvasOut() {
 }
 function fitWorkflowCanvas() {
   void fitView({ padding: 0.2, maxZoom: 0.95 });
+}
+
+async function enterFullscreen() {
+  const el = workflowEditorLayoutRef.value;
+  if (!el) return;
+  try {
+    if (el.requestFullscreen) {
+      await el.requestFullscreen();
+    } else {
+      isFullscreen.value = true;
+    }
+  } catch {
+    isFullscreen.value = true;
+  }
+  nextTick(() => {
+    fitWorkflowCanvas();
+  });
+}
+
+async function exitFullscreen() {
+  try {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen();
+    }
+  } catch {
+    // ignore
+  } finally {
+    isFullscreen.value = false;
+    nextTick(() => {
+      fitWorkflowCanvas();
+    });
+  }
+}
+
+function toggleFullscreen() {
+  if (isFullscreen.value || document.fullscreenElement) {
+    void exitFullscreen();
+  } else {
+    void enterFullscreen();
+  }
+}
+
+function onFullscreenChange() {
+  isFullscreen.value = !!(
+    document.fullscreenElement &&
+    workflowEditorLayoutRef.value &&
+    document.fullscreenElement === workflowEditorLayoutRef.value
+  );
+  nextTick(() => {
+    fitWorkflowCanvas();
+  });
+}
+
+function onWorkflowWindowResize() {
+  closeWorkflowContextMenu();
+  fitWorkflowCanvas();
 }
 
 function workflowToolY(index: number, count: number) {
@@ -2532,6 +2590,10 @@ function onWorkflowKeydown(event: KeyboardEvent) {
       workflowConfigVisible.value = false;
       return;
     }
+    if (isFullscreen.value) {
+      void exitFullscreen();
+      return;
+    }
     selectedNodeId.value = "";
     setSelectedEdge("");
     return;
@@ -2571,7 +2633,8 @@ function onWorkflowKeydown(event: KeyboardEvent) {
 onMounted(() => {
   scheduleSuggestions();
   window.addEventListener("keydown", onWorkflowKeydown);
-  window.addEventListener("resize", closeWorkflowContextMenu);
+  window.addEventListener("resize", onWorkflowWindowResize);
+  document.addEventListener("fullscreenchange", onFullscreenChange);
   void loadProjects();
 });
 onBeforeUnmount(() => {
@@ -2579,7 +2642,11 @@ onBeforeUnmount(() => {
   if (suggestTimer) clearTimeout(suggestTimer);
   if (suggestAbort) suggestAbort.abort();
   window.removeEventListener("keydown", onWorkflowKeydown);
-  window.removeEventListener("resize", closeWorkflowContextMenu);
+  window.removeEventListener("resize", onWorkflowWindowResize);
+  document.removeEventListener("fullscreenchange", onFullscreenChange);
+  if (document.fullscreenElement && document.fullscreenElement === workflowEditorLayoutRef.value) {
+    void document.exitFullscreen().catch(() => {});
+  }
 });
 </script>
 
@@ -2798,7 +2865,11 @@ onBeforeUnmount(() => {
       <pre class="execute-log">{{ executeLogs.join("\n") }}</pre>
     </div>
 
-    <div class="workflow-editor-layout">
+    <div
+      ref="workflowEditorLayoutRef"
+      class="workflow-editor-layout"
+      :class="{ 'is-fullscreen': isFullscreen }"
+    >
       <section class="editor-card">
         <header class="editor-head">
           <div class="editor-head-copy">
@@ -2957,6 +3028,21 @@ onBeforeUnmount(() => {
                 >
                   <FluentIcon name="fit" /></button
               ></el-tooltip>
+              <el-tooltip
+                :content="isFullscreen ? '退出全屏' : '全屏显示'"
+                placement="right"
+                :show-after="350"
+              >
+                <button
+                  type="button"
+                  :aria-label="isFullscreen ? '退出全屏' : '全屏显示'"
+                  @click.stop="toggleFullscreen"
+                >
+                  <FluentIcon
+                    :name="isFullscreen ? 'fullscreen-exit' : 'fullscreen'"
+                  />
+                </button>
+              </el-tooltip>
             </div>
           </VueFlow>
           <Transition name="workflow-popover">
@@ -4006,6 +4092,39 @@ onBeforeUnmount(() => {
   align-items: stretch;
   min-height: 0;
   height: 100%;
+}
+.workflow-editor-layout.is-fullscreen,
+.workflow-editor-layout:fullscreen {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  z-index: 2000 !important;
+  background: var(--app-bg, #0f141c) !important;
+  padding: 14px !important;
+  box-sizing: border-box !important;
+  margin: 0 !important;
+  grid-template-columns: minmax(0, 1fr) minmax(380px, 420px) !important;
+  gap: 14px !important;
+  min-height: 100vh !important;
+}
+.workflow-editor-layout.is-fullscreen .editor-card,
+.workflow-editor-layout:fullscreen .editor-card {
+  height: 100% !important;
+  min-height: 0 !important;
+}
+.workflow-editor-layout.is-fullscreen .workflow-library,
+.workflow-editor-layout:fullscreen .workflow-library {
+  height: 100% !important;
+  min-height: 0 !important;
+}
+.workflow-editor-layout.is-fullscreen .flow-canvas,
+.workflow-editor-layout:fullscreen .flow-canvas {
+  height: 100% !important;
+  min-height: 0 !important;
 }
 .editor-card {
   display: flex;
