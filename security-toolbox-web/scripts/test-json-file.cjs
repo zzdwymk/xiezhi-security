@@ -236,7 +236,7 @@ try {
   );
   assert.match(workflowSource, /v-for="agent in filteredAgents"/);
   assert.doesNotMatch(workflowSource, /v-for="agent in SUBAGENTS"/);
-  assert.match(workflowSource, /<h5>已选节点<\/h5>/);
+  assert.match(workflowSource, /<h5[^>]*>已选节点/);
   assert.match(workflowSource, /<h4>能力库<\/h4>/);
   assert.match(workflowSource, /<h5>流程阶段<\/h5>/);
   assert.match(workflowSource, /流程阶段 · 用于组织能力和依赖/);
