@@ -1453,6 +1453,16 @@ async function changeStatus(status: string) {
   }
 }
 
+interface EditableBatchTargetItem {
+  id: string;
+  name: string;
+  targetValue: string;
+  targetType: "ip" | "domain" | "url";
+  useCustomPort: boolean;
+  customPorts: string;
+  fullPortAccess: boolean;
+}
+
 const targetDialog = ref(false);
 const targetSaving = ref(false);
 const targetMode = ref<"single" | "batch">("single");
@@ -1474,6 +1484,44 @@ const targetBatchForm = reactive({
 const targetBatchParseResult = computed(() =>
   parseBatchTargets(targetBatchForm.rawText),
 );
+const editableTargetBatchItems = ref<EditableBatchTargetItem[]>([]);
+
+watch(
+  () => targetBatchForm.rawText,
+  (newText) => {
+    const res = parseBatchTargets(newText);
+    editableTargetBatchItems.value = res.items.map((item) => ({
+      id: item.id || `${item.targetType}-${item.targetValue}`,
+      name: item.name,
+      targetValue: item.targetValue,
+      targetType: item.targetType,
+      useCustomPort: Boolean(item.customPorts || item.isFullPort),
+      customPorts: item.customPorts || "",
+      fullPortAccess: Boolean(item.isFullPort),
+    }));
+  },
+  { immediate: true },
+);
+
+function enableTargetItemCustomPort(row: EditableBatchTargetItem) {
+  row.useCustomPort = true;
+  if (!row.customPorts && !row.fullPortAccess) {
+    row.customPorts = targetBatchForm.selectedPorts.join(",");
+    row.fullPortAccess = targetBatchForm.fullPortAccess;
+  }
+}
+
+function resetTargetItemToInherit(row: EditableBatchTargetItem) {
+  row.useCustomPort = false;
+  row.customPorts = "";
+  row.fullPortAccess = false;
+}
+
+function removeTargetBatchItem(id: string) {
+  editableTargetBatchItems.value = editableTargetBatchItems.value.filter(
+    (it) => it.id !== id,
+  );
+}
 
 function openTargetCreate() {
   targetMode.value = "single";
@@ -1534,7 +1582,7 @@ async function createTargetInProject() {
 }
 
 async function batchCreateTargetsInProject() {
-  const items = targetBatchParseResult.value.items;
+  const items = editableTargetBatchItems.value;
   if (!items.length) {
     ElMessage.warning("未解析出任何有效的主机、域名或 URL 目标");
     return;
@@ -1544,9 +1592,9 @@ async function batchCreateTargetsInProject() {
     return;
   }
 
-  let allowedPorts: string;
+  let defaultAllowedPorts: string;
   try {
-    allowedPorts = normalizeAllowedPorts(
+    defaultAllowedPorts = normalizeAllowedPorts(
       targetBatchForm.selectedPorts,
       "",
       targetBatchForm.fullPortAccess,
@@ -1562,6 +1610,17 @@ async function batchCreateTargetsInProject() {
   try {
     for (const item of items) {
       try {
+        let allowedPorts: string;
+        if (item.useCustomPort) {
+          if (item.fullPortAccess) {
+            allowedPorts = "1-65535";
+          } else {
+            allowedPorts = normalizeAllowedPorts([], item.customPorts, false);
+          }
+        } else {
+          allowedPorts = defaultAllowedPorts;
+        }
+
         await endpoints.createTarget({
           name: item.name,
           targetValue: item.targetValue,
@@ -2762,17 +2821,75 @@ onUnmounted(() => {
 
             <div class="batch-preview-card" v-if="targetBatchForm.rawText.trim()">
               <div class="batch-preview-head">
-                <span class="preview-title">解析结果实时预览</span>
-                <span class="preview-badge">共 {{ targetBatchParseResult.stats.total }} 个主机目标</span>
+                <div>
+                  <span class="preview-title">解析结果与单机端口定制</span>
+                  <small class="preview-sub">支持单独修改每台主机的专属端口，未单独指定的将继承下方统一设置</small>
+                </div>
+                <span class="preview-badge">共 {{ editableTargetBatchItems.length }} 个主机目标</span>
               </div>
               <div class="batch-preview-stats">
                 <span>IP 主机：<b>{{ targetBatchParseResult.stats.ipCount }}</b></span>
                 <span>域名：<b>{{ targetBatchParseResult.stats.domainCount }}</b></span>
                 <span>URL 站点：<b>{{ targetBatchParseResult.stats.urlCount }}</b></span>
+                <span v-if="targetBatchParseResult.stats.customPortCount">已定制端口：<b>{{ targetBatchParseResult.stats.customPortCount }}</b> 台</span>
               </div>
               <div v-if="targetBatchParseResult.errors.length" class="batch-preview-errors">
                 <span v-for="err in targetBatchParseResult.errors.slice(0, 3)" :key="err">⚠️ {{ err }}</span>
               </div>
+
+              <el-table
+                v-if="editableTargetBatchItems.length"
+                :data="editableTargetBatchItems"
+                size="small"
+                class="batch-preview-table"
+                max-height="240"
+              >
+                <el-table-column label="目标地址" min-width="160">
+                  <template #default="{ row }">
+                    <div class="preview-target-cell">
+                      <span class="preview-target-val" :title="row.targetValue">{{ row.targetValue }}</span>
+                      <el-tag size="small" :type="row.targetType === 'ip' ? 'info' : row.targetType === 'domain' ? 'primary' : 'success'" effect="plain">
+                        {{ row.targetType === 'ip' ? 'IP' : row.targetType === 'domain' ? '域名' : 'URL' }}
+                      </el-tag>
+                    </div>
+                  </template>
+                </el-table-column>
+
+                <el-table-column label="端口模式 / 允许端口" min-width="250">
+                  <template #default="{ row }">
+                    <div v-if="!row.useCustomPort" class="preview-inherit-row">
+                      <span class="inherit-text">
+                        继承统一（{{ targetBatchForm.fullPortAccess ? '全端口 1-65535' : (targetBatchForm.selectedPorts.join(',') || '未配置') }}）
+                      </span>
+                      <el-button link type="primary" size="small" @click="enableTargetItemCustomPort(row)">
+                        单独指定
+                      </el-button>
+                    </div>
+                    <div v-else class="preview-custom-row">
+                      <template v-if="row.fullPortAccess">
+                        <el-tag size="small" type="warning" effect="plain">整机全端口</el-tag>
+                        <el-button link size="small" @click="row.fullPortAccess = false">改端口</el-button>
+                      </template>
+                      <template v-else>
+                        <el-input
+                          v-model="row.customPorts"
+                          size="small"
+                          placeholder="如 80,443,3306"
+                          style="width: 130px"
+                        />
+                        <el-button link type="warning" size="small" @click="row.fullPortAccess = true">全端口</el-button>
+                      </template>
+                      <el-button link type="info" size="small" @click="resetTargetItemToInherit(row)">恢复继承</el-button>
+                    </div>
+                  </template>
+                </el-table-column>
+
+                <el-table-column label="操作" width="56" align="center">
+                  <template #default="{ row }">
+                    <el-button link type="danger" size="small" @click="removeTargetBatchItem(row.id)">✕</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
             </div>
 
             <el-form-item label="统一授权记录" required>
@@ -5816,6 +5933,50 @@ onUnmounted(() => {
   border-top: 1px dashed var(--app-border);
   font-size: 11px;
   color: var(--el-color-warning);
+}
+.preview-sub {
+  display: block;
+  font-size: 11px;
+  color: var(--app-muted);
+  margin-top: 2px;
+}
+.batch-preview-table {
+  margin-top: 4px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--fluent-radius-control);
+  overflow: hidden;
+}
+.preview-target-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.preview-target-val {
+  font-family: var(--fluent-mono, monospace);
+  font-size: 11px;
+  color: var(--app-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preview-inherit-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.inherit-text {
+  font-size: 11px;
+  color: var(--app-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preview-custom-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .custom-port-section {
   display: flex;

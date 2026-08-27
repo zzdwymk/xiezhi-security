@@ -440,55 +440,26 @@ function fitWorkflowCanvas() {
   void fitView({ padding: 0.2, maxZoom: 0.95 });
 }
 
-async function enterFullscreen() {
-  const el = workflowEditorLayoutRef.value;
-  if (!el) return;
-  try {
-    if (el.requestFullscreen) {
-      await el.requestFullscreen();
-    } else {
-      isFullscreen.value = true;
-    }
-  } catch {
-    isFullscreen.value = true;
-  }
+function enterFullscreen() {
+  isFullscreen.value = true;
   nextTick(() => {
     fitWorkflowCanvas();
   });
 }
 
-async function exitFullscreen() {
-  try {
-    if (document.fullscreenElement) {
-      await document.exitFullscreen();
-    }
-  } catch {
-    // ignore
-  } finally {
-    isFullscreen.value = false;
-    nextTick(() => {
-      fitWorkflowCanvas();
-    });
-  }
+function exitFullscreen() {
+  isFullscreen.value = false;
+  nextTick(() => {
+    fitWorkflowCanvas();
+  });
 }
 
 function toggleFullscreen() {
-  if (isFullscreen.value || document.fullscreenElement) {
-    void exitFullscreen();
+  if (isFullscreen.value) {
+    exitFullscreen();
   } else {
-    void enterFullscreen();
+    enterFullscreen();
   }
-}
-
-function onFullscreenChange() {
-  isFullscreen.value = !!(
-    document.fullscreenElement &&
-    workflowEditorLayoutRef.value &&
-    document.fullscreenElement === workflowEditorLayoutRef.value
-  );
-  nextTick(() => {
-    fitWorkflowCanvas();
-  });
 }
 
 function onWorkflowWindowResize() {
@@ -2639,7 +2610,6 @@ onMounted(() => {
   scheduleSuggestions();
   window.addEventListener("keydown", onWorkflowKeydown);
   window.addEventListener("resize", onWorkflowWindowResize);
-  document.addEventListener("fullscreenchange", onFullscreenChange);
   void loadProjects();
 });
 onBeforeUnmount(() => {
@@ -2648,10 +2618,6 @@ onBeforeUnmount(() => {
   if (suggestAbort) suggestAbort.abort();
   window.removeEventListener("keydown", onWorkflowKeydown);
   window.removeEventListener("resize", onWorkflowWindowResize);
-  document.removeEventListener("fullscreenchange", onFullscreenChange);
-  if (document.fullscreenElement && document.fullscreenElement === workflowEditorLayoutRef.value) {
-    void document.exitFullscreen().catch(() => {});
-  }
 });
 </script>
 
@@ -4110,7 +4076,9 @@ onBeforeUnmount(() => {
   width: 100vw !important;
   height: 100vh !important;
   z-index: 2000 !important;
-  background: var(--app-bg, #0f141c) !important;
+  background: var(--app-bg) !important;
+  -webkit-backdrop-filter: blur(28px) saturate(180%) !important;
+  backdrop-filter: blur(28px) saturate(180%) !important;
   padding: 14px !important;
   box-sizing: border-box !important;
   margin: 0 !important;
@@ -4122,11 +4090,13 @@ onBeforeUnmount(() => {
 .workflow-editor-layout:fullscreen .editor-card {
   height: 100% !important;
   min-height: 0 !important;
+  box-shadow: var(--fluent-shadow-16) !important;
 }
 .workflow-editor-layout.is-fullscreen .workflow-library,
 .workflow-editor-layout:fullscreen .workflow-library {
   height: 100% !important;
   min-height: 0 !important;
+  box-shadow: var(--fluent-shadow-16) !important;
 }
 .workflow-editor-layout.is-fullscreen .flow-canvas,
 .workflow-editor-layout:fullscreen .flow-canvas {
