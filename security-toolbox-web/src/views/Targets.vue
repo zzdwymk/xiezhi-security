@@ -33,7 +33,7 @@ interface EditableBatchTargetItem {
   targetValue: string;
   targetType: "ip" | "domain" | "url";
   useCustomPort: boolean;
-  customPorts: string;
+  selectedPorts: string[];
   fullPortAccess: boolean;
 }
 
@@ -100,30 +100,36 @@ watch(
   () => batchForm.rawText,
   (newText) => {
     const res = parseBatchTargets(newText);
-    editableBatchItems.value = res.items.map((item) => ({
-      id: item.id || `${item.targetType}-${item.targetValue}`,
-      name: item.name,
-      targetValue: item.targetValue,
-      targetType: item.targetType,
-      useCustomPort: Boolean(item.customPorts || item.isFullPort),
-      customPorts: item.customPorts || "",
-      fullPortAccess: Boolean(item.isFullPort),
-    }));
+    editableBatchItems.value = res.items.map((item) => {
+      let itemPorts: string[] = [];
+      if (item.customPorts) {
+        itemPorts = item.customPorts.split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
+      }
+      return {
+        id: item.id || `${item.targetType}-${item.targetValue}`,
+        name: item.name,
+        targetValue: item.targetValue,
+        targetType: item.targetType,
+        useCustomPort: Boolean(item.customPorts || item.isFullPort),
+        selectedPorts: itemPorts.length ? itemPorts : [...batchForm.selectedPorts],
+        fullPortAccess: Boolean(item.isFullPort),
+      };
+    });
   },
   { immediate: true },
 );
 
 function enableItemCustomPort(row: EditableBatchTargetItem) {
   row.useCustomPort = true;
-  if (!row.customPorts && !row.fullPortAccess) {
-    row.customPorts = batchForm.selectedPorts.join(",");
+  if (!row.selectedPorts?.length && !row.fullPortAccess) {
+    row.selectedPorts = [...batchForm.selectedPorts];
     row.fullPortAccess = batchForm.fullPortAccess;
   }
 }
 
 function resetItemToInherit(row: EditableBatchTargetItem) {
   row.useCustomPort = false;
-  row.customPorts = "";
+  row.selectedPorts = [...batchForm.selectedPorts];
   row.fullPortAccess = false;
 }
 
@@ -412,11 +418,13 @@ async function batchCreate() {
     for (const item of items) {
       try {
         let allowedPorts: string;
-        if (item.useCustomPort) {
+        if (batchForm.fullPortAccess) {
+          allowedPorts = "1-65535";
+        } else if (item.useCustomPort) {
           if (item.fullPortAccess) {
             allowedPorts = "1-65535";
           } else {
-            allowedPorts = normalizeAllowedPorts([], item.customPorts, false);
+            allowedPorts = normalizeAllowedPorts(item.selectedPorts || [], "", false);
           }
         } else {
           allowedPorts = defaultAllowedPorts;
@@ -896,11 +904,15 @@ onMounted(load);
             </template>
           </el-table-column>
 
-          <el-table-column label="端口模式 / 允许端口" min-width="250">
+          <el-table-column label="端口模式 / 允许端口" min-width="280">
             <template #default="{ row }">
-              <div v-if="!row.useCustomPort" class="preview-inherit-row">
+              <div v-if="batchForm.fullPortAccess" class="preview-inherit-row">
+                <el-tag size="small" type="warning" effect="plain">整机全端口（继承统一 1-65535）</el-tag>
+                <small class="inherit-disabled-hint">已统一开启全端口</small>
+              </div>
+              <div v-else-if="!row.useCustomPort" class="preview-inherit-row">
                 <span class="inherit-text">
-                  继承统一（{{ batchForm.fullPortAccess ? '全端口 1-65535' : (batchForm.selectedPorts.join(',') || '未配置') }}）
+                  继承统一（{{ batchForm.selectedPorts.join(',') || '未配置' }}）
                 </span>
                 <el-button link type="primary" size="small" @click="enableItemCustomPort(row)">
                   单独指定
@@ -908,16 +920,29 @@ onMounted(load);
               </div>
               <div v-else class="preview-custom-row">
                 <template v-if="row.fullPortAccess">
-                  <el-tag size="small" type="warning" effect="plain">整机全端口</el-tag>
+                  <el-tag size="small" type="warning" effect="plain">单机全端口</el-tag>
                   <el-button link size="small" @click="row.fullPortAccess = false">改端口</el-button>
                 </template>
                 <template v-else>
-                  <el-input
-                    v-model="row.customPorts"
+                  <el-select
+                    v-model="row.selectedPorts"
+                    multiple
+                    filterable
+                    allow-create
+                    collapse-tags
+                    collapse-tags-tooltip
+                    default-first-option
                     size="small"
-                    placeholder="如 80,443,3306"
-                    style="width: 130px"
-                  />
+                    placeholder="选择或输入端口"
+                    style="min-width: 150px; max-width: 220px;"
+                  >
+                    <el-option
+                      v-for="port in COMMON_PORT_OPTIONS"
+                      :key="port.value"
+                      :label="port.label"
+                      :value="port.value"
+                    />
+                  </el-select>
                   <el-button link type="warning" size="small" @click="row.fullPortAccess = true">全端口</el-button>
                 </template>
                 <el-button link type="info" size="small" @click="resetItemToInherit(row)">恢复继承</el-button>
@@ -1292,6 +1317,10 @@ onMounted(load);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.inherit-disabled-hint {
+  font-size: 11px;
+  color: var(--app-muted);
 }
 .preview-custom-row {
   display: flex;
