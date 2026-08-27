@@ -717,9 +717,9 @@ function displayTaskError(message?: string) {
 
 function statusType(status: string) {
   if (status === "SUCCESS") return "success";
-  if (["FAILED", "TIMEOUT", "REJECTED", "CANCELLED"].includes(status))
+  if (["FAILED", "TIMEOUT", "REJECTED", "CANCELLED", "PARTIAL_FAILED"].includes(status))
     return "danger";
-  if (status === "RUNNING") return "warning";
+  if (["RUNNING", "STOPPING", "PREPARING"].includes(status)) return "warning";
   return "info";
 }
 
@@ -727,12 +727,18 @@ function statusLabel(status?: string) {
   const labels: Record<string, string> = {
     PENDING: "待执行",
     QUEUED: "排队中",
+    BLOCKED: "等待前置",
     RUNNING: "执行中",
     SUCCESS: "成功",
     FAILED: "失败",
     TIMEOUT: "超时",
     CANCELLED: "已取消",
     REJECTED: "已拒绝",
+    SKIPPED: "已跳过",
+    PREPARING: "准备中",
+    STOPPING: "停止中",
+    STOPPED: "已停止",
+    PARTIAL_FAILED: "部分失败",
   };
   return (status && labels[status]) || status || "未知";
 }

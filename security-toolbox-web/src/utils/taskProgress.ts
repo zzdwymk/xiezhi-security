@@ -36,6 +36,8 @@ export function taskProgressStatus(
 
 export function taskProgressText(task: TaskProgressLike) {
   if (task.status === "PENDING" || task.status === "QUEUED") return "排队中";
+  if (task.status === "BLOCKED") return "等待前置";
+  if (task.status === "SKIPPED") return "已跳过";
   if (task.status === "SUCCESS") return "100%";
   if (FAILURE_STATUSES.has(task.status)) {
     return task.status === "TIMEOUT"

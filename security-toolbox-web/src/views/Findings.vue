@@ -25,6 +25,83 @@ import { formatDateTime } from "../utils/dateTime";
 import { toErrorMessage } from "../utils/errorMessage";
 import { useCopilotStore } from "../stores/copilot";
 import { downloadBlob, EmptyDownloadError } from "../utils/download";
+import { aiToolLabel } from "../utils/aiPresentation";
+
+function postScanStatusLabel(status?: string) {
+  const map: Record<string, string> = {
+    DRAFT: "待执行",
+    DISPATCHED: "已下发",
+    EXPIRED: "已过期",
+  };
+  return (status && map[status]) || status || "未知";
+}
+
+function riskLevelLabel(risk?: string) {
+  const map: Record<string, string> = {
+    SAFE: "低风险",
+    CAUTION: "需谨慎",
+    HIGH: "高风险",
+    CRITICAL: "严重风险",
+    BLOCKED: "已拦截",
+  };
+  return (risk && map[risk]) || risk || "未知";
+}
+
+function phaseLabel(phase?: string) {
+  const map: Record<string, string> = {
+    RECONNAISSANCE: "侦察阶段",
+    recon: "侦察阶段",
+    MAPPING: "资产测绘",
+    mapping: "资产测绘",
+    VULNERABILITY_DISCOVERY: "漏洞发现",
+    discovery: "漏洞发现",
+    VALIDATION: "受控验证",
+    validation: "受控验证",
+    IMPACT_ASSESSMENT: "影响评估",
+    impact: "影响评估",
+    REMEDIATION: "修复核验",
+    retest: "修复核验",
+    REPORTING: "报告交付",
+    report: "报告交付",
+  };
+  return (phase && map[phase]) || phase || "未指定阶段";
+}
+
+function diffChangeLabel(type?: string) {
+  const labels: Record<string, string> = {
+    ADDED: "新增",
+    RESOLVED: "已修复",
+    PERSISTENT: "持续存在",
+    SEVERITY_CHANGED: "等级变化",
+  };
+  return (type && labels[type]) || type || "未知";
+}
+
+function diffChangeTagType(type?: string): "success" | "danger" | "warning" | "info" {
+  const map: Record<string, "success" | "danger" | "warning" | "info"> = {
+    ADDED: "danger",
+    RESOLVED: "success",
+    PERSISTENT: "info",
+    SEVERITY_CHANGED: "warning",
+  };
+  return (type && map[type]) || "info";
+}
+
+function taskStatusLabel(status?: string) {
+  const labels: Record<string, string> = {
+    PENDING: "待执行",
+    QUEUED: "排队中",
+    BLOCKED: "等待前置",
+    RUNNING: "执行中",
+    SUCCESS: "成功",
+    FAILED: "失败",
+    TIMEOUT: "超时",
+    CANCELLED: "已取消",
+    REJECTED: "已拒绝",
+    SKIPPED: "已跳过",
+  };
+  return (status && labels[status]) || status || "未知";
+}
 
 const copilot = useCopilotStore();
 const router = useRouter();
@@ -548,7 +625,9 @@ onBeforeUnmount(() => {
         <section class="post-scan-analysis">
           <div>
             <el-tag size="small">{{ postScanPlan.provider }}</el-tag
-            ><el-tag size="small" type="info">{{ postScanPlan.status }}</el-tag>
+            ><el-tag size="small" type="info">{{
+              postScanStatusLabel(postScanPlan.status)
+            }}</el-tag>
           </div>
           <p>{{ postScanPlan.analysis }}</p>
         </section>
@@ -558,7 +637,7 @@ onBeforeUnmount(() => {
             <header>
               <b>{{ path.title }}</b
               ><el-tag size="small" :type="pathRiskType(path.riskLevel)">{{
-                path.riskLevel
+                riskLevelLabel(path.riskLevel)
               }}</el-tag
               ><el-tag size="small" type="info"
                 >置信度 {{ path.confidence }}</el-tag
@@ -594,7 +673,7 @@ onBeforeUnmount(() => {
                     ><el-tag
                       size="small"
                       :type="pathRiskType(step.riskLevel)"
-                      >{{ step.riskLevel }}</el-tag
+                      >{{ riskLevelLabel(step.riskLevel) }}</el-tag
                     ><el-tag
                       size="small"
                       :type="step.automated ? 'success' : 'warning'"
@@ -604,7 +683,9 @@ onBeforeUnmount(() => {
                 </div>
                 <p>{{ step.reason }}</p>
                 <small
-                  >{{ step.phase }} · {{ step.toolCode || "无自动工具" }} ·
+                  >{{ phaseLabel(step.phase) }} · {{
+                    aiToolLabel(step.toolCode) || "无自动工具"
+                  }} ·
                   预期证据：{{ step.expectedEvidence }}</small
                 >
                 <small v-if="step.blockedReason" class="blocked-reason">{{
@@ -654,7 +735,7 @@ onBeforeUnmount(() => {
           <el-option
             v-for="task in taskOptions"
             :key="task.id"
-            :label="`#${task.id} · ${task.toolCode} · ${task.status}`"
+            :label="`#${task.id} · ${aiToolLabel(task.toolCode, task.toolCode)} · ${taskStatusLabel(task.status)}`"
             :value="task.id"
           />
         </el-select>
@@ -670,7 +751,7 @@ onBeforeUnmount(() => {
           <el-option
             v-for="task in taskOptions"
             :key="task.id"
-            :label="`#${task.id} · ${task.toolCode} · ${task.status}`"
+            :label="`#${task.id} · ${aiToolLabel(task.toolCode, task.toolCode)} · ${taskStatusLabel(task.status)}`"
             :value="task.id"
           />
         </el-select>
@@ -688,7 +769,17 @@ onBeforeUnmount(() => {
         :closable="false"
       />
       <el-table :data="pagedDiffItems" size="small" max-height="360">
-        <el-table-column prop="changeType" label="变化" width="120" />
+        <el-table-column label="变化" width="120">
+          <template #default="scope">
+            <el-tag
+              size="small"
+              :type="diffChangeTagType(scope.row.changeType)"
+              effect="plain"
+            >
+              {{ diffChangeLabel(scope.row.changeType) }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="title" label="漏洞" min-width="220" />
         <el-table-column label="等级" width="140"
           ><template #default="scope"

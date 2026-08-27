@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { MagicStick } from "../components/fluentIcons";
@@ -22,6 +22,7 @@ import {
   normalizeAllowedPorts,
   validateDomainTarget,
 } from "../utils/ports";
+import { parseBatchTargets } from "../utils/targetParser";
 
 const copilot = useCopilotStore();
 const router = useRouter();
@@ -32,6 +33,7 @@ const projectIdsByTarget = ref<Record<number, number[]>>({});
 const editingProjects = ref<AssessmentProject[]>([]);
 const offline = ref(false);
 const dialog = ref(false);
+const targetMode = ref<"single" | "batch">("single");
 const saving = ref(false);
 const saveError = ref("");
 const reporting = ref<number>();
@@ -71,6 +73,18 @@ const form = reactive({
 const selectedPorts = ref<string[]>(["80", "443"]);
 const fullPortAccess = ref(false);
 
+const batchForm = reactive({
+  projectId: undefined as number | undefined,
+  rawText: "",
+  authorizationNote: "",
+  authorizationValidFrom: "",
+  authorizationExpiresAt: "",
+  fullPortAccess: false,
+  selectedPorts: ["80", "443"],
+  enabled: true,
+});
+const batchParseResult = computed(() => parseBatchTargets(batchForm.rawText));
+
 function normalizeDatePickerValue(value?: string) {
   if (!value) return "";
   const parsed = new Date(value);
@@ -82,12 +96,16 @@ function applyProjectAuthorizationDefaults(projectId?: number) {
   const selectedProject = projects.value.find(
     (project) => project.id === projectId,
   );
-  form.authorizationValidFrom = normalizeDatePickerValue(
+  const start = normalizeDatePickerValue(
     selectedProject?.authorizationValidFrom,
   );
-  form.authorizationExpiresAt = normalizeDatePickerValue(
+  const end = normalizeDatePickerValue(
     selectedProject?.authorizationExpiresAt,
   );
+  form.authorizationValidFrom = start;
+  form.authorizationExpiresAt = end;
+  batchForm.authorizationValidFrom = start;
+  batchForm.authorizationExpiresAt = end;
 }
 
 function projectStatusLabel(status?: string) {
@@ -234,6 +252,7 @@ function openCreate() {
   }
   const active =
     projects.value.find((p) => p.status === "ACTIVE") || projects.value[0];
+  targetMode.value = "single";
   Object.assign(form, {
     projectId: active?.id,
     name: "",
@@ -251,6 +270,22 @@ function openCreate() {
   });
   selectedPorts.value = ["80", "443"];
   fullPortAccess.value = false;
+
+  Object.assign(batchForm, {
+    projectId: active?.id,
+    rawText: "",
+    authorizationNote: "",
+    authorizationValidFrom: normalizeDatePickerValue(
+      active?.authorizationValidFrom,
+    ),
+    authorizationExpiresAt: normalizeDatePickerValue(
+      active?.authorizationExpiresAt,
+    ),
+    fullPortAccess: false,
+    selectedPorts: ["80", "443"],
+    enabled: true,
+  });
+
   saveError.value = "";
   dialog.value = true;
 }
@@ -287,6 +322,78 @@ async function create() {
       error,
       "保存失败，请检查服务状态和填写内容",
     );
+    ElMessage.error(saveError.value);
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function batchCreate() {
+  saveError.value = "";
+  if (!batchForm.projectId) {
+    saveError.value = "请选择批量目标归属的评估项目";
+    ElMessage.error(saveError.value);
+    return;
+  }
+  if (!batchParseResult.value.items.length) {
+    saveError.value = "未解析出任何有效的主机、域名或 URL 目标，请检查输入";
+    ElMessage.error(saveError.value);
+    return;
+  }
+  if (!batchForm.authorizationNote.trim()) {
+    saveError.value = "请填写批量授权记录说明";
+    ElMessage.error(saveError.value);
+    return;
+  }
+
+  saving.value = true;
+  let successCount = 0;
+  let failedCount = 0;
+  const items = batchParseResult.value.items;
+  try {
+    const allowedPorts = normalizeAllowedPorts(
+      batchForm.selectedPorts,
+      "",
+      batchForm.fullPortAccess,
+    );
+    const validFrom = batchForm.authorizationValidFrom
+      ? new Date(batchForm.authorizationValidFrom).toISOString()
+      : undefined;
+    const expiresAt = batchForm.authorizationExpiresAt
+      ? new Date(batchForm.authorizationExpiresAt).toISOString()
+      : undefined;
+
+    for (const item of items) {
+      try {
+        await endpoints.createTarget({
+          projectId: batchForm.projectId,
+          name: item.name,
+          targetValue: item.targetValue,
+          targetType: item.targetType,
+          authorizationNote: batchForm.authorizationNote.trim(),
+          allowedPorts,
+          enabled: batchForm.enabled,
+          authorizationValidFrom: validFrom,
+          authorizationExpiresAt: expiresAt,
+        });
+        successCount++;
+      } catch {
+        failedCount++;
+      }
+    }
+
+    if (failedCount === 0) {
+      ElMessage.success(`已成功批量录入 ${successCount} 个授权目标`);
+    } else if (successCount > 0) {
+      ElMessage.warning(`批量录入完成：成功 ${successCount} 个，失败 ${failedCount} 个`);
+    } else {
+      throw new Error("所有批量目标保存均失败，请检查授权时间或连接状态");
+    }
+
+    dialog.value = false;
+    await load();
+  } catch (error) {
+    saveError.value = toErrorMessage(error, "批量保存失败");
     ElMessage.error(saveError.value);
   } finally {
     saving.value = false;
@@ -541,7 +648,17 @@ onMounted(load);
     align-center
     destroy-on-close
   >
-    <p class="app-dialog__intro">登记已获得明确授权的地址和允许检测的端口。</p>
+    <div class="target-mode-nav">
+      <el-segmented
+        v-model="targetMode"
+        class="target-mode-segmented"
+        :options="[
+          { label: '单目标录入', value: 'single' },
+          { label: '批量导入 / 网段 (CIDR)', value: 'batch' },
+        ]"
+      />
+    </div>
+
     <el-alert
       v-if="saveError"
       :title="saveError"
@@ -550,7 +667,9 @@ onMounted(load);
       :closable="false"
       class="target-save-error"
     />
-    <el-form label-position="top" class="target-form">
+
+    <!-- 单目标录入模式 -->
+    <el-form v-if="targetMode === 'single'" label-position="top" class="target-form">
       <el-form-item label="归属评估项目" required>
         <el-select
           v-model="form.projectId"
@@ -610,38 +729,40 @@ onMounted(load);
       <p class="target-time-hint">
         默认带入所选项目的授权时间；如单独修改，将作为该目标的额外授权时间限制。
       </p>
-      <el-form-item label="端口授权" class="port-form-item">
+      <el-form-item label="端口授权模式" class="port-form-item">
         <div class="port-picker">
           <div class="full-port-option">
             <div>
-              <b>全端口授权（1-65535）</b
-              ><small>允许使用 Nmap 执行全端口扫描，扫描时间可能较长。</small>
+              <b>整机全端口模式（1-65535）</b>
+              <small>将整台主机的所有端口作为目标，开放全暴露面深度探测（使用 Nmap 扫描）。</small>
             </div>
             <el-switch v-model="fullPortAccess" />
           </div>
-          <el-select
-            v-model="selectedPorts"
-            :disabled="fullPortAccess"
-            multiple
-            filterable
-            allow-create
-            collapse-tags
-            collapse-tags-tooltip
-            default-first-option
-            placeholder="选择常用端口或手动输入，如 8000, 8080-8090"
-          >
-            <el-option
-              v-for="port in COMMON_PORT_OPTIONS"
-              :key="port.value"
-              :label="port.label"
-              :value="port.value"
-            />
-          </el-select>
+          <div v-if="!fullPortAccess" class="custom-port-section">
+            <span class="custom-port-label">允许测试的指定服务端口：</span>
+            <el-select
+              v-model="selectedPorts"
+              multiple
+              filterable
+              allow-create
+              collapse-tags
+              collapse-tags-tooltip
+              default-first-option
+              placeholder="选择常用端口或手动输入，如 8000, 8080-8090"
+            >
+              <el-option
+                v-for="port in COMMON_PORT_OPTIONS"
+                :key="port.value"
+                :label="port.label"
+                :value="port.value"
+              />
+            </el-select>
+          </div>
           <p class="port-hint">
             {{
               fullPortAccess
-                ? "将保存为 1-65535；执行端口检测时会使用 Nmap，普通 TCP 探测仍只适合少量端口。"
-                : "支持单个端口和端口范围，可用逗号、分号或空格分隔，保存时自动合并去重。"
+                ? "已开启整机全端口模式，将保存为 1-65535；适用于靶场或整机全面黑盒评估。"
+                : "已开启指定端口模式，超出此端口集合的请求将在执行前被平台授权守卫拦截保护。"
             }}
           </p>
         </div>
@@ -654,16 +775,141 @@ onMounted(load);
         <el-switch v-model="form.enabled" />
       </div>
     </el-form>
-    <template #footer
-      ><el-button @click="dialog = false">取消</el-button
-      ><el-button
+
+    <!-- 批量导入与网段模式 -->
+    <el-form v-else label-position="top" class="target-form">
+      <el-form-item label="归属评估项目" required>
+        <el-select
+          v-model="batchForm.projectId"
+          placeholder="选择批量目标归属的评估项目"
+          style="width: 100%"
+          @change="applyProjectAuthorizationDefaults"
+        >
+          <el-option
+            v-for="p in projects"
+            :key="p.id"
+            :label="`${p.name}（${projectStatusLabel(p.status)}）`"
+            :value="p.id"
+          />
+        </el-select>
+      </el-form-item>
+
+      <el-form-item label="批量目标与网段输入" required>
+        <el-input
+          v-model="batchForm.rawText"
+          type="textarea"
+          :rows="5"
+          placeholder="支持按行粘贴多个目标或网段，例如：&#10;192.168.1.10&#10;192.168.1.20-192.168.1.30&#10;10.0.0.0/28&#10;app.example.com&#10;https://target.com:8443"
+        />
+      </el-form-item>
+
+      <div class="batch-preview-card" v-if="batchForm.rawText.trim()">
+        <div class="batch-preview-head">
+          <span class="preview-title">解析结果实时预览</span>
+          <span class="preview-badge">共 {{ batchParseResult.stats.total }} 个主机目标</span>
+        </div>
+        <div class="batch-preview-stats">
+          <span>IP 主机：<b>{{ batchParseResult.stats.ipCount }}</b></span>
+          <span>域名：<b>{{ batchParseResult.stats.domainCount }}</b></span>
+          <span>URL 站点：<b>{{ batchParseResult.stats.urlCount }}</b></span>
+        </div>
+        <div v-if="batchParseResult.errors.length" class="batch-preview-errors">
+          <span v-for="err in batchParseResult.errors.slice(0, 3)" :key="err">⚠️ {{ err }}</span>
+        </div>
+      </div>
+
+      <el-form-item label="统一授权记录" required>
+        <el-input
+          v-model="batchForm.authorizationNote"
+          type="textarea"
+          :rows="2"
+          placeholder="填写统一授权依据、审批单号或测试协议"
+        />
+      </el-form-item>
+
+      <div class="target-form-row">
+        <el-form-item label="统一授权生效时间">
+          <el-date-picker
+            v-model="batchForm.authorizationValidFrom"
+            type="datetime"
+            value-format="YYYY-MM-DDTHH:mm:ssZ"
+            format="YYYY-MM-DD HH:mm"
+            placeholder="跟随项目授权开始"
+          />
+        </el-form-item>
+        <el-form-item label="统一授权到期时间">
+          <el-date-picker
+            v-model="batchForm.authorizationExpiresAt"
+            type="datetime"
+            value-format="YYYY-MM-DDTHH:mm:ssZ"
+            format="YYYY-MM-DD HH:mm"
+            placeholder="跟随项目授权结束"
+          />
+        </el-form-item>
+      </div>
+
+      <el-form-item label="统一端口授权模式" class="port-form-item">
+        <div class="port-picker">
+          <div class="full-port-option">
+            <div>
+              <b>整机全端口模式（1-65535）</b>
+              <small>所有批量主机均开启全端口模式，开放全部 65535 端口深度探测。</small>
+            </div>
+            <el-switch v-model="batchForm.fullPortAccess" />
+          </div>
+          <div v-if="!batchForm.fullPortAccess" class="custom-port-section">
+            <span class="custom-port-label">所有目标统一允许的服务端口：</span>
+            <el-select
+              v-model="batchForm.selectedPorts"
+              multiple
+              filterable
+              allow-create
+              collapse-tags
+              collapse-tags-tooltip
+              default-first-option
+              placeholder="选择常用端口或手动输入，如 8000, 8080-8090"
+            >
+              <el-option
+                v-for="port in COMMON_PORT_OPTIONS"
+                :key="port.value"
+                :label="port.label"
+                :value="port.value"
+              />
+            </el-select>
+          </div>
+        </div>
+      </el-form-item>
+
+      <div class="target-enabled-row">
+        <div>
+          <strong>启用所有批量目标</strong>
+          <small>保存后允许直接用于安全评估与任务分发</small>
+        </div>
+        <el-switch v-model="batchForm.enabled" />
+      </div>
+    </el-form>
+
+    <template #footer>
+      <el-button @click="dialog = false">取消</el-button>
+      <el-button
+        v-if="targetMode === 'single'"
         type="primary"
         :loading="saving"
         :disabled="!form.name || !form.targetValue || !form.authorizationNote"
         @click="create"
-        >保存目标</el-button
-      ></template
-    >
+      >
+        保存目标
+      </el-button>
+      <el-button
+        v-else
+        type="primary"
+        :loading="saving"
+        :disabled="!batchParseResult.stats.total || !batchForm.authorizationNote"
+        @click="batchCreate"
+      >
+        批量保存 {{ batchParseResult.stats.total ? `(${batchParseResult.stats.total} 个)` : '' }}
+      </el-button>
+    </template>
   </el-dialog>
   <el-dialog
     v-model="editDialog"
@@ -699,38 +945,40 @@ onMounted(load);
           placeholder="填写授权来源和范围限制"
         />
       </el-form-item>
-      <el-form-item label="允许端口">
+      <el-form-item label="端口授权模式">
         <div class="port-picker">
           <div class="full-port-option">
             <div>
-              <b>全端口 (1-65535)</b>
-              <small>使用 Nmap 扫描全端口，耗时较长</small>
+              <b>整机全端口模式（1-65535）</b>
+              <small>将整台主机的所有 65535 个端口作为目标，开放全暴露面探测。</small>
             </div>
             <el-switch v-model="editFullPortAccess" />
           </div>
-          <el-select
-            v-if="!editFullPortAccess"
-            v-model="editSelectedPorts"
-            multiple
-            filterable
-            allow-create
-            collapse-tags
-            collapse-tags-tooltip
-            default-first-option
-            placeholder="选择常用端口"
-          >
-            <el-option
-              v-for="opt in COMMON_PORT_OPTIONS"
-              :key="opt.value"
-              :label="opt.label"
-              :value="opt.value"
-            />
-          </el-select>
+          <div v-if="!editFullPortAccess" class="custom-port-section">
+            <span class="custom-port-label">允许测试的指定服务端口：</span>
+            <el-select
+              v-model="editSelectedPorts"
+              multiple
+              filterable
+              allow-create
+              collapse-tags
+              collapse-tags-tooltip
+              default-first-option
+              placeholder="选择常用端口"
+            >
+              <el-option
+                v-for="opt in COMMON_PORT_OPTIONS"
+                :key="opt.value"
+                :label="opt.label"
+                :value="opt.value"
+              />
+            </el-select>
+          </div>
           <p class="port-hint">
             {{
               editFullPortAccess
-                ? "将保存为 1-65535；执行端口检测时会使用 Nmap，普通 TCP 探测仍只适合少量端口。"
-                : "支持单个端口和端口范围，可用逗号、分号或空格分隔，保存时自动合并去重。"
+                ? "已开启整机全端口模式，将保存为 1-65535；适用于靶场或整机全面黑盒评估。"
+                : "已开启指定端口模式，超出此端口集合的请求将在执行前被平台授权守卫拦截保护。"
             }}
           </p>
         </div>
@@ -825,6 +1073,81 @@ onMounted(load);
 }
 .target-save-error {
   margin-bottom: 16px;
+}
+.target-mode-nav {
+  margin-bottom: 18px;
+}
+.target-mode-segmented {
+  width: 100%;
+}
+.target-mode-segmented :deep(.el-segmented) {
+  width: 100%;
+}
+.target-mode-segmented :deep(.el-segmented__item) {
+  min-height: 32px;
+  font-weight: 600;
+}
+.batch-preview-card {
+  margin: -4px 0 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--fluent-radius-control);
+  background: var(--app-surface-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.batch-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.preview-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-text);
+}
+.preview-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--app-accent-soft);
+  color: var(--app-accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+.batch-preview-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--app-muted);
+}
+.batch-preview-stats b {
+  color: var(--app-text);
+}
+.batch-preview-errors {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--app-border);
+  font-size: 11px;
+  color: var(--el-color-warning);
+}
+.custom-port-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+.custom-port-label {
+  font-size: 12px;
+  color: var(--app-muted);
 }
 .target-form-row {
   display: grid;

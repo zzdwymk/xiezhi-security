@@ -1748,15 +1748,20 @@ function runStatusLabel(status: string) {
 
 function taskStatusLabel(status: string) {
   const labels: Record<string, string> = {
-    PENDING: "排队中",
+    PENDING: "待执行",
+    QUEUED: "排队中",
     BLOCKED: "等待前置节点",
     RUNNING: "执行中",
     SUCCESS: "成功",
     FAILED: "失败",
     TIMEOUT: "超时",
-    REJECTED: "被拒绝",
+    REJECTED: "已拒绝",
     CANCELLED: "已取消",
     SKIPPED: "已跳过",
+    PREPARING: "准备中",
+    STOPPING: "停止中",
+    STOPPED: "已停止",
+    PARTIAL_FAILED: "部分失败",
   };
   return labels[status] || status;
 }
@@ -3786,38 +3791,40 @@ onBeforeUnmount(() => {
             placeholder="example.com、192.0.2.10 或 https://example.com"
           />
         </el-form-item>
-        <el-form-item label="允许端口">
+        <el-form-item label="端口授权模式">
           <div class="port-picker">
             <div class="full-port-option">
               <div>
-                <b>全端口授权（1-65535）</b>
-                <small>允许使用 Nmap 执行全端口扫描，扫描时间可能较长。</small>
+                <b>整机全端口模式（1-65535）</b>
+                <small>将整台主机的所有端口作为目标，开放全暴露面深度探测（使用 Nmap）。</small>
               </div>
               <el-switch v-model="targetInputFullPortAccess" />
             </div>
-            <el-select
-              v-model="targetInputSelectedPorts"
-              :disabled="targetInputFullPortAccess"
-              multiple
-              filterable
-              allow-create
-              collapse-tags
-              collapse-tags-tooltip
-              default-first-option
-              placeholder="选择常用端口或手动输入，如 8000, 8080-8090"
-            >
-              <el-option
-                v-for="port in COMMON_PORT_OPTIONS"
-                :key="port.value"
-                :label="port.label"
-                :value="port.value"
-              />
-            </el-select>
+            <div v-if="!targetInputFullPortAccess" class="custom-port-section">
+              <span class="custom-port-label">允许测试的指定服务端口：</span>
+              <el-select
+                v-model="targetInputSelectedPorts"
+                multiple
+                filterable
+                allow-create
+                collapse-tags
+                collapse-tags-tooltip
+                default-first-option
+                placeholder="选择常用端口或手动输入，如 8000, 8080-8090"
+              >
+                <el-option
+                  v-for="port in COMMON_PORT_OPTIONS"
+                  :key="port.value"
+                  :label="port.label"
+                  :value="port.value"
+                />
+              </el-select>
+            </div>
             <p class="port-hint">
               {{
                 targetInputFullPortAccess
-                  ? "将保存为 1-65535；执行端口检测时会使用 Nmap，普通 TCP 探测仍只适合少量端口。"
-                  : "支持单个端口和端口范围，可用逗号、分号或空格分隔，保存时自动合并去重。"
+                  ? "已开启整机全端口模式，将保存为 1-65535；适用于靶场或整机全面黑盒评估。"
+                  : "已开启指定端口模式，超出此端口集合的请求将在执行前被平台授权守卫拦截保护。"
               }}
             </p>
           </div>
@@ -5552,6 +5559,16 @@ onBeforeUnmount(() => {
   color: var(--app-muted);
   font-size: 12px;
   line-height: 1.55;
+}
+.custom-port-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+.custom-port-label {
+  font-size: 12px;
+  color: var(--app-muted);
 }
 .port-hint {
   margin: 0 2px;
