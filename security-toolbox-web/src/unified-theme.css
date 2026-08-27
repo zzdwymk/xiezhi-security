@@ -761,16 +761,19 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
   z-index: 10;
 }
 
+/* Keep Fluent single-card outer border; disable Element Plus grid vertical lines */
 .el-table.el-table--border {
-  border: 1px solid var(--app-border);
+  border: none;
 }
 
-.el-table--border th.el-table__cell {
-  border-right: 1px solid var(--app-border);
-}
-
+.el-table--border th.el-table__cell,
 .el-table--border td.el-table__cell {
-  border-right: 1px solid color-mix(in srgb, var(--app-border) 40%, transparent);
+  border-right: none !important;
+}
+
+.el-table--border::before,
+.el-table--border .el-table__inner-wrapper::before {
+  display: none;
 }
 
 .el-table__inner-wrapper {
