@@ -42,6 +42,7 @@ interface Dependency {
   uninstalling?: boolean;
   uninstallSupported?: boolean;
   logs?: string[];
+  message?: string;
 }
 
 const router = useRouter();
@@ -92,6 +93,22 @@ function isReady(item: Dependency) {
       (item.status || "").toLowerCase(),
     )
   );
+}
+
+function dependencyPathText(item: Dependency) {
+  if (item.path) return item.path;
+  if (isReady(item)) {
+    return "已在系统环境中就绪";
+  }
+  return "未检测到安装路径";
+}
+
+function dependencyTooltipText(item: Dependency) {
+  if (item.path) return item.path;
+  if (isReady(item)) {
+    return item.message || "已在系统环境中检测通过，登录后可查看详细安装路径";
+  }
+  return item.message || "未检测到安装路径";
 }
 
 async function check(forceRefresh = false) {
@@ -621,18 +638,18 @@ onUnmounted(() => {
               <div class="dep-main">
                 <b>{{ item.name }}</b>
                 <el-tooltip
-                  :disabled="!item.path"
+                  :disabled="!dependencyTooltipText(item)"
                   placement="top-start"
                   :show-after="350"
                   popper-class="dependency-path-tooltip"
                 >
                   <template #content
                     ><span class="dependency-path-tooltip-content">{{
-                      item.path
+                      dependencyTooltipText(item)
                     }}</span></template
                   >
                   <small class="dep-path">{{
-                    item.path || "未检测到安装路径"
+                    dependencyPathText(item)
                   }}</small>
                 </el-tooltip>
                 <div
@@ -792,18 +809,18 @@ onUnmounted(() => {
               <div class="dep-main">
                 <b>{{ item.name }}</b>
                 <el-tooltip
-                  :disabled="!item.path"
+                  :disabled="!dependencyTooltipText(item)"
                   placement="top-start"
                   :show-after="350"
                   popper-class="dependency-path-tooltip"
                 >
                   <template #content
                     ><span class="dependency-path-tooltip-content">{{
-                      item.path
+                      dependencyTooltipText(item)
                     }}</span></template
                   >
                   <small class="dep-path">{{
-                    item.path || "未检测到安装路径"
+                    dependencyPathText(item)
                   }}</small>
                 </el-tooltip>
                 <div

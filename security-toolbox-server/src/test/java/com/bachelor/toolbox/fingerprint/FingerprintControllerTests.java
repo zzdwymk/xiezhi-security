@@ -71,7 +71,9 @@ class FingerprintControllerTests {
             "body",
             "cookies",
             "title",
-            "header");
+            "header",
+            "faviconHash",
+            "faviconMd5");
     assertThat(recordComponentNames(FingerprintMatcher.Match.class))
         .containsExactly("id", "name", "category", "confidence", "evidence");
     assertThat(recordComponentNames(FingerprintMatcher.Result.class))
