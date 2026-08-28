@@ -1227,6 +1227,19 @@ onMounted(load);
   min-height: 32px;
   font-weight: 600;
 }
+.target-mode-segmented :deep(.el-segmented__item-selected) {
+  box-sizing: border-box;
+  width: 50% !important;
+  transform: translateX(0) translateZ(0) !important;
+  transition: transform var(--fluent-duration-normal, 200ms)
+    var(--fluent-curve-standard, ease);
+}
+.target-mode-segmented :deep(.el-segmented__group):has(
+    .el-segmented__item.is-selected:last-child
+  )
+  .el-segmented__item-selected {
+  transform: translateX(100%) translateZ(0) !important;
+}
 .batch-preview-card {
   margin: -4px 0 16px;
   padding: 12px 14px;

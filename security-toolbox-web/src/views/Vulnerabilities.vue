@@ -2135,9 +2135,25 @@ onMounted(async () => {
 .poc-selection-mode {
   width: 100%;
 }
+.poc-selection-mode :deep(.el-segmented) {
+  width: 100%;
+}
 .poc-selection-mode :deep(.el-segmented__item) {
   min-width: 0;
   flex: 1;
+}
+.poc-selection-mode :deep(.el-segmented__item-selected) {
+  box-sizing: border-box;
+  width: 50% !important;
+  transform: translateX(0) translateZ(0) !important;
+  transition: transform var(--fluent-duration-normal, 200ms)
+    var(--fluent-curve-standard, ease);
+}
+.poc-selection-mode :deep(.el-segmented__group):has(
+    .el-segmented__item.is-selected:last-child
+  )
+  .el-segmented__item-selected {
+  transform: translateX(100%) translateZ(0) !important;
 }
 .rule-list small {
   display: flex;

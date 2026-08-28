@@ -30,7 +30,7 @@ public class DependencyDetectionService {
   private static final Logger log = LoggerFactory.getLogger(DependencyDetectionService.class);
 
   private static final int MAX_DETECTION_WORKERS = 12;
-  private static final Duration COMMAND_TIMEOUT = Duration.ofMillis(1300);
+  private static final Duration COMMAND_TIMEOUT = Duration.ofMillis(3500);
   private static final Duration CACHE_TTL = Duration.ofSeconds(5);
   private static final Duration WORKER_SHUTDOWN_TIMEOUT = Duration.ofMillis(200);
   private static final String UNKNOWN_VERSION = "unknown";
@@ -214,7 +214,11 @@ public class DependencyDetectionService {
     String output = cleanOutput(result.output());
     if (result.timedOut()) {
       return buildStatus(
-          descriptor, DetectionStatus.TIMEOUT, parseVersion(output), safePath, "版本检测超过 1.3 秒，进程已终止。");
+          descriptor,
+          DetectionStatus.TIMEOUT,
+          parseVersion(output),
+          safePath,
+          String.format(Locale.ROOT, "版本检测超过 %.1f 秒，进程已终止。", COMMAND_TIMEOUT.toMillis() / 1000.0));
     }
     if (result.errorMessage() != null) {
       return buildStatus(descriptor, DetectionStatus.ERROR, null, safePath, "已找到，但无法执行版本检测。");

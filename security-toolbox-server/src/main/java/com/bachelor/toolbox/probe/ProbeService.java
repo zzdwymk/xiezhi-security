@@ -1,6 +1,7 @@
 package com.bachelor.toolbox.probe;
 
 import com.bachelor.toolbox.common.ApiException;
+import com.bachelor.toolbox.fingerprint.FaviconHashUtil;
 import com.bachelor.toolbox.fingerprint.FingerprintMatcher;
 import com.bachelor.toolbox.project.AssessmentProject;
 import com.bachelor.toolbox.project.AssessmentProjectRepository;
@@ -21,6 +22,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 import javax.net.ssl.SSLException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,30 +68,38 @@ public class ProbeService {
     validateProjectTarget(request.getProjectId(), request.getTargetId());
 
     AuthorizedTarget target = findEnabledTarget(request.getTargetId());
-    PreparedProbe preparedProbe = prepareProbe(request, target);
+    List<PreparedProbe> probeCandidates = prepareProbeCandidates(request, target);
 
-    try {
-      HttpResponse<String> response = send(preparedProbe.uri());
-      ProbeResult result = buildResult(request, preparedProbe.url(), response);
-      return results.save(result);
-    } catch (InterruptedException exception) {
-      Thread.currentThread().interrupt();
-      throw new IllegalStateException("探测任务已中断", exception);
-    } catch (IOException exception) {
-      log.warn(
-          "目标探测网络请求失败，projectId={}，targetId={}",
-          request.getProjectId(),
-          request.getTargetId(),
-          exception);
-      return saveUnavailable(request, preparedProbe.url(), friendlyNetworkError(exception));
-    } catch (Exception exception) {
-      log.error(
-          "目标探测处理失败，projectId={}，targetId={}",
-          request.getProjectId(),
-          request.getTargetId(),
-          exception);
-      throw new IllegalStateException("探测失败，请稍后重试", exception);
+    IOException lastIoException = null;
+    PreparedProbe lastAttemptedProbe = probeCandidates.get(0);
+
+    for (PreparedProbe preparedProbe : probeCandidates) {
+      lastAttemptedProbe = preparedProbe;
+      try {
+        HttpResponse<String> response = send(preparedProbe.uri());
+        ProbeResult result = buildResult(request, preparedProbe.url(), response);
+        return results.save(result);
+      } catch (InterruptedException exception) {
+        Thread.currentThread().interrupt();
+        throw new IllegalStateException("探测任务已中断", exception);
+      } catch (IOException exception) {
+        lastIoException = exception;
+        log.info(
+            "目标探测尝试失败，正在尝试备选协议/URL，candidate={}",
+            preparedProbe.url());
+      }
     }
+
+    if (lastIoException != null) {
+      log.warn(
+          "目标探测网络请求最终失败，projectId={}，targetId={}",
+          request.getProjectId(),
+          request.getTargetId(),
+          lastIoException);
+      return saveUnavailable(request, lastAttemptedProbe.url(), friendlyNetworkError(lastIoException));
+    }
+
+    throw new IllegalStateException("探测失败，未找到可探测地址");
   }
 
   public List<ProbeResult> history(Long projectId, Long targetId) {
@@ -137,20 +147,45 @@ public class ProbeService {
     return target;
   }
 
-  private PreparedProbe prepareProbe(ProbeRequest request, AuthorizedTarget target) {
+  private List<PreparedProbe> prepareProbeCandidates(ProbeRequest request, AuthorizedTarget target) {
     String requestedUrl =
         request.getUrl() != null && !request.getUrl().isBlank()
             ? request.getUrl()
             : target.getTargetValue();
-    String probeUrl = withDefaultHttpScheme(requestedUrl);
     String authorizedUrl = withDefaultHttpScheme(target.getTargetValue());
-
-    URI probeUri = parseHttpUri(probeUrl, "探测 URL 无效");
     URI authorizedUri = parseHttpUri(authorizedUrl, "授权目标无效");
-    validateAuthorizedHost(probeUri, authorizedUri);
-    validateAuthorizedPort(probeUri, target.getAllowedPorts());
 
-    return new PreparedProbe(probeUrl, probeUri);
+    boolean explicitScheme = requestedUrl.matches("(?i)^https?://.*");
+    List<String> rawUrls = new java.util.ArrayList<>();
+    if (explicitScheme) {
+      rawUrls.add(requestedUrl);
+    } else {
+      rawUrls.add("http://" + requestedUrl);
+      rawUrls.add("https://" + requestedUrl);
+    }
+
+    List<PreparedProbe> candidates = new java.util.ArrayList<>();
+    IllegalArgumentException lastValidationException = null;
+
+    for (String rawUrl : rawUrls) {
+      try {
+        URI probeUri = parseHttpUri(rawUrl, "探测 URL 无效");
+        validateAuthorizedHost(probeUri, authorizedUri);
+        validateAuthorizedPort(probeUri, target.getAllowedPorts());
+        candidates.add(new PreparedProbe(rawUrl, probeUri));
+      } catch (IllegalArgumentException ex) {
+        lastValidationException = ex;
+      }
+    }
+
+    if (candidates.isEmpty()) {
+      if (lastValidationException != null) {
+        throw lastValidationException;
+      }
+      throw new IllegalArgumentException("探测 URL 超出授权目标或端口范围");
+    }
+
+    return candidates;
   }
 
   private String withDefaultHttpScheme(String url) {
@@ -228,11 +263,22 @@ public class ProbeService {
     return client.send(request, HttpResponse.BodyHandlers.ofString());
   }
 
+  private static final Pattern FAVICON_LINK =
+      Pattern.compile("(?i)<link[^>]+rel=[\"']?(?:shortcut\\s+)?icon[\"']?[^>]+href=[\"']?([^\"'>\\s]+)[\"']?");
+
   private ProbeResult buildResult(ProbeRequest request, String url, HttpResponse<String> response)
       throws IOException {
     Map<String, List<String>> headers = response.headers().map();
     String server = firstHeader(headers, "server");
-    var fingerprintResult = fingerprints.match(headers, response.body());
+
+    // 智能提取 Favicon 并计算 MurmurHash3 与 MD5（EHole/FOFA 标准）
+    FaviconData favicon = fetchFavicon(url, response.body());
+    var fingerprintResult =
+        fingerprints.match(
+            headers,
+            response.body(),
+            favicon.murmurHash(),
+            favicon.md5());
 
     String technologies =
         fingerprintResult.matches().stream()
@@ -246,14 +292,21 @@ public class ProbeService {
             .map(FingerprintMatcher.Match::name)
             .findFirst()
             .orElse("");
-    String evidence =
-        mapper.writeValueAsString(
-            Map.of(
-                "status", response.statusCode(),
-                "title", fingerprintResult.title(),
-                "headers", headers.keySet(),
-                "fingerprints", fingerprintResult.matches(),
-                "ruleCatalog", fingerprintResult.catalog()));
+
+    Map<String, Object> evidenceMap = new java.util.LinkedHashMap<>();
+    evidenceMap.put("status", response.statusCode());
+    evidenceMap.put("title", fingerprintResult.title());
+    evidenceMap.put("headers", headers.keySet());
+    if (!favicon.murmurHash().isEmpty()) {
+      evidenceMap.put("faviconHash", favicon.murmurHash());
+    }
+    if (!favicon.md5().isEmpty()) {
+      evidenceMap.put("faviconMd5", favicon.md5());
+    }
+    evidenceMap.put("fingerprints", fingerprintResult.matches());
+    evidenceMap.put("ruleCatalog", fingerprintResult.catalog());
+
+    String evidence = mapper.writeValueAsString(evidenceMap);
 
     ProbeResult result = new ProbeResult();
     result.setProjectId(request.getProjectId());
@@ -266,6 +319,62 @@ public class ProbeService {
     result.setEvidence(evidence);
     return result;
   }
+
+  private FaviconData fetchFavicon(String pageUrl, String htmlBody) {
+    try {
+      URI baseUri = URI.create(pageUrl);
+      String iconHref = extractFaviconHref(htmlBody);
+      URI iconUri;
+      if (iconHref != null && !iconHref.isBlank()) {
+        iconUri = baseUri.resolve(iconHref);
+      } else {
+        iconUri = baseUri.resolve("/favicon.ico");
+      }
+
+      // 仅允许探测同一主机的 Favicon，避免 SSRF 或越界
+      if (iconUri.getHost() == null || !iconUri.getHost().equalsIgnoreCase(baseUri.getHost())) {
+        return new FaviconData("", "");
+      }
+
+      HttpClient client =
+          HttpClient.newBuilder()
+              .connectTimeout(Duration.ofSeconds(4))
+              .version(HttpClient.Version.HTTP_1_1)
+              .followRedirects(HttpClient.Redirect.NORMAL)
+              .build();
+      HttpRequest iconRequest =
+          HttpRequest.newBuilder(iconUri)
+              .timeout(Duration.ofSeconds(6))
+              .header("User-Agent", USER_AGENT)
+              .GET()
+              .build();
+
+      HttpResponse<byte[]> iconResponse = client.send(iconRequest, HttpResponse.BodyHandlers.ofByteArray());
+      if (iconResponse.statusCode() == 200 && iconResponse.body() != null && iconResponse.body().length > 0) {
+        byte[] bytes = iconResponse.body();
+        // 限制 Favicon 大小为 512KB 以内
+        if (bytes.length <= 512 * 1024) {
+          String murmur = FaviconHashUtil.calculateMurmur3(bytes);
+          String md5 = FaviconHashUtil.calculateMd5(bytes);
+          return new FaviconData(murmur, md5);
+        }
+      }
+    } catch (Exception ex) {
+      log.debug("Favicon 抓取失败或不存在，url={}", pageUrl, ex);
+    }
+    return new FaviconData("", "");
+  }
+
+  private String extractFaviconHref(String html) {
+    if (html == null || html.isBlank()) return null;
+    java.util.regex.Matcher m = FAVICON_LINK.matcher(html);
+    if (m.find()) {
+      return m.group(1).trim();
+    }
+    return null;
+  }
+
+  private record FaviconData(String murmurHash, String md5) {}
 
   private ProbeResult saveUnavailable(ProbeRequest request, String url, String reason) {
     ProbeResult result = new ProbeResult();

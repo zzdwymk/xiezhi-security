@@ -30,10 +30,12 @@ import {
   Handle,
   MarkerType,
   Position,
+  SelectionMode,
   VueFlow,
   type Connection,
   type Edge,
   type EdgeMouseEvent,
+  type GraphNode,
   type Node,
   type NodeMouseEvent,
   type NodeDragEvent,
@@ -56,6 +58,7 @@ import {
   type WorkflowStepSpec,
   type WorkflowSuggestion,
   type WorkflowSuggestStreamEvent,
+  type VulnerabilityDefinition,
 } from "../api";
 import { toErrorMessage } from "../utils/errorMessage";
 import WorkflowEdge from "./WorkflowEdge.vue";
@@ -396,8 +399,17 @@ const preset = ref<PresetCode>("standard");
 const nodes = shallowRef<EditorNode[]>([]);
 const edges = shallowRef<Edge[]>([]);
 const selectedNodeId = ref("");
+const selectedNodeIds = ref<string[]>([]);
 const selectedEdgeId = ref("");
 const hoveredEdgeId = ref("");
+const UNDO_LIMIT = 60;
+const graphHistory = shallowRef<HistorySnapshot[]>([]);
+const graphFuture = shallowRef<HistorySnapshot[]>([]);
+interface HistorySnapshot {
+  nodes: EditorNode[];
+  edges: Edge[];
+}
+let pendingDragSnapshot: HistorySnapshot | null = null;
 const selectedPhase = ref<PhaseCode>("mapping");
 const phaseLibraryExpanded = ref(true);
 const capabilityLibraryExpanded = ref(true);
@@ -409,17 +421,92 @@ const suggestNote = ref("");
 const suggestSource = ref("");
 const suggestions = ref<WorkflowSuggestion[]>([]);
 const suggestExpanded = ref(false);
+const suggestHeight = ref<number | null>(null);
+const SUGGEST_MIN_HEIGHT = 96;
+const SUGGEST_MAX_HEIGHT = 900;
+let suggestResizeStartY = 0;
+let suggestResizeOriginH = 0;
+let suggestResizing = false;
+const suggestPanelEl = ref<HTMLElement | null>(null);
+
+function startSuggestResize(event: PointerEvent) {
+  suggestResizing = true;
+  suggestResizeStartY = event.clientY;
+  const rect = suggestPanelEl.value?.getBoundingClientRect();
+  const measured = rect ? rect.height : 0;
+  suggestResizeOriginH =
+    suggestHeight.value ??
+    (measured > 0
+      ? measured
+      : Math.min(220, window.innerHeight * 0.28));
+  document.body.classList.add("is-resizing-suggest");
+  window.addEventListener("pointermove", onSuggestResizeMove);
+  window.addEventListener("pointerup", endSuggestResize);
+  event.preventDefault();
+}
+
+function onSuggestResizeMove(event: PointerEvent) {
+  if (!suggestResizing) return;
+  const delta = suggestResizeStartY - event.clientY;
+  const next = suggestResizeOriginH + delta;
+  suggestHeight.value = Math.min(
+    SUGGEST_MAX_HEIGHT,
+    Math.max(SUGGEST_MIN_HEIGHT, next),
+  );
+}
+
+function endSuggestResize() {
+  suggestResizing = false;
+  document.body.classList.remove("is-resizing-suggest");
+  window.removeEventListener("pointermove", onSuggestResizeMove);
+  window.removeEventListener("pointerup", endSuggestResize);
+}
 let suggestTimer: ReturnType<typeof setTimeout> | undefined;
 let suggestSeq = 0;
 let loadSeq = 0;
 let suggestAbort: AbortController | undefined;
-const { fitView, setViewport, zoomIn, zoomOut, screenToFlowCoordinate } =
-  useVueFlow("red-team-workflow");
+const {
+  fitView,
+  setViewport,
+  zoomIn,
+  zoomOut,
+  screenToFlowCoordinate,
+  flowToScreenCoordinate,
+  getViewport,
+  nodeLookup,
+} = useVueFlow("red-team-workflow");
 const flowCanvas = ref<HTMLElement | null>(null);
 const workflowEditorLayoutRef = ref<HTMLElement | null>(null);
 const isFullscreen = ref(false);
 const libraryScroll = ref<HTMLElement | null>(null);
 const nodeInputEditor = ref<HTMLElement | null>(null);
+
+interface AlignGuideSegment {
+  axis: "x" | "y";
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+interface AlignRuler {
+  axis: "x" | "y";
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  x: number;
+  y: number;
+  label: string;
+}
+const dragGuides = ref<AlignGuideSegment[]>([]);
+const dragRulers = ref<AlignRuler[]>([]);
+const isAligning = ref(false);
+const ALIGN_SNAP_DISTANCE = 8;
+
+function alignToScreen(x: number, y: number) {
+  const vp = getViewport();
+  return { x: x * vp.zoom + vp.x, y: y * vp.zoom + vp.y };
+}
 
 const WORKFLOW_LAYOUT = {
   startX: 24,
@@ -436,30 +523,83 @@ function zoomCanvasIn() {
 function zoomCanvasOut() {
   void zoomOut();
 }
-function fitWorkflowCanvas() {
-  void fitView({ padding: 0.2, maxZoom: 0.95 });
+function fitWorkflowCanvas(duration: number | unknown = 0) {
+  const dur = typeof duration === "number" ? duration : 0;
+  void fitView({
+    padding: 0.18,
+    maxZoom: 0.95,
+    ...(dur > 0 ? { duration: dur } : {}),
+  });
 }
 
-function enterFullscreen() {
+async function enterFullscreen() {
+  const el = workflowEditorLayoutRef.value;
   isFullscreen.value = true;
   nextTick(() => {
-    fitWorkflowCanvas();
+    fitWorkflowCanvas(340);
   });
+  if (!el) return;
+  // 延迟让视口平滑舒展动画先播放，避免浏览器底层硬切导致的画面黑闪与打断
+  setTimeout(async () => {
+    if (!isFullscreen.value) return;
+    try {
+      if (el.requestFullscreen) {
+        await el.requestFullscreen();
+      } else if ((el as any).webkitRequestFullscreen) {
+        await (el as any).webkitRequestFullscreen();
+      }
+    } catch {
+      // 降级使用视口全屏
+    }
+  }, 180);
 }
 
-function exitFullscreen() {
+async function exitFullscreen() {
   isFullscreen.value = false;
   nextTick(() => {
-    fitWorkflowCanvas();
+    fitWorkflowCanvas(280);
   });
+  try {
+    if (
+      document.fullscreenElement ||
+      (document as any).webkitFullscreenElement
+    ) {
+      if (document.exitFullscreen) {
+        await document.exitFullscreen();
+      } else if ((document as any).webkitExitFullscreen) {
+        await (document as any).webkitExitFullscreen();
+      }
+    }
+  } catch {
+    // ignore
+  }
 }
 
 function toggleFullscreen() {
-  if (isFullscreen.value) {
-    exitFullscreen();
+  const isFs = Boolean(
+    isFullscreen.value ||
+      document.fullscreenElement ||
+      (document as any).webkitFullscreenElement,
+  );
+  if (isFs) {
+    void exitFullscreen();
   } else {
-    enterFullscreen();
+    void enterFullscreen();
   }
+}
+
+function onFullscreenChange() {
+  const fsElem =
+    document.fullscreenElement || (document as any).webkitFullscreenElement;
+  isFullscreen.value = Boolean(
+    fsElem &&
+      workflowEditorLayoutRef.value &&
+      (fsElem === workflowEditorLayoutRef.value ||
+        workflowEditorLayoutRef.value.contains(fsElem)),
+  );
+  nextTick(() => {
+    fitWorkflowCanvas(300);
+  });
 }
 
 function onWorkflowWindowResize() {
@@ -573,7 +713,12 @@ function workflowToolParameters(
   parameters?: Record<string, unknown>,
 ) {
   if (parameters && Object.keys(parameters).length) return { ...parameters };
-  if (tool === "afrog_scan" || tool === "xray_scan") return { allPocs: true };
+  if (
+    tool === "afrog_scan" ||
+    tool === "xray_scan" ||
+    tool === "nuclei_scan"
+  )
+    return { allPocs: true };
   if (tool === "http_security_check") return { check: "cookies" };
   if (tool === "nmap_service_scan") return { mode: "quick" };
   return {};
@@ -631,20 +776,93 @@ const selectedAllPocs = computed({
     ),
 });
 
-const selectedPocCodesInput = computed({
+const selectedPocCodesList = computed({
   get: () => {
     const value = selectedToolNode.value?.data.parameters?.pocCodes;
-    return Array.isArray(value) ? value.join("\n") : "";
+    return Array.isArray(value) ? value : [];
   },
-  set: (value: string) => {
-    const codes = value
-      .split(/[,，;；\s]+/)
+  set: (values: string[]) => {
+    const codes = values
       .map((item) => item.trim().toUpperCase())
       .filter(Boolean)
       .slice(0, 50);
     updateSelectedToolParameters({ pocCodes: codes, allPocs: undefined });
   },
 });
+
+const pocOptions = ref<VulnerabilityDefinition[]>([]);
+const pocLoading = ref(false);
+let pocLoadGeneration = 0;
+
+function scannerSourceForTool(tool?: string): "NUCLEI" | "AFROG" | "XRAY" | undefined {
+  if (tool === "nuclei_scan") return "NUCLEI";
+  if (tool === "afrog_scan") return "AFROG";
+  if (tool === "xray_scan") return "XRAY";
+  return undefined;
+}
+
+function formatPocOptionLabel(item: VulnerabilityDefinition) {
+  return `${item.sourceExternalId || item.vulnerabilityCode} · ${item.name}`;
+}
+
+function pocSeverityTagType(severity?: string) {
+  if (severity === "CRITICAL" || severity === "HIGH") return "danger";
+  if (severity === "MEDIUM") return "warning";
+  if (severity === "LOW") return "info";
+  return "success";
+}
+
+async function loadPocOptionsForTool(search = "") {
+  const tool = selectedToolNode.value?.data.tool;
+  const source = scannerSourceForTool(tool);
+  if (!source) {
+    pocOptions.value = [];
+    return;
+  }
+  const generation = ++pocLoadGeneration;
+  pocLoading.value = true;
+  try {
+    const { data } = await endpoints.vulnerabilities({
+      page: 0,
+      size: 150,
+      source,
+      query: search.trim() || undefined,
+    });
+    if (generation !== pocLoadGeneration) return;
+
+    const currentCodes = selectedPocCodesList.value;
+    const merged = new Map<string, VulnerabilityDefinition>();
+    for (const item of pocOptions.value) {
+      if (currentCodes.includes(item.vulnerabilityCode)) {
+        merged.set(item.vulnerabilityCode, item);
+      }
+    }
+    for (const item of data.content || []) {
+      merged.set(item.vulnerabilityCode, item);
+    }
+    pocOptions.value = [...merged.values()];
+  } catch {
+    if (generation === pocLoadGeneration) {
+      pocOptions.value = [];
+    }
+  } finally {
+    if (generation === pocLoadGeneration) {
+      pocLoading.value = false;
+    }
+  }
+}
+
+watch(
+  () => selectedToolNode.value?.data.tool,
+  (tool) => {
+    if (tool && scannerSourceForTool(tool)) {
+      void loadPocOptionsForTool();
+    } else {
+      pocOptions.value = [];
+    }
+  },
+  { immediate: true },
+);
 
 function makeNode(
   id: string,
@@ -859,6 +1077,7 @@ function buildPreset(code: PresetCode, retainedSteps?: WorkflowStepSpec[]) {
       });
     }
   });
+  pushHistory();
   nodes.value = resultNodes;
   edges.value = dedupeEdges(resultEdges);
   selectedNodeId.value = "";
@@ -1034,6 +1253,7 @@ function onConnect(connection: Connection) {
     return;
   }
   const edgeId = uniqueEdgeId(connection.source, connection.target);
+  pushHistory();
   edges.value = [
     ...edges.value,
     makeEdge(connection.source, connection.target, edgeId),
@@ -1057,13 +1277,100 @@ function uniqueEdgeId(source: string, target: string) {
   return id;
 }
 
+function snapshotGraph(): HistorySnapshot {
+  return {
+    nodes: JSON.parse(JSON.stringify(nodes.value)),
+    edges: JSON.parse(JSON.stringify(edges.value)),
+  };
+}
+function graphsEqual(a: HistorySnapshot, b: HistorySnapshot) {
+  return (
+    JSON.stringify(a.nodes) === JSON.stringify(b.nodes) &&
+    JSON.stringify(a.edges) === JSON.stringify(b.edges)
+  );
+}
+// 记录一次图结构/位置变更前的快照。堆顶内容相同则合并，避免连续操作重复入栈。
+// 可直接传入变更前的快照（用于拖动这类“先捕获再变更”的场景）。
+function pushHistory(before?: HistorySnapshot) {
+  if (viewingRunSnapshot.value || executing.value) return;
+  const snap = before || snapshotGraph();
+  const top = graphHistory.value[graphHistory.value.length - 1];
+  if (top && graphsEqual(top, snap)) return;
+  graphHistory.value = [...graphHistory.value.slice(-(UNDO_LIMIT - 1)), snap];
+  graphFuture.value = [];
+}
+function restoreSnapshotStates(snapshot: HistorySnapshot) {
+  nodes.value = snapshot.nodes;
+  edges.value = snapshot.edges;
+  selectedEdgeId.value = "";
+  selectedNodeId.value = "";
+  selectedNodeIds.value = [];
+  validateGraph();
+}
+function undoGraph() {
+  const prev = graphHistory.value.pop();
+  if (!prev) {
+    ElMessage.info("没有可撤销的操作");
+    return;
+  }
+  const current = snapshotGraph();
+  graphFuture.value = [...graphFuture.value, current];
+  restoreSnapshotStates(prev);
+}
+function redoGraph() {
+  const next = graphFuture.value.pop();
+  if (!next) {
+    ElMessage.info("没有可重做的操作");
+    return;
+  }
+  const current = snapshotGraph();
+  graphHistory.value = [...graphHistory.value, current];
+  restoreSnapshotStates(next);
+}
+
 function onNodeClick(event: NodeMouseEvent) {
   closeWorkflowContextMenu();
-  void selectCanvasNode(event.node.id);
+  const isMulti = Boolean(
+    event.event.ctrlKey || event.event.metaKey || event.event.shiftKey,
+  );
+  void selectCanvasNode(event.node.id, isMulti);
 }
-function selectNode(id: string) {
-  selectedNodeId.value = id;
+function selectNode(id: string, additive = false) {
+  if (additive) {
+    if (selectedNodeIds.value.includes(id)) {
+      selectedNodeIds.value = selectedNodeIds.value.filter((i) => i !== id);
+      selectedNodeId.value =
+        selectedNodeIds.value[selectedNodeIds.value.length - 1] || "";
+    } else {
+      selectedNodeIds.value = [...selectedNodeIds.value, id];
+      selectedNodeId.value = id;
+    }
+  } else {
+    // 若该节点已经是当前多选集合的一员，点击/拖动时保持整个多选，
+    // 避免拖动等交互触发单击把多选塌缩成单节点，导致无法批量原地克隆。
+    const keepMulti =
+      selectedNodeIds.value.length > 1 &&
+      selectedNodeIds.value.includes(id);
+    if (keepMulti) {
+      selectedNodeId.value = id;
+    } else {
+      selectedNodeId.value = id;
+      selectedNodeIds.value = id ? [id] : [];
+    }
+  }
   setSelectedEdge("");
+}
+
+function onSelectionChange(params: { nodes: Node[]; edges: Edge[] }) {
+  const nodeIds = params.nodes.map((n) => n.id);
+  selectedNodeIds.value = nodeIds;
+  if (nodeIds.length === 1) {
+    selectedNodeId.value = nodeIds[0];
+  } else if (nodeIds.length > 1) {
+    if (!selectedNodeId.value || !nodeIds.includes(selectedNodeId.value)) {
+      selectedNodeId.value = nodeIds[0];
+    }
+  }
 }
 function nextAnimationFrame() {
   return new Promise<void>((resolve) =>
@@ -1093,8 +1400,8 @@ async function waitForLibrarySectionLayout(sectionId: string) {
   await nextAnimationFrame();
   await nextAnimationFrame();
 }
-async function selectCanvasNode(id: string) {
-  selectNode(id);
+async function selectCanvasNode(id: string, additive = false) {
+  selectNode(id, additive);
   const node = nodes.value.find((item) => item.id === id);
   if (!node || node.data.nodeKind === "system") return;
 
@@ -1169,6 +1476,7 @@ function onRemoveEdge(edgeId: string) {
 function onPaneClick() {
   closeWorkflowContextMenu();
   selectedNodeId.value = "";
+  selectedNodeIds.value = [];
   setSelectedEdge("");
 }
 
@@ -1276,12 +1584,38 @@ function deleteContextNode() {
   if (nodeId) removeNode(nodeId);
 }
 
+function flowSelectedNodeIds(): string[] {
+  // nodeLookup 反映 VueFlow 实时内部节点（含选中态），用它取框选结果最可靠，
+  // 避免 app 的 selectedNodeIds 被框选后的单击/拖尾清空或塌缩。
+  return Array.from(nodeLookup.value.values())
+    .filter((n) => n.selected)
+    .map((n) => n.id);
+}
+function setFlowSelection(ids: string[]) {
+  const wanted = new Set(ids);
+  nodeLookup.value.forEach((n) => {
+    n.selected = wanted.has(n.id);
+  });
+}
+
 function canCopyNode(node?: EditorNode | null) {
-  const target = node || (selectedNodeId.value ? nodes.value.find((n) => n.id === selectedNodeId.value) || null : null);
-  if (!target) return false;
-  if (target.id === "__start__" || target.id === "__end__") return false;
+  const nodeSelectedIds = flowSelectedNodeIds();
+  const activeIds = node
+    ? [node.id]
+    : [
+        ...nodeSelectedIds,
+        ...selectedNodeIds.value,
+        ...(selectedNodeId.value ? [selectedNodeId.value] : []),
+      ];
+  const targets = [...new Set(activeIds)]
+    .map((id) => nodes.value.find((n) => n.id === id))
+    .filter((n): n is EditorNode => Boolean(n));
+  if (!targets.length) return false;
   if (viewingRunSnapshot.value || executing.value) return false;
-  return true;
+  // 只要选中集合里有可复制的节点即可复制，开始/结束节点会被 copySelectedNodes 跳过
+  return targets.some(
+    (n) => n.id !== "__start__" && n.id !== "__end__",
+  );
 }
 
 function copyAndPasteNode(
@@ -1373,9 +1707,11 @@ function pasteNode(atFlowPosition?: { x: number; y: number }) {
     source.data.tool,
     parameters,
   );
+  pushHistory();
   nodes.value = [...nodes.value, newNode];
   selectedNodeId.value = newId;
   selectedPhase.value = newNode.data.phase as PhaseCode;
+  setFlowSelection([newId]);
   setSelectedEdge("");
   validateGraph();
   graphNotice.value = `已复制并创建“${newNode.data.label}”`;
@@ -1390,10 +1726,603 @@ function pasteFromContextMenu() {
   pasteNode(point || undefined);
 }
 
+interface AlignRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+const ALIGN_EDGES_WIDTH = 220;
+const ALIGN_EDGES_HEIGHT = 120;
+
+function alignRectOf(node: GraphNode): AlignRect {
+  const w =
+    node.dimensions?.width && node.dimensions.width > 0
+      ? node.dimensions.width
+      : ALIGN_EDGES_WIDTH;
+  const h =
+    node.dimensions?.height && node.dimensions.height > 0
+      ? node.dimensions.height
+      : ALIGN_EDGES_HEIGHT;
+  const pos = node.position;
+  return { x: pos.x, y: pos.y, w, h };
+}
+
+interface AlignCandidate {
+  delta: number;
+  guide: number;
+  node: GraphNode;
+  rect: AlignRect;
+}
+
+function resolveAlignCandidate(
+  draggedRect: AlignRect,
+  target: GraphNode,
+  axis: "x" | "y",
+): AlignCandidate | null {
+  const rect = alignRectOf(target);
+  const dEdges =
+    axis === "x"
+      ? [draggedRect.x, draggedRect.x + draggedRect.w / 2, draggedRect.x + draggedRect.w]
+      : [draggedRect.y, draggedRect.y + draggedRect.h / 2, draggedRect.y + draggedRect.h];
+  const tEdges =
+    axis === "x"
+      ? [rect.x, rect.x + rect.w / 2, rect.x + rect.w]
+      : [rect.y, rect.y + rect.h / 2, rect.y + rect.h];
+  let best: AlignCandidate | null = null;
+  for (let s = 0; s < 3; s++) {
+    for (let t = 0; t < 3; t++) {
+      const delta = tEdges[t] - dEdges[s];
+      if (Math.abs(delta) > ALIGN_SNAP_DISTANCE) continue;
+      if (!best || Math.abs(delta) < Math.abs(best.delta)) {
+        best = { delta, guide: tEdges[t], node: target, rect };
+      }
+    }
+  }
+  return best;
+}
+
+function buildAlignRuler(
+  rulers: AlignRuler[],
+  dragged: AlignRect,
+  target: AlignRect,
+  axis: "x" | "y",
+) {
+  const gap =
+    axis === "x"
+      ? target.x - (dragged.x + dragged.w)
+      : target.y - (dragged.y + dragged.h);
+  if (gap <= 0) return;
+  const label = `${Math.round(gap)}px`;
+  if (axis === "x") {
+    const top = Math.min(dragged.y, target.y) - 28;
+    rulers.push({
+      axis,
+      x1: dragged.x + dragged.w,
+      y1: top,
+      x2: dragged.x + dragged.w + gap,
+      y2: top,
+      x: dragged.x + dragged.w + gap / 2,
+      y: top - 6,
+      label,
+    });
+  } else {
+    const left = Math.min(dragged.x, target.x) - 28;
+    rulers.push({
+      axis,
+      x1: left,
+      y1: dragged.y + dragged.h,
+      x2: left,
+      y2: dragged.y + dragged.h + gap,
+      x: left - 6,
+      y: dragged.y + dragged.h + gap / 2,
+      label,
+    });
+  }
+}
+
+function buildDistanceRulers(
+  rulers: AlignRuler[],
+  dragged: AlignRect,
+  targets: GraphNode[],
+) {
+  let leftRect: AlignRect | null = null;
+  let rightRect: AlignRect | null = null;
+  let topRect: AlignRect | null = null;
+  let bottomRect: AlignRect | null = null;
+  let leftDist = -1;
+  let rightDist = -1;
+  let topDist = -1;
+  let bottomDist = -1;
+  for (const t of targets) {
+    const r = alignRectOf(t);
+    const yOverlap = dragged.y < r.y + r.h && dragged.y + dragged.h > r.y;
+    const xOverlap = dragged.x < r.x + r.w && dragged.x + dragged.w > r.x;
+    if (yOverlap) {
+      const gapL = dragged.x - (r.x + r.w);
+      if (gapL >= 0 && (leftDist < 0 || gapL < leftDist)) {
+        leftDist = gapL;
+        leftRect = r;
+      }
+      const gapR = r.x - (dragged.x + dragged.w);
+      if (gapR >= 0 && (rightDist < 0 || gapR < rightDist)) {
+        rightDist = gapR;
+        rightRect = r;
+      }
+    }
+    if (xOverlap) {
+      const gapT = dragged.y - (r.y + r.h);
+      if (gapT >= 0 && (topDist < 0 || gapT < topDist)) {
+        topDist = gapT;
+        topRect = r;
+      }
+      const gapB = r.y - (dragged.y + dragged.h);
+      if (gapB >= 0 && (bottomDist < 0 || gapB < bottomDist)) {
+        bottomDist = gapB;
+        bottomRect = r;
+      }
+    }
+  }
+  const midY = (dragged.y + dragged.h) / 2;
+  const midX = (dragged.x + dragged.w) / 2;
+  if (leftRect) pushGapRuler(rulers, "x", leftRect.x + leftRect.w, dragged.x, midY - 12);
+  if (rightRect) pushGapRuler(rulers, "x", dragged.x + dragged.w, rightRect.x, midY + 12);
+  if (topRect) pushGapRuler(rulers, "y", topRect.y + topRect.h, dragged.y, midX - 12);
+  if (bottomRect) pushGapRuler(rulers, "y", dragged.y + dragged.h, bottomRect.y, midX + 12);
+}
+
+function pushGapRuler(
+  rulers: AlignRuler[],
+  axis: "x" | "y",
+  a: number,
+  b: number,
+  cross: number,
+) {
+  const gap = Math.abs(b - a);
+  if (gap <= 0) return;
+  const label = `${Math.round(gap)}px`;
+  if (axis === "x") {
+    rulers.push({
+      axis,
+      x1: Math.min(a, b),
+      y1: cross,
+      x2: Math.max(a, b),
+      y2: cross,
+      x: (a + b) / 2,
+      y: cross - 6,
+      label,
+    });
+  } else {
+    rulers.push({
+      axis,
+      x1: cross,
+      y1: Math.min(a, b),
+      x2: cross,
+      y2: Math.max(a, b),
+      x: cross - 6,
+      y: (a + b) / 2,
+      label,
+    });
+  }
+}
+
+interface SpacingCandidate {
+  delta: number;
+  axis: "x" | "y";
+  a: AlignRect;
+  b: AlignRect | null;
+  gap: number;
+  mode: "center" | "side";
+  reverse?: boolean;
+}
+
+function guideVertical(
+  guides: AlignGuideSegment[],
+  x: number,
+  y1: number,
+  y2: number,
+) {
+  guides.push({ axis: "x", x1: x, y1, x2: x, y2 });
+}
+function guideH(
+  guides: AlignGuideSegment[],
+  y: number,
+  x1: number,
+  x2: number,
+) {
+  guides.push({ axis: "y", x1, y1: y, x2, y2: y });
+}
+
+function resolveSpacingCandidate(
+  dragged: AlignRect,
+  targets: GraphNode[],
+  axis: "x" | "y",
+): SpacingCandidate | null {
+  let near: AlignRect | null = null; // 负方向邻居（左/上）
+  let far: AlignRect | null = null; // 正方向邻居（右/下）
+  for (const t of targets) {
+    const r = alignRectOf(t);
+    if (axis === "x") {
+      const overlap = dragged.y < r.y + r.h && dragged.y + dragged.h > r.y;
+      if (!overlap) continue;
+      if (r.x + r.w <= dragged.x) {
+        if (!near || dragged.x - (r.x + r.w) < dragged.x - (near.x + near.w)) {
+          near = r;
+        }
+      } else if (r.x >= dragged.x + dragged.w) {
+        if (!far || r.x - (dragged.x + dragged.w) < far.x - (dragged.x + dragged.w)) {
+          far = r;
+        }
+      }
+    } else {
+      const overlap = dragged.x < r.x + r.w && dragged.x + dragged.w > r.x;
+      if (!overlap) continue;
+      if (r.y + r.h <= dragged.y) {
+        if (!near || dragged.y - (r.y + r.h) < dragged.y - (near.y + near.h)) {
+          near = r;
+        }
+      } else if (r.y >= dragged.y + dragged.h) {
+        if (!far || r.y - (dragged.y + dragged.h) < far.y - (dragged.y + dragged.h)) {
+          far = r;
+        }
+      }
+    }
+  }
+  const refGap = referenceGap(axis, targets);
+  let best: SpacingCandidate | null = null;
+  const push = (cand: SpacingCandidate) => {
+    if (!best || Math.abs(cand.delta) < Math.abs(best.delta)) {
+      best = cand;
+    }
+  };
+  if (near && far) {
+    const slack = axis === "x"
+      ? far.x - (near.x + near.w) - dragged.w
+      : far.y - (near.y + near.h) - dragged.h;
+    const spanStart = axis === "x" ? near.x + near.w : near.y + near.h;
+    const spanEnd = axis === "x" ? far.x : far.y;
+    const wanted = axis === "x"
+      ? (spanStart + spanEnd - dragged.w) / 2
+      : (spanStart + spanEnd - dragged.h) / 2;
+    const delta = wanted - (axis === "x" ? dragged.x : dragged.y);
+    if (slack > 0 && Math.abs(delta) <= ALIGN_SNAP_DISTANCE) {
+      push({ delta, axis, a: near, b: far, gap: slack / 2, mode: "center" });
+    }
+  }
+  if (refGap > 0) {
+    if (near) {
+      const wanted = axis === "x"
+        ? near.x + near.w + refGap
+        : near.y + near.h + refGap;
+      const delta = wanted - (axis === "x" ? dragged.x : dragged.y);
+      if (Math.abs(delta) <= ALIGN_SNAP_DISTANCE) {
+        push({ delta, axis, a: near, b: null, gap: refGap, mode: "side" });
+      }
+    } else if (far) {
+      const wanted = axis === "x"
+        ? far.x - refGap - dragged.w
+        : far.y - refGap - dragged.h;
+      const delta = wanted - (axis === "x" ? dragged.x : dragged.y);
+      if (Math.abs(delta) <= ALIGN_SNAP_DISTANCE) {
+        push({ delta, axis, a: far, b: null, gap: refGap, mode: "side", reverse: true });
+      }
+    }
+  }
+  return best;
+}
+
+function referenceGap(axis: "x" | "y", targets: GraphNode[]): number {
+  const rects = targets.map((t) => alignRectOf(t));
+  const overlap = (a: AlignRect, b: AlignRect) =>
+    axis === "x"
+      ? a.y < b.y + b.h && a.y + a.h > b.y
+      : a.x < b.x + b.w && a.x + a.w > b.x;
+  const led = (a: AlignRect) => (axis === "x" ? a.x + a.w : a.y + a.h);
+  const start = (a: AlignRect) => (axis === "x" ? a.x : a.y);
+  let min = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < rects.length; i++) {
+    for (let j = 0; j < rects.length; j++) {
+      if (i === j) continue;
+      if (!overlap(rects[i], rects[j])) continue;
+      const gap = start(rects[j]) - led(rects[i]);
+      if (gap >= 0 && gap < min) {
+        min = gap;
+      }
+    }
+  }
+  if (Number.isFinite(min)) return min;
+  return axis === "x"
+    ? WORKFLOW_LAYOUT.toolOffsetX - ALIGN_EDGES_WIDTH
+    : WORKFLOW_LAYOUT.toolGapY;
+}
+
+function onNodeDragStart(event: NodeDragEvent) {
+  pendingDragSnapshot = snapshotGraph();
+  isAligning.value = Boolean(
+    (event.event as MouseEvent).ctrlKey || (event.event as MouseEvent).metaKey,
+  );
+}
+
+function onNodeDrag(event: NodeDragEvent) {
+  if (viewingRunSnapshot.value || executing.value) return;
+  const drag = nodeLookup.value.get(event.node.id);
+  if (!drag) return;
+  const active = Boolean(
+    (event.event as MouseEvent).ctrlKey || (event.event as MouseEvent).metaKey,
+  );
+  isAligning.value = active;
+  if (!active) {
+    dragGuides.value = [];
+    dragRulers.value = [];
+    return;
+  }
+
+  const dragged = alignRectOf(drag);
+  let xBest: AlignCandidate | SpacingCandidate | null = null;
+  let yBest: AlignCandidate | SpacingCandidate | null = null;
+  const targets: GraphNode[] = [];
+  nodeLookup.value.forEach((node) => {
+    if (node.id !== drag.id && node.data?.nodeKind !== "system") {
+      targets.push(node);
+    }
+  });
+  for (let ti = 0; ti < targets.length; ti++) {
+    const node = targets[ti];
+    const xCand = resolveAlignCandidate(dragged, node, "x");
+    if (xCand && (!xBest || Math.abs(xCand.delta) < Math.abs(xBest.delta))) {
+      xBest = xCand;
+    }
+    const yCand = resolveAlignCandidate(dragged, node, "y");
+    if (yCand && (!yBest || Math.abs(yCand.delta) < Math.abs(yBest.delta))) {
+      yBest = yCand;
+    }
+  }
+
+  const xSpace = resolveSpacingCandidate(dragged, targets, "x");
+  const ySpace = resolveSpacingCandidate(dragged, targets, "y");
+  let xUseSpace = false;
+  let yUseSpace = false;
+  if (xSpace && (!xBest || Math.abs(xSpace.delta) <= Math.abs(xBest.delta))) {
+    xBest = xSpace;
+    xUseSpace = true;
+  }
+  if (ySpace && (!yBest || Math.abs(ySpace.delta) <= Math.abs(yBest.delta))) {
+    yBest = ySpace;
+    yUseSpace = true;
+  }
+
+  const snapX = xBest ? dragged.x + xBest.delta : dragged.x;
+  const snapY = yBest ? dragged.y + yBest.delta : dragged.y;
+  drag.position = { x: snapX, y: snapY };
+
+  const guides: AlignGuideSegment[] = [];
+  const rulers: AlignRuler[] = [];
+  const EXT = 14;
+  buildDistanceRulers(rulers, { ...dragged, x: snapX, y: snapY }, targets);
+
+  if (xBest) {
+    if (xUseSpace) {
+      const sp = xBest as SpacingCandidate;
+      const aLeading = sp.reverse ? sp.a.x : sp.a.x + sp.a.w;
+      const top = Math.min(snapY, sp.a.y, sp.b ? sp.b.y : snapY) - EXT;
+      const bottom = Math.max(
+        snapY + dragged.h,
+        sp.a.y + sp.a.h,
+        sp.b ? sp.b.y + sp.b.h : snapY + dragged.h,
+      ) + EXT;
+      guideVertical(guides, aLeading, top, bottom);
+      if (sp.mode === "center" && sp.b) {
+        guideVertical(guides, sp.b.x, top, bottom);
+      }
+      const midY =
+        (Math.min(snapY, sp.a.y, sp.b ? sp.b.y : snapY) +
+          Math.max(snapY + dragged.h, sp.a.y + sp.a.h, sp.b ? sp.b.y + sp.b.h : snapY + dragged.h)) /
+        2;
+      pushGapRuler(rulers, "x", aLeading, sp.reverse ? snapX + dragged.w : snapX, midY - 18);
+      if (sp.mode === "center" && sp.b) {
+        pushGapRuler(rulers, "x", snapX + dragged.w, sp.b.x, midY - 18);
+      }
+    } else {
+      const tr = (xBest as AlignCandidate).rect;
+      const top = Math.min(snapY, tr.y) - EXT;
+      const bottom = Math.max(snapY + dragged.h, tr.y + tr.h) + EXT;
+      guides.push({
+        axis: "x",
+        x1: (xBest as AlignCandidate).guide,
+        y1: top,
+        x2: (xBest as AlignCandidate).guide,
+        y2: bottom,
+      });
+      buildAlignRuler(rulers, dragged, tr, "x");
+    }
+  }
+  if (yBest) {
+    if (yUseSpace) {
+      const sp = yBest as SpacingCandidate;
+      const aLeading = sp.reverse ? sp.a.y : sp.a.y + sp.a.h;
+      const lx = Math.min(snapX, sp.a.x, sp.b ? sp.b.x : snapX) - EXT;
+      const rx = Math.max(
+        snapX + dragged.w,
+        sp.a.x + sp.a.w,
+        sp.b ? sp.b.x + sp.b.w : snapX + dragged.w,
+      ) + EXT;
+      guideH(guides, aLeading, lx, rx);
+      if (sp.mode === "center" && sp.b) {
+        guideH(guides, sp.b.y, lx, rx);
+      }
+      const midX =
+        (Math.min(snapX, sp.a.x, sp.b ? sp.b.x : snapX) +
+          Math.max(snapX + dragged.w, sp.a.x + sp.a.w, sp.b ? sp.b.x + sp.b.w : snapX + dragged.w)) /
+        2;
+      pushGapRuler(rulers, "y", aLeading, sp.reverse ? snapY + dragged.h : snapY, midX + 18);
+      if (sp.mode === "center" && sp.b) {
+        pushGapRuler(rulers, "y", snapY + dragged.h, sp.b.y, midX + 18);
+      }
+    } else {
+      const tr = (yBest as AlignCandidate).rect;
+      const left = Math.min(snapX, tr.x) - EXT;
+      const right = Math.max(snapX + dragged.w, tr.x + tr.w) + EXT;
+      guides.push({
+        axis: "y",
+        x1: left,
+        y1: (yBest as AlignCandidate).guide,
+        x2: right,
+        y2: (yBest as AlignCandidate).guide,
+      });
+      buildAlignRuler(rulers, dragged, tr, "y");
+    }
+  }
+
+  dragGuides.value = guides;
+  dragRulers.value = rulers;
+}
+
 function onNodeDragStop(event: NodeDragEvent) {
   const current = nodes.value.find((node) => node.id === event.node.id);
   if (current)
     current.position = { x: event.node.position.x, y: event.node.position.y };
+  // 位置确有变化时才把拖动前的快照记入历史，避免空拖动产生多余撤销步
+  if (pendingDragSnapshot) {
+    if (!graphsEqual(pendingDragSnapshot, snapshotGraph())) {
+      pushHistory(pendingDragSnapshot);
+    }
+    pendingDragSnapshot = null;
+  }
+  dragGuides.value = [];
+  dragRulers.value = [];
+  isAligning.value = false;
+}
+
+function copySelectedNodes() {
+  const targetIds = selectedNodeIds.value.length
+    ? [...selectedNodeIds.value]
+    : selectedNodeId.value
+      ? [selectedNodeId.value]
+      : [];
+  // Shift 框选会通过 selection-change 更新 selectedNodeIds；但为避免框选结束后
+  // 有一次单击/拖尾把多选塌缩漏掉，这里再把 VueFlow 内部标记为选中的节点并集进来。
+  const flowSelected = flowSelectedNodeIds();
+  const unionIds = [...new Set([...targetIds, ...flowSelected])];
+  if (!unionIds.length) {
+    ElMessage.warning("请先选择要复制的节点");
+    return;
+  }
+  if (unionIds.length === 1) {
+    copyAndPasteNode(unionIds[0]);
+    return;
+  }
+
+  const validNodes = nodes.value.filter(
+    (n) =>
+      unionIds.includes(n.id) && n.id !== "__start__" && n.id !== "__end__",
+  );
+  if (!validNodes.length) {
+    ElMessage.info("所选节点不可复制");
+    return;
+  }
+  if (validNodes.length === 1 && unionIds.length > 1) {
+    copyAndPasteNode(validNodes[0].id);
+    return;
+  }
+
+  const offset = 36 + pasteOffset.value * 18;
+  pasteOffset.value = (pasteOffset.value + 1) % 8;
+  const newNodes: EditorNode[] = [];
+  const newIds: string[] = [];
+  const cloneIdMap = new Map<string, string>();
+
+  for (const source of validNodes) {
+    if (
+      source.data.nodeKind === "phase" &&
+      hasCanonicalPhaseNode(source.data.phase as PhaseCode)
+    ) {
+      continue;
+    }
+    let newId: string;
+    if (source.data.nodeKind === "tool" && source.data.tool) {
+      newId = uniqueId(`tool-${safeId(source.data.tool)}-${source.data.phase}`);
+    } else if (source.data.nodeKind === "phase") {
+      newId = phaseNodeId(source.data.phase as PhaseCode);
+    } else {
+      newId = uniqueId(`node-${safeId(source.data.label)}`);
+    }
+
+    const basePos = {
+      x: source.position.x + offset,
+      y: source.position.y + offset,
+    };
+    const parameters = source.data.parameters
+      ? JSON.parse(JSON.stringify(source.data.parameters))
+      : undefined;
+    const newNode = makeNode(
+      newId,
+      source.data.nodeKind,
+      source.data.phase,
+      basePos,
+      source.data.label,
+      source.data.tool,
+      parameters,
+    );
+    newNodes.push(newNode);
+    newIds.push(newId);
+    cloneIdMap.set(source.id, newId);
+  }
+
+  if (!newNodes.length) {
+    ElMessage.warning("所选阶段已在画布中，无法重复创建");
+    return;
+  }
+
+  pushHistory();
+  nodes.value = [...nodes.value, ...newNodes];
+  selectedNodeIds.value = newIds;
+  selectedNodeId.value = newIds[0] || "";
+  // 让 VueFlow 内部选中态跟随新克隆，避免原节点仍处选中态造成下次 Ctrl+C 重复克隆原集合
+  setFlowSelection(newIds);
+
+  // 保持选中集合内部的连线关系：源和目标都在被复制集合内时，克隆对应的边
+  const newInternalEdges = edges.value
+    .filter(
+      (edge) =>
+        cloneIdMap.has(edge.source) && cloneIdMap.has(edge.target),
+    )
+    .map((edge) =>
+      makeEdge(cloneIdMap.get(edge.source)!, cloneIdMap.get(edge.target)!),
+    );
+  edges.value = dedupeEdges([...edges.value, ...newInternalEdges]);
+  setSelectedEdge("");
+  validateGraph();
+  ElMessage.success(`已批量复制并克隆 ${newNodes.length} 个节点`);
+}
+
+function removeSelectedNodes() {
+  const targetIds = selectedNodeIds.value.length
+    ? [...selectedNodeIds.value]
+    : selectedNodeId.value
+      ? [selectedNodeId.value]
+      : [];
+  if (!targetIds.length) return;
+
+  const validIds = targetIds.filter(
+    (id) => id !== "__start__" && id !== "__end__",
+  );
+  if (!validIds.length) {
+    ElMessage.info("开始和结束节点固定保留");
+    return;
+  }
+
+  pushHistory();
+  nodes.value = nodes.value.filter((node) => !validIds.includes(node.id));
+  edges.value = edges.value.filter(
+    (edge) =>
+      !validIds.includes(edge.source) && !validIds.includes(edge.target),
+  );
+  selectedNodeId.value = "";
+  selectedNodeIds.value = [];
+  validateGraph();
+  ElMessage.success(
+    validIds.length === 1 ? "已删除节点" : `已批量删除 ${validIds.length} 个节点`,
+  );
 }
 
 function removeSelectedEdge() {
@@ -1402,11 +2331,11 @@ function removeSelectedEdge() {
 }
 
 function removeSelectedNode() {
-  if (!selectedNodeId.value) return;
-  removeNode(selectedNodeId.value);
+  removeSelectedNodes();
 }
 
 function removeEdge(edgeId: string, notify = false) {
+  pushHistory();
   edges.value = edges.value.filter((edge) => edge.id !== edgeId);
   selectedEdgeId.value = "";
   hoveredEdgeId.value = "";
@@ -1429,6 +2358,7 @@ function removeNode(id: string) {
   }
   const target = nodes.value.find((node) => node.id === id);
   if (!target) return;
+  pushHistory();
   nodes.value = nodes.value.filter((node) => node.id !== id);
   edges.value = edges.value.filter(
     (edge) => edge.source !== id && edge.target !== id,
@@ -1454,6 +2384,7 @@ function addPhaseNode(
     x: WORKFLOW_LAYOUT.phaseStartX + phaseIndex * WORKFLOW_LAYOUT.phaseStepX,
     y: WORKFLOW_LAYOUT.phaseY,
   };
+  pushHistory();
   nodes.value = [
     ...nodes.value,
     makeNode(existingId, "phase", phase, position),
@@ -1479,6 +2410,7 @@ function addToolNode(
     x: (phaseAnchor?.position.x || 420) + 185,
     y: 480 + (toolNodes.value.length % 4) * 112,
   };
+  pushHistory();
   nodes.value = [
     ...nodes.value,
     makeNode(id, "tool", phase, position, undefined, tool),
@@ -1686,6 +2618,100 @@ const nodeDetailTitle = computed(() => {
   const node = nodes.value.find((item) => item.id === nodeDetailNodeId.value);
   return node ? `节点详情：${node.data.label}` : "节点详情";
 });
+
+interface EndFinding {
+  key: string;
+  title: string;
+  severity?: string;
+  sourceTool?: string;
+  vulnerabilityCode?: string;
+  description?: string;
+  evidence?: string;
+  remediation?: string;
+  taskId?: number;
+}
+const endFindingDetailVisible = ref(false);
+const endFindingDetail = ref<EndFinding | null>(null);
+
+const endNodeSummary = computed(() => {
+  const tasks = selectedRunDetail.value?.tasks ?? [];
+  const findings: EndFinding[] = [];
+  const sevCount: Record<string, number> = {
+    critical: 0,
+    high: 0,
+    medium: 0,
+    low: 0,
+    info: 0,
+  };
+  let finished = 0;
+  for (const task of tasks) {
+    if (["SUCCESS", "COMPLETED", "FAILED"].includes(task.status)) finished++;
+    const result = parseTaskResult(task);
+    const list = result?.findings;
+    if (!Array.isArray(list)) continue;
+    (list as Array<Record<string, unknown>>).forEach((f) => {
+      const severity = String(f.severity ?? "").toLowerCase();
+      if (["critical", "high", "medium", "low", "info"].includes(severity)) {
+        sevCount[severity]++;
+      }
+      findings.push({
+        key: `${task.id}-${findings.length}`,
+        title:
+          (typeof f.title === "string" && f.title) ||
+          (typeof f.name === "string" && f.name) ||
+          "未命名发现",
+        severity: severity || undefined,
+        sourceTool: task.toolCode,
+        vulnerabilityCode:
+          typeof f.vulnerabilityCode === "string"
+            ? f.vulnerabilityCode
+            : undefined,
+        description:
+          typeof f.description === "string" ? f.description : undefined,
+        evidence: typeof f.evidence === "string" ? f.evidence : undefined,
+        remediation:
+          typeof f.remediation === "string" ? f.remediation : undefined,
+        taskId: task.id,
+      });
+    });
+  }
+  return {
+    findings,
+    severity: sevCount,
+    finished,
+    total: tasks.length,
+    run: selectedRunDetail.value?.run,
+  };
+});
+
+function openEndFinding(finding: EndFinding) {
+  endFindingDetail.value = finding;
+  endFindingDetailVisible.value = true;
+}
+
+function endFindingTagType(severity?: string) {
+  switch ((severity || "").toLowerCase()) {
+    case "critical":
+    case "high":
+      return "danger" as const;
+    case "medium":
+      return "warning" as const;
+    case "low":
+      return "info" as const;
+    default:
+      return "info" as const;
+  }
+}
+
+function syncEndResultsToCenter() {
+  router.push("/findings");
+  const count = endNodeSummary.value.findings.length;
+  ElMessage.success(
+    count
+      ? `已留存 ${count} 条发现到结果中心`
+      : "本轮运行未产生可留存的发现，已打开结果中心核对",
+  );
+}
 
 function nodeRunLabel(run: NodeRunState): string {
   const suffix = run.resultCount ? ` · ${run.resultCount} 项` : "";
@@ -1978,7 +3004,9 @@ function parametersForExecution(step: WorkflowStepSpec) {
     parameters.check = "cookies";
   }
   if (
-    (step.tool === "afrog_scan" || step.tool === "xray_scan") &&
+    (step.tool === "afrog_scan" ||
+      step.tool === "xray_scan" ||
+      step.tool === "nuclei_scan") &&
     parameters.allPocs !== true &&
     !Array.isArray(parameters.pocCodes)
   ) {
@@ -2010,16 +3038,20 @@ function validateExecutionInputs(steps: WorkflowStepSpec[]) {
     ) {
       return "HTTP 风险检查类型无效";
     }
-    if (step.tool === "afrog_scan" || step.tool === "xray_scan") {
+    if (
+      step.tool === "afrog_scan" ||
+      step.tool === "xray_scan" ||
+      step.tool === "nuclei_scan"
+    ) {
       const codes = parameters.pocCodes;
       if (parameters.allPocs !== true) {
         if (!Array.isArray(codes) || !codes.length || codes.length > 50) {
-          return `步骤“${step.label || step.tool}”需要选择 1 到 50 个 PoC`;
+          return `步骤“${step.label || step.tool}”需要选择 1 到 50 个 PoC / 模板`;
         }
         if (
           codes.some((code) => !/^[A-Z]{2}-[A-F0-9]{24}$/.test(String(code)))
         ) {
-          return `步骤“${step.label || step.tool}”包含无效 PoC 编号`;
+          return `步骤“${step.label || step.tool}”包含无效 PoC / 模板编号`;
         }
       }
     }
@@ -2571,15 +3603,32 @@ function onWorkflowKeydown(event: KeyboardEvent) {
       return;
     }
     selectedNodeId.value = "";
+    selectedNodeIds.value = [];
     setSelectedEdge("");
     return;
   }
   if ((event.ctrlKey || event.metaKey) && !isTypingTarget(event.target)) {
     const key = event.key.toLowerCase();
-    if (key === "c" && selectedNodeId.value) {
+    if (key === "z") {
+      event.preventDefault();
+      if (event.shiftKey) redoGraph();
+      else undoGraph();
+      return;
+    }
+    if (key === "y") {
+      event.preventDefault();
+      redoGraph();
+      return;
+    }
+    if (
+      key === "c" &&
+      (selectedNodeId.value ||
+        selectedNodeIds.value.length ||
+        flowSelectedNodeIds().length)
+    ) {
       if (canCopyNode()) {
         event.preventDefault();
-        copyNode(selectedNodeId.value);
+        copySelectedNodes();
       }
       return;
     }
@@ -2596,9 +3645,9 @@ function onWorkflowKeydown(event: KeyboardEvent) {
     isTypingTarget(event.target)
   )
     return;
-  if (selectedNodeId.value) {
+  if (selectedNodeId.value || selectedNodeIds.value.length) {
     event.preventDefault();
-    removeSelectedNode();
+    removeSelectedNodes();
     return;
   }
   if (!selectedEdgeId.value) return;
@@ -2610,6 +3659,8 @@ onMounted(() => {
   scheduleSuggestions();
   window.addEventListener("keydown", onWorkflowKeydown);
   window.addEventListener("resize", onWorkflowWindowResize);
+  document.addEventListener("fullscreenchange", onFullscreenChange);
+  document.addEventListener("webkitfullscreenchange", onFullscreenChange);
   void loadProjects();
 });
 onBeforeUnmount(() => {
@@ -2618,6 +3669,14 @@ onBeforeUnmount(() => {
   if (suggestAbort) suggestAbort.abort();
   window.removeEventListener("keydown", onWorkflowKeydown);
   window.removeEventListener("resize", onWorkflowWindowResize);
+  document.removeEventListener("fullscreenchange", onFullscreenChange);
+  document.removeEventListener("webkitfullscreenchange", onFullscreenChange);
+  if (
+    document.fullscreenElement &&
+    document.fullscreenElement === workflowEditorLayoutRef.value
+  ) {
+    void document.exitFullscreen().catch(() => {});
+  }
 });
 </script>
 
@@ -2882,6 +3941,9 @@ onBeforeUnmount(() => {
             :nodes-draggable="!viewingRunSnapshot"
             :nodes-connectable="!viewingRunSnapshot"
             :elements-selectable="true"
+            :selection-mode="SelectionMode.Partial"
+            :selection-key-code="'Shift'"
+            :multi-selection-key-code="['Control', 'Meta']"
             :delete-key-code="null"
             :min-zoom="0.2"
             :max-zoom="1.6"
@@ -2894,7 +3956,10 @@ onBeforeUnmount(() => {
             @pane-click="onPaneClick"
             @pane-context-menu="onPaneContextMenu"
             @node-context-menu="onNodeContextMenu"
+            @node-drag-start="onNodeDragStart"
+            @node-drag="onNodeDrag"
             @node-drag-stop="onNodeDragStop"
+            @selection-change="onSelectionChange"
           >
             <template #node-workflowNode="{ id, data }">
               <div
@@ -2902,10 +3967,10 @@ onBeforeUnmount(() => {
                 :class="[
                   `workflow-node--${data.nodeKind}`,
                   `workflow-node--${data.phase}`,
-                  { 'is-selected': id === selectedNodeId },
+                  { 'is-selected': id === selectedNodeId || selectedNodeIds.includes(id) },
                   nodeStatusClass(id),
                 ]"
-                @click.stop="selectCanvasNode(id)"
+                @click.stop="onNodeClick({ node: nodes.find(n => n.id === id) || { id, data, position: { x: 0, y: 0 } }, event: $event } as any)"
                 @dblclick="openNodeDetail(id)"
               >
                 <Handle
@@ -3016,6 +4081,53 @@ onBeforeUnmount(() => {
               </el-tooltip>
             </div>
           </VueFlow>
+          <svg
+            v-if="isAligning && (dragGuides.length || dragRulers.length)"
+            class="workflow-align-overlay"
+            aria-hidden="true"
+          >
+            <g
+              v-for="(guide, i) in dragGuides"
+              :key="`g-${i}`"
+              class="align-guide"
+              :class="`align-guide--${guide.axis}`"
+            >
+              <line
+                :x1="alignToScreen(guide.x1, guide.y1).x"
+                :y1="alignToScreen(guide.x1, guide.y1).y"
+                :x2="alignToScreen(guide.x2, guide.y2).x"
+                :y2="alignToScreen(guide.x2, guide.y2).y"
+              />
+            </g>
+            <g
+              v-for="(ruler, i) in dragRulers"
+              :key="`r-${i}`"
+              class="align-ruler"
+              :class="`align-ruler--${ruler.axis}`"
+            >
+              <line
+                :x1="alignToScreen(ruler.x1, ruler.y1).x"
+                :y1="alignToScreen(ruler.x1, ruler.y1).y"
+                :x2="alignToScreen(ruler.x2, ruler.y2).x"
+                :y2="alignToScreen(ruler.x2, ruler.y2).y"
+              />
+              <rect
+                class="align-ruler-badge"
+                :x="alignToScreen(ruler.x, ruler.y).x - 22"
+                :y="alignToScreen(ruler.x, ruler.y).y - 9"
+                width="44"
+                height="18"
+                rx="4"
+              />
+              <text
+                :x="alignToScreen(ruler.x, ruler.y).x"
+                :y="alignToScreen(ruler.x, ruler.y).y"
+                text-anchor="middle"
+                dominant-baseline="middle"
+                >{{ ruler.label }}</text
+              >
+            </g>
+          </svg>
           <Transition name="workflow-popover">
             <aside
               v-if="workflowConfigVisible"
@@ -3253,10 +4365,10 @@ onBeforeUnmount(() => {
         </div>
         <footer class="editor-foot">
           <span
-            >提示：选中节点后按 Ctrl+C 直接复制节点；Delete
-            删除节点/连线。也可点击节点垃圾桶或连线上的 ✕
-            删除。拖动只改布局，不改执行顺序。</span
-          ><span v-if="selectedNode"
+            >提示：按住 Shift 拖动鼠标可框选多个节点；按住 Ctrl 点击可多选；Ctrl+C 批量复制 / Delete 批量删除。</span
+          ><span v-if="selectedNodeIds.length > 1"
+            >已多选 {{ selectedNodeIds.length }} 个节点：Ctrl+C 批量复制 / Delete 批量删除</span
+          ><span v-else-if="selectedNode"
             >已选节点：{{ selectedNode.data.label
             }}{{
               selectedNode.data.nodeKind === "system"
@@ -3366,23 +4478,65 @@ onBeforeUnmount(() => {
 
               <template
                 v-if="
-                  ['afrog_scan', 'xray_scan'].includes(
+                  ['afrog_scan', 'xray_scan', 'nuclei_scan'].includes(
                     selectedToolNode.data.tool || '',
                   )
                 "
               >
-                <el-form-item label="PoC 范围">
+                <el-form-item label="PoC / 模板范围">
                   <el-checkbox v-model="selectedAllPocs">
-                    使用已同步且启用的全部 PoC
+                    使用已同步且启用的全部 PoC / 模板
                   </el-checkbox>
                 </el-form-item>
-                <el-form-item v-if="!selectedAllPocs" label="PoC 编号">
-                  <el-input
-                    v-model="selectedPocCodesInput"
-                    type="textarea"
-                    :rows="4"
-                    placeholder="每行一个 PoC 编号，最多 50 个"
-                  />
+                <el-form-item v-if="!selectedAllPocs" label="指定 PoC / 模板">
+                  <el-select
+                    v-model="selectedPocCodesList"
+                    popper-class="workflow-poc-select-popper"
+                    multiple
+                    filterable
+                    allow-create
+                    remote
+                    reserve-keyword
+                    default-first-option
+                    collapse-tags
+                    collapse-tags-tooltip
+                    :max-collapse-tags="2"
+                    :multiple-limit="50"
+                    :loading="pocLoading"
+                    :placeholder="`下拉选择或直接输入编号 (如 NT-xxx)`"
+                    :remote-method="loadPocOptionsForTool"
+                    @visible-change="(visible: boolean) => visible && !pocOptions.length && loadPocOptionsForTool()"
+                  >
+                    <el-option
+                      v-for="poc in pocOptions"
+                      :key="poc.vulnerabilityCode"
+                      :label="formatPocOptionLabel(poc)"
+                      :value="poc.vulnerabilityCode"
+                    >
+                      <div class="workflow-poc-option">
+                        <span class="workflow-poc-option-main">
+                          <b>{{ poc.name }}</b>
+                          <small>{{ poc.sourceExternalId || poc.vulnerabilityCode }}</small>
+                        </span>
+                        <span class="workflow-poc-option-tags">
+                          <el-tag size="small" :type="pocSeverityTagType(poc.severity)" effect="plain">
+                            {{ poc.severity }}
+                          </el-tag>
+                          <el-tag
+                            v-if="poc.scanSafety && poc.scanSafety !== 'SAFE'"
+                            size="small"
+                            type="warning"
+                            effect="plain"
+                          >
+                            {{ poc.scanSafety }}
+                          </el-tag>
+                        </span>
+                      </div>
+                    </el-option>
+                  </el-select>
+                  <small class="input-hint">
+                    可搜索选择已有 PoC，或直接键入/粘贴编号后回车创建，最多 50 个。
+                  </small>
                 </el-form-item>
               </template>
 
@@ -3392,7 +4546,6 @@ onBeforeUnmount(() => {
                     'retrieve_project_context',
                     'http_headers',
                     'tls_config',
-                    'nuclei_scan',
                   ].includes(selectedToolNode.data.tool || '')
                 "
                class="node-input-empty"
@@ -3415,39 +4568,117 @@ onBeforeUnmount(() => {
               class="node-input-editor"
               aria-label="已选节点属性"
             >
-              <div class="node-editor-header">
-                <div class="node-editor-title-row">
-                  <h5 class="node-editor-title">已选节点 · {{ selectedNode.data.label }}</h5>
-                  <el-tag size="small" type="info" effect="plain" class="node-risk-tag">
-                    {{ selectedNode.data.nodeKind === "phase" ? "流程阶段" : "全局起点" }}
-                  </el-tag>
+              <template v-if="selectedNode.id === '__end__'">
+                <div class="node-editor-header">
+                  <div class="node-editor-title-row">
+                    <h5 class="node-editor-title">结束节点 · {{ selectedNode.data.label }}</h5>
+                    <el-tag size="small" type="success" effect="plain" class="node-risk-tag">结果</el-tag>
+                  </div>
+                  <p class="node-editor-desc">
+                    聚合当前运行全部任务的发现并给出整体结论，可同步留存到结果中心。
+                  </p>
                 </div>
-                <p class="node-editor-desc">
-                  {{ selectedNode.data.nodeKind === "phase" ? "用于组织能力依赖与执行流向，不直接发送网络请求。" : "定义项目评估范围与全局授权目标边界。" }}
-                </p>
-              </div>
-              <div class="node-editor-body">
-              <div class="node-info-list">
-                <div class="node-info-item">
-                  <span>节点类型</span>
-                  <span>{{ selectedNode.data.nodeKind === "phase" ? "流程阶段分组节点" : "工作流起点（运行范围输入）" }}</span>
+                <div class="node-editor-body">
+                  <template v-if="selectedRunDetail">
+                    <div class="end-run-stats">
+                      <div class="end-run-stat">
+                        <strong>{{ endNodeSummary.findings.length }}</strong>
+                        <span>发现总数</span>
+                      </div>
+                      <div class="end-run-stat">
+                        <strong>{{ endNodeSummary.finished }}/{{ endNodeSummary.total }}</strong>
+                        <span>完成任务</span>
+                      </div>
+                      <div class="end-run-stat">
+                        <strong>{{ runStatusLabel(selectedRunDetail.run.status) }}</strong>
+                        <span>运行状态</span>
+                      </div>
+                    </div>
+                    <div v-if="endNodeSummary.findings.length" class="end-severity-row">
+                      <el-tag
+                        v-for="sev in (['critical', 'high', 'medium', 'low', 'info'] as const)"
+                        :key="sev"
+                        size="small"
+                        :type="endFindingTagType(sev)"
+                        effect="plain"
+                        class="end-severity-tag"
+                      >
+                        {{ sev }} {{ endNodeSummary.severity[sev] }}
+                      </el-tag>
+                    </div>
+                    <h6 class="end-finding-head">发现明细</h6>
+                    <p v-if="!endNodeSummary.findings.length" class="node-editor-hint">
+                      本轮运行暂未产生可留存的发现。
+                    </p>
+                    <ul v-else class="end-finding-list">
+                      <li
+                        v-for="finding in endNodeSummary.findings"
+                        :key="finding.key"
+                        class="end-finding-item"
+                        @click="openEndFinding(finding)"
+                      >
+                        <el-tag
+                          size="small"
+                          :type="endFindingTagType(finding.severity)"
+                          effect="plain"
+                          class="end-finding-sev"
+                          >{{ (finding.severity || 'info').toUpperCase() }}</el-tag
+                        >
+                        <span class="end-finding-title">{{ finding.title }}</span>
+                      </li>
+                    </ul>
+                    <el-button
+                      size="small"
+                      type="primary"
+                      class="node-config-action"
+                      @click="syncEndResultsToCenter"
+                    >
+                      同步到结果中心
+                    </el-button>
+                    <p class="node-editor-hint">
+                      发现已随任务执行自动留存，点击同步打开结果中心核对与导出。
+                    </p>
+                  </template>
+                  <template v-else>
+                    <p class="node-editor-hint">尚未选择运行记录，先执行工作流或选择一次运行即可查看汇总结果。</p>
+                  </template>
                 </div>
-                <div class="node-info-item">
-                  <span>执行角色</span>
-                  <span>{{ selectedNode.data.nodeKind === "phase" ? "固定阶段节点，用于组织能力流向与依赖关系，不直接发送网络请求。" : "定义评估项目的授权目标、端口范围及全局请求上下文。" }}</span>
+              </template>
+              <template v-else>
+                <div class="node-editor-header">
+                  <div class="node-editor-title-row">
+                    <h5 class="node-editor-title">已选节点 · {{ selectedNode.data.label }}</h5>
+                    <el-tag size="small" type="info" effect="plain" class="node-risk-tag">
+                      {{ selectedNode.data.nodeKind === "phase" ? "流程阶段" : "全局起点" }}
+                    </el-tag>
+                  </div>
+                  <p class="node-editor-desc">
+                    {{ selectedNode.data.nodeKind === "phase" ? "用于组织能力依赖与执行流向，不直接发送网络请求。" : "定义项目评估范围与全局授权目标边界。" }}
+                  </p>
                 </div>
-                <el-button
-                  v-if="selectedNode.data.nodeKind === 'system'"
-                  size="small"
-                  type="primary"
-                  plain
-                  class="node-config-action"
-                  @click="openWorkflowConfig"
-                >
-                  配置全局运行范围
-                </el-button>
-              </div>
-              </div>
+                <div class="node-editor-body">
+                <div class="node-info-list">
+                  <div class="node-info-item">
+                    <span>节点类型</span>
+                    <span>{{ selectedNode.data.nodeKind === "phase" ? "流程阶段分组节点" : "工作流起点（运行范围输入）" }}</span>
+                  </div>
+                  <div class="node-info-item">
+                    <span>执行角色</span>
+                    <span>{{ selectedNode.data.nodeKind === "phase" ? "固定阶段节点，用于组织能力流向与依赖关系，不直接发送网络请求。" : "定义评估项目的授权目标、端口范围及全局请求上下文。" }}</span>
+                  </div>
+                  <el-button
+                    v-if="selectedNode.data.nodeKind === 'system'"
+                    size="small"
+                    type="primary"
+                    plain
+                    class="node-config-action"
+                    @click="openWorkflowConfig"
+                  >
+                    配置全局运行范围
+                  </el-button>
+                </div>
+                </div>
+              </template>
             </section>
             <div v-else class="node-tab-empty">
               <FluentIcon name="edit" />
@@ -3645,9 +4876,21 @@ onBeforeUnmount(() => {
 
         <div
           class="suggest-panel"
+          ref="suggestPanelEl"
           :class="{ collapsed: !suggestExpanded }"
+          :style="
+            suggestExpanded && suggestHeight
+              ? { height: suggestHeight + 'px', maxHeight: suggestHeight + 'px' }
+              : undefined
+          "
           aria-label="大模型实时建议"
         >
+          <div
+            v-if="suggestExpanded"
+            class="suggest-resizer"
+            title="拖动调整建议面板高度"
+            @pointerdown="startSuggestResize"
+          ></div>
           <div class="suggest-head">
             <button
               type="button"
@@ -3851,6 +5094,41 @@ onBeforeUnmount(() => {
           "
           description="暂无结构化输出"
         />
+      </div>
+    </el-dialog>
+
+    <el-dialog
+      v-model="endFindingDetailVisible"
+      :title="endFindingDetail?.title || '发现详情'"
+      width="620px"
+      append-to-body
+    >
+      <div v-if="endFindingDetail" class="end-finding-detail">
+        <div class="node-detail-meta">
+          <el-tag :type="endFindingTagType(endFindingDetail.severity)" effect="dark">
+            {{ (endFindingDetail.severity || 'info').toUpperCase() }}
+          </el-tag>
+          <span v-if="endFindingDetail.sourceTool"
+            >来源：{{ endFindingDetail.sourceTool }}</span
+          >
+          <span v-if="endFindingDetail.vulnerabilityCode"
+            >{{ endFindingDetail.vulnerabilityCode }}</span
+          >
+          <span v-if="endFindingDetail.taskId"
+            >任务 #{{ endFindingDetail.taskId }}</span
+          >
+        </div>
+        <p v-if="endFindingDetail.description" class="node-detail-summary">
+          {{ endFindingDetail.description }}
+        </p>
+        <template v-if="endFindingDetail.evidence">
+          <h6 class="end-finding-field">证据</h6>
+          <pre class="node-detail-log">{{ endFindingDetail.evidence }}</pre>
+        </template>
+        <template v-if="endFindingDetail.remediation">
+          <h6 class="end-finding-field">修复建议</h6>
+          <p class="node-detail-summary">{{ endFindingDetail.remediation }}</p>
+        </template>
       </div>
     </el-dialog>
   </section>
@@ -4067,7 +5345,8 @@ onBeforeUnmount(() => {
   height: 100%;
 }
 .workflow-editor-layout.is-fullscreen,
-.workflow-editor-layout:fullscreen {
+.workflow-editor-layout:fullscreen,
+.workflow-editor-layout:-webkit-full-screen {
   position: fixed !important;
   top: 0 !important;
   left: 0 !important;
@@ -4076,32 +5355,81 @@ onBeforeUnmount(() => {
   width: 100vw !important;
   height: 100vh !important;
   z-index: 2000 !important;
-  background: var(--app-bg) !important;
-  -webkit-backdrop-filter: blur(28px) saturate(180%) !important;
-  backdrop-filter: blur(28px) saturate(180%) !important;
+  background-color: light-dark(#eaf3fb, #12161f) !important;
+  background-image:
+    radial-gradient(
+      circle at 1px 1px,
+      light-dark(rgba(0, 120, 212, 0.18), rgba(255, 255, 255, 0.07)) 1.2px,
+      transparent 0
+    ),
+    radial-gradient(
+      ellipse 80% 50% at 50% 0%,
+      light-dark(rgba(0, 120, 212, 0.16), rgba(0, 120, 212, 0.22)) 0%,
+      transparent 80%
+    ),
+    linear-gradient(
+      135deg,
+      light-dark(#edf6fd, #161c28) 0%,
+      light-dark(#e3eef9, #0e121a) 100%
+    ) !important;
+  background-size: 24px 24px, 100% 100%, 100% 100% !important;
   padding: 14px !important;
   box-sizing: border-box !important;
   margin: 0 !important;
   grid-template-columns: minmax(0, 1fr) minmax(380px, 420px) !important;
   gap: 14px !important;
   min-height: 100vh !important;
+  animation: fluentFullscreenEnter 300ms cubic-bezier(0.1, 0.9, 0.2, 1) both;
+}
+.workflow-editor-layout:fullscreen,
+.workflow-editor-layout:-webkit-full-screen {
+  position: static !important;
+  width: 100% !important;
+  height: 100% !important;
 }
 .workflow-editor-layout.is-fullscreen .editor-card,
-.workflow-editor-layout:fullscreen .editor-card {
+.workflow-editor-layout:fullscreen .editor-card,
+.workflow-editor-layout:-webkit-full-screen .editor-card {
   height: 100% !important;
   min-height: 0 !important;
   box-shadow: var(--fluent-shadow-16) !important;
+  animation: fluentCardRise 320ms cubic-bezier(0.1, 0.9, 0.2, 1) both;
 }
 .workflow-editor-layout.is-fullscreen .workflow-library,
-.workflow-editor-layout:fullscreen .workflow-library {
+.workflow-editor-layout:fullscreen .workflow-library,
+.workflow-editor-layout:-webkit-full-screen .workflow-library {
   height: 100% !important;
   min-height: 0 !important;
   box-shadow: var(--fluent-shadow-16) !important;
+  animation: fluentCardRise 320ms cubic-bezier(0.1, 0.9, 0.2, 1) 50ms both;
 }
 .workflow-editor-layout.is-fullscreen .flow-canvas,
-.workflow-editor-layout:fullscreen .flow-canvas {
+.workflow-editor-layout:fullscreen .flow-canvas,
+.workflow-editor-layout:-webkit-full-screen .flow-canvas {
   height: 100% !important;
   min-height: 0 !important;
+}
+
+@keyframes fluentFullscreenEnter {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes fluentCardRise {
+  from {
+    opacity: 0.7;
+    transform: translateY(12px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 .editor-card {
   display: flex;
@@ -4207,6 +5535,51 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow: hidden;
   background: var(--app-surface-soft);
+  user-select: none;
+  -webkit-user-select: none;
+}
+.flow-canvas :deep(.vue-flow__selection) {
+  border: 1.5px dashed var(--app-accent) !important;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--app-accent) 14%, transparent) !important;
+  pointer-events: none;
+  z-index: 100;
+}
+.flow-canvas :deep(.vue-flow__nodesselection-rect) {
+  border: 1px dashed color-mix(in srgb, var(--app-accent) 60%, var(--app-border)) !important;
+  border-radius: var(--fluent-radius-card);
+  background: color-mix(in srgb, var(--app-accent) 5%, transparent) !important;
+}
+.workflow-align-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+.align-guide line {
+  stroke: var(--app-accent);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+  vector-effect: non-scaling-stroke;
+}
+.align-ruler line {
+  stroke: color-mix(in srgb, var(--app-accent) 75%, var(--app-text));
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.align-ruler-badge {
+  fill: var(--app-surface-strong);
+  stroke: color-mix(in srgb, var(--app-accent) 60%, var(--app-border));
+}
+.align-ruler text {
+  fill: var(--app-text);
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--app-font-ui, inherit);
+  user-select: none;
 }
 .workflow-config-panel {
   position: absolute;
@@ -4774,23 +6147,22 @@ onBeforeUnmount(() => {
   --el-segmented-item-hover-color: var(--app-text);
   --el-segmented-item-hover-bg-color: transparent;
   --el-segmented-item-active-bg-color: transparent;
-  --el-border-radius-base: var(--fluent-radius-control);
+  --el-border-radius-base: var(--fluent-radius-circular);
   min-height: 32px;
   padding: 2px;
   border: 1px solid var(--app-border);
-  border-radius: var(--fluent-radius-control);
+  border-radius: var(--fluent-radius-circular);
   background: var(--el-segmented-bg-color);
 }
 .workflow-library-tabs :deep(.el-segmented__group) {
   display: flex;
-  gap: 2px;
   width: 100%;
 }
 .workflow-library-tabs :deep(.el-segmented__item) {
   min-width: 0;
   flex: 1;
   min-height: 28px;
-  border-radius: calc(var(--fluent-radius-control) - 2px);
+  border-radius: var(--fluent-radius-circular);
   color: var(--app-muted);
   font-weight: 500;
   transition: color var(--fluent-duration-fast, 150ms)
@@ -4806,9 +6178,19 @@ onBeforeUnmount(() => {
 .workflow-library-tabs :deep(.el-segmented__item-selected) {
   background: var(--el-segmented-item-selected-bg-color);
   border: 1px solid var(--app-border);
-  border-radius: calc(var(--fluent-radius-control) - 2px);
+  border-radius: var(--fluent-radius-circular);
   box-shadow: var(--fluent-shadow-2);
   box-sizing: border-box;
+  width: 50% !important;
+  transform: translateX(0) translateZ(0) !important;
+  transition: transform var(--fluent-duration-normal, 200ms)
+    var(--fluent-curve-standard, ease);
+}
+.workflow-library-tabs :deep(.el-segmented__group):has(
+    .el-segmented__item.is-selected:last-child
+  )
+  .el-segmented__item-selected {
+  transform: translateX(100%) translateZ(0) !important;
 }
 .workflow-tab-label {
   display: inline-flex;
@@ -4912,6 +6294,48 @@ onBeforeUnmount(() => {
   font-size: var(--type-micro);
   line-height: 1.5;
 }
+.workflow-poc-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 2px 0;
+}
+.workflow-poc-option-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+.workflow-poc-option-main b {
+  font-size: var(--type-caption);
+  color: var(--app-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workflow-poc-option-main small {
+  font-size: var(--type-micro);
+  color: var(--app-muted);
+  font-family: var(--fluent-mono, monospace);
+}
+.workflow-poc-option-tags {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+:global(.workflow-poc-select-popper) {
+  min-width: 320px !important;
+  max-width: min(480px, calc(100vw - 32px)) !important;
+}
+:global(.workflow-poc-select-popper .el-select-dropdown__item) {
+  height: auto !important;
+  min-height: 42px !important;
+  padding: 6px 14px !important;
+  line-height: 1.4 !important;
+}
 .node-editor-header {
   margin-bottom: 16px;
 }
@@ -4934,6 +6358,95 @@ onBeforeUnmount(() => {
   color: var(--app-muted);
   font-size: var(--type-micro);
   line-height: 1.6;
+}
+.node-editor-hint {
+  margin: 10px 0 0;
+  color: var(--app-muted);
+  font-size: var(--type-micro);
+  line-height: 1.6;
+}
+.end-run-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.end-run-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 4px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--fluent-radius-card);
+  background: var(--app-surface-soft);
+}
+.end-run-stat strong {
+  color: var(--app-accent);
+  font-size: var(--type-caption);
+  line-height: 1.2;
+}
+.end-run-stat span {
+  color: var(--app-muted);
+  font-size: var(--type-micro);
+}
+.end-severity-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 12px;
+}
+.end-finding-head {
+  margin: 0 0 6px;
+  color: var(--app-text);
+  font-size: var(--type-caption);
+  font-weight: 600;
+}
+.end-finding-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid var(--app-border);
+  border-radius: var(--fluent-radius-card);
+}
+.end-finding-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--app-border-subtle, var(--app-border));
+}
+.end-finding-item:last-child {
+  border-bottom: none;
+}
+.end-finding-item:hover {
+  background: color-mix(in srgb, var(--app-accent) 8%, transparent);
+}
+.end-finding-sev {
+  flex: none;
+}
+.end-finding-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--type-caption);
+  color: var(--app-text);
+}
+.end-finding-field {
+  margin: 12px 0 4px;
+  color: var(--app-muted);
+  font-size: var(--type-micro);
+  font-weight: 600;
+}
+.end-finding-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 .node-risk-tag {
   flex: none;
@@ -5005,32 +6518,37 @@ onBeforeUnmount(() => {
   max-height: none;
   overflow: visible;
 }
+.suggest-resizer {
+  flex: none;
+  height: 8px;
+  margin: -4px 0 -4px;
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cpath d='M14 2 L9.5 7 L18.5 7 Z M14 26 L9.5 21 L18.5 21 Z' fill='%23000'/%3E%3C/svg%3E") 14 14, ns-resize;
+  touch-action: none;
+  user-select: none;
+}
+.is-resizing-suggest {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cpath d='M14 2 L9.5 7 L18.5 7 Z M14 26 L9.5 21 L18.5 21 Z' fill='%23000'/%3E%3C/svg%3E") 14 14, ns-resize !important;
+  user-select: none !important;
+}
 .suggest-content {
-  display: grid;
-  grid-template-rows: minmax(0, 1fr);
+  display: block;
+  max-height: 520px;
+  min-height: 0;
+  overflow: hidden;
   opacity: 1;
-  transition:
-    grid-template-rows
-      var(--fluent-collapse-motion, 220ms cubic-bezier(0.1, 0.9, 0.2, 1)),
-    opacity var(--fluent-duration-fast, 150ms)
-      var(--fluent-curve-standard, ease);
+  transition: max-height var(--fluent-collapse-motion, 260ms
+        cubic-bezier(0.1, 0.9, 0.2, 1)),
+    opacity var(--fluent-duration-fast, 150ms) var(--fluent-curve-standard, ease);
 }
 .suggest-content-inner {
   display: grid;
-  min-height: 0;
   gap: 8px;
-  overflow: hidden;
-  transform: translateY(0);
-  transition: transform
-    var(--fluent-collapse-motion, 220ms cubic-bezier(0.1, 0.9, 0.2, 1));
+  overflow: visible;
 }
 .suggest-panel.collapsed .suggest-content {
-  grid-template-rows: minmax(0, 0fr);
+  max-height: 0;
   opacity: 0;
   pointer-events: none;
-}
-.suggest-panel.collapsed .suggest-content-inner {
-  transform: translateY(-4px);
 }
 .suggest-toggle {
   display: flex;

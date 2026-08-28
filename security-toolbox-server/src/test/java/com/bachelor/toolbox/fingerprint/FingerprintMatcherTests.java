@@ -91,6 +91,51 @@ class FingerprintMatcherTests {
     assertThat(result.matches()).isEmpty();
   }
 
+  @Test
+  void matchesFaviconMurmurHashAndMd5Correctly() {
+    FingerprintRuleCatalog.Rule iconMurmurRule =
+        rule(
+            "icon-murmur-rule",
+            "Icon Murmur Rule",
+            90,
+            null,
+            null,
+            null,
+            null,
+            null,
+            List.of("-123456789"),
+            null);
+
+    FingerprintRuleCatalog.Rule iconMd5Rule =
+        rule(
+            "icon-md5-rule",
+            "Icon MD5 Rule",
+            95,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            List.of("d41d8cd98f00b204e9800998ecf8427e"));
+
+    FingerprintMatcher matcher = matcher(List.of(iconMurmurRule, iconMd5Rule));
+
+    FingerprintMatcher.Result result =
+        matcher.match(
+            Map.of(),
+            "<html><body>test</body></html>",
+            "-123456789",
+            "d41d8cd98f00b204e9800998ecf8427e");
+
+    assertThat(result.matches())
+        .extracting(FingerprintMatcher.Match::id)
+        .containsExactly("icon-md5-rule", "icon-murmur-rule");
+
+    assertThat(result.matches().get(0).evidence()).containsExactly("icon_md5");
+    assertThat(result.matches().get(1).evidence()).containsExactly("icon_hash");
+  }
+
   private FingerprintMatcher matcher(List<FingerprintRuleCatalog.Rule> rules) {
     FingerprintRuleCatalog catalog = mock(FingerprintRuleCatalog.class);
     FingerprintRuleCatalog.CatalogInfo info =
@@ -101,7 +146,7 @@ class FingerprintMatcherTests {
   }
 
   private FingerprintRuleCatalog.Rule bodyRule(String id, int confidence, String marker) {
-    return rule(id, id, confidence, null, List.of(marker), null, null, null);
+    return rule(id, id, confidence, null, List.of(marker), null, null, null, null, null);
   }
 
   private FingerprintRuleCatalog.Rule rule(
@@ -113,7 +158,21 @@ class FingerprintMatcherTests {
       List<String> cookies,
       List<String> title,
       List<String> header) {
+    return rule(id, name, confidence, headers, body, cookies, title, header, null, null);
+  }
+
+  private FingerprintRuleCatalog.Rule rule(
+      String id,
+      String name,
+      int confidence,
+      Map<String, List<String>> headers,
+      List<String> body,
+      List<String> cookies,
+      List<String> title,
+      List<String> header,
+      List<String> faviconHash,
+      List<String> faviconMd5) {
     return new FingerprintRuleCatalog.Rule(
-        id, name, "FRAMEWORK", confidence, headers, body, cookies, title, header);
+        id, name, "FRAMEWORK", confidence, headers, body, cookies, title, header, faviconHash, faviconMd5);
   }
 }

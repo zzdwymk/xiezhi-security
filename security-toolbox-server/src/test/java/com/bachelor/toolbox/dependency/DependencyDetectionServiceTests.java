@@ -28,7 +28,7 @@ class DependencyDetectionServiceTests {
         };
     CommandRunner runner =
         (executable, arguments, timeout) -> {
-          assertThat(timeout).isEqualTo(Duration.ofMillis(1300));
+          assertThat(timeout).isEqualTo(Duration.ofMillis(3500));
           if (executable.getFileName().toString().startsWith("nmap")) {
             return CommandResult.completed(0, "Nmap version 7.99\n");
           }
@@ -113,7 +113,7 @@ class DependencyDetectionServiceTests {
 
     assertThat(nuclei.status()).isEqualTo("TIMEOUT");
     assertThat(nuclei.version()).isEqualTo("unknown");
-    assertThat(nuclei.message()).contains("1.3 秒");
+    assertThat(nuclei.message()).contains("3.5 秒");
   }
 
   @Test

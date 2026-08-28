@@ -21,7 +21,15 @@ public class FingerprintMatcher {
   }
 
   public Result match(Map<String, List<String>> headers, String body) {
-    MatchContext context = createContext(headers, body);
+    return match(headers, body, "", "");
+  }
+
+  public Result match(
+      Map<String, List<String>> headers,
+      String body,
+      String faviconMurmurHash,
+      String faviconMd5) {
+    MatchContext context = createContext(headers, body, faviconMurmurHash, faviconMd5);
     List<Match> matches = new ArrayList<>();
 
     for (FingerprintRuleCatalog.Rule rule : catalog.rules()) {
@@ -35,32 +43,75 @@ public class FingerprintMatcher {
     return buildResult(context, matches);
   }
 
-  private MatchContext createContext(Map<String, List<String>> headers, String body) {
+  private MatchContext createContext(
+      Map<String, List<String>> headers,
+      String body,
+      String faviconMurmurHash,
+      String faviconMd5) {
     String boundedBody = limitBody(body);
     return new MatchContext(
         headers,
         boundedBody,
         extractTitle(boundedBody),
         String.join(";", headerValues(headers, "set-cookie")),
-        buildHeaderText(headers));
+        buildHeaderText(headers),
+        normalize(faviconMurmurHash),
+        normalize(faviconMd5));
   }
 
   private Match matchRule(FingerprintRuleCatalog.Rule rule, MatchContext context) {
     List<String> evidence = new ArrayList<>();
-    boolean configured = rule.headers() != null && !rule.headers().isEmpty();
-    boolean matched = matchNamedHeaders(rule.headers(), context.headers(), evidence);
+    boolean configured = false;
+    boolean matched = true;
 
-    configured |= isConfigured(rule.header());
-    matched |= addEvidenceIfMatched(context.headerText(), rule.header(), "header", evidence);
+    if (rule.headers() != null && !rule.headers().isEmpty()) {
+      configured = true;
+      if (!matchNamedHeaders(rule.headers(), context.headers(), evidence)) {
+        matched = false;
+      }
+    }
 
-    configured |= isConfigured(rule.body());
-    matched |= addEvidenceIfMatched(context.body(), rule.body(), "body", evidence);
+    if (isConfigured(rule.header())) {
+      configured = true;
+      if (!addEvidenceIfMatched(context.headerText(), rule.header(), "header", evidence)) {
+        matched = false;
+      }
+    }
 
-    configured |= isConfigured(rule.cookies());
-    matched |= addEvidenceIfMatched(context.cookies(), rule.cookies(), "cookie", evidence);
+    if (isConfigured(rule.body())) {
+      configured = true;
+      if (!addEvidenceIfMatched(context.body(), rule.body(), "body", evidence)) {
+        matched = false;
+      }
+    }
 
-    configured |= isConfigured(rule.title());
-    matched |= addEvidenceIfMatched(context.title(), rule.title(), "title", evidence);
+    if (isConfigured(rule.cookies())) {
+      configured = true;
+      if (!addEvidenceIfMatched(context.cookies(), rule.cookies(), "cookie", evidence)) {
+        matched = false;
+      }
+    }
+
+    if (isConfigured(rule.title())) {
+      configured = true;
+      if (!addEvidenceIfMatched(context.title(), rule.title(), "title", evidence)) {
+        matched = false;
+      }
+    }
+
+    if (isConfigured(rule.faviconHash())) {
+      configured = true;
+      if (!addEvidenceIfMatched(context.faviconMurmurHash(), rule.faviconHash(), "icon_hash", evidence)) {
+        matched = false;
+      }
+    }
+
+    if (isConfigured(rule.faviconMd5())) {
+      configured = true;
+      if (!addEvidenceIfMatched(context.faviconMd5(), rule.faviconMd5(), "icon_md5", evidence)) {
+        matched = false;
+      }
+    }
 
     if (!configured || !matched) {
       return null;
@@ -72,24 +123,23 @@ public class FingerprintMatcher {
       Map<String, List<String>> expectedHeaders,
       Map<String, List<String>> actualHeaders,
       List<String> evidence) {
-    if (expectedHeaders == null) {
-      return false;
+    if (expectedHeaders == null || expectedHeaders.isEmpty()) {
+      return true;
     }
 
-    boolean matched = false;
     for (Map.Entry<String, List<String>> expected : expectedHeaders.entrySet()) {
       String actual = String.join(";", headerValues(actualHeaders, expected.getKey()));
-      if (containsAny(actual, expected.getValue())) {
-        matched = true;
-        evidence.add("header:" + expected.getKey());
+      if (!containsAll(actual, expected.getValue())) {
+        return false;
       }
+      evidence.add("header:" + expected.getKey());
     }
-    return matched;
+    return true;
   }
 
   private boolean addEvidenceIfMatched(
       String actual, List<String> expected, String evidenceType, List<String> evidence) {
-    if (!isConfigured(expected) || !containsAny(actual, expected)) {
+    if (!isConfigured(expected) || !containsAll(actual, expected)) {
       return false;
     }
     evidence.add(evidenceType);
@@ -100,9 +150,9 @@ public class FingerprintMatcher {
     return values != null && !values.isEmpty();
   }
 
-  private boolean containsAny(String actual, List<String> values) {
+  private boolean containsAll(String actual, List<String> values) {
     String normalizedActual = normalize(actual);
-    if (values == null) {
+    if (values == null || values.isEmpty()) {
       return false;
     }
 
@@ -110,13 +160,15 @@ public class FingerprintMatcher {
       if (value == null) {
         continue;
       }
-      if (value.isEmpty()
-          ? !normalizedActual.isEmpty()
-          : normalizedActual.contains(normalize(value))) {
-        return true;
+      if (value.isEmpty()) {
+        if (normalizedActual.isEmpty()) {
+          return false;
+        }
+      } else if (!normalizedActual.contains(normalize(value))) {
+        return false;
       }
     }
-    return false;
+    return true;
   }
 
   private String normalize(String value) {
@@ -183,7 +235,9 @@ public class FingerprintMatcher {
       String body,
       String title,
       String cookies,
-      String headerText) {}
+      String headerText,
+      String faviconMurmurHash,
+      String faviconMd5) {}
 
   public record Match(
       String id, String name, String category, int confidence, List<String> evidence) {}

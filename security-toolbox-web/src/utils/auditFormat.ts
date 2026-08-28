@@ -130,6 +130,59 @@ export const AUDIT_RESULT_META: Record<
   WAITING_TASKS: { label: "等待前置", tagType: "info" },
 };
 
+export const APPROVAL_ACTION_LABELS: Record<string, string> = {
+  SCAN: "主动扫描",
+  RETEST: "漏洞复测",
+  POST_SCAN: "后续验证",
+  OTHER: "其他安全操作",
+};
+
+export const PROJECT_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "进行中",
+  DRAFT: "草稿",
+  PAUSED: "已暂停",
+  COMPLETED: "已完成",
+  ARCHIVED: "已归档",
+};
+
+export const APPROVAL_STATUS_LABELS: Record<string, string> = {
+  PENDING: "待审批",
+  APPROVED: "已通过",
+  REJECTED: "已拒绝",
+};
+
+export function formatApprovalAction(action?: string): string {
+  if (!action) return "未知动作";
+  const key = String(action).trim().toUpperCase();
+  return APPROVAL_ACTION_LABELS[key] || action;
+}
+
+export function formatAuditDetail(detail?: string): string {
+  if (!detail) return "-";
+  let text = String(detail).trim();
+  if (!text) return "-";
+  // 结构化片段：approvalId=1;status=APPROVED / approvalId=1
+  text = text.replace(/approvalId\s*=\s*(\d+)/gi, "审批单#$1");
+  text = text.replace(/projectId\s*=\s*(\d+)/gi, "项目#$1");
+  text = text.replace(/taskId\s*=\s*(\d+)/gi, "任务#$1");
+  text = text.replace(/actionId\s*=\s*(\d+)/gi, "动作#$1");
+  // 统一中文化所有已知英文枚举（大小写不敏感，使用单词边界）
+  const tokenMap: Record<string, string> = {
+    ...PROJECT_STATUS_LABELS,
+    ...APPROVAL_STATUS_LABELS,
+    ...APPROVAL_ACTION_LABELS,
+  };
+  Object.entries(tokenMap).forEach(([en, zh]) => {
+    text = text.replace(new RegExp(`\\b${en}\\b`, "gi"), zh);
+  });
+  // key=value 形式残留的英文 key 也中文化
+  text = text
+    .replace(/\bstatus\s*=/gi, "状态=")
+    .replace(/\baction\s*=/gi, "动作=")
+    .replace(/\bdecision\s*=/gi, "决定=");
+  return text;
+}
+
 export function formatAuditAction(action?: string): string {
   if (!action) return "未知操作";
   const key = String(action).trim().toUpperCase();

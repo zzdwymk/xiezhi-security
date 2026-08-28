@@ -703,6 +703,45 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
   background: color-mix(in srgb, CanvasText 5%, var(--app-surface-strong));
 }
 
+.el-segmented {
+  --el-segmented-color: var(--app-muted);
+  --el-segmented-bg-color: var(--app-surface-soft);
+  --el-segmented-item-selected-color: var(--app-text);
+  --el-segmented-item-selected-bg-color: var(--app-surface-strong);
+  --el-segmented-item-hover-color: var(--app-text);
+  --el-segmented-item-hover-bg-color: transparent;
+  --el-segmented-item-active-bg-color: transparent;
+  --el-border-radius-base: var(--fluent-radius-circular);
+  padding: 2px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--fluent-radius-circular);
+  background: var(--el-segmented-bg-color);
+}
+
+.el-segmented .el-segmented__item {
+  border-radius: var(--fluent-radius-circular);
+  color: var(--app-muted);
+  transition: color var(--fluent-duration-fast, 150ms)
+    var(--fluent-curve-standard, ease);
+}
+
+.el-segmented .el-segmented__item:hover {
+  color: var(--app-text);
+}
+
+.el-segmented .el-segmented__item.is-selected {
+  color: var(--el-segmented-item-selected-color);
+  font-weight: 600;
+}
+
+.el-segmented .el-segmented__item-selected {
+  border: 1px solid var(--app-border);
+  border-radius: var(--fluent-radius-circular);
+  background: var(--el-segmented-item-selected-bg-color);
+  box-shadow: var(--fluent-shadow-2);
+  box-sizing: border-box;
+}
+
 .el-input__wrapper,
 .el-select__wrapper,
 .el-textarea__inner,
@@ -832,6 +871,12 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
   background: var(--app-hover-popup-bg) !important;
   color: var(--app-hover-popup-text) !important;
   text-shadow: none !important;
+  max-width: min(520px, calc(100vw - 32px)) !important;
+  white-space: normal !important;
+  word-break: break-word !important;
+  overflow-wrap: anywhere !important;
+  line-height: 1.55 !important;
+  box-sizing: border-box;
 }
 
  .el-popper[role="tooltip"]:not(.el-select__popper):not(
@@ -841,6 +886,11 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
    ):not(.el-popover)
    .el-popper__content {
    color: var(--app-hover-popup-text) !important;
+   max-width: 100% !important;
+   white-space: normal !important;
+   word-break: break-word !important;
+   overflow-wrap: anywhere !important;
+   line-height: 1.55 !important;
  }
 
   /* Tags that appear inside inverted hover tooltips (e.g. el-select
@@ -857,8 +907,22 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
     --el-tag-text-color: var(--app-hover-popup-text);
     background-color: transparent !important;
     border-color: transparent !important;
+    max-width: 100% !important;
+    height: auto !important;
+    min-height: 20px !important;
+    padding: 2px 6px !important;
+    white-space: normal !important;
+    line-height: 1.4 !important;
   }
  
+  .el-select__tags-tooltip .el-select-tags-wrapper,
+  .el-popper .el-select-tags-wrapper {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    gap: 6px !important;
+    max-width: min(440px, calc(100vw - 48px)) !important;
+  }
+
  /* Element Plus draws its arrow as a rotated square; remove it everywhere. */
  .el-popper__arrow,
 .el-popper__arrow::before {
@@ -868,7 +932,10 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
 .el-dropdown-menu__item,
 .el-select-dropdown__item,
 .el-cascader-node {
-  min-height: 32px;
+  height: auto !important;
+  min-height: 34px !important;
+  padding: 6px 14px !important;
+  line-height: 1.4 !important;
   border-radius: var(--fluent-radius-control);
   color: var(--app-text);
   font-size: 12px;
@@ -1706,6 +1773,10 @@ html .desktop-v2-native-frame .vuln-workbench {
 
 .setup-logo {
   color: var(--app-accent);
+}
+
+.setup-steps li {
+  border-radius: 8px !important;
 }
 
 .setup-steps li.active {

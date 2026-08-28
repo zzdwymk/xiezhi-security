@@ -148,10 +148,11 @@ class ProbeServiceTest {
     }
 
     AuthorizedTarget target = authorizedTarget("http://127.0.0.1:" + closedPort, closedPort);
+    target.setAllowedPorts(String.valueOf(closedPort));
     stubAuthorizedProject(target);
     when(results.save(any(ProbeResult.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-    ProbeResult result = service().probe(requestFor(target.getId(), null));
+    ProbeResult result = service().probe(requestFor(target.getId(), "http://127.0.0.1:" + closedPort));
 
     assertThat(result.getEvidence()).contains("\"status\":\"UNAVAILABLE\"").contains("连接被拒绝");
     assertThat(result.getWaf()).isEqualTo("未识别");
@@ -178,7 +179,7 @@ class ProbeServiceTest {
       int port = server.getAddress().getPort();
       AuthorizedTarget target = authorizedTarget("http://127.0.0.1:" + port, port);
       stubAuthorizedProject(target);
-      when(fingerprints.match(any(), any()))
+      when(fingerprints.match(any(), any(), any(), any()))
           .thenReturn(
               new FingerprintMatcher.Result(
                   new FingerprintRuleCatalog.CatalogInfo("test", "sha256:test", 0),
@@ -186,7 +187,7 @@ class ProbeServiceTest {
                   List.of()));
       when(results.save(any(ProbeResult.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-      ProbeResult result = service().probe(requestFor(target.getId(), null));
+      ProbeResult result = service().probe(requestFor(target.getId(), "http://127.0.0.1:" + port));
 
       assertThat(result.getEvidence()).contains("\"status\":200").contains("Local probe");
       assertThat(upgrade.get()).isNull();

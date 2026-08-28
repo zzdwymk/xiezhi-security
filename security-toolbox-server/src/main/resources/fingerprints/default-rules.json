@@ -141,6 +141,10 @@
    "confidence": 78,
    "body": [
     "whitelabel error page"
+   ],
+   "faviconHash": [
+    "116323821",
+    "-1826674681"
    ]
   },
   {
@@ -405,6 +409,9 @@
    ],
    "title": [
     "宝塔"
+   ],
+   "faviconHash": [
+    "-797034209"
    ]
   },
   {
@@ -421,6 +428,10 @@
    ],
    "cookies": [
     "phpmyadmin"
+   ],
+   "faviconHash": [
+    "1536780775",
+    "-1244030616"
    ]
   },
   {
@@ -447,6 +458,9 @@
    },
    "body": [
     "jenkins-session"
+   ],
+   "faviconHash": [
+    "-1816789495"
    ]
   },
   {

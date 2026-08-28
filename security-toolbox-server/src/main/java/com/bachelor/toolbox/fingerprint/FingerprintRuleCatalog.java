@@ -364,7 +364,9 @@ public class FingerprintRuleCatalog {
       List<String> body,
       List<String> cookies,
       List<String> title,
-      List<String> header) {}
+      List<String> header,
+      List<String> faviconHash,
+      List<String> faviconMd5) {}
 
   public record CatalogInfo(
       String version, String sha256, int ruleCount, CatalogSource source) {

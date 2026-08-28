@@ -31,8 +31,10 @@ import {
 import { formatDateTime, formatExecutionLog } from "../utils/dateTime";
 import {
   formatAuditAction,
+  formatAuditDetail,
   formatAuditResource,
   formatAuditResult,
+  formatApprovalAction,
   auditResultTagType,
 } from "../utils/auditFormat";
 import {
@@ -4044,10 +4046,12 @@ onUnmounted(() => {
           class="project-table"
         >
           <el-table-column prop="id" label="ID" width="65" /><el-table-column
-            prop="action"
             label="动作"
             width="120"
-          /><el-table-column label="状态" width="110"
+            ><template #default="scope">{{
+              formatApprovalAction(scope.row.action)
+            }}</template></el-table-column
+          ><el-table-column label="状态" width="110"
             ><template #default="scope"
               ><el-tag
                 size="small"
@@ -4163,11 +4167,13 @@ onUnmounted(() => {
             </template>
           </el-table-column>
           <el-table-column
-            prop="detail"
             label="详情"
             min-width="220"
             show-overflow-tooltip
-          /><el-table-column label="时间" min-width="170"
+            ><template #default="scope">{{
+              formatAuditDetail(scope.row.detail)
+            }}</template></el-table-column
+          ><el-table-column label="时间" min-width="170"
             ><template #default="scope">{{
               formatDateTime(scope.row.createdAt)
             }}</template></el-table-column
@@ -5915,6 +5921,19 @@ onUnmounted(() => {
 .target-mode-segmented :deep(.el-segmented__item) {
   min-height: 32px;
   font-weight: 600;
+}
+.target-mode-segmented :deep(.el-segmented__item-selected) {
+  box-sizing: border-box;
+  width: 50% !important;
+  transform: translateX(0) translateZ(0) !important;
+  transition: transform var(--fluent-duration-normal, 200ms)
+    var(--fluent-curve-standard, ease);
+}
+.target-mode-segmented :deep(.el-segmented__group):has(
+    .el-segmented__item.is-selected:last-child
+  )
+  .el-segmented__item-selected {
+  transform: translateX(100%) translateZ(0) !important;
 }
 .batch-preview-card {
   margin: -4px 0 16px;
