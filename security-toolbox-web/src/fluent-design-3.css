@@ -544,7 +544,7 @@ html .el-button.el-button--danger.is-link:not(.is-disabled):hover {
   top: 50%;
   left: 0;
   width: 3px;
-  height: 44px;
+  height: 28px;
   border-radius: 999px;
   background: var(--app-accent, #2563eb);
   opacity: 0;

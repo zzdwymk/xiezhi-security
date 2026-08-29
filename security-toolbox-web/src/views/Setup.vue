@@ -15,6 +15,7 @@ import {
 } from "../components/fluentIcons";
 import { endpoints } from "../api";
 import { toErrorMessage } from "../utils/errorMessage";
+import { taskbarProgress } from "../utils/taskbarProgress";
 
 interface Dependency {
   name: string;

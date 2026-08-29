@@ -95,6 +95,8 @@ contextBridge.exposeInMainWorld(
       return () =>
         ipcRenderer.removeListener("toolbox:capture-browser-closed", listener);
     },
+    setProgressBar: (progress, options) =>
+      ipcRenderer.invoke("toolbox:set-progress-bar", progress, options),
     onDependencyInstallProgress: (callback) => {
       const listener = (_event, progress) => callback(progress);
       ipcRenderer.on("toolbox:dependency-install-progress", listener);

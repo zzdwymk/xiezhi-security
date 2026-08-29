@@ -1,5 +1,8 @@
 import axios from "axios";
 import { clearAuthToken, notifyAuthExpired, readAuthToken } from "./authToken";
+import { taskbarProgress } from "./utils/taskbarProgress";
+
+let requestIdCounter = 0;
 
 const query = new URLSearchParams(window.location.search);
 const desktopMode = Boolean(
@@ -16,12 +19,28 @@ export const api = axios.create({
 api.interceptors.request.use((config) => {
   const token = readAuthToken();
   if (token) config.headers.Authorization = `Bearer ${token}`;
+
+  const isSilent =
+    (config as { silent?: boolean }).silent === true ||
+    Boolean(config.url && config.url.includes("/system/health"));
+  if (!isSilent) {
+    const reqId = `http-req-${++requestIdCounter}`;
+    (config as Record<string, unknown>).__reqId = reqId;
+    taskbarProgress.startIndeterminate(reqId);
+  }
+
   return config;
 });
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    const reqId = (response.config as Record<string, unknown>)?.__reqId;
+    if (typeof reqId === "string") taskbarProgress.stopIndeterminate(reqId);
+    return response;
+  },
   (error) => {
+    const reqId = (error.config as Record<string, unknown>)?.__reqId;
+    if (typeof reqId === "string") taskbarProgress.stopIndeterminate(reqId);
     if (error.response?.status === 401) redirectToLogin();
     return Promise.reject(error);
   },

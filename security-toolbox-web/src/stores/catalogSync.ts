@@ -1,6 +1,7 @@
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
 import { ElMessage } from "element-plus";
+import { taskbarProgress } from "../utils/taskbarProgress";
 import {
   endpoints,
   type CatalogSyncProgress,
@@ -305,9 +306,12 @@ export const useCatalogSyncStore = defineStore("catalog-sync", () => {
     completedSources.value = [];
     localStages.value = {};
     failures.value = {};
+    taskbarProgress.startIndeterminate("catalog-sync");
     ensureProgressTracking();
     activeTask = execute(uniqueSources).finally(async () => {
       running.value = false;
+      taskbarProgress.stopIndeterminate("catalog-sync");
+      taskbarProgress.clearProgress("catalog-sync");
       finishedAt.value = Date.now();
       await refreshProgress();
       queue.value = [];

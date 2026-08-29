@@ -1519,7 +1519,7 @@ onMounted(async () => {
   left: 0;
   top: 50%;
   width: 3px;
-  height: 44px;
+  height: 28px;
   transform: translateY(-50%) scaleY(0.3);
   opacity: 0;
   border-radius: 999px;

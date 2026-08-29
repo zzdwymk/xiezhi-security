@@ -111,6 +111,12 @@ interface ToolboxDesktopBridge {
   ) => Promise<CaptureBrowserStatus>;
   readonly closeCaptureBrowser?: () => Promise<CaptureBrowserStatus>;
   readonly getCaptureBrowserStatus?: () => Promise<CaptureBrowserStatus>;
+  readonly setProgressBar?: (
+    progress: number,
+    options?: {
+      mode?: "none" | "normal" | "indeterminate" | "error" | "paused";
+    },
+  ) => Promise<void>;
   readonly onCaptureBrowserClosed?: (callback: () => void) => () => void;
   readonly onDependencyInstallProgress?: (
     callback: (event: DependencyInstallProgressEvent) => void,

@@ -3175,6 +3175,35 @@ handleRendererIpc("toolbox:set-window-material", (event, material) => {
   broadcastSystemTheme();
   return configuredWindowMaterial();
 });
+function updateTaskbarProgress(progress, options) {
+  const win = mainWindow || startupWindow;
+  if (!win || win.isDestroyed()) return;
+  try {
+    if (
+      progress === -1 ||
+      (options && options.mode === "none") ||
+      progress === null ||
+      progress === undefined
+    ) {
+      win.setProgressBar(-1, { mode: "none" });
+    } else if (options && options.mode === "indeterminate") {
+      win.setProgressBar(2, { mode: "indeterminate" });
+    } else if (typeof progress === "number") {
+      const normalized = Math.max(0, Math.min(1, progress));
+      win.setProgressBar(normalized, {
+        mode: options && options.mode ? options.mode : "normal",
+      });
+    }
+  } catch (_e) {
+    // Ignore taskbar update errors on transient window states
+  }
+}
+
+handleRendererIpc("toolbox:set-progress-bar", (event, progress, options) => {
+  assertMainRenderer(event);
+  updateTaskbarProgress(progress, options);
+});
+
 handleRendererIpc("toolbox:choose-tools-directory", async (event) => {
   assertMainRenderer(event);
   if (hasRunningInstalls())

@@ -3568,7 +3568,7 @@ onUnmounted(() => {
   top: 50%;
   left: 0;
   width: 3px;
-  height: 44px;
+  height: 24px;
   transform: translateY(-50%) scaleY(0.3);
   opacity: 0;
   border-radius: 999px;
