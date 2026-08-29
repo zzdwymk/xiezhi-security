@@ -36,6 +36,7 @@ import { AUTH_EXPIRED_EVENT } from "./authToken";
 import { endpoints } from "./api";
 import { toErrorMessage } from "./utils/errorMessage";
 import { useSelectionIndicator } from "./composables/useSelectionIndicator";
+import { taskbarProgress } from "./utils/taskbarProgress";
 
 const route = useRoute();
 const router = useRouter();
@@ -432,6 +433,7 @@ onBeforeUnmount(() => {
   window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
   window.clearTimeout(workspaceRouteAnimationTimer);
   engine.stopPolling();
+  taskbarProgress.clearAll();
   nativeTooltipObserver?.disconnect();
   nativeTooltipObserver = undefined;
 });

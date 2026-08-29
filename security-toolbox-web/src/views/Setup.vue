@@ -433,6 +433,24 @@ function subscribeInstallProgress() {
     const message = event.installStage || event.stage;
     if (message && item.logs?.[item.logs.length - 1] !== message)
       item.logs = [...(item.logs || []), message].slice(-8);
+
+    if (item.installing && !item.paused) {
+      if (
+        typeof item.progress === "number" &&
+        item.progress >= 0 &&
+        item.progress <= 100
+      ) {
+        taskbarProgress.setProgress(
+          `dep-${item.packageId}`,
+          item.progress / 100,
+        );
+      } else {
+        taskbarProgress.startIndeterminate(`dep-${item.packageId}`);
+      }
+    } else {
+      taskbarProgress.clearProgress(`dep-${item.packageId}`);
+      taskbarProgress.stopIndeterminate(`dep-${item.packageId}`);
+    }
   });
 }
 
@@ -521,6 +539,12 @@ onMounted(() => {
 onUnmounted(() => {
   removeInstallProgressListener?.();
   removeInstallProgressListener = undefined;
+  items.value.forEach((item) => {
+    if (item.packageId) {
+      taskbarProgress.clearProgress(`dep-${item.packageId}`);
+      taskbarProgress.stopIndeterminate(`dep-${item.packageId}`);
+    }
+  });
 });
 </script>
 

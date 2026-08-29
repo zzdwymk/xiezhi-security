@@ -28,6 +28,7 @@ import {
   taskProgressStatus,
   taskProgressText,
 } from "../utils/taskProgress";
+import { taskbarProgress } from "../utils/taskbarProgress";
 
 const copilot = useCopilotStore();
 const router = useRouter();
@@ -219,6 +220,7 @@ function applyTaskEvent(event: TaskProgressEvent) {
       });
     }
   }
+  taskbarProgress.syncTasks(rows.value);
 }
 
 async function load() {
@@ -229,6 +231,7 @@ async function load() {
         progress: task.progress ?? (task.status === "SUCCESS" ? 100 : 0),
       }))
     : [];
+  taskbarProgress.syncTasks(rows.value);
   if (detail.value) {
     const refreshed = rows.value.find((row) => row.id === detail.value?.id);
     if (refreshed) {

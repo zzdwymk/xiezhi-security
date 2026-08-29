@@ -25,7 +25,7 @@ api.interceptors.request.use((config) => {
     Boolean(config.url && config.url.includes("/system/health"));
   if (!isSilent) {
     const reqId = `http-req-${++requestIdCounter}`;
-    (config as Record<string, unknown>).__reqId = reqId;
+    (config as unknown as Record<string, unknown>).__reqId = reqId;
     taskbarProgress.startIndeterminate(reqId);
   }
 
@@ -34,14 +34,14 @@ api.interceptors.request.use((config) => {
 
 api.interceptors.response.use(
   (response) => {
-    const reqId = (response.config as Record<string, unknown>)?.__reqId;
+    const reqId = (response.config as unknown as Record<string, unknown>)?.__reqId;
     if (typeof reqId === "string") taskbarProgress.stopIndeterminate(reqId);
     return response;
   },
   (error) => {
-    const reqId = (error.config as Record<string, unknown>)?.__reqId;
+    const reqId = (error?.config as unknown as Record<string, unknown>)?.__reqId;
     if (typeof reqId === "string") taskbarProgress.stopIndeterminate(reqId);
-    if (error.response?.status === 401) redirectToLogin();
+    if (error?.response?.status === 401) redirectToLogin();
     return Promise.reject(error);
   },
 );

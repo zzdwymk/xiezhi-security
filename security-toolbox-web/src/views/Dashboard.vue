@@ -60,6 +60,7 @@ import {
   taskProgressIndeterminate,
   taskProgressPercentage,
 } from "../utils/taskProgress";
+import { taskbarProgress } from "../utils/taskbarProgress";
 
 interface TaskRow {
   id: number;
@@ -1556,6 +1557,7 @@ async function loadTasks() {
         createdAt: task.createdAt,
       }))
     : [];
+  taskbarProgress.syncTasks(tasks.value);
   if (!result.offline) reconcileTaskMessages();
 }
 

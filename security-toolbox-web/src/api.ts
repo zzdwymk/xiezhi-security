@@ -1,5 +1,6 @@
 import { readAuthToken } from "./authToken";
 import { api, apiUrl } from "./apiClient";
+import { taskbarProgress } from "./utils/taskbarProgress";
 import type { CopilotMode, CopilotReference } from "./types/copilot";
 import type {
   ConversationAgentEvent,
@@ -1365,51 +1366,56 @@ export async function streamWorkflowSuggestions(
   onEvent: (event: WorkflowSuggestStreamEvent) => void,
   signal?: AbortSignal,
 ) {
-  const token = readAuthToken();
-  const response = await fetch(apiUrl("/ai/workflow/suggest"), {
-    method: "POST",
-    headers: {
-      Accept: "text/event-stream",
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify(payload),
-    signal,
-  });
-  if (!response.ok || !response.body) {
-    throw new Error(`工作流建议流连接失败：HTTP ${response.status}`);
-  }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    buffer = buffer.replace(/\r\n/g, "\n");
-    let end: number;
-    while ((end = buffer.indexOf("\n\n")) >= 0) {
-      const block = buffer.slice(0, end);
-      buffer = buffer.slice(end + 2);
-      const lines = block.split(/\n/);
-      let eventName = "message";
-      const dataLines: string[] = [];
-      for (const line of lines) {
-        if (line.startsWith("event:"))
-          eventName = line.slice(6).trim() || eventName;
-        else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
-      }
-      if (!dataLines.length) continue;
-      try {
-        const parsed = JSON.parse(
-          dataLines.join("\n"),
-        ) as WorkflowSuggestStreamEvent;
-        if (!parsed.type) parsed.type = eventName;
-        onEvent(parsed);
-      } catch {
-        /* ignore malformed */
+  taskbarProgress.startIndeterminate("workflow-suggest-stream");
+  try {
+    const token = readAuthToken();
+    const response = await fetch(apiUrl("/ai/workflow/suggest"), {
+      method: "POST",
+      headers: {
+        Accept: "text/event-stream",
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(payload),
+      signal,
+    });
+    if (!response.ok || !response.body) {
+      throw new Error(`工作流建议流连接失败：HTTP ${response.status}`);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      buffer = buffer.replace(/\r\n/g, "\n");
+      let end: number;
+      while ((end = buffer.indexOf("\n\n")) >= 0) {
+        const block = buffer.slice(0, end);
+        buffer = buffer.slice(end + 2);
+        const lines = block.split(/\n/);
+        let eventName = "message";
+        const dataLines: string[] = [];
+        for (const line of lines) {
+          if (line.startsWith("event:"))
+            eventName = line.slice(6).trim() || eventName;
+          else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+        }
+        if (!dataLines.length) continue;
+        try {
+          const parsed = JSON.parse(
+            dataLines.join("\n"),
+          ) as WorkflowSuggestStreamEvent;
+          if (!parsed.type) parsed.type = eventName;
+          onEvent(parsed);
+        } catch {
+          /* ignore malformed */
+        }
       }
     }
+  } finally {
+    taskbarProgress.stopIndeterminate("workflow-suggest-stream");
   }
 }
 
@@ -1858,6 +1864,7 @@ export async function dispatchAiStreaming(
   payload: AiAgentRequestPayload,
   onEvent: (event: AiDispatchStreamEvent) => void,
 ): Promise<AiDispatch> {
+  taskbarProgress.startIndeterminate("ai-agent-stream");
   const controller = new AbortController();
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let streamStarted = false;
@@ -2008,6 +2015,7 @@ export async function dispatchAiStreaming(
     }
     throw error;
   } finally {
+    taskbarProgress.stopIndeterminate("ai-agent-stream");
     if (idleTimer) clearTimeout(idleTimer);
   }
 }

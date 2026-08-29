@@ -43,6 +43,7 @@ import {
   taskProgressStatus,
   taskProgressText,
 } from "../utils/taskProgress";
+import { taskbarProgress } from "../utils/taskbarProgress";
 import { useAuthStore } from "../stores/auth";
 import { useCopilotStore } from "../stores/copilot";
 import AppPagination from "../components/AppPagination.vue";
@@ -659,6 +660,7 @@ function mergeProjectTask(task: ProjectTaskRecord) {
       ...reportSummary.value,
       vulnerabilityDiscovery: projectTasks.value,
     };
+  taskbarProgress.syncTasks(projectTasks.value);
 }
 
 const ASSET_OBSERVATION_TOOLS = new Set(["tcp_ports", "nmap_service_scan"]);
@@ -745,6 +747,7 @@ async function loadProjectTasks() {
         ...reportSummary.value,
         vulnerabilityDiscovery: projectTasks.value,
       };
+    taskbarProgress.syncTasks(projectTasks.value);
   } catch (error: any) {
     // The report summary remains the authoritative fallback when the live list
     // endpoint is temporarily unavailable.

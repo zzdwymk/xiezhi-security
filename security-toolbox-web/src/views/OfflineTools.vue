@@ -49,6 +49,7 @@ import {
   md5Text,
   randomBytes,
 } from "../utils/offlineCrypto";
+import { taskbarProgress } from "../utils/taskbarProgress";
 import {
   buildQueryString,
   buildUrl,
@@ -610,6 +611,7 @@ function clearToolQuery() {
 
 async function calculateHashes() {
   hashing.value = true;
+  taskbarProgress.startIndeterminate("offline-hash");
   try {
     const algorithms = ["SHA-1", "SHA-256", "SHA-384", "SHA-512"] as const;
     const values = await Promise.all(
@@ -631,6 +633,7 @@ async function calculateHashes() {
     errorMessage(error);
   } finally {
     hashing.value = false;
+    taskbarProgress.stopIndeterminate("offline-hash");
   }
 }
 
@@ -641,6 +644,7 @@ const aesWorking = ref(false);
 
 async function runAes(direction: "encrypt" | "decrypt") {
   aesWorking.value = true;
+  taskbarProgress.startIndeterminate("offline-aes");
   try {
     aesOutput.value =
       direction === "encrypt"
@@ -650,6 +654,7 @@ async function runAes(direction: "encrypt" | "decrypt") {
     errorMessage(error);
   } finally {
     aesWorking.value = false;
+    taskbarProgress.stopIndeterminate("offline-aes");
   }
 }
 
