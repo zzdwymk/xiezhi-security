@@ -39,13 +39,16 @@ async function tryCreateTarget(page, ctx, { name, type, address, ports }) {
   await fillByLabel(dlg, page, "授权记录", `负向测试用例：${name}`);
   if (ports) {
     const picker = dlg.locator(".port-picker").first();
-    const custom = picker.locator('input[placeholder*="手动填写"]').first();
-    if (await custom.count()) {
-      await custom.click();
-      await custom.fill(ports);
-      await page.keyboard.press("Enter");
-      await sleep(500);
-    }
+    await picker.waitFor({ state: "visible", timeout: 8000 });
+    const sel = picker.locator(".el-select").first();
+    await sel.click();
+    await sleep(400);
+    const portInput = sel.locator("input").first();
+    await portInput.fill(ports);
+    await page.keyboard.press("Enter");
+    await sleep(600);
+    await page.keyboard.press("Escape").catch(() => {});
+    await sleep(300);
   }
   await dialogButton(dlg, "保存目标");
   await sleep(2000);
@@ -174,7 +177,7 @@ async function run(page, H, ctx) {
   await H.run("N-01", "登记公网 IP 目标（观察校验发生在哪一层）", async () => {
     const name = `负向-公网IP-${ctx.stamp}`;
     const err = await tryCreateTarget(page, ctx, {
-      name, type: "IP 地址", address: "8.8.8.8", ports: "80,443",
+      name, type: "IP 地址", address: "8.8.8.8", ports: "80",
     });
     if (err) return `登记阶段即被拒绝，提示="${err.slice(0, 150)}"`;
     ctx.negativeTargets.push(name);
@@ -197,7 +200,7 @@ async function run(page, H, ctx) {
   await H.run("N-03", "登记公网域名目标（观察校验发生在哪一层）", async () => {
     const name = `负向-域名-${ctx.stamp}`;
     const err = await tryCreateTarget(page, ctx, {
-      name, type: "域名", address: "example.com", ports: "80,443",
+      name, type: "域名", address: "example.com", ports: "80",
     });
     if (err) return `登记阶段即被拒绝，提示="${err.slice(0, 150)}"`;
     ctx.publicDomainTargetName = name;
@@ -288,7 +291,7 @@ async function run(page, H, ctx) {
     const sel = launcher.locator(".el-select").first();
     let selectable = true;
     try {
-      await selectOn(page, sel, ctx.webTargetName);
+      await selectOn(page, sel, ctx.webTargetName, { exact: true });
       await sleep(1800);
     } catch {
       selectable = false;
@@ -373,7 +376,7 @@ async function run(page, H, ctx) {
     const sel = launcher.locator(".el-select").first();
     let selectable = true;
     try {
-      await selectOn(page, sel, ctx.webTargetName);
+      await selectOn(page, sel, ctx.webTargetName, { exact: true });
       await sleep(1800);
     } catch {
       selectable = false;

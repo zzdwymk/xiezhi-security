@@ -345,6 +345,18 @@ public class DependencyDetectionService {
             output -> containsIgnoreCase(output, "xray"),
             "检测到的命令不是 Xray。当前仅检测版本，不默认执行。"),
         descriptor(
+            "fscan",
+            scannerCandidates("FSCAN_PATH", "fscan"),
+            List.of("-h"),
+            false,
+            "SCANNER",
+            output ->
+                containsIgnoreCase(output, "fscan")
+                    && (containsIgnoreCase(output, "扫描")
+                        || containsIgnoreCase(output, "usage")
+                        || containsIgnoreCase(output, "host")),
+            "检测到的命令不是 fscan。当前仅检测版本，不默认执行。"),
+        descriptor(
             "ProjectDiscovery httpx",
             scannerCandidates("HTTPX_PATH", "httpx"),
             List.of("-disable-update-check", "-version"),

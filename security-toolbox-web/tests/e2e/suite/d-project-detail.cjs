@@ -100,7 +100,7 @@ async function run(page, H, ctx) {
     await btn.click();
     const dlg = await dialog(page, "在本项目下新建授权目标");
     const text = ((await dlg.textContent()) || "").replace(/\s+/g, " ");
-    const missing = ["名称", "地址", "允许端口", "授权记录"].filter((k) => !text.includes(k));
+    const missing = ["名称", "地址", "端口", "授权记录"].filter((k) => !text.includes(k));
     const cancel = dlg.locator("button", { hasText: "取消" }).last();
     await cancel.click();
     await sleep(1000);

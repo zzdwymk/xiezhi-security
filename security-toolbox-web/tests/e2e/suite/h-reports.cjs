@@ -292,7 +292,7 @@ async function run(page, H, ctx) {
     await sleep(2500);
     await clearMessages(page);
     await clearDownloadRecords(page);
-    const row = page.locator(".el-table__row").filter({ hasText: "SUCCESS" }).first();
+    const row = page.locator(".el-table__row").filter({ hasText: /成功|SUCCESS/ }).first();
     if (!(await row.count())) throw new Error("无成功任务可下载报告");
     const btn = row.locator("button", { hasText: "报告" }).first();
     if (!(await btn.count())) throw new Error("未渲染报告按钮");
@@ -314,7 +314,7 @@ async function run(page, H, ctx) {
 
   await H.run("H-20", "任务级报告内容包含靶机地址与执行结论", async () => {
     // 用浏览器打开刚下载的报告内容不便，改为通过 UI 的报告预览路径验证
-    const row = page.locator(".el-table__row").filter({ hasText: "SUCCESS" }).first();
+    const row = page.locator(".el-table__row").filter({ hasText: /成功|SUCCESS/ }).first();
     await row.locator("button", { hasText: "详情" }).first().click();
     const dlg = await dialog(page, "任务详情");
     const text = ((await dlg.textContent()) || "").replace(/\s+/g, " ");

@@ -293,6 +293,29 @@ try {
         'MIGRATE_LEGACY_DEVELOPMENT_CREDENTIALS',
         $developmentSecrets.legacyMigrationPending.ToString().ToLowerInvariant(),
         'Process')
+
+    $toolsDir = Join-Path $workspace 'security-toolbox-web\desktop-release\win-unpacked\tools'
+    if (Test-Path $toolsDir) {
+        $nucleiExe = Join-Path $toolsDir 'nuclei\nuclei.exe'
+        if (Test-Path $nucleiExe) {
+            [Environment]::SetEnvironmentVariable('NUCLEI_PATH', $nucleiExe, 'Process')
+            [Environment]::SetEnvironmentVariable('NUCLEI_TEMPLATES_PATH', (Join-Path $toolsDir 'nuclei-templates'), 'Process')
+        }
+        $afrogExe = Join-Path $toolsDir 'afrog\afrog.exe'
+        if (Test-Path $afrogExe) {
+            [Environment]::SetEnvironmentVariable('AFROG_PATH', $afrogExe, 'Process')
+            [Environment]::SetEnvironmentVariable('AFROG_POCS_PATH', (Join-Path $toolsDir 'afrog-pocs'), 'Process')
+        }
+        $xrayExe = Join-Path $toolsDir 'xray\xray_windows_amd64.exe'
+        if (Test-Path $xrayExe) {
+            [Environment]::SetEnvironmentVariable('XRAY_PATH', $xrayExe, 'Process')
+            [Environment]::SetEnvironmentVariable('XRAY_POCS_PATH', (Join-Path $toolsDir 'xray-pocs'), 'Process')
+        }
+        $httpxExe = Join-Path $toolsDir 'httpx\httpx.exe'
+        if (Test-Path $httpxExe) {
+            [Environment]::SetEnvironmentVariable('HTTPX_PATH', $httpxExe, 'Process')
+        }
+    }
     $backendJavaArguments = (
         ($utf8JvmOptions + @('-jar', ('"{0}"' -f $jar))) -join ' '
     )

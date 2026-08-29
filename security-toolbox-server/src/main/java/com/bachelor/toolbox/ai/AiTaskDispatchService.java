@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -30,7 +31,8 @@ public class AiTaskDispatchService {
           "nmap_service_scan",
           "nuclei_scan",
           "afrog_scan",
-          "xray_scan");
+          "xray_scan",
+          "fscan_scan");
 
   private final TargetService targetService;
   private final TargetPolicyService targetPolicyService;
@@ -244,6 +246,7 @@ public class AiTaskDispatchService {
         switch (toolCode) {
           case "tcp_ports" -> Set.of("ports");
           case "nmap_service_scan" -> Set.of("ports", "mode");
+          case "fscan_scan" -> Set.of("ports", "vulnMode");
           case "afrog_scan", "xray_scan" -> Set.of("pocCodes", "allPocs");
           case "nuclei_scan" -> Set.of();
           case "http_security_check" -> Set.of("check");
@@ -270,7 +273,7 @@ public class AiTaskDispatchService {
           throw new ApiException("TLS 检查仅适用于 HTTPS 授权目标");
         }
       }
-      case "tcp_ports", "nmap_service_scan" -> {
+      case "tcp_ports", "nmap_service_scan", "fscan_scan" -> {
         targetPolicyService.validatedHost(target);
         String requested =
             Objects.toString(parameters.getOrDefault("ports", target.getAllowedPorts()), "");
@@ -291,6 +294,14 @@ public class AiTaskDispatchService {
             throw new ApiException("Nmap mode 仅支持 quick 或 service");
           }
           parameters.put("mode", mode);
+        }
+        if ("fscan_scan".equals(toolCode)) {
+          String vulnMode =
+              Objects.toString(parameters.getOrDefault("vulnMode", "safe"), "").toUpperCase(Locale.ROOT);
+          if (!Set.of("SAFE", "FINGERPRINT", "FULL").contains(vulnMode)) {
+            throw new ApiException("fscan 模式仅支持 safe、fingerprint 或 full");
+          }
+          parameters.put("vulnMode", vulnMode);
         }
       }
       case "nuclei_scan" -> targetPolicyService.validatedHost(target);

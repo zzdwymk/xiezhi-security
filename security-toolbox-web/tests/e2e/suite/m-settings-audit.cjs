@@ -304,11 +304,12 @@ async function run(page, H, ctx) {
   }, { page });
 
   await H.run("M-26", "审计记录提供「AI 核查」联动入口", async () => {
-    const row = page.locator(".el-table__row").first();
-    const btns = (await row.locator("button").allTextContents()).map((s) => s.trim()).filter(Boolean);
-    const hasAi = btns.some((b) => b.includes("AI"));
-    if (!hasAi) throw new Error(`审计行未提供 AI 核查入口，实际按钮: ${btns.join(" | ")}`);
-    return `入口存在: ${btns.join(" | ")}`;
+    const btn = page.locator(".el-table__row button", { hasText: "AI 核查" }).first();
+    if (!(await btn.count())) {
+      const allBtns = (await page.locator(".el-table__row button").allTextContents()).map((s) => s.trim()).filter(Boolean);
+      throw new Error(`未找到提供 AI 核查入口的审计行，当前可见按钮: ${allBtns.join(" | ") || "无"}`);
+    }
+    return "项目与目标相关审计记录已提供 AI 核查联动入口";
   }, { page });
 
   return true;

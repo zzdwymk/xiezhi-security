@@ -18,6 +18,14 @@ const {
 } = require("../lib/ui.cjs");
 
 const TERMINAL = ["SUCCESS", "FAILED", "TIMEOUT", "CANCELLED", "REJECTED", "SKIPPED"];
+const STATUS_MAP = {
+  "成功": "SUCCESS", "失败": "FAILED", "超时": "TIMEOUT", "已取消": "CANCELLED",
+  "已拒绝": "REJECTED", "已跳过": "SKIPPED", "待执行": "PENDING", "排队中": "PENDING",
+  "等待前置": "BLOCKED", "执行中": "RUNNING", "准备中": "RUNNING", "停止中": "RUNNING",
+  "已停止": "CANCELLED", "部分失败": "FAILED",
+  "SUCCESS": "SUCCESS", "FAILED": "FAILED", "TIMEOUT": "TIMEOUT", "CANCELLED": "CANCELLED",
+  "REJECTED": "REJECTED", "SKIPPED": "SKIPPED", "PENDING": "PENDING", "RUNNING": "RUNNING", "BLOCKED": "BLOCKED"
+};
 
 /** 解析任务表格行：ID、工具、状态、进度、创建时间 */
 async function readTasks(page) {
@@ -25,19 +33,42 @@ async function readTasks(page) {
   const n = await rows.count();
   const out = [];
   for (let i = 0; i < n; i++) {
-    const raw = ((await rows.nth(i).textContent()) || "").replace(/\s+/g, " ").trim();
-    const tool = (raw.match(/(tcp_ports|http_headers|http_security_check|tls_config|nmap_service_scan|nuclei_scan|afrog_scan|xray_scan)/) || [])[1] || null;
-    const status = TERMINAL.concat(["PENDING", "RUNNING", "BLOCKED"]).find((s) => raw.includes(s)) || null;
-    const time = (raw.match(/(20\d\d-\d\d-\d\d \d\d:\d\d:\d\d)/) || [])[1] || null;
-    const progress = (raw.match(/(\d+)\s*%/) || [])[1] || null;
-    // 行文本形如 "<任务ID><工具代码><目标ID><状态>..."，据此解析任务与目标 ID
-    const taskId = (raw.match(/^(\d+)/) || [])[1] || null;
+    const row = rows.nth(i);
+    const raw = ((await row.textContent()) || "").replace(/\s+/g, " ").trim();
+    const cells = row.locator("td");
+    const cellCount = await cells.count();
+    let taskId = null;
+    let tool = null;
     let targetId = null;
-    if (tool && status) {
-      const m = raw.match(new RegExp(tool + "(\\d+)" + status));
-      if (m) targetId = m[1];
+    let status = null;
+    let progress = null;
+    let time = null;
+
+    if (cellCount >= 6) {
+      taskId = ((await cells.nth(0).textContent()) || "").trim() || null;
+      tool = ((await cells.nth(1).textContent()) || "").trim() || null;
+      targetId = ((await cells.nth(2).textContent()) || "").trim() || null;
+      const statusRaw = ((await cells.nth(3).textContent()) || "").trim();
+      status = STATUS_MAP[statusRaw] || null;
+      const progressRaw = ((await cells.nth(4).textContent()) || "").trim();
+      const pm = progressRaw.match(/(\d+)\s*%/);
+      progress = pm ? Number(pm[1]) : null;
+      const timeRaw = ((await cells.nth(5).textContent()) || "").trim();
+      const tm = timeRaw.match(/(20\d\d-\d\d-\d\d \d\d:\d\d:\d\d)/);
+      time = tm ? tm[1] : null;
+    } else {
+      tool = (raw.match(/(tcp_ports|http_headers|http_security_check|tls_config|nmap_service_scan|nuclei_scan|afrog_scan|xray_scan)/) || [])[1] || null;
+      for (const [k, v] of Object.entries(STATUS_MAP)) {
+        if (raw.includes(k)) { status = v; break; }
+      }
+      const timeMatch = (raw.match(/(20\d\d-\d\d-\d\d \d\d:\d\d:\d\d)/) || [])[1] || null;
+      time = timeMatch;
+      const progressMatch = (raw.match(/(\d+)\s*%/) || [])[1] || null;
+      progress = progressMatch ? Number(progressMatch) : null;
+      taskId = (raw.match(/^(\d+)/) || [])[1] || null;
     }
-    out.push({ i, raw, tool, status, time, taskId, targetId, progress: progress ? Number(progress) : null });
+
+    out.push({ i, raw, tool, status, time, taskId, targetId, progress });
   }
   return out;
 }

@@ -147,23 +147,30 @@ public class AfrogScanTool implements SecurityTool {
       if (root.isArray()) root.forEach(items::add);
       else if (root.path("results").isArray()) root.path("results").forEach(items::add);
       for (JsonNode item : items) {
-        String id = item.path("id").asText("");
+        // Afrog 3.x 将命中信息放在 pocinfo 子节点（id/infoname/infoseg/…），
+        // 旧版放顶层 id + info.*。这里做兼容取读，避免取到空 id 而被误判为"未选择的 PoC"。
+        JsonNode poc = item.path("pocinfo");
+        String id = poc.path("id").asText(item.path("id").asText(""));
         if (!allowed.containsKey(id)) throw new ApiException("Afrog 返回了未选择的 PoC 结果：" + id);
         String matched = item.path("fulltarget").asText(item.path("target").asText(""));
         assertAuthorized(expectedTarget, matched);
-        ScannerPocSelectionService.SelectedPoc poc = allowed.get(id);
-        JsonNode info = item.path("info");
-        String name = info.path("name").asText(poc.name());
-        String severity = normalizeSeverity(info.path("severity").asText(poc.severity()));
+        ScannerPocSelectionService.SelectedPoc selectedPoc = allowed.get(id);
+        JsonNode info = poc.has("infoname") || poc.has("infoseg") || poc.has("infodescription")
+            ? poc
+            : item.path("info");
+        String name = info.path("infoname").asText(info.path("name").asText(selectedPoc.name()));
+        String severity = normalizeSeverity(
+            info.path("infoseg").asText(info.path("severity").asText(selectedPoc.severity())));
         if (findings.size() < MAX_FINDINGS) {
           findings.add(
               new FindingDraft(
                   name,
                   severity,
-                  info.path("description").asText("Afrog PoC 在授权目标上匹配到潜在安全问题，需人工确认。"),
+                  info.path("infodescription")
+                      .asText(info.path("description").asText("Afrog PoC 在授权目标上匹配到潜在安全问题，需人工确认。")),
                   "poc=" + id + "; target=" + matched,
                   "依据 PoC 引用与厂商公告确认影响，修复后使用同一 PoC 复测。",
-                  poc.vulnerabilityCode()));
+                  selectedPoc.vulnerabilityCode()));
         }
         matches.add(Map.of("pocId", id, "name", name, "severity", severity, "target", matched));
       }

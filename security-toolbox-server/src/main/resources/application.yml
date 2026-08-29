@@ -90,6 +90,9 @@ toolbox:
     xray-path: ${XRAY_PATH:xray}
     xray-pocs-path: ${XRAY_POCS_PATH:${user.home}/xray-pocs}
     xray-timeout-seconds: 900
+    fscan-path: ${FSCAN_PATH:fscan}
+    max-fscan-ports-per-task: 65535
+    fscan-timeout-seconds: 600
   vulnerability-catalog:
     nuclei:
       templates-path: ${NUCLEI_TEMPLATES_PATH:${user.home}/nuclei-templates}

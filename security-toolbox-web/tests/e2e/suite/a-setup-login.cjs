@@ -56,6 +56,10 @@ async function run(page, H, ctx) {
     await H.run("A-05", "点击「下一步，进入工具箱」离开依赖检查页", async () => {
       const next = page.locator("button", { hasText: "下一步" }).first();
       await next.waitFor({ state: "visible", timeout: 10000 });
+      for (let i = 0; i < 30; i++) {
+        if (!(await next.isDisabled().catch(() => true))) break;
+        await sleep(1000);
+      }
       const disabled = await next.isDisabled().catch(() => false);
       if (disabled) throw new Error("下一步按钮不可用（可能缺少核心依赖）");
       await next.click();

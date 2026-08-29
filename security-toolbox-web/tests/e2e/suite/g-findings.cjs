@@ -344,9 +344,9 @@ async function run(page, H, ctx) {
     await clearMessages(page);
     await page.locator("button", { hasText: "扫描 Diff" }).first().click();
     const dlg = await dialog(page, "扫描 Diff");
-    const inputs = dlg.locator("input");
-    await inputs.nth(0).fill(String(byTarget[targets[0]][0]));
-    await inputs.nth(1).fill(String(byTarget[targets[1]][0]));
+    const selects = dlg.locator(".el-select");
+    await selectOn(page, selects.nth(0), `#${byTarget[targets[0]][0]}`);
+    await selectOn(page, selects.nth(1), `#${byTarget[targets[1]][0]}`);
     await dialogButton(dlg, "比较");
     await sleep(2500);
     const msg = await lastMessage(page, { timeout: 8000 });
@@ -358,10 +358,13 @@ async function run(page, H, ctx) {
 
   await H.run("G-21", "扫描 Diff 可比较同一授权目标的两个成功任务", async () => {
     const pairs = ctx.taskPairs || [];
+    const tcpPairs = pairs.filter((p) => p.tool === "tcp_ports");
     const byTarget = {};
-    for (const p of pairs) (byTarget[p.targetId] = byTarget[p.targetId] || []).push(p.taskId);
+    for (const p of tcpPairs) {
+      (byTarget[p.targetId] = byTarget[p.targetId] || []).push(p.taskId);
+    }
     const same = Object.values(byTarget).find((arr) => arr.length >= 2);
-    if (!same) return "本次任务集中没有同一目标的两个成功任务，跳过";
+    if (!same) return "本次任务集中没有同一目标的两个相同工具（tcp_ports）成功任务，跳过";
 
     let dlg = page.locator(".el-dialog:visible", { hasText: "扫描 Diff" }).last();
     if (!(await dlg.isVisible().catch(() => false))) {
@@ -369,9 +372,9 @@ async function run(page, H, ctx) {
       dlg = await dialog(page, "扫描 Diff");
     }
     await clearMessages(page);
-    const inputs = dlg.locator("input");
-    await inputs.nth(0).fill(String(same[same.length - 1]));
-    await inputs.nth(1).fill(String(same[0]));
+    const selects = dlg.locator(".el-select");
+    await selectOn(page, selects.nth(0), `#${same[same.length - 1]}`);
+    await selectOn(page, selects.nth(1), `#${same[0]}`);
     await dialogButton(dlg, "比较");
     await sleep(3000);
     const msg = await lastMessage(page, { timeout: 6000 });
@@ -381,7 +384,7 @@ async function run(page, H, ctx) {
       throw new Error(`未返回差异摘要: ${text.slice(0, 250)}`);
     }
     ctx.scanDiffText = text.slice(0, 300);
-    return `比较任务 ${same[same.length - 1]} → ${same[0]}，摘要片段: ${(text.match(/新增[^关]{0,90}/) || [""])[0]}`;
+    return `比较任务 #${same[same.length - 1]} → #${same[0]}，差异摘要: ${(text.match(/新增[^关]{0,90}/) || [""])[0]}`;
   }, { page, shotOnPass: true });
 
   await H.run("G-22", "关闭扫描 Diff 对话框", async () => {

@@ -1028,7 +1028,11 @@ export const endpoints = {
     pocCodes?: string[];
     allPocSources?: Array<"NUCLEI" | "AFROG" | "XRAY">;
     ports?: string;
-  }) => api.post("/active-scans", payload),
+  }) =>
+        api.post("/active-scans", payload, {
+          // 全量 PoC 扫描需在后台校验/加载所有 PoC 文件，创建耗时可能远超默认超时
+          timeout: 120_000,
+        }),
   tasks: () => api.get<ProjectTaskRecord[]>("/tasks"),
   taskControlStatus: () => api.get<TaskControlStatus>("/tasks/control/status"),
   task: (id: number) => api.get<ProjectTaskRecord>(`/tasks/${id}`),

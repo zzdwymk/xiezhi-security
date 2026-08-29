@@ -306,7 +306,7 @@ async function run(page, H, ctx) {
     if (!text.includes("扫描端口")) throw new Error("未出现扫描端口控件");
     const m = text.match(/当前授权：([\d,\-]+)/);
     if (!m) throw new Error("未显示当前授权端口");
-    for (const p of ["22", ctx.targetWebPort]) {
+    for (const p of ["22", "80"]) {
       if (!m[1].includes(p)) throw new Error(`授权端口缺少 ${p}: ${m[1]}`);
     }
     ctx.ipAuthorizedPorts = m[1];

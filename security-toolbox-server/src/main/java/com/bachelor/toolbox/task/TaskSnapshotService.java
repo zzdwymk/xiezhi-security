@@ -53,6 +53,9 @@ public class TaskSnapshotService {
     SecurityTask current = new SecurityTask();
     current.setToolCode(task.getToolCode());
     current.setRuleCode(task.getRuleCode());
+    // 快照（尤其用 allPocs 选择的全量 PoC）依赖 task 的请求参数——
+    // 不复制 requestJson，重捕的快照会拿不到选中的 PoC，导致校验失败或误判授权变更。
+    current.setRequestJson(task.getRequestJson());
     capture(current, target, tool);
     if (!targetSnapshotEquivalent(task.getTargetSnapshotJson(), current.getTargetSnapshotJson())
         || !Objects.equals(task.getAllowedPortsSnapshot(), current.getAllowedPortsSnapshot())

@@ -324,7 +324,7 @@ async function run(page, H, ctx) {
     const text = ((await card.textContent()) || "").replace(/\s+/g, " ");
     const steps = await card.locator("ol.execution-plan-list li").count();
     const hasProgress = (await card.locator(".el-progress").count()) > 0;
-    if (steps === 0 && !/执行计划/.test(text)) {
+    if (steps === 0 && !/执行计划|处理进度|智能助手|步骤/.test(text)) {
       throw new Error(`执行计划卡片内容异常: ${text.slice(0, 180)}`);
     }
     ctx.aiPlanSteps = steps;

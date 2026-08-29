@@ -292,18 +292,26 @@ async function run(page, H, ctx) {
 
   // ---------- 重放器 ----------
   await H.run("I-19", "重放器可对授权目标重放请求并获得响应", async () => {
-    const tabs = page.locator("nav.packet-tabs").first();
-    const replayTab = tabs.locator("button", { hasText: "重放器" }).first();
-    if (!(await replayTab.count())) throw new Error("未渲染重放器标签");
-    await replayTab.click();
-    await sleep(2000);
+    // 优先通过「发送到重放器」按钮将当前会话转入重放器
+    const sendToReplayBtn = page.locator("button", { hasText: "发送到重放器" }).first();
+    if (await sendToReplayBtn.isVisible().catch(() => false)) {
+      await sendToReplayBtn.click();
+      await sleep(1500);
+    } else {
+      const tabs = page.locator("nav.packet-tabs").first();
+      const replayTab = tabs.locator("button", { hasText: "重放器" }).first();
+      if (await replayTab.count()) {
+        await replayTab.click();
+        await sleep(1500);
+      }
+    }
     const editor = page.locator(".inline-replay-editor").first();
     if (!(await editor.count())) throw new Error("未渲染重放编辑器");
 
     // 若无活动重放请求（空状态），先新建一个请求标签
     let line = editor.locator(".replay-request-line").first();
     if (!(await line.count())) {
-      const create = editor.locator("button", { hasText: "新建请求" }).first();
+      const create = editor.locator("button.replay-tab-add, button", { hasText: "新建请求" }).first();
       if (await create.count()) { await create.click(); await sleep(1200); }
       line = editor.locator(".replay-request-line").first();
     }
@@ -312,9 +320,12 @@ async function run(page, H, ctx) {
     // 方法与 URL 均需非空，发包按钮才会启用
     const methodInput = line.locator("input").first();
     const urlInput = line.locator("input").last();
-    await methodInput.click(); await methodInput.fill("GET");
-    await urlInput.click(); await urlInput.fill(`http://${ctx.targetIp}:${ctx.targetWebPort}/`);
-    await sleep(800);
+    const curUrl = await urlInput.inputValue().catch(() => "");
+    if (!curUrl) {
+      await methodInput.click(); await methodInput.fill("GET");
+      await urlInput.click(); await urlInput.fill(`http://${ctx.targetIp}:${ctx.targetWebPort}/`);
+      await sleep(800);
+    }
 
     await clearMessages(page);
     const send = editor.locator("button", { hasText: "发包" }).first();

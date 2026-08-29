@@ -51,6 +51,7 @@ scripts/fill_project_forms_from_templates.py
 scripts/generate_project_forms.py
 scripts/generate_technical_function_doc.py
 scripts/generate_thesis_docx.py
+scripts/generate_software_test_doc.py
 scripts/update_strict_proposal.py
 scripts/update_thesis_documents.py
 scripts/apply_proposal_comments.py
@@ -76,6 +77,8 @@ security-toolbox-web/scripts/ui-target-verify.cjs
 **/e2e-credentials.json
 **/test-report-artifact.html
 **/test-report-section-*.md
+**/test-data/
+**/.toolbox-build-manifest.json
 
 # OS generated files
 Thumbs.db
