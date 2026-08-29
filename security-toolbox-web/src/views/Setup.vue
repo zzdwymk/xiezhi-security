@@ -75,6 +75,7 @@ const manualUrls: Record<string, string> = {
   Nuclei: "https://github.com/projectdiscovery/nuclei/releases",
   Afrog: "https://github.com/zan8in/afrog/releases",
   Xray: "https://github.com/chaitin/xray/releases",
+  fscan: "https://github.com/shadow1ng/fscan/releases",
   "ProjectDiscovery httpx":
     "https://github.com/projectdiscovery/httpx/releases",
   "OWASP ZAP": "https://www.zaproxy.org/download/",
@@ -116,6 +117,7 @@ async function check(forceRefresh = false) {
   loading.value = true;
   error.value = "";
   items.value = [];
+  taskbarProgress.startIndeterminate("setup-detect");
   try {
     if (typeof EventSource !== "undefined") {
       const streamed = await streamDependencies(forceRefresh);
@@ -149,6 +151,7 @@ async function check(forceRefresh = false) {
     return false;
   } finally {
     loading.value = false;
+    taskbarProgress.stopIndeterminate("setup-detect");
   }
 }
 
@@ -180,8 +183,10 @@ async function decorateItems() {
             ? "httpx"
             : item.name === "Afrog"
               ? "afrog"
-              : item.name === "Xray"
-                ? "xray"
+: item.name === "Xray"
+              ? "xray"
+              : item.name === "fscan"
+                ? "fscan"
                 : undefined;
       return {
         ...item,

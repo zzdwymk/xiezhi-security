@@ -347,7 +347,9 @@ public class DependencyDetectionService {
         descriptor(
             "fscan",
             scannerCandidates("FSCAN_PATH", "fscan"),
-            List.of("-h"),
+            // fscan 的 `-h` 是「目标主机」参数（缺参会报错并以非零退出码退出），
+            // 只有 `-help` 会无副作用地打印版本 banner（如 `Fscan 2.2.1 ...`）并以 0 退出。
+            List.of("-help"),
             false,
             "SCANNER",
             output ->

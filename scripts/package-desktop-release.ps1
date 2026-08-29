@@ -44,6 +44,40 @@ $staging = $null
 $resolvedReleaseRoot = $null
 $releaseSucceeded = $false
 
+# Windows Defender / 杀软偶尔会在刚写出的工具有限锁文件几秒（尤其 fscan 这类会被扫描的工具）。
+# 对这类共享冲突做短暂重试，避免打包的"原子替换"阶段因瞬态文件锁而失败。
+function Move-ItemRetry {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Destination,
+        [int]$Attempts = 8,
+        [int]$DelayMs = 500
+    )
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        try {
+            Move-Item -LiteralPath $Path -Destination $Destination -ErrorAction Stop
+            return
+        } catch {
+            $sharing = ($_ -is [System.IO.IOException]) -or ($_.Exception -is [System.IO.IOException]) -or $_.Exception.Message -match 'being used by another process'
+            if (-not $sharing -or $attempt -eq $Attempts) { throw }
+            Start-Sleep -Milliseconds $DelayMs
+        }
+    }
+}
+
+function Remove-ItemRetryable([string]$Path, [int]$Max = 8, [int]$DelayMs = 500) {
+    for ($attempt = 1; $attempt -le $Max; $attempt++) {
+        try {
+            Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+            return
+        } catch {
+            $sharing = ($_ -is [System.IO.IOException]) -or ($_.Exception -is [System.IO.IOException]) -or $_.Exception.Message -match 'being used by another process'
+            if (-not $sharing -or $attempt -eq $Max) { throw }
+            Start-Sleep -Milliseconds $DelayMs
+        }
+    }
+}
+
 # Helper to find the newest LastWriteTimeUtc among files/directories
 function Get-NewestFileTimeUtc([string[]]$Paths, [string[]]$ExcludePatterns = @()) {
     $newest = [DateTime]::MinValue
@@ -553,6 +587,10 @@ try {
 
     $stageWatch = Start-Stage
     Write-Host 'Swapping desktop release with rollback...' -ForegroundColor Cyan
+    # 上一次被中途打断的换汇编残留下的 .previous-* 备份，先清理，避免把陈旧目录一起带进备份。
+    Get-ChildItem -Force -LiteralPath $resolvedReleaseRoot | Where-Object {
+        $_.Name -like '.previous-*'
+    } | ForEach-Object { Remove-ItemRetryable -Path $_.FullName }
     $backupDir = Join-Path $resolvedReleaseRoot ('.previous-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
     Get-ChildItem -Force -LiteralPath $resolvedReleaseRoot | Where-Object { $_.FullName -ne $staging -and $_.FullName -ne $backupDir } | ForEach-Object {
@@ -560,22 +598,22 @@ try {
         if (-not $candidate.StartsWith($resolvedReleaseRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
             throw "Refusing to move path outside release directory: $candidate"
         }
-        Move-Item -LiteralPath $candidate -Destination $backupDir
+        Move-ItemRetry -Path $candidate -Destination $backupDir
     }
 
     try {
         Get-ChildItem -Force -LiteralPath $staging | ForEach-Object {
-            Move-Item -LiteralPath $_.FullName -Destination $resolvedReleaseRoot
+            Move-ItemRetry -Path $_.FullName -Destination $resolvedReleaseRoot
         }
         Remove-Item -LiteralPath $staging -Force
     } catch {
         Get-ChildItem -Force -LiteralPath $backupDir | ForEach-Object {
-            Move-Item -LiteralPath $_.FullName -Destination $resolvedReleaseRoot
+            Move-ItemRetry -Path $_.FullName -Destination $resolvedReleaseRoot
         }
         throw
     }
 
-    Remove-Item -LiteralPath $backupDir -Recurse -Force
+    Remove-ItemRetryable -Path $backupDir
     Stop-Stage 'Swap release with rollback' $stageWatch
 
     $totalStopwatch.Stop()

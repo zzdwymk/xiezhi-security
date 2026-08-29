@@ -65,6 +65,44 @@ function safeArchiveEntryName(entryName) {
   return { normalized, parts };
 }
 
+async function stageExecutableBinary(payload) {
+  const {
+    binaryPath,
+    expectedSha256,
+    expectedSize,
+    maxBinaryBytes,
+    targetPath,
+    maxExecutableBytes,
+  } = payload;
+  const binaryHash = await verifySha256(
+    binaryPath,
+    expectedSha256,
+    maxBinaryBytes,
+    expectedSha256 ? "正在校验安装包 SHA-256" : "正在计算安装包 SHA-256",
+    0,
+    0.7,
+  );
+  if (expectedSize > 0 && binaryHash.totalBytes !== expectedSize) {
+    throw new UserFacingError("安装包长度与官方发布记录不一致");
+  }
+  report("正在校验工具程序", 0.8);
+  const data = fs.readFileSync(binaryPath);
+  if (data.length < 1 || data.length > maxExecutableBytes) {
+    throw new UserFacingError("下载的安装包大小异常");
+  }
+  if (data[0] !== 0x4d || data[1] !== 0x5a) {
+    throw new UserFacingError("下载的安装包不是有效的可执行文件");
+  }
+  fs.writeFileSync(targetPath, data, { flag: "wx" });
+  report("工具程序安装完成", 1, { processedFiles: 1, totalFiles: 1 });
+  return {
+    binaryBytes: data.length,
+    binarySha256: binaryHash.digest,
+    executableBytes: data.length,
+    archiveSha256: binaryHash.digest,
+  };
+}
+
 async function extractExecutable(payload) {
   const {
     archivePath,
@@ -329,6 +367,8 @@ async function run() {
   }
   if (workerData.task === "extract-executable")
     return extractExecutable(workerData.payload);
+  if (workerData.task === "stage-executable-binary")
+    return stageExecutableBinary(workerData.payload);
   if (workerData.task === "extract-templates")
     return extractTemplates(workerData.payload);
   if (workerData.task === "extract-scanner-pocs")

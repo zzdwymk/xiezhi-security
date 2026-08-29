@@ -1032,6 +1032,18 @@ const INSTALLABLE_PACKAGES = Object.freeze({
     assetName: (version) => `afrog_${version}_windows_amd64.zip`,
     checksumName: (version) => `afrog_${version}_checksums.txt`,
   }),
+  fscan: Object.freeze({
+    id: "fscan",
+    optional: true,
+    repository: "shadow1ng/fscan",
+    executable: "fscan.exe",
+    // fscan 官方发布的是不带压缩雪花的裸 PE 可执行文件，而不是 zip 归档。
+    // 因此安装流程走“原始二进制直落”路径（format: "raw"）。
+    format: "raw",
+    assetName: (version) => `fscan_${version}_windows_x64.exe`,
+    checksumName: () => "checksums.txt",
+    releaseMode: "latest-semver-match",
+  }),
 });
 
 class GithubRateLimitError extends UserFacingError {}
@@ -2421,7 +2433,7 @@ async function installPortableDependency(
         .digest("hex");
     const archivePath = path.join(
       downloadsDir,
-      `${packageId}-${release.version}-${releaseIdentity.slice(0, 16)}.zip.part`,
+      `${packageId}-${release.version}-${releaseIdentity.slice(0, 16)}${definition.format === "raw" ? ".exe.part" : ".zip.part"}`,
     );
     const archiveMetadataPath = `${archivePath}.json`;
     const stagedExecutable = path.join(stagingDir, definition.executable);
@@ -2533,17 +2545,28 @@ async function installPortableDependency(
       session.controller = undefined;
       session.phase = "verifying-package";
       try {
+        const isRaw = definition.format === "raw";
+        const stagePayload = isRaw
+          ? {
+              binaryPath: archivePath,
+              expectedSha256: release.sha256,
+              expectedSize: release.size,
+              maxBinaryBytes: 150 * 1024 * 1024,
+              targetPath: stagedExecutable,
+              maxExecutableBytes: 256 * 1024 * 1024,
+            }
+          : {
+              archivePath,
+              expectedSha256: release.sha256,
+              expectedSize: release.size,
+              maxArchiveBytes: 150 * 1024 * 1024,
+              executableName: definition.executable,
+              targetPath: stagedExecutable,
+              maxExecutableBytes: 256 * 1024 * 1024,
+            };
         const extraction = await runDependencyWorker(
-          "extract-executable",
-          {
-            archivePath,
-            expectedSha256: release.sha256,
-            expectedSize: release.size,
-            maxArchiveBytes: 150 * 1024 * 1024,
-            executableName: definition.executable,
-            targetPath: stagedExecutable,
-            maxExecutableBytes: 256 * 1024 * 1024,
-          },
+          isRaw ? "stage-executable-binary" : "extract-executable",
+          stagePayload,
           (progress) => {
             const workerProgress = Math.max(
               0,
@@ -4167,11 +4190,15 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
       ? path.join(toolsDir, "xray", "xray_windows_amd64.exe")
       : "xray",
     XRAY_POCS_PATH: path.join(toolsDir, "xray-pocs"),
+    FSCAN_PATH: fs.existsSync(path.join(toolsDir, "fscan", "fscan.exe"))
+      ? path.join(toolsDir, "fscan", "fscan.exe")
+      : "fscan",
     PATH: [
       path.join(toolsDir, "nuclei"),
       path.join(toolsDir, "httpx"),
       path.join(toolsDir, "afrog"),
       path.join(toolsDir, "xray"),
+      path.join(toolsDir, "fscan"),
       path.join(toolsDir, "nmap"),
       process.env.PATH || "",
     ].join(path.delimiter),
