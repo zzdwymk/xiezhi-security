@@ -34,7 +34,7 @@ async function readTasks(page) {
     const taskId = (raw.match(/^(\d+)/) || [])[1] || null;
     let targetId = null;
     if (tool && status) {
-      const m = raw.match(new RegExp(tool + "(\d+)" + status));
+      const m = raw.match(new RegExp(tool + "(\\d+)" + status));
       if (m) targetId = m[1];
     }
     out.push({ i, raw, tool, status, time, taskId, targetId, progress: progress ? Number(progress) : null });

@@ -39,6 +39,15 @@ const STAGES = [
 
 function browserPath() {
   if (process.env.E2E_BROWSER && fs.existsSync(process.env.E2E_BROWSER)) return process.env.E2E_BROWSER;
+  const standardPaths = process.platform === "win32" ? [
+    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+  ] : [];
+  for (const sp of standardPaths) {
+    if (fs.existsSync(sp)) return sp;
+  }
   const names = process.platform === "win32"
     ? ["msedge.exe", "chrome.exe"]
     : ["microsoft-edge", "google-chrome", "chromium", "chromium-browser"];

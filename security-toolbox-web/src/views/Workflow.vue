@@ -61,6 +61,7 @@ import {
   type VulnerabilityDefinition,
 } from "../api";
 import { toErrorMessage } from "../utils/errorMessage";
+import { taskbarProgress } from "../utils/taskbarProgress";
 import WorkflowEdge from "./WorkflowEdge.vue";
 import { COMMON_PORT_OPTIONS, normalizeAllowedPorts } from "../utils/ports";
 
@@ -3655,6 +3656,23 @@ function onWorkflowKeydown(event: KeyboardEvent) {
   removeSelectedEdge();
 }
 
+watch(
+  [executing, executeProgress, executeIndeterminate],
+  ([isExec, prog, indet]) => {
+    if (isExec) {
+      if (!indet && typeof prog === "number" && prog > 0) {
+        taskbarProgress.setProgress("workflow-run", prog / 100);
+      } else {
+        taskbarProgress.startIndeterminate("workflow-run");
+      }
+    } else {
+      taskbarProgress.clearProgress("workflow-run");
+      taskbarProgress.stopIndeterminate("workflow-run");
+    }
+  },
+  { immediate: true },
+);
+
 onMounted(() => {
   scheduleSuggestions();
   window.addEventListener("keydown", onWorkflowKeydown);
@@ -3664,6 +3682,8 @@ onMounted(() => {
   void loadProjects();
 });
 onBeforeUnmount(() => {
+  taskbarProgress.clearProgress("workflow-run");
+  taskbarProgress.stopIndeterminate("workflow-run");
   runPollGeneration += 1;
   if (suggestTimer) clearTimeout(suggestTimer);
   if (suggestAbort) suggestAbort.abort();

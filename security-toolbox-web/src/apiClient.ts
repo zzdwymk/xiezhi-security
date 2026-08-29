@@ -20,10 +20,14 @@ api.interceptors.request.use((config) => {
   const token = readAuthToken();
   if (token) config.headers.Authorization = `Bearer ${token}`;
 
+  const method = String(config.method || "get").toLowerCase();
+  const isMutating = ["post", "put", "delete", "patch"].includes(method);
+  const isExplicit = (config as { taskbar?: boolean }).taskbar === true;
   const isSilent =
     (config as { silent?: boolean }).silent === true ||
     Boolean(config.url && config.url.includes("/system/health"));
-  if (!isSilent) {
+
+  if (!isSilent && (isMutating || isExplicit)) {
     const reqId = `http-req-${++requestIdCounter}`;
     (config as unknown as Record<string, unknown>).__reqId = reqId;
     taskbarProgress.startIndeterminate(reqId);

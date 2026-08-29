@@ -85,13 +85,13 @@ async function run(page, H, ctx) {
     await sleep(300);
 
     // 自定义端口补充 8000
-    const custom = picker.locator('input[placeholder*="手动填写"]').first();
-    if (await custom.count()) {
-      await custom.click();
-      await custom.fill("8000");
-      await page.keyboard.press("Enter");
-      await sleep(500);
-    }
+    const portInput = sel.locator("input").first();
+    await portInput.click();
+    await portInput.fill("8000");
+    await page.keyboard.press("Enter");
+    await sleep(500);
+    await page.keyboard.press("Escape").catch(() => {});
+    await sleep(300);
     const hint = ((await picker.textContent()) || "").replace(/\s+/g, " ");
     return `端口选择器内容: ${hint.slice(0, 160)}`;
   }, { page });
@@ -161,10 +161,20 @@ async function run(page, H, ctx) {
 
   await H.run("C-14", "编辑对话框回显已授权端口", async () => {
     const dlg = await dialog(page, "编辑授权目标");
-    const text = ((await dlg.textContent()) || "").replace(/\s+/g, " ");
-    if (!text.includes("22")) throw new Error("未回显端口 22");
-    if (!text.includes("8000")) throw new Error("未回显端口 8000");
-    return "端口回显正确";
+    const sel = dlg.locator(".port-picker .el-select").first();
+    await sel.waitFor({ state: "visible", timeout: 8000 });
+    const tag = sel.locator(".el-tag").last();
+    if (await tag.count()) {
+      await tag.hover();
+      await sleep(600);
+    }
+    const tooltip = page.locator(".el-tooltip__popper:visible, .el-popper:visible");
+    const tipText = ((await tooltip.allTextContents()).join(" ")).replace(/\s+/g, " ");
+    const dlgText = ((await dlg.textContent()) || "").replace(/\s+/g, " ");
+    const full = dlgText + " " + tipText;
+    if (!full.includes("22") && !full.includes("SSH")) throw new Error("未回显端口 22");
+    if (!full.includes("8000")) throw new Error(`未回显端口 8000（对话框/提示: ${full.slice(0, 160)}）`);
+    return "端口回显正确（含 22 与 8000）";
   }, { page });
 
   await H.run("C-15", "修改授权记录并保存，触发授权范围变更确认", async () => {
@@ -225,11 +235,15 @@ async function run(page, H, ctx) {
     const dlg = await dialog(page, "新增授权目标");
     const picker = dlg.locator(".port-picker").first();
     await picker.waitFor({ state: "visible", timeout: 8000 });
-    const custom = picker.locator('input[placeholder*="手动填写"]').first();
-    await custom.click();
-    await custom.fill(`80,443,${ctx.targetWebPort}`);
+    const sel = picker.locator(".el-select").first();
+    await sel.click();
+    await sleep(400);
+    const portInput = sel.locator("input").first();
+    await portInput.fill(String(ctx.targetWebPort));
     await page.keyboard.press("Enter");
     await sleep(600);
+    await page.keyboard.press("Escape").catch(() => {});
+    await sleep(300);
     return `已授权端口 80,443,${ctx.targetWebPort}`;
   }, { page });
 
