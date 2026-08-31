@@ -135,6 +135,7 @@
 .setup-storage {
   margin: auto 4px 0;
   padding: 13px;
+  flex: none;
   border: 1px solid #deded9;
   border-radius: 8px;
   background: #fff;
@@ -142,14 +143,17 @@
 .setup-storage-title {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   color: #555650;
 }
 .setup-storage-title .el-icon {
+  flex: none;
   color: var(--setup-accent);
+  font-size: 14px;
 }
 .setup-storage b {
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1;
 }
 .setup-storage code {
   display: block;
@@ -174,8 +178,12 @@
   font-size: 11px;
 }
 .setup-download-source {
-  margin: 10px 4px 0;
+  /* Bottom-anchor alongside the storage card so the card no longer crams
+      directly beneath the stepper list; the auto top margin puts breathing
+      room between the steps and this configuration card. */
+  margin: auto 4px 0;
   padding: 13px;
+  flex: none;
   border: 1px solid #deded9;
   border-radius: 8px;
   background: #fff;
@@ -187,6 +195,63 @@
   margin-top: 9px;
 }
 .setup-download-source-hint {
+  margin: 7px 0 0;
+  color: #878882;
+  font-size: 10px;
+  line-height: 1.5;
+}
+/* 合并卡片：工具下载源 + 工具安装目录 */
+.setup-toolbox-card {
+  margin: auto 4px 0;
+  flex: none;
+  overflow: hidden;
+  border: 1px solid #deded9;
+  border-radius: 8px;
+  background: #fff;
+}
+.setup-toolbox-section {
+  padding: 13px;
+}
+.setup-toolbox-section + .setup-toolbox-divider + .setup-toolbox-section {
+  padding-top: 13px;
+}
+.setup-toolbox-divider {
+  height: 1px;
+  margin: 0 13px;
+  background: #ededeb;
+}
+.setup-toolbox-card .setup-storage-title {
+  gap: 8px;
+}
+.setup-toolbox-card code {
+  display: block;
+  overflow: hidden;
+  margin-top: 9px;
+  color: #878882;
+  font:
+    10px/1.5 Consolas,
+    monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.setup-toolbox-card .setup-storage-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  margin-top: 11px;
+}
+.setup-toolbox-card .setup-storage-actions .el-button {
+  margin: 0;
+  border-radius: 7px;
+  font-size: 11px;
+}
+.setup-toolbox-card .setup-download-source-line {
+  margin-top: 9px;
+}
+.setup-toolbox-card .el-input {
+  margin-top: 9px;
+}
+.setup-toolbox-card .setup-download-source-hint {
   margin: 7px 0 0;
   color: #878882;
   font-size: 10px;
@@ -516,12 +581,16 @@
 }
 .setup-logo,
 .setup-storage,
+.setup-toolbox-card,
 .dependency-group,
 .dependency-row,
 .dependency-loading {
   border-color: var(--setup-border);
   background: var(--setup-panel);
   color: var(--setup-text);
+}
+.setup-toolbox-divider {
+  background: var(--setup-border);
 }
 .setup-logo {
   box-shadow: 0 1px 2px color-mix(in srgb, var(--app-text) 6%, transparent);
@@ -582,6 +651,7 @@
 }
 .setup-logo,
 .setup-storage,
+.setup-toolbox-card,
 .dependency-group,
 .dependency-loading {
   border-radius: 8px;
@@ -599,6 +669,7 @@
   height: 24px;
 }
 .setup-storage,
+.setup-toolbox-card,
 .dependency-group {
   box-shadow: 0 1px 2px color-mix(in srgb, var(--app-text) 5%, transparent);
 }
@@ -621,6 +692,35 @@
 }
 .setup-content > .el-alert {
   border-radius: 6px;
+}
+
+/* Fix: 图标与文字贴在一起 — 统一按钮内图标间距 */
+.setup-header .el-button,
+.dep-actions > .el-button,
+.dep-ready-controls .el-button,
+.dep-install-controls .el-button,
+.setup-storage-actions .el-button,
+.setup-toolbox-card .el-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.setup-header .el-button .el-icon,
+.dep-actions .el-button .el-icon,
+.dep-ready-controls .el-button .el-icon {
+  flex: none;
+  font-size: 14px;
+}
+/* 兼容 Element Plus 对旧版按钮文本未包裹 span 的情况，移除原有 margin 叠加 */
+.dep-ready-controls .el-button span {
+  margin-left: 0 !important;
+}
+/* 按钮内手写嵌套的 el-icon + 文本：用 margin 保证间距（与 :icon 属性的卸载按钮一致） */
+.dep-ready-controls .el-button .el-icon + span,
+.dep-actions .el-button .el-icon + span,
+.setup-header .el-button .el-icon + span {
+  margin-left: 6px !important;
 }
 
 /* Dependency actions — Fluent 2 control sizing and readable contrast. */

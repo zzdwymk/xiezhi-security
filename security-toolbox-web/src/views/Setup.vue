@@ -664,62 +664,70 @@ onUnmounted(() => {
             <i>3</i><span>完成配置<small>进入安全工作台</small></span>
           </li>
         </ol>
-        <div class="setup-download-source" v-if="desktopMode">
-          <div class="setup-storage-title">
-            <el-icon><Download /></el-icon><b>工具下载源</b>
-          </div>
-          <div v-if="downloadSourceSaving" class="setup-download-source-line">
-            正在保存…
-          </div>
-          <div v-else class="setup-download-source-line">
-            <el-radio-group
-              v-model="downloadSourceMode"
-              size="small"
-              @change="handleDownloadSourceModeChange"
-            >
-              <el-radio-button label="github">直连</el-radio-button>
-              <el-radio-button label="custom">镜像</el-radio-button>
-            </el-radio-group>
-          </div>
-          <template v-if="downloadSourceMode === 'custom'">
-            <el-input
-              v-model="downloadSourceMirror"
-              size="small"
-              placeholder="https://ghfast.top/ 或 https://gh-proxy…"
-              @keyup.enter="saveDownloadSource('custom')"
-            />
-            <p class="setup-download-source-hint">
-              前缀 + /https://github.com/…；也可在「设置 → 工具下载源」管理。
-            </p>
+        <div class="setup-toolbox-card">
+          <template v-if="desktopMode">
+            <div class="setup-toolbox-section">
+              <div class="setup-storage-title">
+                <el-icon><Download /></el-icon><b>工具下载源</b>
+              </div>
+              <div
+                v-if="downloadSourceSaving"
+                class="setup-download-source-line"
+              >
+                正在保存…
+              </div>
+              <div v-else class="setup-download-source-line">
+                <el-radio-group
+                  v-model="downloadSourceMode"
+                  size="small"
+                  @change="handleDownloadSourceModeChange"
+                >
+                  <el-radio-button label="github">直连</el-radio-button>
+                  <el-radio-button label="custom">镜像</el-radio-button>
+                </el-radio-group>
+              </div>
+              <template v-if="downloadSourceMode === 'custom'">
+                <el-input
+                  v-model="downloadSourceMirror"
+                  size="small"
+                  placeholder="https://ghfast.top/ 或 https://gh-proxy…"
+                  @keyup.enter="saveDownloadSource('custom')"
+                />
+                <p class="setup-download-source-hint">
+                  前缀 + /https://github.com/…；也可在「设置 → 工具下载源」管理。
+                </p>
+              </template>
+              <p
+                v-if="downloadSourceMode === 'github'"
+                class="setup-download-source-hint"
+              >
+                直连 GitHub 官方源，或部分网络可能连接超时。
+              </p>
+            </div>
+            <div class="setup-toolbox-divider"></div>
           </template>
-          <p
-            v-if="downloadSourceMode === 'github'"
-            class="setup-download-source-hint"
-          >
-            直连 GitHub 官方源，或部分网络可能连接超时。
-          </p>
-        </div>
-        <div class="setup-storage">
-          <div class="setup-storage-title">
-            <el-icon><FolderOpened /></el-icon><b>工具安装目录</b>
-          </div>
-          <code :title="toolsDirectory">{{ toolsDirectory }}</code>
-          <div
-            v-if="desktopDirectorySelectionAvailable"
-            class="setup-storage-actions"
-          >
-            <el-button
-              size="small"
-              :loading="toolsDirectoryChanging"
-              @click="chooseToolsDirectory"
-              >选择目录</el-button
+          <div class="setup-toolbox-section">
+            <div class="setup-storage-title">
+              <el-icon><FolderOpened /></el-icon><b>工具安装目录</b>
+            </div>
+            <code :title="toolsDirectory">{{ toolsDirectory }}</code>
+            <div
+              v-if="desktopDirectorySelectionAvailable"
+              class="setup-storage-actions"
             >
-            <el-button
-              size="small"
-              :disabled="toolsDirectoryChanging"
-              @click="resetToolsDirectory"
-              >恢复默认</el-button
-            >
+              <el-button
+                size="small"
+                :loading="toolsDirectoryChanging"
+                @click="chooseToolsDirectory"
+                >选择目录</el-button
+              >
+              <el-button
+                size="small"
+                :disabled="toolsDirectoryChanging"
+                @click="resetToolsDirectory"
+                >恢复默认</el-button
+              >
+            </div>
           </div>
         </div>
       </aside>
@@ -900,7 +908,7 @@ onUnmounted(() => {
                     :loading="item.installing"
                     :disabled="item.uninstalling"
                     @click="requestInstall(item)"
-                    ><el-icon><Refresh /></el-icon>检查更新</el-button
+                    ><el-icon><Refresh /></el-icon><span>检查更新</span></el-button
                   >
                   <el-tooltip
                     :disabled="!item.uninstallSupported"
@@ -1080,7 +1088,7 @@ onUnmounted(() => {
                     :loading="item.installing"
                     :disabled="item.uninstalling"
                     @click="requestInstall(item)"
-                    ><el-icon><Refresh /></el-icon>检查更新</el-button
+                    ><el-icon><Refresh /></el-icon><span>检查更新</span></el-button
                   >
                   <el-tooltip
                     :disabled="!item.uninstallSupported"
@@ -1152,3 +1160,7 @@ onUnmounted(() => {
     </section>
   </main>
 </template>
+
+<style scoped>
+/* 按钮内图标与文字间距已由 setup.css 统一用 gap 控制 */
+</style>
