@@ -54,6 +54,13 @@ const items = ref<Dependency[]>([]);
 const developmentMode = ref(import.meta.env.DEV);
 const toolsDirectory = ref("程序目录 / tools");
 const toolsDirectoryChanging = ref(false);
+const downloadSourceStatus = ref<{ configuredMirror: string }>({
+  configuredMirror: "",
+});
+const downloadSourceLoading = ref(false);
+const downloadSourceSaving = ref(false);
+const downloadSourceMode = ref<"github" | "custom">("github");
+const downloadSourceMirror = ref("");
 const autoContinue = ref(
   localStorage.getItem("security_toolbox_setup_auto_continue_v1") === "true",
 );
@@ -217,6 +224,58 @@ function upsertDependency(dep: Dependency) {
   }
 }
 
+async function loadDownloadSource() {
+  if (!window.toolboxDesktop?.getToolDownloadSettings) return;
+  downloadSourceLoading.value = true;
+  try {
+    downloadSourceStatus.value =
+      await window.toolboxDesktop.getToolDownloadSettings();
+    downloadSourceMirror.value =
+      downloadSourceStatus.value?.configuredMirror || "";
+    downloadSourceMode.value = downloadSourceMirror.value
+      ? "custom"
+      : "github";
+  } catch {
+    /* 静默：加载失败时保持默认 GitHub 直连 */
+  } finally {
+    downloadSourceLoading.value = false;
+  }
+}
+
+async function saveDownloadSource(mode: "github" | "custom", mirror = "") {
+  if (!window.toolboxDesktop?.saveToolDownloadSettings) return;
+  downloadSourceSaving.value = true;
+  try {
+    const mirrorValue =
+      mode === "custom" ? (mirror || downloadSourceMirror.value).trim() : "";
+    downloadSourceStatus.value =
+      await window.toolboxDesktop.saveToolDownloadSettings({
+        downloadMirror: mirrorValue,
+      });
+    downloadSourceMirror.value =
+      downloadSourceStatus.value?.configuredMirror || "";
+    downloadSourceMode.value = downloadSourceMirror.value
+      ? "custom"
+      : "github";
+  } catch (error: any) {
+    ElMessage.error(error?.message || "下载源切换失败");
+  } finally {
+    downloadSourceSaving.value = false;
+  }
+}
+
+function openMirrorCustom() {
+  downloadSourceMode.value = "custom";
+  if (!downloadSourceMirror.value) {
+    ElMessage.info("请输入镜像前缀，回车保存；留空请切换回“直连”");
+  }
+}
+
+function handleDownloadSourceModeChange(value: string | number | boolean) {
+  if (value === "github") saveDownloadSource("github");
+  else openMirrorCustom();
+}
+
 function streamDependencies(forceRefresh: boolean): Promise<boolean> {
   return new Promise((resolve) => {
     let received = 0;
@@ -307,6 +366,19 @@ async function requestInstall(item: Dependency) {
       );
     }
   } catch (installError: any) {
+    const code = String(
+      installError?.code || installError?.detail?.code || "",
+    ).toUpperCase();
+    if (
+      installError === "cancel" ||
+      installError === "close" ||
+      code.includes("DEPENDENCY_DOWNLOAD_CANCELED") ||
+      code.includes("DEPENDENCY_DOWNLOAD_PAUSED") ||
+      /已取消|已暂停/.test(String(installError?.message || ""))
+    ) {
+      item.paused = code.includes("DEPENDENCY_DOWNLOAD_PAUSED");
+      return;
+    }
     ElMessage.error(toErrorMessage(installError, `${item.name} 安装失败`));
   } finally {
     if (!item.paused) item.installing = false;
@@ -435,7 +507,21 @@ function subscribeInstallProgress() {
     item.totalFiles = event.totalFiles;
     item.paused = event.paused;
     item.canPause = event.canPause;
-    const message = event.installStage || event.stage;
+    const wasCanceled =
+      event.stage === "canceled" ||
+      /取消|已取消|canceled/i.test(
+        String(event.installStage || event.stage || ""),
+      );
+    if (wasCanceled) item.installStage = "canceled";
+    else if (event.stage === "failed") {
+      item.installStage = "failed";
+      if (event.installStage) item.message = event.installStage;
+    }
+    const message = wasCanceled
+      ? installStageLabel("canceled")
+      : event.stage === "failed"
+        ? "安装失败：" + (item.message || "请查看安装日志")
+        : installStageLabel(event.installStage || event.stage);
     if (message && item.logs?.[item.logs.length - 1] !== message)
       item.logs = [...(item.logs || []), message].slice(-8);
 
@@ -539,6 +625,7 @@ function updateAutoContinue(value: string | number | boolean) {
 onMounted(() => {
   subscribeInstallProgress();
   void check();
+  void loadDownloadSource();
 });
 
 onUnmounted(() => {
@@ -599,6 +686,41 @@ onUnmounted(() => {
               >恢复默认</el-button
             >
           </div>
+        </div>
+        <div class="setup-download-source" v-if="desktopMode">
+          <div class="setup-storage-title">
+            <el-icon><Download /></el-icon><b>工具下载源</b>
+          </div>
+          <div v-if="downloadSourceSaving" class="setup-download-source-line">
+            正在保存…
+          </div>
+          <div v-else class="setup-download-source-line">
+            <el-radio-group
+              v-model="downloadSourceMode"
+              size="small"
+              @change="handleDownloadSourceModeChange"
+            >
+              <el-radio-button label="github">直连</el-radio-button>
+              <el-radio-button label="custom">镜像</el-radio-button>
+            </el-radio-group>
+          </div>
+          <template v-if="downloadSourceMode === 'custom'">
+            <el-input
+              v-model="downloadSourceMirror"
+              size="small"
+              placeholder="https://ghfast.top/ 或 https://gh-proxy…"
+              @keyup.enter="saveDownloadSource('custom')"
+            />
+            <p class="setup-download-source-hint">
+              前缀 + /https://github.com/…；也可在「设置 → 工具下载源」管理。
+            </p>
+          </template>
+          <p
+            v-if="downloadSourceMode === 'github'"
+            class="setup-download-source-hint"
+          >
+            直连 GitHub 官方源，部分网络可能连接超时。
+          </p>
         </div>
       </aside>
 
@@ -780,18 +902,29 @@ onUnmounted(() => {
                     @click="requestInstall(item)"
                     ><el-icon><Refresh /></el-icon>检查更新</el-button
                   >
-                  <el-button
-                    v-if="item.uninstallSupported"
-                    class="dep-uninstall-button"
-                    type="danger"
-                    :icon="Delete"
-                    :loading="item.uninstalling"
-                    :disabled="item.installing"
-                    title="卸载可选依赖"
-                    aria-label="卸载可选依赖"
-                    @click="requestUninstall(item)"
-                    >卸载</el-button
+                  <el-tooltip
+                    :disabled="!item.uninstallSupported"
+                    placement="top"
+                    :show-after="350"
+                    popper-class="dependency-path-tooltip"
                   >
+                    <template #content
+                      ><span class="dependency-path-tooltip-content"
+                        >卸载可选依赖</span
+                      ></template
+                    >
+                    <el-button
+                      v-if="item.uninstallSupported"
+                      class="dep-uninstall-button"
+                      type="danger"
+                      :icon="Delete"
+                      :loading="item.uninstalling"
+                      :disabled="item.installing"
+                      aria-label="卸载可选依赖"
+                      @click="requestUninstall(item)"
+                      >卸载</el-button
+                    >
+                  </el-tooltip>
                 </div>
                 <span v-else-if="isReady(item)" class="dep-action">已就绪</span>
                 <a
@@ -949,18 +1082,29 @@ onUnmounted(() => {
                     @click="requestInstall(item)"
                     ><el-icon><Refresh /></el-icon>检查更新</el-button
                   >
-                  <el-button
-                    v-if="item.uninstallSupported"
-                    class="dep-uninstall-button"
-                    type="danger"
-                    :icon="Delete"
-                    :loading="item.uninstalling"
-                    :disabled="item.installing"
-                    title="卸载可选依赖"
-                    aria-label="卸载可选依赖"
-                    @click="requestUninstall(item)"
-                    >卸载</el-button
+                  <el-tooltip
+                    :disabled="!item.uninstallSupported"
+                    placement="top"
+                    :show-after="350"
+                    popper-class="dependency-path-tooltip"
                   >
+                    <template #content
+                      ><span class="dependency-path-tooltip-content"
+                        >卸载可选依赖</span
+                      ></template
+                    >
+                    <el-button
+                      v-if="item.uninstallSupported"
+                      class="dep-uninstall-button"
+                      type="danger"
+                      :icon="Delete"
+                      :loading="item.uninstalling"
+                      :disabled="item.installing"
+                      aria-label="卸载可选依赖"
+                      @click="requestUninstall(item)"
+                      >卸载</el-button
+                    >
+                  </el-tooltip>
                 </div>
                 <span v-else-if="isReady(item)" class="dep-action">已就绪</span>
                 <a

@@ -35,7 +35,7 @@ const route = useRoute();
 const rules = ref<DetectionRule[]>([]);
 const targets = ref<Target[]>([]);
 const selected = ref<VulnerabilityDefinition>();
-type CatalogSyncCommand = ScannerSource | "ALL";
+type CatalogSyncCommand = ScannerSource | "ALL" | "HOST";
 const scannerSources: ScannerSource[] = ["NUCLEI", "AFROG", "XRAY"];
 const scannerTools = new Set(["nuclei_scan", "afrog_scan", "xray_scan"]);
 const query = ref("");
@@ -75,6 +75,7 @@ const portSelections = ref<string[]>([]);
 const loading = ref(false);
 const scanning = ref(false);
 const clearingCatalog = ref(false);
+const hostCatalogSyncing = ref(false);
 const catalogSync = useCatalogSyncStore();
 const {
   running: syncRunning,
@@ -100,7 +101,7 @@ const selectedRules = computed(() =>
 );
 const includesPortScan = computed(() =>
   selectedRules.value.some((item) =>
-    ["tcp_ports", "nmap_service_scan"].includes(item.toolCode),
+    ["tcp_ports", "nmap_service_scan", "fscan_scan"].includes(item.toolCode),
   ),
 );
 const includesNucleiScan = computed(() =>
@@ -316,6 +317,7 @@ function sourceLabel(source?: string) {
   if (source === "NUCLEI") return "Nuclei";
   if (source === "AFROG") return "Afrog";
   if (source === "XRAY") return "Xray";
+  if (source === "HOST") return "獬豸内置插件";
   return "獬豸内置";
 }
 
@@ -723,6 +725,10 @@ async function clearImportedCatalog() {
 }
 
 async function syncOfficialCatalog(command: CatalogSyncCommand = "NUCLEI") {
+  if (command === "HOST") {
+    await syncHostCatalog();
+    return;
+  }
   const sources = command === "ALL" ? scannerSources : [command];
   await refreshDependencyStatus();
   const missingDependencies = sources.filter(sourceSyncDisabled);
@@ -751,6 +757,38 @@ async function syncOfficialCatalog(command: CatalogSyncCommand = "NUCLEI") {
     if (error !== "cancel" && error !== "close") {
       ElMessage.error(toErrorMessage(error, "漏洞库同步失败"));
     }
+  }
+}
+
+async function syncHostCatalog() {
+  if (!stats.value?.hostPluginsAvailable) {
+    ElMessage.warning(
+      "未发现内置主机插件目录，请先将 Nessus/Nexpose 风格插件 JSON 放入本地插件目录",
+    );
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      "将重新导入本地内置主机插件目录中的插件元数据。不会自动执行任何检测。",
+      "同步内置主机插件",
+      {
+        confirmButtonText: "开始导入",
+        cancelButtonText: "取消",
+        type: "warning",
+      },
+    );
+    hostCatalogSyncing.value = true;
+    const { data } = await endpoints.syncHostCatalog();
+    ElMessage.success(
+      `内置主机插件同步完成：发现 ${data.discovered}，新增 ${data.imported}，更新 ${data.updated}`,
+    );
+    await load();
+  } catch (error: any) {
+    if (error !== "cancel" && error !== "close") {
+      ElMessage.error(toErrorMessage(error, "主机插件同步失败"));
+    }
+  } finally {
+    hostCatalogSyncing.value = false;
   }
 }
 
@@ -907,7 +945,7 @@ onMounted(async () => {
           <b>漏洞知识库</b
            ><small>{{
              stats
-               ? `${stats.total} 条 · Nuclei ${stats.nuclei} · Afrog ${stats.afrog} · Xray ${stats.xray}`
+               ? `${stats.total} 条 · Nuclei ${stats.nuclei} · Afrog ${stats.afrog} · Xray ${stats.xray} · 内置插件 ${stats.host ?? 0}`
                : `${total} 条`
            }}</small>
          </div>
@@ -970,6 +1008,20 @@ onMounted(async () => {
               </el-dropdown-menu>
             </template>
           </el-dropdown>
+          <el-button
+            link
+            type="primary"
+            :icon="Refresh"
+            :loading="hostCatalogSyncing"
+            :disabled="catalogSyncing || !stats?.hostPluginsAvailable"
+            :title="
+              stats?.hostPluginsAvailable
+                ? '同步内置主机插件目录'
+                : '未发现内置主机插件目录'
+            "
+            @click="syncOfficialCatalog('HOST')"
+            >内置</el-button
+          >
         </div>
       </header>
       <div v-if="syncProgressRows.length" class="catalog-sync-progress">

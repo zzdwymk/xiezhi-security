@@ -1147,8 +1147,104 @@ function githubApiError(response) {
 
 const activeInstalls = new Map();
 const latestPackageCache = new Map();
-const DEPENDENCY_CONNECT_TIMEOUT_MS = 30000;
-const DEPENDENCY_IDLE_TIMEOUT_MS = 45000;
+const DEPENDENCY_CONNECT_TIMEOUT_MS = 60000;
+const DEPENDENCY_IDLE_TIMEOUT_MS = 60000;
+
+// 可选的工具下载镜像。GitHub release CDN 在某些网络（尤其国内）连不上（ERR_CONNECTION_TIMED_OUT），
+// 通过环境变量 `TOOL_DOWNLOAD_MIRROR` 或「设置 → 下载源」把下载地址改写为镜像前缀，例如：
+//   TOOL_DOWNLOAD_MIRROR=https://cdn.npmmirror.com/binaries
+// 已保存的设置优先于环境变量（设置为空/未设置时回落到环境变量）。
+function resolveToolDownloadMirror() {
+  let raw = "";
+  let source = "env";
+  if (typeof readDesktopSettings === "function") {
+    const configured = readDesktopSettings().downloadMirror;
+    if (typeof configured === "string" && configured.trim() !== "") {
+      raw = configured.trim();
+      source = "settings";
+    }
+  }
+  if (raw === "") {
+    raw = String(process.env.TOOL_DOWNLOAD_MIRROR || "").trim();
+    if (raw !== "") source = "env";
+  }
+  if (!raw) return null;
+  let normalized = raw.replace(/\/+$/, "");
+  let parsed;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    return null;
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    !parsed.hostname ||
+    parsed.username ||
+    parsed.password
+  ) {
+    return null;
+  }
+  return { base: normalized, host: parsed.hostname.toLowerCase(), source };
+}
+
+// 保存到 desktop-settings.json 的「下载源」设置。
+function publicToolDownloadSettings(overrideSettings) {
+  const settings =
+    overrideSettings && typeof overrideSettings === "object"
+      ? overrideSettings
+      : readDesktopSettings();
+  const configured =
+    typeof settings.downloadMirror === "string"
+      ? settings.downloadMirror.trim()
+      : "";
+  return { configuredMirror: configured };
+}
+
+function updatedToolDownloadSettings(previousSettings, payload) {
+  const mirror =
+    payload && payload.downloadMirror && typeof payload.downloadMirror === "string"
+      ? payload.downloadMirror.trim()
+      : "";
+  if (mirror === "") return { ...previousSettings, downloadMirror: "" };
+  let parsed;
+  try {
+    parsed = new URL(mirror);
+  } catch {
+    throw new UserFacingError("镜像地址格式无效");
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    !parsed.hostname ||
+    parsed.username ||
+    parsed.password
+  ) {
+    throw new UserFacingError("镜像地址需为 https:// 开头的纯地址，且不能含用户名密码");
+  }
+  return { ...previousSettings, downloadMirror: mirror.replace(/\/+$/, "") };
+}
+
+// 把 GitHub 下载地址重写为镜像地址；未配置镜像则原样返回并给出原始 github 主机。
+// 镜像约定采用国内常见 GitHub 反向代理（ghproxy/ghfast 等）的"前缀 + 完整原 URL"：
+//   TOOL_DOWNLOAD_MIRROR=https://gh-proxy.example  =>  https://gh-proxy.example/https://github.com/...
+function mirroredDownloadTarget(url, mirror) {
+  const originalHost = "github.com";
+  if (!mirror) return { url, host: originalHost };
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { url, host: originalHost };
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.hostname.toLowerCase() !== originalHost
+  ) {
+    return { url, host: originalHost };
+  }
+  // base + 完整原 URL（含 origin），Query/Hash 一并保留。
+  const mirrored = `${mirror.base}/${url}`;
+  return { url: mirrored, host: mirror.host };
+}
 
 async function openDependencyResource(
   url,
@@ -1193,12 +1289,59 @@ async function openDependencyResource(
   }
 }
 
+// 不稳定的网络 / 被墙的边缘节点上，TLS 握手经常会在“连接超时”边界附近偶发失败。
+// 这类连接级错误（网络 IO / 连接被重置 / DNS / 握手）重试一次往往就能连上（换一条链路或 CDN 节点），
+// 所以对“建立连接”这一个动作做有限次重试，避免 30→60 秒的连接超时被一次抖动浪费。
+function isConnectionLevelError(error) {
+  if (error instanceof UserFacingError) return false;
+  const code = String(error?.code || error?.cause?.code || "");
+  const name = String(error?.name || error?.cause?.name || "");
+  const message = `${error?.message || ""} ${error?.cause?.message || ""} ${name}`;
+  return (
+    /timeout|timed ?out|connect|handshake|ssl|tls|certificate|socket|reset|aborted|closed|refused|unreachable/iu.test(
+      message,
+    ) ||
+    /net::err_|ECONNRESET|ETIMEDOUT|ENOTFOUND|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|EAI_AGAIN|EPROTO|ERR_SSL|UNABLE_TO_VERIFY|EADDRNOTAVAIL/i.test(
+      code,
+    )
+  );
+}
+
+async function openDependencyResourceRetry(url, options = {}) {
+  const attempts = Number(options.connectAttempts || 3);
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    // 用户取消/暂停时，外部的 signal 已 abort，继续重试没有意义。
+    if (options.signal?.aborted) {
+      throw new UserFacingError(
+        options.signal?.reason?.message ||
+          (String(options.signal?.reason) === "cancel" ? "依赖下载已取消" : "依赖下载已暂停"),
+      );
+    }
+    try {
+      // 首次失败后，把连接超时放宽到最长，给慢/抖动链路更多握手时间。
+      const timeoutMs =
+        attempt > 1
+          ? 2 * DEPENDENCY_CONNECT_TIMEOUT_MS
+          : DEPENDENCY_CONNECT_TIMEOUT_MS;
+      const request = await openDependencyResource(url, options, timeoutMs);
+      return request;
+    } catch (error) {
+      if (attempt === attempts || !isConnectionLevelError(error)) {
+        throw error;
+      }
+      const delay = Math.min(600 * attempt, 2000);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  throw new UserFacingError(`连接下载源超时（${DEPENDENCY_CONNECT_TIMEOUT_MS / 1000} 秒）`);
+}
+
 async function fetchDependencyResource(
   url,
   options = {},
   timeoutMs = DEPENDENCY_CONNECT_TIMEOUT_MS,
 ) {
-  const request = await openDependencyResource(url, options, timeoutMs);
+  const request = await openDependencyResourceRetry(url, options);
   request.dispose();
   return request.response;
 }
@@ -1207,7 +1350,7 @@ async function fetchDependencyText(
   url,
   { maxBytes, allowedHosts, headers = {} },
 ) {
-  const request = await openDependencyResource(url, { headers });
+  const request = await openDependencyResourceRetry(url, { headers });
   const response = request.response;
   try {
     if (!response.ok || !response.body) {
@@ -1429,8 +1572,24 @@ function promotePortableInstall({
 }
 
 function removeDownloadState(filePath, metadataPath) {
-  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-  if (fs.existsSync(metadataPath)) fs.unlinkSync(metadataPath);
+  for (const candidate of [filePath, metadataPath]) {
+    if (!candidate || !fs.existsSync(candidate)) continue;
+    // Windows 下刚写完/刚 abort 的下载文件可能被杀软或该进程的文件句柄短暂占用，
+    // unlinkSync 会抛 EBUSY/EPERM。这是**尽力而为**的清理：短暂重试，
+    // 仍失败则吞掉（不能让清理失败把一次正常的“取消”变成报错或残留阻塞）。
+    for (let attempt = 0; attempt < 6; attempt++) {
+      try {
+        fs.unlinkSync(candidate);
+        break;
+      } catch {
+        if (attempt === 5) break;
+        const deadline = Date.now() + 120;
+        while (Date.now() < deadline) {
+          /* busy-wait briefly */
+        }
+      }
+    }
+  }
 }
 
 function readDownloadMetadata(metadataPath) {
@@ -1543,7 +1702,11 @@ async function downloadResumableFile({
         : metadata?.lastModified;
     if (validator) headers["If-Range"] = validator;
   }
-  const request = await openDependencyResource(url, { headers, signal });
+  const request = await openDependencyResourceRetry(url, {
+    headers,
+    signal,
+    connectAttempts: 3,
+  });
   const response = request.response;
   try {
     allowedResponseHost(response, url, allowedHosts);
@@ -2230,14 +2393,21 @@ async function resolveLatestPackage(definition) {
     ? "github-release-asset-digest"
     : "local-sha256-record";
   if (checksumAsset) {
-    const checksumUrl = String(checksumAsset.browser_download_url);
-    const checksumText = await fetchDependencyText(checksumUrl, {
+    const mirror = resolveToolDownloadMirror();
+    const checksumTarget = mirroredDownloadTarget(
+      String(checksumAsset.browser_download_url),
+      mirror,
+    );
+    const checksumAllowedHosts = [
+      "github.com",
+      "release-assets.githubusercontent.com",
+      "objects.githubusercontent.com",
+    ];
+    if (checksumTarget.host !== "github.com")
+      checksumAllowedHosts.push(checksumTarget.host);
+    const checksumText = await fetchDependencyText(checksumTarget.url, {
       maxBytes: 2 * 1024 * 1024,
-      allowedHosts: [
-        "github.com",
-        "release-assets.githubusercontent.com",
-        "objects.githubusercontent.com",
-      ],
+      allowedHosts: checksumAllowedHosts,
     });
     const checksumMatchesInFile = checksumText
       .split(/\r?\n/)
@@ -2266,11 +2436,17 @@ async function resolveLatestPackage(definition) {
     throw new UserFacingError("官方 SHA-256 格式无法识别");
   }
 
+  const mirror = resolveToolDownloadMirror();
+  const archiveTarget = mirroredDownloadTarget(
+    String(archiveAsset.browser_download_url),
+    mirror,
+  );
   const value = {
     version,
     tag,
     repository: definition.repository,
-    url: String(archiveAsset.browser_download_url),
+    url: archiveTarget.url,
+    mirrorHost: archiveTarget.host,
     sha256,
     integritySource,
     archiveName,
@@ -2514,7 +2690,8 @@ async function installPortableDependency(
           "github.com",
           "release-assets.githubusercontent.com",
           "objects.githubusercontent.com",
-        ],
+          release.mirrorHost,
+        ].filter(Boolean),
         signal: session.controller.signal,
         onProgress: (progress) => {
           const receivedBytes = Number(progress.receivedBytes || 0);
@@ -2672,8 +2849,13 @@ async function installPortableDependency(
         const action = session.intent;
         session.controller = undefined;
         if (action === "cancel") {
-          for (const artifact of session.artifacts)
-            removeDownloadState(...JSON.parse(artifact));
+          for (const artifact of session.artifacts) {
+            try {
+              removeDownloadState(...JSON.parse(artifact));
+            } catch {
+              // 尽力而为：单个残留文件不阻止取消完成。
+            }
+          }
           session.state = "canceled";
         } else session.state = "paused";
         const progress = {
@@ -2797,8 +2979,13 @@ async function controlDependencyInstall(packageId, action) {
   const session = activeInstalls.get(packageId);
   if (!session) throw new UserFacingError("当前没有可控制的依赖下载");
   if (action === "cancel" && session.state === "paused") {
-    for (const artifact of session.artifacts)
-      removeDownloadState(...JSON.parse(artifact));
+    for (const artifact of session.artifacts) {
+      try {
+        removeDownloadState(...JSON.parse(artifact));
+      } catch {
+        // 尽力而为：单个残留文件不阻止取消完成。
+      }
+    }
     session.state = "canceled";
     activeInstalls.delete(packageId);
     return { packageId, status: "canceled" };
@@ -3296,6 +3483,20 @@ handleRendererIpc("toolbox:get-ai-settings", (event) => {
 handleRendererIpc("toolbox:get-icp-settings", (event) => {
   assertMainRenderer(event);
   return publicIcpSettings();
+});
+handleRendererIpc("toolbox:get-tool-download-settings", (event) => {
+  assertMainRenderer(event);
+  return publicToolDownloadSettings();
+});
+handleRendererIpc("toolbox:save-tool-download-settings", (event, payload) => {
+  assertMainRenderer(event);
+  const previousSettings = readDesktopSettings();
+  const nextSettings = updatedToolDownloadSettings(
+    previousSettings,
+    payload && typeof payload === "object" ? payload : {},
+  );
+  writeDesktopSettings(nextSettings);
+  return publicToolDownloadSettings(nextSettings);
 });
 handleRendererIpc("toolbox:get-github-token-settings", (event) => {
   assertMainRenderer(event);

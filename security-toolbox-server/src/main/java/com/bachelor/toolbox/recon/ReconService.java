@@ -84,6 +84,12 @@ public class ReconService {
   @Value("${toolbox.recon.icp-api-url:}")
   private String icpApiUrl;
 
+  @Value("${toolbox.recon.icp-mi-enabled:true}")
+  private boolean miitEnabled;
+
+  @Value("${toolbox.recon.icp-ocr-models-path:./data/models/icp}")
+  private String icpOcrModelsPath;
+
   public ReconService(
       ReconResultRepository results,
       AssessmentProjectService projects,
@@ -256,12 +262,48 @@ public class ReconService {
     if (domain == null) {
       return new IcpResult(targetId, "", "UNAVAILABLE", "目标中没有可查询的域名", Map.of());
     }
-    if (icpApiUrl == null || icpApiUrl.isBlank()) {
+
+    if (miitEnabled) {
+      MiitIcpClient.MiitResult builtIn =
+          new MiitIcpClient(json, icpOcrModelsPath).queryByUnit(domain);
+      if (builtIn.success()) {
+        return new IcpResult(
+            targetId, domain, "AVAILABLE", "",
+            Map.of(
+                "source", "miit",
+                "records", convertRecords(builtIn.records),
+                "total", builtIn.total));
+      }
+      boolean manualConfigured = hasManualIcpSource();
+      if (builtIn.wasBlockedByCaptcha()) {
+        if (!manualConfigured) {
+          return new IcpResult(
+              targetId, domain, "CAPTCHA_REQUIRED", builtIn.reason,
+              Map.of("source", "miit", "reason", builtIn.reason));
+        }
+      } else {
+        // Built-in query failed (network / gateway); keep a fallback note but continue.
+        if (!manualConfigured) {
+          return new IcpResult(targetId, domain, "UNAVAILABLE", builtIn.reason, Map.of());
+        }
+      }
+      return collectManualIcpResult(targetId, domain);
+    }
+
+    return collectManualIcpResult(targetId, domain);
+  }
+
+  private boolean hasManualIcpSource() {
+    return icpApiUrl != null && !icpApiUrl.isBlank();
+  }
+
+  private IcpResult collectManualIcpResult(Long targetId, String domain) {
+    if (!hasManualIcpSource()) {
       return new IcpResult(
           targetId,
           domain,
           "CONFIG_REQUIRED",
-          "尚未配置 ICP 备案查询数据源；请设置 ICP_API_URL 后重启本地服务",
+          "尚未配置 ICP 备案查询数据源；请在设置中加入 HTTPS 的手动查询服务或启用内置工信部查询",
           Map.of("source", "configuration", "requiredSetting", "ICP_API_URL"));
     }
 
@@ -278,12 +320,32 @@ public class ReconService {
     }
   }
 
+  private List<Map<String, Object>> convertRecords(List<IcpRecord> records) {
+    if (records == null) {
+      return List.of();
+    }
+    List<Map<String, Object>> rows = new ArrayList<>();
+    for (IcpRecord record : records) {
+      Map<String, Object> row = new LinkedHashMap<>();
+      row.put("owner", record.owner());
+      row.put("domain", record.domain());
+      row.put("mainLicense", record.mainLicense());
+      row.put("serviceLicense", record.serviceLicense());
+      row.put("type", record.type());
+      row.put("approvedContent", record.approvedContent());
+      row.put("limitAccess", record.limitAccess());
+      row.put("approveDate", record.approveDate());
+      rows.add(row);
+    }
+    return rows;
+  }
+
   private String buildIcpEndpoint(String domain) {
     String encodedDomain = URLEncoder.encode(domain, StandardCharsets.UTF_8);
-    if (icpApiUrl.contains("{domain}")) {
+    if (icpApiUrl != null && icpApiUrl.contains("{domain}")) {
       return icpApiUrl.replace("{domain}", encodedDomain);
     }
-    String separator = icpApiUrl.contains("?") ? "&" : "?";
+    String separator = icpApiUrl != null && icpApiUrl.contains("?") ? "&" : "?";
     return icpApiUrl + separator + "domain=" + encodedDomain;
   }
 

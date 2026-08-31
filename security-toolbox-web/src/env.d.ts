@@ -106,6 +106,10 @@ interface ToolboxDesktopBridge {
     settings: IcpSettingsInput,
   ) => Promise<IcpSettingsStatus>;
   readonly clearIcpSettings?: () => Promise<IcpSettingsStatus>;
+  readonly getToolDownloadSettings?: () => Promise<ToolDownloadSettingsStatus>;
+  readonly saveToolDownloadSettings?: (
+    payload: ToolDownloadSettingsInput,
+  ) => Promise<ToolDownloadSettingsStatus>;
   readonly launchCaptureBrowser?: (
     options: CaptureBrowserOptions,
   ) => Promise<CaptureBrowserStatus>;
@@ -203,6 +207,14 @@ interface GithubTokenSettingsStatus {
   readonly source: "env" | "settings" | "none";
   readonly encryptionAvailable: boolean;
   readonly hint: string;
+}
+
+interface ToolDownloadSettingsInput {
+  readonly downloadMirror?: string;
+}
+
+interface ToolDownloadSettingsStatus {
+  readonly configuredMirror: string;
 }
 
 interface DesktopLoginCredentials {

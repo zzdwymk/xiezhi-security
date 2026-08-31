@@ -41,6 +41,15 @@ toolbox:
     # Optional trusted ICP provider. Use {domain} in the URL, or the server
     # appends a domain query parameter. HTTPS is required.
     icp-api-url: ${ICP_API_URL:}
+    # Built-in direct query against the official MIIT ICP portal (beian.miit.gov.cn).
+    # When enabled the server tries the built-in source first and falls back to the
+    # manually configured icp-api-url. Defaults to enabled; set ICP_MI_ENABLED=false
+    # to only use the manual icp-api-url source.
+    icp-mi-enabled: ${ICP_MI_ENABLED:true}
+    # Directory holding the PP-OCR ONNX model assets (det.onnx, rec.onnx,
+    # ppocr_keys_v1.txt). When present, the built-in query attempts automatic
+    # captcha solving first and falls back to the manual data source otherwise.
+    icp-ocr-models-path: ${ICP_OCR_MODELS:./data/models/icp}
   auth:
     admin-password: ${ADMIN_PASSWORD:admin123}
     jwt-secret: ${JWT_SECRET:development-only-jwt-secret-change-me-32-bytes}
@@ -105,6 +114,11 @@ toolbox:
     scanner-pocs:
       import-on-startup: ${SCANNER_POC_CATALOG_IMPORT_ON_STARTUP:false}
       max-poc-bytes: 2097152
+    host:
+      plugins-path: ${HOST_PLUGINS_PATH:${user.home}/host-plugins}
+    host-plugins:
+      import-on-startup: ${HOST_PLUGIN_CATALOG_IMPORT_ON_STARTUP:false}
+      max-plugin-bytes: 524288
     cisa-kev-enabled: ${CISA_KEV_ENABLED:true}
     cisa-kev-url: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
   fingerprints:

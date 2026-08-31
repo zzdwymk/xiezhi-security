@@ -60,6 +60,10 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.invoke("toolbox:uninstall-dependency", packageId),
     getAiSettings: () => ipcRenderer.invoke("toolbox:get-ai-settings"),
     getIcpSettings: () => ipcRenderer.invoke("toolbox:get-icp-settings"),
+    getToolDownloadSettings: () =>
+      ipcRenderer.invoke("toolbox:get-tool-download-settings"),
+    saveToolDownloadSettings: (payload) =>
+      ipcRenderer.invoke("toolbox:save-tool-download-settings", payload),
     getGithubTokenSettings: () =>
       ipcRenderer.invoke("toolbox:get-github-token-settings"),
     saveGithubTokenSettings: (payload) =>

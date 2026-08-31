@@ -519,12 +519,28 @@ export interface ScannerPocCatalogSyncResult {
   warnings: string[];
 }
 
+export interface HostPluginCatalogSyncResult {
+  status: string;
+  sourceType: "HOST";
+  pluginsPath: string;
+  sourceVersion: string;
+  discovered: number;
+  imported: number;
+  updated: number;
+  unchanged: number;
+  invalid: number;
+  deactivated: number;
+  completedAt: string;
+  warnings: string[];
+}
+
 export interface VulnerabilityCatalogStats {
   total: number;
   builtin: number;
   nuclei: number;
   afrog: number;
   xray: number;
+  host: number;
   knownExploited: number;
   safeToScan: number;
   templatesAvailable: boolean;
@@ -536,10 +552,13 @@ export interface VulnerabilityCatalogStats {
   xraySyncing: boolean;
   lastAfrogSync?: ScannerPocCatalogSyncResult;
   lastXraySync?: ScannerPocCatalogSyncResult;
+  hostPluginsAvailable: boolean;
+  hostSyncing: boolean;
+  lastHostSync?: HostPluginCatalogSyncResult;
 }
 
 export interface CatalogSyncProgress {
-  source: "NUCLEI" | "AFROG" | "XRAY";
+  source: "NUCLEI" | "AFROG" | "XRAY" | "HOST";
   stage:
     | "IDLE"
     | "PREPARING"
@@ -1008,6 +1027,12 @@ export const endpoints = {
       undefined,
       { timeout: 10 * 60_000 },
     ),
+  syncHostCatalog: () =>
+    api.post<HostPluginCatalogSyncResult>(
+      "/vulnerabilities/sync/host",
+      undefined,
+      { timeout: 10 * 60_000 },
+    ),
   createPostScanPath: (payload: {
     projectId: number;
     targetId: number;
@@ -1253,6 +1278,31 @@ export const endpoints = {
       { targetIds },
       { timeout: 120_000 },
     ),
+  icpStartCaptcha: (projectId: number, targetId: number) =>
+    api.post<{
+      challengeId: string;
+      domain: string;
+      image: string;
+      characterStrip: string;
+      message: string;
+    }>(`/projects/${projectId}/recon/icp/captcha`, { targetId }),
+  icpVerifyCaptcha: (
+    projectId: number,
+    targetId: number,
+    challengeId: string,
+    points: { x: number; y: number }[],
+  ) =>
+    api.post<{
+      domain: string;
+      status: string;
+      reason?: string;
+      records?: Array<Record<string, unknown>>;
+      total?: number;
+    }>(`/projects/${projectId}/recon/icp/captcha/verify`, {
+      targetId,
+      challengeId,
+      points,
+    }),
 };
 
 async function streamTaskEventPath(

@@ -9,6 +9,7 @@ import {
   Compass,
   Delete,
   Document,
+  Download,
   Key,
   MagicStick,
   Setting,
@@ -87,6 +88,11 @@ const githubLoading = ref(false);
 const githubSaving = ref(false);
 const githubStatus = ref<GithubTokenSettingsStatus>();
 const githubForm = reactive<{ token: string }>({ token: "" });
+const toolDownloadDialog = ref(false);
+const toolDownloadLoading = ref(false);
+const toolDownloadSaving = ref(false);
+const toolDownloadStatus = ref<ToolDownloadSettingsStatus>();
+const toolDownloadForm = reactive({ mode: "github" as "github" | "custom", mirror: "" });
 const aiForm = reactive<AiSettingsInput>({
   baseUrl: "https://api.openai.com",
   model: "gpt-4.1-mini",
@@ -134,6 +140,13 @@ const aiServiceSummary = computed(() => {
       ? ` · ${status.keyHint}`
       : "";
   return `${chatSummary} · ${retrievalSummary}${keySummary}`;
+});
+
+const toolDownloadSummary = computed(() => {
+  if (!isDesktop) return "网页模式请通过服务端环境变量配置";
+  const mirror = toolDownloadStatus.value?.configuredMirror || "";
+  if (mirror) return `已使用镜像源 · ${mirror}`;
+  return "直连 GitHub 官方源（连接不稳定时可改用镜像源）";
 });
 
 const aiConnectionAlert = computed(() => {
@@ -495,6 +508,59 @@ async function clearIcpSettings() {
   }
 }
 
+async function loadToolDownloadSettings(open = false) {
+  if (open) toolDownloadDialog.value = true;
+  if (!window.toolboxDesktop?.getToolDownloadSettings) return;
+  toolDownloadLoading.value = true;
+  try {
+    toolDownloadStatus.value = await window.toolboxDesktop.getToolDownloadSettings();
+    const mirror = toolDownloadStatus.value?.configuredMirror || "";
+    toolDownloadForm.mode = mirror ? "custom" : "github";
+    toolDownloadForm.mirror = mirror;
+  } catch (error) {
+    ElMessage.error(errorText(error, "无法读取工具下载源设置"));
+  } finally {
+    toolDownloadLoading.value = false;
+  }
+}
+
+const TOOL_DOWNLOAD_PRESETS = [
+  { label: "直连 GitHub 官方源", value: "" },
+  {
+    label: "ghfast.top 反代（nsis.app）",
+    value: "https://ghfast.top/",
+  },
+  {
+    label: "gh-proxy 反代（ghproxy.net）",
+    value: "https://ghproxy.net/https://github.com/",
+  },
+];
+
+async function saveToolDownloadSettings() {
+  if (!window.toolboxDesktop?.saveToolDownloadSettings)
+    return ElMessage.warning("工具下载源仅支持桌面应用");
+  const mirror =
+    toolDownloadForm.mode === "custom"
+      ? (toolDownloadForm.mirror || "").trim()
+      : "";
+  toolDownloadSaving.value = true;
+  try {
+    toolDownloadStatus.value = await window.toolboxDesktop.saveToolDownloadSettings({
+      downloadMirror: mirror,
+    });
+    toolDownloadDialog.value = false;
+    ElMessage.success(
+      mirror
+        ? "工具下载源已切换为镜像源，对后续安装生效"
+        : "工具下载源已切换回 GitHub 官方源",
+    );
+  } catch (error) {
+    ElMessage.error(errorText(error, "工具下载源保存失败"));
+  } finally {
+    toolDownloadSaving.value = false;
+  }
+}
+
 async function loadGithubTokenSettings(open = false) {
   if (open) githubDialog.value = true;
   if (!window.toolboxDesktop?.getGithubTokenSettings) return;
@@ -636,7 +702,7 @@ watch(
               <small v-else-if="icpStatus?.configured"
                 >已配置 · {{ icpStatus.endpointHint }} · Windows 安全存储</small
               >
-              <small v-else>尚未配置，点击接入可信的 HTTPS 查询服务</small>
+              <small v-else>尚未配置手动数据源；可启用内置工信部查询或接入可信 HTTPS 服务</small>
             </span>
             <el-icon class="settings-row-chevron"><ArrowRight /></el-icon>
           </button>
@@ -660,6 +726,21 @@ watch(
               <small v-else
                 >未配置时同步漏洞库受未登录限额限制（每小时 60 次）</small
               >
+            </span>
+            <el-icon class="settings-row-chevron"><ArrowRight /></el-icon>
+          </button>
+          <button
+            type="button"
+            class="settings-row"
+            @click="loadToolDownloadSettings(true)"
+          >
+            <el-icon class="settings-row-icon"><Download /></el-icon>
+            <span class="settings-row-copy">
+              <strong>工具下载源</strong>
+              <small v-if="!isDesktop"
+                >网页模式请通过 TOOL_DOWNLOAD_MIRROR 环境变量配置</small
+              >
+              <small v-else>{{ toolDownloadSummary }}</small>
             </span>
             <el-icon class="settings-row-chevron"><ArrowRight /></el-icon>
           </button>
@@ -852,7 +933,7 @@ watch(
         />
         <el-alert
           v-else
-          title="程序不内置来源不明的免费备案接口，请接入你信任且有权使用的 HTTPS 服务。"
+          title="可选用内置工信部备案查询，或接入你信任且有权使用的 HTTPS 查询服务；程序不内置来源不明的免费备案接口。"
           type="warning"
           :closable="false"
           show-icon
@@ -874,7 +955,8 @@ watch(
             <p>
               支持 <code>{domain}</code> 占位符；没有占位符时程序会自动追加
               <code>domain=待查询域名</code>。包含在查询参数中的 Key 会一并使用
-              Windows 安全存储加密。
+              Windows 安全存储加密。启用内置工信部查询后，会先尝试直连
+              <code>beian.miit.gov.cn</code>，失败或需人工点选验证时自动回退到这里。
             </p>
           </el-form-item>
         </el-form>
@@ -988,6 +1070,91 @@ watch(
             "
             @click="saveGithubToken"
             >保存</el-button
+          >
+        </div>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="toolDownloadDialog"
+      title="工具下载源"
+      class="app-dialog app-dialog--md"
+      align-center
+      append-to-body
+      destroy-on-close
+    >
+      <div v-loading="toolDownloadLoading" class="icp-settings-form">
+        <el-alert
+          v-if="!isDesktop"
+          title="当前是网页模式，请通过服务端 TOOL_DOWNLOAD_MIRROR 环境变量配置下载源。"
+          type="info"
+          :closable="false"
+          show-icon
+        />
+        <el-alert
+          v-else
+          title="部分网络连不上 GitHub release（常见提示“连接超时/SSL 中断”）。可改用镜像源前缀，把下载改写为 前缀 + 完整 GitHub 地址。"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+        <el-form label-position="top" class="icp-settings-form">
+          <el-form-item label="下载方式">
+            <el-radio-group v-model="toolDownloadForm.mode" :disabled="!isDesktop">
+              <el-radio label="github">直连 GitHub</el-radio>
+              <el-radio label="custom">自定义镜像源</el-radio>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item v-if="toolDownloadForm.mode === 'custom'" label="镜像前缀">
+            <el-input
+              v-model="toolDownloadForm.mirror"
+              placeholder="https://ghfast.top/ 或 https://gh-proxy.example/https://github.com/"
+              :disabled="!isDesktop || toolDownloadSaving"
+            />
+            <p>
+              常用预置：
+              <el-link
+                type="primary"
+                class="mirror-preset"
+                @click="toolDownloadForm.mirror = TOOL_DOWNLOAD_PRESETS[1].value"
+                >ghfast.top</el-link
+              >
+              ·
+              <el-link
+                type="primary"
+                class="mirror-preset"
+                @click="toolDownloadForm.mirror = TOOL_DOWNLOAD_PRESETS[2].value"
+                >ghproxy.net</el-link
+              >
+            </p>
+            <p>
+              需以 <code>https://</code> 开头；程序会拼成「前缀 +
+              <code>/https://github.com/…</code>」，并把镜像主机加入下载授权白名单。
+            </p>
+          </el-form-item>
+        </el-form>
+      </div>
+      <template #footer>
+        <div class="app-dialog__footer-row">
+          <el-button
+            v-if="toolDownloadStatus?.configuredMirror"
+            type="danger"
+            plain
+            :disabled="toolDownloadSaving"
+            @click="toolDownloadForm.mode = 'github'; toolDownloadForm.mirror = ''; saveToolDownloadSettings()"
+            >恢复直连</el-button
+          >
+          <span class="app-dialog__footer-spacer" />
+          <el-button @click="toolDownloadDialog = false">取消</el-button>
+          <el-button
+            type="primary"
+            :loading="toolDownloadSaving"
+            :disabled="
+              !isDesktop ||
+              (toolDownloadForm.mode === 'custom' && !toolDownloadForm.mirror.trim())
+            "
+            @click="saveToolDownloadSettings"
+            >保存并应用</el-button
           >
         </div>
       </template>

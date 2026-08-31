@@ -663,7 +663,11 @@ function mergeProjectTask(task: ProjectTaskRecord) {
   taskbarProgress.syncTasks(projectTasks.value);
 }
 
-const ASSET_OBSERVATION_TOOLS = new Set(["tcp_ports", "nmap_service_scan"]);
+const ASSET_OBSERVATION_TOOLS = new Set([
+  "tcp_ports",
+  "nmap_service_scan",
+  "fscan_scan",
+]);
 // Mirror of the server-side FindingClassification: an open port (INFO, no vulnerabilityCode,
 // from tcp_ports/nmap) is attack-surface information, not a vulnerability, so it must not be
 // counted under 漏洞发现.
@@ -2229,9 +2233,16 @@ async function queryIcpBatch() {
     const requiresConfiguration = icpRows.value.some(
       (item) => item.status === "CONFIG_REQUIRED",
     );
+    const requiresCaptcha = icpRows.value.some(
+      (item) => item.status === "CAPTCHA_REQUIRED",
+    );
     if (requiresConfiguration)
       ElMessage.warning(
-        "尚未配置 ICP 备案数据源；请设置 HTTPS 的 ICP_API_URL 后重启本地服务",
+        "ICP 查询暂未返回数据；可启用内置工信部查询或配置手动数据源（ICP_API_URL）",
+      );
+    else if (requiresCaptcha)
+      ElMessage.info(
+        "内置工信部查询需人工点选验证，可在结果行点击“手动验证”完成",
       );
     else if (availableCount)
       ElMessage.success(
@@ -2251,13 +2262,100 @@ async function queryIcpBatch() {
 function icpStatusLabel(status: string) {
   if (status === "AVAILABLE") return "已返回";
   if (status === "CONFIG_REQUIRED") return "需要配置";
+  if (status === "CAPTCHA_REQUIRED") return "需人工验证";
   return "不可用";
 }
 
 function icpStatusType(status: string) {
   if (status === "AVAILABLE") return "success";
   if (status === "CONFIG_REQUIRED") return "warning";
+  if (status === "CAPTCHA_REQUIRED") return "warning";
   return "danger";
+}
+
+const captchaDialog = ref(false);
+const captchaLoading = ref(false);
+const captchaVerifying = ref(false);
+const captchaDomain = ref("");
+const captchaImage = ref("");
+const captchaStrip = ref("");
+const captchaChallengeId = ref("");
+const captchaTargetId = ref<number>();
+const captchaClicks = ref<
+  { x: number; y: number; percentX: number; percentY: number }[]
+>([]);
+const captchaResult = ref<{ status: string; reason?: string; records?: Array<Record<string, unknown>> }>();
+
+async function startManualCaptcha(row: IcpBatchResult) {
+  captchaClicks.value = [];
+  captchaResult.value = undefined;
+  captchaDialog.value = true;
+  captchaLoading.value = true;
+  try {
+    const { data } = await endpoints.icpStartCaptcha(id, row.targetId);
+    captchaTargetId.value = row.targetId;
+    captchaDomain.value = data.domain || "";
+    captchaImage.value = data.image;
+    captchaChallengeId.value = data.challengeId;
+    captchaStrip.value = data.characterStrip || "";
+  } catch (error: any) {
+    ElMessage.error(errorMessage(error, "发起人工验证会话失败"));
+  } finally {
+    captchaLoading.value = false;
+  }
+}
+
+function onCaptchaImageClick(event: MouseEvent) {
+  if (captchaClicks.value.length >= 4) {
+    ElMessage.info("已达验证所需的点选数量，可重新点击清空后重试");
+    captchaClicks.value = [];
+  }
+  const img = event.currentTarget as HTMLImageElement;
+  const rect = img.getBoundingClientRect();
+  const scaleX = img.naturalWidth ? img.naturalWidth / rect.width : 1;
+  const scaleY = img.naturalHeight ? img.naturalHeight / rect.height : 1;
+  const x = Math.round((event.clientX - rect.left) * scaleX);
+  const y = Math.round((event.clientY - rect.top) * scaleY);
+  captchaClicks.value.push({
+    x,
+    y,
+    percentX: ((event.clientX - rect.left) / rect.width) * 100,
+    percentY: ((event.clientY - rect.top) / rect.height) * 100,
+  });
+}
+
+function removeCaptchaPoint(index: number) {
+  captchaClicks.value.splice(index, 1);
+}
+
+async function submitManualCaptcha() {
+  if (!captchaTargetId.value || !captchaChallengeId.value) return;
+  if (!captchaClicks.value.length) {
+    ElMessage.warning("请先在大图上点击与字符条一一对应的位置");
+    return;
+  }
+  captchaVerifying.value = true;
+  try {
+    const { data } = await endpoints.icpVerifyCaptcha(
+      id,
+      captchaTargetId.value,
+      captchaChallengeId.value,
+      captchaClicks.value,
+    );
+    captchaResult.value = data;
+    if (data.status === "AVAILABLE") {
+      await queryIcpBatch();
+      ElMessage.success(`验证通过，返回 ${data.records?.length ?? 0} 条备案记录`);
+    } else if (data.status === "CAPTCHA_REQUIRED") {
+      ElMessage.error(data.reason || "点选验证未通过，请重试");
+    } else {
+      ElMessage.error(data.reason || "查询失败");
+    }
+  } catch (error: any) {
+    ElMessage.error(errorMessage(error, "人工验证查询失败"));
+  } finally {
+    captchaVerifying.value = false;
+  }
 }
 
 function parseValue(value: unknown): unknown[] {
@@ -3514,6 +3612,16 @@ onUnmounted(() => {
                 JSON.stringify(scope.row.data || {}, null, 2)
               }}</pre>
             </template></el-table-column
+          ><el-table-column label="操作" width="120" align="right"
+            ><template #default="scope">
+              <el-button
+                v-if="scope.row.status === 'CAPTCHA_REQUIRED'"
+                type="primary"
+                size="small"
+                @click="startManualCaptcha(scope.row)"
+                >手动验证</el-button
+              >
+            </template></el-table-column
           ></el-table
         >
         <AppPagination
@@ -3522,6 +3630,70 @@ onUnmounted(() => {
           class="project-table-pagination"
           :total="icpRows.length"
         />
+        <el-dialog
+          v-model="captchaDialog"
+          title="ICP 备案 · 人工点选验证"
+          class="app-dialog app-dialog--md"
+          align-center
+          append-to-body
+          destroy-on-close
+        >
+          <div v-loading="captchaLoading" class="icp-captcha">
+            <el-alert
+              title="请在下方大图中，按字符条从右到左的每个文字，依次在大图对应位置点击。最多点 4 个点。"
+              type="info"
+              :closable="false"
+              show-icon
+            />
+            <div class="icp-captcha-imgs">
+              <div class="icp-captcha-strip" v-if="captchaStrip">
+                <span>待点选字符</span>
+                <img :src="'data:image/png;base64,' + captchaStrip" alt="字符条" />
+              </div>
+              <div class="icp-captcha-stage">
+                <span>{{ captchaDomain || "目标" }}</span>
+                <div class="icp-captcha-canvas">
+                  <img
+                    v-if="captchaImage"
+                    :src="'data:image/png;base64,' + captchaImage"
+                    alt="备案验证大图"
+                    @click="onCaptchaImageClick"
+                  />
+                  <div
+                    v-for="(point, index) in captchaClicks"
+                    :key="index"
+                    class="icp-captcha-point"
+                    :style="{
+                      left: point.percentX + '%',
+                      top: point.percentY + '%',
+                    }"
+                  >
+                    <b>{{ index + 1 }}</b>
+                    <el-button size="small" @click.stop="removeCaptchaPoint(index)"
+                      >删</el-button
+                    >
+                  </div>
+                </div>
+              </div>
+            </div>
+            <pre
+              v-if="captchaResult"
+              class="json-view icp-captcha-result"
+            >{{ JSON.stringify(captchaResult, null, 2) }}</pre>
+          </div>
+          <template #footer>
+            <div class="app-dialog__footer-row">
+              <el-button @click="captchaDialog = false">关闭</el-button>
+              <el-button
+                type="primary"
+                :loading="captchaVerifying"
+                :disabled="captchaLoading || !captchaClicks.length"
+                @click="submitManualCaptcha"
+                >提交并查询</el-button
+              >
+            </div>
+          </template>
+        </el-dialog>
         <div v-if="workflowRunning || workflowLog.length" class="workflow-box">
           <div class="workflow-head">
             <strong>项目任务流：按已保存红队工作流执行</strong
@@ -5452,6 +5624,73 @@ onUnmounted(() => {
 }
 .icp-table {
   margin: 10px 0 14px;
+}
+.icp-captcha {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.icp-captcha-imgs {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.icp-captcha-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.icp-captcha-strip > span,
+.icp-captcha-stage > span {
+  font-size: 12px;
+  color: var(--app-muted, #666);
+}
+.icp-captcha-strip img {
+  border: 1px solid var(--app-border, #ddd);
+  border-radius: 6px;
+  max-width: 180px;
+}
+.icp-captcha-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 240px;
+}
+.icp-captcha-canvas {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+.icp-captcha-canvas img {
+  display: block;
+  max-width: 100%;
+  cursor: crosshair;
+  border: 1px solid var(--app-border, #ddd);
+  border-radius: 6px;
+}
+.icp-captcha-point {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  transform: translate(-50%, -120%);
+}
+.icp-captcha-point b {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--app-accent, #409eff);
+  color: #fff;
+  font-size: 12px;
+  text-align: center;
+  line-height: 20px;
+}
+.icp-captcha-result {
+  margin-top: 4px;
+  max-height: 180px;
+  overflow: auto;
 }
 @media (max-width: 760px) {
   .subdomain-dictionary {

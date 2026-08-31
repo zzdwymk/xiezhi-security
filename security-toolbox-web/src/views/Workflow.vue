@@ -258,6 +258,14 @@ const SUBAGENTS: {
     risk: "CAUTION",
     phase: "discovery",
   },
+  {
+    tool: "fscan_scan",
+    name: "fscan 主机扫描",
+    icon: "shield-task",
+    desc: "对授权主机做端口、服务指纹与安全漏洞指纹扫描，爆破/弱口令类默认关闭",
+    risk: "CAUTION",
+    phase: "discovery",
+  },
 ];
 const agentOf = (tool?: string) => SUBAGENTS.find((item) => item.tool === tool);
 
@@ -722,6 +730,7 @@ function workflowToolParameters(
     return { allPocs: true };
   if (tool === "http_security_check") return { check: "cookies" };
   if (tool === "nmap_service_scan") return { mode: "quick" };
+  if (tool === "fscan_scan") return { vulnMode: "SAFE" };
   return {};
 }
 
@@ -757,6 +766,15 @@ const selectedPortsInput = computed({
 const selectedNmapMode = computed({
   get: () => String(selectedToolNode.value?.data.parameters?.mode || "quick"),
   set: (value: string) => updateSelectedToolParameters({ mode: value }),
+});
+
+const selectedFscanVulnMode = computed({
+  get: () =>
+    String(
+      selectedToolNode.value?.data.parameters?.vulnMode || "SAFE",
+    ).toUpperCase(),
+  set: (value: string) =>
+    updateSelectedToolParameters({ vulnMode: value.toUpperCase() }),
 });
 
 const selectedHttpCheck = computed({
@@ -912,6 +930,7 @@ function phaseToolMap(code: PresetCode): Record<PhaseCode, string[]> {
       mapping: ["http_headers", "tls_config"],
       discovery: [
         "http_security_check",
+        "fscan_scan",
         "nuclei_scan",
         "afrog_scan",
         "xray_scan",
@@ -925,7 +944,7 @@ function phaseToolMap(code: PresetCode): Record<PhaseCode, string[]> {
     return {
       engagement: [],
       recon: ["retrieve_project_context"],
-      mapping: ["nmap_service_scan", "http_headers", "tls_config"],
+      mapping: ["nmap_service_scan", "fscan_scan", "http_headers", "tls_config"],
       discovery: [],
       validation: [],
       impact: [],
@@ -949,6 +968,7 @@ function phaseToolMap(code: PresetCode): Record<PhaseCode, string[]> {
     mapping: ["nmap_service_scan", "http_headers", "tls_config"],
     discovery: [
       "http_security_check",
+      "fscan_scan",
       "nuclei_scan",
       "afrog_scan",
       "xray_scan",
@@ -1094,7 +1114,8 @@ function inferPhase(tool?: string): PhaseCode {
     tool === "http_security_check" ||
     tool === "nuclei_scan" ||
     tool === "afrog_scan" ||
-    tool === "xray_scan"
+    tool === "xray_scan" ||
+    tool === "fscan_scan"
   )
     return "discovery";
   if (tool) return "mapping";
@@ -2993,13 +3014,18 @@ async function returnToCurrentWorkflow() {
 function parametersForExecution(step: WorkflowStepSpec) {
   const parameters = { ...(step.parameters || {}) };
   if (
-    (step.tool === "tcp_ports" || step.tool === "nmap_service_scan") &&
+    (step.tool === "tcp_ports" ||
+      step.tool === "nmap_service_scan" ||
+      step.tool === "fscan_scan") &&
     !String(parameters.ports || "").trim()
   ) {
     parameters.ports = selectedTarget.value?.allowedPorts || "80,443";
   }
   if (step.tool === "nmap_service_scan" && !parameters.mode) {
     parameters.mode = "quick";
+  }
+  if (step.tool === "fscan_scan" && !parameters.vulnMode) {
+    parameters.vulnMode = "SAFE";
   }
   if (step.tool === "http_security_check" && !parameters.check) {
     parameters.check = "cookies";
@@ -3020,10 +3046,20 @@ function validateExecutionInputs(steps: WorkflowStepSpec[]) {
   for (const step of steps) {
     const parameters = parametersForExecution(step);
     if (
-      (step.tool === "tcp_ports" || step.tool === "nmap_service_scan") &&
+      (step.tool === "tcp_ports" ||
+        step.tool === "nmap_service_scan" ||
+        step.tool === "fscan_scan") &&
       !String(parameters.ports || "").trim()
     ) {
       return `步骤“${step.label || step.tool}”缺少端口输入`;
+    }
+    if (
+      step.tool === "fscan_scan" &&
+      !["SAFE", "FINGERPRINT", "FULL"].includes(
+        String(parameters.vulnMode || "").toUpperCase(),
+      )
+    ) {
+      return "fscan 扫描模式必须是 SAFE、FINGERPRINT 或 FULL";
     }
     if (
       step.tool === "nmap_service_scan" &&
@@ -4459,7 +4495,7 @@ onBeforeUnmount(() => {
             >
               <el-form-item
                 v-if="
-                  ['tcp_ports', 'nmap_service_scan'].includes(
+                  ['tcp_ports', 'nmap_service_scan', 'fscan_scan'].includes(
                     selectedToolNode.data.tool || '',
                   )
                 "
@@ -4471,6 +4507,22 @@ onBeforeUnmount(() => {
                 />
                 <small class="input-hint">
                   必须是当前授权目标端口范围的子集。
+                </small>
+              </el-form-item>
+
+              <el-form-item
+                v-if="selectedToolNode.data.tool === 'fscan_scan'"
+                label="扫描模式"
+              >
+                <el-radio-group v-model="selectedFscanVulnMode">
+                  <el-radio-button value="SAFE">安全（默认）</el-radio-button>
+                  <el-radio-button value="FINGERPRINT"
+                    >指纹</el-radio-button
+                  >
+                  <el-radio-button value="FULL">完整</el-radio-button>
+                </el-radio-group>
+                <small class="input-hint">
+                  完整模式可能包含爆破/弱口令类检测，请在授权范围内谨慎使用。
                 </small>
               </el-form-item>
 

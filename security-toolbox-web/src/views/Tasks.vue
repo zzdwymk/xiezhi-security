@@ -102,6 +102,7 @@ const SCHEDULE_TOOL_OPTIONS = [
   { value: "http_headers", label: "HTTP 响应头" },
   { value: "tls_config", label: "TLS 配置" },
   { value: "nmap_service_scan", label: "Nmap 服务识别" },
+  { value: "fscan_scan", label: "fscan 主机扫描" },
   { value: "http_security_check", label: "HTTP 常见安全检查" },
   { value: "nuclei_scan", label: "Nuclei 漏洞扫描" },
   { value: "afrog_scan", label: "Afrog PoC 扫描" },

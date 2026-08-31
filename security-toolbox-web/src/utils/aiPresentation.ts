@@ -10,6 +10,8 @@ const AI_TOOL_LABELS: Readonly<Record<string, string>> = {
   nuclei_scan: "Nuclei 通用漏洞扫描",
   afrog_scan: "Afrog 漏洞扫描",
   xray_scan: "Xray 漏洞扫描",
+  fscan_scan: "fscan 主机扫描",
+  native_vuln_scan: "内置主机漏洞扫描",
 };
 
 const AI_RUNTIME_LEDGER_FAILURE =
