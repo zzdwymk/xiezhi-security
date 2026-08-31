@@ -36,8 +36,20 @@ const rules = ref<DetectionRule[]>([]);
 const targets = ref<Target[]>([]);
 const selected = ref<VulnerabilityDefinition>();
 type CatalogSyncCommand = ScannerSource | "ALL" | "HOST";
+type ActiveScannerSource = ScannerSource | "HOST";
 const scannerSources: ScannerSource[] = ["NUCLEI", "AFROG", "XRAY"];
-const scannerTools = new Set(["nuclei_scan", "afrog_scan", "xray_scan"]);
+const activeScannerSources: ActiveScannerSource[] = [
+  "NUCLEI",
+  "AFROG",
+  "XRAY",
+  "HOST",
+];
+const scannerTools = new Set([
+  "nuclei_scan",
+  "afrog_scan",
+  "xray_scan",
+  "native_vuln_scan",
+]);
 const query = ref("");
 const severityFilter = ref("");
 const sourceFilter = ref("");
@@ -51,25 +63,29 @@ const total = ref(0);
 const stats = ref<VulnerabilityCatalogStats>();
 const targetId = ref<number>();
 const selectedRuleCodes = ref<string[]>([]);
-const selectedPocCodes = ref<Record<ScannerSource, string[]>>({
+const selectedPocCodes = ref<Record<ActiveScannerSource, string[]>>({
   NUCLEI: [],
   AFROG: [],
   XRAY: [],
+  HOST: [],
 });
-const pocSelectionModes = ref<Record<ScannerSource, "ALL" | "MANUAL">>({
+const pocSelectionModes = ref<Record<ActiveScannerSource, "ALL" | "MANUAL">>({
   NUCLEI: "ALL",
   AFROG: "ALL",
   XRAY: "ALL",
+  HOST: "ALL",
 });
-const pocOptions = ref<Record<ScannerSource, VulnerabilityDefinition[]>>({
+const pocOptions = ref<Record<ActiveScannerSource, VulnerabilityDefinition[]>>({
   NUCLEI: [],
   AFROG: [],
   XRAY: [],
+  HOST: [],
 });
-const pocLoading = ref<Record<ScannerSource, boolean>>({
+const pocLoading = ref<Record<ActiveScannerSource, boolean>>({
   NUCLEI: false,
   AFROG: false,
   XRAY: false,
+  HOST: false,
 });
 const portSelections = ref<string[]>([]);
 const loading = ref(false);
@@ -107,13 +123,13 @@ const includesPortScan = computed(() =>
 const includesNucleiScan = computed(() =>
   selectedRules.value.some((item) => item.toolCode === "nuclei_scan"),
 );
-const selectedScannerSources = computed<ScannerSource[]>(() => {
+const selectedScannerSources = computed<ActiveScannerSource[]>(() => {
   const selectedSources = new Set(
     selectedRules.value
       .map((item) => scannerSourceForTool(item.toolCode))
-      .filter((item): item is ScannerSource => Boolean(item)),
+      .filter((item): item is ActiveScannerSource => Boolean(item)),
   );
-  return scannerSources.filter((source) => selectedSources.has(source));
+  return activeScannerSources.filter((source) => selectedSources.has(source));
 });
 const selectedPocDetails = computed(() => {
   const result: VulnerabilityDefinition[] = [];
@@ -326,11 +342,18 @@ function sourceChipClass(source?: string) {
   return ["source-chip", `source-chip--${normalized}`];
 }
 
-function scannerSourceForTool(toolCode: string): ScannerSource | undefined {
+function scannerSourceForTool(
+  toolCode: string,
+): ActiveScannerSource | undefined {
   if (toolCode === "nuclei_scan") return "NUCLEI";
   if (toolCode === "afrog_scan") return "AFROG";
   if (toolCode === "xray_scan") return "XRAY";
+  if (toolCode === "native_vuln_scan") return "HOST";
   return undefined;
+}
+
+function isHostSource(source: ActiveScannerSource) {
+  return source === "HOST";
 }
 
 function dependencyNameForSource(source: ScannerSource) {
@@ -355,17 +378,20 @@ function dependencyForSource(source: ScannerSource) {
   );
 }
 
-function sourceDependencyReady(source: ScannerSource) {
+function sourceDependencyReady(source: ActiveScannerSource) {
+  if (isHostSource(source)) return true;
   return isDependencyReady(dependencyForSource(source));
 }
 
-function sourceCatalogReady(source: ScannerSource) {
+function sourceCatalogReady(source: ActiveScannerSource) {
+  if (isHostSource(source)) return Boolean(stats.value?.hostPluginsAvailable);
   if (source === "NUCLEI") return Boolean(stats.value?.templatesAvailable);
   if (source === "AFROG") return Boolean(stats.value?.afrogPocsAvailable);
   return Boolean(stats.value?.xrayPocsAvailable);
 }
 
-function sourceCatalogCount(source: ScannerSource) {
+function sourceCatalogCount(source: ActiveScannerSource) {
+  if (isHostSource(source)) return Number(stats.value?.host || 0);
   if (source === "NUCLEI") return Number(stats.value?.nuclei || 0);
   if (source === "AFROG") return Number(stats.value?.afrog || 0);
   return Number(stats.value?.xray || 0);
@@ -415,13 +441,14 @@ function pocOptionLabel(item: VulnerabilityDefinition) {
   return `${item.sourceExternalId || item.vulnerabilityCode} · ${item.name}`;
 }
 
-const pocLoadGeneration: Record<ScannerSource, number> = {
+const pocLoadGeneration: Record<ActiveScannerSource, number> = {
   NUCLEI: 0,
   AFROG: 0,
   XRAY: 0,
+  HOST: 0,
 };
 
-async function loadPocOptions(source: ScannerSource, search = "") {
+async function loadPocOptions(source: ActiveScannerSource, search = "") {
   const generation = ++pocLoadGeneration[source];
   pocLoading.value[source] = true;
   try {
@@ -686,11 +713,13 @@ function resetPocSelections() {
     NUCLEI: [],
     AFROG: [],
     XRAY: [],
+    HOST: [],
   };
   pocOptions.value = {
     NUCLEI: [],
     AFROG: [],
     XRAY: [],
+    HOST: [],
   };
 }
 
@@ -898,7 +927,7 @@ watch(
   () => {
     sanitizeSelectedRuleCodes();
     const activeSources = new Set(selectedScannerSources.value);
-    for (const source of scannerSources) {
+    for (const source of activeScannerSources) {
       if (!activeSources.has(source)) {
         selectedPocCodes.value[source] = [];
         pocSelectionModes.value[source] = "ALL";

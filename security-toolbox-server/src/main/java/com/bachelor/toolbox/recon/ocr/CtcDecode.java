@@ -11,6 +11,10 @@ import java.util.List;
  * probability tensor of shape {@code [1, timesteps, vocab]}; this class argmax-decodes it,
  * removes blanks and consecutive duplicates, then maps indices to the PaddleOCR character
  * dictionary (supplied as {@code ppocr_keys_v1.txt}).
+ *
+ * <p>PaddleOCR reserves index 0 for the CTC blank; a real character emitted at index {@code i}
+ * (i &gt; 0) corresponds to dictionary line {@code i - 1}. Indices beyond the dictionary are
+ * dropped.
  */
 final class CtcDecode {
 
@@ -42,13 +46,19 @@ final class CtcDecode {
     for (int t = 0; t < timesteps; t++) {
       int argmax = maxIndex(logits, t, vocabSize);
       if (argmax != 0 && argmax != prev) {
-        if (argmax < vocabulary.size()) {
-          text.append(vocabulary.get(argmax));
-        }
+        // Real character: index 1.. → dictionary line (argmax-1).
+        addChar(text, argmax);
       }
       prev = argmax;
     }
     return text.toString();
+  }
+
+  private void addChar(StringBuilder text, int modelIndex) {
+    int dictIndex = modelIndex - 1;
+    if (dictIndex >= 0 && dictIndex < vocabulary.size()) {
+      text.append(vocabulary.get(dictIndex));
+    }
   }
 
   private static int maxIndex(float[] data, int t, int vocab) {

@@ -52,7 +52,8 @@ class ScannerPocSelectionServiceTests {
             new ObjectMapper(),
             root.resolve("nuclei-templates").toString(),
             afrog.toString(),
-            root.resolve("xray-pocs").toString());
+            root.resolve("xray-pocs").toString(),
+            root.resolve("host-plugins").toString());
 
     List<ScannerPocSelectionService.SelectedPoc> selected =
         service.resolve(
@@ -137,7 +138,8 @@ class ScannerPocSelectionServiceTests {
         new ObjectMapper(),
         root.resolve("nuclei-templates").toString(),
         root.resolve("afrog-pocs").toString(),
-        xray.toString());
+        xray.toString(),
+        root.resolve("host-plugins").toString());
   }
 
   private VulnerabilityDefinition poc(

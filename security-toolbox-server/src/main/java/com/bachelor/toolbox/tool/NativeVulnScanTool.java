@@ -81,6 +81,7 @@ public class NativeVulnScanTool implements SecurityTool {
   private final BannerProber prober;
   private final long timeoutSeconds;
 
+  @org.springframework.beans.factory.annotation.Autowired
   public NativeVulnScanTool(
       TargetPolicyService policy,
       PortRangeParser portRangeParser,
@@ -89,7 +90,7 @@ public class NativeVulnScanTool implements SecurityTool {
     this(policy, portRangeParser, pocSelection, pluginParser, new SocketBannerProber(), DEFAULT_TIMEOUT_SECONDS);
   }
 
-  public NativeVulnScanTool(
+  NativeVulnScanTool(
       TargetPolicyService policy,
       PortRangeParser portRangeParser,
       ScannerPocSelectionService pocSelection,

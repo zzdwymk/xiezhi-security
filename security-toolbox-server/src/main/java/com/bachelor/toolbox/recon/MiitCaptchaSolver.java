@@ -44,7 +44,7 @@ final class MiitCaptchaSolver {
         return null;
       }
       try (engine) {
-        List<Map<String, Object>> points = engine.solve(bigImage);
+        List<Map<String, Object>> points = engine.solve(bigImage, smallImage);
         if (points == null || points.isEmpty()) {
           return null;
         }

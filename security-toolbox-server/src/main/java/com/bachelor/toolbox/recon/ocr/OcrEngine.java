@@ -39,12 +39,15 @@ public final class OcrEngine implements AutoCloseable {
   private final OrtSession detSession;
   private final OrtSession recSession;
   private final DbPostProcess db;
+  private final CtcDecode ctc;
 
-  private OcrEngine(OrtEnvironment env, OrtSession detSession, OrtSession recSession) {
+  private OcrEngine(
+      OrtEnvironment env, OrtSession detSession, OrtSession recSession, CtcDecode ctc) {
     this.env = env;
     this.detSession = detSession;
     this.recSession = recSession;
     this.db = new DbPostProcess();
+    this.ctc = ctc;
   }
 
   /** Builds the engine when all model assets are present, otherwise returns {@code null}. */
@@ -59,10 +62,10 @@ public final class OcrEngine implements AutoCloseable {
       return null;
     }
     try {
-      // Validate the dictionary is parseable so a corrupt asset fails fast at load time.
-      CtcDecode.fromDictFile(dict);
+      CtcDecode ctc = CtcDecode.fromDictFile(dict);
       OrtEnvironment env = OrtEnvironment.getEnvironment();
-      return new OcrEngine(env, env.createSession(det.toString()), env.createSession(rec.toString()));
+      return new OcrEngine(
+          env, env.createSession(det.toString()), env.createSession(rec.toString()), ctc);
     } catch (Exception exception) {
       return null;
     }
@@ -73,8 +76,9 @@ public final class OcrEngine implements AutoCloseable {
   }
 
   /**
-   * Attempts to resolve the point challenge: returns the upper-left coordinates of the character
-   * boxes detected in the background image, or {@code null} when it cannot resolve the challenge.
+   * Resolves the point challenge from just the big background image, using every detected text box
+   * as a candidate click target. Prefer {@link #solve(String, String)} which also matches the
+   * character strip so the points come back in the requested order.
    */
   public List<Map<String, Object>> solve(String bigImage) {
     if (!available()) {
@@ -86,17 +90,192 @@ public final class OcrEngine implements AutoCloseable {
       if (boxes.isEmpty()) {
         return null;
       }
-      List<Map<String, Object>> out = new ArrayList<>();
-      for (int[] box : boxes) {
-        Map<String, Object> p = new LinkedHashMap<>();
-        p.put("x", box[0]);
-        p.put("y", box[1]);
-        out.add(p);
-      }
-      return out;
+      return toPoints(boxes, null, big);
     } catch (Exception exception) {
       return null;
     }
+  }
+
+  /**
+   * Solves the "click the characters" challenge.
+   *
+   * <p>The strip (small) image shows the characters to click, in order. Each detected text box in
+   * the big image is recognized and the click points come back centered on the boxes that match
+   * the strip characters. Returns {@code null} when the challenge cannot be resolved confidently.
+   *
+   * @param bigImage base64 background image that contains scattered characters
+   * @param smallImage base64 strip image showing the characters to click, in order
+   * @return the ordered click points (image coordinates, centered on each matched character)
+   */
+  public List<Map<String, Object>> solve(String bigImage, String smallImage) {
+    if (!available()) {
+      return null;
+    }
+    try {
+      BufferedImage big =
+          bigImage == null || bigImage.isBlank() ? null : ImageOps.fromBase64(bigImage);
+      BufferedImage strip =
+          smallImage == null || smallImage.isBlank() ? null : ImageOps.fromBase64(smallImage);
+      if (big == null) {
+        return null;
+      }
+      List<int[]> bigBoxes = detect(big);
+      if (bigBoxes.isEmpty()) {
+        return null;
+      }
+      List<Map<String, Object>> resolved = toPoints(bigBoxes, strip, big);
+      return resolved;
+    } catch (Exception exception) {
+      return null;
+    }
+  }
+
+  /** Recognized text box: bounding box plus the character string produced by the rec model. */
+  private static final class BoxText {
+    final int[] box;
+    final String text;
+
+    BoxText(int[] box, String text) {
+      this.box = box;
+      this.text = text;
+    }
+  }
+
+  private List<Map<String, Object>> toPoints(List<int[]> bigBoxes, BufferedImage strip,
+      BufferedImage big) throws Exception {
+    List<BoxText> candidates = new ArrayList<>();
+    for (int[] box : bigBoxes) {
+      candidates.add(new BoxText(box, recognize(big, box)));
+    }
+
+    if (strip == null) {
+      // No strip: return all detected points so a caller can still show/probe them (no matching).
+      List<Map<String, Object>> out = new ArrayList<>();
+      for (BoxText c : candidates) {
+        out.add(point(c.box));
+      }
+      return out.isEmpty() ? null : out;
+    }
+
+    List<String> required = stripChars(strip);
+    if (required.isEmpty()) {
+      return null;
+    }
+    List<Map<String, Object>> out = new ArrayList<>();
+    for (String want : required) {
+      boolean found = false;
+      for (BoxText c : candidates) {
+        if (want.equals(c.text)) {
+          out.add(point(c.box));
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        // A requested character could not be located; do not risk a wrong click.
+        return null;
+      }
+    }
+    return out.isEmpty() ? null : out;
+  }
+
+  /** Centers a click point on a detected box. */
+  private static Map<String, Object> point(int[] box) {
+    Map<String, Object> p = new LinkedHashMap<>();
+    int cx = box[0] + (box[2] - box[0]) / 2;
+    int cy = box[1] + (box[3] - box[1]) / 2;
+    p.put("x", cx);
+    p.put("y", cy);
+    return p;
+  }
+
+  /** Recognizes each sub-box of the strip image and returns the character strings, left to right. */
+  private List<String> stripChars(BufferedImage strip) throws Exception {
+    List<int[]> boxes = detect(strip);
+    if (boxes.isEmpty()) {
+      return List.of();
+    }
+    // DB detection can over-segment a single character into several small fragments; merge any
+    // boxes that horizontally touch or sit right next to each other so each strip character is
+    // recognized as one region.
+    List<int[]> merged = mergeBoxes(boxes);
+    merged.sort((a, b) -> Integer.compare(a[0], b[0]));
+    List<String> texts = new ArrayList<>();
+    for (int[] box : merged) {
+      String t = recognize(strip, box);
+      if (t != null && !t.isBlank()) {
+        texts.add(t);
+      }
+    }
+    return texts;
+  }
+
+  /**
+   * Greedily merges horizontally-adjacent/overlapping boxes into a single box. Boxes whose
+   * x-spans touch (gap &le; half the box height) and whose y-spans overlap are unioned.
+   */
+  private static List<int[]> mergeBoxes(List<int[]> boxes) {
+    List<int[]> sorted = new ArrayList<>(boxes);
+    sorted.sort((a, b) -> Integer.compare(a[0], b[0]));
+    List<int[]> out = new ArrayList<>();
+    for (int[] b : sorted) {
+      if (out.isEmpty()) {
+        out.add(b.clone());
+        continue;
+      }
+      int[] last = out.get(out.size() - 1);
+      int gap = b[0] - last[2];
+      int maxHeight = Math.max(last[3] - last[1], b[3] - b[1]);
+      boolean yOverlap = b[1] < last[3] && last[1] < b[3];
+      if (yOverlap && gap <= Math.max(1, maxHeight / 2)) {
+        last[2] = Math.max(last[2], b[2]);
+        last[3] = Math.max(last[3], b[3]);
+        last[1] = Math.min(last[1], b[1]);
+      } else {
+        out.add(b.clone());
+      }
+    }
+    return out;
+  }
+
+  /** Runs the PP-OCR recognition head on the given sub-image box and returns the decoded text. */
+  private String recognize(BufferedImage image, int[] box) throws Exception {
+    int x0 = Math.max(0, box[0] - 2);
+    int y0 = Math.max(0, box[1] - 2);
+    int x1 = Math.min(image.getWidth(), box[2] + 2);
+    int y1 = Math.min(image.getHeight(), box[3] + 2);
+    if (x1 <= x0 || y1 <= y0) {
+      return "";
+    }
+    BufferedImage crop = image.getSubimage(x0, y0, x1 - x0, y1 - y0);
+
+    // PP-OCR rec expects a fixed height (48 here); recompute width to preserve the box aspect ratio.
+    int recH = 48;
+    int recW = Math.max(10, Math.round((float) (x1 - x0) * recH / (y1 - y0)));
+    BufferedImage resized = ImageOps.resize(crop, recW, recH);
+    // PaddleOCR rec normalizes to 0..1 (mean = std = 0.5).
+    float[] input = ImageOps.toChw(resized, recH, recW, 3);
+
+    String inputName = new ArrayList<>(recSession.getInputInfo().keySet()).get(0);
+    long[] shape = {1, 3, recH, recW};
+    float[] logits;
+    long[] outShape;
+    try (OnnxTensor tensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(input), shape);
+        OrtSession.Result result = recSession.run(Map.of(inputName, tensor))) {
+      OnnxTensor out = (OnnxTensor) result.get(0);
+      TensorInfo oi = (TensorInfo) result.get(0).getInfo();
+      logits = new float[out.getFloatBuffer().remaining()];
+      out.getFloatBuffer().get(logits);
+      outShape = oi.getShape();
+    }
+    // Output is [1, T, vocab]; decode the flattened logits with the CTC decoder.
+    long vocab = outShape[outShape.length - 1];
+    long timesteps = outShape[outShape.length - 2];
+    if (timesteps * vocab <= 0 || logits.length < timesteps * vocab) {
+      return "";
+    }
+    String text = ctc.decode(logits, (int) timesteps, (int) vocab);
+    return text == null ? "" : text.trim();
   }
 
   private List<int[]> detect(BufferedImage image) throws Exception {
@@ -125,10 +304,10 @@ public final class OcrEngine implements AutoCloseable {
     try (OnnxTensor tensor =
             OnnxTensor.createTensor(env, FloatBuffer.wrap(input), tensorShape);
         OrtSession.Result result = detSession.run(Map.of(inputName, tensor))) {
-      OnnxTensor out = (OnnxTensor) result.get(0).getValue();
+      OnnxTensor out = (OnnxTensor) result.get(0);
+      TensorInfo outInfo = (TensorInfo) result.get(0).getInfo();
       prob = new float[out.getFloatBuffer().remaining()];
       out.getFloatBuffer().get(prob);
-      TensorInfo outInfo = (TensorInfo) result.get(0).getInfo();
       outShape = outInfo.getShape();
     }
 

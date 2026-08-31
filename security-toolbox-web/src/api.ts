@@ -1051,7 +1051,7 @@ export const endpoints = {
     targetId: number;
     ruleCodes?: string[];
     pocCodes?: string[];
-    allPocSources?: Array<"NUCLEI" | "AFROG" | "XRAY">;
+    allPocSources?: Array<"NUCLEI" | "AFROG" | "XRAY" | "HOST">;
     ports?: string;
   }) =>
         api.post("/active-scans", payload, {

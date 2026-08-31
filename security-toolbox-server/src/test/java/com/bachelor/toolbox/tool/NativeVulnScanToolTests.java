@@ -2,10 +2,9 @@ package com.bachelor.toolbox.tool;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
-
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.PortRangeParser;
 import com.bachelor.toolbox.target.TargetPolicyService;
@@ -59,7 +58,7 @@ class NativeVulnScanToolTests {
         """,
         StandardCharsets.UTF_8);
     ScannerPocSelectionService selection = mock(ScannerPocSelectionService.class);
-    when(selection.resolve(any(), any(), any())).thenReturn(List.of(poc(file)));
+    when(selection.resolve(any(), any(), anyBoolean())).thenReturn(List.of(poc(file)));
     NativeVulnScanTool tool = tool(selection, (host, port) -> new NativeVulnScanTool.ProbeResult(true, "banner"));
 
     ToolExecutionResult result = tool.execute(target(), Map.of());
@@ -82,7 +81,7 @@ class NativeVulnScanToolTests {
         """,
         StandardCharsets.UTF_8);
     ScannerPocSelectionService selection = mock(ScannerPocSelectionService.class);
-    when(selection.resolve(any(), any(), any())).thenReturn(List.of(poc(file)));
+    when(selection.resolve(any(), any(), anyBoolean())).thenReturn(List.of(poc(file)));
     NativeVulnScanTool tool =
         tool(selection, (host, port) -> new NativeVulnScanTool.ProbeResult(true, "nginx/1.18"));
 
