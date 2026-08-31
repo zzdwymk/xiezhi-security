@@ -38,6 +38,11 @@ function projectStatusLabel(status?: string) {
   return (status && map[status]) || status || "未知";
 }
 
+function projectExpired(row: { authorizationExpiresAt?: string }) {
+  const expiresAt = Date.parse(row.authorizationExpiresAt || "");
+  return Number.isFinite(expiresAt) && expiresAt < Date.now();
+}
+
 function projectStatusType(
   status?: string,
 ): "success" | "warning" | "info" | "primary" | "danger" | "" {
@@ -241,8 +246,20 @@ onMounted(load);
       </el-table-column>
       <el-table-column label="授权有效期" min-width="230">
         <template #default="scope">
-          {{ formatDateTime(scope.row.authorizationValidFrom) }} 至
-          {{ formatDateTime(scope.row.authorizationExpiresAt) }}
+          <div class="project-auth-cell">
+            <span>
+              {{ formatDateTime(scope.row.authorizationValidFrom) }} 至
+              {{ formatDateTime(scope.row.authorizationExpiresAt) }}
+            </span>
+            <el-tag
+              v-if="projectExpired(scope.row)"
+              size="small"
+              type="danger"
+              effect="dark"
+            >
+              已过期
+            </el-tag>
+          </div>
         </template>
       </el-table-column>
       <el-table-column label="操作" width="180">
@@ -435,6 +452,11 @@ onMounted(load);
 </template>
 
 <style scoped>
+.project-auth-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .projects-pagination {
   display: flex;
   justify-content: flex-end;

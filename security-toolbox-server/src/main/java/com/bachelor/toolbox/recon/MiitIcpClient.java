@@ -123,6 +123,9 @@ final class MiitIcpClient {
     if (pending == null || points == null || points.isEmpty()) {
       return MiitResult.failure("无效的验证会话或点击坐标");
     }
+    if (pending.secretKey() == null || pending.secretKey().isBlank()) {
+      return MiitResult.failure("MIIT 当前接口未返回 secretKey，点选验证校验不可用");
+    }
     try {
       String pointJson = aesEcbEncrypt(compactPoints(points), pending.secretKey());
       String body =
@@ -155,7 +158,8 @@ final class MiitIcpClient {
   private String authenticate() throws IOException, InterruptedException {
     String timestamp = String.valueOf(System.currentTimeMillis() / 1000);
     String authKey = md5Hex(AUTH_KEY + timestamp);
-    String body = json.writeValueAsString(Map.of("authKey", authKey, "timeStamp", timestamp));
+    // The MIIT auth gate expects form-urlencoded key=value pairs (authKey, timeStamp), not JSON.
+    String body = "authKey=" + authKey + "&timeStamp=" + timestamp;
     JsonNode response = postForm(AUTH_PATH, body);
     String token = response.path("params").path("bussiness").asText("");
     if (token.isBlank()) {
@@ -171,19 +175,38 @@ final class MiitIcpClient {
     if (response.path("code").asInt(-1) != 200) {
       throw new MiitException("MIIT 获取验证码失败");
     }
-    JsonNode params = response.path("params");
-    String uuid = params.path("uuid").asText("");
-    String secretKey = params.path("secretKey").asText("");
-    String bigImage = params.path("bigImage").asText("");
-    String smallImage = params.path("smallImage").asText("");
-    if (uuid.isBlank() || secretKey.isBlank() || bigImage.isBlank()) {
+    // The current (2025+) MIIT gateway returns the challenge fields at the top level
+    // (bigImage, smallImage, uuid, height); the older reference returned them nested under
+    // params plus a secretKey. Read the top level first and fall back to params so both shapes
+    // are tolerated.
+    String uuid = text(response, "uuid");
+    String bigImage = text(response, "bigImage");
+    String smallImage = text(response, "smallImage");
+    String secretKey = text(response, "secretKey");
+    if (uuid.isBlank() || bigImage.isBlank()) {
       throw new MiitException("MIIT 验证码参数不完整");
     }
     return new Challenge(uuid, secretKey, bigImage, smallImage, clientUid);
   }
 
+  /** Reads a string field, preferring the top-level object then the nested {@code params}. */
+  private static String text(JsonNode response, String key) {
+    String v = response.path(key).asText("");
+    if (v.isBlank()) {
+      v = response.path("params").path(key).asText("");
+    }
+    return v;
+  }
+
+  private void requireSecret(String challengeSecret, String message) throws MiitException {
+    if (challengeSecret == null || challengeSecret.isBlank()) {
+      throw new MiitException(message);
+    }
+  }
+
   private String verify(Challenge challenge, String accessToken)
       throws IOException, InterruptedException, MiitCaptchaRequiredException {
+    requireSecret(challenge.secretKey(), "MIIT 点选验证无法完成（当前接口未返回 secretKey）");
     List<Map<String, Object>> solved =
         MiitCaptchaSolver.solve(challenge.bigImage(), challenge.smallImage(), modelsPath);
     if (solved == null) {
