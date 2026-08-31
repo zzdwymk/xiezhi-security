@@ -664,29 +664,6 @@ onUnmounted(() => {
             <i>3</i><span>完成配置<small>进入安全工作台</small></span>
           </li>
         </ol>
-        <div class="setup-storage">
-          <div class="setup-storage-title">
-            <el-icon><FolderOpened /></el-icon><b>工具安装目录</b>
-          </div>
-          <code :title="toolsDirectory">{{ toolsDirectory }}</code>
-          <div
-            v-if="desktopDirectorySelectionAvailable"
-            class="setup-storage-actions"
-          >
-            <el-button
-              size="small"
-              :loading="toolsDirectoryChanging"
-              @click="chooseToolsDirectory"
-              >选择目录</el-button
-            >
-            <el-button
-              size="small"
-              :disabled="toolsDirectoryChanging"
-              @click="resetToolsDirectory"
-              >恢复默认</el-button
-            >
-          </div>
-        </div>
         <div class="setup-download-source" v-if="desktopMode">
           <div class="setup-storage-title">
             <el-icon><Download /></el-icon><b>工具下载源</b>
@@ -719,8 +696,31 @@ onUnmounted(() => {
             v-if="downloadSourceMode === 'github'"
             class="setup-download-source-hint"
           >
-            直连 GitHub 官方源，部分网络可能连接超时。
+            直连 GitHub 官方源，或部分网络可能连接超时。
           </p>
+        </div>
+        <div class="setup-storage">
+          <div class="setup-storage-title">
+            <el-icon><FolderOpened /></el-icon><b>工具安装目录</b>
+          </div>
+          <code :title="toolsDirectory">{{ toolsDirectory }}</code>
+          <div
+            v-if="desktopDirectorySelectionAvailable"
+            class="setup-storage-actions"
+          >
+            <el-button
+              size="small"
+              :loading="toolsDirectoryChanging"
+              @click="chooseToolsDirectory"
+              >选择目录</el-button
+            >
+            <el-button
+              size="small"
+              :disabled="toolsDirectoryChanging"
+              @click="resetToolsDirectory"
+              >恢复默认</el-button
+            >
+          </div>
         </div>
       </aside>
 

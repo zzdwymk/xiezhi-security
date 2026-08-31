@@ -59,7 +59,8 @@ public class AgentWorkflowSpecService {
           "tls_config",
           "nuclei_scan",
           "afrog_scan",
-          "xray_scan");
+          "xray_scan",
+          "fscan_scan");
   private static final Set<String> PHASES =
       Set.of(
           "engagement",

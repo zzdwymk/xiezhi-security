@@ -416,13 +416,15 @@ body,
 
 .desktop-v2-native-frame > .desktop-v2-shell > .desktop-v2-workspace {
   position: relative;
-  overflow: hidden;
   border: 0 !important;
   border-top-left-radius: var(--fluent-workspace-radius);
   background: var(--app-workspace-surface) !important;
   background-clip: border-box;
   box-shadow: none !important;
-  contain: paint;
+  /* Keep the workspace free of paint/overflow clipping so CSS hover bubbles
+     (e.g. [data-fluent-tooltip]::after, z-index 3000) are not cut off by the
+     rounded corner masking and can overlap the left navigation rail. */
+  contain: layout;
 }
 
 .desktop-v2-native-frame > .desktop-v2-shell > .desktop-v2-workspace::before {
