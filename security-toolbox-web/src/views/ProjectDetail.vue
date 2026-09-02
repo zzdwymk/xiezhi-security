@@ -483,6 +483,15 @@ function displayTaskError(message?: string) {
     : "无";
 }
 
+function projectExpired(project?: {
+  authorizationExpiresAt?: string;
+  status?: string;
+}): boolean {
+  if (!project || project.status !== "ACTIVE") return false;
+  const expiresAt = Date.parse(project.authorizationExpiresAt || "");
+  return Number.isFinite(expiresAt) && expiresAt < Date.now();
+}
+
 function projectStatusLabel(status?: string) {
   const labels: Record<string, string> = {
     ACTIVE: "进行中",
@@ -2769,10 +2778,18 @@ onUnmounted(() => {
           <el-descriptions-item label="状态">
             <el-tag
               size="small"
-              :type="projectStatusType(summary.project.status)"
-              effect="light"
+              :type="
+                projectExpired(summary.project)
+                  ? 'danger'
+                  : projectStatusType(summary.project.status)
+              "
+              :effect="projectExpired(summary.project) ? 'dark' : 'light'"
             >
-              {{ projectStatusLabel(summary.project.status) }}
+              {{
+                projectExpired(summary.project)
+                  ? "已过期"
+                  : projectStatusLabel(summary.project.status)
+              }}
             </el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="目标">{{

@@ -237,29 +237,23 @@ onMounted(load);
         <template #default="scope">
           <el-tag
             size="small"
-            :type="projectStatusType(scope.row.status)"
-            effect="light"
+            :type="projectExpired(scope.row) ? 'danger' : projectStatusType(scope.row.status)"
+            :effect="projectExpired(scope.row) ? 'dark' : 'light'"
           >
-            {{ projectStatusLabel(scope.row.status) }}
+            {{
+              projectExpired(scope.row)
+                ? "已过期"
+                : projectStatusLabel(scope.row.status)
+            }}
           </el-tag>
         </template>
       </el-table-column>
       <el-table-column label="授权有效期" min-width="230">
         <template #default="scope">
-          <div class="project-auth-cell">
-            <span>
-              {{ formatDateTime(scope.row.authorizationValidFrom) }} 至
-              {{ formatDateTime(scope.row.authorizationExpiresAt) }}
-            </span>
-            <el-tag
-              v-if="projectExpired(scope.row)"
-              size="small"
-              type="danger"
-              effect="dark"
-            >
-              已过期
-            </el-tag>
-          </div>
+          <span>
+            {{ formatDateTime(scope.row.authorizationValidFrom) }} 至
+            {{ formatDateTime(scope.row.authorizationExpiresAt) }}
+          </span>
         </template>
       </el-table-column>
       <el-table-column label="操作" width="180">

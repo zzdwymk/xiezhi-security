@@ -404,6 +404,124 @@ function migrateNativeTooltips(root: ParentNode) {
     });
 }
 
+/* Hover bubbles are mounted on <body> (not on the element) so they are never
+   clipped or covered by the overflow-clipped / rounded-corner containers inside
+   the workspace — e.g. the left navigation rail that previously hid them. */
+const TOOLTIP_SELECTOR = "[data-fluent-tooltip]";
+let tooltipEl: HTMLDivElement | null = null;
+let tooltipTarget: HTMLElement | null = null;
+let tooltipListenersAttached = false;
+
+function ensureTooltipElement(): HTMLDivElement {
+  if (tooltipEl) return tooltipEl;
+  const el = document.createElement("div");
+  el.className = "fluent-hover-tooltip";
+  Object.assign(el.style, {
+    position: "fixed",
+    // Very high so the bubble always renders above every Element Plus overlay /
+    // popper / dialog (whose dynamic z-index can exceed 3000 inside nested
+    // pop-ups). Re-parenting to <body> on every show keeps it last in DOM order.
+    zIndex: "2147483000",
+    maxWidth: "min(320px, calc(100vw - 16px))",
+    padding: "6px 9px",
+    pointerEvents: "none",
+    boxSizing: "border-box",
+    border: "1px solid var(--app-hover-popup-border)",
+    borderRadius: "var(--fluent-radius-control)",
+    background: "var(--app-hover-popup-bg)",
+    boxShadow: "var(--fluent-overlay-shadow)",
+    color: "var(--app-hover-popup-text)",
+    fontFamily: "var(--fluent-font)",
+    fontSize: "var(--fluent-caption1-size)",
+    fontWeight: "var(--fluent-weight-regular)",
+    lineHeight: "var(--fluent-caption1-line)",
+    whiteSpace: "normal",
+    opacity: "0",
+    top: "0",
+    left: "0",
+    transition:
+      "opacity var(--fluent-fast), transform var(--fluent-fast)",
+  });
+  document.body.appendChild(el);
+  tooltipEl = el;
+  return el;
+}
+
+function placeTooltip(target: HTMLElement) {
+  if (!tooltipEl) return;
+  const rect = target.getBoundingClientRect();
+  const el = tooltipEl;
+  const vw = window.visualViewport?.width ?? window.innerWidth;
+  const vh = window.visualViewport?.height ?? window.innerHeight;
+  const w = el.offsetWidth;
+  const h = el.offsetHeight;
+
+  // Catalog pane title bubbles open right-aligned off the button; all the
+  // others are centered horizontally over the trigger (matching the old CSS).
+  const inPaneTitle = Boolean(
+    target.closest(".vuln-catalog-pane .pane-title"),
+  );
+  let left = inPaneTitle
+    ? rect.right - w
+    : rect.left + rect.width / 2 - w / 2;
+  left = Math.max(8, Math.min(left, vw - w - 8));
+
+  let top = rect.bottom + 8;
+  const flipUp = top + h > vh - 8 && rect.top - h - 8 >= 8;
+  if (flipUp) top = rect.top - h - 8;
+
+  el.style.left = `${Math.round(left)}px`;
+  el.style.top = `${Math.round(top)}px`;
+  el.style.transform = "translateY(0)";
+  el.style.opacity = "1";
+}
+
+function showFluentTooltip(target: HTMLElement) {
+  const text = target.getAttribute("data-fluent-tooltip")?.trim();
+  if (!text) return;
+  const el = ensureTooltipElement();
+  // Move to the end of <body> so the bubble paints above recently-opened
+  // dialogs / dropdowns / popovers (which are also appended to <body>).
+  document.body.appendChild(el);
+  el.textContent = text;
+  tooltipTarget = target;
+  placeTooltip(target);
+  // Re-measure once text/layout has settled without a frame glitch.
+  requestAnimationFrame(() => placeTooltip(target));
+}
+
+function hideFluentTooltip() {
+  if (tooltipEl) {
+    tooltipEl.style.opacity = "0";
+    tooltipEl.style.transform = "translateY(-2px)";
+  }
+  tooltipTarget = null;
+}
+
+function handleTooltipReposition() {
+  if (tooltipTarget && tooltipEl) placeTooltip(tooltipTarget);
+}
+
+function onTooltipEnter(e: Event) {
+  const target = (e.target as HTMLElement | null)?.closest<HTMLElement>(
+    TOOLTIP_SELECTOR,
+  );
+  if (!target) return;
+  const text = target.getAttribute("data-fluent-tooltip")?.trim();
+  if (!text) return;
+  if (target === tooltipTarget) return;
+  showFluentTooltip(target);
+}
+function onTooltipLeave(e: Event) {
+  const target = e.target as Node | null;
+  const related = (e as PointerEvent).relatedTarget as Node | null;
+  if (target && related && target.contains(related)) {
+    // Moved to a descendant — keep showing.
+    return;
+  }
+  hideFluentTooltip();
+}
+
 onMounted(() => {
   window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
   engine.startPolling();
@@ -427,6 +545,17 @@ onMounted(() => {
     attributes: true,
     attributeFilter: ["title"],
   });
+
+  if (!tooltipListenersAttached) {
+    document.addEventListener("pointerover", onTooltipEnter, true);
+    document.addEventListener("pointerout", onTooltipLeave, true);
+    document.addEventListener("focusin", onTooltipEnter, true);
+    document.addEventListener("focusout", onTooltipLeave, true);
+    window.addEventListener("scroll", handleTooltipReposition, true);
+    window.addEventListener("resize", handleTooltipReposition);
+    window.addEventListener("blur", hideFluentTooltip);
+    tooltipListenersAttached = true;
+  }
 });
 
 onBeforeUnmount(() => {
@@ -436,6 +565,9 @@ onBeforeUnmount(() => {
   taskbarProgress.clearAll();
   nativeTooltipObserver?.disconnect();
   nativeTooltipObserver = undefined;
+  tooltipTarget = null;
+  tooltipEl?.remove();
+  tooltipEl = null;
 });
 </script>
 

@@ -1852,15 +1852,6 @@ onMounted(async () => {
 .vuln-catalog-pane .pane-title > div:first-child {
   min-width: 0;
 }
-.vuln-catalog-pane .pane-title [data-fluent-tooltip]::after {
-  right: 0;
-  left: auto;
-  transform: translateY(-2px);
-}
-.vuln-catalog-pane .pane-title [data-fluent-tooltip]:hover::after,
-.vuln-catalog-pane .pane-title [data-fluent-tooltip]:focus-visible::after {
-  transform: translateY(0);
-}
 .catalog-search :deep(.el-input__wrapper),
 .scan-form :deep(.el-select__wrapper) {
   min-height: 32px;

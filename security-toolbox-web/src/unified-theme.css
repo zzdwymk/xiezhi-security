@@ -421,10 +421,10 @@ body,
   background: var(--app-workspace-surface) !important;
   background-clip: border-box;
   box-shadow: none !important;
-  /* Keep the workspace free of paint/overflow clipping so CSS hover bubbles
-     (e.g. [data-fluent-tooltip]::after, z-index 3000) are not cut off by the
-     rounded corner masking and can overlap the left navigation rail. */
-  contain: layout;
+  /* No contain here: containing layout/paint would make position:fixed dialog
+     overlays (dialog masks) anchor to the workspace instead of the viewport,
+     so the mask could never cover the whole window. Hover bubbles are portals
+     on <body> and are unaffected. */
 }
 
 .desktop-v2-native-frame > .desktop-v2-shell > .desktop-v2-workspace::before {
@@ -444,8 +444,33 @@ body,
   > .desktop-v2-content {
   margin: 0;
   overflow: auto;
-  border-top-left-radius: 0;
+  border-top-left-radius: var(--fluent-workspace-radius);
   background: var(--app-content-surface) !important;
+}
+
+/* Web (non-native) view: round the workspace's leading top corner the same way
+   as the desktop app, and keep the topbar/content square corners from poking
+   out of that radius. No contain here so fixed-position dialog masks still
+   cover the whole window (see native comment above). */
+.desktop-v2-app-frame:not(.desktop-v2-native-frame)
+  > .desktop-v2-shell
+  > .desktop-v2-workspace {
+  position: relative;
+  border-top-left-radius: var(--fluent-workspace-radius);
+  background-clip: border-box;
+}
+.desktop-v2-app-frame:not(.desktop-v2-native-frame)
+  > .desktop-v2-shell
+  > .desktop-v2-workspace
+  > .desktop-v2-topbar {
+  border-top-left-radius: var(--fluent-workspace-radius);
+}
+.desktop-v2-app-frame:not(.desktop-v2-native-frame)
+  > .desktop-v2-shell
+  > .desktop-v2-workspace
+  > .desktop-v2-content {
+  border-top-left-radius: var(--fluent-workspace-radius);
+  background-clip: border-box;
 }
 
 :root[data-caption-mode="accent"] .desktop-v2-native-titlebar {
@@ -532,32 +557,64 @@ body,
   background: var(--app-surface-soft);
 }
 
-/* MessageBox mounts under body; keep its mask aligned with the desktop workspace. */
-body:has(.desktop-v2-native-frame) > .el-overlay.is-message-box {
-  left: var(--desktop-sidebar-width, 260px);
-  border-top-left-radius: var(--fluent-workspace-radius);
-  overflow: hidden;
-}
-
-/* Body-mounted Element Plus dialogs must use the native work area as their
-   containing viewport. Keep this selector specific to el-dialog overlays so
-   drawers, messages, loading masks and poppers retain their own geometry. */
-body:has(.desktop-v2-native-frame) > .el-overlay:has(> .el-overlay-dialog) {
+/* Native desktop: the dialog/message-box mask must fit the work area and round
+   its leading corner to match the rounded workspace. The overlay is nested
+   inside the app tree (dialog overlays are position:fixed), so scope to any
+   el-overlay that wraps a dialog, wherever it mounts. */
+body:has(.desktop-v2-native-frame) .el-overlay.is-message-box {
   right: 0;
   left: var(--desktop-sidebar-width, 260px);
   width: auto;
   border-top-left-radius: var(--fluent-workspace-radius);
   overflow: hidden;
 }
-
+body:has(.desktop-v2-native-frame) .el-overlay:has(> .el-overlay-dialog) {
+  right: 0;
+  left: var(--desktop-sidebar-width, 260px);
+  width: auto;
+  border-top-left-radius: var(--fluent-workspace-radius);
+  overflow: hidden;
+}
 body:has(.desktop-v2-native-frame)
-  > .el-overlay:has(> .el-overlay-dialog)
+  .el-overlay:has(> .el-overlay-dialog)
   > .el-overlay-dialog {
   position: absolute;
 }
-
 body:has(.desktop-v2-native-frame)
-  > .el-overlay:has(> .el-overlay-dialog)
+  .el-overlay:has(> .el-overlay-dialog)
+  .el-dialog {
+  max-width: calc(100% - 32px) !important;
+  max-height: calc(100% - 32px);
+}
+
+/* Web (non-native view). The workspace top-left corner is rounded, so the
+   dialog/message-box mask must fit the same work area — offset it to sit right
+   of the left navigation rail and round+clip its leading corner, otherwise its
+   square top-left would poke past the rounded corner. The overlay is positioned
+   inside the app tree (dialog overlays are position:fixed, so still clickable),
+   so this scopes to any el-overlay that wraps a dialog, wherever it mounts. */
+body:not(:has(.desktop-v2-native-frame)) .el-overlay.is-message-box {
+  right: 0;
+  left: var(--desktop-sidebar-width, 260px);
+  width: auto;
+  border-top-left-radius: var(--fluent-workspace-radius);
+  overflow: hidden;
+}
+body:not(:has(.desktop-v2-native-frame))
+  .el-overlay:has(> .el-overlay-dialog) {
+  right: 0;
+  left: var(--desktop-sidebar-width, 260px);
+  width: auto;
+  border-top-left-radius: var(--fluent-workspace-radius);
+  overflow: hidden;
+}
+body:not(:has(.desktop-v2-native-frame))
+  .el-overlay:has(> .el-overlay-dialog)
+  > .el-overlay-dialog {
+  position: absolute;
+}
+body:not(:has(.desktop-v2-native-frame))
+  .el-overlay:has(> .el-overlay-dialog)
   .el-dialog {
   max-width: calc(100% - 32px) !important;
   max-height: calc(100% - 32px);

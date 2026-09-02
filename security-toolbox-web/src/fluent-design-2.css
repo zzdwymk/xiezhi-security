@@ -1253,72 +1253,11 @@ html
 }
 
 /* Native title bubbles are migrated by App.vue to data-fluent-tooltip and
-   aria-label.  This keeps icon actions accessible while ensuring every hover
-   bubble follows the same opaque Fluent overlay palette. */
-:where(
-  button,
-  a,
-  [role="button"],
-  input,
-  select,
-  textarea
-)[data-fluent-tooltip] {
-  position: relative;
-}
-
-:where(
-    button,
-    a,
-    [role="button"],
-    input,
-    select,
-    textarea
-  )[data-fluent-tooltip]::after {
-  position: absolute;
-  z-index: 3000;
-  top: calc(100% + 8px);
-  left: 50%;
-  width: max-content;
-  max-width: min(320px, 70vw);
-  padding: 6px 9px;
-  pointer-events: none;
-  border: var(--fluent-stroke-thin) solid var(--app-hover-popup-border);
-  border-radius: var(--fluent-radius-control);
-  background: var(--app-hover-popup-bg);
-  box-shadow: var(--fluent-overlay-shadow);
-  color: var(--app-hover-popup-text);
-  content: attr(data-fluent-tooltip);
-  font-family: var(--fluent-font);
-  font-size: var(--fluent-caption1-size);
-  font-weight: var(--fluent-weight-regular);
-  line-height: var(--fluent-caption1-line);
-  opacity: 0;
-  transform: translate(-50%, -2px);
-  transition:
-    opacity var(--fluent-fast),
-    transform var(--fluent-fast);
-  white-space: normal;
-}
-
-:where(
-    button,
-    a,
-    [role="button"],
-    input,
-    select,
-    textarea
-  )[data-fluent-tooltip]:hover::after,
-:where(
-    button,
-    a,
-    [role="button"],
-    input,
-    select,
-    textarea
-  )[data-fluent-tooltip]:focus-visible::after {
-  opacity: 1;
-  transform: translate(-50%, 0);
-}
+   aria-label.  Hover bubbles are now rendered by App.vue as an element mounted
+   directly on <body> (class "fluent-hover-tooltip") instead of the element's
+   ::after pseudo.  Mounting on <body> lets the bubble escape the workspace's
+   overflow-clipped / rounded containers so it can overlap the left navigation
+   rail instead of being clipped, and it shares the Fluent overlay palette. */
 
 /* Keep every vertical scroll owner usable while hiding the scrollbar rail. */
 :where(
