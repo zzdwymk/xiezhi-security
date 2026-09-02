@@ -47,6 +47,14 @@ let captureBrowserWindow;
 let captureBrowserSession;
 let captureBrowserPartition;
 let captureBrowserConfig;
+let icpBrowserWindow;
+let icpBrowserState = {
+  opening: false,
+  domain: "",
+  url: "",
+  lastError: "",
+  lastFetch: "",
+};
 let desktopCredentials;
 let desktopLoginCredentialsIssued = false;
 
@@ -3317,6 +3325,266 @@ async function launchCaptureBrowser(payload) {
   return captureBrowserStatus();
 }
 
+const ICP_QUERY_URL = "https://beian.miit.gov.cn/";
+const ICP_QUERY_PATH_HINT = "请核对页面，工信部反爬策略可能导致无法自动定位输入框";
+
+function normalizeIcpDomain(raw) {
+  let value = String(raw || "").trim().toLowerCase();
+  if (!value) return "";
+  if (/^[a-z0-9+.-]+:\/\//.test(value)) {
+    try {
+      value = new URL(value).hostname;
+    } catch {
+      value = value.replace(/^[a-z0-9+.-]+:\/\//, "");
+    }
+  }
+  value = value.split(/[/?#]/)[0];
+  if (value.includes("@")) value = value.slice(value.lastIndexOf("@") + 1);
+  if (value.startsWith("[")) value = value.slice(1, value.indexOf("]"));
+  value = value.split(":")[0];
+  value = value.replace(/^www\./, "").replace(/\.$/, "");
+  return value;
+}
+
+function icpBrowserStatus() {
+  const windowAlive = Boolean(icpBrowserWindow && !icpBrowserWindow.isDestroyed());
+  return {
+    running: windowAlive,
+    opening: icpBrowserState.opening,
+    domain: icpBrowserState.domain,
+    url: icpBrowserState.url,
+    lastError: icpBrowserState.lastError,
+    lastFetch: icpBrowserState.lastFetch,
+  };
+}
+
+async function autoFillIcpQuery(webContents, domain) {
+  if (!webContents || webContents.isDestroyed()) {
+    return { filled: false, reason: "窗口已关闭" };
+  }
+  const target = String(domain || "").trim();
+  if (!target) {
+    return { filled: false, reason: "缺少待查询域名" };
+  }
+  const script = `
+    (() => {
+      try {
+        const value = ${JSON.stringify(target)};
+        const setValue = (el, v) => {
+          const setter = Object.getOwnPropertyDescriptor(el.constructor.prototype, 'value')?.set;
+          if (setter) setter.call(el, v);
+          else el.value = v;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        const candidates = [
+          '#unitName', 'input[placeholder*="注册单位"]', 'input[placeholder*="备案号"]',
+          'input[placeholder*="域名"]', 'input[placeholder*="单位"]', '.ant-input',
+          'input[type="text"]', 'textarea'
+        ];
+        let input = null;
+        for (const sel of candidates) {
+          try {
+            const els = document.querySelectorAll(sel);
+            for (const el of els) {
+              const r = el.getBoundingClientRect();
+              if (r.width > 0 && r.height > 0) { input = el; break; }
+            }
+          } catch (e) {}
+          if (input) break;
+        }
+        if (!input) return { filled: false, reason: '未能定位查询输入框，请在页面内手动填入域名' };
+        setValue(input, value);
+        const submitBtn = ['.ant-btn-primary', 'button:not([disabled])'].map(sel => {
+          const all = Array.from(document.querySelectorAll(sel));
+          return all.find(b => /查询|确定|搜|查/i.test(b.textContent || ''));
+        }).find(Boolean);
+        if (submitBtn) submitBtn.click();
+        return { filled: true, reason: '已代填域名并尝试触发查询，若弹出验证请完成验证' };
+      } catch (e) {
+        return { filled: false, reason: '代填异常：' + (e && e.message ? e.message : String(e)) };
+      }
+    })()
+  `;
+  return webContents.executeJavaScript(script, true);
+}
+
+async function extractIcpBrowserResult(webContents) {
+  if (!webContents || webContents.isDestroyed()) {
+    return { ok: false, reason: "窗口已关闭，无法抓取" };
+  }
+  const script = `
+    (() => {
+      try {
+        const pickText = (el) => (el ? (el.innerText || el.textContent || '').trim() : '');
+        // Candidate result containers: the beian table rows.
+        const rows = [];
+        // Table-oriented: find table elements and map tbody rows.
+        const tables = Array.from(document.querySelectorAll('table'));
+        for (const table of tables) {
+          const body = table.querySelector('tbody');
+          const trs = (body || table).querySelectorAll('tr');
+          for (const tr of trs) {
+            const cells = Array.from(tr.querySelectorAll('td')).map(pickText).filter(Boolean);
+            if (cells.length >= 3) rows.push({ cells, text: cells.join(' | ') });
+          }
+        }
+        // Generic list rows.
+        if (!rows.length) {
+          const listItems = Array.from(document.querySelectorAll('.item-row, .row-item, .result-row, li'))
+            .map(l => (l.innerText || l.textContent || '').trim())
+            .filter(Boolean);
+          for (const text of listItems) rows.push({ cells: [text], text });
+        }
+        return {
+          ok: rows.length > 0,
+          found: rows.length,
+          rows,
+          pageText: (document.body && document.body.innerText || '').slice(0, 4000)
+        };
+      } catch (e) {
+        return { ok: false, found: 0, rows: [], pageText: '', error: String(e && e.message || e) };
+      }
+    })()
+  `;
+  return webContents.executeJavaScript(script, true);
+}
+
+async function openIcpBrowser(payload) {
+  const domain = normalizeIcpDomain(payload && payload.domain);
+  if (!domain) throw new Error("缺少待查询域名");
+  if (icpBrowserWindow && !icpBrowserWindow.isDestroyed()) {
+    icpBrowserWindow.close();
+    icpBrowserWindow = undefined;
+  }
+  icpBrowserState = {
+    opening: true,
+    domain,
+    url: ICP_QUERY_URL,
+    lastError: "",
+    lastFetch: "",
+  };
+
+  const theme = currentSystemTheme();
+  // A persistent partition keeps the MIIT session cookies (e.g. __jsluid_s) across
+  // opens, matching a normal browser as closely as possible. backgroundThrottling is
+  // disabled so the SPA paints even while the window is still hidden, preventing a
+  // blank white frame that Chromium would otherwise throttle.
+  const icpSession = electronSession.fromPartition("persist:beian-miit");
+  const window = new BrowserWindow({
+    width: 1240,
+    height: 860,
+    minWidth: 720,
+    minHeight: 540,
+    show: false,
+    title: `ICP备案查询代填 - ${domain}`,
+    backgroundColor: windowBackgroundColor(theme),
+    autoHideMenuBar: true,
+    webPreferences: {
+      session: icpSession,
+      devTools: !app.isPackaged,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      backgroundThrottling: false,
+      spellcheck: false,
+    },
+  });
+  icpBrowserWindow = window;
+
+  const guard = (event, url) => {
+    if (!isHttpNavigation(url)) event.preventDefault();
+  };
+  window.webContents.on("will-navigate", guard);
+  window.webContents.on("will-redirect", guard);
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (isHttpNavigation(url))
+      setImmediate(() => {
+        if (!icpBrowserWindow.isDestroyed()) icpBrowserWindow.loadURL(url);
+      });
+    return { action: "deny" };
+  });
+  // On the MIIT site, once a captcha slide is completed the browser navigates or
+  // the results render; we only report the state, never offer a local proxy.
+  window.webContents.on("did-navigate", () => {
+    icpBrowserState.url = window.webContents.getURL();
+  });
+  window.webContents.on("did-navigate-in-page", () => {
+    icpBrowserState.url = window.webContents.getURL();
+  });
+  window.webContents.on(
+    "did-fail-load",
+    (_event, errorCode, errorDescription, validatedURL) => {
+      if (validatedURL === ICP_QUERY_URL || validatedURL.startsWith("https://beian.miit.gov.cn")) {
+        icpBrowserState.lastError =
+          `页面加载失败(${errorCode}): ${errorDescription}`;
+      }
+    },
+  );
+  window.on("closed", () => {
+    if (icpBrowserWindow === window) icpBrowserWindow = undefined;
+    if (mainWindow && !mainWindow.isDestroyed())
+      mainWindow.webContents.send("toolbox:icp-browser-closed");
+  });
+  window.once("ready-to-show", () => {
+    applySystemThemeToStaticWindow(window);
+    window.show();
+  });
+
+  try {
+    await window.loadURL(ICP_QUERY_URL);
+  } catch (error) {
+    icpBrowserState.lastError = publicErrorMessage(error, "打开工信部查询页失败");
+    icpBrowserState.opening = false;
+    // Still surface the window so the operator can retry or inspect in case the
+    // page actually loaded despite a loadURL rejection.
+    if (!window.isDestroyed() && !window.isVisible()) window.show();
+    throw error;
+  }
+
+  // Ensure the window is visible even if "ready-to-show" was delayed by a slow SPA.
+  if (!window.isDestroyed() && !window.isVisible()) window.show();
+  window.webContents
+    .executeJavaScript(
+      "new Promise(r => { if (document.readyState === 'complete') return r(true); window.addEventListener('load', () => r(true), { once: true }); setTimeout(() => r(true), 15000); })",
+      true,
+    )
+    .catch(() => {});
+
+  // Wait for the page to settle, then attempt a tolerant auto-fill.
+  try {
+    await new Promise((resolve) => setTimeout(resolve, window.isDestroyed() ? 0 : 2500));
+    if (!window.isDestroyed()) {
+      const result = await autoFillIcpQuery(window.webContents, domain);
+      icpBrowserState.lastError =
+        result && result.filled === false && result.reason
+          ? String(result.reason)
+          : "";
+    }
+  } catch (error) {
+    icpBrowserState.lastError = publicErrorMessage(error, "自动代填失败，请在窗口内手动填写");
+  }
+  icpBrowserState.opening = false;
+  return icpBrowserStatus();
+}
+
+async function fetchIcpBrowserResult() {
+  const window = icpBrowserWindow;
+  if (!window || window.isDestroyed()) {
+    return { ok: false, error: "ICP 浏览器未打开，请先打开并完成验证" };
+  }
+  const extracted = await extractIcpBrowserResult(window.webContents);
+  icpBrowserState.lastFetch = extracted.ok ? `已抓取 ${extracted.found} 行` : String(extracted.reason || "未解析到结果");
+  return extracted;
+}
+
+function closeIcpBrowser() {
+  const windowToClose = icpBrowserWindow;
+  icpBrowserWindow = undefined;
+  if (windowToClose && !windowToClose.isDestroyed()) windowToClose.close();
+  return icpBrowserStatus();
+}
+
 function handleRendererIpc(channel, handler) {
   ipcMain.handle(channel, async (event, ...args) => {
     try {
@@ -3773,6 +4041,22 @@ handleRendererIpc("toolbox:close-capture-browser", (event) => {
 handleRendererIpc("toolbox:get-capture-browser-status", (event) => {
   assertMainRenderer(event);
   return captureBrowserStatus();
+});
+handleRendererIpc("toolbox:open-icp-browser", (event, payload) => {
+  assertMainRenderer(event);
+  return openIcpBrowser(payload);
+});
+handleRendererIpc("toolbox:fetch-icp-browser-result", (event) => {
+  assertMainRenderer(event);
+  return fetchIcpBrowserResult();
+});
+handleRendererIpc("toolbox:close-icp-browser", (event) => {
+  assertMainRenderer(event);
+  return closeIcpBrowser();
+});
+handleRendererIpc("toolbox:get-icp-browser-status", (event) => {
+  assertMainRenderer(event);
+  return icpBrowserStatus();
 });
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();

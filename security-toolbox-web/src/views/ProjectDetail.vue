@@ -237,6 +237,7 @@ const workflowRunId = ref<number>();
 const workflowStopping = ref(false);
 let workflowPollGeneration = 0;
 let stopTaskFeed: (() => void) | undefined;
+let stopIcpBrowserListener: (() => void) | undefined;
 
 interface SecurityActionPreset {
   category: SecurityActionCategory;
@@ -2268,12 +2269,17 @@ async function queryIcpBatch() {
     const requiresConfiguration = icpRows.value.some(
       (item) => item.status === "CONFIG_REQUIRED",
     );
+    const requiresBrowser = icpRows.value.some(
+      (item) => item.status === "BROWSER_REQUIRED",
+    );
     const requiresCaptcha = icpRows.value.some(
       (item) => item.status === "CAPTCHA_REQUIRED",
     );
-    if (requiresConfiguration)
+    if (requiresBrowser)
+      ElMessage.info("工信部内置自动查询已失效，请点击对应结果行的“浏览器代填”完成备案查询");
+    else if (requiresConfiguration)
       ElMessage.warning(
-        "ICP 查询暂未返回数据；可启用内置工信部查询或配置手动数据源（ICP_API_URL）",
+        "ICP 查询暂未返回数据；可配置手动数据源（ICP_API_URL）",
       );
     else if (requiresCaptcha)
       ElMessage.info(
@@ -2297,6 +2303,7 @@ async function queryIcpBatch() {
 function icpStatusLabel(status: string) {
   if (status === "AVAILABLE") return "已返回";
   if (status === "CONFIG_REQUIRED") return "需要配置";
+  if (status === "BROWSER_REQUIRED") return "需浏览器代填";
   if (status === "CAPTCHA_REQUIRED") return "需人工验证";
   return "不可用";
 }
@@ -2304,6 +2311,7 @@ function icpStatusLabel(status: string) {
 function icpStatusType(status: string) {
   if (status === "AVAILABLE") return "success";
   if (status === "CONFIG_REQUIRED") return "warning";
+  if (status === "BROWSER_REQUIRED") return "warning";
   if (status === "CAPTCHA_REQUIRED") return "warning";
   return "danger";
 }
@@ -2320,6 +2328,177 @@ const captchaClicks = ref<
   { x: number; y: number; percentX: number; percentY: number }[]
 >([]);
 const captchaResult = ref<{ status: string; reason?: string; records?: Array<Record<string, unknown>> }>();
+
+const icpBrowserDialog = ref(false);
+const icpBrowserDomain = ref("");
+const icpBrowserTargetRow = ref<IcpBatchResult>();
+const icpBrowserOpening = ref(false);
+const icpBrowserFetching = ref(false);
+const icpBrowserRunning = ref(false);
+const icpBrowserStatus = ref<IcpBrowserStatus>();
+const icpBrowserCaptured = ref<IcpBrowserCaptureResult>();
+
+const icpDataPreview = ref<IcpBatchResult>();
+const icpDialogPreviewVisible = ref(false);
+const icpPreviewRecords = computed(() => {
+  const records = (icpDataPreview.value?.data as { records?: unknown[] })
+    ?.records;
+  if (!Array.isArray(records)) return [];
+  return records as Record<string, unknown>[];
+});
+
+function icpRecordCount(row: IcpBatchResult): number {
+  const data = (row.data || {}) as { records?: unknown[]; total?: number };
+  if (Array.isArray(data.records)) return data.records.length;
+  if (typeof data.total === "number") return data.total;
+  return 0;
+}
+
+function icpDataSummary(row: IcpBatchResult): string {
+  const data = row.data || {};
+  if (typeof data === "string") return data as string;
+  const count = icpRecordCount(row);
+  if (Array.isArray((data as { records?: unknown[] }).records))
+    return count ? `已抓取备案记录 ${count} 条` : "已抓取备案记录";
+  const first = (data as { records?: unknown[] }).records?.[0] as
+    | Record<string, unknown>
+    | undefined;
+  if (first) return icpRecordLine(first);
+  if (Array.isArray(data)) {
+    const line = icpRecordLine(data[0] as Record<string, unknown>);
+    if (line) return `共 ${data.length} 条 · ${line}`;
+  }
+  return "";
+}
+
+function icpRecordLine(rec: Record<string, unknown>): string {
+  const pick = (keys: string[]) => {
+    for (const k of keys) {
+      const v = rec[k];
+      if (v != null && v !== "") return String(v);
+    }
+    return "";
+  };
+  const name = pick(["ownerName", "unitName", "负责人", "主体", "unit", "owner"]);
+  const domain = pick(["domain", "域名", "unitDomain"]);
+  const license = pick(["mainLicense", "备案号", "license", "icp_no", "icpno"]);
+  return [name, license, domain].filter(Boolean).join(" · ");
+}
+
+function showIcpData(row: IcpBatchResult) {
+  icpDataPreview.value = row;
+  icpDialogPreviewVisible.value = true;
+}
+
+function desktopIcpAvailable() {
+  return Boolean(window.toolboxDesktop?.openIcpBrowser);
+}
+
+function reopenIcpBrowser() {
+  const row = icpBrowserTargetRow.value;
+  if (row) return openIcpBrowserFor(row);
+  ElMessage.warning("请先选择一条 ICP 结果行");
+  return Promise.resolve();
+}
+
+/**
+ * Normalizes a target host into the format the MIIT ICP query page recognizes:
+ * strips scheme / userinfo / port / path, lowercases, and drops a leading "www."
+ * so the submitted value matches how ICP records are registered.
+ */
+function normalizeIcpDomain(raw: string | null | undefined) {
+  let value = String(raw || "").trim().toLowerCase();
+  if (!value) return "";
+  if (/^[a-z0-9+.-]+:\/\//.test(value)) {
+    try {
+      const url = new URL(value);
+      value = url.hostname;
+    } catch {
+      value = value.replace(/^[a-z0-9+.-]+:\/\//, "");
+    }
+  }
+  value = value.split(/[/?#]/)[0];
+  if (value.includes("@")) value = value.slice(value.lastIndexOf("@") + 1);
+  if (value.startsWith("[")) value = value.slice(1, value.indexOf("]"));
+  value = value.split(":")[0];
+  value = value.replace(/^www\./, "");
+  value = value.replace(/\.$/, "");
+  return value;
+}
+
+async function openIcpBrowserFor(row: IcpBatchResult) {
+  if (!window.toolboxDesktop?.openIcpBrowser) {
+    ElMessage.warning("桌面版支持浏览器代填，请使用桌面版打开本项目");
+    return;
+  }
+  const queryDomain = normalizeIcpDomain(row.domain || "");
+  if (!queryDomain) {
+    ElMessage.warning("目标中没有可用于 ICP 查询的域名");
+    return;
+  }
+  icpBrowserTargetRow.value = row;
+  icpBrowserDomain.value = queryDomain;
+  icpBrowserCaptured.value = undefined;
+  icpBrowserFetching.value = false;
+  icpBrowserDialog.value = true;
+  icpBrowserOpening.value = true;
+  try {
+    const status = await window.toolboxDesktop.openIcpBrowser({
+      domain: queryDomain,
+    });
+    icpBrowserStatus.value = status;
+    icpBrowserRunning.value = Boolean(status.running);
+  } catch (error: any) {
+    ElMessage.error(errorMessage(error, "打开浏览器代填失败"));
+  } finally {
+    icpBrowserOpening.value = false;
+  }
+}
+
+async function fetchAndImportIcpCaptured() {
+  if (!window.toolboxDesktop?.fetchIcpBrowserResult) return;
+  icpBrowserFetching.value = true;
+  try {
+    const result = await window.toolboxDesktop.fetchIcpBrowserResult();
+    icpBrowserCaptured.value = result;
+    if (!result?.ok || !result?.rows?.length) {
+      ElMessage.warning(
+        result?.reason || result?.error || "未解析到结果，请确认查询页已返回结果后重试",
+      );
+      return;
+    }
+    const row = icpBrowserTargetRow.value;
+    const { data } = await endpoints.icpBrowserCapture(
+      id,
+      row?.targetId ?? 0,
+      result.rows.map((r) => ({
+        text: r.text,
+        cells: r.cells || [],
+      })),
+    );
+    const returnedRecords = data.records ?? [];
+    // Backfill the visible row immediately so the table reflects the imported
+    // records without waiting for the batch round-trip; then refresh for parity.
+    const existing = icpRows.value.find(
+      (item) => item.targetId === row?.targetId,
+    );
+    if (existing) {
+      existing.status = "AVAILABLE";
+      existing.data = {
+        source: "miit-browser-capture",
+        records: returnedRecords,
+        total: returnedRecords.length,
+      };
+    }
+    ElMessage.success(`已抓取并导入备案数据（${returnedRecords.length} 条）`);
+    await queryIcpBatch();
+    icpBrowserDialog.value = false;
+  } catch (error: any) {
+    ElMessage.error(errorMessage(error, "抓取并导入备案结果失败"));
+  } finally {
+    icpBrowserFetching.value = false;
+  }
+}
 
 async function startManualCaptcha(row: IcpBatchResult) {
   captchaClicks.value = [];
@@ -2758,6 +2937,16 @@ async function report() {
 onMounted(() => {
   stopTaskFeed = connectTaskEventFeed(applyProjectTaskEvent);
   void load();
+  if (window.toolboxDesktop?.onIcpBrowserClosed) {
+    stopIcpBrowserListener = window.toolboxDesktop.onIcpBrowserClosed(() => {
+      icpBrowserRunning.value = false;
+      if (window.toolboxDesktop?.getIcpBrowserStatus) {
+        void window.toolboxDesktop.getIcpBrowserStatus().then((status) => {
+          icpBrowserStatus.value = status;
+        });
+      }
+    });
+  }
   overviewPollTimer = window.setInterval(() => {
     if (tab.value === "overview" || tab.value === "report")
       void loadProjectReportSummary();
@@ -2766,6 +2955,7 @@ onMounted(() => {
 onUnmounted(() => {
   workflowPollGeneration += 1;
   stopTaskFeed?.();
+  stopIcpBrowserListener?.();
   clearTimeout(summaryRefreshTimer);
   if (overviewPollTimer) window.clearInterval(overviewPollTimer);
 });
@@ -3636,15 +3826,15 @@ onUnmounted(() => {
           size="small"
           stripe
           class="icp-table"
-          ><el-table-column label="目标" min-width="180"
+          ><el-table-column label="目标" min-width="150"
             ><template #default="scope">{{
               taskTargetName(scope.row.targetId) || scope.row.domain
             }}</template></el-table-column
           ><el-table-column
             prop="domain"
             label="域名"
-            min-width="180"
-          /><el-table-column label="状态" width="120"
+            min-width="150"
+          /><el-table-column label="状态" width="110"
             ><template #default="scope"
               ><el-tag size="small" :type="icpStatusType(scope.row.status)">{{
                 icpStatusLabel(scope.row.status)
@@ -3653,16 +3843,34 @@ onUnmounted(() => {
           ><el-table-column
             prop="reason"
             label="说明"
-            min-width="320"
+            min-width="200"
             show-overflow-tooltip
-          /><el-table-column label="备案数据" min-width="260"
+          /><el-table-column label="备案数据" min-width="230"
             ><template #default="scope">
-              <pre class="json-view">{{
-                JSON.stringify(scope.row.data || {}, null, 2)
-              }}</pre>
+              <div
+                v-if="icpRecordCount(scope.row) > 0"
+                class="icp-data-cell"
+                @click="showIcpData(scope.row)"
+              >
+                <el-tag size="small" effect="plain" type="primary"
+                  >备案 {{ icpRecordCount(scope.row) }} 条</el-tag
+                >
+                <span class="icp-data-summary">{{
+                  icpDataSummary(scope.row)
+                }}</span>
+              </div>
+              <el-tag v-else size="small" type="info">暂无数据</el-tag>
             </template></el-table-column
-          ><el-table-column label="操作" width="120" align="right"
+          ><el-table-column label="操作" width="150" align="right"
             ><template #default="scope">
+              <el-button
+                v-if="desktopIcpAvailable()"
+                type="primary"
+                plain
+                size="small"
+                @click="openIcpBrowserFor(scope.row)"
+                >浏览器代填</el-button
+              >
               <el-button
                 v-if="scope.row.status === 'CAPTCHA_REQUIRED'"
                 type="primary"
@@ -3741,6 +3949,88 @@ onUnmounted(() => {
                 >提交并查询</el-button
               >
             </div>
+          </template>
+        </el-dialog>
+        <el-dialog
+          v-model="icpBrowserDialog"
+          title="ICP 备案 · 浏览器代填"
+          class="app-dialog app-dialog--md"
+          align-center
+          append-to-body
+          destroy-on-close
+        >
+          <el-alert
+            title="已在内置浏览器打开工信部备案查询页并代填域名。请在弹窗中完成验证（如滑块/验证码），在查询结果出现后点击“抓取并导入”完成抓取并写入结果表。若页面结构变化导致无法自动代填，请直接在弹窗内手动填写后查询。"
+            type="info"
+            :closable="false"
+            show-icon
+          />
+          <div class="icp-browser-state">
+            目标：<b>{{ icpBrowserDomain || "—" }}</b>
+            <el-tag size="small" :type="icpBrowserRunning ? 'success' : 'info'">
+              {{ icpBrowserRunning ? "浏览器已打开" : "浏览器未打开" }}
+            </el-tag>
+          </div>
+          <el-alert
+            v-if="icpBrowserStatus?.lastError"
+            :title="icpBrowserStatus.lastError"
+            type="warning"
+            :closable="false"
+            show-icon
+          />
+          <pre
+            v-if="icpBrowserCaptured?.ok"
+            class="json-view icp-captcha-result"
+          >{{ JSON.stringify(icpBrowserCaptured, null, 2) }}</pre>
+          <template #footer>
+            <div class="app-dialog__footer-row">
+              <el-button
+                :loading="icpBrowserOpening"
+                @click="reopenIcpBrowser()"
+                >打开浏览器并代填</el-button
+              >
+              <el-button
+                :loading="icpBrowserFetching"
+                :disabled="!icpBrowserRunning"
+                @click="fetchAndImportIcpCaptured"
+                >抓取并导入</el-button
+              >
+              <el-button @click="icpBrowserDialog = false">关闭</el-button>
+            </div>
+          </template>
+        </el-dialog>
+        <el-dialog
+          v-model="icpDialogPreviewVisible"
+          :title="`ICP 备案数据 · ${icpDataPreview?.domain || ''}`"
+          class="app-dialog app-dialog--lg"
+          align-center
+          append-to-body
+          destroy-on-close
+        >
+          <template v-if="icpDataPreview">
+            <el-alert
+              :title="`共 ${icpRecordCount(icpDataPreview)} 条备案记录`"
+              type="success"
+              :closable="false"
+              show-icon
+            />
+            <el-descriptions
+              v-if="icpPreviewRecords.length"
+              border
+              :column="1"
+              size="small"
+              class="icp-preview-descriptions"
+            >
+              <el-descriptions-item
+                v-for="(rec, idx) in icpPreviewRecords"
+                :key="idx"
+                label="备案记录"
+              >{{ icpRecordLine(rec) }}</el-descriptions-item>
+            </el-descriptions>
+            <el-divider content-position="left">原始数据</el-divider>
+            <pre class="json-view icp-preview-raw">{{
+              JSON.stringify(icpDataPreview.data || {}, null, 2)
+            }}</pre>
           </template>
         </el-dialog>
         <div v-if="workflowRunning || workflowLog.length" class="workflow-box">
@@ -5312,6 +5602,25 @@ onUnmounted(() => {
     11px/1.45 Consolas,
     monospace;
 }
+.icp-data-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  cursor: pointer;
+}
+.icp-data-summary {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.icp-preview-descriptions {
+  margin-top: 12px;
+}
+.icp-preview-raw {
+  max-height: 320px;
+}
 .workflow-box {
   margin: 14px 0;
   padding: 14px;
@@ -5740,6 +6049,13 @@ onUnmounted(() => {
   margin-top: 4px;
   max-height: 180px;
   overflow: auto;
+}
+.icp-browser-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 4px;
+  min-height: 28px;
 }
 @media (max-width: 760px) {
   .subdomain-dictionary {

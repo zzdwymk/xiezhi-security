@@ -17,6 +17,7 @@ import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.finding.Finding;
 import com.bachelor.toolbox.project.AssessmentProject;
 import com.bachelor.toolbox.project.AssessmentProjectService;
+import com.bachelor.toolbox.target.TargetService;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -31,6 +32,7 @@ import org.springframework.security.core.Authentication;
 class SecurityActionServiceTests {
   private final SecurityActionRepository repository = mock(SecurityActionRepository.class);
   private final AssessmentProjectService projects = mock(AssessmentProjectService.class);
+  private final TargetService targets = mock(TargetService.class);
   private final AuditService audit = mock(AuditService.class);
   private final UserRepository users = mock(UserRepository.class);
   private final Authentication applicant = mock(Authentication.class);
@@ -41,7 +43,7 @@ class SecurityActionServiceTests {
 
   @BeforeEach
   void setUp() {
-    service = new SecurityActionService(repository, projects, audit, users);
+    service = new SecurityActionService(repository, projects, targets, audit, users);
     Instant authorizationFrom = Instant.now().minusSeconds(3600);
     authorizationTo = Instant.now().plusSeconds(4 * 3600L);
 

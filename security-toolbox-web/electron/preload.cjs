@@ -99,6 +99,19 @@ contextBridge.exposeInMainWorld(
       return () =>
         ipcRenderer.removeListener("toolbox:capture-browser-closed", listener);
     },
+    openIcpBrowser: (payload) =>
+      ipcRenderer.invoke("toolbox:open-icp-browser", payload),
+    fetchIcpBrowserResult: () =>
+      ipcRenderer.invoke("toolbox:fetch-icp-browser-result"),
+    closeIcpBrowser: () => ipcRenderer.invoke("toolbox:close-icp-browser"),
+    getIcpBrowserStatus: () =>
+      ipcRenderer.invoke("toolbox:get-icp-browser-status"),
+    onIcpBrowserClosed: (callback) => {
+      const listener = () => callback();
+      ipcRenderer.on("toolbox:icp-browser-closed", listener);
+      return () =>
+        ipcRenderer.removeListener("toolbox:icp-browser-closed", listener);
+    },
     setProgressBar: (progress, options) =>
       ipcRenderer.invoke("toolbox:set-progress-bar", progress, options),
     onDependencyInstallProgress: (callback) => {

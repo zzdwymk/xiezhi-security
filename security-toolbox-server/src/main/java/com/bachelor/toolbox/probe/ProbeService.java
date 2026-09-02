@@ -8,6 +8,7 @@ import com.bachelor.toolbox.project.AssessmentProjectRepository;
 import com.bachelor.toolbox.project.ProjectTargetRepository;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.AuthorizedTargetRepository;
+import com.bachelor.toolbox.target.TargetService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.net.ConnectException;
@@ -42,6 +43,7 @@ public class ProbeService {
   private final AssessmentProjectRepository projects;
   private final ProjectTargetRepository projectTargets;
   private final AuthorizedTargetRepository targets;
+  private final TargetService targetService;
   private final FingerprintMatcher fingerprints;
   private final ObjectMapper mapper;
 
@@ -50,12 +52,14 @@ public class ProbeService {
       AssessmentProjectRepository projects,
       ProjectTargetRepository projectTargets,
       AuthorizedTargetRepository targets,
+      TargetService targetService,
       FingerprintMatcher fingerprints,
       ObjectMapper mapper) {
     this.results = results;
     this.projects = projects;
     this.projectTargets = projectTargets;
     this.targets = targets;
+    this.targetService = targetService;
     this.fingerprints = fingerprints;
     this.mapper = mapper;
   }
@@ -67,7 +71,7 @@ public class ProbeService {
     validateProjectAuthorization(project);
     validateProjectTarget(request.getProjectId(), request.getTargetId());
 
-    AuthorizedTarget target = findEnabledTarget(request.getTargetId());
+    AuthorizedTarget target = targetService.getCurrentlyAuthorized(request.getTargetId(), request.getProjectId());
     List<PreparedProbe> probeCandidates = prepareProbeCandidates(request, target);
 
     IOException lastIoException = null;
@@ -136,15 +140,6 @@ public class ProbeService {
     projectTargets
         .findByProjectIdAndTargetId(projectId, targetId)
         .orElseThrow(() -> new IllegalArgumentException("目标不属于当前项目"));
-  }
-
-  private AuthorizedTarget findEnabledTarget(Long targetId) {
-    AuthorizedTarget target =
-        targets.findById(targetId).orElseThrow(() -> new IllegalArgumentException("未找到目标"));
-    if (!target.isEnabled()) {
-      throw new IllegalStateException("目标已停用");
-    }
-    return target;
   }
 
   private List<PreparedProbe> prepareProbeCandidates(ProbeRequest request, AuthorizedTarget target) {

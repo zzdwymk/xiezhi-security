@@ -16,6 +16,7 @@ import ch.qos.logback.core.read.ListAppender;
 import com.bachelor.toolbox.project.AssessmentProjectService;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.AuthorizedTargetRepository;
+import com.bachelor.toolbox.target.TargetService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
@@ -40,6 +41,8 @@ class ReconServiceTest {
   @Mock private ReconResultRepository results;
   @Mock private AssessmentProjectService projects;
   @Mock private AuthorizedTargetRepository targets;
+  @Mock private TargetService targetService;
+  @Mock private IcpBrowserCaptureStore icpBrowserCaptures;
 
   @Test
   void reportsMissingTargetIdentifierInChinese() {
@@ -317,7 +320,9 @@ class ReconServiceTest {
   }
 
   private ReconService service(boolean passiveSourcesEnabled) {
-    ReconService service = new ReconService(results, projects, targets, new ObjectMapper());
+    ReconService service =
+        new ReconService(
+            results, projects, targets, targetService, new ObjectMapper(), icpBrowserCaptures);
     ReflectionTestUtils.setField(service, "passiveSourcesEnabled", passiveSourcesEnabled);
     return service;
   }

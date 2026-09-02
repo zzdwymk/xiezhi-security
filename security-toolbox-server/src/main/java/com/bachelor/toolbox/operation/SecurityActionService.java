@@ -7,6 +7,7 @@ import com.bachelor.toolbox.common.PageRequests;
 import com.bachelor.toolbox.finding.Finding;
 import com.bachelor.toolbox.project.AssessmentProject;
 import com.bachelor.toolbox.project.AssessmentProjectService;
+import com.bachelor.toolbox.target.TargetService;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
@@ -67,16 +68,19 @@ public class SecurityActionService {
 
   private final SecurityActionRepository repository;
   private final AssessmentProjectService projects;
+  private final TargetService targets;
   private final AuditService audit;
   private final UserRepository users;
 
   public SecurityActionService(
       SecurityActionRepository repository,
       AssessmentProjectService projects,
+      TargetService targets,
       AuditService audit,
       UserRepository users) {
     this.repository = repository;
     this.projects = projects;
+    this.targets = targets;
     this.audit = audit;
     this.users = users;
   }
@@ -149,6 +153,7 @@ public class SecurityActionService {
   public SecurityAction start(Long projectId, Long id) {
     SecurityAction action = get(projectId, id);
     projects.validateProjectTarget(projectId, action.getTargetId());
+    targets.getCurrentlyAuthorized(action.getTargetId(), projectId);
 
     Instant now = Instant.now();
     requireStatus(action, STATUS_APPROVED, "动作尚未批准");
@@ -214,6 +219,7 @@ public class SecurityActionService {
       throw new ApiException("必须指定授权目标");
     }
     projects.validateProjectTarget(projectId, targetId);
+    targets.getCurrentlyAuthorized(targetId, projectId);
   }
 
   private void validateCategory(String category) {

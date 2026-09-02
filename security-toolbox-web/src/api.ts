@@ -1303,6 +1303,18 @@ export const endpoints = {
       challengeId,
       points,
     }),
+  icpBrowserCapture: (projectId: number, targetId: number, records: Array<Record<string, unknown>>) =>
+    api.post<{
+      domain: string;
+      status: string;
+      source?: string;
+      reason?: string;
+      records?: Array<Record<string, unknown>>;
+      total?: number;
+    }>(`/projects/${projectId}/recon/icp/browser/capture`, {
+      targetId,
+      records,
+    }),
 };
 
 async function streamTaskEventPath(

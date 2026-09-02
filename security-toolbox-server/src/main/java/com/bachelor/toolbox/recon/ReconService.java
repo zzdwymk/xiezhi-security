@@ -3,6 +3,7 @@ package com.bachelor.toolbox.recon;
 import com.bachelor.toolbox.project.AssessmentProjectService;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.AuthorizedTargetRepository;
+import com.bachelor.toolbox.target.TargetService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
@@ -69,7 +70,9 @@ public class ReconService {
   private final ReconResultRepository results;
   private final AssessmentProjectService projects;
   private final AuthorizedTargetRepository targets;
+  private final TargetService targetService;
   private final ObjectMapper json;
+  private final IcpBrowserCaptureStore icpBrowserCaptures;
   private final HttpClient passiveClient =
       HttpClient.newBuilder()
           .connectTimeout(PASSIVE_CONNECT_TIMEOUT)
@@ -87,6 +90,9 @@ public class ReconService {
   @Value("${toolbox.recon.icp-mi-enabled:true}")
   private boolean miitEnabled;
 
+  @Value("${toolbox.recon.icp-mi-auto-enabled:false}")
+  private boolean miitAutoEnabled;
+
   @Value("${toolbox.recon.icp-ocr-models-path:./data/models/icp}")
   private String icpOcrModelsPath;
 
@@ -94,16 +100,21 @@ public class ReconService {
       ReconResultRepository results,
       AssessmentProjectService projects,
       AuthorizedTargetRepository targets,
-      ObjectMapper json) {
+      TargetService targetService,
+      ObjectMapper json,
+      IcpBrowserCaptureStore icpBrowserCaptures) {
     this.results = results;
     this.projects = projects;
     this.targets = targets;
+    this.targetService = targetService;
     this.json = json;
+    this.icpBrowserCaptures = icpBrowserCaptures;
   }
 
   public ReconResult collect(Long projectId, ReconRequest request) {
     validateCollectRequest(request);
     projects.validateProjectTarget(projectId, request.targetId());
+    targetService.getCurrentlyAuthorized(request.targetId(), projectId);
 
     AuthorizedTarget target = findTarget(request.targetId());
     String rootDomain = requireRootDomain(target);
@@ -253,6 +264,7 @@ public class ReconService {
 
   private IcpResult collectIcpResult(Long projectId, Long targetId) {
     projects.validateProjectTarget(projectId, targetId);
+    targetService.getCurrentlyAuthorized(targetId, projectId);
     AuthorizedTarget target = targets.findById(targetId).orElse(null);
     if (target == null) {
       return new IcpResult(targetId, "", "UNAVAILABLE", "授权目标不存在或已删除", Map.of());
@@ -263,29 +275,45 @@ public class ReconService {
       return new IcpResult(targetId, "", "UNAVAILABLE", "目标中没有可查询的域名", Map.of());
     }
 
+    IcpBrowserCaptureStore.Capture captured = icpBrowserCaptures.take(projectId, targetId);
+    if (captured != null && captured.records() != null && !captured.records().isEmpty()) {
+      return new IcpResult(
+          targetId, domain, "AVAILABLE", "",
+          Map.of(
+              "source", "miit-browser-capture",
+              "records", captured.records(),
+              "total", captured.records().size()));
+    }
+
     if (miitEnabled) {
-      MiitIcpClient.MiitResult builtIn =
-          new MiitIcpClient(json, icpOcrModelsPath).queryByUnit(domain);
-      if (builtIn.success()) {
-        return new IcpResult(
-            targetId, domain, "AVAILABLE", "",
-            Map.of(
-                "source", "miit",
-                "records", convertRecords(builtIn.records),
-                "total", builtIn.total));
-      }
-      boolean manualConfigured = hasManualIcpSource();
-      if (builtIn.wasBlockedByCaptcha()) {
-        if (!manualConfigured) {
+      if (miitAutoEnabled) {
+        MiitIcpClient.MiitResult builtIn =
+            new MiitIcpClient(json, icpOcrModelsPath).queryByUnit(domain);
+        if (builtIn.success()) {
+          return new IcpResult(
+              targetId, domain, "AVAILABLE", "",
+              Map.of(
+                  "source", "miit",
+                  "records", convertRecords(builtIn.records),
+                  "total", builtIn.total));
+        }
+        if (!hasManualIcpSource()) {
           return new IcpResult(
               targetId, domain, "CAPTCHA_REQUIRED", builtIn.reason,
               Map.of("source", "miit", "reason", builtIn.reason));
         }
-      } else {
-        // Built-in query failed (network / gateway); keep a fallback note but continue.
-        if (!manualConfigured) {
-          return new IcpResult(targetId, domain, "UNAVAILABLE", builtIn.reason, Map.of());
-        }
+        return collectManualIcpResult(targetId, domain);
+      }
+      // The MIIT gateway no longer returns a challenge secretKey, so the built-in
+      // auto chain cannot satisfy its point challenge. Route the operator to the
+      // desktop browser assistant (浏览器代填) instead of surfacing an internal error.
+      if (!hasManualIcpSource()) {
+        return new IcpResult(
+            targetId,
+            domain,
+            "BROWSER_REQUIRED",
+            "请使用“浏览器代填”完成备案查询",
+            Map.of("source", "miit-browser", "reason", "请使用浏览器代填"));
       }
       return collectManualIcpResult(targetId, domain);
     }
@@ -303,7 +331,7 @@ public class ReconService {
           targetId,
           domain,
           "CONFIG_REQUIRED",
-          "尚未配置 ICP 备案查询数据源；请在设置中加入 HTTPS 的手动查询服务或启用内置工信部查询",
+          "尚未配置 ICP 查询数据源（ICP_API_URL）",
           Map.of("source", "configuration", "requiredSetting", "ICP_API_URL"));
     }
 

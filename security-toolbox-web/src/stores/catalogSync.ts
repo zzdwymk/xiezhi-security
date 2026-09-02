@@ -6,6 +6,7 @@ import {
   endpoints,
   type CatalogSyncProgress,
   type DependencyStatus,
+  type HostPluginCatalogSyncResult,
   type ScannerPocCatalogSyncResult,
   type SystemDependenciesResponse,
   type VulnerabilityCatalogStats,
@@ -13,7 +14,12 @@ import {
 } from "../api";
 import { toErrorMessage } from "../utils/errorMessage";
 
-export type ScannerSource = "NUCLEI" | "AFROG" | "XRAY";
+export type ScannerSource = "NUCLEI" | "AFROG" | "XRAY" | "HOST";
+
+/** Sources backed by an on-disk catalog with no remote binary to install. */
+function isSelfHostedSource(source: ScannerSource) {
+  return source === "HOST";
+}
 
 export interface CatalogLocalSyncStage {
   message: string;
@@ -22,7 +28,8 @@ export interface CatalogLocalSyncStage {
 
 type CatalogSyncResult =
   | VulnerabilityCatalogSyncResult
-  | ScannerPocCatalogSyncResult;
+  | ScannerPocCatalogSyncResult
+  | HostPluginCatalogSyncResult;
 
 interface LocalUpdateResult {
   localFilesUpdated: boolean;
@@ -33,6 +40,7 @@ const sourceLabels: Record<ScannerSource, string> = {
   NUCLEI: "Nuclei",
   AFROG: "Afrog",
   XRAY: "Xray",
+  HOST: "内置主机插件",
 };
 
 function dependenciesFrom(data: SystemDependenciesResponse) {
@@ -52,6 +60,7 @@ function sourceDependencyReady(
   dependencies: DependencyStatus[],
   source: ScannerSource,
 ) {
+  if (isSelfHostedSource(source)) return true;
   const expected = sourceLabels[source].toLowerCase();
   return dependencyReady(
     dependencies.find((item) => item.name?.toLowerCase() === expected),
@@ -61,7 +70,8 @@ function sourceDependencyReady(
 function catalogCount(stats: VulnerabilityCatalogStats, source: ScannerSource) {
   if (source === "NUCLEI") return Number(stats.nuclei || 0);
   if (source === "AFROG") return Number(stats.afrog || 0);
-  return Number(stats.xray || 0);
+  if (source === "XRAY") return Number(stats.xray || 0);
+  return Number(stats.host || 0);
 }
 
 async function importCatalogSource(
@@ -69,7 +79,8 @@ async function importCatalogSource(
 ): Promise<CatalogSyncResult> {
   if (source === "NUCLEI") return (await endpoints.syncNucleiCatalog()).data;
   if (source === "AFROG") return (await endpoints.syncAfrogCatalog()).data;
-  return (await endpoints.syncXrayCatalog()).data;
+  if (source === "XRAY") return (await endpoints.syncXrayCatalog()).data;
+  return (await endpoints.syncHostCatalog()).data;
 }
 
 async function runBounded<T>(
@@ -170,6 +181,9 @@ export const useCatalogSyncStore = defineStore("catalog-sync", () => {
         percentage: 5,
       },
     };
+    if (isSelfHostedSource(source)) {
+      return { localFilesUpdated: false, catalogFilesUpdated: true };
+    }
     if (!window.toolboxDesktop?.installDependency) {
       return { localFilesUpdated: false, catalogFilesUpdated: true };
     }

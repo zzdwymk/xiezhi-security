@@ -46,6 +46,11 @@ toolbox:
     # manually configured icp-api-url. Defaults to enabled; set ICP_MI_ENABLED=false
     # to only use the manual icp-api-url source.
     icp-mi-enabled: ${ICP_MI_ENABLED:true}
+    # The MIIT gateway no longer returns a challenge secretKey for the built-in
+    # point-slide captcha, so the old auto chain is disabled by default. Kept off
+    # unless the portal re-enables the token; the normal flow routes the operator
+    # to the desktop "浏览器代填" assistant instead.
+    icp-mi-auto-enabled: ${ICP_MI_AUTO_ENABLED:false}
     # Directory holding the PP-OCR ONNX model assets (det.onnx, rec.onnx,
     # ppocr_keys_v1.txt). When present, the built-in query attempts automatic
     # captcha solving first and falls back to the manual data source otherwise.

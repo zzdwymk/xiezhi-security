@@ -122,6 +122,13 @@ interface ToolboxDesktopBridge {
     },
   ) => Promise<void>;
   readonly onCaptureBrowserClosed?: (callback: () => void) => () => void;
+  readonly openIcpBrowser?: (
+    payload: IcpBrowserOpenOptions,
+  ) => Promise<IcpBrowserStatus>;
+  readonly fetchIcpBrowserResult?: () => Promise<IcpBrowserCaptureResult>;
+  readonly closeIcpBrowser?: () => Promise<IcpBrowserStatus>;
+  readonly getIcpBrowserStatus?: () => Promise<IcpBrowserStatus>;
+  readonly onIcpBrowserClosed?: (callback: () => void) => () => void;
   readonly onDependencyInstallProgress?: (
     callback: (event: DependencyInstallProgressEvent) => void,
   ) => () => void;
@@ -155,6 +162,28 @@ interface CaptureBrowserStatus {
   readonly proxyPort?: number;
   readonly targetUrl?: string;
   readonly mitmTrusted?: boolean;
+}
+
+interface IcpBrowserOpenOptions {
+  domain: string;
+}
+
+interface IcpBrowserStatus {
+  readonly running: boolean;
+  readonly opening?: boolean;
+  readonly domain?: string;
+  readonly url?: string;
+  readonly lastError?: string;
+  readonly lastFetch?: string;
+}
+
+interface IcpBrowserCaptureResult {
+  ok: boolean;
+  found?: number;
+  rows?: Array<{ cells: string[]; text: string }>;
+  pageText?: string;
+  reason?: string;
+  error?: string;
 }
 
 interface AiSettingsInput {

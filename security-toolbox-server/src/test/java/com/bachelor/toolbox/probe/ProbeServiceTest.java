@@ -18,6 +18,7 @@ import com.bachelor.toolbox.project.ProjectTarget;
 import com.bachelor.toolbox.project.ProjectTargetRepository;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.AuthorizedTargetRepository;
+import com.bachelor.toolbox.target.TargetService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
@@ -39,6 +40,7 @@ class ProbeServiceTest {
   @Mock private AssessmentProjectRepository projects;
   @Mock private ProjectTargetRepository projectTargets;
   @Mock private AuthorizedTargetRepository targets;
+  @Mock private TargetService targetService;
   @Mock private FingerprintMatcher fingerprints;
 
   @Test
@@ -63,15 +65,15 @@ class ProbeServiceTest {
     verifyNoInteractions(projectTargets, targets, results, fingerprints);
   }
 
-  @Test
+@Test
   void reportsMissingTargetInChinese() {
     when(projects.findById(1L)).thenReturn(Optional.of(activeProject()));
     when(projectTargets.findByProjectIdAndTargetId(1L, 7L))
         .thenReturn(Optional.of(new ProjectTarget(1L, 7L)));
-    when(targets.findById(7L)).thenReturn(Optional.empty());
+    when(targetService.getCurrentlyAuthorized(7L, 1L)).thenThrow(new ApiException("未找到目标"));
 
     assertThatThrownBy(() -> service().probe(requestFor(7L, null)))
-        .isInstanceOf(IllegalArgumentException.class)
+        .isInstanceOf(ApiException.class)
         .hasMessage("未找到目标");
 
     verifyNoInteractions(results, fingerprints);
@@ -88,6 +90,36 @@ class ProbeServiceTest {
         .hasMessage("项目授权已过期或尚未生效");
 
     verifyNoInteractions(projectTargets, targets, results, fingerprints);
+  }
+
+  @Test
+  void rejectsExpiredTargetAuthorizationAsBusinessError() {
+    when(projects.findById(1L)).thenReturn(Optional.of(activeProject()));
+    when(projectTargets.findByProjectIdAndTargetId(1L, 7L))
+        .thenReturn(Optional.of(new ProjectTarget(1L, 7L)));
+    when(targetService.getCurrentlyAuthorized(7L, 1L))
+        .thenThrow(new ApiException("目标授权已过期"));
+
+    assertThatThrownBy(() -> service().probe(requestFor(7L, null)))
+        .isInstanceOf(ApiException.class)
+        .hasMessage("目标授权已过期");
+
+    verifyNoInteractions(results, fingerprints);
+  }
+
+  @Test
+  void rejectsDisabledTargetAuthorizationAsBusinessError() {
+    when(projects.findById(1L)).thenReturn(Optional.of(activeProject()));
+    when(projectTargets.findByProjectIdAndTargetId(1L, 7L))
+        .thenReturn(Optional.of(new ProjectTarget(1L, 7L)));
+    when(targetService.getCurrentlyAuthorized(7L, 1L))
+        .thenThrow(new ApiException("授权目标已停用"));
+
+    assertThatThrownBy(() -> service().probe(requestFor(7L, null)))
+        .isInstanceOf(ApiException.class)
+        .hasMessage("授权目标已停用");
+
+    verifyNoInteractions(results, fingerprints);
   }
 
   @Test
@@ -227,7 +259,7 @@ class ProbeServiceTest {
     when(projects.findById(1L)).thenReturn(Optional.of(activeProject()));
     when(projectTargets.findByProjectIdAndTargetId(1L, target.getId()))
         .thenReturn(Optional.of(new ProjectTarget(1L, target.getId())));
-    when(targets.findById(target.getId())).thenReturn(Optional.of(target));
+    when(targetService.getCurrentlyAuthorized(target.getId(), 1L)).thenReturn(target);
   }
 
   private AssessmentProject activeProject() {
@@ -255,8 +287,8 @@ class ProbeServiceTest {
     return request;
   }
 
-  private ProbeService service() {
+private ProbeService service() {
     return new ProbeService(
-        results, projects, projectTargets, targets, fingerprints, new ObjectMapper());
+        results, projects, projectTargets, targets, targetService, fingerprints, new ObjectMapper());
   }
 }
