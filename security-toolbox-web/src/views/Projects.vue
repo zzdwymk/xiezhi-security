@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { endpoints, safeGet, type AssessmentProject } from "../api";
@@ -38,6 +38,17 @@ function projectStatusLabel(status?: string) {
   return (status && map[status]) || status || "未知";
 }
 
+function projectWindowActive(row: {
+  authorizationValidFrom?: string;
+  authorizationExpiresAt?: string;
+}) {
+  const from = Date.parse(row.authorizationValidFrom || "");
+  const to = Date.parse(row.authorizationExpiresAt || "");
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return false;
+  const now = Date.now();
+  return now >= from && now < to;
+}
+
 function projectExpired(row: { authorizationExpiresAt?: string }) {
   const expiresAt = Date.parse(row.authorizationExpiresAt || "");
   return Number.isFinite(expiresAt) && expiresAt < Date.now();
@@ -67,6 +78,29 @@ const editForm = ref({
   owner: "",
   status: "DRAFT",
 });
+const editAuthorizationExpired = computed(() =>
+  !projectWindowActive(editForm.value),
+);
+const editWindowActive = computed(() => projectWindowActive(editForm.value));
+
+function dateWindowValid(from?: string, to?: string) {
+  if (!from || !to) return false;
+  const fromTime = Date.parse(from);
+  const toTime = Date.parse(to);
+  if (!Number.isFinite(fromTime) || !Number.isFinite(toTime)) return false;
+  return toTime > fromTime;
+}
+
+const formCreateValid = computed(() => {
+  const f = form.value;
+  return Boolean(
+    f.name &&
+      f.owner &&
+      f.authorizationStatement &&
+      dateWindowValid(f.authorizationValidFrom, f.authorizationExpiresAt),
+  );
+});
+const formCanSubmit = formCreateValid;
 const {
   page,
   pageSize,
@@ -96,6 +130,8 @@ async function load() {
 async function create() {
   saving.value = true;
   try {
+    if (!dateWindowValid(form.value.authorizationValidFrom, form.value.authorizationExpiresAt))
+      throw new Error("授权结束时间必须晚于授权开始时间");
     await endpoints.createProject(form.value);
     visible.value = false;
     form.value = {
@@ -159,6 +195,14 @@ function projectAuthorizationChanged() {
 
 async function saveEdit() {
   if (!editingId.value) return;
+  if (editAuthorizationExpired.value && editForm.value.status !== originalEditProject.value?.status) {
+    ElMessage.warning("项目不在授权有效期内，无法修改项目状态，请先调整授权时间窗");
+    return;
+  }
+  if (!dateWindowValid(editForm.value.authorizationValidFrom, editForm.value.authorizationExpiresAt)) {
+    ElMessage.warning("授权结束时间必须晚于授权开始时间");
+    return;
+  }
   let updatingStatus = false;
   try {
     if (projectAuthorizationChanged()) {
@@ -331,6 +375,12 @@ onMounted(load);
             format="YYYY-MM-DD HH:mm"
             placeholder="选择结束时间"
             :editable="false"
+            :disabled-date="
+              (d: Date) =>
+                form.authorizationValidFrom
+                  ? d.getTime() <= Date.parse(form.authorizationValidFrom)
+                  : false
+            "
           />
         </el-form-item>
       </div>
@@ -347,7 +397,11 @@ onMounted(load);
 
     <template #footer>
       <el-button @click="visible = false">取消</el-button>
-      <el-button type="primary" :loading="saving" @click="create"
+      <el-button
+        type="primary"
+        :loading="saving"
+        :disabled="!formCanSubmit"
+        @click="create"
         >创建项目</el-button
       >
     </template>
@@ -374,7 +428,11 @@ onMounted(load);
       </div>
 
       <el-form-item label="项目状态">
-        <el-select v-model="editForm.status" style="width: 100%">
+        <el-select
+          v-model="editForm.status"
+          style="width: 100%"
+          :disabled="editAuthorizationExpired"
+        >
           <el-option
             v-for="option in projectStatusOptions"
             :key="option.value"
@@ -382,6 +440,12 @@ onMounted(load);
             :value="option.value"
           />
         </el-select>
+        <div
+          v-if="editAuthorizationExpired"
+          class="project-status-hint"
+        >
+          项目当前不在授权有效期内，无法修改项目状态。请先将授权时间窗调整为包含当前时间。
+        </div>
       </el-form-item>
 
       <el-form-item label="授权声明">
@@ -412,6 +476,12 @@ onMounted(load);
             format="YYYY-MM-DD HH:mm"
             placeholder="选择结束时间"
             :editable="false"
+            :disabled-date="
+              (d: Date) =>
+                editForm.authorizationValidFrom
+                  ? d.getTime() <= Date.parse(editForm.authorizationValidFrom)
+                  : false
+            "
           />
         </el-form-item>
       </div>
@@ -450,6 +520,12 @@ onMounted(load);
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.project-status-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--el-color-danger);
 }
 .projects-pagination {
   display: flex;

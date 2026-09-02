@@ -144,6 +144,14 @@ function normalizeDatePickerValue(value?: string) {
   return parsed.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
+function isDateWindowValid(from?: string, to?: string) {
+  if (!from || !to) return true;
+  const fromTime = Date.parse(from);
+  const toTime = Date.parse(to);
+  if (!Number.isFinite(fromTime) || !Number.isFinite(toTime)) return true;
+  return toTime >= fromTime;
+}
+
 function applyProjectAuthorizationDefaults(projectId?: number) {
   const selectedProject = projects.value.find(
     (project) => project.id === projectId,
@@ -218,6 +226,20 @@ function targetAuthorizationWindow(row: Target) {
         ? ""
         : "未设置",
   };
+}
+
+function targetWindowState(row: Target) {
+  const window = targetAuthorizationWindow(row);
+  if (!row.enabled)
+    return { label: "停用", type: "info" as const };
+  const now = Date.now();
+  const validFrom = Date.parse(window.validFrom || "");
+  const expiresAt = Date.parse(window.expiresAt || "");
+  if (Number.isFinite(expiresAt) && now > expiresAt)
+    return { label: "已过期", type: "danger" as const };
+  if (Number.isFinite(validFrom) && now < validFrom)
+    return { label: "未生效", type: "warning" as const };
+  return { label: "启用", type: "success" as const };
 }
 
 function compactDateTime(value?: string) {
@@ -349,6 +371,15 @@ async function create() {
     ElMessage.error(saveError.value);
     return;
   }
+  if (
+    form.authorizationValidFrom &&
+    form.authorizationExpiresAt &&
+    !isDateWindowValid(form.authorizationValidFrom, form.authorizationExpiresAt)
+  ) {
+    saveError.value = "目标授权结束时间不能早于授权开始时间";
+    ElMessage.error(saveError.value);
+    return;
+  }
   try {
     validateDomainTarget(form.targetValue, form.targetType);
     form.allowedPorts = normalizeAllowedPorts(
@@ -394,6 +425,18 @@ async function batchCreate() {
   }
   if (!batchForm.authorizationNote.trim()) {
     saveError.value = "请填写批量授权记录说明";
+    ElMessage.error(saveError.value);
+    return;
+  }
+  if (
+    batchForm.authorizationValidFrom &&
+    batchForm.authorizationExpiresAt &&
+    !isDateWindowValid(
+      batchForm.authorizationValidFrom,
+      batchForm.authorizationExpiresAt,
+    )
+  ) {
+    saveError.value = "目标授权结束时间不能早于授权开始时间";
     ElMessage.error(saveError.value);
     return;
   }
@@ -535,6 +578,14 @@ function targetAuthorizationChanged(ports: string) {
 
 async function saveEditTarget() {
   if (!editingTargetId.value) return;
+  if (
+    editForm.authorizationValidFrom &&
+    editForm.authorizationExpiresAt &&
+    !isDateWindowValid(editForm.authorizationValidFrom, editForm.authorizationExpiresAt)
+  ) {
+    ElMessage.error("目标授权结束时间不能早于授权开始时间");
+    return;
+  }
   try {
     validateDomainTarget(editForm.targetValue, editForm.targetType);
     const ports = normalizeAllowedPorts(
@@ -664,8 +715,8 @@ onMounted(load);
         ><template #default="scope"
           ><el-tag
             size="small"
-            :type="scope.row.enabled ? 'success' : 'info'"
-            >{{ scope.row.enabled ? "启用" : "停用" }}</el-tag
+            :type="targetWindowState(scope.row).type"
+            >{{ targetWindowState(scope.row).label }}</el-tag
           ></template
         ></el-table-column
       >
@@ -789,6 +840,12 @@ onMounted(load);
             value-format="YYYY-MM-DDTHH:mm:ssZ"
             format="YYYY-MM-DD HH:mm"
             placeholder="跟随项目授权结束"
+            :disabled-date="
+              (d: Date) =>
+                form.authorizationValidFrom
+                  ? d.getTime() < Date.parse(form.authorizationValidFrom)
+                  : false
+            "
         /></el-form-item>
       </div>
       <p class="target-time-hint">
@@ -984,6 +1041,12 @@ onMounted(load);
             value-format="YYYY-MM-DDTHH:mm:ssZ"
             format="YYYY-MM-DD HH:mm"
             placeholder="跟随项目授权结束"
+            :disabled-date="
+              (d: Date) =>
+                batchForm.authorizationValidFrom
+                  ? d.getTime() < Date.parse(batchForm.authorizationValidFrom)
+                  : false
+            "
           />
         </el-form-item>
       </div>
@@ -1142,6 +1205,12 @@ onMounted(load);
             format="YYYY-MM-DD HH:mm"
             :placeholder="inheritedTimePlaceholder('end')"
             :editable="false"
+            :disabled-date="
+              (d: Date) =>
+                editForm.authorizationValidFrom
+                  ? d.getTime() < Date.parse(editForm.authorizationValidFrom)
+                  : false
+            "
           />
         </el-form-item>
       </div>

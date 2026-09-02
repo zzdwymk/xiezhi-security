@@ -89,6 +89,9 @@ public class AssessmentProjectService {
     validateStatus(status);
 
     AssessmentProject project = get(id);
+    if ("ACTIVE".equals(status)) {
+      validateAuthorizationWindow(project, Instant.now());
+    }
     project.setStatus(status);
     AssessmentProject saved = projects.save(project);
     audit.record("UPDATE_PROJECT_STATUS", "PROJECT", id, status, "SUCCESS");

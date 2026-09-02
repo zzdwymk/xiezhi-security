@@ -211,6 +211,43 @@ class AssessmentProjectServiceTests {
   }
 
   @Test
+  void rejectsActivatingProjectWhenAuthorizationExpired() {
+    AssessmentProject project = project("DRAFT");
+    project.setAuthorizationExpiresAt(Instant.now().minusSeconds(60));
+    project.setAuthorizationValidFrom(Instant.now().minusSeconds(3600));
+    when(projects.findById(1L)).thenReturn(Optional.of(project));
+
+    assertThatThrownBy(() -> service.updateStatus(1L, "ACTIVE"))
+        .isInstanceOf(ApiException.class)
+        .hasMessage("项目授权已过期或尚未生效");
+    verify(projects, never()).save(any(AssessmentProject.class));
+  }
+
+  @Test
+  void rejectsActivatingProjectWhenAuthorizationNotYetValid() {
+    AssessmentProject project = project("DRAFT");
+    project.setAuthorizationValidFrom(Instant.now().plusSeconds(60));
+    project.setAuthorizationExpiresAt(Instant.now().plusSeconds(3600));
+    when(projects.findById(1L)).thenReturn(Optional.of(project));
+
+    assertThatThrownBy(() -> service.updateStatus(1L, "ACTIVE"))
+        .isInstanceOf(ApiException.class)
+        .hasMessage("项目授权已过期或尚未生效");
+    verify(projects, never()).save(any(AssessmentProject.class));
+  }
+
+  @Test
+  void allowsActivatingProjectWithValidAuthorization() {
+    AssessmentProject project = project("DRAFT");
+    when(projects.findById(1L)).thenReturn(Optional.of(project));
+    when(projects.save(any(AssessmentProject.class)))
+        .thenAnswer(invocation -> invocation.getArgument(0));
+
+    assertThat(service.updateStatus(1L, "ACTIVE").getStatus()).isEqualTo("ACTIVE");
+    verify(projects).save(any(AssessmentProject.class));
+  }
+
+  @Test
   void rejectsUnsupportedProjectStatusBeforeLoadingProject() {
     assertThatThrownBy(() -> service.updateStatus(1L, "UNKNOWN"))
         .isInstanceOf(ApiException.class)

@@ -501,6 +501,14 @@ function targetDisplayName(target: Target) {
     : target.targetValue;
 }
 
+function targetWindowActive(target: Target) {
+  const start = Date.parse((target.authorizationValidFrom || "") as string);
+  const end = Date.parse((target.authorizationExpiresAt || "") as string);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+  const now = Date.now();
+  return now >= start && now < end;
+}
+
 function scheduleProjectName(projectId?: number) {
   if (!projectId) return "未关联项目";
   return (
@@ -947,10 +955,13 @@ onUnmounted(() => {
             :key="target.id"
             :label="targetDisplayName(target)"
             :value="target.id"
-            :disabled="!target.enabled"
+            :disabled="!target.enabled || !targetWindowActive(target)"
           >
             <span>{{ targetDisplayName(target) }}</span
-            ><span v-if="!target.enabled" class="disabled-target">已停用</span>
+            ><span v-if="!target.enabled" class="disabled-target">已停用</span
+            ><span v-else-if="!targetWindowActive(target)" class="disabled-target"
+              >授权失效</span
+            >
           </el-option>
         </el-select>
       </el-form-item>

@@ -492,6 +492,28 @@ function projectExpired(project?: {
   return Number.isFinite(expiresAt) && expiresAt < Date.now();
 }
 
+const windowActive = computed(() => {
+  if (!project.value) return false;
+  const start = Date.parse(project.value.authorizationValidFrom || "");
+  const end = Date.parse(project.value.authorizationExpiresAt || "");
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+  const now = Date.now();
+  return now >= start && now < end;
+});
+
+function targetWindowActive(target?: {
+  enabled?: boolean;
+  authorizationValidFrom?: string;
+  authorizationExpiresAt?: string;
+}) {
+  if (!target || !target.enabled) return false;
+  const start = Date.parse(target.authorizationValidFrom || "");
+  const end = Date.parse(target.authorizationExpiresAt || "");
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+  const now = Date.now();
+  return now >= start && now < end;
+}
+
 function projectStatusLabel(status?: string) {
   const labels: Record<string, string> = {
     ACTIVE: "进行中",
@@ -1457,6 +1479,10 @@ const STATUS_OPTIONS = [
   { value: "ARCHIVED", label: "已归档" },
 ];
 async function changeStatus(status: string) {
+  if (status === "ACTIVE" && !windowActive.value) {
+    ElMessage.warning("项目不在授权有效期内，无法切换为「进行中」，请先调整授权时间窗");
+    return;
+  }
   try {
     const { data } = await endpoints.updateProjectStatus(id, status);
     project.value = data;
@@ -2581,9 +2607,14 @@ async function loadProjectWorkflowRun() {
 }
 
 async function runWorkflow() {
+  if (!projectAuthorizationGuard.value.active)
+    return ElMessage.warning(projectAuthorizationGuard.value.text);
   const target =
     reconTarget.value || discoveryTarget.value || linkedTargets.value[0]?.id;
   if (!target) return ElMessage.warning("请先选择项目内授权目标");
+  const targetObject = linkedTargets.value.find((item) => item.id === target);
+  if (!targetWindowActive(targetObject))
+    return ElMessage.warning("所选目标已停用或不在授权有效期内，无法执行");
 
   let spec: WorkflowSpecV2 | undefined;
   try {
@@ -2762,6 +2793,7 @@ onUnmounted(() => {
             :key="s.value"
             :label="s.label"
             :value="s.value"
+            :disabled="s.value === 'ACTIVE' && !windowActive"
           />
         </el-select>
         <el-button type="primary" plain @click="openProjectCopilot()"
@@ -3582,7 +3614,7 @@ onUnmounted(() => {
             <el-button
               type="success"
               :loading="workflowRunning"
-              :disabled="workflowRunning"
+              :disabled="workflowRunning || !projectAuthorizationGuard.active"
               @click="runWorkflow"
               >一键联动工作流</el-button
             >
