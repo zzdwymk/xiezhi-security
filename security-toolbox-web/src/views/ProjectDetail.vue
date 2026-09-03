@@ -2334,6 +2334,7 @@ const icpBrowserDomain = ref("");
 const icpBrowserTargetRow = ref<IcpBatchResult>();
 const icpBrowserOpening = ref(false);
 const icpBrowserFetching = ref(false);
+const icpBrowserReloading = ref(false);
 const icpBrowserRunning = ref(false);
 const icpBrowserStatus = ref<IcpBrowserStatus>();
 const icpBrowserCaptured = ref<IcpBrowserCaptureResult>();
@@ -2401,6 +2402,24 @@ function reopenIcpBrowser() {
   return Promise.resolve();
 }
 
+async function reloadIcpBrowserPage() {
+  if (!window.toolboxDesktop?.reloadIcpBrowser) {
+    ElMessage.warning("当前桌面版不支持刷新，请重开浏览器代填");
+    return;
+  }
+  icpBrowserReloading.value = true;
+  icpBrowserCaptured.value = undefined;
+  try {
+    const status = await window.toolboxDesktop.reloadIcpBrowser();
+    icpBrowserStatus.value = status;
+    icpBrowserRunning.value = Boolean(status.running);
+  } catch (error: any) {
+    ElMessage.error(errorMessage(error, "刷新浏览器页面失败"));
+  } finally {
+    icpBrowserReloading.value = false;
+  }
+}
+
 /**
  * Normalizes a target host into the format the MIIT ICP query page recognizes:
  * strips scheme / userinfo / port / path, lowercases, and drops a leading "www."
@@ -2450,6 +2469,7 @@ async function openIcpBrowserFor(row: IcpBatchResult) {
     icpBrowserRunning.value = Boolean(status.running);
   } catch (error: any) {
     ElMessage.error(errorMessage(error, "打开浏览器代填失败"));
+    icpBrowserRunning.value = false;
   } finally {
     icpBrowserOpening.value = false;
   }
@@ -3826,15 +3846,15 @@ onUnmounted(() => {
           size="small"
           stripe
           class="icp-table"
-          ><el-table-column label="目标" min-width="150"
+          ><el-table-column label="目标" min-width="110"
             ><template #default="scope">{{
               taskTargetName(scope.row.targetId) || scope.row.domain
             }}</template></el-table-column
           ><el-table-column
             prop="domain"
             label="域名"
-            min-width="150"
-          /><el-table-column label="状态" width="110"
+            min-width="110"
+          /><el-table-column label="状态" width="150"
             ><template #default="scope"
               ><el-tag size="small" :type="icpStatusType(scope.row.status)">{{
                 icpStatusLabel(scope.row.status)
@@ -3988,6 +4008,12 @@ onUnmounted(() => {
                 :loading="icpBrowserOpening"
                 @click="reopenIcpBrowser()"
                 >打开浏览器并代填</el-button
+              >
+              <el-button
+                :loading="icpBrowserReloading"
+                :disabled="!icpBrowserRunning"
+                @click="reloadIcpBrowserPage()"
+                >刷新</el-button
               >
               <el-button
                 :loading="icpBrowserFetching"

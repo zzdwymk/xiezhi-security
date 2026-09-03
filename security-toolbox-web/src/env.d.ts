@@ -127,6 +127,7 @@ interface ToolboxDesktopBridge {
   ) => Promise<IcpBrowserStatus>;
   readonly fetchIcpBrowserResult?: () => Promise<IcpBrowserCaptureResult>;
   readonly closeIcpBrowser?: () => Promise<IcpBrowserStatus>;
+  readonly reloadIcpBrowser?: () => Promise<IcpBrowserStatus>;
   readonly getIcpBrowserStatus?: () => Promise<IcpBrowserStatus>;
   readonly onIcpBrowserClosed?: (callback: () => void) => () => void;
   readonly onDependencyInstallProgress?: (

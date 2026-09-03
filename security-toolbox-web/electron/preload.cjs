@@ -104,6 +104,7 @@ contextBridge.exposeInMainWorld(
     fetchIcpBrowserResult: () =>
       ipcRenderer.invoke("toolbox:fetch-icp-browser-result"),
     closeIcpBrowser: () => ipcRenderer.invoke("toolbox:close-icp-browser"),
+    reloadIcpBrowser: () => ipcRenderer.invoke("toolbox:reload-icp-browser"),
     getIcpBrowserStatus: () =>
       ipcRenderer.invoke("toolbox:get-icp-browser-status"),
     onIcpBrowserClosed: (callback) => {

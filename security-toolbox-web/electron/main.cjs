@@ -3327,6 +3327,11 @@ async function launchCaptureBrowser(payload) {
 
 const ICP_QUERY_URL = "https://beian.miit.gov.cn/";
 const ICP_QUERY_PATH_HINT = "请核对页面，工信部反爬策略可能导致无法自动定位输入框";
+// A real desktop Chrome UA so the MIIT front page (which bot-protects bare
+// Electron/Chromium identifiers) renders instead of a blank challenge frame.
+const ICP_BROWSER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+  "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
 function normalizeIcpDomain(raw) {
   let value = String(raw || "").trim().toLowerCase();
@@ -3366,8 +3371,10 @@ async function autoFillIcpQuery(webContents, domain) {
   if (!target) {
     return { filled: false, reason: "缺少待查询域名" };
   }
-  const script = `
-    (() => {
+  // Probe + fill the query input. Returns { found, filled, reason }.
+  const attempt = () =>
+    webContents.executeJavaScript(
+      `(() => {
       try {
         const value = ${JSON.stringify(target)};
         const setValue = (el, v) => {
@@ -3393,20 +3400,33 @@ async function autoFillIcpQuery(webContents, domain) {
           } catch (e) {}
           if (input) break;
         }
-        if (!input) return { filled: false, reason: '未能定位查询输入框，请在页面内手动填入域名' };
+        if (!input) return { found: false, filled: false, reason: '查询输入框尚未渲染' };
         setValue(input, value);
         const submitBtn = ['.ant-btn-primary', 'button:not([disabled])'].map(sel => {
           const all = Array.from(document.querySelectorAll(sel));
           return all.find(b => /查询|确定|搜|查/i.test(b.textContent || ''));
         }).find(Boolean);
         if (submitBtn) submitBtn.click();
-        return { filled: true, reason: '已代填域名并尝试触发查询，若弹出验证请完成验证' };
+        return { found: true, filled: true, reason: '已代填域名并尝试触发查询，若弹出验证请完成验证' };
       } catch (e) {
-        return { filled: false, reason: '代填异常：' + (e && e.message ? e.message : String(e)) };
+        return { found: false, filled: false, reason: '代填异常：' + (e && e.message ? e.message : String(e)) };
       }
-    })()
-  `;
-  return webContents.executeJavaScript(script, true);
+    })()`,
+      true,
+    );
+
+  // The MIIT front page is a Vue SPA that can take several seconds to mount its
+  // query form. Poll for the input so the auto-fill does not run into the still
+  // empty DOM, and do it before the login/guide screen hides the field.
+  const deadline = Date.now() + 6000;
+  let last = { found: false, filled: false, reason: "查询输入框尚未渲染" };
+  while (Date.now() < deadline) {
+    if (webContents.isDestroyed()) return { filled: false, reason: "窗口已关闭" };
+    last = await attempt();
+    if (last.found) return last;
+    await new Promise((r) => setTimeout(r, 600));
+  }
+  return { filled: false, reason: last.reason || "未能定位查询输入框，请在页面内手动填入域名" };
 }
 
 async function extractIcpBrowserResult(webContents) {
@@ -3457,6 +3477,18 @@ async function openIcpBrowser(payload) {
     icpBrowserWindow.close();
     icpBrowserWindow = undefined;
   }
+  try {
+    return await openIcpBrowserInner(domain);
+  } catch (error) {
+    icpBrowserState.opening = false;
+    icpBrowserState.lastError =
+      icpBrowserState.lastError ||
+      publicErrorMessage(error, "打开工信部查询窗口失败");
+    return icpBrowserStatus();
+  }
+}
+
+async function openIcpBrowserInner(domain) {
   icpBrowserState = {
     opening: true,
     domain,
@@ -3471,6 +3503,12 @@ async function openIcpBrowser(payload) {
   // disabled so the SPA paints even while the window is still hidden, preventing a
   // blank white frame that Chromium would otherwise throttle.
   const icpSession = electronSession.fromPartition("persist:beian-miit");
+  icpSession.setUserAgent(ICP_BROWSER_UA);
+  // Clear stored cookies/cache so a previously-challenged/bot-flagged session does
+  // not keep serving the blank/521 page across opens.
+  await icpSession
+    .clearStorageData({ storages: ["cookies", "cachestorage", "caches"] })
+    .catch(() => {});
   const window = new BrowserWindow({
     width: 1240,
     height: 860,
@@ -3534,12 +3572,17 @@ async function openIcpBrowser(payload) {
   try {
     await window.loadURL(ICP_QUERY_URL);
   } catch (error) {
+    // The MIIT front shell frequently rejects loadURL with a bot/HTTP error yet
+    // still paints a page. Do NOT abort the whole open: record the error, retry
+    // once (reload completes the challenge handshake), and keep the window usable.
     icpBrowserState.lastError = publicErrorMessage(error, "打开工信部查询页失败");
-    icpBrowserState.opening = false;
-    // Still surface the window so the operator can retry or inspect in case the
-    // page actually loaded despite a loadURL rejection.
-    if (!window.isDestroyed() && !window.isVisible()) window.show();
-    throw error;
+    try {
+      if (!window.isDestroyed()) {
+        await window.loadURL(ICP_QUERY_URL);
+      }
+    } catch (_retryError) {
+      // give up retrying silently — manual 刷新 is available
+    }
   }
 
   // Ensure the window is visible even if "ready-to-show" was delayed by a slow SPA.
@@ -3553,7 +3596,7 @@ async function openIcpBrowser(payload) {
 
   // Wait for the page to settle, then attempt a tolerant auto-fill.
   try {
-    await new Promise((resolve) => setTimeout(resolve, window.isDestroyed() ? 0 : 2500));
+    await new Promise((resolve) => setTimeout(resolve, window.isDestroyed() ? 0 : 1200));
     if (!window.isDestroyed()) {
       const result = await autoFillIcpQuery(window.webContents, domain);
       icpBrowserState.lastError =
@@ -3582,6 +3625,20 @@ function closeIcpBrowser() {
   const windowToClose = icpBrowserWindow;
   icpBrowserWindow = undefined;
   if (windowToClose && !windowToClose.isDestroyed()) windowToClose.close();
+  return icpBrowserStatus();
+}
+
+async function reloadIcpBrowser() {
+  const window = icpBrowserWindow;
+  if (window && !window.isDestroyed()) {
+    icpBrowserState.lastError = "";
+    icpBrowserState.lastFetch = "";
+    try {
+      await window.webContents.reloadIgnoringCache();
+    } catch (error) {
+      icpBrowserState.lastError = publicErrorMessage(error, "刷新失败");
+    }
+  }
   return icpBrowserStatus();
 }
 
@@ -4057,6 +4114,10 @@ handleRendererIpc("toolbox:close-icp-browser", (event) => {
 handleRendererIpc("toolbox:get-icp-browser-status", (event) => {
   assertMainRenderer(event);
   return icpBrowserStatus();
+});
+handleRendererIpc("toolbox:reload-icp-browser", (event) => {
+  assertMainRenderer(event);
+  return reloadIcpBrowser();
 });
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
