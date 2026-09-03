@@ -2269,19 +2269,34 @@ async function queryIcpBatch() {
     const requiresConfiguration = icpRows.value.some(
       (item) => item.status === "CONFIG_REQUIRED",
     );
-    const requiresBrowser = icpRows.value.some(
-      (item) => item.status === "BROWSER_REQUIRED",
-    );
     const requiresCaptcha = icpRows.value.some(
       (item) => item.status === "CAPTCHA_REQUIRED",
     );
-    if (requiresBrowser)
-      ElMessage.info("工信部内置自动查询已失效，请点击对应结果行的“浏览器代填”完成备案查询");
-    else if (requiresConfiguration)
+    const browserRows = icpRows.value.filter(
+      (item) => item.status === "BROWSER_REQUIRED",
+    );
+    if (browserRows.length) {
+      // Distinguish remaining targets that genuinely wait on manual代填 from the one that was
+      // just imported (now AVAILABLE). If even the just-imported target still reports
+      // BROWSER_REQUIRED, the backend did not pick up the imported capture - surface that too.
+      const current = icpBrowserTargetRow.value;
+      const stillPending = browserRows.filter(
+        (item) => item.targetId !== current?.targetId,
+      ).length;
+      const importedStillBroken = browserRows.some(
+        (item) => item.targetId === current?.targetId,
+      );
+      if (stillPending > 0 || importedStillBroken) {
+        ElMessage.info(
+          `还有 ${browserRows.length} 个目标需点击“浏览器代填”完成备案查询` +
+            (stillPending === browserRows.length ? "" : `（含本次导入的目标）`),
+        );
+      }
+    } else if (requiresConfiguration) {
       ElMessage.warning(
         "ICP 查询暂未返回数据；可配置手动数据源（ICP_API_URL）",
       );
-    else if (requiresCaptcha)
+    } else if (requiresCaptcha)
       ElMessage.info(
         "内置工信部查询需人工点选验证，可在结果行点击“手动验证”完成",
       );
