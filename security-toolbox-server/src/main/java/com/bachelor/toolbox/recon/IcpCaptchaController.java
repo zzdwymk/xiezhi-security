@@ -166,12 +166,6 @@ public class IcpCaptchaController {
     // (审核通过日期 / 主办单位性质 / 服务前置审批项) can be filled when the DOM cut
     // them into separate nodes.
     StringBuilder blobBuilder = new StringBuilder();
-    // The desktop DOM capture can cut detail fields (报告通过日期 / 前置审批项) into parts that do
-    // not land in any single row. The full-page innerText carries everything, so seed the blob
-    // with it first, then layer the per-row cells/text on top.
-    if (request.pageText() != null && !request.pageText().isBlank()) {
-      blobBuilder.append(request.pageText()).append('\n');
-    }
     if (request.records() != null) {
       for (Map<String, Object> raw : request.records()) {
         for (String cell : cellsOf(raw)) blobBuilder.append(cell).append(' ');
@@ -616,10 +610,5 @@ if (isLabelToken(approveDate)) approveDate = "";
 
   public record VerifiedRequest(Long targetId, String challengeId, List<Map<String, Object>> points) {}
 
-  public record BrowserCaptureRequest(
-      Long targetId, List<Map<String, Object>> records, String pageText) {
-    public BrowserCaptureRequest(Long targetId, List<Map<String, Object>> records) {
-      this(targetId, records, null);
-    }
-  }
+  public record BrowserCaptureRequest(Long targetId, List<Map<String, Object>> records) {}
 }

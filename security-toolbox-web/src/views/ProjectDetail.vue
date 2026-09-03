@@ -2342,9 +2342,9 @@ const icpBrowserRaw = computed(() => {
   const captured = icpBrowserCaptured.value;
   if (!captured?.ok) return "";
   // Prefer the original MIIT response packet (code/msg/params.list) when the DOM hook
-  // captured it; otherwise fall back to the whole capture result.
+  // captured it. Without it, return "" so UI falls back to the imported server data.
   if (captured.raw) return JSON.stringify(captured.raw, null, 2);
-  return JSON.stringify(captured, null, 2);
+  return "";
 });
 
 async function copyIcpRaw() {
@@ -2363,6 +2363,26 @@ async function copyIcpRaw() {
 
 const icpDataPreview = ref<IcpBatchResult>();
 const icpDialogPreviewVisible = ref(false);
+const icpPreviewRaw = computed(() => {
+  // Prefer the captured MIIT response packet; fall back to the imported server data.
+  return (
+    icpBrowserRaw.value ||
+    JSON.stringify(icpDataPreview.value?.data || {}, null, 2)
+  );
+});
+async function copyIcpPreviewRaw() {
+  const text = icpPreviewRaw.value;
+  if (!text) {
+    ElMessage.warning("暂无可复制的原始数据");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    ElMessage.success("原始数据已复制");
+  } catch {
+    ElMessage.error("复制失败，请手动选取文本复制");
+  }
+}
 const icpPreviewRecords = computed(() => {
   const records = (icpDataPreview.value?.data as { records?: unknown[] })
     ?.records;
@@ -2502,7 +2522,6 @@ async function fetchAndImportIcpCaptured() {
       id,
       row?.targetId ?? 0,
       result.rows.map((r) => ({ ...r })),
-      result.pageText,
     );
     const returnedRecords = data.records ?? [];
     // Backfill the visible row immediately so the table reflects the imported
@@ -4064,9 +4083,19 @@ onUnmounted(() => {
               >{{ icpRecordLine(rec) }}</el-descriptions-item>
             </el-descriptions>
             <el-divider content-position="left">原始数据</el-divider>
-            <pre class="json-view icp-preview-raw">{{
-              JSON.stringify(icpDataPreview.data || {}, null, 2)
-            }}</pre>
+            <el-input
+              :model-value="icpPreviewRaw"
+              type="textarea"
+              :autosize="{ minRows: 6, maxRows: 14 }"
+              readonly
+              placeholder="原始数据（可全选复制）"
+              class="icp-preview-raw"
+            />
+            <div v-if="icpPreviewRaw" class="icp-browser-copy">
+              <el-button size="small" text type="primary" @click="copyIcpPreviewRaw">
+                复制原始数据
+              </el-button>
+            </div>
           </template>
         </el-dialog>
         <div v-if="workflowRunning || workflowLog.length" class="workflow-box">
@@ -5659,7 +5688,8 @@ onUnmounted(() => {
   margin-top: 12px;
 }
 .icp-preview-raw {
-  max-height: 320px;
+  width: 100%;
+  margin-top: 4px;
 }
 .workflow-box {
   margin: 14px 0;
