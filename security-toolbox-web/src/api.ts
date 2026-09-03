@@ -1303,7 +1303,12 @@ export const endpoints = {
       challengeId,
       points,
     }),
-  icpBrowserCapture: (projectId: number, targetId: number, records: Array<Record<string, unknown>>) =>
+  icpBrowserCapture: (
+    projectId: number,
+    targetId: number,
+    records: Array<Record<string, unknown>>,
+    pageText?: string,
+  ) =>
     api.post<{
       domain: string;
       status: string;
@@ -1314,6 +1319,7 @@ export const endpoints = {
     }>(`/projects/${projectId}/recon/icp/browser/capture`, {
       targetId,
       records,
+      pageText,
     }),
 };
 

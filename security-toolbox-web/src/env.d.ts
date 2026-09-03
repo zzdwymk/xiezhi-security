@@ -127,7 +127,6 @@ interface ToolboxDesktopBridge {
   ) => Promise<IcpBrowserStatus>;
   readonly fetchIcpBrowserResult?: () => Promise<IcpBrowserCaptureResult>;
   readonly closeIcpBrowser?: () => Promise<IcpBrowserStatus>;
-  readonly reloadIcpBrowser?: () => Promise<IcpBrowserStatus>;
   readonly getIcpBrowserStatus?: () => Promise<IcpBrowserStatus>;
   readonly onIcpBrowserClosed?: (callback: () => void) => () => void;
   readonly onDependencyInstallProgress?: (
@@ -181,7 +180,9 @@ interface IcpBrowserStatus {
 interface IcpBrowserCaptureResult {
   ok: boolean;
   found?: number;
-  rows?: Array<{ cells: string[]; text: string }>;
+  rows?: Array<Record<string, unknown>>;
+  /** Original MIIT query response packet ({code,msg,params:{list:[…]}}), when captured. */
+  raw?: Record<string, unknown> | null;
   pageText?: string;
   reason?: string;
   error?: string;

@@ -44,6 +44,11 @@ $staging = $null
 $resolvedReleaseRoot = $null
 $releaseSucceeded = $false
 
+# Build date/time record: keeps an auditable timestamp of this packaging run and
+# writes it into the packaged app so each release artifact is traceable.
+$releaseStartedAt = Get-Date
+Write-Host ("Release run started at {0}." -f $releaseStartedAt.ToString('yyyy-MM-dd HH:mm:ss')) -ForegroundColor DarkGray
+
 # Windows Defender / 杀软偶尔会在刚写出的工具有限锁文件几秒（尤其 fscan 这类会被扫描的工具）。
 # 对这类共享冲突做短暂重试，避免打包的"原子替换"阶段因瞬态文件锁而失败。
 function Move-ItemRetry {
@@ -496,6 +501,20 @@ try {
     $packageVersion = ([IO.File]::ReadAllText($packageJsonPath, [Text.Encoding]::UTF8) | ConvertFrom-Json).version
     $portableArchiveName = "xiezhi-$packageVersion-portable.zip"
     $portableArchive = Join-Path $staging $portableArchiveName
+
+    # Write an auditable build date/time record into the packaged app and beside it.
+    $buildInfoFile = Join-Path $unpackedStaging 'BUILD_INFO.txt'
+    $buildInfoContent = @(
+        "Xiezhi Security Toolbox",
+        "version=$packageVersion",
+        ("packagedAt=" + $releaseStartedAt.ToString('yyyy-MM-dd HH:mm:ss zzz')),
+        ("completedAt=" + (Get-Date).ToString('yyyy-MM-dd HH:mm:ss zzz')),
+        "script=scripts/package-desktop-release.ps1"
+    ) -join "`n"
+    [IO.File]::WriteAllText($buildInfoFile, $buildInfoContent, [Text.UTF8Encoding]::new($false))
+    $releaseBuildInfo = Join-Path $staging 'BUILD_INFO.txt'
+    [IO.File]::WriteAllText($releaseBuildInfo, $buildInfoContent + "`n", [Text.UTF8Encoding]::new($false))
+
     $stageWatch = Start-Stage
     Write-Host "Creating portable archive ($ZipCompressionLevel compression)..." -ForegroundColor Cyan
     Add-Type -AssemblyName System.IO.Compression.FileSystem

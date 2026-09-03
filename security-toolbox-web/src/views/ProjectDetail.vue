@@ -2334,10 +2334,32 @@ const icpBrowserDomain = ref("");
 const icpBrowserTargetRow = ref<IcpBatchResult>();
 const icpBrowserOpening = ref(false);
 const icpBrowserFetching = ref(false);
-const icpBrowserReloading = ref(false);
 const icpBrowserRunning = ref(false);
 const icpBrowserStatus = ref<IcpBrowserStatus>();
 const icpBrowserCaptured = ref<IcpBrowserCaptureResult>();
+
+const icpBrowserRaw = computed(() => {
+  const captured = icpBrowserCaptured.value;
+  if (!captured?.ok) return "";
+  // Prefer the original MIIT response packet (code/msg/params.list) when the DOM hook
+  // captured it; otherwise fall back to the whole capture result.
+  if (captured.raw) return JSON.stringify(captured.raw, null, 2);
+  return JSON.stringify(captured, null, 2);
+});
+
+async function copyIcpRaw() {
+  const text = icpBrowserRaw.value;
+  if (!text) {
+    ElMessage.warning("暂无可复制的原始数据");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    ElMessage.success("原始数据已复制");
+  } catch {
+    ElMessage.error("复制失败，请手动选取文本复制");
+  }
+}
 
 const icpDataPreview = ref<IcpBatchResult>();
 const icpDialogPreviewVisible = ref(false);
@@ -2355,23 +2377,6 @@ function icpRecordCount(row: IcpBatchResult): number {
   return 0;
 }
 
-function icpDataSummary(row: IcpBatchResult): string {
-  const data = row.data || {};
-  if (typeof data === "string") return data as string;
-  const count = icpRecordCount(row);
-  if (Array.isArray((data as { records?: unknown[] }).records))
-    return count ? `已抓取备案记录 ${count} 条` : "已抓取备案记录";
-  const first = (data as { records?: unknown[] }).records?.[0] as
-    | Record<string, unknown>
-    | undefined;
-  if (first) return icpRecordLine(first);
-  if (Array.isArray(data)) {
-    const line = icpRecordLine(data[0] as Record<string, unknown>);
-    if (line) return `共 ${data.length} 条 · ${line}`;
-  }
-  return "";
-}
-
 function icpRecordLine(rec: Record<string, unknown>): string {
   const pick = (keys: string[]) => {
     for (const k of keys) {
@@ -2384,6 +2389,17 @@ function icpRecordLine(rec: Record<string, unknown>): string {
   const domain = pick(["domain", "域名", "unitDomain"]);
   const license = pick(["mainLicense", "备案号", "license", "icp_no", "icpno"]);
   return [name, license, domain].filter(Boolean).join(" · ");
+}
+
+function icpBrief(row: IcpBatchResult): string {
+  const records = (row.data || {}).records;
+  const list = Array.isArray(records) ? (records as Record<string, unknown>[]) : [];
+  if (!list.length) return "暂无数据";
+  const count = icpRecordCount(row);
+  const first = list[0];
+  const line = icpRecordLine(first);
+  if (!line) return count > 0 ? `共 ${count} 条备案记录` : "备案记录";
+  return count > 1 ? `${line} · 等 ${count} 条` : line;
 }
 
 function showIcpData(row: IcpBatchResult) {
@@ -2402,29 +2418,19 @@ function reopenIcpBrowser() {
   return Promise.resolve();
 }
 
-async function reloadIcpBrowserPage() {
-  if (!window.toolboxDesktop?.reloadIcpBrowser) {
-    ElMessage.warning("当前桌面版不支持刷新，请重开浏览器代填");
-    return;
-  }
-  icpBrowserReloading.value = true;
-  icpBrowserCaptured.value = undefined;
-  try {
-    const status = await window.toolboxDesktop.reloadIcpBrowser();
-    icpBrowserStatus.value = status;
-    icpBrowserRunning.value = Boolean(status.running);
-  } catch (error: any) {
-    ElMessage.error(errorMessage(error, "刷新浏览器页面失败"));
-  } finally {
-    icpBrowserReloading.value = false;
-  }
-}
-
 /**
  * Normalizes a target host into the format the MIIT ICP query page recognizes:
- * strips scheme / userinfo / port / path, lowercases, and drops a leading "www."
- * so the submitted value matches how ICP records are registered.
+ * strips scheme / userinfo / port / path, lowercases, drops a leading "www." and a
+ * single-label locale/content/CDN prefix (cn.bing.com -> bing.com) so the submitted
+ * value matches the registerable domain under which ICP is registered.
  */
+const ICP_CONTENT_PREFIX = new Set([
+  "www", "m", "mobile", "wap", "app", "apps", "api", "apiv2", "apiv3",
+  "static", "cdn", "img", "image", "web", "www2",
+  "cn", "en", "de", "fr", "es", "it", "jp", "kr", "ru", "pt", "br", "mx",
+  "in", "au", "sg", "my", "id", "vn", "th", "ph", "tw", "hk", "global", "world",
+]);
+
 function normalizeIcpDomain(raw: string | null | undefined) {
   let value = String(raw || "").trim().toLowerCase();
   if (!value) return "";
@@ -2440,8 +2446,12 @@ function normalizeIcpDomain(raw: string | null | undefined) {
   if (value.includes("@")) value = value.slice(value.lastIndexOf("@") + 1);
   if (value.startsWith("[")) value = value.slice(1, value.indexOf("]"));
   value = value.split(":")[0];
-  value = value.replace(/^www\./, "");
-  value = value.replace(/\.$/, "");
+  value = value.replace(/^www\./, "").replace(/\.$/, "");
+  const labels = value.split(".");
+  if (labels.length >= 3 && ICP_CONTENT_PREFIX.has(labels[0])) {
+    labels.shift();
+    if (labels.length >= 2) value = labels.join(".");
+  }
   return value;
 }
 
@@ -2491,10 +2501,8 @@ async function fetchAndImportIcpCaptured() {
     const { data } = await endpoints.icpBrowserCapture(
       id,
       row?.targetId ?? 0,
-      result.rows.map((r) => ({
-        text: r.text,
-        cells: r.cells || [],
-      })),
+      result.rows.map((r) => ({ ...r })),
+      result.pageText,
     );
     const returnedRecords = data.records ?? [];
     // Backfill the visible row immediately so the table reflects the imported
@@ -3865,19 +3873,17 @@ onUnmounted(() => {
             label="说明"
             min-width="200"
             show-overflow-tooltip
-          /><el-table-column label="备案数据" min-width="230"
+          /><el-table-column label="备案数据" min-width="220"
             ><template #default="scope">
               <div
                 v-if="icpRecordCount(scope.row) > 0"
                 class="icp-data-cell"
                 @click="showIcpData(scope.row)"
               >
-                <el-tag size="small" effect="plain" type="primary"
-                  >备案 {{ icpRecordCount(scope.row) }} 条</el-tag
-                >
                 <span class="icp-data-summary">{{
-                  icpDataSummary(scope.row)
+                  icpBrief(scope.row)
                 }}</span>
+                <span class="icp-data-hint">点击查看详情</span>
               </div>
               <el-tag v-else size="small" type="info">暂无数据</el-tag>
             </template></el-table-column
@@ -3998,22 +4004,26 @@ onUnmounted(() => {
             :closable="false"
             show-icon
           />
-          <pre
+          <el-input
             v-if="icpBrowserCaptured?.ok"
-            class="json-view icp-captcha-result"
-          >{{ JSON.stringify(icpBrowserCaptured, null, 2) }}</pre>
+            :model-value="icpBrowserRaw"
+            type="textarea"
+            :autosize="{ minRows: 8, maxRows: 16 }"
+            readonly
+            placeholder="抓取到的原始数据（整份 params.list JSON）"
+            class="icp-captcha-result"
+          />
+          <div v-if="icpBrowserRaw" class="icp-browser-copy">
+            <el-button size="small" text type="primary" @click="copyIcpRaw">
+              复制原始数据
+            </el-button>
+          </div>
           <template #footer>
             <div class="app-dialog__footer-row">
               <el-button
                 :loading="icpBrowserOpening"
                 @click="reopenIcpBrowser()"
                 >打开浏览器并代填</el-button
-              >
-              <el-button
-                :loading="icpBrowserReloading"
-                :disabled="!icpBrowserRunning"
-                @click="reloadIcpBrowserPage()"
-                >刷新</el-button
               >
               <el-button
                 :loading="icpBrowserFetching"
@@ -5636,10 +5646,14 @@ onUnmounted(() => {
 }
 .icp-data-summary {
   font-size: 11px;
-  color: var(--el-text-color-secondary);
+  color: var(--el-text-color-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.icp-data-hint {
+  font-size: 10px;
+  color: var(--el-text-color-secondary);
 }
 .icp-preview-descriptions {
   margin-top: 12px;
@@ -6072,9 +6086,13 @@ onUnmounted(() => {
   line-height: 20px;
 }
 .icp-captcha-result {
+  width: 100%;
+  margin-top: 8px;
+}
+.icp-browser-copy {
+  display: flex;
+  justify-content: flex-end;
   margin-top: 4px;
-  max-height: 180px;
-  overflow: auto;
 }
 .icp-browser-state {
   display: flex;

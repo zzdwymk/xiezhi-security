@@ -3348,8 +3348,22 @@ function normalizeIcpDomain(raw) {
   if (value.startsWith("[")) value = value.slice(1, value.indexOf("]"));
   value = value.split(":")[0];
   value = value.replace(/^www\./, "").replace(/\.$/, "");
+  // ICP is registered per registerable domain. Strip a leading single-label
+  // content/locale/CDN prefix (cn., m., mobile., app., api., en., de., …) so the
+  // query targets the canonical root (cn.bing.com -> bing.com) instead of parking.
+  const labels = value.split(".");
+  if (labels.length >= 3 && CONTENT_PREFIX.has(labels[0])) {
+    labels.shift();
+    if (labels.length >= 2) value = labels.join(".");
+  }
   return value;
 }
+const CONTENT_PREFIX = new Set([
+  "www", "m", "mobile", "wap", "app", "apps", "api", "apiv2", "apiv3",
+  "static", "cdn", "img", "image", "web", "www2",
+  "cn", "en", "de", "fr", "es", "it", "jp", "kr", "ru", "pt", "br", "mx",
+  "in", "au", "sg", "my", "id", "vn", "th", "ph", "tw", "hk", "global", "world",
+]);
 
 function icpBrowserStatus() {
   const windowAlive = Boolean(icpBrowserWindow && !icpBrowserWindow.isDestroyed());
@@ -3437,24 +3451,84 @@ async function extractIcpBrowserResult(webContents) {
     (() => {
       try {
         const pickText = (el) => (el ? (el.innerText || el.textContent || '').trim() : '');
-        // Candidate result containers: the beian table rows.
         const rows = [];
-        // Table-oriented: find table elements and map tbody rows.
-        const tables = Array.from(document.querySelectorAll('table'));
-        for (const table of tables) {
-          const body = table.querySelector('tbody');
-          const trs = (body || table).querySelectorAll('tr');
-          for (const tr of trs) {
-            const cells = Array.from(tr.querySelectorAll('td')).map(pickText).filter(Boolean);
-            if (cells.length >= 3) rows.push({ cells, text: cells.join(' | ') });
+        // Preferred source: the structured MIIT query response (params.list). It carries the
+        // whole result set (not just visible DOM rows) with clean key/value fields, so import
+        // every entry straight off it.
+        try {
+          const list = (window && window.__icpList) || [];
+          if (Array.isArray(list) && list.length && list[0] && typeof list[0] === 'object') {
+            const seen = new Set();
+            for (const item of list) {
+              const row = {
+                mainLicense: item.mainLicence || '',
+                serviceLicense: item.serviceLicence || '',
+                owner: item.unitName || '',
+                type: item.natureName || '',
+                domain: item.domain || '',
+                approvedContent: item.contentTypeName || '',
+                limitAccess: item.limitAccess || '',
+                leaderName: item.leaderName || '',
+                updateRecordTime: item.updateRecordTime || '',
+              };
+              const key =
+                (row.mainLicense || '') + '|' +
+                (row.serviceLicense || '') + '|' +
+                (row.owner || '') + '|' +
+                (item.domain || '');
+              if (!seen.has(key)) { seen.add(key); rows.push(row); }
+            }
           }
+        } catch (e) {}
+        if (rows.length) {
+          return {
+            ok: true,
+            found: rows.length,
+            rows,
+            raw: (window && (window.__icpRawResponse || window.__icpList)) || null,
+            source: 'miit-api',
+            pageText: (document.body && document.body.innerText || '').slice(0, 4000)
+          };
         }
-        // Generic list rows.
+        // Candidate result rows: broad selector list so layout changes (table vs div list)
+        // are tolerated. Each captured row keeps both the structured cells and the raw text.
+        const rowSelectors = [
+          'table tbody tr', 'table tr',
+          '.ant-table-row', '.el-table__row',
+          '.item-row, .row-item', '.result-row',
+          'li[class*="row"]', 'li[class*="item"]'
+        ];
+        const seenTexts = new Set();
+        let nodeList = [];
+        for (const sel of rowSelectors) {
+          nodeList = nodeList.concat(Array.from(document.querySelectorAll(sel)));
+        }
+        for (const node of nodeList) {
+          const cells = Array.from(node.querySelectorAll('td,th'))
+            .map(pickText)
+            .concat([pickText(node)])
+            .filter((t) => t && t.length);
+          if (!cells.length) continue;
+          const row = {};
+          row.cells = cells.slice(0, cells.length - 1);
+          row.text = cells[cells.length - 1];
+          // De-dup: keep the first (most specific) match for the same visible text.
+          const key = row.text;
+          if (!key || seenTexts.has(key)) continue;
+          seenTexts.add(key);
+          rows.push(row);
+        }
+        // Family: if nothing structured was found, fall back to table <td> scanning.
         if (!rows.length) {
-          const listItems = Array.from(document.querySelectorAll('.item-row, .row-item, .result-row, li'))
-            .map(l => (l.innerText || l.textContent || '').trim())
-            .filter(Boolean);
-          for (const text of listItems) rows.push({ cells: [text], text });
+          const seen = new Set();
+          for (const tr of document.querySelectorAll('tr')) {
+            const cells = Array.from(tr.querySelectorAll('td')).map(pickText).filter(Boolean);
+            if (cells.length >= 3) {
+              const row = { cells, text: cells.join(' | ') };
+              const key = row.text;
+              if (!seen.has(key)) { seen.add(key); rows.push(row); }
+            }
+          }
         }
         return {
           ok: rows.length > 0,
@@ -3581,7 +3655,7 @@ async function openIcpBrowserInner(domain) {
         await window.loadURL(ICP_QUERY_URL);
       }
     } catch (_retryError) {
-      // give up retrying silently — manual 刷新 is available
+      // give up retrying silently — the blank-frame auto-reload below will run
     }
   }
 
@@ -3593,6 +3667,92 @@ async function openIcpBrowserInner(domain) {
       true,
     )
     .catch(() => {});
+
+  // Minimal silent recovery: the MIIT shell sometimes paints an empty frame on the
+  // first hit (bot challenge has not completed yet). If the body is still blank a
+  // moment later, reload once (ignoring cache) to let the challenge handshake
+  // finish and the SPA render — with no UI/log/debug gall.
+  try {
+    await new Promise((resolve) => setTimeout(resolve, window.isDestroyed() ? 0 : 1200));
+    if (!window.isDestroyed()) {
+      const blank = await window.webContents.executeJavaScript(
+        `(() => {
+          try {
+            const t = (document.body && (document.body.innerText || '').trim()) || '';
+            return t.length === 0;
+          } catch (e) { return true; }
+        })()`,
+        true,
+      );
+      if (blank) {
+        await window.webContents.reloadIgnoringCache();
+        await new Promise((resolve) => setTimeout(resolve, window.isDestroyed() ? 0 : 1600));
+      }
+    }
+  } catch (_ignored) {
+    // never block opening on the recovery attempt
+  }
+
+  // Tap the SPA's query responses: whenever the page loads the structured ICP result
+  // JSON (params.list), stash it on window so a later "抓取并导入" can import the WHOLE
+  // list mapped by its clean key/value pairs instead of scraping only visible DOM rows.
+  try {
+    if (!window.isDestroyed()) {
+      await window.webContents.executeJavaScript(
+        `
+        (() => {
+          try {
+            if (window.__icpListBufferInit) return true;
+            window.__icpListBufferInit = true;
+            window.__icpList = [];
+            const storeIcResponse = (data) => {
+              if (!data || typeof data !== 'object') return;
+              if (data.params && Array.isArray(data.params.list)) {
+                window.__icpList = data.params.list;
+                window.__icpRawResponse = data;
+              }
+            };
+            const origFetch = window.fetch;
+            if (typeof origFetch === 'function') {
+              window.fetch = async (...args) => {
+                const res = await origFetch.apply(window, args);
+                try {
+                  const ct = (res.headers && res.headers.get('content-type')) || '';
+                  if (ct.indexOf('json') >= 0) {
+                    const c = res.clone();
+                    storeIcResponse(await c.json());
+                  }
+                } catch (e) {}
+                return res;
+              };
+            }
+            const XHR = window.XMLHttpRequest;
+            if (XHR && XHR.prototype) {
+              const send = XHR.prototype.send;
+              XHR.prototype.send = function (...args) {
+                this.addEventListener('load', () => {
+                  try {
+                    const ct = (this.getResponseHeader && this.getResponseHeader('content-type')) || '';
+                    if (ct.indexOf('json') >= 0 && this.responseText) {
+                      storeIcResponse(JSON.parse(this.responseText));
+                    }
+                  } catch (e) {}
+                });
+                return send.apply(this, args);
+              };
+            }
+            return true;
+          } catch (e) {
+            return false;
+          }
+        })()
+        `,
+        true,
+      );
+    }
+  } catch (_ignored) {
+    // the injector is best-effort; the DOM row fallback still works
+  }
 
   // Wait for the page to settle, then attempt a tolerant auto-fill.
   try {
@@ -3625,20 +3785,6 @@ function closeIcpBrowser() {
   const windowToClose = icpBrowserWindow;
   icpBrowserWindow = undefined;
   if (windowToClose && !windowToClose.isDestroyed()) windowToClose.close();
-  return icpBrowserStatus();
-}
-
-async function reloadIcpBrowser() {
-  const window = icpBrowserWindow;
-  if (window && !window.isDestroyed()) {
-    icpBrowserState.lastError = "";
-    icpBrowserState.lastFetch = "";
-    try {
-      await window.webContents.reloadIgnoringCache();
-    } catch (error) {
-      icpBrowserState.lastError = publicErrorMessage(error, "刷新失败");
-    }
-  }
   return icpBrowserStatus();
 }
 
@@ -4114,10 +4260,6 @@ handleRendererIpc("toolbox:close-icp-browser", (event) => {
 handleRendererIpc("toolbox:get-icp-browser-status", (event) => {
   assertMainRenderer(event);
   return icpBrowserStatus();
-});
-handleRendererIpc("toolbox:reload-icp-browser", (event) => {
-  assertMainRenderer(event);
-  return reloadIcpBrowser();
 });
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -5112,6 +5254,7 @@ function createMainWindow(port) {
   mainWindow.on("closed", () => {
     mainWindow = undefined;
     closeCaptureBrowser();
+    closeIcpBrowser();
   });
   // Keep the native title bar fully owned by DWM. Setting an overlay/caption
   // color here would take precedence over the user's Windows personalization.
@@ -5206,6 +5349,7 @@ app.on("before-quit", (event) => {
   systemPreferences.off("color-changed", handleSystemThemeChanged);
   nativeTheme.off("updated", handleSystemThemeChanged);
   closeCaptureBrowser();
+  closeIcpBrowser();
   stopAiRuntime();
   event.preventDefault();
   stopBackend()
