@@ -98,7 +98,7 @@ src\views\DataPage.vue|7412|639237355478112596
 src\views\Findings.vue|30317|639237355478122565
 src\views\Login.vue|8509|639237355478122565
 src\views\OfflineTools.vue|52771|639237355478137637
-src\views\ProjectDetail.vue|231691|639240492343014576
+src\views\ProjectDetail.vue|231662|639240496444626527
 src\views\Projects.vue|16821|639239353111899178
 src\views\Recon.vue|5523|639237355478179500
 src\views\Settings.vue|53417|639237621473207687
@@ -131,7 +131,7 @@ tests\e2e\suite\l-offline-tools.cjs|78065|639237355478431721
 tests\e2e\suite\m-settings-audit.cjs|16677|639237355478446051
 tests\e2e\suite\n-negative-auth.cjs|23363|639237355478469870
 tsconfig.app.json|348|639237355478479837
-tsconfig.app.tsbuildinfo|1700|639240493073465005
+tsconfig.app.tsbuildinfo|1700|639240497986188072
 tsconfig.json|91|639237355478479837
 tsconfig.node.json|183|639237355478489798
 tsconfig.node.tsbuildinfo|91017|639240424751803445

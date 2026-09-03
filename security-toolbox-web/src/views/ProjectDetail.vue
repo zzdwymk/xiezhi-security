@@ -3890,7 +3890,6 @@ onUnmounted(() => {
           ><el-table-column
             prop="reason"
             label="说明"
-            min-width="200"
             show-overflow-tooltip
           /><el-table-column label="备案数据" min-width="220"
             ><template #default="scope">

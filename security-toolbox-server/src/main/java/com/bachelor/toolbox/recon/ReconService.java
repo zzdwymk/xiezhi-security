@@ -277,6 +277,8 @@ public class ReconService {
 
     IcpBrowserCaptureStore.Capture captured = icpBrowserCaptures.take(projectId, targetId);
     if (captured != null && captured.records() != null && !captured.records().isEmpty()) {
+      log.info("[icp-batch] targetId={} using captured records n={}", targetId,
+          captured.records().size());
       return new IcpResult(
           targetId, domain, "AVAILABLE", "",
           Map.of(
@@ -308,6 +310,8 @@ public class ReconService {
       // auto chain cannot satisfy its point challenge. Route the operator to the
       // desktop browser assistant (浏览器代填) instead of surfacing an internal error.
       if (!hasManualIcpSource()) {
+        log.info("[icp-batch] targetId={} -> BROWSER_REQUIRED (no captured, auto disabled)",
+            targetId);
         return new IcpResult(
             targetId,
             domain,

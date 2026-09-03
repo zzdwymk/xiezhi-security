@@ -19,6 +19,8 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Manual, operator-assisted caption flow for the built-in MIIT ICP lookup. Because the MIIT portal
@@ -29,6 +31,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api/projects/{projectId}/recon/icp")
 public class IcpCaptchaController {
+
+  private static final Logger log = LoggerFactory.getLogger(IcpCaptchaController.class);
 
   private final IcpChallengeStore challenges;
   private final IcpBrowserCaptureStore browserCaptures;
@@ -199,6 +203,9 @@ public class IcpCaptchaController {
       }
     }
     browserCaptures.store(projectId, request.targetId(), domain, rows);
+    log.info("[icp-capture] domain={} targetId={} received={} stored={}", domain,
+        request.targetId(),
+        request.records() == null ? 0 : request.records().size(), rows.size());
     response.put("records", rows);
     response.put("total", rows.size());
     return response;
