@@ -1,7 +1,6 @@
 package com.bachelor.toolbox.tool;
 
 import com.bachelor.toolbox.common.ApiException;
-import com.bachelor.toolbox.vulnerability.HostPluginCatalogService;
 import com.bachelor.toolbox.vulnerability.NucleiTemplateCatalogService;
 import com.bachelor.toolbox.vulnerability.ScannerPocCatalogService;
 import com.bachelor.toolbox.vulnerability.VulnerabilityDefinition;
@@ -44,9 +43,7 @@ public class ScannerPocSelectionService {
           String nucleiPath,
       @Value("${toolbox.execution.afrog-pocs-path:${user.home}/afrog-pocs}")
           String afrogPath,
-      @Value("${toolbox.execution.xray-pocs-path:${user.home}/xray-pocs}") String xrayPath,
-      @Value("${toolbox.vulnerability-catalog.host.plugins-path:${user.home}/host-plugins}")
-          String hostPluginsPath) {
+      @Value("${toolbox.execution.xray-pocs-path:${user.home}/xray-pocs}") String xrayPath) {
     this.repository = repository;
     this.objectMapper = objectMapper;
     this.roots =
@@ -56,9 +53,7 @@ public class ScannerPocSelectionService {
             ScannerPocCatalogService.AFROG,
             Path.of(afrogPath).toAbsolutePath().normalize(),
             ScannerPocCatalogService.XRAY,
-            Path.of(xrayPath).toAbsolutePath().normalize(),
-            HostPluginCatalogService.SOURCE_TYPE,
-            Path.of(hostPluginsPath).toAbsolutePath().normalize());
+            Path.of(xrayPath).toAbsolutePath().normalize());
   }
 
   public List<SelectedPoc> resolve(
@@ -174,7 +169,6 @@ public class ScannerPocSelectionService {
       case "nuclei_scan" -> NucleiTemplateCatalogService.SOURCE_TYPE;
       case "afrog_scan" -> ScannerPocCatalogService.AFROG;
       case "xray_scan" -> ScannerPocCatalogService.XRAY;
-      case "native_vuln_scan" -> HostPluginCatalogService.SOURCE_TYPE;
       default -> null;
     };
   }

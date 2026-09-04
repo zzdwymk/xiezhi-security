@@ -519,28 +519,12 @@ export interface ScannerPocCatalogSyncResult {
   warnings: string[];
 }
 
-export interface HostPluginCatalogSyncResult {
-  status: string;
-  sourceType: "HOST";
-  pluginsPath: string;
-  sourceVersion: string;
-  discovered: number;
-  imported: number;
-  updated: number;
-  unchanged: number;
-  invalid: number;
-  deactivated: number;
-  completedAt: string;
-  warnings: string[];
-}
-
 export interface VulnerabilityCatalogStats {
   total: number;
   builtin: number;
   nuclei: number;
   afrog: number;
   xray: number;
-  host: number;
   knownExploited: number;
   safeToScan: number;
   templatesAvailable: boolean;
@@ -552,13 +536,10 @@ export interface VulnerabilityCatalogStats {
   xraySyncing: boolean;
   lastAfrogSync?: ScannerPocCatalogSyncResult;
   lastXraySync?: ScannerPocCatalogSyncResult;
-  hostPluginsAvailable: boolean;
-  hostSyncing: boolean;
-  lastHostSync?: HostPluginCatalogSyncResult;
 }
 
 export interface CatalogSyncProgress {
-  source: "NUCLEI" | "AFROG" | "XRAY" | "HOST";
+  source: "NUCLEI" | "AFROG" | "XRAY";
   stage:
     | "IDLE"
     | "PREPARING"
@@ -1027,12 +1008,6 @@ export const endpoints = {
       undefined,
       { timeout: 10 * 60_000 },
     ),
-  syncHostCatalog: () =>
-    api.post<HostPluginCatalogSyncResult>(
-      "/vulnerabilities/sync/host",
-      undefined,
-      { timeout: 10 * 60_000 },
-    ),
   createPostScanPath: (payload: {
     projectId: number;
     targetId: number;
@@ -1051,7 +1026,7 @@ export const endpoints = {
     targetId: number;
     ruleCodes?: string[];
     pocCodes?: string[];
-    allPocSources?: Array<"NUCLEI" | "AFROG" | "XRAY" | "HOST">;
+    allPocSources?: Array<"NUCLEI" | "AFROG" | "XRAY">;
     ports?: string;
     vulnModes?: Record<string, string>;
   }) =>

@@ -33,7 +33,7 @@ public class AiTaskDispatchService {
           "afrog_scan",
           "xray_scan",
           "fscan_scan",
-          "native_vuln_scan");
+          "msf_scan");
 
   private final TargetService targetService;
   private final TargetPolicyService targetPolicyService;
@@ -249,7 +249,7 @@ public class AiTaskDispatchService {
           case "nmap_service_scan" -> Set.of("ports", "mode");
           case "fscan_scan" -> Set.of("ports", "vulnMode");
           case "afrog_scan", "xray_scan" -> Set.of("pocCodes", "allPocs");
-          case "native_vuln_scan" -> Set.of("pocCodes", "allPocs");
+          case "msf_scan" -> Set.of("module", "options");
           case "nuclei_scan" -> Set.of();
           case "http_security_check" -> Set.of("check");
           case "http_headers", "tls_config" -> Set.of();
@@ -307,13 +307,17 @@ public class AiTaskDispatchService {
         }
       }
       case "nuclei_scan" -> targetPolicyService.validatedHost(target);
-      case "native_vuln_scan" -> {
-        targetPolicyService.validatedHost(target);
-        normalizePocSelection(parameters);
-      }
       case "afrog_scan", "xray_scan" -> {
         targetPolicyService.validatedHttpUri(target);
         normalizePocSelection(parameters);
+      }
+      case "msf_scan" -> {
+        targetPolicyService.validatedHost(target);
+        String module = Objects.toString(parameters.get("module"), "").trim().toLowerCase(Locale.ROOT);
+        if (!(module.startsWith("auxiliary/") || module.startsWith("exploit/"))) {
+          throw new ApiException("AI 计划必须指定合法的 Metasploit 模块");
+        }
+        parameters.put("module", module);
       }
       default -> throw new ApiException("AI 工具不在安全白名单内");
     }

@@ -107,6 +107,8 @@ toolbox:
     fscan-path: ${FSCAN_PATH:fscan}
     max-fscan-ports-per-task: 65535
     fscan-timeout-seconds: 600
+    msf-path: ${MSF_PATH:msfconsole}
+    msf-timeout-seconds: 600
   vulnerability-catalog:
     nuclei:
       templates-path: ${NUCLEI_TEMPLATES_PATH:${user.home}/nuclei-templates}
@@ -119,11 +121,6 @@ toolbox:
     scanner-pocs:
       import-on-startup: ${SCANNER_POC_CATALOG_IMPORT_ON_STARTUP:false}
       max-poc-bytes: 2097152
-    host:
-      plugins-path: ${HOST_PLUGINS_PATH:${user.home}/host-plugins}
-    host-plugins:
-      import-on-startup: ${HOST_PLUGIN_CATALOG_IMPORT_ON_STARTUP:false}
-      max-plugin-bytes: 524288
     cisa-kev-enabled: ${CISA_KEV_ENABLED:true}
     cisa-kev-url: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
   fingerprints:

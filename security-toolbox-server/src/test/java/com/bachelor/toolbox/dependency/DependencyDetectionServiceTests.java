@@ -39,7 +39,7 @@ class DependencyDetectionServiceTests {
     DependencyStatus nmap = find(response, "Nmap");
     DependencyStatus httpx = find(response, "ProjectDiscovery httpx");
 
-    assertThat(response.dependencies()).hasSize(13);
+    assertThat(response.dependencies()).hasSize(14);
     assertThat(response.dependencies())
         .extracting(DependencyStatus::name)
         .containsExactly(
@@ -55,6 +55,7 @@ class DependencyDetectionServiceTests {
             "Xray",
             "fscan",
             "ProjectDiscovery httpx",
+            "Metasploit",
             "OWASP ZAP");
     assertThat(find(response, "Afrog").status()).isEqualTo("MISSING");
     assertThat(find(response, "Xray").status()).isEqualTo("MISSING");
@@ -132,7 +133,7 @@ class DependencyDetectionServiceTests {
     SystemDependenciesResponse second = service.detect();
 
     assertThat(second).isSameAs(first);
-    assertThat(locateCalls).hasValue(13);
+    assertThat(locateCalls).hasValue(14);
   }
 
   @Test
@@ -150,7 +151,7 @@ class DependencyDetectionServiceTests {
     SystemDependenciesResponse refreshed = service.detect(true);
 
     assertThat(refreshed).isNotSameAs(first);
-    assertThat(locateCalls).hasValue(26);
+    assertThat(locateCalls).hasValue(28);
   }
 
   @Test

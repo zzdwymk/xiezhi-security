@@ -11,7 +11,7 @@ const AI_TOOL_LABELS: Readonly<Record<string, string>> = {
   afrog_scan: "Afrog 漏洞扫描",
   xray_scan: "Xray 漏洞扫描",
   fscan_scan: "fscan 主机扫描",
-  native_vuln_scan: "内置主机漏洞扫描",
+  msf_scan: "Metasploit 模块执行",
 };
 
 const AI_RUNTIME_LEDGER_FAILURE =

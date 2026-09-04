@@ -35,20 +35,18 @@ const route = useRoute();
 const rules = ref<DetectionRule[]>([]);
 const targets = ref<Target[]>([]);
 const selected = ref<VulnerabilityDefinition>();
-type CatalogSyncCommand = ScannerSource | "ALL" | "HOST";
-type ActiveScannerSource = ScannerSource | "HOST";
+type CatalogSyncCommand = ScannerSource | "ALL";
+type ActiveScannerSource = ScannerSource;
 const scannerSources: ScannerSource[] = ["NUCLEI", "AFROG", "XRAY"];
 const activeScannerSources: ActiveScannerSource[] = [
   "NUCLEI",
   "AFROG",
   "XRAY",
-  "HOST",
 ];
 const scannerTools = new Set([
   "nuclei_scan",
   "afrog_scan",
   "xray_scan",
-  "native_vuln_scan",
 ]);
 const query = ref("");
 const severityFilter = ref("");
@@ -67,32 +65,27 @@ const selectedPocCodes = ref<Record<ActiveScannerSource, string[]>>({
   NUCLEI: [],
   AFROG: [],
   XRAY: [],
-  HOST: [],
 });
 const pocSelectionModes = ref<Record<ActiveScannerSource, "ALL" | "MANUAL">>({
   NUCLEI: "ALL",
   AFROG: "ALL",
   XRAY: "ALL",
-  HOST: "ALL",
 });
 const pocOptions = ref<Record<ActiveScannerSource, VulnerabilityDefinition[]>>({
   NUCLEI: [],
   AFROG: [],
   XRAY: [],
-  HOST: [],
 });
 const pocLoading = ref<Record<ActiveScannerSource, boolean>>({
   NUCLEI: false,
   AFROG: false,
   XRAY: false,
-  HOST: false,
 });
 const portSelections = ref<string[]>([]);
 const fscanVulnMode = ref("SAFE");
 const loading = ref(false);
 const scanning = ref(false);
 const clearingCatalog = ref(false);
-const hostCatalogSyncing = ref(false);
 const catalogSync = useCatalogSyncStore();
 const {
   running: syncRunning,
@@ -337,7 +330,6 @@ function sourceLabel(source?: string) {
   if (source === "NUCLEI") return "Nuclei";
   if (source === "AFROG") return "Afrog";
   if (source === "XRAY") return "Xray";
-  if (source === "HOST") return "獬豸内置插件";
   return "獬豸内置";
 }
 
@@ -352,12 +344,7 @@ function scannerSourceForTool(
   if (toolCode === "nuclei_scan") return "NUCLEI";
   if (toolCode === "afrog_scan") return "AFROG";
   if (toolCode === "xray_scan") return "XRAY";
-  if (toolCode === "native_vuln_scan") return "HOST";
   return undefined;
-}
-
-function isHostSource(source: ActiveScannerSource) {
-  return source === "HOST";
 }
 
 function dependencyNameForSource(source: ScannerSource) {
@@ -383,19 +370,16 @@ function dependencyForSource(source: ScannerSource) {
 }
 
 function sourceDependencyReady(source: ActiveScannerSource) {
-  if (isHostSource(source)) return true;
   return isDependencyReady(dependencyForSource(source));
 }
 
 function sourceCatalogReady(source: ActiveScannerSource) {
-  if (isHostSource(source)) return Boolean(stats.value?.hostPluginsAvailable);
   if (source === "NUCLEI") return Boolean(stats.value?.templatesAvailable);
   if (source === "AFROG") return Boolean(stats.value?.afrogPocsAvailable);
   return Boolean(stats.value?.xrayPocsAvailable);
 }
 
 function sourceCatalogCount(source: ActiveScannerSource) {
-  if (isHostSource(source)) return Number(stats.value?.host || 0);
   if (source === "NUCLEI") return Number(stats.value?.nuclei || 0);
   if (source === "AFROG") return Number(stats.value?.afrog || 0);
   return Number(stats.value?.xray || 0);
@@ -449,7 +433,6 @@ const pocLoadGeneration: Record<ActiveScannerSource, number> = {
   NUCLEI: 0,
   AFROG: 0,
   XRAY: 0,
-  HOST: 0,
 };
 
 async function loadPocOptions(source: ActiveScannerSource, search = "") {
@@ -717,13 +700,11 @@ function resetPocSelections() {
     NUCLEI: [],
     AFROG: [],
     XRAY: [],
-    HOST: [],
   };
   pocOptions.value = {
     NUCLEI: [],
     AFROG: [],
     XRAY: [],
-    HOST: [],
   };
 }
 
@@ -758,10 +739,6 @@ async function clearImportedCatalog() {
 }
 
 async function syncOfficialCatalog(command: CatalogSyncCommand = "NUCLEI") {
-  if (command === "HOST") {
-    await syncHostCatalog();
-    return;
-  }
   const sources = command === "ALL" ? scannerSources : [command];
   await refreshDependencyStatus();
   const missingDependencies = sources.filter(sourceSyncDisabled);
@@ -790,38 +767,6 @@ async function syncOfficialCatalog(command: CatalogSyncCommand = "NUCLEI") {
     if (error !== "cancel" && error !== "close") {
       ElMessage.error(toErrorMessage(error, "漏洞库同步失败"));
     }
-  }
-}
-
-async function syncHostCatalog() {
-  if (!stats.value?.hostPluginsAvailable) {
-    ElMessage.warning(
-      "未发现内置主机插件目录，请先将 Nessus/Nexpose 风格插件 JSON 放入本地插件目录",
-    );
-    return;
-  }
-  try {
-    await ElMessageBox.confirm(
-      "将重新导入本地内置主机插件目录中的插件元数据。不会自动执行任何检测。",
-      "同步内置主机插件",
-      {
-        confirmButtonText: "开始导入",
-        cancelButtonText: "取消",
-        type: "warning",
-      },
-    );
-    hostCatalogSyncing.value = true;
-    const { data } = await endpoints.syncHostCatalog();
-    ElMessage.success(
-      `内置主机插件同步完成：发现 ${data.discovered}，新增 ${data.imported}，更新 ${data.updated}`,
-    );
-    await load();
-  } catch (error: any) {
-    if (error !== "cancel" && error !== "close") {
-      ElMessage.error(toErrorMessage(error, "主机插件同步失败"));
-    }
-  } finally {
-    hostCatalogSyncing.value = false;
   }
 }
 
@@ -985,7 +930,7 @@ onMounted(async () => {
           <b>漏洞知识库</b
            ><small>{{
              stats
-               ? `${stats.total} 条 · Nuclei ${stats.nuclei} · Afrog ${stats.afrog} · Xray ${stats.xray} · 内置插件 ${stats.host ?? 0}`
+               ? `${stats.total} 条 · Nuclei ${stats.nuclei} · Afrog ${stats.afrog} · Xray ${stats.xray}`
                : `${total} 条`
            }}</small>
          </div>
@@ -1045,23 +990,9 @@ onMounted(async () => {
                       : "同步全部（依赖不完整）"
                   }}</el-dropdown-item
                 >
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-          <el-button
-            link
-            type="primary"
-            :icon="Refresh"
-            :loading="hostCatalogSyncing"
-            :disabled="catalogSyncing || !stats?.hostPluginsAvailable"
-            :title="
-              stats?.hostPluginsAvailable
-                ? '同步内置主机插件目录'
-                : '未发现内置主机插件目录'
-            "
-            @click="syncOfficialCatalog('HOST')"
-            >内置</el-button
-          >
+</el-dropdown-menu>
+              </template>
+            </el-dropdown>
         </div>
       </header>
       <div v-if="syncProgressRows.length" class="catalog-sync-progress">

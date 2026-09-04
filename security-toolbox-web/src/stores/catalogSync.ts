@@ -6,7 +6,6 @@ import {
   endpoints,
   type CatalogSyncProgress,
   type DependencyStatus,
-  type HostPluginCatalogSyncResult,
   type ScannerPocCatalogSyncResult,
   type SystemDependenciesResponse,
   type VulnerabilityCatalogStats,
@@ -14,11 +13,11 @@ import {
 } from "../api";
 import { toErrorMessage } from "../utils/errorMessage";
 
-export type ScannerSource = "NUCLEI" | "AFROG" | "XRAY" | "HOST";
+export type ScannerSource = "NUCLEI" | "AFROG" | "XRAY";
 
 /** Sources backed by an on-disk catalog with no remote binary to install. */
 function isSelfHostedSource(source: ScannerSource) {
-  return source === "HOST";
+  return false;
 }
 
 export interface CatalogLocalSyncStage {
@@ -28,8 +27,7 @@ export interface CatalogLocalSyncStage {
 
 type CatalogSyncResult =
   | VulnerabilityCatalogSyncResult
-  | ScannerPocCatalogSyncResult
-  | HostPluginCatalogSyncResult;
+  | ScannerPocCatalogSyncResult;
 
 interface LocalUpdateResult {
   localFilesUpdated: boolean;
@@ -40,7 +38,6 @@ const sourceLabels: Record<ScannerSource, string> = {
   NUCLEI: "Nuclei",
   AFROG: "Afrog",
   XRAY: "Xray",
-  HOST: "内置主机插件",
 };
 
 function dependenciesFrom(data: SystemDependenciesResponse) {
@@ -70,8 +67,7 @@ function sourceDependencyReady(
 function catalogCount(stats: VulnerabilityCatalogStats, source: ScannerSource) {
   if (source === "NUCLEI") return Number(stats.nuclei || 0);
   if (source === "AFROG") return Number(stats.afrog || 0);
-  if (source === "XRAY") return Number(stats.xray || 0);
-  return Number(stats.host || 0);
+  return Number(stats.xray || 0);
 }
 
 async function importCatalogSource(
@@ -79,8 +75,7 @@ async function importCatalogSource(
 ): Promise<CatalogSyncResult> {
   if (source === "NUCLEI") return (await endpoints.syncNucleiCatalog()).data;
   if (source === "AFROG") return (await endpoints.syncAfrogCatalog()).data;
-  if (source === "XRAY") return (await endpoints.syncXrayCatalog()).data;
-  return (await endpoints.syncHostCatalog()).data;
+  return (await endpoints.syncXrayCatalog()).data;
 }
 
 async function runBounded<T>(

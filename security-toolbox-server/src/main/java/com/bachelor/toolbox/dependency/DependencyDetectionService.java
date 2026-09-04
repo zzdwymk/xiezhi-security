@@ -367,6 +367,14 @@ public class DependencyDetectionService {
             this::isProjectDiscoveryHttpx,
             "检测到同名命令，但不是 ProjectDiscovery httpx。"),
         descriptor(
+            "Metasploit",
+            scannerCandidates("MSF_PATH", "msfconsole", "msfconsole.bat"),
+            List.of("--version"),
+            false,
+            "SCANNER",
+            output -> containsIgnoreCase(output, "metasploit"),
+            "检测到的命令不是 MetasploitFramework。当前仅检测版本，不默认执行。"),
+        descriptor(
             "OWASP ZAP", zapCandidates(windows), List.of(), false, "PROXY_SCANNER", anyOutput, ""));
   }
 
