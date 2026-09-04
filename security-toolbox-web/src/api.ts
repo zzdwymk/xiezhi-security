@@ -1053,6 +1053,7 @@ export const endpoints = {
     pocCodes?: string[];
     allPocSources?: Array<"NUCLEI" | "AFROG" | "XRAY" | "HOST">;
     ports?: string;
+    vulnModes?: Record<string, string>;
   }) =>
         api.post("/active-scans", payload, {
           // 全量 PoC 扫描需在后台校验/加载所有 PoC 文件，创建耗时可能远超默认超时

@@ -1,0 +1,19 @@
+{
+  "plugin_definition": {
+    "pluginID": "39520",
+    "pluginName": "SMB 服务指纹识别",
+    "family_name": "资产识别",
+    "description": "识别授权主机上开放的 SMB 服务与协议指纹，便于确认 Windows/文件共享暴露面与相关补丁状态。",
+    "synopsis": "仅对授权主机的 SMB 端口发起一次只读连接读取 banner。",
+    "solution": "对 SMB 服务实施访问控制，禁用不必要的共享并保持系统补丁更新。",
+    "risk_information": {
+      "cvss_base_score": 0.0,
+      "risk": "Info",
+      "verify": false
+    },
+    "protocols": ["smb"],
+    "tags": ["fingerprint", "detect", "SMB"],
+    "scan_safety": "SAFE",
+    "exploit_available": false
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "plugin_definition": {
+    "pluginID": "10028",
+    "pluginName": "Telnet 服务指纹识别",
+    "family_name": "资产识别",
+    "description": "识别授权主机上开放的 Telnet 服务 banner，提示明文远程管理通道暴露风险。",
+    "synopsis": "仅对授权主机的 Telnet 端口发起一次 TCP 只读连接读取 banner。",
+    "solution": "用 SSH 取代明文 Telnet，并关闭不需要的终端接入通道。",
+    "risk_information": {
+      "cvss_base_score": 0.0,
+      "risk": "Info",
+      "verify": false
+    },
+    "protocols": ["telnet"],
+    "tags": ["fingerprint", "detect", "Telnet"],
+    "scan_safety": "SAFE",
+    "exploit_available": false
+  }
+}

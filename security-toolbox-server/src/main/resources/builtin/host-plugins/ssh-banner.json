@@ -1,0 +1,19 @@
+{
+  "plugin_definition": {
+    "pluginID": "11936",
+    "pluginName": "SSH 服务指纹识别",
+    "family_name": "资产识别",
+    "description": "识别目标主机上开放的 SSH 服务及其版本指纹，用于确认服务暴露面与后续关联已知漏洞。",
+    "synopsis": "仅对授权主机的 SSH 端口做一次 TCP 只读握手并读取 banner，不发起登录或爆破。",
+    "solution": "当扫描到过时的 OpenSSH 版本时，升级到受支持版本并保持补丁最新。",
+    "risk_information": {
+      "cvss_base_score": 0.0,
+      "risk": "Info",
+      "verify": false
+    },
+    "protocols": ["ssh"],
+    "tags": ["fingerprint", "detect", "SSH"],
+    "scan_safety": "SAFE",
+    "exploit_available": false
+  }
+}

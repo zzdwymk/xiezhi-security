@@ -1479,7 +1479,7 @@ onUnmounted(() => {
 }
 .schedule-parameter-panel {
   margin: 0 0 18px;
-  padding: 14px 0 2px;
+  padding: 8px 0;
   border-top: 1px solid var(--app-border);
   border-bottom: 1px solid var(--app-border);
 }

@@ -88,6 +88,7 @@ const pocLoading = ref<Record<ActiveScannerSource, boolean>>({
   HOST: false,
 });
 const portSelections = ref<string[]>([]);
+const fscanVulnMode = ref("SAFE");
 const loading = ref(false);
 const scanning = ref(false);
 const clearingCatalog = ref(false);
@@ -122,6 +123,9 @@ const includesPortScan = computed(() =>
 );
 const includesNucleiScan = computed(() =>
   selectedRules.value.some((item) => item.toolCode === "nuclei_scan"),
+);
+const includesFscan = computed(() =>
+  selectedRules.value.some((item) => item.toolCode === "fscan_scan"),
 );
 const selectedScannerSources = computed<ActiveScannerSource[]>(() => {
   const selectedSources = new Set(
@@ -895,6 +899,13 @@ async function startScan() {
       ),
       allPocSources: allSelectedPocSources.value,
       ports,
+      vulnModes: includesFscan.value
+        ? Object.fromEntries(
+            selectedRules.value
+              .filter((rule) => rule.toolCode === "fscan_scan")
+              .map((rule) => [rule.ruleCode, fscanVulnMode.value]),
+          )
+        : undefined,
     });
     ElMessage.success(`已创建 ${data.taskCount} 个检测任务`);
   } catch (error: any) {
@@ -1436,6 +1447,18 @@ onMounted(async () => {
             可多选，也可输入端口或范围；多个自定义端口可用逗号分隔。当前授权：{{
               selectedTarget?.allowedPorts || "未选择目标"
             }}
+          </p>
+        </template>
+        <template v-if="includesFscan">
+          <label>fscan 扫描模式</label>
+          <el-radio-group v-model="fscanVulnMode" class="fscan-mode">
+            <el-radio-button value="SAFE">安全</el-radio-button>
+            <el-radio-button value="FINGERPRINT">指纹</el-radio-button>
+            <el-radio-button value="FULL">全量</el-radio-button>
+          </el-radio-group>
+          <p class="port-help">
+            安全：仅端口/服务与漏洞指纹，关闭爆破、模糊与 POC；指纹：额外服务指纹与风险提示；
+            全量：开启弱口令/爆破等高风险检测，仅用于已充分授权与受控的目标。
           </p>
         </template>
       </div>

@@ -1,0 +1,19 @@
+{
+  "plugin_definition": {
+    "pluginID": "11219",
+    "pluginName": "MySQL 服务指纹识别",
+    "family_name": "资产识别",
+    "description": "识别授权主机上开放的 MySQL 服务协议与版本信息的只读指纹，不尝试登录或执行 SQL。",
+    "synopsis": "仅对授权主机的 MySQL 端口做一次只读协议连接读取版本 banner。",
+    "solution": "禁止数据库端口对公网直接暴露，限定访问来源并保持组件更新。",
+    "risk_information": {
+      "cvss_base_score": 0.0,
+      "risk": "Info",
+      "verify": false
+    },
+    "protocols": ["mysql"],
+    "tags": ["fingerprint", "detect", "MySQL"],
+    "scan_safety": "SAFE",
+    "exploit_available": false
+  }
+}

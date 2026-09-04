@@ -5757,7 +5757,7 @@ onUnmounted(() => {
   padding-bottom: 2px;
 }
 .recon-controls-row--options {
-  padding: 2px 0 4px;
+  padding: 4px 0;
   border-top: 1px dashed
     color-mix(
       in srgb,

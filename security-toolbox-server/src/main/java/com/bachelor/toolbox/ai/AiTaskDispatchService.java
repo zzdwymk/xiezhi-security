@@ -32,7 +32,8 @@ public class AiTaskDispatchService {
           "nuclei_scan",
           "afrog_scan",
           "xray_scan",
-          "fscan_scan");
+          "fscan_scan",
+          "native_vuln_scan");
 
   private final TargetService targetService;
   private final TargetPolicyService targetPolicyService;
@@ -248,6 +249,7 @@ public class AiTaskDispatchService {
           case "nmap_service_scan" -> Set.of("ports", "mode");
           case "fscan_scan" -> Set.of("ports", "vulnMode");
           case "afrog_scan", "xray_scan" -> Set.of("pocCodes", "allPocs");
+          case "native_vuln_scan" -> Set.of("pocCodes", "allPocs");
           case "nuclei_scan" -> Set.of();
           case "http_security_check" -> Set.of("check");
           case "http_headers", "tls_config" -> Set.of();
@@ -305,6 +307,10 @@ public class AiTaskDispatchService {
         }
       }
       case "nuclei_scan" -> targetPolicyService.validatedHost(target);
+      case "native_vuln_scan" -> {
+        targetPolicyService.validatedHost(target);
+        normalizePocSelection(parameters);
+      }
       case "afrog_scan", "xray_scan" -> {
         targetPolicyService.validatedHttpUri(target);
         normalizePocSelection(parameters);

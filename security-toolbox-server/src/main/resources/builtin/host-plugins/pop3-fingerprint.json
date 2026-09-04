@@ -1,0 +1,19 @@
+{
+  "plugin_definition": {
+    "pluginID": "10323",
+    "pluginName": "POP3 服务指纹识别",
+    "family_name": "资产识别",
+    "description": "识别授权主机上开放的 POP3 邮箱服务 banner，确认邮件服务暴露面。",
+    "synopsis": "仅对授权主机的 POP3 端口发起一次只读连接读取 banner。",
+    "solution": "为邮件服务启用 TLS，禁止明文 POP3 并限制来源访问。",
+    "risk_information": {
+      "cvss_base_score": 0.0,
+      "risk": "Info",
+      "verify": false
+    },
+    "protocols": ["pop3"],
+    "tags": ["fingerprint", "detect", "POP3"],
+    "scan_safety": "SAFE",
+    "exploit_available": false
+  }
+}
