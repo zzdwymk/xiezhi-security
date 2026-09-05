@@ -51,7 +51,7 @@ public class SystemDependencyController {
       @RequestParam(value = "refresh", defaultValue = "false") boolean refresh) {
     requireLoopbackAccess(request, DEPENDENCY_LOCAL_ACCESS_ONLY);
     boolean authenticated = isAuthenticated();
-    SseEmitter emitter = new SseEmitter(30_000L);
+    SseEmitter emitter = new SseEmitter(90_000L);
 
     detectionService.detectStreaming(
         status -> {
@@ -65,6 +65,12 @@ public class SystemDependencyController {
         },
         allResults -> {
           try {
+            Map<String, String> meta =
+                Map.of("database", detectionService.activeDatabase());
+            emitter.send(
+                SseEmitter.event()
+                    .name("meta")
+                    .data(meta, MediaType.APPLICATION_JSON));
             emitter.send(SseEmitter.event().name("complete").data("done"));
             emitter.complete();
           } catch (Exception ignored) {
@@ -104,7 +110,8 @@ public class SystemDependencyController {
                         dependency.category(),
                         dependency.message()))
             .toList();
-    return new SystemDependenciesResponse(response.os(), response.arch(), sanitized);
+    return new SystemDependenciesResponse(
+        response.os(), response.arch(), response.database(), sanitized);
   }
 
   private boolean isAuthenticated() {

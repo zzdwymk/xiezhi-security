@@ -259,10 +259,26 @@ const SUBAGENTS: {
     phase: "discovery",
   },
   {
+    tool: "zap_scan",
+    name: "OWASP ZAP 主动扫描",
+    icon: "shield-task",
+    desc: "使用 OWASP ZAP 对授权 Web 目标做主动爬取与漏洞扫描，执行前需人工确认",
+    risk: "CAUTION",
+    phase: "discovery",
+  },
+  {
     tool: "fscan_scan",
     name: "fscan 主机扫描",
     icon: "shield-task",
     desc: "对授权主机做端口、服务指纹与安全漏洞指纹扫描，爆破/弱口令类默认关闭",
+    risk: "CAUTION",
+    phase: "discovery",
+  },
+  {
+    tool: "msf_scan",
+    name: "Metasploit 模块执行",
+    icon: "shield-task",
+    desc: "对授权主机执行用户明确选择的 Metasploit auxiliary/exploit 模块，爆破与越权默认禁止",
     risk: "CAUTION",
     phase: "discovery",
   },
@@ -783,6 +799,28 @@ const selectedHttpCheck = computed({
   set: (value: string) => updateSelectedToolParameters({ check: value }),
 });
 
+const selectedMsfModule = computed({
+  get: () => {
+    const value = selectedToolNode.value?.data.parameters?.modules;
+    if (Array.isArray(value)) return value.join(", ");
+    return String(
+      selectedToolNode.value?.data.parameters?.module || "",
+    );
+  },
+  set: (value: string) => {
+    const modules = value
+      .split(/[,，\s]+/)
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean)
+      .slice(0, 25);
+    updateSelectedToolParameters(
+      modules.length
+        ? { modules, module: undefined }
+        : { modules: undefined, module: undefined },
+    );
+  },
+});
+
 const selectedAllPocs = computed({
   get: () =>
     selectedToolNode.value?.data.parameters?.allPocs === true ||
@@ -931,9 +969,11 @@ function phaseToolMap(code: PresetCode): Record<PhaseCode, string[]> {
       discovery: [
         "http_security_check",
         "fscan_scan",
+        "msf_scan",
         "nuclei_scan",
         "afrog_scan",
         "xray_scan",
+        "zap_scan",
       ],
       validation: [],
       impact: [],
@@ -959,7 +999,7 @@ function phaseToolMap(code: PresetCode): Record<PhaseCode, string[]> {
       discovery: [],
       validation: ["http_security_check"],
       impact: [],
-      retest: ["http_security_check", "nuclei_scan", "afrog_scan", "xray_scan"],
+      retest: ["http_security_check", "nuclei_scan", "afrog_scan", "xray_scan", "zap_scan"],
       report: [],
     };
   return {
@@ -969,9 +1009,11 @@ function phaseToolMap(code: PresetCode): Record<PhaseCode, string[]> {
     discovery: [
       "http_security_check",
       "fscan_scan",
+      "msf_scan",
       "nuclei_scan",
       "afrog_scan",
       "xray_scan",
+      "zap_scan",
     ],
     validation: [],
     impact: [],
@@ -1115,7 +1157,9 @@ function inferPhase(tool?: string): PhaseCode {
     tool === "nuclei_scan" ||
     tool === "afrog_scan" ||
     tool === "xray_scan" ||
-    tool === "fscan_scan"
+    tool === "zap_scan" ||
+    tool === "fscan_scan" ||
+    tool === "msf_scan"
   )
     return "discovery";
   if (tool) return "mapping";
@@ -3061,6 +3105,16 @@ function validateExecutionInputs(steps: WorkflowStepSpec[]) {
     ) {
       return "fscan 扫描模式必须是 SAFE、FINGERPRINT 或 FULL";
     }
+    if (step.tool === "msf_scan") {
+      const modules = Array.isArray(parameters.modules)
+        ? parameters.modules
+        : parameters.module
+          ? [parameters.module]
+          : [];
+      if (!modules.length) {
+        return `步骤“${step.label || step.tool}”必须指定至少一个 Metasploit 模块`;
+      }
+    }
     if (
       step.tool === "nmap_service_scan" &&
       !["quick", "service"].includes(String(parameters.mode || ""))
@@ -4534,6 +4588,19 @@ onBeforeUnmount(() => {
                   <el-radio-button value="quick">快速探测</el-radio-button>
                   <el-radio-button value="service">服务识别</el-radio-button>
                 </el-radio-group>
+              </el-form-item>
+
+              <el-form-item
+                v-if="selectedToolNode.data.tool === 'msf_scan'"
+                label="Metasploit 模块"
+              >
+                <el-input
+                  v-model="selectedMsfModule"
+                  placeholder="例如 auxiliary/scanner/ssh/ssh_login"
+                />
+                <small class="input-hint">
+                  支持以英文逗号分隔多个模块（auxiliary/... 或 exploit/...）；仅作用于授权主机与端口。
+                </small>
               </el-form-item>
 
               <el-form-item

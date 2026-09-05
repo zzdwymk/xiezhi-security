@@ -361,6 +361,92 @@ async function extractScannerPocs(payload) {
   };
 }
 
+async function extractPortableTree(payload) {
+  const {
+    archivePath,
+    expectedSha256,
+    maxArchiveBytes,
+    stagingDir,
+    maxFiles,
+    maxExtractedBytes,
+    sourceMetadata,
+    label = "便携工具",
+  } = payload;
+  const archiveHash = await verifySha256(
+    archivePath,
+    expectedSha256 || "",
+    maxArchiveBytes,
+    `正在校验 ${label} 安装包 SHA-256`,
+    0,
+    0.18,
+  );
+  report(`正在读取 ${label} 安装包目录`, 0.2);
+  const zip = new AdmZip(archivePath);
+  const entries = zip.getEntries().filter((entry) => {
+    if (entry.isDirectory) return false;
+    return Boolean(safeArchiveEntryName(entry.entryName));
+  });
+  if (!entries.length || entries.length > maxFiles) {
+    throw new UserFacingError(`${label} 安装包文件数量异常`);
+  }
+
+  let extractedFiles = 0;
+  let extractedBytes = 0;
+  for (const entry of entries) {
+    const safeName = safeArchiveEntryName(entry.entryName);
+    if (!safeName) throw new UserFacingError(`${label} 安装包包含不安全路径`);
+    const size = Number(entry.header.size);
+    if (!Number.isSafeInteger(size) || size < 0) {
+      throw new UserFacingError(`${label} 安装包文件大小异常`);
+    }
+    extractedFiles += 1;
+    extractedBytes += size;
+    if (extractedFiles > maxFiles || extractedBytes > maxExtractedBytes) {
+      throw new UserFacingError(`${label} 解压数量或大小超过安全限制`);
+    }
+    const target = path.join(stagingDir, ...safeName.parts);
+    const relativeTarget = path.relative(
+      path.resolve(stagingDir),
+      path.resolve(target),
+    );
+    if (relativeTarget.startsWith("..") || path.isAbsolute(relativeTarget)) {
+      throw new UserFacingError(`${label} 解压路径超出安装目录`);
+    }
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, entry.getData(), { flag: "wx" });
+    if (extractedFiles === entries.length || extractedFiles % 200 === 0) {
+      report(
+        `正在解压 ${label}（${extractedFiles}/${entries.length}）`,
+        0.22 + 0.76 * (extractedFiles / entries.length),
+        {
+          processedFiles: extractedFiles,
+          totalFiles: entries.length,
+          processedBytes: extractedBytes,
+        },
+      );
+    }
+  }
+  fs.writeFileSync(
+    path.join(stagingDir, ".toolbox-source.json"),
+    JSON.stringify(
+      { ...sourceMetadata, archiveSha256: archiveHash.digest },
+      null,
+      2,
+    ),
+    { encoding: "utf8", flag: "wx", mode: 0o600 },
+  );
+  report(`${label} 解压完成`, 1, {
+    processedFiles: extractedFiles,
+    totalFiles: entries.length,
+    processedBytes: extractedBytes,
+  });
+  return {
+    extractedFiles,
+    extractedBytes,
+    archiveSha256: archiveHash.digest,
+  };
+}
+
 async function run() {
   if (!parentPort || !workerData || typeof workerData !== "object") {
     throw new UserFacingError("后台安装任务参数无效");
@@ -373,6 +459,8 @@ async function run() {
     return extractTemplates(workerData.payload);
   if (workerData.task === "extract-scanner-pocs")
     return extractScannerPocs(workerData.payload);
+  if (workerData.task === "extract-portable-tree")
+    return extractPortableTree(workerData.payload);
   throw new UserFacingError("不支持的后台安装任务");
 }
 

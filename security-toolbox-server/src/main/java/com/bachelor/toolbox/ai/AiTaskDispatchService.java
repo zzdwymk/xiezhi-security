@@ -32,6 +32,7 @@ public class AiTaskDispatchService {
           "nuclei_scan",
           "afrog_scan",
           "xray_scan",
+          "zap_scan",
           "fscan_scan",
           "msf_scan");
 
@@ -249,7 +250,8 @@ public class AiTaskDispatchService {
           case "nmap_service_scan" -> Set.of("ports", "mode");
           case "fscan_scan" -> Set.of("ports", "vulnMode");
           case "afrog_scan", "xray_scan" -> Set.of("pocCodes", "allPocs");
-          case "msf_scan" -> Set.of("module", "options");
+          case "zap_scan" -> Set.of("spider", "strength");
+          case "msf_scan" -> Set.of("module", "modules", "options");
           case "nuclei_scan" -> Set.of();
           case "http_security_check" -> Set.of("check");
           case "http_headers", "tls_config" -> Set.of();
@@ -311,13 +313,47 @@ public class AiTaskDispatchService {
         targetPolicyService.validatedHttpUri(target);
         normalizePocSelection(parameters);
       }
+      case "zap_scan" -> {
+        targetPolicyService.validatedHttpUri(target);
+        if (parameters.containsKey("spider")
+            && !(parameters.get("spider") instanceof Boolean)) {
+          throw new ApiException("ZAP spider 参数必须为布尔值");
+        }
+        if (parameters.containsKey("strength")) {
+          String strength =
+              Objects.toString(parameters.get("strength"), "").toUpperCase(Locale.ROOT);
+          if (!Set.of("LOW", "MEDIUM", "HIGH", "INSANE").contains(strength)) {
+            throw new ApiException("ZAP 扫描强度仅支持 LOW、MEDIUM、HIGH 或 INSANE");
+          }
+          parameters.put("strength", strength);
+        }
+      }
       case "msf_scan" -> {
         targetPolicyService.validatedHost(target);
-        String module = Objects.toString(parameters.get("module"), "").trim().toLowerCase(Locale.ROOT);
-        if (!(module.startsWith("auxiliary/") || module.startsWith("exploit/"))) {
-          throw new ApiException("AI 计划必须指定合法的 Metasploit 模块");
+        if (parameters.containsKey("modules")) {
+          if (parameters.containsKey("module")) {
+            throw new ApiException("AI 计划不能同时指定 msf 模块与模块列表");
+          }
+          Object raw = parameters.get("modules");
+          if (!(raw instanceof java.util.Collection<?> collection) || collection.isEmpty()) {
+            throw new ApiException("AI MSF 模块列表格式无效");
+          }
+          List<String> batch = new java.util.ArrayList<>();
+          for (Object item : collection) {
+            String module = Objects.toString(item, "").trim().toLowerCase(Locale.ROOT);
+            if (!(module.startsWith("auxiliary/") || module.startsWith("exploit/"))) {
+              throw new ApiException("AI MSF 模块列表仅允许 auxiliary 或 exploit 模块");
+            }
+            batch.add(module);
+          }
+          parameters.put("modules", batch);
+        } else {
+          String module = Objects.toString(parameters.get("module"), "").trim().toLowerCase(Locale.ROOT);
+          if (!(module.startsWith("auxiliary/") || module.startsWith("exploit/"))) {
+            throw new ApiException("AI 计划必须指定合法的 Metasploit 模块");
+          }
+          parameters.put("module", module);
         }
-        parameters.put("module", module);
       }
       default -> throw new ApiException("AI 工具不在安全白名单内");
     }

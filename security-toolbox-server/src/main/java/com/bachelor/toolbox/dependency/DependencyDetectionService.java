@@ -18,11 +18,13 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -31,7 +33,14 @@ public class DependencyDetectionService {
 
   private static final int MAX_DETECTION_WORKERS = 12;
   private static final Duration COMMAND_TIMEOUT = Duration.ofMillis(3500);
-  private static final Duration CACHE_TTL = Duration.ofSeconds(5);
+  // Metasploit 的 msfconsole 由 Windows 上的嵌入式 Ruby 驱动，冷启动很不稳定，
+// 实测首次打印 Framework Version 需 12~20 秒，冷启动/杀软较慢时可超过 30 秒。
+// 放宽到 45 秒尽力读出版本；即使仍超时也会按“已安装但版本未知”降级，不报失败。
+private static final Duration MSF_COMMAND_TIMEOUT = Duration.ofSeconds(45);
+  // 依赖检测结果跨页面复用：漏洞知识库页、发起检测前都通过非强制刷新接口读取同一份缓存，
+// 避免频繁重跑最慢的 Metasploit 冷启动探测。检测依赖页的"重新检测"走 forceRefresh，不受影响。
+// 延长到 60 秒，使短时间内往返多个页面能直接复用检测依赖页已探测出的结果。
+private static final Duration CACHE_TTL = Duration.ofSeconds(60);
   private static final Duration WORKER_SHUTDOWN_TIMEOUT = Duration.ofMillis(200);
   private static final String UNKNOWN_VERSION = "unknown";
   private static final Pattern ANSI_ESCAPE =
@@ -40,15 +49,18 @@ public class DependencyDetectionService {
   private final ExecutableLocator locator;
   private final CommandRunner commandRunner;
   private final NmapExecutableResolver nmapExecutableResolver;
+  private final Environment environment;
   private volatile CachedDetection cachedDetection;
 
   public DependencyDetectionService(
       ExecutableLocator locator,
       CommandRunner commandRunner,
-      NmapExecutableResolver nmapExecutableResolver) {
+      NmapExecutableResolver nmapExecutableResolver,
+      Environment environment) {
     this.locator = locator;
     this.commandRunner = commandRunner;
     this.nmapExecutableResolver = nmapExecutableResolver;
+    this.environment = environment;
   }
 
   public SystemDependenciesResponse detect() {
@@ -69,6 +81,7 @@ public class DependencyDetectionService {
         new SystemDependenciesResponse(
             System.getProperty("os.name", "unknown"),
             System.getProperty("os.arch", "unknown"),
+            activeDatabaseName(),
             dependencies);
     cachedDetection = new CachedDetection(System.nanoTime(), response);
     return response;
@@ -98,6 +111,7 @@ public class DependencyDetectionService {
                   new SystemDependenciesResponse(
                       System.getProperty("os.name", "unknown"),
                       System.getProperty("os.arch", "unknown"),
+                      activeDatabaseName(),
                       sorted);
               cachedDetection = new CachedDetection(System.nanoTime(), response);
               try {
@@ -205,7 +219,8 @@ public class DependencyDetectionService {
           descriptor, DetectionStatus.AVAILABLE, UNKNOWN_VERSION, safePath, "已检测到安装目录或启动文件。");
     }
 
-    CommandResult result = commandRunner.run(executable, descriptor.arguments(), COMMAND_TIMEOUT);
+    CommandResult result =
+        commandRunner.run(executable, descriptor.arguments(), descriptor.timeout());
     return evaluateVersionCommand(descriptor, safePath, result);
   }
 
@@ -213,12 +228,22 @@ public class DependencyDetectionService {
       DependencyDescriptor descriptor, String safePath, CommandResult result) {
     String output = cleanOutput(result.output());
     if (result.timedOut()) {
+      // 首次运行/冷启动较慢的工具（Metasploit：Ruby 预热可远超普通上限）超时，
+      // 若可执行文件已就位，将其视为“已安装”，仅版本未知，避免误报为失败。
+      if (descriptor.timeoutResolvesAsAvailable()) {
+        return buildStatus(
+            descriptor,
+            DetectionStatus.AVAILABLE,
+            parseVersion(descriptor, output),
+            safePath,
+            "已安装；版本检测超时（首次运行较慢），可稍后重新检测获取版本。");
+      }
       return buildStatus(
           descriptor,
           DetectionStatus.TIMEOUT,
-          parseVersion(output),
+          parseVersion(descriptor, output),
           safePath,
-          String.format(Locale.ROOT, "版本检测超过 %.1f 秒，进程已终止。", COMMAND_TIMEOUT.toMillis() / 1000.0));
+          String.format(Locale.ROOT, "版本检测超过 %.1f 秒，进程已终止。", descriptor.timeout().toMillis() / 1000.0));
     }
     if (result.errorMessage() != null) {
       return buildStatus(descriptor, DetectionStatus.ERROR, null, safePath, "已找到，但无法执行版本检测。");
@@ -227,7 +252,7 @@ public class DependencyDetectionService {
       return buildStatus(
           descriptor,
           DetectionStatus.INCOMPATIBLE,
-          parseVersion(output),
+          parseVersion(descriptor, output),
           safePath,
           descriptor.incompatibleMessage());
     }
@@ -235,12 +260,12 @@ public class DependencyDetectionService {
       return buildStatus(
           descriptor,
           DetectionStatus.ERROR,
-          parseVersion(output),
+          parseVersion(descriptor, output),
           safePath,
           "版本命令执行失败，退出码 " + result.exitCode() + "。");
     }
     return buildStatus(
-        descriptor, DetectionStatus.AVAILABLE, parseVersion(output), safePath, "可用。");
+        descriptor, DetectionStatus.AVAILABLE, parseVersion(descriptor, output), safePath, "可用。");
   }
 
   private DependencyStatus buildStatus(
@@ -257,6 +282,22 @@ public class DependencyDetectionService {
         descriptor.required(),
         descriptor.category(),
         message.trim());
+  }
+
+  public String activeDatabase() {
+    return activeDatabaseName();
+  }
+
+  private String activeDatabaseName() {
+    String url = environment.getProperty("spring.datasource.url", "");
+    if (url.toLowerCase(Locale.ROOT).contains("jdbc:h2")) {
+      return "H2";
+    }
+    if (url.toLowerCase(Locale.ROOT).contains("postgresql")) {
+      return "PostgreSQL";
+    }
+    String fallback = url.isBlank() ? "unknown" : url;
+    return fallback;
   }
 
   private List<DependencyDescriptor> dependencyDescriptors() {
@@ -366,14 +407,16 @@ public class DependencyDetectionService {
             "SCANNER",
             this::isProjectDiscoveryHttpx,
             "检测到同名命令，但不是 ProjectDiscovery httpx。"),
-        descriptor(
+        descriptorWithExtractor(
             "Metasploit",
             scannerCandidates("MSF_PATH", "msfconsole", "msfconsole.bat"),
             List.of("--version"),
             false,
             "SCANNER",
             output -> containsIgnoreCase(output, "metasploit"),
-            "检测到的命令不是 MetasploitFramework。当前仅检测版本，不默认执行。"),
+            "检测到的命令不是 MetasploitFramework。当前仅检测版本，不默认执行。",
+            MSF_COMMAND_TIMEOUT,
+            this::metasploitVersion),
         descriptor(
             "OWASP ZAP", zapCandidates(windows), List.of(), false, "PROXY_SCANNER", anyOutput, ""));
   }
@@ -429,7 +472,21 @@ public class DependencyDetectionService {
       Predicate<String> validator,
       String incompatibleMessage) {
     return new DependencyDescriptor(
-        name, candidates, arguments, required, category, validator, incompatibleMessage);
+        name, candidates, arguments, required, category, validator, incompatibleMessage, COMMAND_TIMEOUT, DependencyDetectionService::firstNonBlankLine, false);
+  }
+
+  private DependencyDescriptor descriptorWithExtractor(
+      String name,
+      List<String> candidates,
+      List<String> arguments,
+      boolean required,
+      String category,
+      Predicate<String> validator,
+      String incompatibleMessage,
+      Duration timeout,
+      Function<String, String> versionExtractor) {
+    return new DependencyDescriptor(
+        name, candidates, arguments, required, category, validator, incompatibleMessage, timeout, versionExtractor, true);
   }
 
   private List<String> paths(String... values) {
@@ -475,16 +532,27 @@ public class DependencyDetectionService {
     return ANSI_ESCAPE.matcher(output).replaceAll("").replace('\r', '\n').trim();
   }
 
-  private String parseVersion(String output) {
+  private String parseVersion(DependencyDescriptor descriptor, String output) {
     if (output == null || output.isBlank()) {
       return UNKNOWN_VERSION;
     }
+    String extracted = descriptor.versionExtractor().apply(output);
+    return extracted == null || extracted.isBlank() ? UNKNOWN_VERSION : extracted;
+  }
+
+  private static String firstNonBlankLine(String output) {
+    return output.lines().map(String::trim).filter(line -> !line.isBlank()).findFirst().orElse(UNKNOWN_VERSION);
+  }
+
+  // Metasploit 的 msfconsole --version 会先打印一串 Ruby 弃用警告（第一行往往是
+  // 长长的 gem 路径），真正的版本在 "Framework Version: x.y..." 那行。
+  private String metasploitVersion(String output) {
     return output
         .lines()
         .map(String::trim)
-        .filter(line -> !line.isBlank())
+        .filter(line -> containsIgnoreCase(line, "Framework Version"))
         .findFirst()
-        .orElse(UNKNOWN_VERSION);
+        .orElseGet(() -> firstNonBlankLine(output));
   }
 
   private String sanitizePath(Path path) {
@@ -511,7 +579,10 @@ public class DependencyDetectionService {
       boolean required,
       String category,
       Predicate<String> outputValidator,
-      String incompatibleMessage) {}
+      String incompatibleMessage,
+      Duration timeout,
+      Function<String, String> versionExtractor,
+      boolean timeoutResolvesAsAvailable) {}
 
   private record CachedDetection(long createdAtNanos, SystemDependenciesResponse response) {}
 }

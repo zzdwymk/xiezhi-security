@@ -1056,7 +1056,7 @@ public class AgentOrchestrator {
         plan.steps().stream()
             .anyMatch(
                 step ->
-                    Set.of("nuclei_scan", "afrog_scan", "xray_scan")
+                    Set.of("nuclei_scan", "afrog_scan", "xray_scan", "zap_scan")
                         .contains(step.toolCode()));
     if (validation) return AgentPhase.VALIDATION;
     boolean discovery =

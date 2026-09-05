@@ -269,6 +269,8 @@ interface DependencyInstallProgressEvent {
   readonly installing?: boolean;
   readonly paused?: boolean;
   readonly canPause?: boolean;
+  readonly elapsedSeconds?: number;
+  readonly logs?: string[];
 }
 
 interface Window {

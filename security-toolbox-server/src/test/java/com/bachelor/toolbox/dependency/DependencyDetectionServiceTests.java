@@ -1,6 +1,8 @@
 package com.bachelor.toolbox.dependency;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.bachelor.toolbox.dependency.CommandRunner.CommandResult;
 import com.bachelor.toolbox.dependency.SystemDependenciesResponse.DependencyStatus;
@@ -11,6 +13,7 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.env.Environment;
 
 class DependencyDetectionServiceTests {
   @Test
@@ -88,8 +91,14 @@ class DependencyDetectionServiceTests {
     NmapExecutableResolver resolver =
         new NmapExecutableResolver(locator, configuredExecutable);
 
+    Environment environment = mock(Environment.class);
+    when(environment.getProperty("spring.datasource.url", ""))
+        .thenReturn("jdbc:h2:test");
+
     DependencyStatus nmap =
-        find(new DependencyDetectionService(locator, runner, resolver).detect(), "Nmap");
+        find(
+            new DependencyDetectionService(locator, runner, resolver, environment).detect(),
+            "Nmap");
 
     assertThat(receivedCandidates.get())
         .containsExactly(
@@ -134,6 +143,37 @@ class DependencyDetectionServiceTests {
 
     assertThat(second).isSameAs(first);
     assertThat(locateCalls).hasValue(14);
+  }
+
+  @Test
+  void usesLongerTimeoutForMetasploitVersionProbe() {
+    ExecutableLocator locator = locateCandidate("msfconsole", Path.of("test-data/tools/msfconsole.bat"));
+    CommandRunner runner =
+        (executable, arguments, timeout) -> {
+          assertThat(timeout).isEqualTo(Duration.ofSeconds(45));
+          return CommandResult.completed(
+              0,
+              "D:/tools/metasploit-framework/embedded/lib/ruby/3.4.0/bundled_gems.rb:82: warning: Win32API is deprecated\n"
+                  + "Framework Version: 6.5.3-dev\n");
+        };
+
+    DependencyStatus metasploit =
+        find(service(locator, runner).detect(), "Metasploit");
+
+    assertThat(metasploit.status()).isEqualTo("AVAILABLE");
+    assertThat(metasploit.version()).isEqualTo("Framework Version: 6.5.3-dev");
+  }
+
+  @Test
+  void metasploitTimeoutDegradesToInstalled() {
+    ExecutableLocator locator = locateCandidate("msfconsole", Path.of("test-data/tools/msfconsole.bat"));
+    CommandRunner runner = (executable, arguments, timeout) -> CommandResult.timeout("");
+
+    DependencyStatus metasploit =
+        find(service(locator, runner).detect(), "Metasploit");
+
+    assertThat(metasploit.status()).isEqualTo("AVAILABLE");
+    assertThat(metasploit.message()).contains("版本检测超时");
   }
 
   @Test
@@ -288,8 +328,10 @@ class DependencyDetectionServiceTests {
   }
 
   private DependencyDetectionService service(ExecutableLocator locator, CommandRunner runner) {
+    Environment environment = mock(Environment.class);
+    when(environment.getProperty("spring.datasource.url", "")).thenReturn("jdbc:h2:test");
     return new DependencyDetectionService(
-        locator, runner, new NmapExecutableResolver(locator, "nmap"));
+        locator, runner, new NmapExecutableResolver(locator, "nmap"), environment);
   }
 
   private DependencyStatus find(SystemDependenciesResponse response, String name) {

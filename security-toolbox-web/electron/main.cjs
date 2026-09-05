@@ -272,6 +272,14 @@ function handleSystemThemeChanged() {
 }
 
 function defaultToolsDirectory() {
+  // 允许通过环境变量指定项目根目录，再由其派生出 tools 绝对路径：
+  // TOOLBOX_PROJECT_ROOT=<项目绝对路径> -> <项目根>\tools。
+  const projectRoot = String(
+    process.env.TOOLBOX_PROJECT_ROOT || "",
+  ).trim();
+  if (projectRoot) {
+    return path.join(path.normalize(projectRoot), "tools");
+  }
   return app.isPackaged
     ? path.join(path.dirname(app.getPath("exe")), "tools")
     : path.resolve(__dirname, "..", "tools");
@@ -976,6 +984,105 @@ async function testAiConnection(payload) {
   }
 }
 
+// 判断目标是否为目录链接（junction / symbolic link）。
+function isDirectoryLink(target) {
+  try {
+    const stat = fs.lstatSync(target);
+    return stat.isSymbolicLink() || stat.isJunction();
+  } catch {
+    return false;
+  }
+}
+
+// Metasploit 内置的 FastUnzip（7z）解压时对含空格/中文等非 ASCII 路径不稳定，
+// 官方默认装在 C:\metasploit-framework。另外它的 Ruby 工具链在启动时会遍历深层
+// gem 目录；若目录前缀过长会触发 Windows “Errno::ENAMETOOLONG”（路径过长）导致
+// msfconsole 无法启动。因此判定“能否直接装进 tools”需同时满足：
+//  1) Windows 盘符绝对路径；2) 无空格、无非 ASCII 字符；3) 前缀长度加上工具包深层
+//  后缀（预估约 150 字符）后仍在 MAX_PATH（260）以内，否则回退到短根 + junction。
+function isMsfSafeInstallPath(target) {
+  if (!target || typeof target !== "string") return false;
+  if (!/^[a-zA-Z]:\\/.test(target)) return false; // 要求 Windows 盘符绝对路径
+  const nonAscii = /[^\x00-\x7f]/; // 中文/日文等非 ASCII
+  const hasSpace = /\s/;
+  if (nonAscii.test(target) || hasSpace.test(target)) return false;
+  // 保留约 150 字符给 tools 内深层 gem 目录；长度过长会触发 ENAMETOOLONG。
+  return target.length <= 110;
+}
+
+// 无空格真实根：默认在 D 盘根（例如 D:\stbtools），供 MSF 无法直接装进 tools
+// 时作为兜底的安装根，再在 tools 下建 junction 指回它。
+function msfRealRoot() {
+  const toolsDir = resolveToolsDirectory();
+  const drive = path.parse(toolsDir).root || path.parse(process.cwd()).root;
+  const configured = String(process.env.MSF_INSTALL_ROOT || "").trim();
+  if (configured && path.isAbsolute(configured)) {
+    return path.normalize(configured);
+  }
+  return path.join(drive, "stbtools");
+}
+
+// 兜底真实安装目录（含 metasploit-framework）。
+function msfRealInstallDir() {
+  return path.join(msfRealRoot(), "metasploit-framework");
+}
+
+// msfconsole.bat 实际所在目录。安装目录下可能有内层同名目录。
+function msfRealFrameworkDir() {
+  const realRoot = msfRealInstallDir();
+  const nested = path.join(realRoot, "metasploit-framework");
+  if (
+    fs.existsSync(path.join(nested, "bin", "msfconsole.bat")) ||
+    fs.existsSync(path.join(nested, "bin"))
+  ) {
+    return nested;
+  }
+  return realRoot;
+}
+
+function isRealMsfInstalled() {
+  return fs.existsSync(
+    path.join(msfRealFrameworkDir(), "bin", "msfconsole.bat"),
+  );
+}
+
+// 若真实目录已装好但 tools 下没有指向它的链接，则补建目录链接。
+function ensureMsfJunction(toolsDir) {
+  const link = path.join(toolsDir, "metasploit-framework");
+  if (isDirectoryLink(link)) return link;
+  if (!isRealMsfInstalled()) return false;
+  fs.mkdirSync(path.dirname(link), { recursive: true });
+  const real = msfRealFrameworkDir();
+  const output = spawnSync(
+    "cmd.exe",
+    ["/c", "mklink", "/J", link, real],
+    { windowsHide: true, encoding: "utf8" },
+  );
+  if (output.status !== 0 || !isDirectoryLink(link)) {
+    throw new UserFacingError(
+      `无法为 Metasploit 建立工具目录链接：${String(output.stderr || output.stdout || "").trim()}`,
+    );
+  }
+  return true;
+}
+
+function removeMsfJunction() {
+  const toolsDir = resolveToolsDirectory();
+  const link = path.join(toolsDir, "metasploit-framework");
+  if (isDirectoryLink(link)) {
+    try {
+      fs.unlinkSync(link);
+    } catch {
+      try {
+        spawnSync("cmd.exe", ["/c", "rd", link], {
+          windowsHide: true,
+          encoding: "utf8",
+        });
+      } catch {}
+    }
+  }
+}
+
 function resolveToolsDirectory() {
   const configured = readDesktopSettings().toolsDirectory;
   return typeof configured === "string" && path.isAbsolute(configured)
@@ -991,6 +1098,35 @@ function resolvePortableNmapPath(toolsDir) {
   } catch {
     return undefined;
   }
+}
+
+// 工具目录内已安装 MetasploitFramework 时，返回 msfconsole.bat 的完整路径，
+// 供后端 MSF_PATH 检测使用；否则回落到系统 PATH 中同名的 msfconsole。
+function msfBackendPath(toolsDir) {
+  const msfDefinition = INSTALLABLE_PACKAGES.msf;
+  // 自愈：兜底模式下真实目录若已装好但 tools 下链接丢失，先补建，保证后端
+  // 启动阶段能从 <tools>\metasploit-framework\bin 取到可执行路径。
+  try {
+    ensureMsfJunction(toolsDir);
+  } catch {}
+  if (msfDefinition && isMsfInstallPresent(msfDefinition, toolsDir)) {
+    return msfInstallPaths(msfDefinition, toolsDir).executable;
+  }
+  return "msfconsole";
+}
+
+// 返回工具目录内已安装的 ZAP 启动脚本路径，供后端 ZAP_PATH 检测使用；
+// 找不到使用时回落到系统 PATH 中同名的 zap。
+function zapBackendPath(toolsDir) {
+  const zapDefinition = INSTALLABLE_PACKAGES.zap;
+  if (zapDefinition) {
+    const launcher = findExecutableInTree(
+      path.join(toolsDir, zapDefinition.id),
+      zapDefinition.executableSearchNames || [zapDefinition.executable],
+    );
+    if (launcher) return launcher;
+  }
+  return "zap";
 }
 
 function ensureWritableDirectory(directory) {
@@ -1052,7 +1188,42 @@ const INSTALLABLE_PACKAGES = Object.freeze({
     checksumName: () => "checksums.txt",
     releaseMode: "latest-semver-match",
   }),
+  msf: Object.freeze({
+    id: "msf",
+    optional: true,
+    installer: "msi",
+    // MetasploitFramework 是 per-machine 的 omnibus MSI，但用户要求装到 tools
+    // 目录。用绝对路径 INSTALLLOCATION="<tools>\metasploit-framework" 静默安装，
+    // 安装后由 bin/msfconsole.bat 驱动。
+    installerUrl:
+      "https://windows.metasploit.com/metasploitframework-latest.msi",
+    executable: "msfconsole.bat",
+    installRelativeDir: "metasploit-framework",
+    binRelativeDir: "bin",
+  }),
+  zap: Object.freeze({
+    id: "zap",
+    optional: true,
+    // 便携安装：整个目录从 GitHub release 的 windows zip 解压，不是单文件。
+    portableTree: true,
+    repository: "zaproxy/zaproxy",
+    executable: "zap.bat",
+    // 相对解压后根目录的启动脚本路径（解压出的 zap 顶层目录名可变，运行时探测）。
+    executableSearchNames: ["zap.bat", "zap.sh"],
+    // GitHub release asset 前缀；Windows 包形如 zaproxy_2.14.0_windows.zip。
+    assetName: (version) => {
+      const short = version.replace(/^[v]/, "");
+      return `zaproxy_${short}_windows.zip`;
+    },
+    checksumName: () => "",
+    releaseMode: "latest-semver-match",
+    maxArchiveBytes: 900 * 1024 * 1024,
+    maxExtractedBytes: 3 * 1024 * 1024 * 1024,
+  }),
 });
+
+// 官方 nightly 安装器最大大小约束（MSI 通常约 300–500MB），防止异常下载。
+const MSF_INSTALLER_MAX_BYTES = 1024 * 1024 * 1024;
 
 class GithubRateLimitError extends UserFacingError {}
 
@@ -1573,6 +1744,55 @@ function promotePortableInstall({
   if (hadMetadata) {
     try {
       fs.unlinkSync(metadataBackup);
+    } catch {
+      /* cleaned on a later maintenance pass */
+    }
+  }
+}
+
+// 便携树包（如 ZAP）：stagingDir 是完整个树，原子替换 targetDir。
+function promotePortableTree({ toolsDir, stagingDir, targetDir, sourceMetadata }) {
+  assertInside(toolsDir, stagingDir);
+  assertInside(toolsDir, targetDir);
+  assertSafeInstallDirectory(targetDir);
+  // 提取阶段已在 stagingDir/.toolbox-source.json 写入基础元数据；这里把下载相关的
+  // 来源信息合并进去，保持与单文件包一致的来源记录。
+  const stagedMetadataPath = path.join(stagingDir, ".toolbox-source.json");
+  const existing = readJsonFile(stagedMetadataPath);
+  fs.writeFileSync(
+    stagedMetadataPath,
+    JSON.stringify({ ...existing, ...sourceMetadata }, null, 2),
+    { encoding: "utf8", mode: 0o600 },
+  );
+
+  const targetMetadataPath = path.join(targetDir, ".toolbox-source.json");
+  const targetBackup = path.join(
+    toolsDir,
+    `.toolbox-backup-${crypto.randomUUID()}`,
+  );
+  [targetDir, targetMetadataPath, targetBackup].forEach((candidate) =>
+    assertInside(toolsDir, candidate),
+  );
+
+  const hadTarget = fs.existsSync(targetDir);
+  if (hadTarget) {
+    try {
+      fs.renameSync(targetDir, targetBackup);
+    } catch (error) {
+      throw new UserFacingError("无法备份已有的便携工具目录，请稍后再试");
+    }
+  }
+  try {
+    fs.renameSync(stagingDir, targetDir);
+  } catch (error) {
+    if (hadTarget && fs.existsSync(targetBackup) && !fs.existsSync(targetDir)) {
+      fs.renameSync(targetBackup, targetDir);
+    }
+    throw new UserFacingError("便携工具目录替换失败，请稍后再试");
+  }
+  if (hadTarget) {
+    try {
+      fs.rmSync(targetBackup, { recursive: true, force: true });
     } catch {
       /* cleaned on a later maintenance pass */
     }
@@ -2543,6 +2763,480 @@ async function refreshPortableDependencyCatalog({
   return { updated: false };
 }
 
+function msfInstallPaths(definition, toolsDir) {
+  assertInside(toolsDir, path.join(toolsDir, definition.installRelativeDir));
+  const installDir = path.join(toolsDir, definition.installRelativeDir);
+  const binDir = path.join(installDir, definition.binRelativeDir);
+  const executable = path.join(binDir, definition.executable);
+  return { installDir, binDir, executable };
+}
+
+function isMsfInstallPresent(definition, toolsDir) {
+  const paths = msfInstallPaths(definition, toolsDir);
+  try {
+    return fs.statSync(paths.executable).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function msfInstalledVersion(definition, toolsDir) {
+  const metadata = readJsonFile(
+    path.join(
+      msfInstallPaths(definition, toolsDir).installDir,
+      ".toolbox-source.json",
+    ),
+  );
+  return metadata?.version || "latest";
+}
+
+// MSI（OLE 复合文档）文件头魔数，用于校验下载的安装包是有效 MSI。
+const MSI_HEADER = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+
+function msfMirrorHost() {
+  const mirror = resolveToolDownloadMirror();
+  return mirror ? mirror.host : "";
+}
+
+// 读取 msiexec 安装日志的末尾若干有意义行，用于安装期间向用户展示实时动态。
+function readMsfInstallLogTail(installLog, maxLines = 40, maxBytes = 96 * 1024) {
+  try {
+    if (!fs.existsSync(installLog) || !fs.statSync(installLog).isFile()) return [];
+    const size = fs.statSync(installLog).size;
+    const start = Math.max(0, size - maxBytes);
+    const buf = Buffer.alloc(size - start);
+    const fd = fs.openSync(installLog, "r");
+    try {
+      fs.readSync(fd, buf, 0, buf.length, start);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const lines = buf
+      .toString("utf8")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .slice(-maxLines);
+    return lines;
+  } catch {
+    return [];
+  }
+}
+
+async function installMsfFramework(
+  definition,
+  options = {},
+  reportProgress = () => {},
+) {
+  const toolsDir = resolveToolsDirectory();
+  // 用户可见路径 = <tools>\metasploit-framework（始终不变）。
+  const { installDir, binDir, executable } = msfInstallPaths(definition, toolsDir);
+  assertInside(toolsDir, installDir);
+  assertInside(toolsDir, binDir);
+  assertInside(toolsDir, executable);
+  assertSafeInstallDirectory(toolsDir);
+  // 兜底判定：tools 路径若含空格/中文等 MSI FastUnzip 禁忌字符，则无法直接安装，
+  // 回退到 D 盘无空格真实根 + junction；否则直接装进 tools。
+  const directEnabled = isMsfSafeInstallPath(installDir);
+  // 真实写入目录：direct 时为 tools 下可见路径；否则为 D 盘无空格根。
+  let realInstallDir = directEnabled ? installDir : msfRealInstallDir();
+  let useRealRoot = !directEnabled;
+  assertSafeInstallDirectory(realInstallDir);
+
+  // 兜底模式先确保 junction 链路健康，避免后续覆盖判断误判。
+  if (useRealRoot) {
+    try {
+      ensureMsfJunction(toolsDir);
+    } catch {}
+  }
+
+  if (isMsfInstallPresent(definition, toolsDir)) {
+    reportProgress({
+      packageId: definition.id,
+      stage: "已安装",
+      installStage: "MetasploitFramework 已安装到 " + installDir,
+      progress: 100,
+      progressDeterminate: true,
+      installing: false,
+    });
+    return {
+      packageId: definition.id,
+      version: msfInstalledVersion(definition, toolsDir),
+      path: executable,
+      installDirectory: installDir,
+      status: "up-to-date",
+      updated: false,
+    };
+  }
+
+  const session = {
+    packageId: definition.id,
+    controller: undefined,
+  };
+  try {
+    reportProgress({
+      packageId: definition.id,
+      stage: "正在准备下载 Metasploit",
+      installStage: "preparing",
+      progress: 1,
+      progressDeterminate: false,
+      installing: true,
+    });
+
+    const downloadsDir = path.join(toolsDir, ".downloads");
+    assertSafeInstallDirectory(downloadsDir);
+    const archivePath = path.join(downloadsDir, "metasploitframework-latest.msi");
+    const archiveMetadataPath = `${archivePath}.json`;
+    assertInside(downloadsDir, archivePath);
+    assertInside(downloadsDir, archiveMetadataPath);
+
+    session.controller = new AbortController();
+    const download = await downloadResumableFile({
+      url: definition.installerUrl,
+      filePath: archivePath,
+      metadataPath: archiveMetadataPath,
+      expectedSha256: "",
+      expectedSize: 0,
+      maxBytes: MSF_INSTALLER_MAX_BYTES,
+      allowedHosts: ["windows.metasploit.com", msfMirrorHost()].filter(Boolean),
+      signal: session.controller.signal,
+      onProgress: (progress) => {
+        const receivedBytes = Number(progress.receivedBytes || 0);
+        const totalBytes = Number(progress.totalBytes || download.size || 0);
+        const downloadPercent =
+          totalBytes > 0
+            ? Math.min(85, Math.max(2, Math.round((receivedBytes / totalBytes) * 85)))
+            : Math.min(84, 2 + Math.floor(receivedBytes / (1024 * 1024)));
+        reportProgress({
+          packageId: definition.id,
+          stage:
+            progress.resumedBytes > 0
+              ? "正在续传 Metasploit 安装器"
+              : "正在下载 Metasploit 官方安装器",
+          installStage: "downloading",
+          progress: downloadPercent,
+          progressDeterminate: totalBytes > 0,
+          installing: true,
+          downloadedBytes: receivedBytes,
+          totalBytes,
+        });
+      },
+    });
+    session.controller = undefined;
+
+    reportProgress({
+      packageId: definition.id,
+      stage: "下载完成，正在准备安装",
+      installStage: "downloaded",
+      progress: 100,
+      progressDeterminate: true,
+      installing: true,
+      downloadedBytes: download.size,
+      totalBytes: download.size && download.totalBytes ? download.totalBytes : download.size,
+    });
+
+    reportProgress({
+      packageId: definition.id,
+      stage: "正在校验安装包",
+      installStage: "verifying",
+      progress: 87,
+      progressDeterminate: false,
+      installing: true,
+    });
+    const stat = fs.statSync(archivePath);
+    if (stat.size < 1 || stat.size > MSF_INSTALLER_MAX_BYTES) {
+      throw new UserFacingError("Metasploit 安装包大小异常");
+    }
+    const header = fs.readFileSync(archivePath).subarray(0, MSI_HEADER.length);
+    if (!header.equals(MSI_HEADER)) {
+      throw new UserFacingError("下载的安装包不是有效的 MSI，已拒绝安装");
+    }
+
+    // 确保 tools 下已无残留目录抢位；junction 模式下保留既有链接。
+    if (!isDirectoryLink(installDir) && fs.existsSync(installDir)) {
+      fs.rmSync(installDir, { recursive: true, force: true });
+    }
+    // 兜底：tools 路径安全则直接安装进 <tools>\metasploit-framework；否则装到
+    // D 盘无空格真实根，再在 tools 下建 junction 指回它（兼容旧方案）。
+    const installStageText = useRealRoot
+      ? "正在静默安装到 D 盘无空格目录（路径含空格/中文，正在兜底安装）"
+      : "正在静默安装到工具目录";
+    reportProgress({
+      packageId: definition.id,
+      stage: `${installStageText}（将弹出管理员授权确认，请留意）`,
+      installStage: "installing",
+      progress: 90,
+      progressDeterminate: false,
+      installing: true,
+    });
+    fs.mkdirSync(realInstallDir, { recursive: true });
+    const installLocation = realInstallDir.replace(/[|<>]/g, "").trim();
+    const installLog = path.join(toolsDir, ".downloads", "metasploit-install.log");
+    assertInside(toolsDir, installLog);
+    const installStartedAt = Date.now();
+    let lastLogTail = "";
+    const emitInstallTick = (force = false) => {
+      const elapsedSeconds = Math.max(
+        0,
+        Math.round((Date.now() - installStartedAt) / 1000),
+      );
+      const tail = readMsfInstallLogTail(installLog);
+      const logJson = JSON.stringify(tail);
+      const logChanged = logJson !== lastLogTail;
+      lastLogTail = logJson;
+      // 首次强制输出；后续仅当秒表逢整刻或日志有新内容时更新，避免刷屏。
+      if (!force && !logChanged && elapsedSeconds % 5 !== 0) return;
+      reportProgress({
+        packageId: definition.id,
+        stage:
+          elapsedSeconds < 60
+            ? `正在安装（已运行 ${elapsedSeconds} 秒）`
+            : `正在安装（已运行 ${Math.floor(elapsedSeconds / 60)} 分 ${elapsedSeconds % 60} 秒）`,
+        installStage: "installing",
+        progress: 90,
+        progressDeterminate: false,
+        installing: true,
+        elapsedSeconds,
+        logs: tail,
+      });
+    };
+    emitInstallTick(true);
+    const installTicker = setInterval(() => emitInstallTick(false), 2000);
+    try {
+      await runMsiexecSilent(
+        archivePath,
+        installLocation,
+        installLog,
+        (stage) => {
+          const pendingElevation =
+            stage && /需要管理员权限|提升权限|UAC|同意|继续/.test(stage)
+              ? "，请在系统提示中确认管理员授权"
+              : "";
+          emitInstallTick(true);
+          reportProgress({
+            packageId: definition.id,
+            stage: (stage || "正在安装 Metasploit") + pendingElevation,
+            installStage: "installing",
+            progress: 90,
+            progressDeterminate: false,
+            installing: true,
+          });
+        },
+      );
+    } finally {
+      clearInterval(installTicker);
+    }
+
+    // 校验安装是否成功。
+    const verified = useRealRoot
+      ? isRealMsfInstalled()
+      : isMsfInstallPresent(definition, toolsDir);
+    if (!verified) {
+      throw new UserFacingError(
+        useRealRoot
+          ? "Metasploit 静默安装未完成，请查看安装日志或手动运行安装器"
+          : "Metasploit 静默未完成，请查看安装日志或手动运行安装器",
+      );
+    }
+    // 兜底模式：装到 D 盘后建 junction，保证用户访问路径始终是 <tools>\metasploit-framework。
+    if (useRealRoot) ensureMsfJunction(toolsDir);
+    try {
+      // .toolbox-source.json 写入用户可见目录（junction 模式下经链接映射到真实目录）。
+      writeJsonFileAtomic(
+        path.join(installDir, ".toolbox-source.json"),
+        {
+          repository: "rapid7/metasploit-framework",
+          version: msfVersionFromExecutable(executable),
+          source: "official-nightly-msi",
+          installLocation: useRealRoot ? msfRealInstallDir() : realInstallDir,
+          direct: !useRealRoot,
+          installedAt: new Date().toISOString(),
+          platform: "windows",
+          architecture: "x64",
+        },
+      );
+    } catch {
+      // 忽略：写入标记失败时仅丢失元数据，不影响安装结果。
+    }
+    // 安装完成后清理下载缓存，释放数百 MB 的安装包占用。
+    fs.rmSync(archivePath, { force: true });
+    fs.rmSync(archiveMetadataPath, { force: true });
+
+    reportProgress({
+      packageId: definition.id,
+      stage: "MetasploitFramework 安装完成",
+      installStage: "completed",
+      progress: 100,
+      progressDeterminate: true,
+      installing: false,
+    });
+    session.controller = undefined;
+    return {
+      packageId: definition.id,
+      version: msfInstalledVersion(definition, toolsDir),
+      path: executable,
+      toolsDirectory: toolsDir,
+      status: "installed",
+      updated: true,
+    };
+  } catch (error) {
+    session.controller = undefined;
+    reportProgress({
+      packageId: definition.id,
+      stage: "failed",
+      installStage: publicErrorMessage(error, "MetasploitFramework 安装失败"),
+      progress: 0,
+      progressDeterminate: false,
+      installing: false,
+    });
+    throw error;
+  }
+}
+
+function isMsfInstalled(_installerPath, installDir) {
+  const candidate = path.join(installDir, "bin", "msfconsole.bat");
+  try {
+    return fs.statSync(candidate).isFile();
+  } catch {
+    return false;
+  }
+}
+
+// Metasploit 没有类似 nuclei -version 的单一精确版本文件；为避免冷启动 Ruby /
+// msfconsole（可能数秒到数十秒），这里采用安装日期作为 nightly 版本标识。
+function msfVersionFromExecutable(_executable) {
+  return `nightly-${new Date().toISOString().slice(0, 10)}`;
+}
+
+// Metasploit 的 nightly MSI 是 per-machine(需要管理员)的 omnibus 安装器。
+// 未以管理员运行时 /qn 会卡在不可见的提权请求上；这里在必要时通过 UAC
+// 提升运行，并写 MSI 详细日志、加超时，避免无限“正在安装”。
+const MSF_INSTALL_TIMEOUT_MS = 20 * 60 * 1000;
+
+function killProcessTree(pid) {
+  try {
+    if (pid && pid > 0)
+      spawnSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
+        windowsHide: true,
+        encoding: "utf8",
+      });
+  } catch {
+    // 尽力而为：超时终止失败不阻断错误返回。
+  }
+}
+
+function isCurrentProcessElevated() {
+  if (process.platform !== "win32") return true;
+  try {
+    const result = spawnSync(
+      "net.exe",
+      ["session"],
+      { windowsHide: true, encoding: "utf8" },
+    );
+    // net session 无管理员权限时返回非零。
+    return result.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+// Windows Installer 的 server 端运行在"工作目录已重置"上下文，相对路径会失效
+// (MSI 1324)。因此一律用【绝对路径】；含空格的路径交给 node spawn(argv 数组)
+// 处理，可靠而不会让 msiexec 打印用法帮助。
+function runMsiexecSilent(msiPath, installLocation, installLog, onStage) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      callback(value);
+    };
+    fs.mkdirSync(path.dirname(installLog), { recursive: true });
+
+    const elevated = isCurrentProcessElevated();
+
+    if (elevated) {
+      // 已提权时直接 spawn：argv 数组由 Node 内置引用转义，路径含空格也可靠。
+      const child = spawn(
+        "msiexec.exe",
+        [
+          "/i",
+          msiPath,
+          "/qn",
+          "/norestart",
+          `/L*v ${installLog}`,
+          `INSTALLLOCATION=${installLocation}`,
+        ],
+        { windowsHide: true, stdio: ["ignore", "ignore", "ignore"] },
+      );
+      const timer = setTimeout(() => {
+        finish(reject, new UserFacingError("Metasploit 安装器执行超时，请查看安装日志"));
+        try {
+          killProcessTree(child.pid);
+        } catch {}
+      }, MSF_INSTALL_TIMEOUT_MS);
+      child.on("error", (error) => {
+        clearTimeout(timer);
+        finish(reject, new UserFacingError(`无法启动 Metasploit 安装器：${error.message}`));
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (code === 0) finish(resolve);
+        else finish(reject, new UserFacingError(`Metasploit 安装器退出码 ${code}`));
+      });
+      return;
+    }
+
+    // 未提权：通过 PowerShell Start-Process -Verb RunAs 触发 UAC，用户确认后安装。
+    onStage && onStage("需要管理员权限,请在系统提示中确认授权以安装 Metasploit。");
+    // 关键：Start-Process -ArgumentList 传【数组】会把含空格的元素拆散，导致
+    // msiexec 打印用法帮助。要用 Single-string、每个令牌以双引号包裹的命令行。
+const psScript =
+      "$ErrorActionPreference='Stop'; " +
+      "$cmdline = '/i \"' + $env:MSI_PATH + '\" /qn /norestart /L*v \"' + $env:MSI_LOG + '\" INSTALLLOCATION=\"' + $env:MSI_LOCATION + '\"'; " +
+      "$p = Start-Process -FilePath 'msiexec.exe' -ArgumentList $cmdline -Verb RunAs -Wait -PassThru; " +
+      "exit $p.ExitCode";
+    const child = spawn(
+      "powershell.exe",
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psScript],
+      {
+        windowsHide: true,
+        stdio: ["ignore", "ignore", "ignore"],
+        env: {
+          ...process.env,
+          MSI_PATH: msiPath,
+          MSI_LOG: installLog,
+          MSI_LOCATION: installLocation,
+        },
+      },
+    );
+    const timer = setTimeout(() => {
+      finish(reject, new UserFacingError("等待管理员授权超时，请在任务栏允许 UAC 提示后重试"));
+      try {
+        killProcessTree(child.pid);
+      } catch {}
+    }, MSF_INSTALL_TIMEOUT_MS);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      finish(
+        reject,
+        new UserFacingError(`无法以管理员权限启动 MSI 安装器：${error.message}`),
+      );
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) finish(resolve);
+      else
+        finish(
+          reject,
+          new UserFacingError(
+            "需要在管理员权限下安装 Metasploit（UAC 被拒绝或未授权）。请复制安装包并手动运行，或将应用程序以管理员身份启动后重试。",
+          ),
+        );
+    });
+  });
+}
+
 async function installPortableDependency(
   packageId,
   options = {},
@@ -2552,6 +3246,13 @@ async function installPortableDependency(
   if (!definition) throw new UserFacingError("不支持安装该依赖");
   if (process.platform !== "win32" || process.arch !== "x64") {
     throw new UserFacingError("当前安装包仅支持 Windows x64");
+  }
+  if (definition.installer === "msi") {
+    return installMsfFramework(
+      definition,
+      options,
+      reportProgress,
+    );
   }
   const refreshCatalog = options?.refreshCatalog === true;
   const existing = activeInstalls.get(packageId);
@@ -2693,7 +3394,7 @@ async function installPortableDependency(
         metadataPath: archiveMetadataPath,
         expectedSha256: release.sha256,
         expectedSize: release.size,
-        maxBytes: 150 * 1024 * 1024,
+        maxBytes: definition.maxArchiveBytes || 150 * 1024 * 1024,
         allowedHosts: [
           "github.com",
           "release-assets.githubusercontent.com",
@@ -2731,6 +3432,7 @@ async function installPortableDependency(
       session.phase = "verifying-package";
       try {
         const isRaw = definition.format === "raw";
+        const isTree = definition.portableTree === true;
         const stagePayload = isRaw
           ? {
               binaryPath: archivePath,
@@ -2740,17 +3442,33 @@ async function installPortableDependency(
               targetPath: stagedExecutable,
               maxExecutableBytes: 256 * 1024 * 1024,
             }
-          : {
-              archivePath,
-              expectedSha256: release.sha256,
-              expectedSize: release.size,
-              maxArchiveBytes: 150 * 1024 * 1024,
-              executableName: definition.executable,
-              targetPath: stagedExecutable,
-              maxExecutableBytes: 256 * 1024 * 1024,
-            };
+          : isTree
+            ? {
+                archivePath,
+                expectedSha256: release.sha256,
+                expectedSize: release.size,
+                maxArchiveBytes: definition.maxArchiveBytes || 900 * 1024 * 1024,
+                maxFiles: 40000,
+                maxExtractedBytes:
+                  definition.maxExtractedBytes || 3 * 1024 * 1024 * 1024,
+                stagingDir,
+                label: "ZAP",
+              }
+            : {
+                archivePath,
+                expectedSha256: release.sha256,
+                expectedSize: release.size,
+                maxArchiveBytes: 150 * 1024 * 1024,
+                executableName: definition.executable,
+                targetPath: stagedExecutable,
+                maxExecutableBytes: 256 * 1024 * 1024,
+              };
         const extraction = await runDependencyWorker(
-          isRaw ? "stage-executable-binary" : "extract-executable",
+          isRaw
+            ? "stage-executable-binary"
+            : isTree
+              ? "extract-portable-tree"
+              : "extract-executable",
           stagePayload,
           (progress) => {
             const workerProgress = Math.max(
@@ -2810,27 +3528,49 @@ async function installPortableDependency(
       if (!/^[a-f0-9]{64}$/.test(recordedSha256)) {
         throw new UserFacingError("无法记录安装包 SHA-256，已拒绝安装");
       }
-      promotePortableInstall({
-        toolsDir,
-        stagingDir,
-        targetDir,
-        stagedExecutable,
-        targetExecutable,
-        sourceMetadata: {
-          repository: release.repository,
-          version: release.version,
-          releaseTag: release.tag,
-          archiveName: release.archiveName,
-          archiveSha256: recordedSha256,
-          integritySource: release.integritySource,
-          integrityVerified: Boolean(release.sha256),
-          sourceUrl: release.url,
-          platform: "windows",
-          architecture: "x64",
-          acquisition: "allowlisted-official-release",
-          installedAt: new Date().toISOString(),
-        },
-      });
+      if (definition.portableTree === true) {
+        promotePortableTree({
+          toolsDir,
+          stagingDir,
+          targetDir,
+          sourceMetadata: {
+            repository: release.repository,
+            version: release.version,
+            releaseTag: release.tag,
+            archiveName: release.archiveName,
+            archiveSha256: recordedSha256,
+            integritySource: release.integritySource,
+            integrityVerified: Boolean(release.sha256),
+            sourceUrl: release.url,
+            platform: "windows",
+            architecture: "x64",
+            acquisition: "allowlisted-official-release",
+            installedAt: new Date().toISOString(),
+          },
+        });
+      } else {
+        promotePortableInstall({
+          toolsDir,
+          stagingDir,
+          targetDir,
+          stagedExecutable,
+          targetExecutable,
+          sourceMetadata: {
+            repository: release.repository,
+            version: release.version,
+            releaseTag: release.tag,
+            archiveName: release.archiveName,
+            archiveSha256: recordedSha256,
+            integritySource: release.integritySource,
+            integrityVerified: Boolean(release.sha256),
+            sourceUrl: release.url,
+            platform: "windows",
+            architecture: "x64",
+            acquisition: "allowlisted-official-release",
+            installedAt: new Date().toISOString(),
+          },
+        });
+      }
       installationCompleted = true;
       removeDownloadState(archivePath, archiveMetadataPath);
       report(
@@ -2926,23 +3666,105 @@ async function installPortableDependency(
 }
 
 function portableDependencyInstallState(definition, toolsDir) {
+  if (definition.installer === "msi") {
+    const paths = msfInstallPaths(definition, toolsDir);
+    // 兼容直装与 junction 两种布局：
+    //  - 直装：<tools>\metasploit-framework 就是真实安装目录（普通目录）。
+    //  - 兜底：tools 下是指向 D 盘无空格真实目录的 junction。
+    const junctionPresent = isDirectoryLink(paths.installDir);
+    const directPresent = !junctionPresent && isMsfInstallPresent(definition, toolsDir);
+    let metadata = readJsonFile(
+      path.join(paths.installDir, ".toolbox-source.json"),
+    );
+    // 自愈：工具已安装但元数据丢失（例如重新打包清掉了 win-unpacked 下的文件），
+    // 补一份默认元数据，保证应用能识别为已安装。
+    const payloadInstalled =
+      directPresent || (junctionPresent && isRealMsfInstalled());
+    if (!metadata && payloadInstalled) {
+      try {
+        const metaDir =
+          junctionPresent && isRealMsfInstalled()
+            ? msfRealFrameworkDir()
+            : paths.installDir;
+        writeJsonFileAtomic(
+          path.join(metaDir, ".toolbox-source.json"),
+          {
+            repository: "rapid7/metasploit-framework",
+            version: msfVersionFromExecutable(
+              junctionPresent ? msfRealFrameworkDir() : paths.executable,
+            ),
+            source: "official-nightly-msi",
+            installLocation: junctionPresent
+              ? msfRealInstallDir()
+              : paths.installDir,
+            direct: !junctionPresent,
+            installedAt: new Date().toISOString(),
+            platform: "windows",
+            architecture: "x64",
+          },
+        );
+        metadata = readJsonFile(
+          path.join(paths.installDir, ".toolbox-source.json"),
+        );
+      } catch {}
+    }
+    return {
+      managed: Boolean(metadata && payloadInstalled),
+      installedVersion: metadata?.version || "",
+      metadata,
+      targetDir: paths.installDir,
+      targetExecutable: paths.executable,
+      isMsfJunction: Boolean(junctionPresent && metadata && isRealMsfInstalled()),
+    };
+  }
   const targetDir = path.join(toolsDir, definition.id);
   const targetExecutable = path.join(targetDir, definition.executable);
   const metadata = readJsonFile(
     path.join(targetDir, ".toolbox-source.json"),
   );
+  // 便携树包（如 ZAP）把整个目录解压进 targetDir，启动脚本可能在顶层或内层子目录。
+  const resolvedExecutable =
+    definition.portableTree === true
+      ? findExecutableInTree(
+          targetDir,
+          definition.executableSearchNames || [definition.executable],
+        ) || targetExecutable
+      : targetExecutable;
   const state = evaluateInstalledRelease({
     metadata,
     repository: definition.repository,
     latestVersion: metadata.version,
-    payloadExists: isRegularFile(targetExecutable),
+    payloadExists: isRegularFile(resolvedExecutable),
   });
   return {
     ...state,
     metadata,
     targetDir,
-    targetExecutable,
+    targetExecutable: resolvedExecutable,
   };
+}
+
+// 在目录树内（含一层子目录）定位便携工具的启动脚本，容忍解压出的顶层目录名变化。
+function findExecutableInTree(root, names) {
+  if (!root) return null;
+  for (const name of names) {
+    const candidate = path.join(root, name);
+    if (isRegularFile(candidate)) return candidate;
+  }
+  try {
+    for (const child of fs.readdirSync(root)) {
+      if (child.startsWith(".")) continue;
+      const childDir = path.join(root, child);
+      if (!fs.statSync(childDir).isDirectory()) continue;
+      for (const name of names) {
+        const candidate = path.join(childDir, name);
+        if (isRegularFile(candidate)) return candidate;
+      }
+    }
+  } catch {
+    /* ignore unreadable trees */
+  }
+  return null;
 }
 
 async function uninstallPortableDependency(packageId) {
@@ -2958,6 +3780,29 @@ async function uninstallPortableDependency(packageId) {
   assertInside(toolsDir, installed.targetDir);
   if (!installed.managed) {
     throw new UserFacingError("该依赖不是由本应用安装，无法在此卸载");
+  }
+
+  // MSF 直装：<tools>\metasploit-framework 是普通目录，走统一“改名再删”路径。
+  // 兜底模式：tools 下是 junction（真实目录在 D 盘无空格根），卸载 = 删链接 + 删真实目录。
+  if (installed.isMsfJunction && isDirectoryLink(installed.targetDir)) {
+    removeMsfJunction();
+    const realDir = msfRealInstallDir();
+    if (fs.existsSync(realDir)) {
+      try {
+        await fs.promises.rm(realDir, { recursive: true, force: true });
+      } catch (error) {
+        // 尽力而为，卸载失败时重建链接以便重试。
+        try {
+          ensureMsfJunction(toolsDir);
+        } catch {}
+        throw error;
+      }
+    }
+    return {
+      packageId,
+      version: installed.installedVersion,
+      status: "uninstalled",
+    };
   }
 
   const removalDir = path.join(
@@ -4881,6 +5726,10 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
     FSCAN_PATH: fs.existsSync(path.join(toolsDir, "fscan", "fscan.exe"))
       ? path.join(toolsDir, "fscan", "fscan.exe")
       : "fscan",
+    MSF_PATH: msfBackendPath(toolsDir),
+    ZAP_PATH: zapBackendPath(toolsDir),
+    ZAP_HOST: "127.0.0.1",
+    ZAP_PORT: "8090",
     PATH: [
       path.join(toolsDir, "nuclei"),
       path.join(toolsDir, "httpx"),
@@ -4888,6 +5737,11 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
       path.join(toolsDir, "xray"),
       path.join(toolsDir, "fscan"),
       path.join(toolsDir, "nmap"),
+      path.join(toolsDir, "zap"),
+      // Metasploit 经 junction 暴露于 tools\metasploit-framework，其后端
+      // PATH 探测也能命中 msfconsole（位于其 bin 目录）。
+      path.join(toolsDir, "metasploit-framework", "metasploit-framework", "bin"),
+      path.join(toolsDir, "metasploit-framework", "bin"),
       process.env.PATH || "",
     ].join(path.delimiter),
   };

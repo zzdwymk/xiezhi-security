@@ -29,9 +29,10 @@ public class AiWorkflowSuggestService {
           "tls_config",
           "nuclei_scan",
           "afrog_scan",
-          "xray_scan");
+          "xray_scan",
+          "zap_scan");
   private static final Set<String> SCANNER_TOOLS =
-      Set.of("nuclei_scan", "afrog_scan", "xray_scan");
+      Set.of("nuclei_scan", "afrog_scan", "xray_scan", "zap_scan");
 
   private final AiModelClient modelClient;
   private final ObjectMapper objectMapper;
@@ -352,7 +353,7 @@ public class AiWorkflowSuggestService {
         + " item:{kind,severity,title,detail,action}."
         + " action null or {type:add_tool,tool,phase}."
         + " tools:retrieve_project_context,tcp_ports,nmap_service_scan,http_headers,"
-        + "http_security_check,tls_config,nuclei_scan,afrog_scan,xray_scan. max 5.";
+        + "http_security_check,tls_config,nuclei_scan,afrog_scan,xray_scan,zap_scan. max 5.";
   }
 
   private String modelUserPrompt(WorkflowInput input) throws Exception {

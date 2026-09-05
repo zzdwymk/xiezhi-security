@@ -44,6 +44,7 @@ interface Dependency {
   uninstallSupported?: boolean;
   logs?: string[];
   message?: string;
+  elapsedSeconds?: number;
 }
 
 const router = useRouter();
@@ -51,6 +52,8 @@ const route = useRoute();
 const loading = ref(false);
 const error = ref("");
 const items = ref<Dependency[]>([]);
+const streaming = ref(false);
+const activeDatabase = ref("");
 const developmentMode = ref(import.meta.env.DEV);
 const toolsDirectory = ref("程序目录 / tools");
 const toolsDirectoryChanging = ref(false);
@@ -83,6 +86,8 @@ const manualUrls: Record<string, string> = {
   Afrog: "https://github.com/zan8in/afrog/releases",
   Xray: "https://github.com/chaitin/xray/releases",
   fscan: "https://github.com/shadow1ng/fscan/releases",
+  Metasploit:
+    "https://docs.metasploit.com/docs/using-metasploit/getting-started/nightly-installers.html",
   "ProjectDiscovery httpx":
     "https://github.com/projectdiscovery/httpx/releases",
   "OWASP ZAP": "https://www.zaproxy.org/download/",
@@ -94,6 +99,13 @@ const grouped = computed(() => ({
   core: items.value.filter((item) => item.required !== false),
   optional: items.value.filter((item) => item.required === false),
 }));
+
+// 流式检测期间，Metasploit 的 Ruby 启动很慢，在结果到达前单独显示加载动画。
+const metasploitPending = computed(
+  () =>
+    streaming.value &&
+    !items.value.some((item) => item.name === "Metasploit"),
+);
 
 function isReady(item: Dependency) {
   return (
@@ -139,6 +151,8 @@ async function check(forceRefresh = false) {
     items.value = Array.isArray(data)
       ? data
       : data.dependencies || data.items || [];
+    activeDatabase.value =
+      (data && typeof data === "object" ? data.database : "") || "";
     await decorateItems();
     developmentMode.value = data.developmentMode ?? import.meta.env.DEV;
     maybeAutoContinue();
@@ -158,6 +172,7 @@ async function check(forceRefresh = false) {
     return false;
   } finally {
     loading.value = false;
+    streaming.value = false;
     taskbarProgress.stopIndeterminate("setup-detect");
   }
 }
@@ -183,18 +198,22 @@ async function decorateItems() {
       installable.map((item) => [item.packageId, item]),
     );
     items.value = items.value.map((item) => {
-      const packageId =
+const packageId =
         item.name === "Nuclei"
           ? "nuclei"
           : item.name === "ProjectDiscovery httpx"
             ? "httpx"
             : item.name === "Afrog"
               ? "afrog"
-: item.name === "Xray"
-              ? "xray"
-              : item.name === "fscan"
-                ? "fscan"
-                : undefined;
+              : item.name === "Xray"
+                ? "xray"
+: item.name === "fscan"
+                    ? "fscan"
+                    : item.name === "Metasploit"
+                      ? "msf"
+                      : item.name === "OWASP ZAP"
+                        ? "zap"
+                        : undefined;
       return {
         ...item,
         packageId,
@@ -292,9 +311,12 @@ function streamDependencies(forceRefresh: boolean): Promise<boolean> {
     const close = (success: boolean) => {
       clearTimeout(timer);
       source.close();
+      streaming.value = false;
       resolve(success);
     };
-    timer = setTimeout(() => close(received > 0), 20_000);
+    // Metasploit 的 Ruby 冷启动可能远超 30 秒，需给足流式传输窗口。
+    timer = setTimeout(() => close(received > 0), 90_000);
+    streaming.value = true;
     source.onmessage = (event) => {
       received += 1;
       try {
@@ -303,6 +325,16 @@ function streamDependencies(forceRefresh: boolean): Promise<boolean> {
         // 忽略无法解析的事件。
       }
     };
+    source.addEventListener("meta", (event) => {
+      try {
+        const meta = JSON.parse((event as MessageEvent).data);
+        if (meta && typeof meta.database === "string") {
+          activeDatabase.value = meta.database;
+        }
+      } catch {
+        // 忽略无法解析的元数据。
+      }
+    });
     source.addEventListener("complete", () => close(true));
     source.onerror = () => close(received > 0);
   });
@@ -464,6 +496,7 @@ function installStageLabel(stage?: string) {
   const labels: Record<string, string> = {
     preparing: "准备下载",
     downloading: "正在下载",
+    downloaded: "下载完成",
     verifying: "正在校验",
     extracting: "正在解压",
     installing: "正在安装",
@@ -473,6 +506,14 @@ function installStageLabel(stage?: string) {
     canceled: "下载已取消，缓存文件已清除",
   };
   return labels[(stage || "").toLowerCase()] || stage || "正在处理";
+}
+
+function formatElapsed(seconds?: number) {
+  const s = Math.max(0, Math.floor(seconds || 0));
+  if (s < 60) return `${s} 秒`;
+  const m = Math.floor(s / 60);
+  const rest = s % 60;
+  return m < 60 ? `${m} 分 ${rest} 秒` : `${Math.floor(m / 60)} 时 ${m % 60} 分`;
 }
 
 function formatBytes(bytes?: number) {
@@ -507,6 +548,9 @@ function subscribeInstallProgress() {
     item.totalFiles = event.totalFiles;
     item.paused = event.paused;
     item.canPause = event.canPause;
+    item.elapsedSeconds = event.elapsedSeconds;
+    if (Array.isArray(event.logs) && event.logs.length)
+      item.logs = event.logs.slice(-8);
     const wasCanceled =
       event.stage === "canceled" ||
       /取消|已取消|canceled/i.test(
@@ -741,8 +785,8 @@ onUnmounted(() => {
               确认安全检测引擎与本地工具均可用，缺失项目可在此安装或查看官方来源。
             </p>
           </div>
-          <el-button :loading="loading" @click="check(true)"
-            ><el-icon><Refresh /></el-icon>重新检测</el-button
+          <el-button class="dep-rescan-button" :loading="loading" @click="check(true)"
+            ><el-icon><Refresh /></el-icon><span>重新检测</span></el-button
           >
         </header>
 
@@ -823,7 +867,16 @@ onUnmounted(() => {
                     :indeterminate="installProgressIndeterminate(item)"
                     :duration="1.2"
                   />
-                  <span>{{ installStageLabel(item.installStage) }}</span>
+                  <span
+                    >{{ installStageLabel(item.installStage)
+                    }}<template
+                      v-if="
+                        item.elapsedSeconds &&
+                        item.installStage === 'installing'
+                      "
+                      >（已运行 {{ formatElapsed(item.elapsedSeconds) }}）</template
+                    ></span
+                  >
                   <span v-if="item.totalFiles"
                     >{{ item.processedFiles || 0 }} /
                     {{ item.totalFiles }} 个文件</span
@@ -994,6 +1047,14 @@ onUnmounted(() => {
                     dependencyPathText(item)
                   }}</small>
                 </el-tooltip>
+                <span v-if="item.name === 'Metasploit'" class="dep-note"
+                  >装在工具目录内；路径含空格/中文时自动兜底到盘符根目录</span
+                >
+                <span
+                  v-if="item.name === 'PostgreSQL' && activeDatabase"
+                  class="dep-note"
+                  >当前数据库：{{ activeDatabase }}</span
+                >
                 <div
                   v-if="item.installing || item.paused"
                   class="dep-install-progress"
@@ -1005,7 +1066,16 @@ onUnmounted(() => {
                     :indeterminate="installProgressIndeterminate(item)"
                     :duration="1.2"
                   />
-                  <span>{{ installStageLabel(item.installStage) }}</span>
+                  <span
+                    >{{ installStageLabel(item.installStage)
+                    }}<template
+                      v-if="
+                        item.elapsedSeconds &&
+                        item.installStage === 'installing'
+                      "
+                      >（已运行 {{ formatElapsed(item.elapsedSeconds) }}）</template
+                    ></span
+                  >
                   <span v-if="item.totalFiles"
                     >{{ item.processedFiles || 0 }} /
                     {{ item.totalFiles }} 个文件</span
@@ -1126,6 +1196,22 @@ onUnmounted(() => {
                 <span v-else class="dep-action">暂不支持</span>
               </div>
             </div>
+            <div
+              v-if="metasploitPending"
+              key="msf-pending"
+              class="dependency-row"
+            >
+              <span class="dep-status msf-pending-status"
+                ><el-icon class="is-loading"><Setting /></el-icon
+              ></span>
+              <div class="dep-main">
+                <b>Metasploit 正在检测</b>
+                <small class="dep-path">启动版本检测中，请稍候…</small>
+              </div>
+              <span class="dep-version">…</span>
+              <el-tag type="info" size="small">检测中</el-tag>
+              <span class="dep-action">等待完成</span>
+            </div>
           </div>
         </div>
 
@@ -1163,4 +1249,22 @@ onUnmounted(() => {
 
 <style scoped>
 /* 按钮内图标与文字间距已由 setup.css 统一用 gap 控制 */
+.setup-database-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--app-border) 88%, transparent);
+  background: var(--app-surface-soft);
+  color: var(--app-text);
+  font-size: 12px;
+}
+.setup-database-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--app-success);
+}
 </style>

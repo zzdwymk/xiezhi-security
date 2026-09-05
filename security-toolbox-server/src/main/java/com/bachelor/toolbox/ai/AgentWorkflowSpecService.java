@@ -60,6 +60,7 @@ public class AgentWorkflowSpecService {
           "nuclei_scan",
           "afrog_scan",
           "xray_scan",
+          "zap_scan",
           "fscan_scan");
   private static final Set<String> PHASES =
       Set.of(

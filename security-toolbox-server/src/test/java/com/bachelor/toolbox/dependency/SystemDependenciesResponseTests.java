@@ -23,13 +23,14 @@ class SystemDependenciesResponseTests {
             "SCANNER",
             "可用。");
     SystemDependenciesResponse response =
-        new SystemDependenciesResponse("Windows 11", "amd64", List.of(dependency));
+        new SystemDependenciesResponse("Windows 11", "amd64", "PostgreSQL", List.of(dependency));
 
     JsonNode json = objectMapper.valueToTree(response);
 
-    assertThat(json.size()).isEqualTo(3);
+    assertThat(json.size()).isEqualTo(4);
     assertThat(json.path("os").asText()).isEqualTo("Windows 11");
     assertThat(json.path("arch").asText()).isEqualTo("amd64");
+    assertThat(json.path("database").asText()).isEqualTo("PostgreSQL");
 
     JsonNode item = json.path("dependencies").get(0);
     assertThat(item.size()).isEqualTo(7);

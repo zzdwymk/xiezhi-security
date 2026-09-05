@@ -53,7 +53,12 @@ async function run() {
   desktop = spawn(electron, ["."], {
     cwd: projectDir,
     stdio: "inherit",
-    env: { ...process.env, TOOLBOX_DEV_URL: "http://127.0.0.1:5173" },
+    env: {
+      ...process.env,
+      TOOLBOX_DEV_URL: "http://127.0.0.1:5173",
+      // 让 Electron 主进程通过环境变量拿到项目绝对路径，再用它推出 tools 目录。
+      TOOLBOX_PROJECT_ROOT: projectDir,
+    },
     windowsHide: false,
   });
   desktop.once("exit", (code) => {

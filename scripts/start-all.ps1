@@ -46,6 +46,21 @@ function Test-PortListening([int]$Port) {
     return [bool]($listeners | Where-Object { $_.Port -eq $Port } | Select-Object -First 1)
 }
 
+function Test-TcpEndpoint([string]$HostName, [int]$Port, [int]$TimeoutMilliseconds = 800) {
+    try {
+        $client = [Net.Sockets.TcpClient]::new()
+        try {
+            $task = $client.ConnectAsync($HostName, $Port)
+            if (-not $task.Wait($TimeoutMilliseconds)) { return $false }
+            return $client.Connected
+        } finally {
+            $client.Dispose()
+        }
+    } catch {
+        return $false
+    }
+}
+
 function Stop-StartedProcessTree([System.Diagnostics.Process]$Process) {
     if (-not $Process) { return }
     $Process.Refresh()
@@ -247,6 +262,22 @@ foreach ($port in @(8080, 5173)) {
     }
 }
 
+$postgresHost = if ($env:DB_HOST) { $env:DB_HOST } else { '127.0.0.1' }
+$postgresPort = 5432
+if ($env:DB_PORT) { [int]$postgresPort = $env:DB_PORT }
+$postgresReachable = Test-TcpEndpoint $postgresHost $postgresPort
+$postgresForcedOff = $env:TOOLBOX_USE_POSTGRES -eq '0'
+$postgresEnabled = $postgresReachable -and -not $postgresForcedOff
+if (-not $env:POSTGRES_PASSWORD -and $postgresEnabled) {
+    $postgresEnabled = $false
+    Write-Warning 'PostgreSQL 已检测到，但未设置 POSTGRES_PASSWORD，回退使用内置 H2 数据库。'
+}
+if ($postgresEnabled) {
+    Write-Host ("检测到 PostgreSQL（{0}:{1}），后端将自动切换使用 PostgreSQL。" -f $postgresHost, $postgresPort) -ForegroundColor Cyan
+} else {
+    Write-Host '未检测到可用的 PostgreSQL，后端将使用内置 H2 数据库。' -ForegroundColor DarkGray
+}
+
 $java = (Get-Command java -ErrorAction Stop).Source
 $node = (Get-Command node -ErrorAction Stop).Source
 $maven = (Get-Command mvn -ErrorAction Stop).Source
@@ -282,6 +313,9 @@ $previousJwtSecret = [Environment]::GetEnvironmentVariable('JWT_SECRET', 'Proces
 $previousMitmPassword = [Environment]::GetEnvironmentVariable('TRAFFIC_MITM_CA_PASSWORD', 'Process')
 $previousInsecureGate = [Environment]::GetEnvironmentVariable('ALLOW_INSECURE_DEVELOPMENT_CREDENTIALS', 'Process')
 $previousLegacyMigration = [Environment]::GetEnvironmentVariable('MIGRATE_LEGACY_DEVELOPMENT_CREDENTIALS', 'Process')
+$previousDbUrl = [Environment]::GetEnvironmentVariable('DB_URL', 'Process')
+$previousDbUsername = [Environment]::GetEnvironmentVariable('DB_USERNAME', 'Process')
+$previousDbPassword = [Environment]::GetEnvironmentVariable('DB_PASSWORD', 'Process')
 $backendOutLog = Join-Path $logDir 'backend.out.log'
 $backendErrLog = Join-Path $logDir 'backend.err.log'
 try {
@@ -293,6 +327,22 @@ try {
         'MIGRATE_LEGACY_DEVELOPMENT_CREDENTIALS',
         $developmentSecrets.legacyMigrationPending.ToString().ToLowerInvariant(),
         'Process')
+
+    if ($postgresEnabled) {
+        [Environment]::SetEnvironmentVariable(
+            'DB_URL',
+            ("jdbc:postgresql://{0}:{1}/security_toolbox" -f $postgresHost, $postgresPort),
+            'Process')
+        [Environment]::SetEnvironmentVariable(
+            'DB_USERNAME',
+            (if ($env:DB_USERNAME) { $env:DB_USERNAME } else { 'postgres' }),
+            'Process')
+        [Environment]::SetEnvironmentVariable('DB_PASSWORD', $env:POSTGRES_PASSWORD, 'Process')
+    } else {
+        [Environment]::SetEnvironmentVariable('DB_URL', $null, 'Process')
+        [Environment]::SetEnvironmentVariable('DB_USERNAME', $null, 'Process')
+        [Environment]::SetEnvironmentVariable('DB_PASSWORD', $null, 'Process')
+    }
 
     $toolsDir = Join-Path $workspace 'security-toolbox-web\desktop-release\win-unpacked\tools'
     if (Test-Path $toolsDir) {
@@ -316,8 +366,12 @@ try {
             [Environment]::SetEnvironmentVariable('HTTPX_PATH', $httpxExe, 'Process')
         }
     }
+    $extraJvmOptions = @()
+    if ($postgresEnabled) {
+        $extraJvmOptions += '--spring.profiles.active=postgres'
+    }
     $backendJavaArguments = (
-        ($utf8JvmOptions + @('-jar', ('"{0}"' -f $jar))) -join ' '
+        ($utf8JvmOptions + $extraJvmOptions + @('-jar', ('"{0}"' -f $jar))) -join ' '
     )
     $backend = Start-Process -FilePath $java `
         -ArgumentList $backendJavaArguments `
@@ -332,6 +386,9 @@ try {
     [Environment]::SetEnvironmentVariable('TRAFFIC_MITM_CA_PASSWORD', $previousMitmPassword, 'Process')
     [Environment]::SetEnvironmentVariable('ALLOW_INSECURE_DEVELOPMENT_CREDENTIALS', $previousInsecureGate, 'Process')
     [Environment]::SetEnvironmentVariable('MIGRATE_LEGACY_DEVELOPMENT_CREDENTIALS', $previousLegacyMigration, 'Process')
+    [Environment]::SetEnvironmentVariable('DB_URL', $previousDbUrl, 'Process')
+    [Environment]::SetEnvironmentVariable('DB_USERNAME', $previousDbUsername, 'Process')
+    [Environment]::SetEnvironmentVariable('DB_PASSWORD', $previousDbPassword, 'Process')
 }
 
 $backendReady = Wait-ProcessPort $backend 8080 $BackendStartupTimeoutSeconds

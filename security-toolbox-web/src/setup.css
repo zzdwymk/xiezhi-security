@@ -402,6 +402,12 @@
   white-space: nowrap;
   cursor: help;
 }
+.dep-main .dep-note {
+  display: block;
+  margin-top: 3px;
+  color: #8f908a;
+  font-size: 10px;
+}
 .dep-version {
   display: block;
   overflow: hidden;

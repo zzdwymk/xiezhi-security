@@ -3,6 +3,7 @@ package com.bachelor.toolbox.tool;
 import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.common.ProcessEnvironmentSanitizer;
 import com.bachelor.toolbox.dependency.ExecutableLocator;
+import com.bachelor.toolbox.msf.MsfScanEngine;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.TargetPolicyService;
 import java.io.InputStream;
@@ -56,16 +57,19 @@ public class MsfScanTool implements SecurityTool {
   private final ExecutableLocator locator;
   private final String configuredExecutable;
   private final long timeoutSeconds;
+  private final org.springframework.beans.factory.ObjectProvider<MsfScanEngine> engineProvider;
 
   public MsfScanTool(
       TargetPolicyService policy,
       ExecutableLocator locator,
       @Value("${toolbox.execution.msf-path:msfconsole}") String configuredExecutable,
-      @Value("${toolbox.execution.msf-timeout-seconds:600}") long timeoutSeconds) {
+      @Value("${toolbox.execution.msf-timeout-seconds:600}") long timeoutSeconds,
+      org.springframework.beans.factory.ObjectProvider<MsfScanEngine> engineProvider) {
     this.policy = policy;
     this.locator = locator;
     this.configuredExecutable = configuredExecutable;
     this.timeoutSeconds = timeoutSeconds;
+    this.engineProvider = engineProvider;
   }
 
   @Override
@@ -93,6 +97,14 @@ public class MsfScanTool implements SecurityTool {
   public ToolExecutionResult execute(
       AuthorizedTarget target, Map<String, Object> parameters, ToolExecutionObserver observer)
       throws Exception {
+    List<String> modules = requestedModules(parameters);
+    if (modules != null) {
+      Map<String, Object> engineOptions = new java.util.HashMap<>();
+      engineOptions.putAll(sanitizedOptions(parameters));
+      return engineProvider
+          .getObject()
+          .runMany(target, modules, engineOptions, observer);
+    }
     String host = policy.validatedHost(target);
     String module = requireModule(parameters);
     Map<String, String> options = sanitizedOptions(parameters);
@@ -114,6 +126,21 @@ public class MsfScanTool implements SecurityTool {
     } finally {
       if (process.isAlive()) process.destroyForcibly();
     }
+  }
+
+  private List<String> requestedModules(Map<String, Object> parameters) {
+    Object raw = parameters == null ? null : parameters.get("modules");
+    if (raw == null) return null;
+    if (!(raw instanceof java.util.Collection<?> collection)) {
+      throw new ApiException("MSF 模块列表格式无效");
+    }
+    List<String> result = new ArrayList<>();
+    for (Object item : collection) {
+      String value = Objects.toString(item, "").trim().toLowerCase(Locale.ROOT);
+      if (value.isEmpty()) throw new ApiException("MSF 模块列表包含空项");
+      result.add(value);
+    }
+    return result;
   }
 
   private String requireModule(Map<String, Object> parameters) {

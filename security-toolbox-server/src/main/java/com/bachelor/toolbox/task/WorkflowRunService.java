@@ -556,6 +556,7 @@ public class WorkflowRunService {
       case "nuclei_scan" -> "Nuclei";
       case "afrog_scan" -> "Afrog";
       case "xray_scan" -> "Xray";
+      case "zap_scan" -> "ZAP";
       default -> null;
     };
   }

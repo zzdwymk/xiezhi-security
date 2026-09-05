@@ -2,6 +2,7 @@ package com.bachelor.toolbox.tool;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.bachelor.toolbox.msf.MsfScanEngine;
 import com.bachelor.toolbox.target.PortRangeParser;
 import com.bachelor.toolbox.target.TargetPolicyService;
 import java.nio.file.Path;
@@ -16,7 +17,18 @@ class MsfScanToolTests {
           new TargetPolicyService(false, new PortRangeParser()),
           candidates -> java.util.Optional.of(Path.of("msfconsole.exe")),
           "msfconsole",
-          600);
+          600,
+          new org.springframework.beans.factory.ObjectProvider<MsfScanEngine>() {
+            @Override
+            public MsfScanEngine getObject() {
+              return null;
+            }
+
+            @Override
+            public MsfScanEngine getObject(Object... args) {
+              return null;
+            }
+          });
 
   @Test
   void buildCommandForcesAuthorizedHostAndRunsAuxiliary() {

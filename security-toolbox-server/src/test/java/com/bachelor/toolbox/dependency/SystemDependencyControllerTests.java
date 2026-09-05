@@ -24,7 +24,7 @@ class SystemDependencyControllerTests {
   @Test
   void returnsDependenciesForLoopbackRequest() {
     SystemDependenciesResponse expected =
-        new SystemDependenciesResponse("Windows", "amd64", List.of());
+        new SystemDependenciesResponse("Windows", "amd64", "H2", List.of());
     when(request.getRemoteAddr()).thenReturn("127.0.0.1");
     when(detectionService.detect(false)).thenReturn(expected);
 
@@ -35,7 +35,7 @@ class SystemDependencyControllerTests {
   @Test
   void forcesRefreshForExplicitRecheck() {
     SystemDependenciesResponse expected =
-        new SystemDependenciesResponse("Windows", "amd64", List.of());
+        new SystemDependenciesResponse("Windows", "amd64", "H2", List.of());
     when(request.getRemoteAddr()).thenReturn("127.0.0.1");
     when(detectionService.detect(true)).thenReturn(expected);
 

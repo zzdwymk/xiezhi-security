@@ -109,11 +109,19 @@ toolbox:
     fscan-timeout-seconds: 600
     msf-path: ${MSF_PATH:msfconsole}
     msf-timeout-seconds: 600
+    zap-path: ${ZAP_PATH:zap}
+    zap-host: ${ZAP_HOST:127.0.0.1}
+    zap-port: ${ZAP_PORT:8090}
+    zap-startup-seconds: ${ZAP_STARTUP_SECONDS:120}
+    zap-scan-timeout-seconds: ${ZAP_SCAN_TIMEOUT_SECONDS:1800}
+    zap-max-alerts: ${ZAP_MAX_ALERTS:500}
   vulnerability-catalog:
     nuclei:
       templates-path: ${NUCLEI_TEMPLATES_PATH:${user.home}/nuclei-templates}
       import-on-startup: ${NUCLEI_CATALOG_IMPORT_ON_STARTUP:false}
       max-template-bytes: 2097152
+    msf:
+      import-on-startup: ${MSF_CATALOG_IMPORT_ON_STARTUP:false}
     afrog:
       pocs-path: ${AFROG_POCS_PATH:${user.home}/afrog-pocs}
     xray:

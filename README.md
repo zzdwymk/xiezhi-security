@@ -33,6 +33,24 @@ powershell -ExecutionPolicy Bypass -File scripts\status-all.ps1
 
 浏览器开发模式默认访问 `http://localhost:5173`，后端 API 默认使用 `http://localhost:8080/api`。桌面版只监听本机回环地址。
 
+### 数据库模式（自动切换）
+
+后端默认使用内置 H2 数据库（`./data/security-toolbox`）。`start-all.ps1` 启动时会自动探测本机 PostgreSQL：
+
+- 检测到 `127.0.0.1:5432`（可用 `DB_HOST`/`DB_PORT` 覆盖）有可用 PostgreSQL，**且**设置了 `POSTGRES_PASSWORD` 环境变量，则自动以 `postgres` profile 启动，连接 `security_toolbox` 数据库。
+- 未检测到 PostgreSQL 或未提供 `POSTGRES_PASSWORD`，则回退使用内置 H2，不阻塞启动。
+- 设 `$env:TOOLBOX_USE_POSTGRES='0'` 可强制禁用 PostgreSQL，始终使用 H2。
+
+需要数据库实例时，用仓库根目录的 `compose.yaml` 启动：
+
+```powershell
+docker compose up -d postgres
+```
+
+务必保证 `compose.yaml` 中的 `POSTGRES_PASSWORD` 与启动脚本读取的 `POSTGRES_PASSWORD` 一致。
+
+依赖检测页面会显示「当前数据库：PostgreSQL / H2」，方便确认后端实际使用的存储。
+
 ## 主要能力
 
 - 项目和授权目标治理，包括授权声明、有效期、状态和端口范围。

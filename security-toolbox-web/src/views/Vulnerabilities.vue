@@ -36,8 +36,8 @@ const rules = ref<DetectionRule[]>([]);
 const targets = ref<Target[]>([]);
 const selected = ref<VulnerabilityDefinition>();
 type CatalogSyncCommand = ScannerSource | "ALL";
-type ActiveScannerSource = ScannerSource;
-const scannerSources: ScannerSource[] = ["NUCLEI", "AFROG", "XRAY"];
+type ActiveScannerSource = Exclude<ScannerSource, "MSF">;
+const scannerSources: ScannerSource[] = ["NUCLEI", "AFROG", "XRAY", "MSF"];
 const activeScannerSources: ActiveScannerSource[] = [
   "NUCLEI",
   "AFROG",
@@ -47,6 +47,7 @@ const scannerTools = new Set([
   "nuclei_scan",
   "afrog_scan",
   "xray_scan",
+  "zap_scan",
 ]);
 const query = ref("");
 const severityFilter = ref("");
@@ -166,6 +167,7 @@ const catalogSyncing = computed(
     Boolean(stats.value?.syncing) ||
     Boolean(stats.value?.afrogSyncing) ||
     Boolean(stats.value?.xraySyncing) ||
+    Boolean(stats.value?.msfSyncing) ||
     Object.values(sourceSyncProgress.value).some((item) => item?.active),
 );
 
@@ -330,6 +332,7 @@ function sourceLabel(source?: string) {
   if (source === "NUCLEI") return "Nuclei";
   if (source === "AFROG") return "Afrog";
   if (source === "XRAY") return "Xray";
+  if (source === "MSF") return "Metasploit";
   return "獬豸内置";
 }
 
@@ -350,7 +353,8 @@ function scannerSourceForTool(
 function dependencyNameForSource(source: ScannerSource) {
   if (source === "NUCLEI") return "Nuclei";
   if (source === "AFROG") return "Afrog";
-  return "Xray";
+  if (source === "XRAY") return "Xray";
+  return "Metasploit";
 }
 
 function isDependencyReady(item?: DependencyStatus) {
@@ -369,7 +373,25 @@ function dependencyForSource(source: ScannerSource) {
   );
 }
 
-function sourceDependencyReady(source: ActiveScannerSource) {
+function dependencyByName(name: string): DependencyStatus | undefined {
+  const expected = name.toLowerCase();
+  return dependencies.value.find(
+    (item) => item.name?.toLowerCase() === expected,
+  );
+}
+
+function toolDependencyName(toolCode: string): string | undefined {
+  if (toolCode === "nuclei_scan") return "Nuclei";
+  if (toolCode === "afrog_scan") return "Afrog";
+  if (toolCode === "xray_scan") return "Xray";
+  if (toolCode === "zap_scan") return "OWASP ZAP";
+  if (toolCode === "nmap_service_scan") return "Nmap";
+  if (toolCode === "fscan_scan") return "fscan";
+  if (toolCode === "msf_scan") return "Metasploit";
+  return undefined;
+}
+
+function sourceDependencyReady(source: ScannerSource) {
   return isDependencyReady(dependencyForSource(source));
 }
 
@@ -409,11 +431,15 @@ function ruleDisabledReason(rule: DetectionRule) {
   if (isFullPortTarget.value && rule.toolCode === "tcp_ports")
     return "全端口不能使用逐端口 TCP 探测，请改用 Nmap";
   const source = scannerSourceForTool(rule.toolCode);
-  if (!source) return "";
-  if (!sourceDependencyReady(source))
-    return `未安装 ${sourceLabel(source)}，请先到依赖检测安装`;
-  if (!sourceCatalogReady(source))
-    return `未同步 ${sourceLabel(source)} 模板/PoC，请先同步漏洞库`;
+  if (source) {
+    if (!sourceDependencyReady(source))
+      return `未安装 ${sourceLabel(source)}，请先到依赖检测安装`;
+    if (!sourceCatalogReady(source))
+      return `未同步 ${sourceLabel(source)} 模板/PoC，请先同步漏洞库`;
+  }
+  const dependencyName = toolDependencyName(rule.toolCode);
+  if (dependencyName && !isDependencyReady(dependencyByName(dependencyName)))
+    return `未安装 ${dependencyName}，请先到依赖检测安装`;
   return "";
 }
 
@@ -508,12 +534,15 @@ function applyDependencyStatus(data?: {
   dependencyLoadFailed.value = !data;
 }
 
-async function refreshDependencyStatus(forceRefresh = false) {
+async function refreshDependencyStatus(forceRefresh = false, guard = 0) {
+  const gen = guard !== 0 ? guard : ++dependencyGen;
   try {
     const { data } = await endpoints.dependencies(forceRefresh);
+    if (guard !== 0 && gen !== dependencyGen) return false;
     applyDependencyStatus(data);
     return true;
   } catch {
+    if (guard !== 0 && gen !== dependencyGen) return false;
     applyDependencyStatus();
     return false;
   }
@@ -523,6 +552,34 @@ async function refreshDependencyStatus(forceRefresh = false) {
 // from the 5s sync poll racing a user page click) are discarded instead of
 // overwriting newer results or fighting each other.
 let loadGen = 0;
+// 独立的依赖状态代际：依赖探测可能很慢（Metasploit 冷启动），通过后台异步刷新而不能阻塞
+// 页面首要数据渲染。用独立代际防止一次慢速探测的结果覆盖更晚一次刷新后的状态。
+let dependencyGen = 0;
+
+// 逐条渐进显示：列表加载后逐条浮现，配合"已显示 N / 共 M 条"计数与完成提示。
+const revealUntil = ref(0);
+let revealTotal = 0;
+let revealTimer: number | undefined;
+
+function startReveal(count: number) {
+  window.clearInterval(revealTimer);
+  revealUntil.value = 0;
+  revealTotal = Math.max(0, count);
+  if (revealTotal <= 0) return;
+  revealTimer = window.setInterval(() => {
+    revealUntil.value += 1;
+    if (revealUntil.value >= revealTotal) {
+      window.clearInterval(revealTimer);
+      revealTimer = undefined;
+      revealUntil.value = revealTotal;
+    }
+  }, 30);
+}
+
+function stopReveal() {
+  window.clearInterval(revealTimer);
+  revealTimer = undefined;
+}
 
 async function load() {
   loading.value = true;
@@ -534,7 +591,6 @@ async function load() {
       ruleResponse,
       targetResponse,
       projectResponse,
-      dependencyResponse,
     ] = await Promise.all([
       endpoints.vulnerabilities({
         page: page.value,
@@ -550,7 +606,6 @@ async function load() {
       endpoints.detectionRules(),
       endpoints.targets(),
       endpoints.projects(),
-      endpoints.dependencies().catch(() => undefined),
     ]);
     if (gen !== loadGen) return;
     const content = vulnerabilityResponse.data.content || [];
@@ -577,10 +632,13 @@ async function load() {
       // a Nuclei sync). Show the empty page rather than recursively reloading — the
       // sync poll or next navigation will refresh the list shortly.
     }
+    startReveal(vulnerabilities.value.length);
     stats.value = statsResponse.data;
     rules.value = ruleResponse.data;
     targets.value = targetResponse.data;
-    applyDependencyStatus(dependencyResponse?.data);
+    // 依赖状态改为后台异步刷新：不并入上面的 Promise.all，避免最慢的 Metasploit 探测
+    // 阻塞漏洞知识库列表的首次渲染。结果就绪后（去重保护）再更新规则可用性等派生状态。
+    void refreshDependencyStatus(false, ++dependencyGen);
     const activeProjects = projectResponse.data.filter(
       (item) => item.status === "ACTIVE",
     );
@@ -753,7 +811,7 @@ async function syncOfficialCatalog(command: CatalogSyncCommand = "NUCLEI") {
   try {
     await ElMessageBox.confirm(
       command === "ALL"
-        ? "将检查 Nuclei、Afrog、Xray 及其漏洞目录的官方稳定版本；仅在发现新版本时下载，随后导入漏洞元数据。不会自动执行任何 PoC。"
+        ? "将检查 Nuclei、Afrog、Xray、Metasploit 及其漏洞目录的官方稳定版本；仅在发现新版本时下载，随后导入漏洞元数据。Metasploit 由本机 Framework 枚举模块，不会下载或执行任何 PoC。"
         : `将检查 ${sources.map(sourceLabel).join("、")} 及其漏洞目录的官方稳定版本；仅在发现新版本时下载，随后导入漏洞元数据。不会自动执行任何 PoC。`,
       "同步漏洞目录",
       {
@@ -930,7 +988,7 @@ onMounted(async () => {
           <b>漏洞知识库</b
            ><small>{{
              stats
-               ? `${stats.total} 条 · Nuclei ${stats.nuclei} · Afrog ${stats.afrog} · Xray ${stats.xray}`
+               ? `${stats.total} 条 · Nuclei ${stats.nuclei} · Afrog ${stats.afrog} · Xray ${stats.xray} · MSF ${stats.msf}`
                : `${total} 条`
            }}</small>
          </div>
@@ -979,6 +1037,11 @@ onMounted(async () => {
                   command="XRAY"
                   :disabled="sourceSyncDisabled('XRAY')"
                   >{{ syncMenuLabel("XRAY") }}</el-dropdown-item
+                >
+                <el-dropdown-item
+                  command="MSF"
+                  :disabled="sourceSyncDisabled('MSF')"
+                  >{{ syncMenuLabel("MSF") }}</el-dropdown-item
                 >
                 <el-dropdown-item
                   divided
@@ -1055,6 +1118,7 @@ onMounted(async () => {
             <el-option label="Nuclei 模板" value="NUCLEI" />
             <el-option label="Afrog PoC" value="AFROG" />
             <el-option label="Xray PoC" value="XRAY" />
+            <el-option label="Metasploit 模块" value="MSF" />
           </el-select>
           <el-input
             v-model="yearFilter"
@@ -1091,7 +1155,8 @@ onMounted(async () => {
           漏洞知识库为空，请点击右上角同步导入 Nuclei、Afrog 或 Xray 的官方漏洞库。
         </div>
         <button
-          v-for="item in vulnerabilities"
+          v-for="(item, index) in vulnerabilities"
+          v-show="index < revealUntil"
           :key="item.id"
           type="button"
           :class="{ active: selected?.id === item.id }"
@@ -1116,6 +1181,12 @@ onMounted(async () => {
             ></small
           >
         </button>
+      </div>
+      <div v-if="vulnerabilities.length" class="catalog-reveal-status">
+        <template v-if="revealUntil < vulnerabilities.length">
+          已显示 {{ revealUntil }} / {{ vulnerabilities.length }} 条，逐条加载中…
+        </template>
+        <template v-else>本页已加载完毕（共 {{ vulnerabilities.length }} 条）</template>
       </div>
       <footer class="catalog-pagination">
         <el-pagination
@@ -1528,6 +1599,11 @@ onMounted(async () => {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
+}
+.catalog-reveal-status {
+  padding: 6px 13px 8px;
+  font-size: 12px;
+  color: #6b7280;
 }
 .catalog-list button {
   position: relative;

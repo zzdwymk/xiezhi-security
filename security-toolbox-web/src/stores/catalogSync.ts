@@ -13,11 +13,12 @@ import {
 } from "../api";
 import { toErrorMessage } from "../utils/errorMessage";
 
-export type ScannerSource = "NUCLEI" | "AFROG" | "XRAY";
+export type ScannerSource = "NUCLEI" | "AFROG" | "XRAY" | "MSF";
 
 /** Sources backed by an on-disk catalog with no remote binary to install. */
 function isSelfHostedSource(source: ScannerSource) {
-  return false;
+  // MSF 是超大 Ruby 应用+服务，无可直接下发的单 exe 分包；由本机 msfconsole 驱动，跳过下载安装步骤。
+  return source === "MSF";
 }
 
 export interface CatalogLocalSyncStage {
@@ -38,6 +39,7 @@ const sourceLabels: Record<ScannerSource, string> = {
   NUCLEI: "Nuclei",
   AFROG: "Afrog",
   XRAY: "Xray",
+  MSF: "Metasploit",
 };
 
 function dependenciesFrom(data: SystemDependenciesResponse) {
@@ -67,7 +69,8 @@ function sourceDependencyReady(
 function catalogCount(stats: VulnerabilityCatalogStats, source: ScannerSource) {
   if (source === "NUCLEI") return Number(stats.nuclei || 0);
   if (source === "AFROG") return Number(stats.afrog || 0);
-  return Number(stats.xray || 0);
+  if (source === "XRAY") return Number(stats.xray || 0);
+  return Number(stats.msf || 0);
 }
 
 async function importCatalogSource(
@@ -75,7 +78,8 @@ async function importCatalogSource(
 ): Promise<CatalogSyncResult> {
   if (source === "NUCLEI") return (await endpoints.syncNucleiCatalog()).data;
   if (source === "AFROG") return (await endpoints.syncAfrogCatalog()).data;
-  return (await endpoints.syncXrayCatalog()).data;
+  if (source === "XRAY") return (await endpoints.syncXrayCatalog()).data;
+  return (await endpoints.syncMsfCatalog()).data;
 }
 
 async function runBounded<T>(

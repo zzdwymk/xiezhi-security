@@ -157,6 +157,7 @@ class WorkflowRunServiceTests {
             new SystemDependenciesResponse(
                 "test",
                 "test",
+                "H2",
                 List.of(new DependencyStatus("Nmap", "MISSING", "", "", true, "scanner", ""))));
 
     assertThatThrownBy(() -> service.start(startRequest(List.of(), List.of())))
@@ -423,6 +424,7 @@ class WorkflowRunServiceTests {
     return new SystemDependenciesResponse(
         "test",
         "test",
+        "H2",
         List.of(new DependencyStatus("Nmap", "AVAILABLE", "1", "nmap", true, "scanner", "")));
   }
 }

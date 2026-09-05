@@ -10,6 +10,7 @@ const AI_TOOL_LABELS: Readonly<Record<string, string>> = {
   nuclei_scan: "Nuclei 通用漏洞扫描",
   afrog_scan: "Afrog 漏洞扫描",
   xray_scan: "Xray 漏洞扫描",
+  zap_scan: "OWASP ZAP 主动扫描",
   fscan_scan: "fscan 主机扫描",
   msf_scan: "Metasploit 模块执行",
 };

@@ -107,6 +107,7 @@ const SCHEDULE_TOOL_OPTIONS = [
   { value: "nuclei_scan", label: "Nuclei 漏洞扫描" },
   { value: "afrog_scan", label: "Afrog PoC 扫描" },
   { value: "xray_scan", label: "Xray PoC 扫描" },
+  { value: "zap_scan", label: "OWASP ZAP 主动扫描" },
 ] as const;
 const HTTP_SECURITY_CHECK_OPTIONS = [
   { value: "cookies", label: "Cookie 安全属性" },

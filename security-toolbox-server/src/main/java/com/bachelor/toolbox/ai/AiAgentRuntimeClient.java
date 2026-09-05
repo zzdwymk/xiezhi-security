@@ -54,7 +54,8 @@ public class AiAgentRuntimeClient {
           "tls_config",
           "nuclei_scan",
           "afrog_scan",
-          "xray_scan");
+          "xray_scan",
+          "zap_scan");
   private static final List<String> ACTIVE_TASK_STATUSES = List.of("BLOCKED", "PENDING", "RUNNING");
   private static final List<String> PROJECT_INDEX_SOURCES =
       List.of("project", "target", "task", "finding", "recon", "probe", "conversation");
@@ -1066,6 +1067,7 @@ public class AiAgentRuntimeClient {
           case "nmap_service_scan" -> Set.of("ports", "mode");
           case "http_security_check" -> Set.of("check");
           case "afrog_scan", "xray_scan" -> Set.of("pocCodes", "allPocs");
+          case "zap_scan" -> Set.of("spider", "strength");
           case "nuclei_scan", "http_headers", "tls_config" -> Set.of();
           default -> throw new RuntimeProtocolException("AI Runtime 工具不在白名单");
         };
@@ -1091,6 +1093,21 @@ public class AiAgentRuntimeClient {
         result.put("check", check);
       }
       case "afrog_scan", "xray_scan" -> result.putAll(strictPocSelection(raw));
+      case "zap_scan" -> {
+        if (raw.has("spider")) {
+          if (!raw.path("spider").isBoolean()) {
+            throw new RuntimeProtocolException("AI Runtime zap_scan spider 参数无效");
+          }
+          result.put("spider", raw.path("spider").booleanValue());
+        }
+        if (raw.has("strength")) {
+          String strength = strictText(raw, "strength", 20);
+          if (!Set.of("LOW", "MEDIUM", "HIGH", "INSANE").contains(strength)) {
+            throw new RuntimeProtocolException("AI Runtime zap_scan strength 无效");
+          }
+          result.put("strength", strength);
+        }
+      }
       case "nuclei_scan", "http_headers", "tls_config" -> {}
       default -> throw new RuntimeProtocolException("AI Runtime 工具不在白名单");
     }
@@ -1185,6 +1202,7 @@ public class AiAgentRuntimeClient {
       case "nuclei_scan" -> "Nuclei 安全模板检测";
       case "afrog_scan" -> "Afrog PoC 漏洞扫描";
       case "xray_scan" -> "Xray PoC 漏洞扫描";
+      case "zap_scan" -> "OWASP ZAP 主动扫描";
       case "tcp_ports" -> "授权端口探测";
       case "http_headers" -> "HTTP 安全响应头检查";
       case "http_security_check" -> "HTTP 常见安全检查";

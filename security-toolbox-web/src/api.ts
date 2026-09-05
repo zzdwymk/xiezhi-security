@@ -195,6 +195,7 @@ export interface DependencyStatus {
 export interface SystemDependenciesResponse {
   os?: string;
   arch?: string;
+  database?: string;
   dependencies?: DependencyStatus[];
   items?: DependencyStatus[];
   developmentMode?: boolean;
@@ -506,7 +507,7 @@ export interface VulnerabilityCatalogSyncResult {
 
 export interface ScannerPocCatalogSyncResult {
   status: string;
-  sourceType: "AFROG" | "XRAY";
+  sourceType: "AFROG" | "XRAY" | "MSF";
   pocsPath: string;
   sourceVersion: string;
   discovered: number;
@@ -525,6 +526,7 @@ export interface VulnerabilityCatalogStats {
   nuclei: number;
   afrog: number;
   xray: number;
+  msf: number;
   knownExploited: number;
   safeToScan: number;
   templatesAvailable: boolean;
@@ -536,10 +538,13 @@ export interface VulnerabilityCatalogStats {
   xraySyncing: boolean;
   lastAfrogSync?: ScannerPocCatalogSyncResult;
   lastXraySync?: ScannerPocCatalogSyncResult;
+  msfModulesAvailable: number;
+  msfSyncing: boolean;
+  lastMsfSync?: ScannerPocCatalogSyncResult;
 }
 
 export interface CatalogSyncProgress {
-  source: "NUCLEI" | "AFROG" | "XRAY";
+  source: "NUCLEI" | "AFROG" | "XRAY" | "MSF";
   stage:
     | "IDLE"
     | "PREPARING"
@@ -547,7 +552,8 @@ export interface CatalogSyncProgress {
     | "IMPORTING"
     | "FINALIZING"
     | "COMPLETED"
-    | "FAILED";
+    | "FAILED"
+    | "RUNNING";
   processed: number;
   total: number;
   message: string;
@@ -1005,6 +1011,12 @@ export const endpoints = {
   syncXrayCatalog: () =>
     api.post<ScannerPocCatalogSyncResult>(
       "/vulnerabilities/sync/xray",
+      undefined,
+      { timeout: 10 * 60_000 },
+    ),
+  syncMsfCatalog: () =>
+    api.post<ScannerPocCatalogSyncResult>(
+      "/vulnerabilities/sync/msf",
       undefined,
       { timeout: 10 * 60_000 },
     ),
