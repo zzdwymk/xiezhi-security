@@ -92,6 +92,7 @@ jobs:
       JWT_SECRET: ci-only-jwt-secret-with-more-than-thirty-two-bytes
       TRAFFIC_MITM_CA_PASSWORD: ci-only-mitm-ca-password
       TRAFFIC_MITM_ENABLED: "false"
+      ALLOW_PUBLIC_TARGETS: "true"
       AI_ENABLED: "false"
       AI_RUNTIME_ENABLED: "false"
       RECON_PASSIVE_SOURCES_ENABLED: "false"

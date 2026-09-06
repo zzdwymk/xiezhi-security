@@ -1210,10 +1210,12 @@ const INSTALLABLE_PACKAGES = Object.freeze({
     executable: "zap.bat",
     // 相对解压后根目录的启动脚本路径（解压出的 zap 顶层目录名可变，运行时探测）。
     executableSearchNames: ["zap.bat", "zap.sh"],
-    // GitHub release asset 前缀；Windows 包形如 zaproxy_2.14.0_windows.zip。
+    // GitHub release 里的跨平台 zip（含 Windows 启动脚本 zap.bat / Linux zap.sh）。
+    // ZAP 2.x 的 Windows 资产是 .exe 安装器（无 zip），且较新版本不再发布独立 windows.zip，
+    // 因此统一使用 ZAP_<版本>_Crossplatform.zip，可在各平台解压直接运行。
     assetName: (version) => {
       const short = version.replace(/^[v]/, "");
-      return `zaproxy_${short}_windows.zip`;
+      return `ZAP_${short}_Crossplatform.zip`;
     },
     checksumName: () => "",
     releaseMode: "latest-semver-match",
@@ -2540,7 +2542,7 @@ function matchingReleaseAssets(release, definition, version) {
 async function fetchOfficialPackageRelease(definition) {
   const listMode = definition.releaseMode === "latest-semver-match";
   const apiUrl = listMode
-    ? `https://api.github.com/repos/${definition.repository}/releases?per_page=30`
+    ? `https://api.github.com/repos/${definition.repository}/releases?per_page=100`
     : `https://api.github.com/repos/${definition.repository}/releases/latest`;
   const response = await fetchDependencyResource(apiUrl, {
     headers: githubApiHeaders(),
@@ -2549,7 +2551,7 @@ async function fetchOfficialPackageRelease(definition) {
   allowedResponseHost(response, apiUrl, ["api.github.com"]);
   const payload = await response.json();
   if (!listMode) return payload;
-  if (!Array.isArray(payload) || payload.length > 30)
+  if (!Array.isArray(payload) || payload.length > 100)
     throw new UserFacingError("官方发布列表格式异常");
   const release = payload.find((candidate) => {
     const parsed = stableReleaseVersion(candidate);
@@ -2589,10 +2591,12 @@ async function resolveLatestPackage(definition) {
     throw new UserFacingError("最新发布版的官方校验文件不唯一");
   const archiveAsset = archiveMatches[0];
   const checksumAsset = checksumMatches[0];
+  const maxArchiveCeiling =
+    definition.maxArchiveBytes || 150 * 1024 * 1024;
   if (
     !archiveAsset.browser_download_url ||
     Number(archiveAsset.size) < 1 ||
-    Number(archiveAsset.size) > 150 * 1024 * 1024 ||
+    Number(archiveAsset.size) > maxArchiveCeiling ||
     (checksumAsset &&
       (Number(checksumAsset.size) < 1 ||
         Number(checksumAsset.size) > 2 * 1024 * 1024))
@@ -3346,11 +3350,19 @@ async function installPortableDependency(
       const installedMetadata = readJsonFile(
         path.join(targetDir, ".toolbox-source.json"),
       );
+      const payloadExists = isRegularFile(
+        definition.portableTree === true
+          ? findExecutableInTree(
+              targetDir,
+              definition.executableSearchNames || [definition.executable],
+            ) || targetExecutable
+          : targetExecutable,
+      );
       const installedState = evaluateInstalledRelease({
         metadata: installedMetadata,
         repository: release.repository,
         latestVersion: release.version,
-        payloadExists: isRegularFile(targetExecutable),
+        payloadExists,
       });
       if (installedState.upToDate) {
         if (refreshCatalog) {

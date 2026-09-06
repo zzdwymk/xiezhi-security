@@ -174,12 +174,63 @@ final class LocalZapDaemon implements ZapDaemon {
 
   @Override
   public void includeInScope(URI target) throws Exception {
-    String contextName = "xiezhi-" + Integer.toHexString((host + port).hashCode() & 0x7fffffff);
+    String contextName = contextName();
     getJsonRequired("context/action/newContext", Map.of("contextName", contextName));
     String origin = target.getScheme() + "://" + zone(target);
     getJsonRequired(
         "context/action/includeInContext",
         Map.of("contextName", contextName, "regex", escape(origin)));
+  }
+
+  // 该 daemon 实例复用的默认上下文名：与 host/端口绑定，认证与范围共用同一上下文。
+  private String contextName() {
+    return "xiezhi-" + Integer.toHexString((host + port).hashCode() & 0x7fffffff);
+  }
+
+  @Override
+  public void configureFormAuthentication(FormAuthSpec spec) throws Exception {
+    if (spec == null) {
+      return;
+    }
+    String contextName = spec.contextName() == null || spec.contextName().isBlank()
+        ? contextName()
+        : spec.contextName();
+    String config =
+        "loginPageUrl=" + urlEncoded(spec.loginPageUrl())
+            + "&loginRequestUrl=" + urlEncoded(spec.loginRequestUrl());
+    // 表单认证配置：设定认证方法 -> 设定会话管理 -> 写入凭据。任一步失败都不阻塞扫描，
+    // 未登录时也能退化为传统（未认证）扫描。
+    try {
+      getJsonRequired(
+          "context/action/setAuthenticationMethod",
+          Map.of(
+              "contextName", contextName,
+              "authMethodName", "formBasedAuthentication",
+              "authMethodConfigParams", config));
+      getJsonRequired(
+          "context/action/setSessionManagementMethod",
+          Map.of(
+              "contextName", contextName,
+              "sessionManagementMethodName", "httpBasedSessionManagement"));
+      getJsonRequired(
+          "authentication/action/setAuthenticationCredentials",
+          Map.of(
+              "contextName", contextName,
+              "credentials", spec.postData() == null ? "" : spec.postData()));
+    } catch (Exception ex) {
+      LOGGER.warn("ZAP 表单认证配置未完全生效，将退化为未认证扫描: {}", ex.getMessage());
+    }
+  }
+
+  private static String urlEncoded(String value) {
+    if (value == null) {
+      return "";
+    }
+    try {
+      return URI.create(value).toString();
+    } catch (Exception ex) {
+      return value;
+    }
   }
 
   @Override
@@ -196,6 +247,64 @@ final class LocalZapDaemon implements ZapDaemon {
   @Override
   public int spiderProgress(String taskId) throws Exception {
     return (int) status("spider/view/status", taskId);
+  }
+
+  @Override
+  public void startAjaxSpider(URI target) throws Exception {
+    getJsonRequired("ajaxSpider/action/scanRun", Map.of("url", target.toString()));
+  }
+
+  @Override
+  public String ajaxSpiderState() throws Exception {
+    JsonNode status = getJson("ajaxSpider/view/status", Map.of());
+    JsonNode results = getJson("ajaxSpider/view/numberOfResults", Map.of());
+    String text = status == null ? "" : status.path("status").asText("");
+    int count = results == null ? 0 : results.path("count").asInt(0);
+    return text + ";number=" + count + ";running=" + (!text.endsWith("stopped"));
+  }
+
+  @Override
+  public String startFuzz(FuzzSpec spec) throws Exception {
+    if (spec == null || spec.target() == null || spec.requestUrl() == null) {
+      return "";
+    }
+    // ZAP fuzzer 需要先 newFuzzer 注册目标消息，再按 payload 触发 scan。这里的字段在不同
+    // ZAP 版本间有差异，全部包在该 try 内：失败时返回空 id，由调用方按“无可执行 fuzz”降级。
+    try {
+      String newFuzzerParams = "url=" + spec.requestUrl();
+      String id = postJsonText("fuzzer/action/newFuzzer", newFuzzerParams);
+      if (id == null || id.isBlank()) {
+        return "";
+      }
+      Map<String, String> params = new LinkedHashMap<>();
+      params.put("fuzzers", "1");
+      params.put("message", spec.postBody() == null ? "" : spec.postBody());
+      params.put("method", "POST");
+      params.put("postMessage", spec.targetField() == null ? "" : spec.targetField());
+      JsonNode json = postJson("fuzzer/action/scan", params);
+      if (json == null) {
+        return "";
+      }
+      return json.path("scanId").asText("");
+    } catch (Exception ex) {
+      throw new ApiException("ZAP fuzz 启动失败（可能版本差异或不支持的 payload）: " + ex.getMessage());
+    }
+  }
+
+  @Override
+  public String fuzzStatus(String fuzzId) throws Exception {
+    Map<String, String> params = new LinkedHashMap<>();
+    params.put("scanId", fuzzId);
+    try {
+      JsonNode status = getJson("fuzzer/view/status", params);
+      String text = status == null ? "" : status.path("status").asText("");
+      if (text.isBlank()) {
+        text = "stopped";
+      }
+      return text + ";id=" + fuzzId;
+    } catch (Exception ex) {
+      return "stopped;id=" + fuzzId;
+    }
   }
 
   private double status(String path, String taskId) throws Exception {
@@ -217,10 +326,18 @@ final class LocalZapDaemon implements ZapDaemon {
 
   @Override
   public String startActiveScan(URI target) throws Exception {
+    return startActiveScan(target, null);
+  }
+
+  @Override
+  public String startActiveScan(URI target, String scanPolicyName) throws Exception {
     Map<String, String> params = new LinkedHashMap<>();
     params.put("url", target.toString());
     params.put("recurse", "true");
     params.put("inScopeOnly", "false");
+    if (scanPolicyName != null && !scanPolicyName.isBlank()) {
+      params.put("scanPolicyName", scanPolicyName);
+    }
     JsonNode json = getJson("ascan/action/scan", params);
     JsonNode scan = json == null ? null : json.get("scan");
     return scan == null || scan.isNull() ? "" : scan.asText();
@@ -260,13 +377,15 @@ final class LocalZapDaemon implements ZapDaemon {
       risk = node.path("riskdesc").asText("");
     }
     String cwe = node.path("cweid").asText("");
+    int sourceId = node.path("sourceid").asInt(0);
     return new ZapAlert(
         url,
         title,
         normalizeRisk(risk),
         node.path("confidence").path("desc").asText(""),
         cwe.isBlank() ? null : "CWE-" + cwe,
-        node.path("description").asText(""));
+        node.path("description").asText(""),
+        sourceId);
   }
 
   private String normalizeRisk(String risk) {
@@ -326,6 +445,47 @@ final class LocalZapDaemon implements ZapDaemon {
     } catch (Exception ex) {
       throw new ApiException("无法解析 ZAP REST 响应");
     }
+  }
+
+  private JsonNode postJson(String path, Map<String, String> params) {
+    try {
+      return objectMapper.readTree(postBody(path, params));
+    } catch (Exception ex) {
+      return null;
+    }
+  }
+
+  private String postJsonText(String path, String rawParams) {
+    try {
+      String body = postBodyRaw(path, rawParams);
+      JsonNode root = objectMapper.readTree(body);
+      return root.path("fuzzerId").asText(
+          root.path("scanId").asText(""));
+    } catch (Exception ex) {
+      return "";
+    }
+  }
+
+  private String postBody(String path, Map<String, String> params) throws Exception {
+    StringBuilder query = new StringBuilder("apikey=").append(apiKey);
+    if (params != null) {
+      for (Map.Entry<String, String> entry : params.entrySet()) {
+        query.append('&').append(entry.getKey()).append('=').append(enc(entry.getValue()));
+      }
+    }
+    return postBodyRaw(path, query.toString());
+  }
+
+  private String postBodyRaw(String path, String rawBody) throws Exception {
+    URI uri = URI.create(
+        "http://" + host + ":" + port + "/json/" + stripLeadingSlash(path));
+    HttpRequest request =
+        HttpRequest.newBuilder(uri)
+            .timeout(Duration.ofSeconds(30))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .POST(HttpRequest.BodyPublishers.ofString(rawBody, StandardCharsets.UTF_8))
+            .build();
+    return httpClient.send(request, HttpResponse.BodyHandlers.ofString()).body();
   }
 
   private HttpResponse<String> httpGetJson(String path, Map<String, String> params) throws Exception {

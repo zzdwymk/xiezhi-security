@@ -23,18 +23,21 @@ public class TrafficProxyController {
   private final TrafficReplayService replay;
   private final TrafficCaptureFilterService filters;
   private final TrafficAiChatService chat;
+  private final TrafficFuzzService fuzz;
 
   public TrafficProxyController(
       TrafficProxyService proxy,
       TrafficAnalysisService analysis,
       TrafficReplayService replay,
       TrafficCaptureFilterService filters,
-      TrafficAiChatService chat) {
+      TrafficAiChatService chat,
+      TrafficFuzzService fuzz) {
     this.proxy = proxy;
     this.analysis = analysis;
     this.replay = replay;
     this.filters = filters;
     this.chat = chat;
+    this.fuzz = fuzz;
   }
 
   @GetMapping("/status")
@@ -88,6 +91,12 @@ public class TrafficProxyController {
   public TrafficReplayService.ReplayResponse replay(
       @PathVariable Long id, @Valid @RequestBody TrafficReplayService.ReplayRequest request) {
     return replay.replay(id, request);
+  }
+
+  @PostMapping("/packets/{id}/fuzz")
+  public TrafficFuzzService.FuzzResponse fuzz(
+      @PathVariable Long id, @Valid @RequestBody TrafficFuzzService.FuzzRequest request) {
+    return fuzz.fuzz(id, request);
   }
 
   @PostMapping("/packets/{id}/chat")

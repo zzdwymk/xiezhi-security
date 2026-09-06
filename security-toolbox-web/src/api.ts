@@ -1041,6 +1041,7 @@ export const endpoints = {
     allPocSources?: Array<"NUCLEI" | "AFROG" | "XRAY">;
     ports?: string;
     vulnModes?: Record<string, string>;
+    toolParams?: Record<string, Record<string, string | number | boolean>>;
   }) =>
         api.post("/active-scans", payload, {
           // 全量 PoC 扫描需在后台校验/加载所有 PoC 文件，创建耗时可能远超默认超时

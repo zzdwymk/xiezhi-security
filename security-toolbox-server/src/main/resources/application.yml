@@ -90,7 +90,7 @@ toolbox:
     max-ports-per-task: 65535
     max-nmap-ports-per-task: 65535
     max-authorized-ports: 65535
-    allow-public-targets: ${ALLOW_PUBLIC_TARGETS:false}
+    allow-public-targets: ${ALLOW_PUBLIC_TARGETS:true}
     nmap-path: ${NMAP_PATH:nmap}
     nmap-timeout-seconds: 60
     nmap-full-timeout-seconds: 600

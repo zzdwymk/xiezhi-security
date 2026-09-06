@@ -92,11 +92,11 @@ class ZapScanToolTests {
         stubThatReachesDone(
             List.of(
                 new ZapDaemon.ZapAlert(
-                    "https://127.0.0.1:8443/login", "SQL Injection", "Medium", "Medium", null, "desc"),
+                    "https://127.0.0.1:8443/login", "SQL Injection", "Medium", "Medium", null, "desc", 0),
                 new ZapDaemon.ZapAlert(
-                    "https://127.0.0.1:8443/", "XSS", "High", "High", "CWE-79", "desc"),
+                    "https://127.0.0.1:8443/", "XSS", "High", "High", "CWE-79", "desc", 1),
                 new ZapDaemon.ZapAlert(
-                    "https://192.0.2.10:8443/evil", "OutOfScope", "Critical", "High", "CWE-1", "desc")));
+                    "https://192.0.2.10:8443/evil", "OutOfScope", "Critical", "High", "CWE-1", "desc", 1)));
 
     ToolExecutionResult result = tool(daemon).execute(target(), Map.of(), ToolExecutionObserver.NOOP);
 
@@ -119,7 +119,7 @@ class ZapScanToolTests {
         stubThatReachesDone(
             List.of(
                 new ZapDaemon.ZapAlert(
-                    "https://127.0.0.1:8443/a", "Low risk", "Medium (Medium)", "Confirmed", "CWE-200", "x")));
+                    "https://127.0.0.1:8443/a", "Low risk", "Medium (Medium)", "Confirmed", "CWE-200", "x", 0)));
 
     ToolExecutionResult result = tool(daemon).execute(target(), Map.of(), ToolExecutionObserver.NOOP);
 

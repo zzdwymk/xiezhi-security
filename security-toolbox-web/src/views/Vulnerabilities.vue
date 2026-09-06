@@ -534,12 +534,26 @@ function applyDependencyStatus(data?: {
   dependencyLoadFailed.value = !data;
 }
 
+// 本会话内是否已经用最新依赖刷新过一次 stats。依赖探测可能很慢，一旦首个依赖结果回传，
+// 立即补一次 stats 拉取，让 sourceCatalogReady/count 尽快准确，避免“一打开没有扫描器”的空窗。
+let statsRefreshedForFreshDependency = false;
+
 async function refreshDependencyStatus(forceRefresh = false, guard = 0) {
   const gen = guard !== 0 ? guard : ++dependencyGen;
   try {
     const { data } = await endpoints.dependencies(forceRefresh);
     if (guard !== 0 && gen !== dependencyGen) return false;
     applyDependencyStatus(data);
+    if (!statsRefreshedForFreshDependency && (data?.dependencies || data?.items)) {
+      statsRefreshedForFreshDependency = true;
+      try {
+        const { data: fresh } = await endpoints.vulnerabilityStats();
+        if (guard !== 0 && gen !== dependencyGen) return true;
+        stats.value = fresh;
+      } catch {
+        // 统计失败不阻断：规则可用性仍由现有 stats 兜底。
+      }
+    }
     return true;
   } catch {
     if (guard !== 0 && gen !== dependencyGen) return false;
@@ -1451,7 +1465,7 @@ onMounted(async () => {
             }}
           </p>
         </template>
-        <template v-if="includesFscan">
+<template v-if="includesFscan">
           <label>fscan 扫描模式</label>
           <el-radio-group v-model="fscanVulnMode" class="fscan-mode">
             <el-radio-button value="SAFE">安全</el-radio-button>
@@ -1770,6 +1784,12 @@ onMounted(async () => {
   font-size: 9px;
   line-height: 1.55;
   word-break: break-all;
+}
+.fuzz-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
 }
 .scan-summary {
   display: flex;

@@ -31,8 +31,44 @@ public interface ZapDaemon extends AutoCloseable {
    */
   void includeInScope(URI target) throws Exception;
 
-  /** Starts (or continues) the spider for the target and returns the spider task id. */
+  /** Starts the spider (crawler) for the target and returns the spider task id. */
   String startSpider(URI target) throws Exception;
+
+  /**
+   * Rooster AJAX spider for modern/SPA targets. The default is a no-op and returns immediately
+   * (no AJAX scanning); implementations that support the ZAP {@code ajaxSpider} view (such as
+   * {@link LocalZapDaemon}) override to actually drive it. AJAX spiders have no scalar completion,
+   * so callers poll state via {@link #ajaxSpiderState()}.
+   */
+  default void startAjaxSpider(URI target) throws Exception {}
+
+  /** Returns a textual AJAX-spider progress/state marker (e.g. "running"/"stopped"/"number=.."). */
+  default String ajaxSpiderState() throws Exception {
+    return "notSupported";
+  }
+
+  /**
+   * Drives the ZAP fuzzer for a single HTTP message against a target, returning a fuzz result id
+   * (or a blank string when unsupported). The default is a no-op; implementations that support the
+   * ZAP {@code fuzzer/action/scan} API (such as {@link LocalZapDaemon}) override.
+   */
+  default String startFuzz(FuzzSpec spec) throws Exception {
+    return "";
+  }
+
+  /** Polls a fuzz run; returns a status marker (e.g. "running"/"stopped"/"number=.."). */
+  default String fuzzStatus(String fuzzId) throws Exception {
+    return "stopped;number=0";
+  }
+
+  /** Parameters for a ZAP fuzzing attempt against an authorized Web target. */
+  record FuzzSpec(
+      URI target,
+      String requestUrl,
+      String method,
+      String postBody,
+      String payload,
+      String targetField) {}
 
   /** Polls the spider progress; returns percentage 0..100. */
   int spiderProgress(String taskId) throws Exception;
@@ -42,6 +78,18 @@ public interface ZapDaemon extends AutoCloseable {
 
   /** Starts the active scan policy on the target; returns the ascan id. */
   String startActiveScan(URI target) throws Exception;
+
+  /**
+   * Starts the active scan on the target using a named ZAP scan policy. Default delegates to {@link
+   * #startActiveScan(URI)}; implementations that support the ZAP {@code ascan/action/scan}
+   * {@code scanPolicyName} option (such as {@link LocalZapDaemon}) override to honour it.
+   *
+   * @param scanPolicyName the ZAP scan policy name (e.g. "Default Policy"), or {@code null} to use
+   *     ZAP's default behaviour.
+   */
+  default String startActiveScan(URI target, String scanPolicyName) throws Exception {
+    return startActiveScan(target);
+  }
 
   /** Polls the active scan progress; returns percentage 0..100. */
   int activeScanProgress(String scanId) throws Exception;
@@ -55,5 +103,28 @@ public interface ZapDaemon extends AutoCloseable {
   /** Immediately terminates the daemon process (used on cancellation / error). */
   void kill() throws Exception;
 
-  record ZapAlert(String url, String name, String risk, String confidence, String cweId, String description) {}
+  /**
+   * Configures form-based authentication so the daemon can log into the target before crawling and
+   * scanning. {@link #includeInScope} and this method share a context, so the authenticated session
+   * applies only to in-scope traffic. Default is a no-op so unauthenticated installs keep working.
+   */
+  default void configureFormAuthentication(FormAuthSpec spec) throws Exception {}
+
+  /** Credentials and form fields needed for ZAP form-based authentication. */
+  record FormAuthSpec(
+      String contextName,
+      String loginPageUrl,
+      String loginRequestUrl,
+      String usernameField,
+      String passwordField,
+      String postData) {}
+
+  record ZapAlert(
+      String url,
+      String name,
+      String risk,
+      String confidence,
+      String cweId,
+      String description,
+      int sourceId) {}
 }

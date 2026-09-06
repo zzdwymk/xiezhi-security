@@ -166,6 +166,97 @@ const replayInlineOpen = ref(false);
 const replayTabs = ref<ReplayTab[]>([]);
 const activeReplayTabId = ref("");
 let replayTabSequence = 0;
+
+interface FuzzHit {
+  payload: string;
+  statusCode?: number;
+  reason?: string;
+  durationMs?: number;
+  responseBytes?: number;
+  digestPrefix?: string;
+  effectiveStatus?: number;
+  changed?: boolean;
+}
+
+interface FuzzResult {
+  payloadCount?: number;
+  url?: string;
+  results?: FuzzHit[];
+}
+
+const fuzzForm = ref<ReplayForm>({
+  method: "GET",
+  url: "",
+  headers: "",
+  body: "",
+});
+const fuzzPayloads = ref("' OR '1'='1\n\" OR \"1\"=\"1\n'; DROP TABLE users;--\n\\x3Cscript>alert(1)\\x3C/script>\n../../../../etc/passwd\n%00\n\u0041\u0042\u0043");
+const fuzzRunning = ref(false);
+const fuzzResult = ref<FuzzResult>();
+const fuzzError = ref("");
+const fuzzPlaceholderHint = "\u00a7name\u00a7（在 URL、请求头或请求体中标记模糊点，每个 payload 会替换该占位符逐一重放）";
+
+const sessionSelection = ref<Set<number | string>>(new Set());
+const selectedSessionCount = computed(() => sessionSelection.value.size);
+const multiSelectMode = ref(false);
+const fuzzBatchWithSelection = ref(false);
+const fuzzBatchResults = ref<Record<string, FuzzResult>>({});
+const fuzzFocusPacketId = ref<number | string>();
+
+interface FuzzDictionary {
+  key: string;
+  label: string;
+  payloads: string[];
+}
+
+const FUZZ_DICTIONARIES: FuzzDictionary[] = [
+  {
+    key: "sqli",
+    label: "SQL 注入",
+    payloads: [
+      "' OR '1'='1",
+      "\" OR \"1\"=\"1",
+      "'; DROP TABLE users;--",
+      "' UNION SELECT NULL--",
+      "1 AND SLEEP(5)",
+    ],
+  },
+  {
+    key: "xss",
+    label: "XSS / 脚本",
+    payloads: [
+      "\\x3Cscript>alert(1)\\x3C/script>",
+      "<img src=x onerror=alert(1)>",
+      "javascript:alert(1)",
+      "\"><svg onload=alert(1)>",
+    ],
+  },
+  {
+    key: "path",
+    label: "路径遍历",
+    payloads: [
+      "../../../etc/passwd",
+      "..\\..\\windows\\win.ini",
+      "%2e%2e%2fetc%2fpasswd",
+      "/etc/passwd",
+    ],
+  },
+  {
+    key: "encoding",
+    label: "编码注入",
+    payloads: [
+      "%00",
+      "%27%20OR%20%271%27%3D%271",
+      "%5c%27",
+      "\\u003cscript\\u003e",
+    ],
+  },
+  {
+    key: "baseline",
+    label: "占位符清空",
+    payloads: [],
+  },
+];
 const captureFilterDialogVisible = ref(false);
 const captureFilters = ref<CaptureFilterRule[]>([]);
 const {
@@ -196,6 +287,25 @@ const trafficChatPrompt = ref("");
 const chatMessagesElement = ref<HTMLElement>();
 let refreshTimer: number | undefined;
 let removeCaptureBrowserListener: (() => void) | undefined;
+const sessionDropdownRefs = new Map<
+  string,
+  { handleClose?: () => void }
+>();
+let openSessionDropdownId = "";
+function setSessionDropdownRef(id: string, el: unknown) {
+  if (el) sessionDropdownRefs.set(id, el as { handleClose?: () => void });
+  else sessionDropdownRefs.delete(id);
+}
+function onSessionDropdownVisible(visible: boolean, id: string) {
+  if (visible) {
+    if (openSessionDropdownId && openSessionDropdownId !== id) {
+      sessionDropdownRefs.get(openSessionDropdownId)?.handleClose?.();
+    }
+    openSessionDropdownId = id;
+  } else if (openSessionDropdownId === id) {
+    openSessionDropdownId = "";
+  }
+}
 
 const selected = computed(() =>
   sessions.value.find((item) => item.id === selectedId.value),
@@ -534,12 +644,24 @@ const trafficSecurityPoints = computed(() => {
       "x-frame-options",
       "strict-transport-security",
     ].filter((h) => !respHeaders.includes(h));
-    points.push({
+points.push({
       label: "安全响应头",
       badge: missing.length ? `${missing.length}项缺失` : "配置齐全",
       value: missing.length ? "缺失：" : "常见安全头齐全",
       items: missing.length ? missing : undefined,
       level: missing.length ? "warn" : "ok",
+    });
+  }
+  const fuzzForPacket = fuzzBatchResults.value[String(packet.id)];
+  if (fuzzForPacket?.results?.length) {
+    const changed = fuzzForPacket.results.filter((hit) => hit.changed).length;
+    points.push({
+      label: "模糊命中",
+      badge: changed ? `${changed} 个变更` : "全部同基线",
+      value: changed
+        ? `本会话最近一轮模糊有 ${changed}/${fuzzForPacket.results.length} 个响应相对基线变化，建议在模糊器逐条重放并结合 AI 研判真反射。`
+        : `本会话最近一轮模糊 ${fuzzForPacket.results.length} 次响应均与基线一致。`,
+      level: changed ? "warn" : "ok",
     });
   }
   return points;
@@ -964,6 +1086,128 @@ function selectSession(item: TrafficSession) {
   void scrollTrafficChat();
 }
 
+let longPressTimer: number | undefined;
+let suppressClickId: number | string | undefined;
+let suppressClickUntil = 0;
+function cancelLongPress() {
+  if (longPressTimer) window.clearTimeout(longPressTimer);
+  longPressTimer = undefined;
+}
+function beginRowPress(item: TrafficSession, event?: PointerEvent) {
+  cancelLongPress();
+  if (event && event.button !== 0) return;
+  if (multiSelectMode.value) return;
+  longPressTimer = window.setTimeout(() => enterMultiSelect(item), 520);
+}
+
+function enterMultiSelect(item: TrafficSession) {
+  if (multiSelectMode.value) return;
+  multiSelectMode.value = true;
+  const next = new Set(sessionSelection.value);
+  next.add(item.id);
+  sessionSelection.value = next;
+  selectedId.value = item.id;
+  suppressClickId = item.id;
+  suppressClickUntil = Date.now() + 320;
+}
+
+function handleSessionClick(item: TrafficSession) {
+  cancelLongPress();
+  if (suppressClickId === item.id || Date.now() < suppressClickUntil) {
+    suppressClickId = undefined;
+    suppressClickUntil = 0;
+    return;
+  }
+  if (multiSelectMode.value) {
+    toggleSessionSelection(item);
+    return;
+  }
+  selectSession(item);
+}
+
+function isSessionSelected(id: number | string) {
+  return sessionSelection.value.has(id);
+}
+
+function toggleSessionSelection(item: TrafficSession) {
+  const next = new Set(sessionSelection.value);
+  if (next.has(item.id)) next.delete(item.id);
+  else next.add(item.id);
+  sessionSelection.value = next;
+  selectedId.value = item.id;
+}
+
+function toggleMultiSelectMode() {
+  multiSelectMode.value = !multiSelectMode.value;
+  suppressClickUntil = Date.now() + 260;
+  if (multiSelectMode.value) {
+    if (!sessionSelection.value.size && selected.value) {
+      sessionSelection.value = new Set([selected.value.id]);
+    }
+  } else {
+    sessionSelection.value = new Set();
+  }
+}
+
+function pickSessionForContextMenu(item: TrafficSession) {
+  if (!multiSelectMode.value) {
+    if (!sessionSelection.value.has(item.id)) {
+      sessionSelection.value = new Set([item.id]);
+    }
+  }
+  selectedId.value = item.id;
+}
+
+function actionSessions(): TrafficSession[] {
+  if (sessionSelection.value.size) {
+    const selected = [...sessionSelection.value];
+    return sessions.value.filter((item) => selected.includes(item.id));
+  }
+  return selected.value ? [selected.value] : [];
+}
+
+async function sendSelectedToReplay() {
+  const targets = actionSessions();
+  if (!targets.length) return ElMessage.warning("请先选择流量会话");
+  replayPreparing.value = true;
+  try {
+    for (const packet of targets) {
+      if (replayTabs.value.some((tab) => tab.sourcePacketId === packet.id)) {
+        continue;
+      }
+      const form = {
+        method: (packet.method || "GET").toUpperCase(),
+        url: packetRequestUrl(packet),
+        headers: editableRequestHeaders(packet.requestHeaders),
+        body: editablePacketValue(packet.requestBody, "body"),
+      };
+      createReplayTab(form, composeReplayPacket(form.headers, form.body), packet.id);
+    }
+    ElMessage.success(`已创建 ${replayTabs.value.length} 个重放请求`);
+  } finally {
+    replayPreparing.value = false;
+  }
+}
+
+function openFuzz() {
+  const targets = actionSessions();
+  if (!targets.length) return ElMessage.warning("请先选择流量会话");
+  fuzzBatchWithSelection.value = targets.length > 1;
+  sessionSelection.value = new Set(targets.map((item) => item.id));
+  const focus = targets[targets.length - 1];
+  selectedId.value = focus.id;
+  fuzzFocusPacketId.value = focus.id;
+  fuzzForm.value = {
+    method: (focus.method || "GET").toUpperCase(),
+    url: packetRequestUrl(focus),
+    headers: editableRequestHeaders(focus.requestHeaders),
+    body: editablePacketValue(focus.requestBody, "body"),
+  };
+  fuzzResult.value = fuzzBatchResults.value[String(focus.id)];
+  fuzzError.value = "";
+  packetTab.value = "fuzz";
+}
+
 function formatPacketValue(value?: Record<string, string> | string) {
   if (!value) return "暂无数据";
   if (typeof value === "string") return value;
@@ -1204,6 +1448,155 @@ function isHttp2Protocol(value?: string) {
   );
 }
 
+function hasFuzzPlaceholder(value: string | undefined) {
+  return String(value || "").includes("\u00a7name\u00a7");
+}
+
+function splitFuzzPacket() {
+  if (!fuzzForm.value) return;
+  const parts = splitReplayPacket(
+    composeReplayPacket(fuzzForm.value.headers, fuzzForm.value.body),
+  );
+  fuzzForm.value.headers = parts.headers;
+  fuzzForm.value.body = parts.body;
+}
+
+function applyFuzzDictionary(dict: FuzzDictionary) {
+  if (!dict || !dict.payloads.length) {
+    fuzzPayloads.value = "";
+    return;
+  }
+  const payloads = dict.payloads.join("\n");
+  fuzzPayloads.value = payloads;
+}
+
+function appendFuzzDictionary(dict: FuzzDictionary) {
+  const extra = dict.payloads.join("\n");
+  fuzzPayloads.value = [fuzzPayloads.value, extra].filter(Boolean).join("\n");
+}
+
+async function runFuzz() {
+  const targets = actionSessions();
+  const form = fuzzForm.value;
+  if (!targets.length || fuzzRunning.value) return;
+  if (!form.method.trim() || !form.url.trim()) return;
+  splitFuzzPacket();
+  if (
+    !hasFuzzPlaceholder(form.url) &&
+    !hasFuzzPlaceholder(form.headers) &&
+    !hasFuzzPlaceholder(form.body)
+  ) {
+    ElMessage.warning(`请在 URL、请求头或请求体中标记 “${fuzzPlaceholderHint}” 占位符`);
+    return;
+  }
+  const payloads = fuzzPayloads.value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (!payloads.length) {
+    ElMessage.warning("至少需要一行 fuzz payload");
+    return;
+  }
+  fuzzRunning.value = true;
+  fuzzError.value = "";
+  const results: Record<string, FuzzResult> = {};
+  let total = 0;
+  try {
+    for (const packet of targets) {
+      const { data } = await api.post<FuzzResult>(
+        `/traffic/packets/${encodeURIComponent(String(packet.id))}/fuzz`,
+        {
+          method: form.method.trim().toUpperCase(),
+          url: form.url.trim(),
+          headers: form.headers,
+          body: form.body,
+          payloads,
+        },
+        { timeout: 120_000 },
+      );
+      results[String(packet.id)] = data;
+      total += data.results?.length || 0;
+    }
+    fuzzBatchResults.value = results;
+    fuzzFocusPacketId.value = selectedId.value ?? targets[0].id;
+    fuzzResult.value = results[String(fuzzFocusPacketId.value)];
+    const changed = Object.values(results).reduce(
+      (sum, r) => sum + (r.results?.filter((h) => h.changed).length || 0),
+      0,
+    );
+    ElMessage.success(
+      `模糊测试完成：${targets.length} 个会话，${total} 次响应，${changed} 个变更命中`,
+    );
+  } catch (error) {
+    fuzzError.value = readableError(error);
+    ElMessage.error(fuzzError.value);
+  } finally {
+    fuzzRunning.value = false;
+  }
+}
+
+function focusFuzzResult(packetId: number | string) {
+  fuzzFocusPacketId.value = packetId;
+  fuzzResult.value = fuzzBatchResults.value[String(packetId)] ?? fuzzResult.value;
+}
+
+function activeFuzzResult() {
+  return fuzzResult.value;
+}
+
+const fuzzChangedHits = computed(() => {
+  const result = fuzzResult.value;
+  if (!result?.results) return 0;
+  return result.results.filter((hit) => hit.changed).length;
+});
+
+async function fuzzHitToReplay(hit: FuzzHit) {
+  const focus = fuzzFocusPacketId.value ?? selectedId.value;
+  if (focus == null) return;
+  const packet = sessions.value.find((item) => item.id === focus);
+  if (!packet) return;
+  const form = {
+    method: fuzzForm.value.method.toUpperCase(),
+    url: fuzzForm.value.url.replace("\u00a7name\u00a7", hit.payload),
+    headers: fuzzForm.value.headers.replace("\u00a7name\u00a7", hit.payload),
+    body: fuzzForm.value.body.replace("\u00a7name\u00a7", hit.payload),
+  };
+  createReplayTab(form, composeReplayPacket(form.headers, form.body), packet.id);
+  packetTab.value = "replay";
+  ElMessage.info("已带入该 hit 到重放器，可核对响应");
+}
+
+async function aiReviewFuzzHits() {
+  const focus = fuzzFocusPacketId.value ?? selectedId.value;
+  if (focus == null) return;
+  const result = fuzzBatchResults.value[String(focus)] || fuzzResult.value;
+  if (!result?.results?.length) {
+    ElMessage.warning("当前没有可研判的模糊结果");
+    return;
+  }
+  const changedHits = result.results.filter((hit) => hit.changed);
+  const changedText = changedHits.length
+    ? changedHits
+        .slice(0, 12)
+        .map(
+          (hit) =>
+            `- payload=${hit.payload}｜status=${hit.effectiveStatus}｜changed=${hit.changed}`,
+        )
+        .join("\n")
+    : "无";
+  const prompt = `这是对授权目标的一轮 fuzz 循环重放结果（基线+逐 payload 对比响应状态/长度/哈希）。请研判哪些是"真反射/可利用"、哪些是"误报/正常差异"，并给出简明证据。\n变更命中：\n${changedText}\n总响应数：${result.results.length}`;
+  selectedId.value = focus;
+  trafficChatPrompt.value = prompt;
+  await nextTick();
+  void scrollTrafficChat();
+  void sendTrafficChat();
+}
+
+function fuzzHitStatus(hit: FuzzHit) {
+  if (hit.effectiveStatus == null) return "-";
+  return `HTTP ${hit.effectiveStatus}`;
+}
+
 onMounted(() => {
   void load();
   void loadCaptureFilters();
@@ -1340,6 +1733,14 @@ onUnmounted(() => {
               @click="clearSessions"
               >清空未标记</el-button
             >
+            <el-button
+              text
+              size="small"
+              :type="multiSelectMode ? 'primary' : 'default'"
+              :class="{ 'is-active': multiSelectMode }"
+              @click="toggleMultiSelectMode"
+              >多选模式{{ multiSelectMode ? `（${selectedSessionCount}）` : "" }}</el-button
+            >
           </div>
           <el-input
             v-model="filter"
@@ -1358,20 +1759,41 @@ onUnmounted(() => {
           v-else
           :key="item.id"
           trigger="contextmenu"
+          :ref="(el: unknown) => setSessionDropdownRef(item.id, el)"
+          @visible-change="(visible: boolean) => {
+            if (visible) pickSessionForContextMenu(item);
+            onSessionDropdownVisible(visible, item.id);
+          }"
           @command="
-            (cmd: 'mark' | 'delete') =>
-              cmd === 'mark' ? toggleSessionMarked(item) : deleteSession(item)
+            (cmd) =>
+              cmd === 'mark'
+                ? toggleSessionMarked(item)
+                : cmd === 'delete'
+                  ? deleteSession(item)
+                  : cmd === 'replay'
+                    ? sendSelectedToReplay()
+                    : openFuzz()
           "
         >
           <div
             class="traffic-row-wrap"
-            :class="{ active: selectedId === item.id, marked: item.marked }"
+            :class="{
+              active: selectedId === item.id,
+              marked: item.marked,
+              selected: multiSelectMode && isSessionSelected(item.id),
+            }"
           >
             <button
               type="button"
               class="traffic-row"
-              :class="{ active: selectedId === item.id }"
-              @click="selectSession(item)"
+              :class="{
+                active: selectedId === item.id,
+              }"
+              @click="handleSessionClick(item)"
+              @dblclick="toggleMultiSelectMode"
+              @pointerdown="beginRowPress(item, $event)"
+              @pointerup="cancelLongPress"
+              @pointerleave="cancelLongPress"
             >
               <span class="session-row-main">
                 <span class="session-row-title"
@@ -1382,7 +1804,9 @@ onUnmounted(() => {
                     item.host || item.url || "未知地址"
                   }}</strong></span
                 >
-                <small>{{ item.path || item.url || "/" }}</small>
+                <small>{{
+                  item.path || item.url || "/"
+                }}</small>
               </span>
               <span class="session-row-meta"
                 ><el-icon
@@ -1404,6 +1828,21 @@ onUnmounted(() => {
           <template #dropdown>
             <el-dropdown-menu>
               <el-dropdown-item
+                command="replay"
+                :disabled="clearingSessions"
+                >发送到重放器<small v-if="selectedSessionCount"
+                  >（{{ selectedSessionCount }}）</small
+                ></el-dropdown-item
+              >
+              <el-dropdown-item
+                command="fuzz"
+                :disabled="clearingSessions"
+                >发送到模糊测试<small v-if="selectedSessionCount"
+                  >（{{ selectedSessionCount }}）</small
+                ></el-dropdown-item
+              >
+              <el-dropdown-item
+                divided
                 command="mark"
                 :disabled="markingId === item.id || clearingSessions"
                 >{{ item.marked ? "取消标记" : "标记会话" }}</el-dropdown-item
@@ -1422,6 +1861,7 @@ onUnmounted(() => {
           v-model:page-size="sessionPageSize"
           :total="filteredSessions.length"
           layout="prev, pager, next"
+          class="traffic-session-pagination"
         />
       </section>
 
@@ -1463,11 +1903,23 @@ onUnmounted(() => {
                 ></el-tooltip
               >
               <el-button
-                type="primary"
                 size="small"
-                :loading="replayPreparing"
-                @click="openReplayDialog"
-                ><el-icon><Promotion /></el-icon>发送到重放器</el-button
+                :type="selectedSessionCount ? 'primary' : 'default'"
+                :disabled="!selectedSessionCount"
+                @click="sendSelectedToReplay"
+                ><el-icon><Promotion /></el-icon>重放所选{{
+                  selectedSessionCount ? `（${selectedSessionCount}）` : ""
+                }}</el-button
+              >
+              <el-button
+                size="small"
+                :type="selectedSessionCount ? 'primary' : 'default'"
+                plain
+                :disabled="!selectedSessionCount"
+                @click="openFuzz"
+                ><el-icon><MagicStick /></el-icon>模糊所选{{
+                  selectedSessionCount ? `（${selectedSessionCount}）` : ""
+                }}</el-button
               >
             </div>
           </header>
@@ -1500,6 +1952,13 @@ onUnmounted(() => {
               @click="packetTab = 'replay'"
             >
               重放器
+            </button>
+            <button
+              type="button"
+              :class="{ active: packetTab === 'fuzz' }"
+              @click="packetTab = 'fuzz'"
+            >
+              模糊器
             </button>
           </nav>
           <section v-if="packetTab === 'replay'" class="inline-replay-editor">
@@ -1678,6 +2137,221 @@ onUnmounted(() => {
               <strong>暂无重放请求</strong
               ><span>点击“新建请求”，或从流量会话点击“发包”创建标签。</span>
             </div>
+          </section>
+          <section v-else-if="packetTab === 'fuzz'" class="inline-replay-editor">
+            <header>
+              <strong>模糊测试</strong>
+              <div class="fuzz-head-actions">
+                <el-select
+                  v-if="fuzzBatchWithSelection && Object.keys(fuzzBatchResults).length"
+                  v-model="fuzzFocusPacketId"
+                  size="small"
+                  style="width: 200px"
+                  @change="focusFuzzResult"
+                  placeholder="选择查看结果的会话"
+                >
+                  <el-option
+                    v-for="item in actionSessions()"
+                    :key="item.id"
+                    :label="`${item.method} ${item.host || '#'}${item.path || ''}`"
+                    :value="item.id"
+                  >
+                    <span>{{ item.method }}</span
+                    ><small>{{ item.host || `#${item.id}` }}{{ item.path || "" }}</small>
+                  </el-option>
+                </el-select>
+                <el-button
+                  size="small"
+                  @click="aiReviewFuzzHits"
+                  :disabled="!activeFuzzResult()?.results?.length"
+                  >AI 研判命中</el-button
+                >
+                <el-button
+                  type="primary"
+                  size="small"
+                  :loading="fuzzRunning"
+                  :disabled="
+                    !fuzzForm.method.trim() ||
+                    !fuzzForm.url.trim() ||
+                    !fuzzPayloads.trim()
+                  "
+                  @click="runFuzz"
+                  >运行模糊测试</el-button
+                >
+              </div>
+            </header>
+            <el-alert
+              :title="fuzzPlaceholderHint"
+              type="info"
+              show-icon
+              :closable="false"
+              class="fuzz-hint"
+            />
+            <div class="replay-request-line">
+              <el-select
+                v-model="fuzzForm.method"
+                :disabled="fuzzRunning"
+                filterable
+                allow-create
+                default-first-option
+                placeholder="GET"
+              >
+                <el-option
+                  v-for="m in HTTP_METHODS"
+                  :key="m"
+                  :label="m"
+                  :value="m"
+                />
+              </el-select>
+              <el-input
+                v-model="fuzzForm.url"
+                :disabled="fuzzRunning"
+                placeholder="https://example.com/path（可用 §name§ 标记模糊点）"
+              />
+            </div>
+            <label class="replay-packet-editor"
+              >请求数据包<el-input
+                v-model="fuzzForm.headers"
+                type="textarea"
+                :rows="3"
+                :disabled="fuzzRunning"
+                spellcheck="false"
+                placeholder="Header-Name: value"
+            /></label>
+            <label class="replay-packet-editor"
+              >请求体<el-input
+                v-model="fuzzForm.body"
+                type="textarea"
+                :rows="3"
+                :disabled="fuzzRunning"
+                spellcheck="false"
+                placeholder="可选请求体，可用 §name§ 标记模糊点"
+            /></label>
+            <label class="replay-packet-editor fuzz-payloads"
+              ><span class="fuzz-dict-label">Payload 列表（每行一个）</span>
+              <div class="fuzz-dict-bar">
+                <span>字典：</span>
+                <el-button
+                  v-for="dict in FUZZ_DICTIONARIES"
+                  :key="dict.key"
+                  size="small"
+                  link
+                  type="primary"
+                  @click="appendFuzzDictionary(dict)"
+                  >{{ dict.label }}</el-button
+                >
+                <el-button
+                  size="small"
+                  link
+                  @click="fuzzPayloads = ''"
+                  >清空</el-button
+                >
+              </div>
+              <el-input
+                v-model="fuzzPayloads"
+                type="textarea"
+                :rows="5"
+                :disabled="fuzzRunning"
+                spellcheck="false"
+            /></label>
+            <section class="replay-response">
+              <header>
+                <div>
+                  <strong>{{
+                    fuzzResult
+                      ? `完成 · ${fuzzResult.results?.length || 0} 次响应`
+                      : "模糊结果"
+                  }}</strong>
+                </div>
+              </header>
+              <div
+                v-if="fuzzRunning"
+                class="replay-response-state"
+              >
+                <el-icon class="is-loading"><Refresh /></el-icon
+                ><strong>正在逐个重放请求</strong
+                ><span>每个 payload 会替换占位符后按顺序发送并对比基线。</span>
+              </div>
+              <div v-else-if="fuzzError" class="replay-response-state error">
+                <strong>模糊测试失败</strong><span>{{ fuzzError }}</span>
+              </div>
+              <div
+                v-else-if="!fuzzResult"
+                class="replay-response-state"
+              >
+                <strong>尚未运行</strong
+                ><span
+                  >在 URL / 请求头 / 请求体标记占位符，添加 payload
+                  后点击“运行模糊测试”。</span
+                >
+              </div>
+              <div
+                v-else-if="fuzzResult.results && fuzzResult.results.length"
+                class="fuzz-results"
+              >
+                <div class="fuzz-result-summary">
+                  <span>响应 {{ fuzzResult.results.length }} 次</span
+                  ><span v-if="fuzzChangedHits" class="fuzz-summary-changed"
+                    >{{ fuzzChangedHits }} 个变更命中</span
+                  ><span v-else>全部同基线</span>
+                </div>
+                <table class="fuzz-result-table">
+                  <thead>
+                    <tr>
+                      <th>状态</th>
+                      <th>响应体</th>
+                      <th>耗时</th>
+                      <th>字节</th>
+                      <th>Hash</th>
+                      <th>payload</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      v-for="(hit, index) in fuzzResult.results"
+                      :key="index"
+                    >
+                      <td
+                        class="fuzz-hit-status"
+                        :class="{ changed: hit.changed }"
+                        >{{ fuzzHitStatus(hit) }}</td
+                      >
+                      <td class="fuzz-hit-diff">{{
+                        hit.changed ? "变更" : "同基线"
+                      }}</td>
+                      <td>{{
+                        hit.durationMs !== undefined
+                          ? `${hit.durationMs} ms`
+                          : "-"
+                      }}</td>
+                      <td>{{
+                        hit.responseBytes !== undefined
+                          ? hit.responseBytes
+                          : "-"
+                      }}</td>
+                      <td>{{ hit.digestPrefix || "-" }}</td>
+                      <td>
+                        <code class="fuzz-hit-payload">{{ hit.payload }}</code>
+                      </td>
+                      <td>
+                        <el-button
+                          v-if="hit.changed"
+                          link
+                          type="primary"
+                          size="small"
+                          @click="fuzzHitToReplay(hit)"
+                          >重放</el-button
+                        >
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div v-else class="replay-response-state">
+                <strong>无结果</strong>
+              </div>
+            </section>
           </section>
           <div v-else class="packet-sections packet-editor">
             <template v-if="packetTab === 'request'">
@@ -2139,6 +2813,21 @@ onUnmounted(() => {
   border-color: var(--app-border);
   background: var(--app-surface-strong);
 }
+.traffic-session-rail > .traffic-session-pagination {
+  position: sticky;
+  z-index: 3;
+  bottom: 0;
+  flex: none;
+  padding: 6px 8px 2px;
+  border-top: var(--traffic-pane-divider, 1px solid var(--app-border));
+  background: var(--app-surface);
+}
+.traffic-session-rail > .traffic-session-pagination > .el-pagination {
+  justify-content: center;
+  flex-wrap: nowrap;
+  margin: 0;
+  white-space: nowrap;
+}
 .traffic-session-rail > .traffic-empty {
   position: absolute;
   inset: 0;
@@ -2580,6 +3269,90 @@ onUnmounted(() => {
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+}
+.fuzz-hint {
+  margin-bottom: 10px;
+}
+.fuzz-hint :deep(.el-alert__title) {
+  font-size: 11px;
+  line-height: 1.5;
+}
+.replay-packet-editor.fuzz-payloads {
+  margin-top: 8px;
+}
+.fuzz-results {
+  overflow: auto;
+  padding-top: 8px;
+}
+.fuzz-result-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.fuzz-result-table th {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--app-border, rgba(120, 130, 140, 0.2));
+  color: var(--app-muted);
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+.fuzz-result-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(120, 130, 140, 0.12);
+  vertical-align: top;
+  white-space: nowrap;
+}
+.fuzz-hit-status.changed {
+  color: #d97742;
+  font-weight: 700;
+}
+.fuzz-hit-diff {
+  color: var(--app-muted);
+}
+.fuzz-hit-payload {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--app-text);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: nowrap;
+}
+.fuzz-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fuzz-dict-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+.fuzz-dict-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin: 4px 0;
+  font-size: 11px;
+  color: var(--app-muted);
+}
+.fuzz-result-summary {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 4px 0;
+  font-size: 11px;
+  color: var(--app-muted);
+}
+.fuzz-summary-changed {
+  color: #d97742;
+  font-weight: 700;
+}
+.traffic-row-wrap.selected {
+  background: rgba(80, 120, 220, 0.08);
+}
+.traffic-row {
+  position: relative;
 }
 .packet-title {
   display: flex;

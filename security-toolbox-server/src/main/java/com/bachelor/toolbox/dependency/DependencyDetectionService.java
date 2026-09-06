@@ -418,7 +418,13 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
             MSF_COMMAND_TIMEOUT,
             this::metasploitVersion),
         descriptor(
-            "OWASP ZAP", zapCandidates(windows), List.of(), false, "PROXY_SCANNER", anyOutput, ""));
+            "OWASP ZAP",
+            scannerCandidates(
+                "ZAP_PATH",
+                windows ? "zap.exe" : "zap.sh",
+                "zap.bat",
+                "zaproxy"),
+            List.of(), false, "PROXY_SCANNER", anyOutput, ""));
   }
 
   private boolean isWindows() {
