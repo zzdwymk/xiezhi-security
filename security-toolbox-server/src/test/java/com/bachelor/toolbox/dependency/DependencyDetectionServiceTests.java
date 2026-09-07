@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
@@ -180,7 +181,10 @@ class DependencyDetectionServiceTests {
 
   @Test
   void parsesZapVersionFromBatchCommandOutput() {
-    ExecutableLocator locator = locateCandidate("zap.bat", Path.of("test-data/tools/zap/ZAP_2.17.0/zap.bat"));
+    ExecutableLocator locator =
+        locateAnyCandidate(
+            Path.of("test-data/tools/zap/ZAP_2.17.0/zap.bat"),
+            "zap.bat", "zap.exe", "zap.sh", "zaproxy", "zap");
     CommandRunner runner =
         (executable, arguments, timeout) -> {
           assertThat(arguments).contains("-version");
@@ -201,7 +205,10 @@ class DependencyDetectionServiceTests {
 
   @Test
   void zapTimeoutDegradesToInstalledAndExtractsVersionFromPath() {
-    ExecutableLocator locator = locateCandidate("zap.bat", Path.of("test-data/tools/zap/ZAP_2.17.0/zap.bat"));
+    ExecutableLocator locator =
+        locateAnyCandidate(
+            Path.of("test-data/tools/zap/ZAP_2.17.0/zap.bat"),
+            "zap.bat", "zap.exe", "zap.sh", "zaproxy", "zap");
     CommandRunner runner = (executable, arguments, timeout) -> CommandResult.timeout("");
 
     DependencyStatus zap = find(service(locator, runner).detect(), "OWASP ZAP");
@@ -357,8 +364,16 @@ class DependencyDetectionServiceTests {
   }
 
   private ExecutableLocator locateCandidate(String expectedCandidate, Path executable) {
+    return locateAnyCandidate(executable, expectedCandidate);
+  }
+
+  private ExecutableLocator locateAnyCandidate(Path executable, String... expectedCandidates) {
+    Set<String> expectedSet = Set.of(expectedCandidates);
     return candidates ->
-        candidates.contains(expectedCandidate) ? Optional.of(executable) : Optional.empty();
+        candidates.stream()
+            .filter(c -> expectedSet.contains(c) || expectedSet.stream().anyMatch(c::endsWith))
+            .findFirst()
+            .map(ignored -> executable);
   }
 
   private DependencyDetectionService service(ExecutableLocator locator, CommandRunner runner) {
