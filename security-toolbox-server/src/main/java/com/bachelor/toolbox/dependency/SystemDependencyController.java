@@ -54,6 +54,16 @@ public class SystemDependencyController {
     SseEmitter emitter = new SseEmitter(90_000L);
 
     detectionService.detectStreaming(
+        manifests -> {
+          try {
+            emitter.send(
+                SseEmitter.event()
+                    .name("manifest")
+                    .data(manifests, MediaType.APPLICATION_JSON));
+          } catch (Exception ignored) {
+            // 连接断开时由 detectStreaming 内部继续完成检测并写缓存。
+          }
+        },
         status -> {
           try {
             SystemDependenciesResponse.DependencyStatus sanitized =
@@ -79,7 +89,9 @@ public class SystemDependencyController {
         });
 
     emitter.onTimeout(emitter::complete);
-    emitter.onError(e -> emitter.complete());
+    emitter.onError(e -> {
+      // 客户端中断或发生错误时由容器清理，不再重复调用 complete() 触发二次异常。
+    });
     return emitter;
   }
 
@@ -92,7 +104,9 @@ public class SystemDependencyController {
         null,
         dependency.required(),
         dependency.category(),
-        dependency.message());
+        dependency.message(),
+        dependency.hash(),
+        dependency.dirHash());
   }
 
   /** 去除依赖项的绝对路径，保留名称、状态、版本等页面必需信息 */
@@ -108,7 +122,9 @@ public class SystemDependencyController {
                         null,
                         dependency.required(),
                         dependency.category(),
-                        dependency.message()))
+                        dependency.message(),
+                        dependency.hash(),
+                        dependency.dirHash()))
             .toList();
     return new SystemDependenciesResponse(
         response.os(), response.arch(), response.database(), sanitized);

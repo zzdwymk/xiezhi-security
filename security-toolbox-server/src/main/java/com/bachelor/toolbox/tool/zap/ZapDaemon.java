@@ -100,7 +100,31 @@ public interface ZapDaemon extends AutoCloseable {
   /** Returns all alerts in the current session as normalized records. */
   List<ZapAlert> alerts() throws Exception;
 
-  /** Immediately terminates the daemon process (used on cancellation / error). */
+  /**
+   * 读取当前会话爬到的 URL 清单（sites）。返回绝对 URL 字符串或相对路径；实现支持 ZAP 的
+   * {@code core/view/sites} 视图返回全量 URL，否则返回空列表。供“ZAP 爬虫结果回填资产/资源发现”。
+   */
+  default List<String> crawlResults(URI target) throws Exception {
+    return List.of();
+  }
+
+  /**
+   * 读取 ZAP 识别到的目标技术栈（框架/服务/语言等）。ZAP 具体版本对“技术指纹”REST 支持不一，
+   * 实现尽力探测，失败或空时返回空列表，不影响主扫描流程。
+   */
+  default List<String> technologies(URI target) throws Exception {
+    return List.of();
+  }
+
+  /**
+   * 导入 OpenAPI/Swagger 定义并纳入扫描范围（{@code openapi/action/importUrl}）。成功返回 true；
+   * 实现不支持或失败返回 false，由调用方降级为普通目标扫描。
+   */
+  default boolean importOpenApi(String specUrl) throws Exception {
+    return false;
+  }
+
+  /** 立即终止 daemon 进程（用于取消/出错）。 */
   void kill() throws Exception;
 
   /**
@@ -110,14 +134,26 @@ public interface ZapDaemon extends AutoCloseable {
    */
   default void configureFormAuthentication(FormAuthSpec spec) throws Exception {}
 
-  /** Credentials and form fields needed for ZAP form-based authentication. */
+  /** 凭据与表单字段、认证方式。authType 支持 form/cookie(脚本式凭据可延展)。 */
   record FormAuthSpec(
       String contextName,
       String loginPageUrl,
       String loginRequestUrl,
       String usernameField,
       String passwordField,
-      String postData) {}
+      String postData,
+      String authType) {
+
+    FormAuthSpec(
+        String contextName,
+        String loginPageUrl,
+        String loginRequestUrl,
+        String usernameField,
+        String passwordField,
+        String postData) {
+      this(contextName, loginPageUrl, loginRequestUrl, usernameField, passwordField, postData, "form");
+    }
+  }
 
   record ZapAlert(
       String url,

@@ -21,7 +21,9 @@ class SystemDependenciesResponseTests {
             "test-data/tools/nmap",
             false,
             "SCANNER",
-            "可用。");
+            "可用。",
+            DependencyStatus.hashOf("Nmap", "AVAILABLE", "Nmap version 7.99"),
+            "dir-hash");
     SystemDependenciesResponse response =
         new SystemDependenciesResponse("Windows 11", "amd64", "PostgreSQL", List.of(dependency));
 
@@ -33,7 +35,7 @@ class SystemDependenciesResponseTests {
     assertThat(json.path("database").asText()).isEqualTo("PostgreSQL");
 
     JsonNode item = json.path("dependencies").get(0);
-    assertThat(item.size()).isEqualTo(7);
+    assertThat(item.size()).isEqualTo(9);
     assertThat(item.path("name").asText()).isEqualTo("Nmap");
     assertThat(item.path("status").asText()).isEqualTo("AVAILABLE");
     assertThat(item.path("version").asText()).isEqualTo("Nmap version 7.99");
@@ -41,5 +43,7 @@ class SystemDependenciesResponseTests {
     assertThat(item.path("required").asBoolean()).isFalse();
     assertThat(item.path("category").asText()).isEqualTo("SCANNER");
     assertThat(item.path("message").asText()).isEqualTo("可用。");
+    assertThat(item.path("hash").asText()).isNotBlank();
+    assertThat(item.path("dirHash").asText()).isEqualTo("dir-hash");
   }
 }

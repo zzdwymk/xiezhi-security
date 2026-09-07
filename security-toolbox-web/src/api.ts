@@ -190,6 +190,8 @@ export interface DependencyStatus {
   required?: boolean;
   category?: string;
   message?: string;
+  hash?: string;
+  dirHash?: string;
 }
 
 export interface SystemDependenciesResponse {
@@ -1241,6 +1243,8 @@ export const endpoints = {
     api.get<DiscoveryResult[]>(`/projects/${projectId}/discovery/results`, {
       params: targetId ? { targetId } : undefined,
     }),
+  deleteDiscoveryResult: (projectId: number, id: number) =>
+    api.delete<void>(`/projects/${projectId}/discovery/results/${id}`),
   collectProjectRecon: (
     projectId: number,
     payload: {

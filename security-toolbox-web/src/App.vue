@@ -28,6 +28,7 @@ import {
   Tools,
   FolderOpened,
   Warning,
+  DataAnalysis,
 } from "./components/fluentIcons";
 import { useAuthStore } from "./stores/auth";
 import { useConversationStore } from "./stores/conversations";
@@ -213,8 +214,13 @@ const navigationGroups = [
     id: "projects-assets",
     label: "项目与资产",
     items: [
-      { path: "/projects", label: "评估项目", icon: markRaw(FolderOpened) },
+{ path: "/projects", label: "评估项目", icon: markRaw(FolderOpened) },
       { path: "/targets", label: "授权目标", icon: markRaw(Location) },
+      {
+        path: "/assets/topology",
+        label: "资产拓扑",
+        icon: markRaw(DataAnalysis),
+      },
     ],
   },
   {
@@ -247,6 +253,7 @@ const activeNavigation = computed(() => {
   }
   if (route.path.startsWith("/workflow")) return "/workflow";
   if (route.path.startsWith("/targets")) return "/targets";
+  if (route.path.startsWith("/assets/topology")) return "/assets/topology";
   if (route.path.startsWith("/projects") && route.query.tab === "recon")
     return "/projects";
   if (route.path.startsWith("/recon")) return "/projects";

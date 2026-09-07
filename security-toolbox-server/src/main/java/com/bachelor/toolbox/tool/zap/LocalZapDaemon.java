@@ -36,7 +36,7 @@ final class LocalZapDaemon implements ZapDaemon {
   private static final Logger LOGGER = LoggerFactory.getLogger(LocalZapDaemon.class);
   private static final SecureRandom RANDOM = new SecureRandom();
 
-  private final String executable;
+  private volatile String executable;
   private final String host;
   private final int port;
   private final Duration startupTimeout;
@@ -69,6 +69,7 @@ final class LocalZapDaemon implements ZapDaemon {
       awaitReady();
       return;
     }
+    this.executable = resolveExecutable(this.executable);
     ensureExecutable();
     Path logFile = Files.createTempFile("zap-daemon-", ".log");
     String[] args =
@@ -89,6 +90,10 @@ final class LocalZapDaemon implements ZapDaemon {
         };
     String[] commandBuilder = buildCommand(executable, args);
     ProcessBuilder builder = new ProcessBuilder(commandBuilder).redirectErrorStream(true);
+    Path exePath = Path.of(executable);
+    if (Files.isRegularFile(exePath) && exePath.getParent() != null) {
+      builder.directory(exePath.getParent().toFile());
+    }
     ProcessEnvironmentSanitizer.sanitize(builder);
     builder.redirectOutput(logFile.toFile());
     builder.redirectError(logFile.toFile());
@@ -102,6 +107,48 @@ final class LocalZapDaemon implements ZapDaemon {
       throw new ApiException("无法启动 ZAP daemon: " + executable);
     }
     awaitReady();
+  }
+
+  private String resolveExecutable(String exe) {
+    if (exe != null && !exe.isBlank() && !"zap".equalsIgnoreCase(exe.trim())) {
+      Path p = Path.of(exe);
+      if (Files.isRegularFile(p)) {
+        return p.toAbsolutePath().normalize().toString();
+      }
+    }
+    String toolsDirVal = System.getenv("TOOLBOX_TOOLS_DIR");
+    List<Path> searchRoots = new ArrayList<>();
+    if (toolsDirVal != null && !toolsDirVal.isBlank()) {
+      searchRoots.add(Path.of(toolsDirVal.trim()));
+    }
+    searchRoots.add(Path.of("tools"));
+    searchRoots.add(Path.of("..", "tools"));
+    searchRoots.add(Path.of("security-toolbox-web", "tools"));
+    searchRoots.add(Path.of("..", "security-toolbox-web", "tools"));
+    searchRoots.add(Path.of("security-toolbox-web", "desktop-release", "win-unpacked", "tools"));
+    searchRoots.add(Path.of("..", "security-toolbox-web", "desktop-release", "win-unpacked", "tools"));
+    searchRoots.add(Path.of("D:\\stbtools"));
+    searchRoots.add(Path.of("D:\\tools"));
+
+    boolean isWin = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+    List<String> names = isWin ? List.of("zap.bat", "zap.exe", "zap.sh") : List.of("zap.sh", "zaproxy", "zap");
+    for (Path root : searchRoots) {
+      try {
+        if (!Files.isDirectory(root)) continue;
+        Path zapDir = root.resolve("zap");
+        if (Files.isDirectory(zapDir)) {
+          for (String name : names) {
+            Path p = zapDir.resolve(name);
+            if (Files.isRegularFile(p)) return p.toAbsolutePath().normalize().toString();
+          }
+          try (var stream = Files.list(zapDir)) {
+            var found = stream.filter(Files::isDirectory).flatMap(sub -> names.stream().map(sub::resolve)).filter(Files::isRegularFile).findFirst();
+            if (found.isPresent()) return found.get().toAbsolutePath().normalize().toString();
+          } catch (Exception ignored) {}
+        }
+      } catch (Exception ignored) {}
+    }
+    return exe;
   }
 
   // Windows 上的 .bat/.cmd 需要经 cmd.exe 才能真正启动（JVM 不会直接执行批处理），
@@ -195,17 +242,27 @@ final class LocalZapDaemon implements ZapDaemon {
     String contextName = spec.contextName() == null || spec.contextName().isBlank()
         ? contextName()
         : spec.contextName();
+    String authType = spec.authType() == null ? "form" : spec.authType().toLowerCase(Locale.ROOT);
+    String authMethodName;
     String config =
         "loginPageUrl=" + urlEncoded(spec.loginPageUrl())
             + "&loginRequestUrl=" + urlEncoded(spec.loginRequestUrl());
-    // 表单认证配置：设定认证方法 -> 设定会话管理 -> 写入凭据。任一步失败都不阻塞扫描，
-    // 未登录时也能退化为传统（未认证）扫描。
+    // 认证方式映射：form=表单；basic/http=HTTP Basic；cookie/script=脚本式；ntlm=NTLM。
+    // ZAP 各版本的 auth 方法/参数名存在差异，任一步失败都不阻塞，退化为未认证扫描。
+    switch (authType) {
+      case "basic", "http", "ntlm" -> {
+        authMethodName = "httpBasedAuthentication";
+        config = "hostname=" + host + "&port=" + port;
+      }
+      case "cookie", "script" -> authMethodName = "scriptBasedAuthentication";
+      default -> authMethodName = "formBasedAuthentication";
+    }
     try {
       getJsonRequired(
           "context/action/setAuthenticationMethod",
           Map.of(
               "contextName", contextName,
-              "authMethodName", "formBasedAuthentication",
+              "authMethodName", authMethodName,
               "authMethodConfigParams", config));
       getJsonRequired(
           "context/action/setSessionManagementMethod",
@@ -218,7 +275,7 @@ final class LocalZapDaemon implements ZapDaemon {
               "contextName", contextName,
               "credentials", spec.postData() == null ? "" : spec.postData()));
     } catch (Exception ex) {
-      LOGGER.warn("ZAP 表单认证配置未完全生效，将退化为未认证扫描: {}", ex.getMessage());
+      LOGGER.warn("ZAP 认证配置未完全生效（authType={}），将退化为未认证扫描: {}", authType, ex.getMessage());
     }
   }
 
@@ -364,6 +421,79 @@ final class LocalZapDaemon implements ZapDaemon {
       result.add(toAlert(node));
     }
     return result;
+  }
+
+  @Override
+  public List<String> crawlResults(URI target) throws Exception {
+    try {
+      JsonNode sites = getJson("core/view/sites", Map.of());
+      if (sites == null) {
+        return List.of();
+      }
+      List<String> urls = new ArrayList<>();
+      JsonNode children = sites.path("sites").path(0).path("site").path("children");
+      collectUrlTree(children, urls);
+      return urls;
+    } catch (Exception ignored) {
+      return List.of();
+    }
+  }
+
+  private void collectUrlTree(JsonNode node, List<String> out) {
+    if (node == null || !node.isArray()) {
+      return;
+    }
+    for (JsonNode child : node) {
+      String method = child.path("method").asText("");
+      String uri = child.path("uri").asText("");
+      if (uri.isBlank()) {
+        uri = child.path("name").asText("");
+      }
+      if (!uri.isBlank()) {
+        out.add(method.isBlank() ? uri : method + " " + uri);
+      }
+      JsonNode grandchildren = child.path("children");
+      if (grandchildren.isArray() && grandchildren.size() > 0) {
+        collectUrlTree(grandchildren, out);
+      }
+    }
+  }
+
+  @Override
+  public List<String> technologies(URI target) throws Exception {
+    // ZAP 各版本对“技术栈识别”REST 支持不一：优先 core/view/tech，失败退空。
+    try {
+      JsonNode root = getJson("core/view/tech", Map.of());
+      if (root == null || !root.path("all").isArray()) {
+        return List.of();
+      }
+      List<String> tech = new ArrayList<>();
+      for (JsonNode node : root.path("all")) {
+        String value = node.asText("");
+        if (!value.isBlank()) {
+          tech.add(value);
+        }
+      }
+      return tech;
+    } catch (Exception ex) {
+      return List.of();
+    }
+  }
+
+  @Override
+  public boolean importOpenApi(String specUrl) throws Exception {
+    if (specUrl == null || specUrl.isBlank()) {
+      return false;
+    }
+    try {
+      JsonNode root = postJson(
+          "openapi/action/importUrl",
+          Map.of("url", specUrl));
+      return root != null && root.path("ResultCode").isTextual();
+    } catch (Exception ex) {
+      LOGGER.debug("ZAP OpenAPI 导入失败 specUrl={}", specUrl, ex);
+      return false;
+    }
   }
 
   private ZapAlert toAlert(JsonNode node) {

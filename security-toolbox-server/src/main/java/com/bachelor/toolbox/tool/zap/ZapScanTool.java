@@ -92,6 +92,7 @@ public class ZapScanTool implements SecurityTool {
     String scanPolicy = resolveScanPolicy(parameters);
     boolean passiveOnly = isPassiveOnly(parameters);
     boolean withSpider = !Boolean.FALSE.equals(parameters == null ? null : parameters.get("spider"));
+    String openApiUrl = resolveOpenApiUrl(parameters);
 
     int acquired = 0;
     if (!DAEMON_LOCK.tryAcquire()) {
@@ -104,18 +105,27 @@ public class ZapScanTool implements SecurityTool {
       daemon.includeInScope(targetUri);
       configureAuthIfPresent(daemon, parameters);
 
-      if (withSpider) {
+      boolean openApiImported = false;
+      if (openApiUrl != null && !openApiUrl.isBlank()) {
+        openApiImported = daemon.importOpenApi(openApiUrl);
+      }
+      if (withSpider && !openApiImported) {
         runSpider(daemon, targetUri, observer);
         if (isAjaxSpiderRequested(parameters)) {
           runAjaxSpider(daemon, targetUri, observer);
         }
       }
+      List<String> crawledUrls = new ArrayList<>(daemon.crawlResults(targetUri));
+      List<String> technologies = new ArrayList<>(daemon.technologies(targetUri));
+      if (crawledUrls.isEmpty() && openApiImported) {
+        crawledUrls.add(targetUri.toString());
+      }
       if (passiveOnly) {
         observer.progressPercent(100d, "爬虫完成，正在采集被动扫描结果");
         List<ZapDaemon.ZapAlert> alerts = daemon.alerts();
-        return toResult(targetUri, alerts);
+        return toResult(targetUri, alerts, crawledUrls, technologies, openApiImported);
       }
-      return runActiveScan(daemon, targetUri, strength, scanPolicy, observer);
+      return runActiveScan(daemon, targetUri, strength, scanPolicy, crawledUrls, technologies, openApiImported, observer);
     } catch (Exception ex) {
       if (ex instanceof ApiException) {
         throw ex;
@@ -157,6 +167,9 @@ public class ZapScanTool implements SecurityTool {
       URI target,
       String strength,
       String scanPolicy,
+      List<String> crawledUrls,
+      List<String> technologies,
+      boolean openApiImported,
       ToolExecutionObserver observer)
       throws Exception {
     String scanId = null;
@@ -188,10 +201,15 @@ public class ZapScanTool implements SecurityTool {
     observer.progressPercent(100d, "主动扫描完成，正在解析结果");
 
     List<ZapDaemon.ZapAlert> alerts = daemon.alerts();
-    return toResult(target, alerts);
+    return toResult(target, alerts, crawledUrls, technologies, openApiImported);
   }
 
-  private ToolExecutionResult toResult(URI target, List<ZapDaemon.ZapAlert> alerts) {
+  private ToolExecutionResult toResult(
+      URI target,
+      List<ZapDaemon.ZapAlert> alerts,
+      List<String> crawledUrls,
+      List<String> technologies,
+      boolean openApiImported) {
     List<FindingDraft> findings = new ArrayList<>();
     List<Map<String, Object>> matches = new ArrayList<>();
     int inScope = 0;
@@ -222,6 +240,9 @@ public class ZapScanTool implements SecurityTool {
     data.put("passiveAlertCount", passiveCount);
     data.put("activeAlertCount", activeCount);
     data.put("matches", matches);
+    data.put("openApiImported", openApiImported);
+    data.put("spiderUrls", crawledUrls == null ? List.of() : crawledUrls);
+    data.put("technologies", technologies == null ? List.of() : technologies);
     return new ToolExecutionResult(
         "ZAP 扫描完成，命中 " + findings.size() + " 项在授权范围内的潜在问题（被动 "
             + passiveCount
@@ -310,6 +331,14 @@ public class ZapScanTool implements SecurityTool {
     return policy;
   }
 
+  private String resolveOpenApiUrl(Map<String, Object> parameters) {
+    if (parameters == null) {
+      return null;
+    }
+    String url = Objects.toString(parameters.get("openApiUrl"), "").trim();
+    return url.isBlank() ? null : url;
+  }
+
   // 被动扫描只跑爬虫取材 + 被动规则，不做主动攻击注入，风险更低。
   private boolean isPassiveOnly(Map<String, Object> parameters) {
     if (parameters == null) {
@@ -338,9 +367,10 @@ public class ZapScanTool implements SecurityTool {
     String password = Objects.toString(parameters.get("authPassword"), "");
     String userField = Objects.toString(parameters.get("authUsernameField"), "username").trim();
     String passField = Objects.toString(parameters.get("authPasswordField"), "password").trim();
+    String authType = Objects.toString(parameters.get("authType"), "form").trim().toLowerCase(Locale.ROOT);
     String postData = "username=" + username + "&password=" + password;
     daemon.configureFormAuthentication(
-        new ZapDaemon.FormAuthSpec(null, loginUrl, loginUrl, userField, passField, postData));
+        new ZapDaemon.FormAuthSpec(null, loginUrl, loginUrl, userField, passField, postData, authType));
   }
 
   private boolean isAjaxSpiderRequested(Map<String, Object> parameters) {

@@ -97,7 +97,9 @@ class DependencyDetectionServiceTests {
 
     DependencyStatus nmap =
         find(
-            new DependencyDetectionService(locator, runner, resolver, environment).detect(),
+            new DependencyDetectionService(
+                    locator, runner, resolver, environment, mock(ToolDirectoryHasher.class))
+                .detect(),
             "Nmap");
 
     assertThat(receivedCandidates.get())
@@ -174,6 +176,38 @@ class DependencyDetectionServiceTests {
 
     assertThat(metasploit.status()).isEqualTo("AVAILABLE");
     assertThat(metasploit.message()).contains("版本检测超时");
+  }
+
+  @Test
+  void parsesZapVersionFromBatchCommandOutput() {
+    ExecutableLocator locator = locateCandidate("zap.bat", Path.of("test-data/tools/zap/ZAP_2.17.0/zap.bat"));
+    CommandRunner runner =
+        (executable, arguments, timeout) -> {
+          assertThat(arguments).contains("-version");
+          assertThat(timeout).isGreaterThanOrEqualTo(Duration.ofSeconds(20));
+          return CommandResult.completed(
+              0,
+              "D:\\tools\\zap\\ZAP_2.17.0>if exist \"C:\\Users\\Wymk\\ZAP\\.ZAP_JVM.properties\" (set /p jvmopts= 0<\"C:\\Users\\Wymk\\ZAP\\.ZAP_JVM.properties\" )  else (set jvmopts=-Xmx512m )\n\n"
+                  + "D:\\tools\\zap\\ZAP_2.17.0>java -Xmx512m -jar zap-2.17.0.jar -version\n"
+                  + "2.17.0\n");
+        };
+
+    DependencyStatus zap = find(service(locator, runner).detect(), "OWASP ZAP");
+
+    assertThat(zap.status()).isEqualTo("AVAILABLE");
+    assertThat(zap.version()).isEqualTo("2.17.0");
+    assertThat(zap.message()).isEqualTo("可用。");
+  }
+
+  @Test
+  void zapTimeoutDegradesToInstalledAndExtractsVersionFromPath() {
+    ExecutableLocator locator = locateCandidate("zap.bat", Path.of("test-data/tools/zap/ZAP_2.17.0/zap.bat"));
+    CommandRunner runner = (executable, arguments, timeout) -> CommandResult.timeout("");
+
+    DependencyStatus zap = find(service(locator, runner).detect(), "OWASP ZAP");
+
+    assertThat(zap.status()).isEqualTo("AVAILABLE");
+    assertThat(zap.version()).isEqualTo("2.17.0");
   }
 
   @Test
@@ -331,7 +365,7 @@ class DependencyDetectionServiceTests {
     Environment environment = mock(Environment.class);
     when(environment.getProperty("spring.datasource.url", "")).thenReturn("jdbc:h2:test");
     return new DependencyDetectionService(
-        locator, runner, new NmapExecutableResolver(locator, "nmap"), environment);
+        locator, runner, new NmapExecutableResolver(locator, "nmap"), environment, mock(ToolDirectoryHasher.class));
   }
 
   private DependencyStatus find(SystemDependenciesResponse response, String name) {

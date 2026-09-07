@@ -2,7 +2,9 @@ package com.bachelor.toolbox.dependency;
 
 import com.bachelor.toolbox.dependency.CommandRunner.CommandResult;
 import com.bachelor.toolbox.dependency.SystemDependenciesResponse.DependencyStatus;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -21,6 +23,7 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,7 +39,8 @@ public class DependencyDetectionService {
   // Metasploit 的 msfconsole 由 Windows 上的嵌入式 Ruby 驱动，冷启动很不稳定，
 // 实测首次打印 Framework Version 需 12~20 秒，冷启动/杀软较慢时可超过 30 秒。
 // 放宽到 45 秒尽力读出版本；即使仍超时也会按“已安装但版本未知”降级，不报失败。
-private static final Duration MSF_COMMAND_TIMEOUT = Duration.ofSeconds(45);
+  private static final Duration MSF_COMMAND_TIMEOUT = Duration.ofSeconds(45);
+  private static final Duration ZAP_COMMAND_TIMEOUT = Duration.ofSeconds(25);
   // 依赖检测结果跨页面复用：漏洞知识库页、发起检测前都通过非强制刷新接口读取同一份缓存，
 // 避免频繁重跑最慢的 Metasploit 冷启动探测。检测依赖页的"重新检测"走 forceRefresh，不受影响。
 // 延长到 60 秒，使短时间内往返多个页面能直接复用检测依赖页已探测出的结果。
@@ -50,17 +54,20 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
   private final CommandRunner commandRunner;
   private final NmapExecutableResolver nmapExecutableResolver;
   private final Environment environment;
+  private final ToolDirectoryHasher toolDirectoryHasher;
   private volatile CachedDetection cachedDetection;
 
   public DependencyDetectionService(
       ExecutableLocator locator,
       CommandRunner commandRunner,
       NmapExecutableResolver nmapExecutableResolver,
-      Environment environment) {
+      Environment environment,
+      ToolDirectoryHasher toolDirectoryHasher) {
     this.locator = locator;
     this.commandRunner = commandRunner;
     this.nmapExecutableResolver = nmapExecutableResolver;
     this.environment = environment;
+    this.toolDirectoryHasher = toolDirectoryHasher;
   }
 
   public SystemDependenciesResponse detect() {
@@ -88,8 +95,12 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
   }
 
   public void detectStreaming(
-      Consumer<DependencyStatus> onEach, Consumer<List<DependencyStatus>> onComplete) {
+      Consumer<List<DependencyStatus>> onManifest,
+      Consumer<DependencyStatus> onEach,
+      Consumer<List<DependencyStatus>> onComplete) {
     List<DependencyDescriptor> descriptors = dependencyDescriptors();
+    // 先回传“清单”：列出将在检测的每项依赖（无状态/哈希），让前端逐项预置为“检测中”占位。
+    onManifest.accept(manifests(descriptors));
     int workerCount = Math.min(MAX_DETECTION_WORKERS, descriptors.size());
     ExecutorService workers = Executors.newFixedThreadPool(workerCount);
     List<DependencyStatus> results = Collections.synchronizedList(new ArrayList<>());
@@ -123,6 +134,25 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
             }
           });
     }
+  }
+
+  /** 生成“检测中”占位清单：仅含名称/类别/是否必需，无状态、无哈希。
+   *  前端据此先铺全部项，待逐项结果回传后覆盖为真实状态；未回的项保持“检测中”转圈。 */
+  private List<DependencyStatus> manifests(List<DependencyDescriptor> descriptors) {
+    return descriptors.stream()
+        .map(
+            d ->
+                new DependencyStatus(
+                    d.name(),
+                    null,
+                    null,
+                    null,
+                    d.required(),
+                    d.category(),
+                    null,
+                    null,
+                    null))
+        .toList();
   }
 
   private List<DependencyStatus> sortInDescriptorOrder(
@@ -227,45 +257,66 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
   private DependencyStatus evaluateVersionCommand(
       DependencyDescriptor descriptor, String safePath, CommandResult result) {
     String output = cleanOutput(result.output());
+    String version = resolveVersion(descriptor, safePath, output);
     if (result.timedOut()) {
-      // 首次运行/冷启动较慢的工具（Metasploit：Ruby 预热可远超普通上限）超时，
-      // 若可执行文件已就位，将其视为“已安装”，仅版本未知，避免误报为失败。
+      // 首次运行/冷启动较慢的工具（Metasploit/ZAP）超时，
+      // 若可执行文件已就位，将其视为“已安装”，尽力解析版本或标明超时。
       if (descriptor.timeoutResolvesAsAvailable()) {
+        String msg = UNKNOWN_VERSION.equals(version)
+            ? "已安装；版本检测超时（首次运行较慢），可稍后重新检测获取版本。"
+            : "可用（版本检测较慢，已根据本地元数据读取版本）。";
         return buildStatus(
             descriptor,
             DetectionStatus.AVAILABLE,
-            parseVersion(descriptor, output),
+            version,
             safePath,
-            "已安装；版本检测超时（首次运行较慢），可稍后重新检测获取版本。");
+            msg);
       }
       return buildStatus(
           descriptor,
           DetectionStatus.TIMEOUT,
-          parseVersion(descriptor, output),
+          version,
           safePath,
           String.format(Locale.ROOT, "版本检测超过 %.1f 秒，进程已终止。", descriptor.timeout().toMillis() / 1000.0));
     }
     if (result.errorMessage() != null) {
+      if (descriptor.timeoutResolvesAsAvailable() && !UNKNOWN_VERSION.equals(version)) {
+        return buildStatus(descriptor, DetectionStatus.AVAILABLE, version, safePath, "可用。");
+      }
       return buildStatus(descriptor, DetectionStatus.ERROR, null, safePath, "已找到，但无法执行版本检测。");
     }
     if (!output.isBlank() && !descriptor.outputValidator().test(output)) {
       return buildStatus(
           descriptor,
           DetectionStatus.INCOMPATIBLE,
-          parseVersion(descriptor, output),
+          version,
           safePath,
           descriptor.incompatibleMessage());
     }
     if (result.exitCode() != 0) {
+      if (descriptor.timeoutResolvesAsAvailable() && !UNKNOWN_VERSION.equals(version)) {
+        return buildStatus(descriptor, DetectionStatus.AVAILABLE, version, safePath, "可用。");
+      }
       return buildStatus(
           descriptor,
           DetectionStatus.ERROR,
-          parseVersion(descriptor, output),
+          version,
           safePath,
           "版本命令执行失败，退出码 " + result.exitCode() + "。");
     }
     return buildStatus(
-        descriptor, DetectionStatus.AVAILABLE, parseVersion(descriptor, output), safePath, "可用。");
+        descriptor, DetectionStatus.AVAILABLE, version, safePath, "可用。");
+  }
+
+  private String resolveVersion(DependencyDescriptor descriptor, String safePath, String output) {
+    String parsed = parseVersion(descriptor, output);
+    if (UNKNOWN_VERSION.equals(parsed) && "OWASP ZAP".equals(descriptor.name())) {
+      String fromPath = zapVersionFromPath(safePath);
+      if (!UNKNOWN_VERSION.equals(fromPath)) {
+        return fromPath;
+      }
+    }
+    return parsed;
   }
 
   private DependencyStatus buildStatus(
@@ -274,14 +325,87 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
       String version,
       String path,
       String message) {
+    String name = descriptor.name();
+    String statusName = status.name();
+    boolean available = status == DetectionStatus.AVAILABLE;
+    // 仅“可用”的依赖才生成哈希：hash 是已被检测到且可用的指纹。未安装/错误/不兼容等状态
+    // 不产生哈希，避免在依赖页看到“没装却有哈希”的误导（缺失依赖仅显示暂无哈希）。
+    String capabilityHash =
+        available ? DependencyStatus.hashOf(name, statusName, version) : null;
     return new DependencyStatus(
-        descriptor.name(),
-        status.name(),
+        name,
+        statusName,
         version,
         path,
         descriptor.required(),
         descriptor.category(),
-        message.trim());
+        message.trim(),
+        capabilityHash,
+        available ? toolDirHash(path) : null);
+  }
+
+  /**
+   * 对位于 {@code TOOLBOX_TOOLS_DIR} 下的工具目录生成目录内容哈希（排除 {@code .toolbox-hash}）。
+   * 主动检测启动时可对同一目录重算比对以确认扫描器确实存在。非 tools 目录或读取失败返回 null。
+   */
+  private String toolDirHash(String path) {
+    if (path == null || path.isBlank()) {
+      return null;
+    }
+    try {
+      Path root = toolsRoot();
+      if (root == null) {
+        return null;
+      }
+      Path located = Path.of(path);
+      Path resolved =
+          Files.isDirectory(located) ? located : (located.getParent() != null ? located.getParent() : located);
+      Path normalized = resolved.toAbsolutePath().normalize();
+      if (!normalized.startsWith(root.toAbsolutePath().normalize())) {
+        return null;
+      }
+      return toolDirectoryHasher.hashDirectory(normalized);
+    } catch (Exception ex) {
+      log.debug("生成工具目录哈希失败，path={}", path, ex);
+      return null;
+    }
+  }
+
+  private Path toolsRoot() {
+    String value = environment.getProperty("TOOLBOX_TOOLS_DIR");
+    if (value == null || value.isBlank()) {
+      return null;
+    }
+    return Path.of(value.trim());
+  }
+
+  /**
+   * 主动检测启动时的扫描器目录核对：确认工具目录仍然存在且非空，即为“扫描器确实在”。
+   *
+   * <p>早期版本通过「重算整个目录内容哈希并与 {@code .toolbox-hash} 比对」来判定，但工具目录通常包含
+   * 数据库、日志、临时文件、版本更新等易变内容，任何文件变化都会让哈希失配，导致手动清空并重新生成
+   * {@code .toolbox-hash} 才能恢复，反复误报「目录与记录不一致」。这里改为只确认目录存在（存在性即
+   * 证明扫描器在位），不再被目录内容是否变化所干扰。目录不在 tools 下或无法定位时返回 true（不阻断，
+   * 交由既有依赖存在性判断）；仅当目录确实缺失时才返回 false。
+   */
+  public boolean verifyToolDir(String path) {
+    if (path == null || path.isBlank()) {
+      return true;
+    }
+    try {
+      Path root = toolsRoot();
+      if (root == null) {
+        return true;
+      }
+      Path located = Path.of(path);
+      Path resolved =
+          Files.isDirectory(located) ? located : (located.getParent() != null ? located.getParent() : located);
+      Path normalized = resolved.toAbsolutePath().normalize();
+      return Files.isDirectory(normalized);
+    } catch (Exception ex) {
+      log.debug("核验工具目录失败，path={}", path, ex);
+      return true;
+    }
   }
 
   public String activeDatabase() {
@@ -417,14 +541,16 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
             "检测到的命令不是 MetasploitFramework。当前仅检测版本，不默认执行。",
             MSF_COMMAND_TIMEOUT,
             this::metasploitVersion),
-        descriptor(
+        descriptorWithExtractor(
             "OWASP ZAP",
-            scannerCandidates(
-                "ZAP_PATH",
-                windows ? "zap.exe" : "zap.sh",
-                "zap.bat",
-                "zaproxy"),
-            List.of(), false, "PROXY_SCANNER", anyOutput, ""));
+            zapCandidates(windows),
+            List.of("-version"),
+            false,
+            "PROXY_SCANNER",
+            output -> containsIgnoreCase(output, "zap") || containsIgnoreCase(output, "2.") || output.matches("(?s).*\\d+\\.\\d+.*"),
+            "检测到的命令不是 OWASP ZAP。当前仅检测版本，不默认执行。",
+            ZAP_COMMAND_TIMEOUT,
+            this::zapVersion));
   }
 
   private boolean isWindows() {
@@ -460,13 +586,106 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
   }
 
   private List<String> zapCandidates(boolean windows) {
-    if (!windows) {
-      return List.of("zaproxy", "zap.sh");
+    LinkedHashSet<String> candidates = new LinkedHashSet<>();
+    String explicit = System.getenv("ZAP_PATH");
+    if (explicit != null && !explicit.isBlank() && !"zap".equalsIgnoreCase(explicit.trim())) {
+      candidates.add(explicit.trim());
     }
-    return paths(
-        "zap.exe",
-        "zap.bat",
-        "zaproxy");
+
+    findZapInTools(candidates, windows);
+
+    if (windows) {
+      candidates.add("zap.bat");
+      candidates.add("zap.exe");
+      candidates.add("zaproxy.bat");
+      candidates.add("zaproxy.exe");
+      candidates.add("zap");
+      candidates.add("zaproxy");
+      String programFiles = System.getenv("ProgramFiles");
+      if (programFiles != null && !programFiles.isBlank()) {
+        candidates.add(Path.of(programFiles, "OWASP", "Zed Attack Proxy", "zap.bat").toString());
+        candidates.add(Path.of(programFiles, "Zed Attack Proxy", "zap.bat").toString());
+        candidates.add(Path.of(programFiles, "ZAP", "zap.bat").toString());
+      }
+      String programFilesX86 = System.getenv("ProgramFiles(x86)");
+      if (programFilesX86 != null && !programFilesX86.isBlank()) {
+        candidates.add(Path.of(programFilesX86, "OWASP", "Zed Attack Proxy", "zap.bat").toString());
+        candidates.add(Path.of(programFilesX86, "Zed Attack Proxy", "zap.bat").toString());
+        candidates.add(Path.of(programFilesX86, "ZAP", "zap.bat").toString());
+      }
+    } else {
+      candidates.add("zaproxy");
+      candidates.add("zap.sh");
+      candidates.add("zap");
+    }
+    return new ArrayList<>(candidates);
+  }
+
+  private void findZapInTools(LinkedHashSet<String> candidates, boolean windows) {
+    List<Path> searchRoots = new ArrayList<>();
+    Path toolsDir = toolsRoot();
+    if (toolsDir != null) {
+      searchRoots.add(toolsDir);
+    }
+    searchRoots.add(Path.of("tools"));
+    searchRoots.add(Path.of("..", "tools"));
+    searchRoots.add(Path.of("security-toolbox-web", "tools"));
+    searchRoots.add(Path.of("..", "security-toolbox-web", "tools"));
+    searchRoots.add(Path.of("security-toolbox-web", "desktop-release", "win-unpacked", "tools"));
+    searchRoots.add(Path.of("..", "security-toolbox-web", "desktop-release", "win-unpacked", "tools"));
+    if (windows) {
+      searchRoots.add(Path.of("D:\\stbtools"));
+      searchRoots.add(Path.of("D:\\tools"));
+    }
+
+    List<String> targetNames =
+        windows ? List.of("zap.bat", "zap.exe", "zap.sh") : List.of("zap.sh", "zaproxy", "zap");
+
+    for (Path root : searchRoots) {
+      try {
+        if (!Files.isDirectory(root)) {
+          continue;
+        }
+        Path zapDir = root.resolve("zap");
+        if (Files.isDirectory(zapDir)) {
+          for (String name : targetNames) {
+            Path direct = zapDir.resolve(name);
+            if (Files.isRegularFile(direct)) {
+              candidates.add(direct.toAbsolutePath().normalize().toString());
+            }
+          }
+          try (var stream = Files.list(zapDir)) {
+            stream
+                .filter(Files::isDirectory)
+                .forEach(
+                    sub -> {
+                      for (String name : targetNames) {
+                        Path candidate = sub.resolve(name);
+                        if (Files.isRegularFile(candidate)) {
+                          candidates.add(candidate.toAbsolutePath().normalize().toString());
+                        }
+                      }
+                    });
+          } catch (Exception ignored) {
+          }
+        }
+        try (var stream = Files.list(root)) {
+          stream
+              .filter(p -> Files.isDirectory(p) && p.getFileName().toString().toLowerCase(Locale.ROOT).contains("zap"))
+              .forEach(
+                  dir -> {
+                    for (String name : targetNames) {
+                      Path candidate = dir.resolve(name);
+                      if (Files.isRegularFile(candidate)) {
+                        candidates.add(candidate.toAbsolutePath().normalize().toString());
+                      }
+                    }
+                  });
+        } catch (Exception ignored) {
+        }
+      } catch (Exception ignored) {
+      }
+    }
   }
 
   private DependencyDescriptor descriptor(
@@ -559,6 +778,75 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
         .filter(line -> containsIgnoreCase(line, "Framework Version"))
         .findFirst()
         .orElseGet(() -> firstNonBlankLine(output));
+  }
+
+  // ZAP 的 zap.bat -version 在 Windows 下可能包含批处理回显命令行，
+  // 提取纯语义版本号行或从命令回显中提取 zap 版本。
+  private String zapVersion(String output) {
+    if (output == null || output.isBlank()) {
+      return UNKNOWN_VERSION;
+    }
+    List<String> lines = output.lines().map(String::trim).toList();
+    for (String line : lines) {
+      if (line.isBlank() || line.startsWith("if exist") || line.contains(">") || line.startsWith("set ")) {
+        continue;
+      }
+      if (line.matches("^\\d+\\.\\d+(\\.\\d+)?.*")) {
+        return line;
+      }
+    }
+    for (String line : lines) {
+      if (containsIgnoreCase(line, "zap") && line.matches(".*\\d+\\.\\d+.*")) {
+        Matcher matcher = Pattern.compile("\\b\\d+\\.\\d+(\\.\\d+)?\\b").matcher(line);
+        if (matcher.find()) {
+          return matcher.group();
+        }
+      }
+    }
+    return firstNonBlankLine(output);
+  }
+
+  private String zapVersionFromPath(String path) {
+    if (path == null || path.isBlank()) {
+      return UNKNOWN_VERSION;
+    }
+    Matcher matcher = Pattern.compile("(?i)zap[_-](\\d+\\.\\d+(\\.\\d+)?)").matcher(path);
+    if (matcher.find()) {
+      return matcher.group(1);
+    }
+    try {
+      Path p = Path.of(path);
+      Path parent = p.getParent();
+      if (parent != null) {
+        // 尝试检查同目录或父目录下的 zap-*.jar 或 .toolbox-source.json
+        Path sourceJson = parent.resolve(".toolbox-source.json");
+        if (!Files.isRegularFile(sourceJson) && parent.getParent() != null) {
+          sourceJson = parent.getParent().resolve(".toolbox-source.json");
+        }
+        if (Files.isRegularFile(sourceJson)) {
+          String content = Files.readString(sourceJson, StandardCharsets.UTF_8);
+          Matcher jsonMatcher = Pattern.compile("\"version\"\\s*:\\s*\"([^\"]+)\"").matcher(content);
+          if (jsonMatcher.find()) {
+            return jsonMatcher.group(1);
+          }
+        }
+        try (var stream = Files.list(parent)) {
+          var jarVersion = stream
+              .filter(Files::isRegularFile)
+              .map(f -> f.getFileName().toString())
+              .filter(name -> name.toLowerCase(Locale.ROOT).startsWith("zap-") && name.toLowerCase(Locale.ROOT).endsWith(".jar"))
+              .findFirst();
+          if (jarVersion.isPresent()) {
+            Matcher jarMatcher = Pattern.compile("(?i)zap-(\\d+\\.\\d+(\\.\\d+)?)\\.jar").matcher(jarVersion.get());
+            if (jarMatcher.find()) {
+              return jarMatcher.group(1);
+            }
+          }
+        }
+      }
+    } catch (Exception ignored) {
+    }
+    return UNKNOWN_VERSION;
   }
 
   private String sanitizePath(Path path) {

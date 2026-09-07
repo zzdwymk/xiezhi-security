@@ -2448,6 +2448,7 @@ html .desktop-v2-native-frame .vuln-workbench {
     .dependency-group-head p,
     .dependency-group-head em,
     .dep-main .dep-path,
+    .dep-main .dep-hash,
     .dep-version,
     .dep-action,
     .dependency-empty,
