@@ -8,8 +8,14 @@ const query = new URLSearchParams(window.location.search);
 const desktopMode = Boolean(
   window.toolboxDesktop?.isDesktop || query.get("desktop") === "1",
 );
-const apiBaseUrl =
+export const apiBaseUrl =
   query.get("backend") || window.toolboxDesktop?.backendBaseUrl || "/api";
+
+export function getApiUrl(path: string): string {
+  const normalized = apiBaseUrl.replace(/\/+$/, "");
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${normalized}${normalizedPath}`;
+}
 
 export const api = axios.create({
   baseURL: apiBaseUrl,

@@ -382,6 +382,23 @@
   background: #e2f0e9;
   color: #21815f;
 }
+.dep-status.detecting,
+.dep-status.msf-pending-status {
+  background: #e4edfb;
+  color: #2563eb;
+}
+.dep-status.detecting .el-icon,
+.dep-status.msf-pending-status .el-icon {
+  animation: dep-status-spin 1.1s linear infinite;
+}
+@keyframes dep-status-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
 .dep-main {
   display: flex;
   min-width: 0;
@@ -400,6 +417,13 @@
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: help;
+}
+.dep-main .dep-hash {
+  display: block;
+  margin-top: 2px;
+  color: #8b8c86;
+  font: 10px Consolas, monospace;
   cursor: help;
 }
 .dep-main .dep-note {

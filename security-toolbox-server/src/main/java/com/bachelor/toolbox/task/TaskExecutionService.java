@@ -43,6 +43,13 @@ public class TaskExecutionService {
   private final ProjectAuthorizationService authorization;
   private final BusinessDataOperationGate operationGate;
   private final ApplicationEventPublisher eventPublisher;
+  private com.bachelor.toolbox.tool.zap.ZapDiscoverySink zapDiscoverySink;
+
+  @Autowired
+  public void setZapDiscoverySink(
+      com.bachelor.toolbox.tool.zap.ZapDiscoverySink zapDiscoverySink) {
+    this.zapDiscoverySink = zapDiscoverySink;
+  }
 
   @Autowired
   public TaskExecutionService(
@@ -231,6 +238,10 @@ public class TaskExecutionService {
     appendLog(task, "命令执行完成，正在解析输出并生成检测结果…");
     updateProgress(task, 88, false, null, null, "工具执行完成，正在保存检测结果");
     saveFindings(task, target, tool, result);
+
+    if ("zap_scan".equals(tool.code()) && zapDiscoverySink != null) {
+      zapDiscoverySink.ingest(task.getProjectId(), task.getTargetId(), target, result);
+    }
 
     task.setResultJson(objectMapper.writeValueAsString(result));
     task.setStatus("SUCCESS");

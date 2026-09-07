@@ -158,7 +158,7 @@ class WorkflowRunServiceTests {
                 "test",
                 "test",
                 "H2",
-                List.of(new DependencyStatus("Nmap", "MISSING", "", "", true, "scanner", ""))));
+                List.of(new DependencyStatus("Nmap", "MISSING", "", "", true, "scanner", "", null, null))));
 
     assertThatThrownBy(() -> service.start(startRequest(List.of(), List.of())))
         .isInstanceOf(ApiException.class)
@@ -425,6 +425,6 @@ class WorkflowRunServiceTests {
         "test",
         "test",
         "H2",
-        List.of(new DependencyStatus("Nmap", "AVAILABLE", "1", "nmap", true, "scanner", "")));
+        List.of(new DependencyStatus("Nmap", "AVAILABLE", "1", "nmap", true, "scanner", "", null, null)));
   }
 }

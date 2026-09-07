@@ -111,6 +111,19 @@ public class ProbeService {
         projectId, targetId, HISTORY_PAGE);
   }
 
+  /** 删除一条资产/结果节点：校验项目授权与归属，节点必须属于该项目。 */
+  public void delete(Long projectId, Long id) {
+    ProbeResult row =
+        results
+            .findById(id)
+            .orElseThrow(() -> new com.bachelor.toolbox.common.ApiException("资产节点不存在"));
+    if (!row.getProjectId().equals(projectId)) {
+      throw new com.bachelor.toolbox.common.ApiException("资产节点不属于当前项目");
+    }
+    validateProjectAuthorization(findProject(projectId));
+    results.delete(row);
+  }
+
   public List<ProbeResult> history(Long projectId) {
     return results.findByProjectIdOrderByDetectedAtDescIdDesc(projectId, HISTORY_PAGE);
   }

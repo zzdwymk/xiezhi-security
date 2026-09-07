@@ -34,6 +34,9 @@ public class ProcessCommandRunner implements CommandRunner {
     Future<String> output = null;
     try {
       ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);
+      if (executable.getParent() != null && java.nio.file.Files.isDirectory(executable.getParent())) {
+        builder.directory(executable.getParent().toFile());
+      }
       process = ProcessEnvironmentSanitizer.sanitize(builder).start();
       InputStream processOutput = process.getInputStream();
       output = reader.submit(() -> readOutput(processOutput));

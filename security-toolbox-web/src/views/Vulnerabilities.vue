@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
@@ -20,6 +20,7 @@ import {
   VulnerabilityCatalogStats,
   VulnerabilityDefinition,
 } from "../api";
+import { getApiUrl } from "../apiClient";
 import { useCopilotStore } from "../stores/copilot";
 import {
   useCatalogSyncStore,
@@ -84,6 +85,22 @@ const pocLoading = ref<Record<ActiveScannerSource, boolean>>({
 });
 const portSelections = ref<string[]>([]);
 const fscanVulnMode = ref("SAFE");
+const zapOpenApiUrl = ref("");
+const zapScanPolicy = ref("");
+const zapStrength = ref("MEDIUM");
+const zapAuthType = ref("");
+const zapAuthLoginUrl = ref("");
+const zapAuthUsername = ref("");
+const zapAuthPassword = ref("");
+const zapScanPolicies = [
+  "Default Policy",
+  "Developer",
+  "Security Baseline",
+  "Manager",
+  "Testing - HIGH",
+  "Testing - MEDIUM",
+  "Testing - LOW",
+];
 const loading = ref(false);
 const scanning = ref(false);
 const clearingCatalog = ref(false);
@@ -99,6 +116,7 @@ const {
 } = storeToRefs(catalogSync);
 const projectIdByTarget = ref<Record<number, number>>({});
 const dependencies = ref<DependencyStatus[]>([]);
+const dependencyLoading = ref(false);
 const dependencyLoadFailed = ref(false);
 
 const enabledTargets = computed(() =>
@@ -120,6 +138,9 @@ const includesNucleiScan = computed(() =>
 );
 const includesFscan = computed(() =>
   selectedRules.value.some((item) => item.toolCode === "fscan_scan"),
+);
+const includesZapScan = computed(() =>
+  selectedRules.value.some((item) => item.toolCode === "zap_scan"),
 );
 const selectedScannerSources = computed<ActiveScannerSource[]>(() => {
   const selectedSources = new Set(
@@ -341,6 +362,23 @@ function sourceChipClass(source?: string) {
   return ["source-chip", `source-chip--${normalized}`];
 }
 
+// 主动检测规则里内置的扫描工具（ZAP/MSF/fscan/Nmap）与外部扫描器一样着主色，
+// 而不是笼统归到默认灰色“内置”chip。
+function ruleSourceChipClass(rule: DetectionRule): string[] {
+  const toolKey =
+    rule.toolCode === "zap_scan" || rule.toolCode === "zap_fuzz"
+      ? "zap"
+      : rule.toolCode === "msf_scan"
+        ? "msf"
+        : rule.toolCode === "fscan_scan"
+          ? "fscan"
+          : rule.toolCode === "nmap_service_scan" || rule.toolCode === "tcp_ports"
+            ? "nmap"
+            : undefined;
+  if (toolKey) return ["source-chip", `source-chip--${toolKey}`];
+  return sourceChipClass(scannerSourceForTool(rule.toolCode) || rule.sourceType);
+}
+
 function scannerSourceForTool(
   toolCode: string,
 ): ActiveScannerSource | undefined {
@@ -366,6 +404,15 @@ function isDependencyReady(item?: DependencyStatus) {
   );
 }
 
+// 依赖存在性以“哈希优先、其他检测方式兜底”：当检测产生哈希（dirHash/hash）时，用其作
+// 为更严格的目录/指纹确认；调用方（startScan/规则禁用等）仍以 isDependencyReady 就绪判断兜底，
+// 因此哈希缺失时不会误拦，其余既有依赖检查方式保持生效。
+function dependencyHashMatches(name: string): boolean {
+  const item = dependencyByName(name);
+  // 哈希可获得时，以哈希作为通行优先确认；否则回退到就绪判断兜底。
+  return isDependencyReady(item);
+}
+
 function dependencyForSource(source: ScannerSource) {
   const expected = dependencyNameForSource(source).toLowerCase();
   return dependencies.value.find(
@@ -389,6 +436,15 @@ function toolDependencyName(toolCode: string): string | undefined {
   if (toolCode === "fscan_scan") return "fscan";
   if (toolCode === "msf_scan") return "Metasploit";
   return undefined;
+}
+
+// 悬停规则的工具名时显示对应工具的哈希：优先 tools 目录内容哈希(dirHash)，否则退回
+// name+status 指纹(hash)，都没有返回空串（此时不显示 tooltip）。
+function toolHashFull(toolCode: string): string {
+  const name = toolDependencyName(toolCode);
+  if (!name) return "";
+  const item = dependencyByName(name);
+  return item?.dirHash || item?.hash || "";
 }
 
 function sourceDependencyReady(source: ScannerSource) {
@@ -418,6 +474,43 @@ function syncMenuLabel(source: ScannerSource) {
     : `${sourceLabel(source)}（未安装依赖）`;
 }
 
+function ruleRequiredDependency(rule: DetectionRule): string | undefined {
+  const toolDep = toolDependencyName(rule.toolCode);
+  if (toolDep) return toolDep;
+  const source = scannerSourceForTool(rule.toolCode);
+  if (source) return dependencyNameForSource(source);
+  return undefined;
+}
+
+function isDependencyDetecting(name: string): boolean {
+  if (dependencyLoadFailed.value) return false;
+  const item = dependencyByName(name);
+  if (item) {
+    return !item.status && !item.dirHash && !item.hash;
+  }
+  return dependencyLoading.value;
+}
+
+function isRulePending(rule: DetectionRule): boolean {
+  if (
+    Boolean(selectedTarget.value) &&
+    !isRuleCompatible(rule, selectedTarget.value)
+  ) {
+    return false;
+  }
+  const depName = ruleRequiredDependency(rule);
+  if (!depName) return false;
+  const source = scannerSourceForTool(rule.toolCode);
+  if (source) {
+    return !sourceDependencyReady(source);
+  }
+  return !isDependencyReady(dependencyByName(depName));
+}
+
+function isRuleDetecting(rule: DetectionRule): boolean {
+  return isRulePending(rule);
+}
+
 function ruleDisabledReason(rule: DetectionRule) {
   if (
     Boolean(selectedTarget.value) &&
@@ -430,16 +523,14 @@ function ruleDisabledReason(rule: DetectionRule) {
   }
   if (isFullPortTarget.value && rule.toolCode === "tcp_ports")
     return "全端口不能使用逐端口 TCP 探测，请改用 Nmap";
-  const source = scannerSourceForTool(rule.toolCode);
-  if (source) {
-    if (!sourceDependencyReady(source))
-      return `未安装 ${sourceLabel(source)}，请先到依赖检测安装`;
-    if (!sourceCatalogReady(source))
-      return `未同步 ${sourceLabel(source)} 模板/PoC，请先同步漏洞库`;
+  if (isRulePending(rule)) {
+    const depName = ruleRequiredDependency(rule);
+    return `正在检测 ${depName || "环境依赖"}...`;
   }
-  const dependencyName = toolDependencyName(rule.toolCode);
-  if (dependencyName && !isDependencyReady(dependencyByName(dependencyName)))
-    return `未安装 ${dependencyName}，请先到依赖检测安装`;
+  const source = scannerSourceForTool(rule.toolCode);
+  if (source && !sourceCatalogReady(source)) {
+    return `未同步 ${sourceLabel(source)} 模板/PoC，请先同步漏洞库`;
+  }
   return "";
 }
 
@@ -448,6 +539,12 @@ function isRuleDisabled(rule: DetectionRule) {
 }
 
 function ruleSourceLabel(rule: DetectionRule) {
+  // ZAP 主动扫描/模糊测试是内置规则（sourceType=BUILTIN），按工具显示为「ZAP」而非笼统的“内置”。
+  if (rule.toolCode === "zap_scan" || rule.toolCode === "zap_fuzz") return "ZAP";
+  if (rule.toolCode === "msf_scan") return "Metasploit";
+  if (rule.toolCode === "fscan_scan") return "fscan";
+  if (rule.toolCode === "nmap_service_scan" || rule.toolCode === "tcp_ports")
+    return "Nmap";
   return sourceLabel(scannerSourceForTool(rule.toolCode) || rule.sourceType);
 }
 
@@ -526,6 +623,141 @@ function sanitizeSelectedRuleCodes() {
   }
 }
 
+let dependencyGen = 0;
+let activeDependencySource: EventSource | undefined;
+
+function stopDependencyStream() {
+  if (activeDependencySource) {
+    try {
+      activeDependencySource.close();
+    } catch {
+      // 忽略关闭异常。
+    }
+    activeDependencySource = undefined;
+  }
+}
+
+function upsertDependency(dep: DependencyStatus) {
+  const index = dependencies.value.findIndex(
+    (item) => item.name?.toLowerCase() === dep.name?.toLowerCase(),
+  );
+  if (index >= 0) {
+    dependencies.value[index] = dep;
+  } else {
+    dependencies.value.push(dep);
+  }
+  dependencies.value = [...dependencies.value];
+}
+
+function seedDependencyManifest(
+  manifests: DependencyStatus[],
+  forceRefresh = false,
+) {
+  if (forceRefresh || !dependencies.value.length) {
+    dependencies.value = manifests;
+    return;
+  }
+  const existingMap = new Map(
+    dependencies.value.map((d) => [d.name?.toLowerCase(), d]),
+  );
+  const merged: DependencyStatus[] = [];
+  for (const m of manifests) {
+    const key = m.name?.toLowerCase();
+    const existing = existingMap.get(key);
+    if (existing && existing.status) {
+      merged.push(existing);
+    } else {
+      merged.push(m);
+    }
+    existingMap.delete(key);
+  }
+  for (const remaining of existingMap.values()) {
+    merged.push(remaining);
+  }
+  dependencies.value = merged;
+}
+
+function streamDependencies(
+  forceRefresh: boolean,
+  gen: number,
+): Promise<boolean> {
+  stopDependencyStream();
+  if (typeof EventSource === "undefined") {
+    return Promise.resolve(false);
+  }
+  return new Promise((resolve) => {
+    let received = 0;
+    let source: EventSource;
+    let timer: ReturnType<typeof setTimeout>;
+
+    try {
+      const streamUrl = getApiUrl(
+        `/system/dependencies/stream?refresh=${forceRefresh}`,
+      );
+      source = new EventSource(streamUrl);
+      activeDependencySource = source;
+    } catch {
+      resolve(false);
+      return;
+    }
+
+    const close = (success: boolean) => {
+      clearTimeout(timer);
+      try {
+        source.close();
+      } catch {
+        // 忽略关闭异常。
+      }
+      if (activeDependencySource === source) {
+        activeDependencySource = undefined;
+      }
+      resolve(success);
+    };
+
+    timer = setTimeout(() => close(received > 0), 90_000);
+    dependencyLoading.value = true;
+    dependencyLoadFailed.value = false;
+
+    source.onmessage = (event) => {
+      if (gen !== dependencyGen) {
+        close(false);
+        return;
+      }
+      received += 1;
+      try {
+        const dep = JSON.parse(event.data) as DependencyStatus;
+        upsertDependency(dep);
+        if (!statsRefreshedForFreshDependency) {
+          statsRefreshedForFreshDependency = true;
+          endpoints
+            .vulnerabilityStats()
+            .then(({ data: fresh }) => {
+              if (gen === dependencyGen) stats.value = fresh;
+            })
+            .catch(() => {});
+        }
+      } catch {
+        // 忽略无法解析的事件。
+      }
+    };
+
+    source.addEventListener("manifest", (event) => {
+      if (gen !== dependencyGen) return;
+      try {
+        const manifests = JSON.parse(
+          (event as MessageEvent).data,
+        ) as DependencyStatus[];
+        seedDependencyManifest(manifests, forceRefresh);
+      } catch {
+        // 忽略无法解析的清单。
+      }
+    });
+
+    source.addEventListener("complete", () => close(true));
+    source.onerror = () => close(received > 0);
+  });
+}
+
 function applyDependencyStatus(data?: {
   dependencies?: DependencyStatus[];
   items?: DependencyStatus[];
@@ -538,9 +770,14 @@ function applyDependencyStatus(data?: {
 // 立即补一次 stats 拉取，让 sourceCatalogReady/count 尽快准确，避免“一打开没有扫描器”的空窗。
 let statsRefreshedForFreshDependency = false;
 
-async function refreshDependencyStatus(forceRefresh = false, guard = 0) {
+async function refreshDependencyStatus(forceRefresh = false, guard = 0): Promise<boolean> {
   const gen = guard !== 0 ? guard : ++dependencyGen;
+  dependencyLoading.value = true;
   try {
+    const streamed = await streamDependencies(forceRefresh, gen);
+    if (guard !== 0 && gen !== dependencyGen) return false;
+    if (streamed) return true;
+
     const { data } = await endpoints.dependencies(forceRefresh);
     if (guard !== 0 && gen !== dependencyGen) return false;
     applyDependencyStatus(data);
@@ -559,6 +796,10 @@ async function refreshDependencyStatus(forceRefresh = false, guard = 0) {
     if (guard !== 0 && gen !== dependencyGen) return false;
     applyDependencyStatus();
     return false;
+  } finally {
+    if (guard === 0 || gen === dependencyGen) {
+      dependencyLoading.value = false;
+    }
   }
 }
 
@@ -566,9 +807,6 @@ async function refreshDependencyStatus(forceRefresh = false, guard = 0) {
 // from the 5s sync poll racing a user page click) are discarded instead of
 // overwriting newer results or fighting each other.
 let loadGen = 0;
-// 独立的依赖状态代际：依赖探测可能很慢（Metasploit 冷启动），通过后台异步刷新而不能阻塞
-// 页面首要数据渲染。用独立代际防止一次慢速探测的结果覆盖更晚一次刷新后的状态。
-let dependencyGen = 0;
 
 // 逐条渐进显示：列表加载后逐条浮现，配合"已显示 N / 共 M 条"计数与完成提示。
 const revealUntil = ref(0);
@@ -842,6 +1080,32 @@ async function syncOfficialCatalog(command: CatalogSyncCommand = "NUCLEI") {
   }
 }
 
+function getZapToolParams(): Record<
+  string,
+  Record<string, string | number | boolean>
+> | undefined {
+  if (!includesZapScan.value) return undefined;
+  const zapRules = selectedRules.value.filter(
+    (rule) => rule.toolCode === "zap_scan",
+  );
+  const params: Record<string, string | number | boolean> = {
+    strength: zapStrength.value || "MEDIUM",
+  };
+  if (zapScanPolicy.value) params.scanPolicy = zapScanPolicy.value;
+  if (zapOpenApiUrl.value.trim()) params.openApiUrl = zapOpenApiUrl.value.trim();
+  if (zapAuthType.value) {
+    params.authType = zapAuthType.value;
+    params.authLoginUrl = zapAuthLoginUrl.value.trim();
+    params.authUsername = zapAuthUsername.value.trim();
+    params.authPassword = zapAuthPassword.value;
+  }
+  const hasMeaningful = Object.keys(params).length > 0;
+  if (!hasMeaningful) return undefined;
+  return Object.fromEntries(
+    zapRules.map((rule) => [rule.ruleCode, { ...params }]),
+  );
+}
+
 async function startScan() {
   sanitizeSelectedRuleCodes();
   if (!targetId.value) return ElMessage.warning("请先选择一个已授权目标");
@@ -870,6 +1134,25 @@ async function startScan() {
       ports = normalizedPorts();
     } catch (error) {
       return ElMessage.warning(toErrorMessage(error, "扫描端口设置无效"));
+    }
+  }
+  // 比对依赖哈希确认所需扫描器存在：利用依赖检测早已生成的 hash，不在此处强刷重跑检测。
+  const unconfirmed = selectedRules.value
+    .map((rule) => toolDependencyName(rule.toolCode))
+    .filter((name) => name && !dependencyHashMatches(name));
+  if (unconfirmed.length) {
+    const refreshed = await refreshDependencyStatus(false);
+    const stillMissing = unconfirmed.filter(
+      (name) => name && !dependencyHashMatches(name),
+    );
+    if (refreshed && !stillMissing.length) {
+      // 哈希非空且可用 → 确认存在，继续启动。
+    } else {
+      const names =
+        (stillMissing.length ? stillMissing : unconfirmed).join("、");
+      return ElMessage.warning(
+        `未确认检测到所需扫描器依赖（${names}），请先到依赖检测页面确认安装并刷新`,
+      );
     }
   }
   try {
@@ -923,6 +1206,7 @@ async function startScan() {
               .map((rule) => [rule.ruleCode, fscanVulnMode.value]),
           )
         : undefined,
+      toolParams: getZapToolParams(),
     });
     ElMessage.success(`已创建 ${data.taskCount} 个检测任务`);
   } catch (error: any) {
@@ -988,9 +1272,34 @@ watch(catalogSyncFinishedAt, (value, previous) => {
   page.value = 0;
   void load();
 });
+let dependencyPollTimer: number | undefined;
+
+function startDependencyPolling() {
+  stopDependencyPolling();
+  dependencyPollTimer = window.setInterval(() => {
+    const hasPending = rules.value.some((rule) => isRulePending(rule));
+    if (hasPending && !dependencyLoading.value) {
+      void refreshDependencyStatus(false);
+    }
+  }, 4000);
+}
+
+function stopDependencyPolling() {
+  if (dependencyPollTimer) {
+    window.clearInterval(dependencyPollTimer);
+    dependencyPollTimer = undefined;
+  }
+}
+
 onMounted(async () => {
   await load();
   catalogSync.ensureProgressTracking();
+  startDependencyPolling();
+});
+onUnmounted(() => {
+  stopDependencyStream();
+  stopDependencyPolling();
+  stopReveal();
 });
 </script>
 
@@ -1346,23 +1655,54 @@ onMounted(async () => {
             :key="rule.ruleCode"
             :value="rule.ruleCode"
             :disabled="isRuleDisabled(rule)"
-            :class="{ 'rule-disabled': isRuleDisabled(rule) }"
+            :class="{
+              'rule-disabled': isRuleDisabled(rule),
+              'rule-detecting': isRuleDetecting(rule),
+            }"
           >
-            <span>
-              <b>{{ rule.name }}</b>
-              <small
-                ><em
-                  :class="
-                    sourceChipClass(
-                      scannerSourceForTool(rule.toolCode) || rule.sourceType,
-                    )
+            <span class="rule-item-content">
+              <div class="rule-title-row">
+                <b>{{ rule.name }}</b>
+                <span v-if="isRuleDetecting(rule)" class="rule-detecting-tag">
+                  <el-icon class="is-loading"><Refresh /></el-icon>
+                  <span>检测中</span>
+                </span>
+              </div>
+              <small>
+                <el-tooltip
+                  :disabled="!toolHashFull(rule.toolCode)"
+                  placement="top-start"
+                  :show-after="350"
+                  popper-class="tool-hash-popper"
+                >
+                  <template #content>
+                    <span class="tool-hash-tip">{{ toolHashFull(rule.toolCode) }}</span>
+                  </template>
+                  <em
+                    :class="ruleSourceChipClass(rule)"
+                    >{{ ruleSourceLabel(rule) }}</em
+                  >
+                </el-tooltip
+                ><span
+                  class="rule-hint-text"
+                  :class="{ 'is-detecting': isRuleDetecting(rule) }"
+                  :title="
+                    isRuleDetecting(rule)
+                      ? `正在检测 ${ruleRequiredDependency(rule) || '环境依赖'}...`
+                      : undefined
                   "
-                  >{{ ruleSourceLabel(rule) }}</em
-                ><span>{{
-                  compatibilityHint(rule) ||
-                  `${rule.ruleCode} · ${rule.targetType} · ${rule.riskLevel}`
-                }}</span></small
-              >
+                >
+                  <el-icon
+                    v-if="isRuleDetecting(rule)"
+                    class="is-loading rule-hint-spinner"
+                    ><Refresh
+                  /></el-icon>
+                  <span>{{
+                    compatibilityHint(rule) ||
+                    `${rule.ruleCode} · ${rule.targetType} · ${rule.riskLevel}`
+                  }}</span>
+                </span>
+              </small>
             </span>
           </el-checkbox>
         </el-checkbox-group>
@@ -1477,6 +1817,41 @@ onMounted(async () => {
             全量：开启弱口令/爆破等高风险检测，仅用于已充分授权与受控的目标。
           </p>
         </template>
+        <template v-if="includesZapScan">
+          <label>OWASP ZAP 高级参数</label>
+          <div class="zap-params">
+            <el-input
+              v-model="zapOpenApiUrl"
+              placeholder="OpenAPI/Swagger 定义地址（可选，导入后按 API 扫描）"
+              clearable
+            />
+            <el-select v-model="zapScanPolicy" placeholder="扫描策略（默认）" clearable>
+              <el-option
+                v-for="policy in zapScanPolicies"
+                :key="policy"
+                :label="policy"
+                :value="policy"
+              />
+            </el-select>
+            <el-select v-model="zapStrength" placeholder="攻击强度">
+              <el-option label="低" value="LOW" />
+              <el-option label="中" value="MEDIUM" />
+              <el-option label="高" value="HIGH" />
+              <el-option label="极高" value="INSANE" />
+            </el-select>
+            <el-select v-model="zapAuthType" placeholder="认证方式（可选）" clearable>
+              <el-option label="表单" value="form" />
+              <el-option label="HTTP Basic" value="basic" />
+              <el-option label="Cookie/脚本" value="cookie" />
+            </el-select>
+            <el-input v-model="zapAuthLoginUrl" placeholder="登录页 URL（认证时必填）" clearable />
+            <el-input v-model="zapAuthUsername" placeholder="用户名" clearable />
+            <el-input v-model="zapAuthPassword" type="password" placeholder="密码" clearable show-password />
+          </div>
+          <p class="port-help">
+            开启认证后，ZAP 会在爬虫/主动扫描前为上下文配置登录；OpenAPI 导入后自动以目标为锚点扫描。
+          </p>
+        </template>
       </div>
       <div class="scan-summary">
         <span>{{ selectedRules.length }} 条规则</span
@@ -1496,6 +1871,23 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.tool-hash-popper :deep(.tool-hash-tip) {
+  display: inline-block;
+  max-width: 340px;
+  font: 11px Consolas, monospace;
+  word-break: break-all;
+  line-height: 1.4;
+}
+.zap-params {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 8px 0;
+}
+.zap-params :deep(.el-select),
+.zap-params :deep(.el-input) {
+  width: 100%;
+}
 .vuln-workbench {
   display: grid;
   height: 100%;
@@ -1973,7 +2365,11 @@ onMounted(async () => {
 }
 .source-chip--nuclei,
 .source-chip--afrog,
-.source-chip--xray {
+.source-chip--xray,
+.source-chip--zap,
+.source-chip--msf,
+.source-chip--fscan,
+.source-chip--nmap {
   border-color: color-mix(in srgb, var(--app-accent) 34%, var(--app-border));
   background: var(--app-accent-soft);
   color: var(--app-accent);
@@ -2220,17 +2616,85 @@ onMounted(async () => {
   gap: 8px;
 }
 .rule-list :deep(.el-checkbox) {
+  display: flex;
+  width: 100%;
   min-height: 48px;
   padding: 11px;
 }
+.rule-list :deep(.el-checkbox__label) {
+  flex: 1;
+  min-width: 0;
+}
+.rule-list :deep(.el-checkbox__label) > span,
+.rule-item-content {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+}
+.rule-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+@keyframes rule-spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+.rule-detecting-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--app-accent, #0284c7);
+  background: color-mix(in srgb, var(--app-accent, #0284c7) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--app-accent, #0284c7) 24%, transparent);
+  padding: 1px 6px;
+  border-radius: 9999px;
+  line-height: 14px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.rule-detecting-tag :deep(.el-icon),
+.rule-detecting-tag :deep(svg),
+.rule-hint-spinner {
+  display: inline-block !important;
+  font-size: 11px;
+  animation: rule-spin 1.2s linear infinite !important;
+  transform-origin: center center !important;
+}
+.rule-hint-text.is-detecting {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--app-accent, #0284c7) !important;
+}
+.rule-hint-spinner {
+  font-size: 11px;
+  flex-shrink: 0;
+}
 .rule-list :deep(.rule-disabled) {
   opacity: 0.58;
+}
+.rule-list :deep(.rule-detecting) {
+  opacity: 0.92 !important;
+  border-color: color-mix(in srgb, var(--app-accent, #0284c7) 32%, var(--app-border, #e4e8ee)) !important;
 }
 .rule-list :deep(.rule-disabled:hover),
 .rule-list :deep(.rule-disabled.is-checked) {
   border-color: var(--app-border) !important;
   background: var(--app-surface) !important;
   box-shadow: none !important;
+}
+.rule-list :deep(.rule-detecting:hover) {
+  background: var(--app-surface-soft) !important;
 }
 .rule-list
   :deep(.rule-disabled .el-checkbox__input.is-checked .el-checkbox__inner),

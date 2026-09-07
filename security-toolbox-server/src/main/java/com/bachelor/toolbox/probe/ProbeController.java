@@ -2,6 +2,7 @@ package com.bachelor.toolbox.probe;
 
 import jakarta.validation.Valid;
 import java.util.List;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -29,5 +30,11 @@ public class ProbeController {
   public List<ProbeResult> history(
       @PathVariable Long projectId, @RequestParam(required = false) Long targetId) {
     return targetId == null ? service.history(projectId) : service.history(projectId, targetId);
+  }
+
+  /** 删除一条资产/结果节点：仅限该项目内，且受项目授权与目标归属约束。 */
+  @DeleteMapping("/results/{id}")
+  public void delete(@PathVariable Long projectId, @PathVariable Long id) {
+    service.delete(projectId, id);
   }
 }

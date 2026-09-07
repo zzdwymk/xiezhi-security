@@ -992,7 +992,7 @@ watch(
       append-to-body
       destroy-on-close
     >
-      <div v-loading="githubLoading" class="icp-settings-form">
+      <div v-loading="githubLoading">
         <el-alert
           v-if="!isDesktop"
           title="当前是网页模式，请通过后端 GITHUB_TOKEN / GH_TOKEN 环境变量配置。"
@@ -1083,7 +1083,7 @@ watch(
       append-to-body
       destroy-on-close
     >
-      <div v-loading="toolDownloadLoading" class="icp-settings-form">
+      <div v-loading="toolDownloadLoading">
         <el-alert
           v-if="!isDesktop"
           title="当前是网页模式，请通过服务端 TOOL_DOWNLOAD_MIRROR 环境变量配置下载源。"

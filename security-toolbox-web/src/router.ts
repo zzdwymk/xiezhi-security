@@ -20,6 +20,7 @@ const Projects = () => import("./views/Projects.vue");
 const ProjectDetail = () => import("./views/ProjectDetail.vue");
 const Recon = () => import("./views/Recon.vue");
 const Workflow = () => import("./views/Workflow.vue");
+const AssetsTopology = () => import("./views/AssetsTopology.vue");
 
 const SETUP_KEY = "security_toolbox_setup_complete_v2";
 const desktopMode =
@@ -48,6 +49,11 @@ const router = createRouter({
       meta: { title: "评估项目详情" },
     },
     { path: "/recon", component: Recon, meta: { title: "信息收集" } },
+    {
+      path: "/assets/topology",
+      component: AssetsTopology,
+      meta: { title: "资产拓扑" },
+    },
     {
       path: "/vulnerabilities",
       component: Vulnerabilities,

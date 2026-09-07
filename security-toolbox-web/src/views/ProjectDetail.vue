@@ -47,6 +47,7 @@ import { taskbarProgress } from "../utils/taskbarProgress";
 import { useAuthStore } from "../stores/auth";
 import { useCopilotStore } from "../stores/copilot";
 import AppPagination from "../components/AppPagination.vue";
+import AssetTopology from "../components/AssetTopology.vue";
 import {
   ArrowDown,
   MagicStick,
@@ -96,6 +97,8 @@ const loading = ref(false);
 const selected = ref<number>();
 const discoveryTarget = ref<number>();
 const discoveryRows = ref<DiscoveryResult[]>([]);
+const showDiscoveryTopology = ref(false);
+const discoveryLoading = ref(false);
 const {
   page: discoveryPage,
   pageSize: discoveryPageSize,
@@ -1805,12 +1808,15 @@ function openReportMetric(targetTab: string, query?: Record<string, string>) {
 }
 
 async function loadDiscovery() {
+  discoveryLoading.value = true;
   try {
     discoveryRows.value = (
       await endpoints.projectDiscoveryResults(id, discoveryTarget.value)
     ).data;
   } catch (error: any) {
     ElMessage.error(errorMessage(error, "探测结果加载失败"));
+  } finally {
+    discoveryLoading.value = false;
   }
 }
 
@@ -3592,7 +3598,21 @@ onUnmounted(() => {
             </div>
           </div>
         </section>
-        <el-empty v-if="!discoveryRows.length" description="暂无探测结果" />
+        <div class="discovery-toolbar">
+          <el-radio-group v-model="showDiscoveryTopology" size="small">
+            <el-radio-button :value="false">列表</el-radio-button>
+            <el-radio-button :value="true">拓扑</el-radio-button>
+          </el-radio-group>
+        </div>
+        <AssetTopology
+          v-if="showDiscoveryTopology"
+          :project-id="id"
+          :assets="discoveryRows"
+          :loading="discoveryLoading"
+          @change="loadDiscovery"
+        />
+        <template v-if="!showDiscoveryTopology">
+          <el-empty v-if="!discoveryRows.length" description="暂无探测结果" />
         <el-table v-else :data="pagedDiscoveryRows" stripe>
           <el-table-column label="目标" min-width="170"
             ><template #default="s">{{
@@ -3670,6 +3690,7 @@ onUnmounted(() => {
           class="project-table-pagination"
           :total="discoveryRows.length"
         />
+        </template>
         <el-dialog
           v-model="pocRecommendationVisible"
           title="指纹关联的安全检测建议"
@@ -6565,6 +6586,11 @@ onUnmounted(() => {
   display: flex;
   justify-content: flex-end;
   margin-top: 12px;
+}
+.discovery-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
 }
 .project-tabs .project-subtitle {
   margin: 24px 0 12px;

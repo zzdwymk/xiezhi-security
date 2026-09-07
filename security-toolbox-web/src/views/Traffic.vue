@@ -182,6 +182,7 @@ interface FuzzResult {
   payloadCount?: number;
   url?: string;
   results?: FuzzHit[];
+  engine?: "ZAP" | "LOOP";
 }
 
 const fuzzForm = ref<ReplayForm>({
@@ -190,8 +191,287 @@ const fuzzForm = ref<ReplayForm>({
   headers: "",
   body: "",
 });
-const fuzzPayloads = ref("' OR '1'='1\n\" OR \"1\"=\"1\n'; DROP TABLE users;--\n\\x3Cscript>alert(1)\\x3C/script>\n../../../../etc/passwd\n%00\n\u0041\u0042\u0043");
+type FuzzCombinationType =
+  | "SNIPER"
+  | "BATTERING_RAM"
+  | "PITCHFORK"
+  | "PITCHFORK_LONGEST"
+  | "CLUSTER_BOMB"
+  | "LONGEST"
+  | "SHORTEST"
+  | "CARTESIAN";
+
+const FUZZ_ATTACK_TYPES = [
+  {
+    value: "SNIPER",
+    label: "狙击手 (Sniper)",
+    shortDesc: "单字典，逐位置依次测试",
+    desc: "单字典：依次对每个占位符注入测试，其余占位符保持原始基础值不变",
+  },
+  {
+    value: "BATTERING_RAM",
+    label: "攻城槌 (Battering ram)",
+    shortDesc: "单字典，所有位置同时替换",
+    desc: "单字典：所有占位符在单次请求中同时替换为同一个 payload",
+  },
+  {
+    value: "PITCHFORK",
+    label: "草叉 (Pitchfork - 最短对齐)",
+    shortDesc: "多字典并发，按行同步推进",
+    desc: "多字典：每个占位符独立配置字典，按行同步取值，达到最短字典长度时结束",
+  },
+  {
+    value: "PITCHFORK_LONGEST",
+    label: "草叉 (Pitchfork - 最长对齐)",
+    shortDesc: "多字典并发，短字典复用末项",
+    desc: "多字典：每个占位符独立配置字典，按行同步取值，短字典自动复用最后一行",
+  },
+  {
+    value: "CLUSTER_BOMB",
+    label: "集束炸弹 (Cluster bomb)",
+    shortDesc: "多字典笛卡尔积全组合",
+    desc: "多字典：每个占位符独立配置字典，进行全排列笛卡尔积组合测试",
+  },
+] as const;
+
+const FUZZ_PAYLOAD_PRESETS = [
+  {
+    label: "SQL 注入探测 (SQLi)",
+    payloads: [
+      "'",
+      "\"",
+      "' OR '1'='1",
+      "\" OR \"1\"=\"1",
+      "' UNION SELECT NULL--",
+      "1' ORDER BY 1--",
+      "admin'--",
+      "1 AND 1=1",
+      "1 AND 1=2",
+      "sleep(5)#",
+    ],
+  },
+  {
+    label: "XSS 跨站脚本探测",
+    payloads: [
+      "<scr" + "ipt>alert(1)</scr" + "ipt>",
+      "\"><img src=x onerror=alert(1)>",
+      "<svg onload=alert(1)>",
+      "javascript:alert(1)",
+      "'><scr" + "ipt>alert(document.domain)</scr" + "ipt>",
+      "<iframe src=\"javascript:alert(1)\">",
+    ],
+  },
+  {
+    label: "路径穿越 / LFI 探测",
+    payloads: [
+      "../",
+      "../../../../etc/passwd",
+      "..\\..\\..\\..\\windows\\win.ini",
+      "/etc/passwd",
+      "C:\\boot.ini",
+      "%2e%2e%2f%2e%2e%2fetc/passwd",
+    ],
+  },
+  {
+    label: "命令执行注入探测 (RCE)",
+    payloads: [
+      ";id",
+      "|id",
+      "`id`",
+      "$(id)",
+      "& whoami",
+      "| whoami",
+    ],
+  },
+  {
+    label: "常见弱口令 / 凭证",
+    payloads: [
+      "admin",
+      "123456",
+      "password",
+      "root",
+      "12345678",
+      "admin123",
+      "guest",
+      "111111",
+    ],
+  },
+  {
+    label: "布尔与边界逻辑值",
+    payloads: [
+      "true",
+      "false",
+      "1",
+      "0",
+      "-1",
+      "null",
+      "undefined",
+      "NaN",
+    ],
+  },
+];
+
+const fuzzPayloadGroups = ref<Record<string, string>>({});
+const fuzzGroupOrder = ref<string[]>([]);
+const fuzzCombination = ref<FuzzCombinationType>("SNIPER");
+const fuzzSharedPayload = ref("test\ndebug\nadmin");
+const activeFuzzGroup = ref("");
+
+const isSinglePayloadMode = computed(
+  () => fuzzCombination.value === "SNIPER" || fuzzCombination.value === "BATTERING_RAM",
+);
+
+const currentAttackType = computed(() =>
+  FUZZ_ATTACK_TYPES.find((item) => item.value === fuzzCombination.value) || FUZZ_ATTACK_TYPES[0],
+);
+
+const numbersGenDialogVisible = ref(false);
+const numbersGenForm = ref({
+  from: 1,
+  to: 20,
+  step: 1,
+});
+
+const fuzzVariables = computed(() => {
+  const found = new Set<string>();
+  const scan = (value: string | undefined) => {
+    const text = String(value || "");
+    const re = /§([^§]+)§/g;
+    let m;
+    while ((m = re.exec(text))) {
+      const name = m[1].trim();
+      if (name) found.add(name);
+    }
+  };
+  scan(fuzzForm.value.url);
+  scan(fuzzRawPacket.value);
+  if (fuzzForm.value.headers) scan(fuzzForm.value.headers);
+  if (fuzzForm.value.body) scan(fuzzForm.value.body);
+  return [...found];
+});
+
+const estimatedFuzzRequests = computed(() => {
+  const vars = fuzzVariables.value;
+  if (!vars.length) return 0;
+  if (isSinglePayloadMode.value) {
+    const lines = fuzzSharedPayload.value
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const count = lines.length;
+    if (count === 0) return 0;
+    if (fuzzCombination.value === "BATTERING_RAM") {
+      return count;
+    }
+    // SNIPER:
+    return vars.length * count;
+  } else {
+    const counts = vars.map((name) => {
+      const text = fuzzPayloadGroups.value[name] || "";
+      return text
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter(Boolean).length;
+    });
+    if (counts.some((c) => c === 0)) {
+      if (fuzzCombination.value === "PITCHFORK" || fuzzCombination.value === "SHORTEST") return 0;
+    }
+    if (fuzzCombination.value === "PITCHFORK" || fuzzCombination.value === "SHORTEST") {
+      return Math.min(...counts);
+    }
+    if (fuzzCombination.value === "PITCHFORK_LONGEST" || fuzzCombination.value === "LONGEST") {
+      return Math.max(...counts);
+    }
+    // CLUSTER_BOMB / CARTESIAN:
+    return counts.reduce((acc, curr) => acc * curr, 1);
+  }
+});
+
+function ensureFuzzGroups() {
+  const vars = fuzzVariables.value;
+  const order: string[] = [];
+  const groups: Record<string, string> = {};
+  for (const name of vars) {
+    if (!Object.prototype.hasOwnProperty.call(fuzzPayloadGroups.value, name)) {
+      fuzzPayloadGroups.value[name] = fuzzSharedPayload.value || "test\ndebug\nadmin";
+    }
+    order.push(name);
+    groups[name] = fuzzPayloadGroups.value[name];
+  }
+  fuzzGroupOrder.value = order;
+  fuzzPayloadGroups.value = groups;
+}
+
+const totalMultiPayloadLines = computed(() => {
+  return Object.values(fuzzPayloadGroups.value).reduce((sum, text) => {
+    return sum + (text || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean).length;
+  }, 0);
+});
+
+function handleImportCommand(cmd: string) {
+  if (cmd === "clipboard") {
+    importFuzzFromClipboard();
+  } else if (cmd === "file") {
+    pickFuzzFile();
+  }
+}
+const fuzzFileInput = ref<HTMLInputElement>();
+const fuzzUrlInput = ref();
+const fuzzHeadersInput = ref();
+const fuzzBodyInput = ref();
+const fuzzRawInput = ref();
+const fuzzRawPacket = ref("");
+const fuzzBackdropRef = ref<HTMLElement>();
+const fuzzUrlBackdropRef = ref<HTMLElement>();
+
+function highlightPlaceholders(text: string): string {
+  if (!text) return "";
+  const escaped = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  const marked = escaped.replace(
+    /§([^§\r\n]+)§/g,
+    '<mark class="fuzz-placeholder-mark">§$1§</mark>',
+  );
+  return marked.endsWith("\n") ? marked + " " : marked;
+}
+
+const highlightedRawPacketHtml = computed(() => {
+  return highlightPlaceholders(fuzzRawPacket.value);
+});
+
+const highlightedUrlHtml = computed(() => {
+  return highlightPlaceholders(fuzzForm.value.url);
+});
+
+function syncRawEditorScroll() {
+  const textarea = fuzzRawInput.value?.$el?.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (textarea && fuzzBackdropRef.value) {
+    fuzzBackdropRef.value.scrollTop = textarea.scrollTop;
+    fuzzBackdropRef.value.scrollLeft = textarea.scrollLeft;
+  }
+}
+
+function syncUrlEditorScroll() {
+  const input = fuzzUrlInput.value?.$el?.querySelector("input") as HTMLInputElement | null;
+  if (input && fuzzUrlBackdropRef.value) {
+    fuzzUrlBackdropRef.value.scrollLeft = input.scrollLeft;
+  }
+}
+
+watch(fuzzRawPacket, () => {
+  nextTick(syncRawEditorScroll);
+});
+
+watch(
+  () => fuzzForm.value.url,
+  () => {
+    nextTick(syncUrlEditorScroll);
+  },
+);
 const fuzzRunning = ref(false);
+const fuzzEngine = ref<"auto" | "zap" | "loop">("auto");
 const fuzzResult = ref<FuzzResult>();
 const fuzzError = ref("");
 const fuzzPlaceholderHint = "\u00a7name\u00a7（在 URL、请求头或请求体中标记模糊点，每个 payload 会替换该占位符逐一重放）";
@@ -203,60 +483,6 @@ const fuzzBatchWithSelection = ref(false);
 const fuzzBatchResults = ref<Record<string, FuzzResult>>({});
 const fuzzFocusPacketId = ref<number | string>();
 
-interface FuzzDictionary {
-  key: string;
-  label: string;
-  payloads: string[];
-}
-
-const FUZZ_DICTIONARIES: FuzzDictionary[] = [
-  {
-    key: "sqli",
-    label: "SQL 注入",
-    payloads: [
-      "' OR '1'='1",
-      "\" OR \"1\"=\"1",
-      "'; DROP TABLE users;--",
-      "' UNION SELECT NULL--",
-      "1 AND SLEEP(5)",
-    ],
-  },
-  {
-    key: "xss",
-    label: "XSS / 脚本",
-    payloads: [
-      "\\x3Cscript>alert(1)\\x3C/script>",
-      "<img src=x onerror=alert(1)>",
-      "javascript:alert(1)",
-      "\"><svg onload=alert(1)>",
-    ],
-  },
-  {
-    key: "path",
-    label: "路径遍历",
-    payloads: [
-      "../../../etc/passwd",
-      "..\\..\\windows\\win.ini",
-      "%2e%2e%2fetc%2fpasswd",
-      "/etc/passwd",
-    ],
-  },
-  {
-    key: "encoding",
-    label: "编码注入",
-    payloads: [
-      "%00",
-      "%27%20OR%20%271%27%3D%271",
-      "%5c%27",
-      "\\u003cscript\\u003e",
-    ],
-  },
-  {
-    key: "baseline",
-    label: "占位符清空",
-    payloads: [],
-  },
-];
 const captureFilterDialogVisible = ref(false);
 const captureFilters = ref<CaptureFilterRule[]>([]);
 const {
@@ -659,7 +885,7 @@ points.push({
       label: "模糊命中",
       badge: changed ? `${changed} 个变更` : "全部同基线",
       value: changed
-        ? `本会话最近一轮模糊有 ${changed}/${fuzzForPacket.results.length} 个响应相对基线变化，建议在模糊器逐条重放并结合 AI 研判真反射。`
+        ? `本会话最近一轮模糊有 ${changed}/${fuzzForPacket.results.length} 个响应相对基线变化，建议在模糊器逐条重放核实真反射。`
         : `本会话最近一轮模糊 ${fuzzForPacket.results.length} 次响应均与基线一致。`,
       level: changed ? "warn" : "ok",
     });
@@ -1027,6 +1253,66 @@ async function deleteSession(item: TrafficSession) {
   }
 }
 
+async function deleteSessionAction(item: TrafficSession) {
+  const targets = actionSessions();
+  if (targets.length > 1) {
+    await deleteSelectedSessions(targets);
+    return;
+  }
+  await deleteSession(item);
+}
+
+async function deleteSelectedSessions(targets: TrafficSession[]) {
+  if (!targets.length || clearingSessions.value) return;
+  const label =
+    targets.length === 1
+      ? targets[0].url || `#${targets[0].id}`
+      : `所选 ${targets.length} 条流量记录`;
+  try {
+    await ElMessageBox.confirm(
+      `确定删除${targets.length === 1 ? "这条" : "这"}流量记录吗？\n${label}`,
+      "删除流量记录",
+      {
+        type: "warning",
+        confirmButtonText: "删除",
+        cancelButtonText: "取消",
+      },
+    );
+  } catch {
+    return;
+  }
+  clearingSessions.value = true;
+  try {
+    const ids = targets.map((item) => item.id);
+    for (const id of ids) {
+      await api.delete(`/traffic/sessions/${encodeURIComponent(String(id))}`);
+    }
+    const idSet = new Set(ids);
+    sessions.value = sessions.value.filter((session) => !idSet.has(session.id));
+    if (selectedId.value !== undefined && idSet.has(selectedId.value)) {
+      selectedId.value = sessions.value[0]?.id;
+      suggestion.value = undefined;
+    }
+    sessionSelection.value = new Set();
+    const nextChats = { ...trafficChats.value };
+    ids.forEach((id) => delete nextChats[String(id)]);
+    trafficChats.value = nextChats;
+    persistTrafficChats();
+    status.value = {
+      ...status.value,
+      capturedCount: Math.max(
+        0,
+        (status.value.capturedCount || 0) - ids.length,
+      ),
+    };
+    ElMessage.success(`已删除 ${ids.length} 条流量记录`);
+  } catch (error) {
+    ElMessage.error(readableError(error));
+  } finally {
+    clearingSessions.value = false;
+  }
+}
+
 async function clearSessions() {
   if (
     !unmarkedSessionCount.value ||
@@ -1149,6 +1435,21 @@ function toggleMultiSelectMode() {
   }
 }
 
+function exitMultiSelect() {
+  if (!multiSelectMode.value) return;
+  multiSelectMode.value = false;
+  sessionSelection.value = new Set();
+}
+
+function onWindowPointerDown(event: PointerEvent) {
+  if (!multiSelectMode.value) return;
+  const target = event.target as HTMLElement | null;
+  if (!target) return;
+  if (target.closest && target.closest(".traffic-session-rail")) return;
+  if (target.closest && target.closest(".el-popper, .el-dropdown-menu")) return;
+  exitMultiSelect();
+}
+
 function pickSessionForContextMenu(item: TrafficSession) {
   if (!multiSelectMode.value) {
     if (!sessionSelection.value.has(item.id)) {
@@ -1203,6 +1504,7 @@ function openFuzz() {
     headers: editableRequestHeaders(focus.requestHeaders),
     body: editablePacketValue(focus.requestBody, "body"),
   };
+  fuzzRawPacket.value = formatRequestPacket(focus);
   fuzzResult.value = fuzzBatchResults.value[String(focus.id)];
   fuzzError.value = "";
   packetTab.value = "fuzz";
@@ -1449,7 +1751,22 @@ function isHttp2Protocol(value?: string) {
 }
 
 function hasFuzzPlaceholder(value: string | undefined) {
-  return String(value || "").includes("\u00a7name\u00a7");
+  return /§[^§]+§/.test(String(value || ""));
+}
+
+/** 把完整 HTTP 原始请求报文拆分为 method / url / headers / body。 */
+function parseRawFuzzPacket(raw: string) {
+  const text = String(raw || "").replace(/\r\n/g, "\n");
+  const firstBreak = text.indexOf("\n\n");
+  const headSection = firstBreak === -1 ? text : text.slice(0, firstBreak);
+  const bodySection = firstBreak === -1 ? "" : text.slice(firstBreak + 2);
+  const lines = headSection.split("\n");
+  const requestLine = lines.length ? lines[0] : "";
+  const [method, requestTarget] = requestLine.trim().split(/\s+/);
+  let headers = lines.slice(1).join("\r\n");
+  if (!headers.trim()) headers = "";
+  let body = bodySection;
+  return { method, requestTarget, headers, body };
 }
 
 function splitFuzzPacket() {
@@ -1461,39 +1778,252 @@ function splitFuzzPacket() {
   fuzzForm.value.body = parts.body;
 }
 
-function applyFuzzDictionary(dict: FuzzDictionary) {
-  if (!dict || !dict.payloads.length) {
-    fuzzPayloads.value = "";
-    return;
+function currentFuzzGroupName(): string | undefined {
+  if (activeFuzzGroup.value && fuzzGroupOrder.value.includes(activeFuzzGroup.value)) {
+    return activeFuzzGroup.value;
   }
-  const payloads = dict.payloads.join("\n");
-  fuzzPayloads.value = payloads;
+  if (fuzzGroupOrder.value.length) return fuzzGroupOrder.value[0];
+  return undefined;
 }
 
-function appendFuzzDictionary(dict: FuzzDictionary) {
-  const extra = dict.payloads.join("\n");
-  fuzzPayloads.value = [fuzzPayloads.value, extra].filter(Boolean).join("\n");
+function appendToFuzzGroup(text: string) {
+  const lines = text
+    .replace(/^\uFEFF/, "")
+    .split(/\r\n|\r|\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (!lines.length) return false;
+  if (isSinglePayloadMode.value) {
+    const current = fuzzSharedPayload.value || "";
+    fuzzSharedPayload.value = [current, ...lines].filter(Boolean).join("\n");
+    return true;
+  }
+  const name = currentFuzzGroupName();
+  if (!name) return false;
+  const current = fuzzPayloadGroups.value[name] || "";
+  fuzzPayloadGroups.value[name] = [current, ...lines].filter(Boolean).join("\n");
+  return true;
+}
+
+function clearFuzzGroups() {
+  if (isSinglePayloadMode.value) {
+    fuzzSharedPayload.value = "";
+  } else {
+    const name = currentFuzzGroupName();
+    if (name) {
+      fuzzPayloadGroups.value[name] = "";
+    } else {
+      fuzzPayloadGroups.value = {};
+      fuzzGroupOrder.value = [];
+    }
+  }
+}
+
+function applyFuzzPreset(payloads: readonly string[]) {
+  const text = payloads.join("\n");
+  if (isSinglePayloadMode.value) {
+    fuzzSharedPayload.value = text;
+    ElMessage.success(`已载入 ${payloads.length} 行预设 Payload 到通用字典`);
+  } else {
+    const name = currentFuzzGroupName();
+    if (!name) {
+      ElMessage.warning("请先在请求中标记一个占位符");
+      return;
+    }
+    fuzzPayloadGroups.value[name] = text;
+    ElMessage.success(`已向 §${name}§ 载入 ${payloads.length} 行预设 Payload`);
+  }
+}
+
+function applyNumbersGenerator() {
+  const list: string[] = [];
+  const from = Number(numbersGenForm.value.from) || 1;
+  const to = Number(numbersGenForm.value.to) || 20;
+  const step = Math.max(1, Number(numbersGenForm.value.step) || 1);
+  for (let i = from; i <= to && list.length < 200; i += step) {
+    list.push(String(i));
+  }
+  const text = list.join("\n");
+  if (isSinglePayloadMode.value) {
+    fuzzSharedPayload.value = text;
+  } else {
+    const name = currentFuzzGroupName();
+    if (name) {
+      fuzzPayloadGroups.value[name] = text;
+    }
+  }
+  numbersGenDialogVisible.value = false;
+  ElMessage.success(`已生成 ${list.length} 个数字 Payload (范围 ${from}..${to})`);
+}
+
+function importFuzzFromClipboard() {
+  navigator.clipboard
+    .readText()
+    .then((text) => {
+      if (!text.trim()) {
+        ElMessage.warning("剪贴板没有可导入的内容");
+        return;
+      }
+      const ok = appendToFuzzGroup(text);
+      if (ok) {
+        const count = text.trim().split(/\r?\n/).length;
+        if (isSinglePayloadMode.value) {
+          ElMessage.success(`已向通用 Payload 字典导入 ${count} 行`);
+        } else {
+          const name = currentFuzzGroupName();
+          ElMessage.success(`已向 §${name}§ 导入 ${count} 行 payload`);
+        }
+      }
+    })
+    .catch(() => {
+      ElMessage.error("读取剪贴板失败，请检查浏览器剪贴板权限");
+    });
+}
+
+function pickFuzzFile() {
+  fuzzFileInput.value?.click();
+}
+
+function onFuzzFileSelected(event: Event) {
+  const target = event.target as HTMLInputElement;
+  const file = target.files?.[0];
+  target.value = "";
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onerror = () => {
+    ElMessage.error("读取文件失败");
+  };
+  reader.onload = () => {
+    const text = String(reader.result || "");
+    if (!text.trim()) {
+      ElMessage.warning("文件内容为空，没有可导入的 payload");
+      return;
+    }
+    const ok = appendToFuzzGroup(text);
+    if (ok) {
+      const lines = text.trim().split(/\r?\n/).length;
+      const bytes = new Blob([text]).size;
+      if (isSinglePayloadMode.value) {
+        ElMessage.success(`已从 ${file.name} 导入 ${lines} 行 payload（${bytes} 字节）到通用字典`);
+      } else {
+        const name = currentFuzzGroupName();
+        ElMessage.success(`已向 §${name}§ 从 ${file.name} 导入 ${lines} 行 payload（${bytes} 字节）`);
+      }
+    }
+  };
+  reader.readAsText(file, "utf-8");
+}
+
+function insertFuzzPlaceholder(target: "url" | "headers" | "body") {
+  const inputRef = target === "url" ? fuzzUrlInput : target === "headers" ? fuzzHeadersInput : fuzzBodyInput;
+  const inputEl = inputRef.value?.$el?.querySelector?.("textarea") || inputRef.value?.$el?.querySelector?.("input");
+  const value = fuzzForm.value[target];
+  if (!inputEl) {
+    fuzzForm.value[target] = value + "\u00a7name\u00a7";
+    ensureFuzzGroups();
+    nextTick(syncUrlEditorScroll);
+    return;
+  }
+  const start = inputEl.selectionStart ?? value.length;
+  const end = inputEl.selectionEnd ?? value.length;
+  const selected = value.slice(start, end);
+  if (selected) {
+    fuzzForm.value[target] = value.slice(0, start) + "\u00a7" + selected + "\u00a7" + value.slice(end);
+    const anchor = start + 1;
+    requestAnimationFrame(() => {
+      inputEl.focus({ preventScroll: true });
+      inputEl.setSelectionRange(anchor, anchor + selected.length);
+      syncUrlEditorScroll();
+    });
+  } else {
+    fuzzForm.value[target] = value.slice(0, start) + "\u00a7name\u00a7" + value.slice(end);
+    const anchor = start + 1 + 4;
+    requestAnimationFrame(() => {
+      inputEl.focus({ preventScroll: true });
+      inputEl.setSelectionRange(anchor, anchor + 4);
+      syncUrlEditorScroll();
+    });
+  }
+  ensureFuzzGroups();
+  nextTick(syncUrlEditorScroll);
+}
+
+function insertRawPlaceholder() {
+  const inputEl = fuzzRawInput.value?.$el?.querySelector?.("textarea") || fuzzRawInput.value?.$el?.querySelector?.("input");
+  const value = fuzzRawPacket.value;
+  if (!inputEl) {
+    fuzzRawPacket.value = value + "\u00a7name\u00a7";
+    ensureFuzzGroups();
+    nextTick(syncRawEditorScroll);
+    return;
+  }
+  const start = inputEl.selectionStart ?? value.length;
+  const end = inputEl.selectionEnd ?? value.length;
+  const selected = value.slice(start, end);
+  if (selected) {
+    fuzzRawPacket.value = value.slice(0, start) + "\u00a7" + selected + "\u00a7" + value.slice(end);
+    const anchor = start + 1;
+    requestAnimationFrame(() => {
+      inputEl.focus({ preventScroll: true });
+      inputEl.setSelectionRange(anchor, anchor + selected.length);
+      syncRawEditorScroll();
+    });
+  } else {
+    fuzzRawPacket.value = value.slice(0, start) + "\u00a7name\u00a7" + value.slice(end);
+    const anchor = start + 1 + 4;
+    requestAnimationFrame(() => {
+      inputEl.focus({ preventScroll: true });
+      inputEl.setSelectionRange(anchor, anchor + 4);
+      syncRawEditorScroll();
+    });
+  }
+  ensureFuzzGroups();
+  nextTick(syncRawEditorScroll);
 }
 
 async function runFuzz() {
   const targets = actionSessions();
   const form = fuzzForm.value;
   if (!targets.length || fuzzRunning.value) return;
+  if (fuzzRawPacket.value.trim()) {
+    const parsed = parseRawFuzzPacket(fuzzRawPacket.value);
+    if (parsed.method) form.method = parsed.method;
+    if (parsed.requestTarget && /^https?:\/\//.test(parsed.requestTarget)) {
+      form.url = parsed.requestTarget;
+    }
+    form.headers = parsed.headers;
+    form.body = parsed.body;
+  }
   if (!form.method.trim() || !form.url.trim()) return;
   splitFuzzPacket();
-  if (
-    !hasFuzzPlaceholder(form.url) &&
-    !hasFuzzPlaceholder(form.headers) &&
-    !hasFuzzPlaceholder(form.body)
-  ) {
-    ElMessage.warning(`请在 URL、请求头或请求体中标记 “${fuzzPlaceholderHint}” 占位符`);
+  if (!fuzzVariables.value.length) {
+    ElMessage.warning(`请在 URL 或请求数据包中标记 “§name§” 占位符`);
     return;
   }
-  const payloads = fuzzPayloads.value
-    .split(/\r?\n/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-  if (!payloads.length) {
+  ensureFuzzGroups();
+  const multiPayloads: Record<string, string[]> = {};
+  let singleList: string[] = [];
+  if (isSinglePayloadMode.value) {
+    singleList = (fuzzSharedPayload.value || "")
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    for (const name of fuzzGroupOrder.value) {
+      multiPayloads[name] = singleList;
+    }
+  } else {
+    for (const name of fuzzGroupOrder.value) {
+      const items = (fuzzPayloadGroups.value[name] || "")
+        .split(/\r?\n/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      if (items.length) multiPayloads[name] = items;
+    }
+  }
+  const hasAnyPayload = isSinglePayloadMode.value
+    ? singleList.length > 0
+    : Object.values(multiPayloads).some((list) => list.length > 0);
+  if (!hasAnyPayload && fuzzEngine.value !== "zap") {
     ElMessage.warning("至少需要一行 fuzz payload");
     return;
   }
@@ -1510,7 +2040,10 @@ async function runFuzz() {
           url: form.url.trim(),
           headers: form.headers,
           body: form.body,
-          payloads,
+          multiPayloads,
+          payloads: isSinglePayloadMode.value ? singleList : null,
+          combination: fuzzCombination.value,
+          engine: fuzzEngine.value === "auto" ? undefined : fuzzEngine.value.toUpperCase(),
         },
         { timeout: 120_000 },
       );
@@ -1540,10 +2073,6 @@ function focusFuzzResult(packetId: number | string) {
   fuzzResult.value = fuzzBatchResults.value[String(packetId)] ?? fuzzResult.value;
 }
 
-function activeFuzzResult() {
-  return fuzzResult.value;
-}
-
 const fuzzChangedHits = computed(() => {
   const result = fuzzResult.value;
   if (!result?.results) return 0;
@@ -1566,32 +2095,6 @@ async function fuzzHitToReplay(hit: FuzzHit) {
   ElMessage.info("已带入该 hit 到重放器，可核对响应");
 }
 
-async function aiReviewFuzzHits() {
-  const focus = fuzzFocusPacketId.value ?? selectedId.value;
-  if (focus == null) return;
-  const result = fuzzBatchResults.value[String(focus)] || fuzzResult.value;
-  if (!result?.results?.length) {
-    ElMessage.warning("当前没有可研判的模糊结果");
-    return;
-  }
-  const changedHits = result.results.filter((hit) => hit.changed);
-  const changedText = changedHits.length
-    ? changedHits
-        .slice(0, 12)
-        .map(
-          (hit) =>
-            `- payload=${hit.payload}｜status=${hit.effectiveStatus}｜changed=${hit.changed}`,
-        )
-        .join("\n")
-    : "无";
-  const prompt = `这是对授权目标的一轮 fuzz 循环重放结果（基线+逐 payload 对比响应状态/长度/哈希）。请研判哪些是"真反射/可利用"、哪些是"误报/正常差异"，并给出简明证据。\n变更命中：\n${changedText}\n总响应数：${result.results.length}`;
-  selectedId.value = focus;
-  trafficChatPrompt.value = prompt;
-  await nextTick();
-  void scrollTrafficChat();
-  void sendTrafficChat();
-}
-
 function fuzzHitStatus(hit: FuzzHit) {
   if (hit.effectiveStatus == null) return "-";
   return `HTTP ${hit.effectiveStatus}`;
@@ -1600,6 +2103,7 @@ function fuzzHitStatus(hit: FuzzHit) {
 onMounted(() => {
   void load();
   void loadCaptureFilters();
+  window.addEventListener("pointerdown", onWindowPointerDown);
   if (window.toolboxDesktop?.onCaptureBrowserClosed) {
     removeCaptureBrowserListener = window.toolboxDesktop.onCaptureBrowserClosed(
       () => {
@@ -1613,6 +2117,7 @@ onMounted(() => {
 });
 onUnmounted(() => {
   if (refreshTimer) window.clearInterval(refreshTimer);
+  window.removeEventListener("pointerdown", onWindowPointerDown);
   removeCaptureBrowserListener?.();
 });
 </script>
@@ -1707,16 +2212,11 @@ onUnmounted(() => {
       </div>
     </header>
 
-    <el-alert
-      v-if="serviceUnavailable"
-      title="流量代理模块尚未就绪；界面会保留，待本地引擎提供 /api/traffic 接口后即可使用。"
-      type="info"
-      show-icon
-      :closable="false"
-    />
-
     <div class="traffic-workbench codex-traffic-workbench">
-      <section class="traffic-list-pane traffic-session-rail">
+      <section
+          class="traffic-list-pane traffic-session-rail"
+          @click.self="exitMultiSelect"
+        >
         <header class="session-rail-header">
           <div>
             <span class="session-rail-title"
@@ -1728,18 +2228,11 @@ onUnmounted(() => {
               text
               type="danger"
               size="small"
+              class="clear-unmarked-btn"
               :disabled="!unmarkedSessionCount || deletingId !== undefined"
               :loading="clearingSessions"
               @click="clearSessions"
               >清空未标记</el-button
-            >
-            <el-button
-              text
-              size="small"
-              :type="multiSelectMode ? 'primary' : 'default'"
-              :class="{ 'is-active': multiSelectMode }"
-              @click="toggleMultiSelectMode"
-              >多选模式{{ multiSelectMode ? `（${selectedSessionCount}）` : "" }}</el-button
             >
           </div>
           <el-input
@@ -1769,7 +2262,7 @@ onUnmounted(() => {
               cmd === 'mark'
                 ? toggleSessionMarked(item)
                 : cmd === 'delete'
-                  ? deleteSession(item)
+                  ? deleteSessionAction(item)
                   : cmd === 'replay'
                     ? sendSelectedToReplay()
                     : openFuzz()
@@ -1851,7 +2344,7 @@ onUnmounted(() => {
                 command="delete"
                 class="is-danger"
                 :disabled="deletingId === item.id || clearingSessions"
-                >删除这条流量</el-dropdown-item
+                >{{ selectedSessionCount > 1 ? `删除所选（${selectedSessionCount}）` : "删除这条流量" }}</el-dropdown-item
               >
             </el-dropdown-menu>
           </template>
@@ -1901,25 +2394,6 @@ onUnmounted(() => {
                   @click="openTrafficCopilot"
                   ><el-icon><MagicStick /></el-icon>转交 AI 智能体</el-button
                 ></el-tooltip
-              >
-              <el-button
-                size="small"
-                :type="selectedSessionCount ? 'primary' : 'default'"
-                :disabled="!selectedSessionCount"
-                @click="sendSelectedToReplay"
-                ><el-icon><Promotion /></el-icon>重放所选{{
-                  selectedSessionCount ? `（${selectedSessionCount}）` : ""
-                }}</el-button
-              >
-              <el-button
-                size="small"
-                :type="selectedSessionCount ? 'primary' : 'default'"
-                plain
-                :disabled="!selectedSessionCount"
-                @click="openFuzz"
-                ><el-icon><MagicStick /></el-icon>模糊所选{{
-                  selectedSessionCount ? `（${selectedSessionCount}）` : ""
-                }}</el-button
               >
             </div>
           </header>
@@ -2142,6 +2616,15 @@ onUnmounted(() => {
             <header>
               <strong>模糊测试</strong>
               <div class="fuzz-head-actions">
+                <el-radio-group
+                  v-model="fuzzEngine"
+                  size="small"
+                  class="fuzz-engine-switch"
+                >
+                  <el-radio-button value="auto">自动</el-radio-button>
+                  <el-radio-button value="zap">ZAP</el-radio-button>
+                  <el-radio-button value="loop">内置循环</el-radio-button>
+                </el-radio-group>
                 <el-select
                   v-if="fuzzBatchWithSelection && Object.keys(fuzzBatchResults).length"
                   v-model="fuzzFocusPacketId"
@@ -2161,32 +2644,21 @@ onUnmounted(() => {
                   </el-option>
                 </el-select>
                 <el-button
-                  size="small"
-                  @click="aiReviewFuzzHits"
-                  :disabled="!activeFuzzResult()?.results?.length"
-                  >AI 研判命中</el-button
-                >
-                <el-button
                   type="primary"
                   size="small"
                   :loading="fuzzRunning"
                   :disabled="
                     !fuzzForm.method.trim() ||
                     !fuzzForm.url.trim() ||
-                    !fuzzPayloads.trim()
+                    (fuzzEngine !== 'zap' && !fuzzVariables.length)
                   "
                   @click="runFuzz"
-                  >运行模糊测试</el-button
+                  >{{
+                    fuzzEngine === "zap" ? "运行 ZAP 模糊测试" : "运行模糊测试"
+                  }}</el-button
                 >
               </div>
             </header>
-            <el-alert
-              :title="fuzzPlaceholderHint"
-              type="info"
-              show-icon
-              :closable="false"
-              class="fuzz-hint"
-            />
             <div class="replay-request-line">
               <el-select
                 v-model="fuzzForm.method"
@@ -2203,57 +2675,232 @@ onUnmounted(() => {
                   :value="m"
                 />
               </el-select>
-              <el-input
-                v-model="fuzzForm.url"
-                :disabled="fuzzRunning"
-                placeholder="https://example.com/path（可用 §name§ 标记模糊点）"
-              />
-            </div>
-            <label class="replay-packet-editor"
-              >请求数据包<el-input
-                v-model="fuzzForm.headers"
-                type="textarea"
-                :rows="3"
-                :disabled="fuzzRunning"
-                spellcheck="false"
-                placeholder="Header-Name: value"
-            /></label>
-            <label class="replay-packet-editor"
-              >请求体<el-input
-                v-model="fuzzForm.body"
-                type="textarea"
-                :rows="3"
-                :disabled="fuzzRunning"
-                spellcheck="false"
-                placeholder="可选请求体，可用 §name§ 标记模糊点"
-            /></label>
-            <label class="replay-packet-editor fuzz-payloads"
-              ><span class="fuzz-dict-label">Payload 列表（每行一个）</span>
-              <div class="fuzz-dict-bar">
-                <span>字典：</span>
-                <el-button
-                  v-for="dict in FUZZ_DICTIONARIES"
-                  :key="dict.key"
-                  size="small"
-                  link
-                  type="primary"
-                  @click="appendFuzzDictionary(dict)"
-                  >{{ dict.label }}</el-button
-                >
+              <div class="fuzz-url-wrap">
+                <div class="fuzz-url-input-wrap" @scroll.capture="syncUrlEditorScroll">
+                  <div
+                    ref="fuzzUrlBackdropRef"
+                    class="fuzz-url-backdrop"
+                    aria-hidden="true"
+                    v-html="highlightedUrlHtml"
+                  ></div>
+                  <el-input
+                    ref="fuzzUrlInput"
+                    v-model="fuzzForm.url"
+                    :disabled="fuzzRunning"
+                    placeholder="https://example.com/path（可用 §name§ 标记模糊点）"
+                    @input="syncUrlEditorScroll"
+                    @keyup="syncUrlEditorScroll"
+                  />
+                </div>
                 <el-button
                   size="small"
-                  link
-                  @click="fuzzPayloads = ''"
-                  >清空</el-button
+                  :disabled="fuzzRunning"
+                  @click="insertFuzzPlaceholder('url')"
+                  >添加占位符</el-button
                 >
               </div>
-              <el-input
-                v-model="fuzzPayloads"
-                type="textarea"
-                :rows="5"
-                :disabled="fuzzRunning"
-                spellcheck="false"
-            /></label>
+            </div>
+            <div class="replay-packet-editor">
+              <span class="fuzz-field-head">
+                <span>请求数据包（完整原始报文）</span>
+                <div v-if="fuzzVariables.length" class="fuzz-field-chips">
+                  <span class="fuzz-chips-label">占位符:</span>
+                  <span
+                    v-for="name in fuzzVariables"
+                    :key="name"
+                    class="fuzz-ph-pill"
+                  >§{{ name }}§</span>
+                </div>
+                <el-button
+                  size="small"
+                  link
+                  :disabled="fuzzRunning"
+                  @click="insertRawPlaceholder"
+                  >添加占位符</el-button
+                >
+              </span>
+              <div class="fuzz-highlight-editor" @scroll.capture="syncRawEditorScroll">
+                <div
+                  ref="fuzzBackdropRef"
+                  class="fuzz-raw-backdrop"
+                  aria-hidden="true"
+                  v-html="highlightedRawPacketHtml"
+                ></div>
+                <el-input
+                  ref="fuzzRawInput"
+                  v-model="fuzzRawPacket"
+                  type="textarea"
+                  :rows="8"
+                  :disabled="fuzzRunning"
+                  spellcheck="false"
+                  placeholder="POST /submit HTTP/1.1&#10;Host: example.com&#10;Content-Type: application/x-www-form-urlencoded&#10;&#10;q=&#167;name&#167;"
+                  @input="syncRawEditorScroll"
+                />
+              </div>
+            </div>
+            <section
+              v-if="fuzzEngine !== 'zap'"
+              class="fuzz-payload-panel"
+            >
+              <!-- 头部：标题、攻击模式下拉与统计胶囊 -->
+              <div class="fuzz-panel-header">
+                <div class="fuzz-header-title-group">
+                  <span class="fuzz-panel-title">Payload 设置</span>
+                  <el-select
+                    v-model="fuzzCombination"
+                    size="small"
+                    class="fuzz-mode-select"
+                    :disabled="fuzzRunning"
+                  >
+                    <el-option
+                      v-for="item in FUZZ_ATTACK_TYPES"
+                      :key="item.value"
+                      :label="item.label"
+                      :value="item.value"
+                    >
+                      <div class="fuzz-option-row">
+                        <span class="fuzz-opt-name">{{ item.label }}</span>
+                        <small class="fuzz-opt-tip">{{ item.shortDesc }}</small>
+                      </div>
+                    </el-option>
+                  </el-select>
+                </div>
+
+                <div class="fuzz-header-pills">
+                  <span class="fuzz-stat-pill">
+                    <span class="pill-k">位置</span>
+                    <b class="pill-v">{{ fuzzVariables.length }}</b>
+                  </span>
+                  <span class="fuzz-stat-pill" :class="{ 'is-warn': estimatedFuzzRequests > 200 }">
+                    <span class="pill-k">预计重放</span>
+                    <b class="pill-v">{{ estimatedFuzzRequests }} 次</b>
+                  </span>
+                </div>
+              </div>
+
+              <!-- 模式说明与占位符状态整合条（单一轻量 Ribbon，消除双重边框横幅） -->
+              <div class="fuzz-context-ribbon">
+                <el-icon class="fuzz-ribbon-icon"><InfoCircle /></el-icon>
+                <span class="fuzz-ribbon-desc">{{ currentAttackType.desc }}</span>
+                <span class="fuzz-ribbon-divider"></span>
+                <div v-if="fuzzVariables.length" class="fuzz-ribbon-vars">
+                  <span class="fuzz-ribbon-var-label">标记点:</span>
+                  <span v-for="name in fuzzVariables" :key="name" class="fuzz-ph-pill">§{{ name }}§</span>
+                </div>
+                <span v-else class="fuzz-ribbon-novars">未标记占位符（在上方请求报文中选中文本点击“添加占位符”）</span>
+              </div>
+
+              <!-- 编辑器工具栏：单行 Fluent CommandBar -->
+              <div class="fuzz-editor-toolbar">
+                <div class="fuzz-editor-meta">
+                  <span class="fuzz-editor-title">
+                    {{ isSinglePayloadMode ? "通用字典列表" : `字典集合 (${fuzzGroupOrder.length} 组)` }}
+                  </span>
+                  <span class="fuzz-editor-lines">
+                    {{ isSinglePayloadMode ? (fuzzSharedPayload.split(/\r?\n/).filter(Boolean)).length : totalMultiPayloadLines }} 行
+                  </span>
+                </div>
+
+                <div class="fuzz-editor-actions">
+                  <el-dropdown trigger="click" :disabled="fuzzRunning" @command="applyFuzzPreset">
+                    <el-button size="small" :disabled="fuzzRunning">
+                      常用预设 ▾
+                    </el-button>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item
+                          v-for="(p, idx) in FUZZ_PAYLOAD_PRESETS"
+                          :key="idx"
+                          :command="p.payloads"
+                        >
+                          {{ p.label }} ({{ p.payloads.length }} 条)
+                        </el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+
+                  <el-button
+                    size="small"
+                    :disabled="fuzzRunning"
+                    @click="numbersGenDialogVisible = true"
+                  >数字序列...</el-button>
+
+                  <el-dropdown trigger="click" :disabled="fuzzRunning" @command="handleImportCommand">
+                    <el-button size="small" type="primary" plain :disabled="fuzzRunning">
+                      导入 ▾
+                    </el-button>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item command="clipboard">从剪贴板导入</el-dropdown-item>
+                        <el-dropdown-item command="file">从文件导入 (.txt, .dic)...</el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+
+                  <input
+                    ref="fuzzFileInput"
+                    type="file"
+                    hidden
+                    accept=".txt,.lst,.dic,.payload,.csv,.wordlist,.text,text/plain"
+                    :disabled="fuzzRunning"
+                    @change="onFuzzFileSelected"
+                  />
+
+                  <el-button
+                    size="small"
+                    link
+                    type="danger"
+                    class="fuzz-clear-btn"
+                    :disabled="fuzzRunning"
+                    @click="clearFuzzGroups"
+                  >清空</el-button>
+                </div>
+              </div>
+
+              <!-- 编辑区域：单字典或多字典 -->
+              <div class="fuzz-editor-body">
+                <div v-if="isSinglePayloadMode" class="fuzz-editor-frame">
+                  <el-input
+                    v-model="fuzzSharedPayload"
+                    type="textarea"
+                    :rows="5"
+                    :disabled="fuzzRunning"
+                    spellcheck="false"
+                    placeholder="每行一个 payload&#10;admin&#10;test&#10;debug&#10;1' OR '1'='1"
+                  />
+                </div>
+
+                <div v-else-if="fuzzGroupOrder.length" class="fuzz-multi-list">
+                  <div
+                    v-for="(name, index) in fuzzGroupOrder"
+                    :key="name"
+                    class="fuzz-multi-item"
+                    :class="{ 'is-focused': activeFuzzGroup === name }"
+                  >
+                    <div class="fuzz-multi-head">
+                      <span class="fuzz-set-badge">Set {{ index + 1 }}</span>
+                      <span class="fuzz-set-name">§{{ name }}§</span>
+                      <span class="fuzz-set-count">
+                        {{ ((fuzzPayloadGroups[name] || '').split(/\r?\n/).filter(Boolean)).length }} 行
+                      </span>
+                    </div>
+                    <el-input
+                      :model-value="fuzzPayloadGroups[name]"
+                      type="textarea"
+                      :rows="3"
+                      :disabled="fuzzRunning"
+                      spellcheck="false"
+                      placeholder="每行一个 payload"
+                      @focus="activeFuzzGroup = name"
+                      @update:model-value="(v) => (fuzzPayloadGroups[name] = v)"
+                    />
+                  </div>
+                </div>
+                <div v-else class="fuzz-empty-groups">
+                  <span>尚未标记占位符。请在上方请求报文中选中文本点击“添加占位符”。</span>
+                </div>
+              </div>
+            </section>
             <section class="replay-response">
               <header>
                 <div>
@@ -2290,7 +2937,16 @@ onUnmounted(() => {
                 class="fuzz-results"
               >
                 <div class="fuzz-result-summary">
-                  <span>响应 {{ fuzzResult.results.length }} 次</span
+                  <el-tag
+                    size="small"
+                    :type="fuzzResult.engine === 'ZAP' ? 'warning' : 'info'"
+                    effect="plain"
+                    >{{
+                      fuzzResult.engine === "ZAP"
+                        ? "引擎：ZAP FuzzDB"
+                        : "引擎：自研循环重放"
+                    }}</el-tag
+                  ><span>响应 {{ fuzzResult.results.length }} 次</span
                   ><span v-if="fuzzChangedHits" class="fuzz-summary-changed"
                     >{{ fuzzChangedHits }} 个变更命中</span
                   ><span v-else>全部同基线</span>
@@ -2357,13 +3013,27 @@ onUnmounted(() => {
             <template v-if="packetTab === 'request'">
               <article class="raw-packet-card">
                 <h3>请求报文</h3>
-                <pre>{{ formatRequestPacket(selected) }}</pre>
+                <el-input
+                  class="raw-packet-text"
+                  type="textarea"
+                  :model-value="formatRequestPacket(selected)"
+                  readonly
+                  resize="none"
+                  spellcheck="false"
+                />
               </article>
             </template>
             <template v-else-if="packetTab === 'response'">
               <article class="raw-packet-card">
                 <h3>响应报文</h3>
-                <pre>{{ formatResponsePacket(selected) }}</pre>
+                <el-input
+                  class="raw-packet-text"
+                  type="textarea"
+                  :model-value="formatResponsePacket(selected)"
+                  readonly
+                  resize="none"
+                  spellcheck="false"
+                />
               </article>
             </template>
           </div>
@@ -2425,6 +3095,34 @@ onUnmounted(() => {
         </footer>
       </aside>
     </div>
+
+    <el-dialog
+      v-model="numbersGenDialogVisible"
+      title="数字序列发生器 (Numbers Payload)"
+      width="380px"
+      append-to-body
+      class="app-dialog"
+      align-center
+    >
+      <el-form label-position="left" label-width="70px" size="small" style="margin-top: 10px">
+        <el-form-item label="起始值">
+          <el-input-number v-model="numbersGenForm.from" :min="0" :max="100000" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="结束值">
+          <el-input-number v-model="numbersGenForm.to" :min="0" :max="100000" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="步长">
+          <el-input-number v-model="numbersGenForm.step" :min="1" :max="1000" style="width: 100%" />
+        </el-form-item>
+        <div style="font-size: 11px; color: var(--app-muted); margin-bottom: 6px">
+          预计生成 {{ Math.max(0, Math.floor((Number(numbersGenForm.to) - Number(numbersGenForm.from)) / (Number(numbersGenForm.step) || 1)) + 1) }} 个数字（系统单次上限 200 项）
+        </div>
+      </el-form>
+      <template #footer>
+        <el-button size="small" @click="numbersGenDialogVisible = false">取消</el-button>
+        <el-button size="small" type="primary" @click="applyNumbersGenerator">生成并填入字典</el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog
       v-model="captureFilterDialogVisible"
@@ -3224,15 +3922,140 @@ onUnmounted(() => {
   color: var(--app-accent);
 }
 .inline-replay-editor .replay-request-line {
+  display: grid;
   grid-template-columns: 110px minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+  margin: 0 !important;
 }
-.inline-replay-editor .replay-packet-editor {
-  margin-top: 8px;
+.inline-replay-editor .replay-request-line > .el-select {
+  width: 100%;
 }
-.inline-replay-editor .replay-packet-editor :deep(textarea) {
+.inline-replay-editor .replay-request-line .fuzz-url-wrap {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+.inline-replay-editor .replay-request-line .fuzz-url-wrap .fuzz-url-input-wrap {
+  flex: 1;
+  min-width: 0;
+}
+.inline-replay-editor .replay-packet-editor .fuzz-field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+.inline-replay-editor .replay-packet-editor .fuzz-field-head > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.fuzz-url-input-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+.fuzz-url-backdrop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow: hidden;
+  pointer-events: none;
+  border: var(--fluent-stroke-thin) solid transparent;
+  border-radius: var(--fluent-radius-control);
+  padding: 0 11px;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  font-family: var(--el-font-family-mono, Consolas, monospace);
+  font-size: 12px;
+  white-space: nowrap;
+  color: transparent;
+  background: transparent;
+  z-index: 1;
+}
+.fuzz-url-input-wrap :deep(.el-input) {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+}
+.fuzz-url-input-wrap :deep(.el-input__wrapper) {
+  background: transparent !important;
+}
+.fuzz-url-input-wrap :deep(.el-input__inner) {
+  font-family: var(--el-font-family-mono, Consolas, monospace);
+  font-size: 12px;
+}
+.fuzz-field-chips {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+}
+.fuzz-chips-label {
+  font-size: var(--type-micro);
+  color: var(--app-muted);
+  font-weight: normal;
+}
+.fuzz-highlight-editor {
+  position: relative;
+  width: 100%;
+}
+.fuzz-raw-backdrop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow: hidden;
+  pointer-events: none;
+  border: var(--fluent-stroke-thin) solid transparent;
+  border-radius: var(--fluent-radius-control);
+  padding: 10px 12px;
+  box-sizing: border-box;
+  font-family: var(--el-font-family-mono, Consolas, monospace) !important;
+  font-size: 12px !important;
+  line-height: 20px !important;
+  white-space: pre-wrap !important;
+  word-break: break-all !important;
+  color: transparent;
+  background: transparent;
+  z-index: 1;
+}
+.fuzz-highlight-editor :deep(.el-textarea) {
+  position: relative;
+  z-index: 2;
+}
+.fuzz-highlight-editor :deep(.el-textarea__inner) {
+  background: transparent !important;
+  font-family: var(--el-font-family-mono, Consolas, monospace) !important;
+  font-size: 12px !important;
+  line-height: 20px !important;
+  padding: 10px 12px !important;
+  white-space: pre-wrap !important;
+  word-break: break-all !important;
+  box-sizing: border-box !important;
   height: clamp(220px, 35vh, 420px) !important;
   min-height: 220px !important;
   resize: none !important;
+}
+.fuzz-placeholder-mark {
+  color: transparent;
+  background: light-dark(rgba(247, 130, 59, 0.32), rgba(247, 130, 59, 0.45));
+  outline: 1px solid light-dark(#d9651a, #f7823b);
+  border-radius: 2px;
+  box-shadow: 0 0 4px light-dark(rgba(247, 130, 59, 0.35), rgba(247, 130, 59, 0.45));
+  padding: 1px 0;
+  margin: 0;
+}
+.inline-replay-editor .replay-packet-editor {
+  margin-top: 20px !important;
 }
 .replay-empty-state,
 .replay-response-state {
@@ -3270,19 +4093,32 @@ onUnmounted(() => {
   justify-content: flex-end;
   gap: 8px;
 }
-.fuzz-hint {
-  margin-bottom: 10px;
-}
-.fuzz-hint :deep(.el-alert__title) {
-  font-size: 11px;
-  line-height: 1.5;
-}
 .replay-packet-editor.fuzz-payloads {
-  margin-top: 8px;
+  margin-top: 12px;
+}
+.fuzz-group-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.fuzz-group-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.fuzz-group-name {
+  color: var(--app-accent);
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 .fuzz-results {
   overflow: auto;
-  padding-top: 8px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: var(--fluent-stroke-thin) solid var(--app-border);
+  border-radius: var(--fluent-radius-card);
+  background: var(--app-surface);
+  box-shadow: var(--fluent-card-shadow);
 }
 .fuzz-result-table {
   width: 100%;
@@ -3303,9 +4139,21 @@ onUnmounted(() => {
   vertical-align: top;
   white-space: nowrap;
 }
+.fuzz-result-table tr:hover td {
+  background: var(--app-surface-soft);
+}
+.fuzz-result-table tr:nth-child(even) td {
+  background: color-mix(in srgb, CanvasText 2%, transparent);
+}
+.fuzz-result-table tr:hover td:empty {
+  background: var(--app-surface-soft);
+}
 .fuzz-hit-status.changed {
-  color: #d97742;
-  font-weight: 700;
+  color: light-dark(#bc4b09, #f7823b);
+  font-weight: var(--fluent-weight-semibold);
+  background: light-dark(rgba(255, 193, 7, 0.10), rgba(255, 183, 77, 0.12));
+  padding: 2px 8px;
+  border-radius: var(--fluent-radius-control);
 }
 .fuzz-hit-diff {
   color: var(--app-muted);
@@ -3315,38 +4163,242 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--app-text);
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font: var(--type-micro) ui-monospace, SFMono-Regular, Consolas, monospace;
   white-space: nowrap;
 }
 .fuzz-head-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
-.fuzz-dict-label {
-  font-size: 12px;
-  font-weight: 600;
+.fuzz-engine-switch {
+  flex: none;
 }
-.fuzz-dict-bar {
+.fuzz-engine-switch :deep(.el-radio-button__inner) {
+  font-size: 11px;
+  padding: 6px 10px;
+}
+.fuzz-payload-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: var(--fluent-radius-card);
+  border: var(--fluent-stroke-thin) solid var(--app-border);
+  background: var(--app-surface);
+  box-shadow: var(--fluent-shadow-2);
+}
+.fuzz-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.fuzz-header-title-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.fuzz-panel-title {
+  font-size: var(--type-section-desc);
+  font-weight: var(--fluent-weight-semibold);
+  color: var(--app-text);
+  white-space: nowrap;
+}
+.fuzz-mode-select {
+  width: 220px;
+}
+.fuzz-option-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.fuzz-opt-name {
+  font-weight: var(--fluent-weight-medium);
+}
+.fuzz-opt-tip {
+  color: var(--app-muted);
+  font-size: var(--type-micro);
+}
+.fuzz-header-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.fuzz-stat-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--fluent-radius-circular);
+  background: color-mix(in srgb, CanvasText 4%, transparent);
+  border: var(--fluent-stroke-thin) solid var(--app-border);
+  font-size: var(--type-micro);
+  color: var(--app-muted);
+}
+.fuzz-stat-pill .pill-v {
+  color: var(--app-text);
+  font-weight: var(--fluent-weight-semibold);
+}
+.fuzz-stat-pill.is-warn {
+  border-color: color-mix(in srgb, var(--fluent-warning-bg) 40%, transparent);
+  background: color-mix(in srgb, var(--fluent-warning-bg) 10%, transparent);
+}
+.fuzz-stat-pill.is-warn .pill-v {
+  color: light-dark(#b26200, #f5a623);
+}
+.fuzz-context-ribbon {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 2px;
-  margin: 4px 0;
-  font-size: 11px;
+  gap: 8px;
+  padding: 7px 12px;
+  border-radius: var(--fluent-radius-control);
+  background: color-mix(in srgb, var(--app-accent) 6%, transparent);
+  border: var(--fluent-stroke-thin) solid color-mix(in srgb, var(--app-accent) 18%, transparent);
+  font-size: var(--type-micro);
+  color: var(--app-text);
+  line-height: 1.4;
+}
+.fuzz-ribbon-icon {
+  color: var(--app-accent);
+  font-size: 14px;
+  flex: none;
+}
+.fuzz-ribbon-desc {
+  color: var(--app-text);
+}
+.fuzz-ribbon-divider {
+  width: 1px;
+  height: 12px;
+  background: color-mix(in srgb, var(--app-accent) 25%, transparent);
+  margin: 0 2px;
+}
+.fuzz-ribbon-vars {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.fuzz-ribbon-var-label {
   color: var(--app-muted);
+}
+.fuzz-ph-pill {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: var(--fluent-radius-control);
+  background: var(--app-surface);
+  border: var(--fluent-stroke-thin) solid color-mix(in srgb, var(--app-accent) 30%, transparent);
+  color: var(--app-accent);
+  font-family: var(--el-font-family-mono, Consolas, monospace);
+  font-weight: var(--fluent-weight-semibold);
+  font-size: 11px;
+}
+.fuzz-ph-none {
+  color: var(--app-muted);
+  font-style: italic;
+}
+.fuzz-editor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0 2px;
+}
+.fuzz-editor-meta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.fuzz-editor-title {
+  font-size: var(--type-caption);
+  font-weight: var(--fluent-weight-semibold);
+  color: var(--app-text);
+}
+.fuzz-editor-lines {
+  font-size: var(--type-micro);
+  color: var(--app-muted);
+}
+.fuzz-editor-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.fuzz-editor-actions .el-button {
+  height: 28px;
+  font-size: var(--type-micro);
+}
+.fuzz-editor-frame :deep(.el-textarea__inner) {
+  font-family: var(--el-font-family-mono, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.fuzz-multi-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.fuzz-multi-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: var(--fluent-radius-control);
+  border: var(--fluent-stroke-thin) solid var(--app-border);
+  background: var(--app-surface-soft);
+  transition: border-color var(--fluent-duration-fast) var(--fluent-curve-standard);
+}
+.fuzz-multi-item.is-focused {
+  border-color: var(--app-accent);
+}
+.fuzz-multi-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fuzz-set-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: var(--fluent-radius-control);
+  background: color-mix(in srgb, var(--app-accent) 15%, transparent);
+  color: var(--app-accent);
+  font-size: 10px;
+  font-weight: var(--fluent-weight-semibold);
+}
+.fuzz-set-name {
+  color: var(--app-accent);
+  font-family: var(--el-font-family-mono, Consolas, monospace);
+  font-weight: var(--fluent-weight-semibold);
+}
+.fuzz-set-count {
+  margin-left: auto;
+  font-size: var(--type-micro);
+  color: var(--app-muted);
+}
+.fuzz-empty-groups {
+  padding: 16px;
+  text-align: center;
+  border-radius: var(--fluent-radius-control);
+  background: var(--app-surface);
+  border: var(--fluent-stroke-thin) dashed var(--app-border);
+  color: var(--app-muted);
+  font-size: var(--type-caption);
 }
 .fuzz-result-summary {
   display: flex;
   gap: 12px;
   align-items: center;
-  padding: 4px 0;
-  font-size: 11px;
+  padding: 8px 0;
+  font-size: var(--type-micro);
   color: var(--app-muted);
+  border-bottom: var(--fluent-stroke-thin) solid var(--app-border);
 }
 .fuzz-summary-changed {
-  color: #d97742;
-  font-weight: 700;
+  color: light-dark(#bc4b09, #f7823b);
+  font-weight: var(--fluent-weight-semibold);
 }
 .traffic-row-wrap.selected {
   background: rgba(80, 120, 220, 0.08);
@@ -3436,6 +4488,7 @@ onUnmounted(() => {
 }
 .packet-editor {
   flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 14px;
   background: var(--app-bg);
@@ -3452,12 +4505,30 @@ onUnmounted(() => {
   border-color: var(--app-border-strong);
 }
 .packet-editor .raw-packet-card {
-  min-height: 100%;
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.packet-editor .raw-packet-card:hover {
+  border-color: transparent;
+}
+.packet-editor .raw-packet-card .el-input,
+.packet-editor .raw-packet-card .el-textarea {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
 }
 .packet-editor h3 {
   margin: 0;
   padding: 8px 12px;
-  border-bottom: 1px solid var(--app-border);
+  border-bottom: 0;
   color: var(--app-muted);
   font-size: 11px;
   font-weight: 600;
@@ -3479,6 +4550,28 @@ onUnmounted(() => {
   min-height: 320px;
   white-space: pre-wrap;
   word-break: break-all;
+}
+.packet-editor .raw-packet-card :deep(.raw-packet-text) {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+.packet-editor .raw-packet-card :deep(.raw-packet-text .el-textarea__inner) {
+  height: 100%;
+  min-height: 460px;
+  padding: 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--app-text);
+  font-family: var(--el-font-family-mono, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-all;
+  resize: none;
+  overflow: auto;
+  box-shadow: none;
 }
 .replay-response-grid {
   grid-template-columns: minmax(0, 1fr);
@@ -3895,15 +4988,21 @@ onUnmounted(() => {
   font-size: 11px;
 }
 .replay-request-line {
-  display: grid;
+  display: grid !important;
   grid-template-columns: 116px minmax(0, 1fr);
-  gap: 8px;
+  gap: 14px !important;
+  align-items: center;
+  margin: 0 0 12px !important;
+}
+.replay-request-line > .el-select {
+  width: 100% !important;
 }
 .replay-packet-editor {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
+  margin-top: 12px !important;
   color: var(--app-text);
   font-size: 11px;
   font-weight: 600;
@@ -4264,6 +5363,10 @@ onUnmounted(() => {
   border-color: transparent;
   background: rgba(197, 15, 31, 0.1);
   color: var(--fluent-danger-hover-bg, #a80000);
+}
+.codex-traffic-page :deep(.el-button--danger.is-text.clear-unmarked-btn:hover),
+.codex-traffic-page :deep(.el-button--danger.is-link.fuzz-clear-btn:hover) {
+  background: transparent;
 }
 .traffic-session-rail,
 .packet-editor-pane,

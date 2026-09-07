@@ -5750,6 +5750,9 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
       path.join(toolsDir, "fscan"),
       path.join(toolsDir, "nmap"),
       path.join(toolsDir, "zap"),
+      zapBackendPath(toolsDir) && zapBackendPath(toolsDir) !== "zap"
+        ? path.dirname(zapBackendPath(toolsDir))
+        : path.join(toolsDir, "zap"),
       // Metasploit 经 junction 暴露于 tools\metasploit-framework，其后端
       // PATH 探测也能命中 msfconsole（位于其 bin 目录）。
       path.join(toolsDir, "metasploit-framework", "metasploit-framework", "bin"),
@@ -6028,6 +6031,28 @@ function createStartupWindow() {
 
 function createMainWindow(port) {
   const initialTheme = currentSystemTheme();
+  const rendererSession = electronSession.fromPartition(
+    "persist:security-toolbox-desktop-v2",
+  );
+  const handleLoopbackHeaders = (details, callback) => {
+    const headers = { ...details.requestHeaders };
+    if (
+      !headers.Origin ||
+      headers.Origin === "null" ||
+      headers.Origin.startsWith("file://")
+    ) {
+      headers.Origin = "http://localhost:5173";
+    }
+    callback({ requestHeaders: headers });
+  };
+  rendererSession.webRequest.onBeforeSendHeaders(
+    { urls: ["http://127.0.0.1:*/*", "http://localhost:*/*"] },
+    handleLoopbackHeaders,
+  );
+  electronSession.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: ["http://127.0.0.1:*/*", "http://localhost:*/*"] },
+    handleLoopbackHeaders,
+  );
   mainWindow = new BrowserWindow({
     title: "獬豸授权安全测试平台",
     icon: path.join(__dirname, "icon.png"),
