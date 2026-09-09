@@ -1129,6 +1129,20 @@ function zapBackendPath(toolsDir) {
   return "zap";
 }
 
+// 返回工具目录内已安装的 sqlmap 启动器路径，供后端 SQLMAP_PATH 检测使用；
+// 找不到时回落到系统 PATH 中同名的 sqlmap.bat。
+function sqlmapBackendPath(toolsDir) {
+  const definition = INSTALLABLE_PACKAGES.sqlmap;
+  if (definition) {
+    const launcher = findExecutableInTree(
+      path.join(toolsDir, definition.id),
+      definition.executableSearchNames || [definition.executable],
+    );
+    if (launcher) return launcher;
+  }
+  return "sqlmap.bat";
+}
+
 function ensureWritableDirectory(directory) {
   fs.mkdirSync(directory, { recursive: true });
   const probe = path.join(
@@ -1187,6 +1201,24 @@ const INSTALLABLE_PACKAGES = Object.freeze({
     assetName: (version) => `fscan_${version}_windows_x64.exe`,
     checksumName: () => "checksums.txt",
     releaseMode: "latest-semver-match",
+  }),
+  sqlmap: Object.freeze({
+    id: "sqlmap",
+    optional: true,
+    // sqlmap 是 Python 工具，官方以源码树分发（python sqlmap.py 开箱即用），
+    // 没有带校验文件的 GitHub release 二进制资产。因此以“源码树便携安装”接入：
+    // 从官方仓库解析最新稳定 tag，用 tag↔提交记录绑定来源，拉取该 tag 的源码 zip，
+    // 解压为 <tools>/sqlmap 便携树，并在根目录生成以随包 Python 驱动的 sqlmap.bat 启动器。
+    githubSourceArchive: true,
+    portableTree: true,
+    repository: "sqlmapproject/sqlmap",
+    executable: "sqlmap.bat",
+    executableSearchNames: ["sqlmap.bat"],
+    entrypointName: "sqlmap.py",
+    // 完整源码树约 2.5 万文件、数十 MB；配合依赖检测里的 Python 运行时运行。
+    maxArchiveBytes: 96 * 1024 * 1024,
+    maxExtractedBytes: 600 * 1024 * 1024,
+    maxFiles: 40000,
   }),
   msf: Object.freeze({
     id: "msf",
@@ -2688,6 +2720,105 @@ async function resolveLatestPackage(definition) {
   return value;
 }
 
+// 源码树便携包（如 sqlmap）：官方仓库以 tag/提交源码 zip 分发，没有带校验文件的
+// release 二进制资产。这里解析最新稳定 tag，用“tag↔提交记录”绑定来源，取出该 tag
+// 对应的源码 zip 地址；校验方式为记录式（安装时计算并锁定实际 SHA-256，同 ZAP 的
+// checksum-less 便携包一致），来源绑定靠 API 返回的 tag 与提交哈希保持一致来保证。
+async function resolveGithubSourceArchive(definition) {
+  const cached = latestPackageCache.get(definition.id);
+  if (cached && Date.now() - cached.cachedAt < 30 * 60 * 1000)
+    return cached.value;
+
+  const tagListUrl = `https://api.github.com/repos/${definition.repository}/tags?per_page=100`;
+  const tagResponse = await fetchDependencyResource(tagListUrl, {
+    headers: githubApiHeaders(),
+  });
+  if (!tagResponse.ok) throw githubApiError(tagResponse);
+  allowedResponseHost(tagResponse, tagListUrl, ["api.github.com"]);
+
+  let payload;
+  try {
+    payload = await tagResponse.json();
+  } catch {
+    throw new UserFacingError("官方版本列表读取失败");
+  }
+  if (!Array.isArray(payload) || payload.length > 100)
+    throw new UserFacingError("官方 tag 列表格式异常");
+
+  // 取“最新稳定语义版本” tag：匹配 X.Y.Z 且跳过 alpha/beta/rc 等预发布标记。
+  const stable = payload
+    .map((item) => String(item?.name || "").trim())
+    .filter((tag) => /^\d+\.\d+\.\d+$/.test(tag.replace(/^v/i, "")))
+    .sort((a, b) => {
+      const pa = a.replace(/^v/i, "").split(".").map(Number);
+      const pb = b.replace(/^v/i, "").split(".").map(Number);
+      for (let i = 0; i < 3; i++) {
+        if (pa[i] !== pb[i]) return pb[i] - pa[i];
+      }
+      return 0;
+    })[0];
+  if (!stable)
+    throw new UserFacingError("官方仓库中没有可识别的稳定版本标签");
+
+  const tag = stable;
+  const version = String(tag).replace(/^v/i, "");
+
+  // 用 git ref API 解析 tag 指向的提交哈希，作为 tag↔commit 的来源绑定。
+  const refUrl = `https://api.github.com/repos/${definition.repository}/git/ref/tags/${encodeURIComponent(tag)}`;
+  const refResponse = await fetchDependencyResource(refUrl, {
+    headers: githubApiHeaders(),
+  });
+  if (!refResponse.ok) throw githubApiError(refResponse);
+  allowedResponseHost(refResponse, refUrl, ["api.github.com"]);
+  const ref = await refResponse.json();
+  const objectSha = String(ref?.object?.sha || "");
+  if (!/^[a-f0-9]{40}$/.test(objectSha)) {
+    throw new UserFacingError("官方 tag 提交记录无法识别，拒绝安装");
+  }
+  // 注解 tag 只给出 tag 对象哈希，需再解引用一次拿到提交哈希。
+  let commitSha = objectSha;
+  if (String(ref?.object?.type || "") === "tag") {
+    const commitResponse = await fetchDependencyResource(
+      `https://api.github.com/repos/${definition.repository}/git/tags/${objectSha}`,
+      { headers: githubApiHeaders() },
+    );
+    if (commitResponse.ok) {
+      allowedResponseHost(commitResponse, refUrl, ["api.github.com"]);
+      const tagObject = await commitResponse.json();
+      if (String(tagObject?.object?.type || "") === "commit") {
+        commitSha = String(tagObject?.object?.sha || "") || commitSha;
+      }
+    }
+  }
+  if (!/^[a-f0-9]{40}$/.test(commitSha)) {
+    throw new UserFacingError("提交记录哈希无法识别，拒绝安装");
+  }
+
+  const archiveName = `${definition.repository.split("/")[1]}-${commitSha}.zip`;
+  // codeload 的源码 zip 引用的是 ref（tag 或 refs/tags/<tag>），URL 不带 .zip 后缀；
+  // 内容本身是 zip。downloadRef 仅用作用户可见的来源标识。
+  const downloadRef = `${definition.repository.split("/")[1]}-${tag}`;
+  const archiveUrl = `https://codeload.github.com/${definition.repository}/zip/refs/tags/${tag}`;
+  const archiveTarget = { url: archiveUrl, host: "codeload.github.com" };
+
+  const value = {
+    version,
+    tag,
+    commit: commitSha,
+    repository: definition.repository,
+    url: archiveTarget.url,
+    mirrorHost: archiveTarget.host,
+    // 精确提交由 tag↔commit 绑定保证，安装时计算并记录包 SHA-256。
+    sha256: "",
+    integritySource: "github-tag-commit",
+    archiveName,
+    downloadArchiveName: downloadRef,
+    size: 0,
+  };
+  latestPackageCache.set(definition.id, { cachedAt: Date.now(), value });
+  return value;
+}
+
 async function refreshPortableDependencyCatalog({
   packageId,
   release,
@@ -3302,7 +3433,9 @@ async function installPortableDependency(
       reportProgress(progress);
     };
     report("正在查询官方最新版本", 1, 0, 0, { progressDeterminate: false });
-    const release = await resolveLatestPackage(definition);
+    const release = definition.githubSourceArchive === true
+      ? await resolveGithubSourceArchive(definition)
+      : await resolveLatestPackage(definition);
     const toolsDir = resolveToolsDirectory();
     const downloadsDir = path.join(toolsDir, ".downloads");
     const stagingRoot = path.join(toolsDir, ".staging");
@@ -3411,6 +3544,10 @@ async function installPortableDependency(
           "github.com",
           "release-assets.githubusercontent.com",
           "objects.githubusercontent.com",
+          // 源码树便携包从 codeload / objects CDN 拉取官方 zip。
+          ...(definition.githubSourceArchive === true
+            ? ["codeload.github.com", "objects.githubusercontent.com"]
+            : []),
           release.mirrorHost,
         ].filter(Boolean),
         signal: session.controller.signal,
@@ -3460,11 +3597,11 @@ async function installPortableDependency(
                 expectedSha256: release.sha256,
                 expectedSize: release.size,
                 maxArchiveBytes: definition.maxArchiveBytes || 900 * 1024 * 1024,
-                maxFiles: 40000,
+                maxFiles: definition.maxFiles || 40000,
                 maxExtractedBytes:
                   definition.maxExtractedBytes || 3 * 1024 * 1024 * 1024,
                 stagingDir,
-                label: "ZAP",
+                label: packageId === "zap" ? "ZAP" : "sqlmap",
               }
             : {
                 archivePath,
@@ -3541,6 +3678,8 @@ async function installPortableDependency(
         throw new UserFacingError("无法记录安装包 SHA-256，已拒绝安装");
       }
       if (definition.portableTree === true) {
+        // 源码树便携包：解压后在暂存目录生成启动器，再原子替换到目标目录。
+        ensureSqlmapLauncher(stagingDir, definition);
         promotePortableTree({
           toolsDir,
           stagingDir,
@@ -3549,6 +3688,7 @@ async function installPortableDependency(
             repository: release.repository,
             version: release.version,
             releaseTag: release.tag,
+            commit: release.commit,
             archiveName: release.archiveName,
             archiveSha256: recordedSha256,
             integritySource: release.integritySource,
@@ -3777,6 +3917,40 @@ function findExecutableInTree(root, names) {
     /* ignore unreadable trees */
   }
   return null;
+}
+
+// 源码树便携包（sqlmap）：解压出的是一棵含顶层目录的源码树，且原生入口是 python
+// 脚本（sqlmap.py），Windows 上无法可靠地直接以脚本进程启动。这里在安装目录根目录
+// 生成一个 sqlmap.bat 启动器，用系统 Python 调用树内入口，供后端 SQLMAP_PATH 使用。
+function ensureSqlmapLauncher(stagingDir, definition) {
+  if (!definition || definition.githubSourceArchive !== true) return;
+  const entrypointName = definition.entrypointName || "sqlmap.py";
+  const entrypoint = findExecutableInTree(stagingDir, [entrypointName]);
+  if (!entrypoint) {
+    throw new UserFacingError(
+      "源码树中未找到 sqlmap 入口脚本，已拒绝安装",
+    );
+  }
+  const relative = path.relative(path.resolve(stagingDir), path.resolve(entrypoint));
+  if (
+    !relative ||
+    relative.startsWith("..") ||
+    path.isAbsolute(relative)
+  ) {
+    throw new UserFacingError("sqlmap 入口脚本路径异常，已拒绝安装");
+  }
+  const launcher = path.join(stagingDir, definition.executable || "sqlmap.bat");
+  assertInside(stagingDir, launcher);
+  assertReplaceableInstallFile(launcher, "sqlmap 启动器");
+  // “%~dp0”在本批处理所在目录（<tools>/sqlmap）展开，拼接相对入口即可定位源码树。
+  const relativeWindows = relative.replace(/\//g, "\\");
+  const script = [
+    "@echo off",
+    `chcp 65001 >nul`,
+    `python "%~dp0${relativeWindows}" %*`,
+    "exit /b %errorlevel%",
+  ].join("\r\n");
+  fs.writeFileSync(launcher, script, { encoding: "utf8", flag: "wx" });
 }
 
 async function uninstallPortableDependency(packageId) {
@@ -5748,6 +5922,7 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
     FSCAN_PATH: fs.existsSync(path.join(toolsDir, "fscan", "fscan.exe"))
       ? path.join(toolsDir, "fscan", "fscan.exe")
       : "fscan",
+    SQLMAP_PATH: sqlmapBackendPath(toolsDir),
     MSF_PATH: msfBackendPath(toolsDir),
     ZAP_PATH: zapBackendPath(toolsDir),
     ZAP_HOST: "127.0.0.1",
@@ -5763,6 +5938,7 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
       zapBackendPath(toolsDir) && zapBackendPath(toolsDir) !== "zap"
         ? path.dirname(zapBackendPath(toolsDir))
         : path.join(toolsDir, "zap"),
+      path.join(toolsDir, "sqlmap"),
       // Metasploit 经 junction 暴露于 tools\metasploit-framework，其后端
       // PATH 探测也能命中 msfconsole（位于其 bin 目录）。
       path.join(toolsDir, "metasploit-framework", "metasploit-framework", "bin"),

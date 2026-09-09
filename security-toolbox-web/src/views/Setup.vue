@@ -86,6 +86,7 @@ const manualUrls: Record<string, string> = {
   Afrog: "https://github.com/zan8in/afrog/releases",
   Xray: "https://github.com/chaitin/xray/releases",
   fscan: "https://github.com/shadow1ng/fscan/releases",
+  sqlmap: "https://github.com/sqlmapproject/sqlmap",
   Metasploit:
     "https://docs.metasploit.com/docs/using-metasploit/getting-started/nightly-installers.html",
   "ProjectDiscovery httpx":
@@ -209,11 +210,13 @@ const packageId =
                 ? "xray"
 : item.name === "fscan"
                     ? "fscan"
-                    : item.name === "Metasploit"
-                      ? "msf"
-                      : item.name === "OWASP ZAP"
-                        ? "zap"
-                        : undefined;
+                    : item.name === "sqlmap"
+                      ? "sqlmap"
+                      : item.name === "Metasploit"
+                        ? "msf"
+                        : item.name === "OWASP ZAP"
+                          ? "zap"
+                          : undefined;
       return {
         ...item,
         packageId,
