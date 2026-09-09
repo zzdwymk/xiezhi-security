@@ -41,7 +41,7 @@ jobs:
             case "${file}" in
               .github/*|ai-runtime/*|security-toolbox-server/*|security-toolbox-web/*)
                 ;;
-              scripts/package-desktop-release.ps1|scripts/start-all.ps1|scripts/start-desktop.ps1|scripts/status-all.ps1|scripts/stop-all.ps1)
+              scripts/package-desktop-release.ps1|scripts/start-all.ps1|scripts/start-desktop.ps1|scripts/status-all.ps1|scripts/stop-all.ps1|scripts/generate_test_report_from_run.py)
                 ;;
               .gitignore|README.md|compose.yaml|package-desktop-release.cmd|start-all.cmd|start-desktop.cmd|stop-all.cmd|LICENSE|LICENSE.*|CONTRIBUTING.md|SECURITY.md|CODE_OF_CONDUCT.md|.editorconfig)
                 ;;
