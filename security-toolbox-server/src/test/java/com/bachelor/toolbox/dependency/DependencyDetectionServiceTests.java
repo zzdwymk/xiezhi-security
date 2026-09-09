@@ -146,7 +146,7 @@ class DependencyDetectionServiceTests {
     SystemDependenciesResponse second = service.detect();
 
     assertThat(second).isSameAs(first);
-    assertThat(locateCalls).hasValue(14);
+    assertThat(locateCalls).hasValue(15);
   }
 
   @Test
@@ -233,7 +233,7 @@ class DependencyDetectionServiceTests {
     SystemDependenciesResponse refreshed = service.detect(true);
 
     assertThat(refreshed).isNotSameAs(first);
-    assertThat(locateCalls).hasValue(28);
+    assertThat(locateCalls).hasValue(30);
   }
 
   @Test
