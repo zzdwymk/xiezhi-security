@@ -58,6 +58,9 @@ public class ReconResult {
   @Column(nullable = false)
   private String subdomains = "[]";
 
+  // 可空：允许 ddl-auto 向已存在的 recon_results 表增量添加该列（NOT NULL 列无法直接加到有数据的表）。
+  @Lob private String webPaths = "[]";
+
   @Lob
   @Column(nullable = false)
   private String networkInformation = "{}";

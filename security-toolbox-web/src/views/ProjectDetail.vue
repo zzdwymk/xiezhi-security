@@ -136,6 +136,10 @@ const enumerateSubdomains = ref(true);
 const subdomainDictionary = ref(
   "www,api,admin,dev,test,staging,mail,vpn,portal,cdn",
 );
+const enumeratePaths = ref(true);
+const crawlSite = ref(true);
+const aggregateProxyPaths = ref(true);
+const pathDictionary = ref("");
 const reconRows = ref<ReconResult[]>([]);
 const collectingRecon = ref(false);
 const reconFilter = ref("");
@@ -2237,6 +2241,16 @@ async function collectRecon(options: LinkedStepOptions = {}): Promise<boolean> {
             .filter(Boolean)
             .slice(0, 50)
         : [],
+      enumeratePaths: reconMode.value === "ACTIVE" && enumeratePaths.value,
+      crawlSite: reconMode.value === "ACTIVE" && crawlSite.value,
+      aggregateProxyPaths: aggregateProxyPaths.value,
+      pathWords: pathDictionary.value
+        ? pathDictionary.value
+            .split(/[，,;；\n]+/)
+            .map((item) => item.trim())
+            .filter(Boolean)
+            .slice(0, 200)
+        : undefined,
     });
     reconRows.value = [result.data, ...reconRows.value];
     const unavailableSources = parseValue(result.data.sourceEvidence).filter(
@@ -2659,6 +2673,7 @@ function reconGroups(row: ReconResult) {
       data: values(row, "domains", "domainNames", "rootDomain"),
     },
     { label: "子域名", data: values(row, "subdomains", "subDomains") },
+    { label: "已发现路径", data: values(row, "webPaths", "discoveredPaths") },
     { label: "DNS 记录", data: values(row, "dnsRecords", "dnsRecords") },
     {
       label: "IP/归属地",
@@ -3847,11 +3862,24 @@ onUnmounted(() => {
               :disabled="reconMode !== 'ACTIVE'"
               >受限同网段发现</el-checkbox
             >
+            <el-checkbox v-model="enumeratePaths" :disabled="reconMode !== 'ACTIVE'"
+              >目录/路径枚举</el-checkbox
+            >
+            <el-checkbox v-model="crawlSite" :disabled="reconMode !== 'ACTIVE'"
+              >站点爬取</el-checkbox
+            >
+            <el-checkbox v-model="aggregateProxyPaths">代理会话路径聚合</el-checkbox>
             <el-input
               v-if="enumerateSubdomains"
               v-model="subdomainDictionary"
               class="subdomain-dictionary"
               placeholder="子域名字典：www,api,dev"
+            />
+            <el-input
+              v-if="reconMode === 'ACTIVE' && enumeratePaths"
+              v-model="pathDictionary"
+              class="subdomain-dictionary"
+              placeholder="路径字典(留空用默认)：admin/,Less-[1-65]/"
             />
           </div>
           <div class="recon-controls-row recon-controls-row--actions">

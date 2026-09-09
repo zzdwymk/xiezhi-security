@@ -63,7 +63,12 @@ public class NucleiScanTool implements SecurityTool {
           "file-upload",
           "fileupload",
           "deserialization",
-          "traversal");
+          "traversal",
+          // OSINT/headless/DAST 模板多为 self-contained（访问其硬编码的外部地址，忽略扫描目标），
+          // 既与“对授权主机做漏洞扫描”无关，又会让输出出现授权范围外的 matched-at 触发范围守卫而整单失败。
+          "osint",
+          "headless",
+          "dast");
 
   private final TargetPolicyService policy;
   private final PortRangeParser ports;
@@ -154,7 +159,8 @@ public class NucleiScanTool implements SecurityTool {
             targetList,
             allPocs
                 ? List.of(templatesPath)
-                : selected.stream().map(ScannerPocSelectionService.SelectedPoc::file).toList());
+                : selected.stream().map(ScannerPocSelectionService.SelectedPoc::file).toList(),
+            allPocs);
     observer.command(command);
     ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);
     Process process = ProcessEnvironmentSanitizer.sanitize(builder).start();
@@ -190,10 +196,14 @@ public class NucleiScanTool implements SecurityTool {
   }
 
   List<String> buildCommand(Path targetList) {
-    return buildCommand(targetList, List.of());
+    return buildCommand(targetList, List.of(), false);
   }
 
   List<String> buildCommand(Path targetList, List<Path> selectedTemplates) {
+    return buildCommand(targetList, selectedTemplates, false);
+  }
+
+  List<String> buildCommand(Path targetList, List<Path> selectedTemplates, boolean allPocs) {
     List<String> command = new ArrayList<>();
     command.add(executable);
     command.addAll(List.of("-list", targetList.toString()));
@@ -202,7 +212,11 @@ public class NucleiScanTool implements SecurityTool {
       command.add("-templates");
       command.add(safeDirectory.toString());
     }
-    if (selectedTemplates.isEmpty()) command.addAll(List.of("-pt", "http,ssl", "-ni"));
+    // 全量/默认安全集都属于“非用户逐条选定”的受控扫描：限制为 http,ssl 协议（不启用 headless/code，
+    // 避免 self-contained OSINT/headless 模板越界访问外部地址），并统一排除高危/自包含标签。
+    // 仅当用户明确逐条选定模板时，才尊重其选择并放开 headless/code、不做标签排除。
+    boolean controlledScan = selectedTemplates.isEmpty() || allPocs;
+    if (controlledScan) command.addAll(List.of("-pt", "http,ssl", "-ni"));
     else command.addAll(List.of("-headless", "-code"));
     command.addAll(
         List.of(
@@ -227,7 +241,7 @@ public class NucleiScanTool implements SecurityTool {
             "10",
             "-bs",
             "25"));
-    if (selectedTemplates.isEmpty()) command.addAll(List.of("-etags", EXCLUDED_TAGS));
+    if (controlledScan) command.addAll(List.of("-etags", EXCLUDED_TAGS));
     command.addAll(List.of("-severity", "info,low,medium,high,critical"));
     return List.copyOf(command);
   }

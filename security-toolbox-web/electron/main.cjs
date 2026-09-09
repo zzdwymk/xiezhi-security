@@ -4700,6 +4700,16 @@ handleRendererIpc("toolbox:window-close", (event) => {
   assertMainRenderer(event);
   mainWindow.close();
 });
+handleRendererIpc("toolbox:open-external", (event, targetUrl) => {
+  assertMainRenderer(event);
+  if (typeof targetUrl !== "string") return false;
+  const trimmed = targetUrl.trim();
+  if (/^https?:\/\//i.test(trimmed)) {
+    void shell.openExternal(trimmed);
+    return true;
+  }
+  return false;
+});
 handleRendererIpc("toolbox:set-window-material", (event, material) => {
   assertMainRenderer(event);
   if (!["none", "mica", "acrylic"].includes(material))
@@ -6090,12 +6100,12 @@ function createMainWindow(port) {
   const guardMainNavigation = (event, url) => {
     if (isTrustedMainRendererUrl(url)) return;
     event.preventDefault();
-    if (String(url).startsWith("https://")) void shell.openExternal(url);
+    if (/^https?:\/\//i.test(String(url))) void shell.openExternal(url);
   };
   mainWindow.webContents.on("will-navigate", guardMainNavigation);
   mainWindow.webContents.on("will-redirect", guardMainNavigation);
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith("https://")) shell.openExternal(url);
+    if (/^https?:\/\//i.test(String(url))) void shell.openExternal(url);
     return { action: "deny" };
   });
   mainWindow.webContents.on(

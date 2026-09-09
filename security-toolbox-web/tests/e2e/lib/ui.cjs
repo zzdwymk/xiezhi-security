@@ -25,6 +25,33 @@ async function settle(page, ms = 400) {
   await sleep(ms);
 }
 
+/**
+ * 关闭遗留的 ElMessageBox 模态并清理其遮罩。
+ * 典型场景：某阶段触发的"同步漏洞目录"确认框因依赖探测(Metasploit 探版本)迟到才弹出，
+ * 遗留到后续阶段，其 .el-overlay 遮罩会拦截侧边栏/页签点击导致连锁超时。
+ * 优先点「取消/关闭」（避免误触发确认动作），再退回关闭按钮/Escape，最后等遮罩消散。
+ */
+async function dismissStrayModal(page) {
+  try {
+    const box = page.locator(".el-message-box").filter({ has: page.locator(".el-message-box__btns") }).last();
+    if (!(await box.isVisible().catch(() => false))) return false;
+    for (const label of ["取消", "关闭", "Cancel"]) {
+      const b = box.locator("button", { hasText: label }).last();
+      if (await b.count()) { await b.click({ timeout: 5000 }).catch(() => {}); break; }
+    }
+    // 仍可见则点右上角关闭 / 按 Escape 兜底
+    if (await box.isVisible().catch(() => false)) {
+      const x = box.locator(".el-message-box__headerbtn").first();
+      if (await x.count()) await x.click({ timeout: 3000 }).catch(() => {});
+    }
+    if (await box.isVisible().catch(() => false)) await page.keyboard.press("Escape").catch(() => {});
+    // 等待遮罩层真正移除
+    await page.locator(".el-overlay:visible").last().waitFor({ state: "detached", timeout: 4000 }).catch(() => {});
+    await sleep(300);
+    return true;
+  } catch { return false; }
+}
+
 /* ------------------------------------------------------------------ */
 /* 导航                                                                */
 /* ------------------------------------------------------------------ */
@@ -48,6 +75,9 @@ async function navigate(page, itemLabel) {
   const group = Object.keys(SIDEBAR).find((g) => SIDEBAR[g].includes(itemLabel));
   if (!group) throw new Error(`未知的侧边栏菜单项: ${itemLabel}`);
   const groupId = GROUP_IDS[group];
+
+  // 阶段切换前先清理遗留模态（如上一阶段迟到未关的同步确认框），其遮罩会挡住侧边栏点击
+  await dismissStrayModal(page);
 
   const nav = page.locator("#desktop-v2-primary-navigation");
   await nav.waitFor({ state: "visible", timeout: 15000 });
@@ -75,6 +105,7 @@ async function navigate(page, itemLabel) {
 
 /** 通过用户下拉菜单进入系统设置（唯一入口） */
 async function openSettings(page) {
+  await dismissStrayModal(page);
   await page.locator("button.desktop-v2-user").first().click();
   await sleep(600);
   const menu = page.locator(".desktop-v2-user-menu");
@@ -373,6 +404,7 @@ module.exports = {
   SIDEBAR,
   sleep,
   settle,
+  dismissStrayModal,
   navigate,
   openSettings,
   pageTitle,

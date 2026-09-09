@@ -477,6 +477,16 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
             "RUNTIME",
             output -> containsIgnoreCase(output, "python "),
             "检测到的命令不是 Python。"),
+        descriptorWithExtractor(
+            "sqlmap",
+            scannerCandidates("SQLMAP_PATH", "sqlmap.bat", "sqlmap"),
+            List.of("--version", "--batch"),
+            false,
+            "SCANNER",
+            output -> output != null && output.matches("(?s).*\\d+\\.\\d+\\.\\d+.*"),
+            "检测到的命令不是 sqlmap（需 Python 运行时）。",
+            Duration.ofSeconds(20),
+            DependencyDetectionService::firstNonBlankLine),
         descriptor(
             "PostgreSQL",
             postgresqlCandidates(windows),

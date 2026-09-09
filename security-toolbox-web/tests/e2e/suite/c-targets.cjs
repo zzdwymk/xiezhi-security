@@ -231,20 +231,27 @@ async function run(page, H, ctx) {
     return `地址=${ctx.webTargetUrl}`;
   }, { page });
 
-  await H.run("C-20", "为 Web 目标授权 8000 端口", async () => {
+  await H.run("C-20", `为 Web 目标授权 ${ctx.targetWebPort} 端口`, async () => {
     const dlg = await dialog(page, "新增授权目标");
     const picker = dlg.locator(".port-picker").first();
     await picker.waitFor({ state: "visible", timeout: 8000 });
-    const sel = picker.locator(".el-select").first();
-    await sel.click();
-    await sleep(400);
-    const portInput = sel.locator("input").first();
-    await portInput.fill(String(ctx.targetWebPort));
-    await page.keyboard.press("Enter");
-    await sleep(600);
-    await page.keyboard.press("Escape").catch(() => {});
-    await sleep(300);
-    return `已授权端口 80,443,${ctx.targetWebPort}`;
+    const port = String(ctx.targetWebPort);
+    // 端口选择器默认已选中 80、443。用输入框回车会“反选”已选中的默认端口，
+    // 导致 Web 目标丢失 80 → HTTP 检查被授权守卫拦截。因此：
+    //   - 默认端口(80/443)本就选中，无需操作；
+    //   - 仅非默认端口才用输入框创建（此时该端口未选中，回车会正确添加）。
+    if (port !== "80" && port !== "443") {
+      const sel = picker.locator(".el-select").first();
+      await sel.click();
+      await sleep(400);
+      const portInput = sel.locator("input").first();
+      await portInput.fill(port);
+      await page.keyboard.press("Enter");
+      await sleep(500);
+      await page.keyboard.press("Escape").catch(() => {});
+      await sleep(300);
+    }
+    return `已确保授权端口包含 ${port}（默认端口 80/443 保持选中）`;
   }, { page });
 
   await H.run("C-21", "保存 URL 型目标", async () => {

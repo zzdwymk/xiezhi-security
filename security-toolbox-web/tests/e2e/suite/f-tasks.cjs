@@ -390,14 +390,16 @@ async function run(page, H, ctx) {
   await H.run("F-23", "可删除定时任务", async () => {
     if (!ctx.scheduleCreated) return "未成功创建定时任务，跳过";
     const dlg = await ensureScheduleDialog(page);
+    await sleep(800); // F-22 停用后表格会重渲染，等其稳定再取行，避免点到过期元素
     const row = dlg.locator(".schedule-table .el-table__row").first();
+    await row.waitFor({ state: "visible", timeout: 8000 });
     const btn = row.locator("button", { hasText: "删除" }).first();
     if (!(await btn.count())) throw new Error("未找到删除按钮");
     await clearMessages(page);
     await btn.scrollIntoViewIfNeeded().catch(() => {});
     await btn.click({ timeout: 12000 });
-    await sleep(1200);
-    const clicked = await confirmBoxIfPresent(page, ["删除", "确定", "确认"]);
+    // 删除确认为 ElMessageBox.confirm（确认按钮「删除」），给足弹出时间
+    const clicked = await confirmBoxIfPresent(page, ["删除", "确定", "确认"], { timeout: 10000 });
     if (!clicked) throw new Error("删除操作未弹出确认框");
     await sleep(1800);
     const msg = await lastMessage(page, { timeout: 10000 });

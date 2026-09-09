@@ -58,11 +58,10 @@ onMounted(async () => {
 </script>
 
 <template>
-  <section class="panel assets-topology-page">
+  <section class="assets-topology-page">
     <header class="assets-page-header">
       <div class="header-title-box">
         <h1 class="fluent-title">资产拓扑</h1>
-        <p class="fluent-subtitle">以项目为核心透视网络资产测绘、开放服务与爬虫回填的攻击面拓扑分布</p>
       </div>
 
       <div class="header-actions">
@@ -70,6 +69,7 @@ onMounted(async () => {
           v-model="projectId"
           :loading="loading"
           placeholder="选择评估项目"
+          aria-label="评估项目"
           clearable
           class="project-picker"
         >
@@ -81,15 +81,17 @@ onMounted(async () => {
           />
         </el-select>
 
-        <el-button
-          :loading="assetsLoading"
-          :disabled="!projectId"
-          class="fluent-action-btn"
-          @click="loadAssets"
-        >
-          <FluentIcon name="arrow-sync" :size="14" style="margin-right: 6px;" />
-          刷新拓扑
-        </el-button>
+        <el-tooltip content="刷新拓扑" placement="bottom">
+          <el-button
+            :loading="assetsLoading"
+            :disabled="!projectId"
+            aria-label="刷新拓扑"
+            class="refresh-topology-btn"
+            @click="loadAssets"
+          >
+            <FluentIcon v-if="!assetsLoading" name="arrow-clockwise" />
+          </el-button>
+        </el-tooltip>
       </div>
     </header>
 
@@ -105,7 +107,7 @@ onMounted(async () => {
 
       <el-empty
         v-else
-        description="请在上方选择一个评估项目以展示资产拓扑"
+        description="未选择评估项目"
         class="empty-project-prompt"
       />
     </div>
@@ -116,58 +118,82 @@ onMounted(async () => {
 .assets-topology-page {
   display: flex;
   flex-direction: column;
-  padding: 16px 20px;
-  height: calc(100vh - 100px);
-  min-height: 640px;
+  gap: var(--page-gap, 14px);
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: var(--page-pad-y, 16px) var(--page-pad-x, 20px);
   box-sizing: border-box;
   font-family: var(--fluent-font);
-  background: var(--app-surface);
-  border-radius: var(--fluent-radius-card);
-  border: 1px solid var(--app-border);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .assets-page-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 14px;
+  gap: 10px 20px;
   flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.header-title-box {
+  min-width: 0;
 }
 
 .header-title-box .fluent-title {
   margin: 0;
-  font-size: var(--type-section-title, 18px);
+  font-size: var(--page-title-size, 18px);
   font-weight: var(--fluent-weight-semibold, 600);
   color: var(--app-text);
-  letter-spacing: -0.01em;
-}
-
-.header-title-box .fluent-subtitle {
-  margin: 4px 0 0;
-  color: var(--app-muted);
-  font-size: var(--fluent-caption1-size, 12px);
-  line-height: var(--fluent-caption1-line, 16px);
+  line-height: 28px;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
 }
 
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  width: 288px;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .project-picker {
-  width: 240px;
+  flex: 1;
+  width: 0;
+  min-width: 0;
 }
 
-.fluent-action-btn {
+.project-picker :deep(.el-select__wrapper) {
+  min-height: 32px;
+  height: 32px;
+  line-height: 32px;
   border-radius: var(--fluent-radius-control, 4px);
-  font-family: var(--fluent-font);
-  font-size: var(--fluent-body1-size, 14px);
+  font-size: 13px;
+}
+
+.refresh-topology-btn {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: var(--fluent-radius-control, 4px);
+  font-size: 16px;
+}
+
+.refresh-topology-btn :deep(.el-icon.is-loading) {
+  margin: 0;
 }
 
 .topology-wrapper {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -175,5 +201,18 @@ onMounted(async () => {
 
 .empty-project-prompt {
   margin: auto;
+  max-width: 100%;
+}
+
+@media (max-width: 640px) {
+  .assets-topology-page {
+    padding: 12px;
+    gap: 12px;
+  }
+
+  .header-actions {
+    flex: 1 1 240px;
+    width: auto;
+  }
 }
 </style>

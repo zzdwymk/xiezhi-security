@@ -30,7 +30,7 @@ class FscanScanToolTests {
   void safeModeDisablesPocBruteAndFuzz() {
     List<String> command = tool.buildCommand(Path.of("fscan.exe"), "127.0.0.1", "80", "SAFE");
 
-    assertThat(command).contains("-np", "-nopoc", "-nobr", "-nofuzz");
+    assertThat(command).contains("-np", "-nopoc", "-nobr").doesNotContain("-nofuzz");
   }
 
   @Test

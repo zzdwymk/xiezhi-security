@@ -1,5 +1,7 @@
 package com.bachelor.toolbox.recon;
 
+import com.bachelor.toolbox.asset.DiscoveredPath;
+import com.bachelor.toolbox.asset.DiscoveredPathService;
 import jakarta.validation.Valid;
 import java.util.List;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -14,9 +16,11 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/projects/{projectId}/recon")
 public class ReconController {
   private final ReconService service;
+  private final DiscoveredPathService discoveredPaths;
 
-  public ReconController(ReconService service) {
+  public ReconController(ReconService service, DiscoveredPathService discoveredPaths) {
     this.service = service;
+    this.discoveredPaths = discoveredPaths;
   }
 
   @PostMapping("/collect")
@@ -29,6 +33,12 @@ public class ReconController {
   public List<ReconResult> results(
       @PathVariable Long projectId, @RequestParam(required = false) Long targetId) {
     return targetId == null ? service.history(projectId) : service.history(projectId, targetId);
+  }
+
+  @GetMapping("/paths")
+  public List<DiscoveredPath> paths(
+      @PathVariable Long projectId, @RequestParam Long targetId) {
+    return discoveredPaths.list(projectId, targetId);
   }
 
   @PostMapping("/icp/batch")

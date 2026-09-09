@@ -62,6 +62,51 @@ public class TargetPolicyService {
     }
   }
 
+  /**
+   * 在授权目标基址上解析一条已发现路径，返回可请求的 URI。仍只校验 host+端口（授权粒度为 host:端口，
+   * 路径不参与授权校验）。path 可为相对路径（/Less-2/?id=1）或同主机的完整 URL；为空或 "/" 时退回基址。
+   */
+  public URI validatedHttpUri(AuthorizedTarget target, String path) {
+    URI base = validatedHttpUri(target);
+    if (path == null || path.isBlank() || "/".equals(path.trim())) {
+      return base;
+    }
+    String p = path.trim();
+    if (p.startsWith("http://") || p.startsWith("https://")) {
+      URI abs;
+      try {
+        abs = URI.create(p);
+      } catch (IllegalArgumentException ex) {
+        throw new ApiException("路径 URL 格式不正确");
+      }
+      String host = abs.getHost();
+      if (host == null || !host.equalsIgnoreCase(base.getHost())) {
+        throw new ApiException("路径主机与授权目标不一致");
+      }
+      int port =
+          abs.getPort() > 0
+              ? abs.getPort()
+              : ("https".equalsIgnoreCase(abs.getScheme()) ? 443 : 80);
+      validateAuthorizedPort(target, port);
+      return abs;
+    }
+    if (!p.startsWith("/")) {
+      p = "/" + p;
+    }
+    String rawPath = p;
+    String rawQuery = null;
+    int q = p.indexOf('?');
+    if (q >= 0) {
+      rawPath = p.substring(0, q);
+      rawQuery = p.substring(q + 1);
+    }
+    try {
+      return new URI(base.getScheme(), null, base.getHost(), base.getPort(), rawPath, rawQuery, null);
+    } catch (Exception ex) {
+      throw new ApiException("目标路径格式不正确");
+    }
+  }
+
   public void validateAuthorizedPort(AuthorizedTarget target, int port) {
     if (port < PortRangeParser.MIN_PORT || port > PortRangeParser.MAX_PORT) {
       throw new ApiException("目标端口必须在 1-65535 范围内");

@@ -132,12 +132,66 @@ public class TrafficAnalysisService {
       String headers =
           packet.getResponseHeaders() == null ? "" : packet.getResponseHeaders().toLowerCase();
       if (!headers.contains("content-security-policy:")) {
-        reasons.add("响应中未发现 Content-Security-Policy。 ");
+        reasons.add("ZAP被动审计：响应中未配置 Content-Security-Policy (CSP)。 ");
         severity = "MEDIUM";
       }
+      if (!headers.contains("x-content-type-options:")) {
+        reasons.add("ZAP被动审计：缺失 X-Content-Type-Options: nosniff 防御响应头。 ");
+        if ("INFO".equals(severity)) severity = "LOW";
+      }
+      if (!headers.contains("x-frame-options:") && !headers.contains("frame-ancestors")) {
+        reasons.add("ZAP被动审计：缺失 X-Frame-Options 点击劫持防护头。 ");
+        if ("INFO".equals(severity)) severity = "LOW";
+      }
+      if ("https".equalsIgnoreCase(packet.getScheme()) && !headers.contains("strict-transport-security:")) {
+        reasons.add("ZAP被动审计：HTTPS 站点缺失 Strict-Transport-Security (HSTS) 头。 ");
+        if ("INFO".equals(severity)) severity = "LOW";
+      }
+
+      // CORS 缺陷
+      if (headers.contains("access-control-allow-origin: *") && headers.contains("access-control-allow-credentials: true")) {
+        reasons.add("ZAP被动审计：CORS 跨域策略缺陷，通配符 Origin 允许携带认证凭据。 ");
+        severity = "HIGH";
+        title = "CORS 跨域资源共享高危配置";
+      }
+
+      // Cookie 安全标记
+      if (headers.contains("set-cookie:")) {
+        for (String line : headers.split("\\r?\\n")) {
+          if (line.startsWith("set-cookie:")) {
+            if (!line.contains("httponly")) {
+              reasons.add("ZAP被动审计：Set-Cookie 缺失 HttpOnly 属性，易受 XSS 劫持。 ");
+              if ("INFO".equals(severity)) severity = "LOW";
+            }
+            if ("https".equalsIgnoreCase(packet.getScheme()) && !line.contains("secure")) {
+              reasons.add("ZAP被动审计：HTTPS 环境下 Set-Cookie 缺失 Secure 属性。 ");
+              if ("INFO".equals(severity)) severity = "LOW";
+            }
+            if (!line.contains("samesite")) {
+              reasons.add("ZAP被动审计：Set-Cookie 缺失 SameSite 属性。 ");
+              if ("INFO".equals(severity)) severity = "LOW";
+            }
+          }
+        }
+      }
+
+      // 响应敏感信息泄露
+      String respBody = packet.getResponseBody() == null ? "" : packet.getResponseBody();
+      if (!respBody.isEmpty() && respBody.length() < 200_000) {
+        if (respBody.matches("(?s).*(Exception in thread|Traceback \\(most recent call last\\)|org\\.springframework\\.|NullPointerException|SQLException|SQLSTATE\\[).*")) {
+          reasons.add("ZAP被动审计：响应体中包含服务端详细报错或异常堆栈追踪信息。 ");
+          severity = "HIGH".equals(severity) ? "HIGH" : "MEDIUM";
+          title = "服务端详细错误与堆栈泄露";
+        }
+        if (respBody.matches("(?s).*\\b(10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|172\\.(1[6-9]|2\\d|3[01])\\.\\d{1,3}\\.\\d{1,3}|192\\.168\\.\\d{1,3}\\.\\d{1,3})\\b.*")) {
+          reasons.add("ZAP被动审计：响应体中包含局域网私有 IPv4 地址泄露。 ");
+          if ("INFO".equals(severity)) severity = "LOW";
+        }
+      }
+
       if (packet.getStatusCode() != null && packet.getStatusCode() >= 500) {
-        reasons.add("服务端返回 5xx，建议结合服务指纹继续确认。 ");
-        severity = "MEDIUM";
+        reasons.add("服务端返回 5xx 状态码，建议结合服务指纹继续确认。 ");
+        if ("INFO".equals(severity) || "LOW".equals(severity)) severity = "MEDIUM";
         tool = "nmap_service_scan";
         title = "识别服务与版本";
       }
@@ -154,20 +208,25 @@ public class TrafficAnalysisService {
       if ("http".equalsIgnoreCase(packet.getScheme()) && containsCredentials) {
         reasons.add("明文 HTTP 请求中包含疑似凭据字段。 ");
         severity = "HIGH";
+        title = "明文传输敏感认证凭据";
       }
       if (reasons.isEmpty()) {
         reasons.add("未发现直接高危特征，可执行一次低风险 Web 基线检查。 ");
       }
     }
 
+    packet.setRiskLevel(severity);
+    packets.save(packet);
+
     TrafficSuggestion suggestion = new TrafficSuggestion();
     suggestion.setPacketId(packet.getId());
     suggestion.setTargetId(packet.getTargetId());
+    suggestion.setSource("ZAP_PASSIVE");
     suggestion.setSeverity(severity);
     suggestion.setTitle(title);
-    suggestion.setSummary("基于原始请求、响应和连接元数据生成下一步建议。 ");
+    suggestion.setSummary("基于 ZAP 协议被动分析与原始请求/响应规则审查生成建议。 ");
     suggestion.setReason(String.join("\n", reasons));
-    suggestion.setConfidence("HIGH".equals(severity) ? 0.88 : 0.76);
+    suggestion.setConfidence("HIGH".equals(severity) ? 0.90 : "MEDIUM".equals(severity) ? 0.82 : 0.75);
     suggestion.setActionType("PASSIVE_CHECK");
     suggestion.setToolCode(tool);
     suggestion.setRequiresConfirmation(true);

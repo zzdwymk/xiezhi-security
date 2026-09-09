@@ -447,6 +447,19 @@ export interface SafePocRecommendation {
   executionPolicy?: string;
 }
 export type ReconMode = "PASSIVE" | "ACTIVE";
+export interface DiscoveredPath {
+  id: number;
+  projectId: number;
+  targetId: number;
+  url: string;
+  path?: string;
+  method?: string;
+  source?: string;
+  statusCode?: number;
+  responseBytes?: number;
+  note?: string;
+  discoveredAt?: string;
+}
 export interface ReconEvidence {
   source?: string;
   type?: string;
@@ -463,6 +476,7 @@ export interface ReconResult {
   mode?: ReconMode | string;
   domains?: unknown[];
   subdomains?: unknown[];
+  webPaths?: string | unknown[];
   dnsRecords?: unknown[];
   ipAddresses?: unknown[];
   servers?: unknown[];
@@ -1044,6 +1058,7 @@ export const endpoints = {
     ports?: string;
     vulnModes?: Record<string, string>;
     toolParams?: Record<string, Record<string, string | number | boolean>>;
+    paths?: string[];
   }) =>
         api.post("/active-scans", payload, {
           // 全量 PoC 扫描需在后台校验/加载所有 PoC 文件，创建耗时可能远超默认超时
@@ -1255,12 +1270,18 @@ export const endpoints = {
       includeTls?: boolean;
       enumerateSubdomains?: boolean;
       subdomainWords?: string[];
+      enumeratePaths?: boolean;
+      pathWords?: string[];
+      crawlSite?: boolean;
+      aggregateProxyPaths?: boolean;
       activeNetworkProbe?: boolean;
     },
   ) =>
     api.post<ReconResult>(`/projects/${projectId}/recon/collect`, payload, {
       timeout: 180_000,
     }),
+  targetDiscoveredPaths: (targetId: number) =>
+    api.get<DiscoveredPath[]>(`/targets/${targetId}/discovered-paths`),
   projectReconResults: (projectId: number, targetId?: number) =>
     api.get<ReconResult[]>(`/projects/${projectId}/recon/results`, {
       params: targetId ? { targetId } : undefined,

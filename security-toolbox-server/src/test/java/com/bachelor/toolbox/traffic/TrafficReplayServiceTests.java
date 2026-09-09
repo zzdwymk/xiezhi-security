@@ -250,7 +250,8 @@ class TrafficReplayServiceTests {
             replay,
             mock(TrafficCaptureFilterService.class),
             mock(TrafficAiChatService.class),
-            mock(TrafficFuzzService.class));
+            mock(TrafficFuzzService.class),
+            mock(TrafficScanService.class));
     MockMvc mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
     when(replay.replay(
             org.mockito.ArgumentMatchers.eq(PACKET_ID), org.mockito.ArgumentMatchers.any()))
