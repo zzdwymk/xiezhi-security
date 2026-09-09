@@ -176,9 +176,8 @@ public class FscanScanTool implements SecurityTool {
       command.add("-nopoc");
     }
     if ("SAFE".equals(vulnMode)) {
-      // 完全安全的模式：同时关闭爆破与模糊测试。
+      // 完全安全的模式：关闭爆破。当前 fscan 版本不提供 -nofuzz；模糊/探测风险已由 -nopoc 关闭。
       command.add("-nobr");
-      command.add("-nofuzz");
     }
     if (outputFile != null) {
       command.add("-o");
@@ -283,6 +282,42 @@ public class FscanScanTool implements SecurityTool {
               "依据 fscan 结果与厂商公告确认影响，修复后使用相同主机与端口复测。",
               fscanVulnCode(evidence)));
       matches.add(Map.of("title", title, "severity", severity, "detail", evidence));
+    }
+
+    // 专项：SMBv1 / 老旧 Windows 暴露面。fscan 的 SMBInfo 指纹行（如
+    // "[+] SMBInfo <ip>:445 [Windows 7/Server 2008 R2 (Build 7601)] <host> SMBv1"）
+    // 被通用解析器归为 LOW，这里将其明确升格为一条中危“资产暴露面”结果（是否可被具体利用需另行确认）。
+    String smbEvidence = null;
+    for (String line : lines) {
+      if (line == null) continue;
+      boolean smbV1 = line.contains("SMBv1") || line.toUpperCase(Locale.ROOT).contains("SMBGHOST");
+      if (smbV1 && line.toLowerCase(Locale.ROOT).contains(host.toLowerCase(Locale.ROOT))) {
+        // fscan 输出常被合并为一整块，这里截取 SMBInfo/SMBv1 附近的片段作为“明确”的证据，
+        // 避免把整幅 banner 作为证据。
+        int idx = line.indexOf("SMBInfo");
+        if (idx < 0) idx = line.indexOf("SMBv1");
+        int from = idx < 0 ? 0 : Math.max(0, idx - 12);
+        int to = idx < 0 ? line.length() : Math.min(line.length(), idx + 140);
+        smbEvidence = line.substring(from, to).replaceAll("\\s+", " ").trim();
+        break;
+      }
+    }
+    if (smbEvidence != null && findings.size() < MAX_FINDINGS) {
+      String smbTitle = "SMBv1 协议启用 / 老旧 Windows 暴露面";
+      findings.add(
+          new FindingDraft(
+              smbTitle,
+              "MEDIUM",
+              "fscan SMB 指纹显示授权主机启用了 SMBv1（NT LM 0.12）且系统版本老旧。SMBv1 是 MS17-010"
+                  + "（EternalBlue）、WannaCry 等高危漏洞的攻击面，且常伴随 SMB 消息签名关闭，属应尽快收敛的"
+                  + "资产暴露面（是否可被具体利用需结合补丁状态另行确认）。",
+              smbEvidence,
+              "在目标上禁用 SMBv1（PowerShell：Set-SmbServerConfiguration -EnableSMB1Protocol $false，"
+                  + "或移除 SMB1Protocol 功能），升级到受支持的 Windows 版本，启用 SMB 签名，并对 135/139/445"
+                  + " 端口实施网络访问控制后复测。",
+              "STB-SMB-SMBV1"));
+      matches.add(Map.of("title", smbTitle, "severity", "MEDIUM", "detail", smbEvidence));
+      total++;
     }
 
     for (String port : uniquePorts) {

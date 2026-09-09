@@ -15,6 +15,7 @@ import {
   CatalogSyncProgress,
   DependencyStatus,
   DetectionRule,
+  DiscoveredPath,
   endpoints,
   Target,
   VulnerabilityCatalogStats,
@@ -48,7 +49,6 @@ const scannerTools = new Set([
   "nuclei_scan",
   "afrog_scan",
   "xray_scan",
-  "zap_scan",
 ]);
 const query = ref("");
 const severityFilter = ref("");
@@ -85,22 +85,10 @@ const pocLoading = ref<Record<ActiveScannerSource, boolean>>({
 });
 const portSelections = ref<string[]>([]);
 const fscanVulnMode = ref("SAFE");
-const zapOpenApiUrl = ref("");
-const zapScanPolicy = ref("");
-const zapStrength = ref("MEDIUM");
-const zapAuthType = ref("");
-const zapAuthLoginUrl = ref("");
-const zapAuthUsername = ref("");
-const zapAuthPassword = ref("");
-const zapScanPolicies = [
-  "Default Policy",
-  "Developer",
-  "Security Baseline",
-  "Manager",
-  "Testing - HIGH",
-  "Testing - MEDIUM",
-  "Testing - LOW",
-];
+const sqlmapLevel = ref("1");
+const sqlmapRisk = ref("1");
+const discoveredPaths = ref<DiscoveredPath[]>([]);
+const selectedPaths = ref<string[]>([]);
 const loading = ref(false);
 const scanning = ref(false);
 const clearingCatalog = ref(false);
@@ -139,8 +127,8 @@ const includesNucleiScan = computed(() =>
 const includesFscan = computed(() =>
   selectedRules.value.some((item) => item.toolCode === "fscan_scan"),
 );
-const includesZapScan = computed(() =>
-  selectedRules.value.some((item) => item.toolCode === "zap_scan"),
+const includesSqlmap = computed(() =>
+  selectedRules.value.some((item) => item.toolCode === "sqlmap_scan"),
 );
 const selectedScannerSources = computed<ActiveScannerSource[]>(() => {
   const selectedSources = new Set(
@@ -1080,32 +1068,6 @@ async function syncOfficialCatalog(command: CatalogSyncCommand = "NUCLEI") {
   }
 }
 
-function getZapToolParams(): Record<
-  string,
-  Record<string, string | number | boolean>
-> | undefined {
-  if (!includesZapScan.value) return undefined;
-  const zapRules = selectedRules.value.filter(
-    (rule) => rule.toolCode === "zap_scan",
-  );
-  const params: Record<string, string | number | boolean> = {
-    strength: zapStrength.value || "MEDIUM",
-  };
-  if (zapScanPolicy.value) params.scanPolicy = zapScanPolicy.value;
-  if (zapOpenApiUrl.value.trim()) params.openApiUrl = zapOpenApiUrl.value.trim();
-  if (zapAuthType.value) {
-    params.authType = zapAuthType.value;
-    params.authLoginUrl = zapAuthLoginUrl.value.trim();
-    params.authUsername = zapAuthUsername.value.trim();
-    params.authPassword = zapAuthPassword.value;
-  }
-  const hasMeaningful = Object.keys(params).length > 0;
-  if (!hasMeaningful) return undefined;
-  return Object.fromEntries(
-    zapRules.map((rule) => [rule.ruleCode, { ...params }]),
-  );
-}
-
 async function startScan() {
   sanitizeSelectedRuleCodes();
   if (!targetId.value) return ElMessage.warning("请先选择一个已授权目标");
@@ -1206,7 +1168,17 @@ async function startScan() {
               .map((rule) => [rule.ruleCode, fscanVulnMode.value]),
           )
         : undefined,
-      toolParams: getZapToolParams(),
+      toolParams: includesSqlmap.value
+        ? Object.fromEntries(
+            selectedRules.value
+              .filter((rule) => rule.toolCode === "sqlmap_scan")
+              .map((rule) => [
+                rule.ruleCode,
+                { level: Number(sqlmapLevel.value), risk: Number(sqlmapRisk.value) },
+              ]),
+          )
+        : undefined,
+      paths: selectedPaths.value.length ? selectedPaths.value : undefined,
     });
     ElMessage.success(`已创建 ${data.taskCount} 个检测任务`);
   } catch (error: any) {
@@ -1219,6 +1191,18 @@ async function startScan() {
 }
 
 watch(targetId, () => {
+  discoveredPaths.value = [];
+  selectedPaths.value = [];
+  if (targetId.value) {
+    endpoints
+      .targetDiscoveredPaths(targetId.value)
+      .then(({ data }) => {
+        discoveredPaths.value = Array.isArray(data) ? data : [];
+      })
+      .catch(() => {
+        discoveredPaths.value = [];
+      });
+  }
   portSelections.value = selectedTarget.value?.allowedPorts
     ? selectedTarget.value.allowedPorts
         .split(",")
@@ -1514,7 +1498,6 @@ onUnmounted(() => {
       <footer class="catalog-pagination">
         <el-pagination
           small
-          background
           layout="prev, pager, next, jumper"
           :page-size="pageSize"
           :total="total"
@@ -1817,39 +1800,54 @@ onUnmounted(() => {
             全量：开启弱口令/爆破等高风险检测，仅用于已充分授权与受控的目标。
           </p>
         </template>
-        <template v-if="includesZapScan">
-          <label>OWASP ZAP 高级参数</label>
-          <div class="zap-params">
-            <el-input
-              v-model="zapOpenApiUrl"
-              placeholder="OpenAPI/Swagger 定义地址（可选，导入后按 API 扫描）"
-              clearable
+        <template v-if="discoveredPaths.length">
+          <label>扫描路径范围（已发现子路径 {{ discoveredPaths.length }} 条）</label>
+          <el-select
+            v-model="selectedPaths"
+            multiple
+            filterable
+            allow-create
+            default-first-option
+            clearable
+            collapse-tags
+            collapse-tags-tooltip
+            placeholder="留空=仅测根地址；可多选已发现路径，或输入如 /Less-2/?id=1"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="p in discoveredPaths"
+              :key="p.id"
+              :label="(p.path || p.url) + (p.source ? ' · ' + p.source : '')"
+              :value="p.path || p.url"
             />
-            <el-select v-model="zapScanPolicy" placeholder="扫描策略（默认）" clearable>
+          </el-select>
+          <p class="port-help">
+            选中的路径会与所选检测规则按（规则×路径）逐个测试（如 sqlmap 对
+            /Less-2/?id=1）。留空则仅测目标根地址。
+          </p>
+        </template>
+        <template v-if="includesSqlmap">
+          <label>sqlmap 检测强度</label>
+          <div class="fscan-mode">
+            <el-select v-model="sqlmapLevel" style="width: 120px">
               <el-option
-                v-for="policy in zapScanPolicies"
-                :key="policy"
-                :label="policy"
-                :value="policy"
+                v-for="l in ['1', '2', '3', '4', '5']"
+                :key="l"
+                :label="'level ' + l"
+                :value="l"
               />
             </el-select>
-            <el-select v-model="zapStrength" placeholder="攻击强度">
-              <el-option label="低" value="LOW" />
-              <el-option label="中" value="MEDIUM" />
-              <el-option label="高" value="HIGH" />
-              <el-option label="极高" value="INSANE" />
+            <el-select v-model="sqlmapRisk" style="width: 120px">
+              <el-option
+                v-for="r in ['1', '2', '3']"
+                :key="r"
+                :label="'risk ' + r"
+                :value="r"
+              />
             </el-select>
-            <el-select v-model="zapAuthType" placeholder="认证方式（可选）" clearable>
-              <el-option label="表单" value="form" />
-              <el-option label="HTTP Basic" value="basic" />
-              <el-option label="Cookie/脚本" value="cookie" />
-            </el-select>
-            <el-input v-model="zapAuthLoginUrl" placeholder="登录页 URL（认证时必填）" clearable />
-            <el-input v-model="zapAuthUsername" placeholder="用户名" clearable />
-            <el-input v-model="zapAuthPassword" type="password" placeholder="密码" clearable show-password />
           </div>
           <p class="port-help">
-            开启认证后，ZAP 会在爬虫/主动扫描前为上下文配置登录；OpenAPI 导入后自动以目标为锚点扫描。
+            level/risk 越高测试越充分但请求更多；默认仅探测、不导出数据，仅用于已充分授权目标。
           </p>
         </template>
       </div>
@@ -1877,16 +1875,6 @@ onUnmounted(() => {
   font: 11px Consolas, monospace;
   word-break: break-all;
   line-height: 1.4;
-}
-.zap-params {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin: 8px 0;
-}
-.zap-params :deep(.el-select),
-.zap-params :deep(.el-input) {
-  width: 100%;
 }
 .vuln-workbench {
   display: grid;

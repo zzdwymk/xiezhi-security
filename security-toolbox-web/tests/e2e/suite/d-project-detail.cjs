@@ -10,13 +10,15 @@
 const {
   sleep, settle, navigate, pageTitle, dialog, dialogButton, selectOption, selectOn,
   lastMessage, clearMessages, rowCount, waitRow, confirmBoxIfPresent,
-  pickDateTimeNow, pickDateTimeFuture,
+  pickDateTimeNow, pickDateTimeFuture, dismissStrayModal,
 } = require("../lib/ui.cjs");
 
 /** 切换项目详情页签 */
 async function openTab(page, label) {
   const tabs = page.locator(".project-tabs").first();
   await tabs.waitFor({ state: "visible", timeout: 15000 });
+  // 清理可能遗留的模态遮罩（如上一阶段迟到的同步确认框），否则页签点击会被拦截超时
+  await dismissStrayModal(page);
   const tab = tabs.locator(".el-tabs__item", { hasText: label }).first();
   await tab.click();
   await sleep(1800);

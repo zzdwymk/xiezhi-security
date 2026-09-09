@@ -224,11 +224,20 @@ async function run(page, H, ctx) {
     const tabs = page.locator("nav.packet-tabs").first();
     if (!(await tabs.count())) throw new Error("未渲染报文标签页");
     await tabs.locator("button", { hasText: "请求" }).first().click();
-    await sleep(1500);
+    await sleep(1200);
     const card = page.locator("article.raw-packet-card").first();
     if (!(await card.count())) throw new Error("未渲染原始报文卡片");
-    const text = ((await card.textContent()) || "").replace(/\s+/g, " ");
-    if (!/GET|Host/.test(text)) throw new Error(`请求报文内容异常: ${text.slice(0, 200)}`);
+    // 原始报文渲染在 el-input textarea 内，正文是其 value 而非 textContent；
+    // 且报文内容异步载入，需轮询等待正文出现。
+    const ta = card.locator("textarea").first();
+    await ta.waitFor({ state: "attached", timeout: 8000 });
+    let text = "";
+    for (let i = 0; i < 20; i++) {
+      text = ((await ta.inputValue().catch(() => "")) || "").replace(/\s+/g, " ");
+      if (/GET|POST|Host/i.test(text)) break;
+      await sleep(400);
+    }
+    if (!/GET|POST|Host/i.test(text)) throw new Error(`请求报文内容异常: ${text.slice(0, 200)}`);
     ctx.requestPacket = text.slice(0, 300);
     return `请求报文: ${text.slice(0, 150)}`;
   }, { page, shotOnPass: true });
@@ -236,15 +245,22 @@ async function run(page, H, ctx) {
   await H.run("I-15", "可查看原始响应报文且内容来自靶机", async () => {
     const tabs = page.locator("nav.packet-tabs").first();
     await tabs.locator("button", { hasText: "响应" }).first().click();
-    await sleep(1800);
+    await sleep(1200);
     const card = page.locator("article.raw-packet-card").first();
-    const text = ((await card.textContent()) || "").replace(/\s+/g, " ");
+    const ta = card.locator("textarea").first();
+    await ta.waitFor({ state: "attached", timeout: 8000 });
+    let text = "";
+    for (let i = 0; i < 20; i++) {
+      text = ((await ta.inputValue().catch(() => "")) || "").replace(/\s+/g, " ");
+      if (/HTTP\/|Server|Content-Type/i.test(text)) break;
+      await sleep(400);
+    }
     if (!/HTTP\/|Server|Content-Type/i.test(text)) {
       throw new Error(`响应报文内容异常: ${text.slice(0, 200)}`);
     }
     ctx.responsePacket = text.slice(0, 300);
-    const fromTarget = /SimpleHTTP|Python|Directory listing/i.test(text);
-    return `响应报文${fromTarget ? "确认来自靶机 SimpleHTTP 服务" : "已渲染"}: ${text.slice(0, 140)}`;
+    const fromTarget = /SimpleHTTP|Python|Directory listing|nginx/i.test(text);
+    return `响应报文${fromTarget ? "确认来自靶机 Web 服务" : "已渲染"}: ${text.slice(0, 140)}`;
   }, { page, shotOnPass: true });
 
   await H.run("I-16", "右侧展示本条流量的本地安全要点", async () => {
@@ -308,21 +324,26 @@ async function run(page, H, ctx) {
     const editor = page.locator(".inline-replay-editor").first();
     if (!(await editor.count())) throw new Error("未渲染重放编辑器");
 
-    // 若无活动重放请求（空状态），先新建一个请求标签
+    // 若无活动重放请求（空状态），点「新建请求」(+，图标按钮 aria-label=新建请求) 建一个
     let line = editor.locator(".replay-request-line").first();
     if (!(await line.count())) {
-      const create = editor.locator("button.replay-tab-add, button", { hasText: "新建请求" }).first();
+      const create = editor.locator("button.replay-tab-add, button[aria-label='新建请求']").first();
       if (await create.count()) { await create.click(); await sleep(1200); }
       line = editor.locator(".replay-request-line").first();
     }
     if (!(await line.count())) throw new Error("无法进入可编辑的重放请求（无请求行）");
 
-    // 方法与 URL 均需非空，发包按钮才会启用
-    const methodInput = line.locator("input").first();
-    const urlInput = line.locator("input").last();
+    // 方法为 el-select（allow-create），URL 为 el-input；两者均需非空发包按钮才启用
+    const urlInput = line.locator(".el-input input, input").last();
     const curUrl = await urlInput.inputValue().catch(() => "");
     if (!curUrl) {
-      await methodInput.click(); await methodInput.fill("GET");
+      // 方法：点开 el-select 输入 GET 回车（allow-create）
+      const methodSel = line.locator(".el-select").first();
+      if (await methodSel.count()) {
+        await methodSel.click(); await sleep(300);
+        const mi = methodSel.locator("input").first();
+        await mi.fill("GET"); await page.keyboard.press("Enter"); await sleep(300);
+      }
       await urlInput.click(); await urlInput.fill(`http://${ctx.targetIp}:${ctx.targetWebPort}/`);
       await sleep(800);
     }

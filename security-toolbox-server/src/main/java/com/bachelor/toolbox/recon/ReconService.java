@@ -1,9 +1,11 @@
 package com.bachelor.toolbox.recon;
 
 import com.bachelor.toolbox.project.AssessmentProjectService;
+import com.bachelor.toolbox.asset.DiscoveredPathService;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.AuthorizedTargetRepository;
 import com.bachelor.toolbox.target.TargetService;
+import com.bachelor.toolbox.traffic.TrafficPacketRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
@@ -49,6 +51,7 @@ import javax.net.ssl.SSLSocketFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -67,12 +70,43 @@ public class ReconService {
   private static final String USER_AGENT = "Xiezhi-Recon/1.0";
   private static final Pageable HISTORY_PAGE = PageRequest.of(0, 1_000);
 
+  /**
+   * 常见后端数据库报错指纹（大小写不敏感、跨行匹配）。命中即视为参数触发了 SQL 报错回显，
+   * 用于「参数探测」阶段把疑似可注入的 URL 参数补进已发现路径，交由 sqlmap 复核确认。
+   */
+  private static final Pattern SQL_ERROR_SIGNATURE =
+      Pattern.compile(
+          "(?is)(you have an error in your sql syntax"
+              + "|warning:\\s*mysqli?"
+              + "|mysqli?_(?:fetch|num_rows|query|result)"
+              + "|valid mysql result"
+              + "|com\\.mysql\\.jdbc"
+              + "|mysqlsyntaxerrorexception"
+              + "|check the manual that corresponds to your (?:mysql|mariadb)"
+              + "|unknown column '[^']*' in 'where clause'"
+              + "|postgresql.{0,24}error"
+              + "|pg_query\\(\\)|pg::syntaxerror"
+              + "|ora-\\d{4,5}|quoted string not properly terminated"
+              + "|microsoft ole db provider for sql server"
+              + "|unclosed quotation mark after the character string"
+              + "|odbc sql server driver|system\\.data\\.sqlclient"
+              + "|sqlite/jdbcdriver|sqlite3?::|sqlite3\\.operationalerror"
+              + "|near \\\"[^\\\"]+\\\": syntax error"
+              + "|sqlstate\\[)");
+
+  /** 参数探测使用的常见 GET 参数名（按命中概率排序，id 优先);受预算与命中上限约束。 */
+  private static final List<String> MINE_PARAM_NAMES =
+      List.of(
+          "id", "uid", "cat", "page", "pid", "user", "name", "q", "item", "cid", "gid", "tid");
+
   private final ReconResultRepository results;
   private final AssessmentProjectService projects;
   private final AuthorizedTargetRepository targets;
   private final TargetService targetService;
   private final ObjectMapper json;
   private final IcpBrowserCaptureStore icpBrowserCaptures;
+  private final DiscoveredPathService discoveredPaths;
+  private final TrafficPacketRepository trafficPackets;
   private final HttpClient passiveClient =
       HttpClient.newBuilder()
           .connectTimeout(PASSIVE_CONNECT_TIMEOUT)
@@ -96,19 +130,32 @@ public class ReconService {
   @Value("${toolbox.recon.icp-ocr-models-path:./data/models/icp}")
   private String icpOcrModelsPath;
 
+  @Value("${toolbox.recon.param-probe-enabled:true}")
+  private boolean paramProbeEnabled;
+
+  @Value("${toolbox.recon.param-probe-max-endpoints:16}")
+  private int paramProbeMaxEndpoints;
+
+  @Value("${toolbox.recon.param-probe-max-findings:8}")
+  private int paramProbeMaxFindings;
+
   public ReconService(
       ReconResultRepository results,
       AssessmentProjectService projects,
       AuthorizedTargetRepository targets,
       TargetService targetService,
       ObjectMapper json,
-      IcpBrowserCaptureStore icpBrowserCaptures) {
+      IcpBrowserCaptureStore icpBrowserCaptures,
+      DiscoveredPathService discoveredPaths,
+      TrafficPacketRepository trafficPackets) {
     this.results = results;
     this.projects = projects;
     this.targets = targets;
     this.targetService = targetService;
     this.json = json;
     this.icpBrowserCaptures = icpBrowserCaptures;
+    this.discoveredPaths = discoveredPaths;
+    this.trafficPackets = trafficPackets;
   }
 
   public ReconResult collect(Long projectId, ReconRequest request) {
@@ -122,8 +169,9 @@ public class ReconService {
     try {
       List<Map<String, Object>> evidence = new ArrayList<>();
       ReconSnapshot snapshot = collectSnapshot(rootDomain, target, request, evidence);
+      List<String> webPaths = collectWebPaths(projectId, target, request, evidence);
       ReconResult result =
-          createResult(projectId, request.targetId(), rootDomain, snapshot, evidence);
+          createResult(projectId, request.targetId(), rootDomain, snapshot, evidence, webPaths);
       return results.save(result);
     } catch (Exception exception) {
       log.error(
@@ -232,7 +280,8 @@ public class ReconService {
       Long targetId,
       String rootDomain,
       ReconSnapshot snapshot,
-      List<Map<String, Object>> evidence)
+      List<Map<String, Object>> evidence,
+      List<String> webPaths)
       throws Exception {
     ReconResult result = new ReconResult();
     result.setProjectId(projectId);
@@ -243,6 +292,7 @@ public class ReconService {
     result.setTlsInformation(write(snapshot.tlsInformation()));
     result.setHttpInformation(write(snapshot.httpInformation()));
     result.setSubdomains(write(snapshot.subdomains()));
+    result.setWebPaths(write(webPaths == null ? List.of() : webPaths));
     result.setNetworkInformation(write(snapshot.networkInformation()));
     result.setRegistrationInformation(write(snapshot.registrationInformation()));
     result.setGeolocationInformation(write(snapshot.geolocationInformation()));
@@ -251,6 +301,386 @@ public class ReconService {
     // 相邻主机探测必须由单独、经过审核且明确授权 CIDR 的任务执行。
     result.setActiveNetworkProbe(false);
     return result;
+  }
+
+  /**
+   * 子路径/资产发现：主动目录枚举（含软-404 基线）、站点链接提取、代理会话路径聚合。
+   * 全部只在授权 host:端口 内进行；命中写入 DiscoveredPath 并返回本次发现的 URL 列表。
+   */
+  private List<String> collectWebPaths(
+      Long projectId, AuthorizedTarget target, ReconRequest request, List<Map<String, Object>> evidence) {
+    java.util.LinkedHashSet<String> discovered = new java.util.LinkedHashSet<>();
+    HttpEndpoint endpoint = httpEndpoint(target);
+    URI targetUri = targetUri(target.getTargetValue());
+    String host = targetUri == null ? null : targetUri.getHost();
+    if (host == null || endpoint == null) {
+      // 目标无可用 HTTP 端口时仍尝试代理路径聚合（基于已抓包）。
+      aggregateProxyPaths(projectId, target, host, discovered, evidence);
+      return mergeKnownPaths(projectId, target.getId(), discovered);
+    }
+    String base = endpoint.scheme() + "://" + host + ":" + endpoint.port();
+    HttpClient client =
+        HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(4))
+            .version(HttpClient.Version.HTTP_1_1)
+            .followRedirects(HttpClient.Redirect.NEVER)
+            .build();
+
+    // ---- 主动目录枚举（仅 ACTIVE 且勾选）----
+    if (request.activeMode() && Boolean.TRUE.equals(request.enumeratePaths())) {
+      enumerateWebPaths(projectId, target, base, request.pathWords(), client, discovered, evidence);
+    }
+    // ---- 站点链接提取 / 爬取（抓根页面，提取同源链接）----
+    if (request.activeMode() && Boolean.TRUE.equals(request.crawlSite())) {
+      crawlLinks(projectId, target, base, client, discovered, evidence);
+    }
+    // ---- 参数探测：对已发现端点补测常见可注入 GET 参数，命中 SQL 报错则登记候选 ----
+    if (request.activeMode()
+        && (Boolean.TRUE.equals(request.crawlSite())
+            || Boolean.TRUE.equals(request.enumeratePaths()))) {
+      mineInjectableParameters(projectId, target, base, discovered, evidence);
+    }
+    // ---- 被动代理会话路径聚合 ----
+    if (!request.activeMode() || Boolean.TRUE.equals(request.aggregateProxyPaths())) {
+      aggregateProxyPaths(projectId, target, host, discovered, evidence);
+    }
+    return mergeKnownPaths(projectId, target.getId(), discovered);
+  }
+
+  /**
+   * 快照并入该目标当前已知的全部路径（含历史与各来源），使「已发现路径」结果与主动检测的路径选择保持一致。
+   * 去重由 {@link DiscoveredPathService#record} 保证，这里只是把完整集合并入本次返回的快照。
+   */
+  private List<String> mergeKnownPaths(
+      Long projectId, Long targetId, java.util.LinkedHashSet<String> discovered) {
+    try {
+      for (var dp : discoveredPaths.list(projectId, targetId)) {
+        if (dp.getUrl() != null && !dp.getUrl().isBlank()) {
+          discovered.add(dp.getUrl());
+        }
+      }
+    } catch (RuntimeException ex) {
+      log.debug("合并已知路径快照失败 targetId={} : {}", targetId, ex.getMessage());
+    }
+    return List.copyOf(discovered);
+  }
+
+  private void enumerateWebPaths(
+      Long projectId,
+      AuthorizedTarget target,
+      String base,
+      List<String> requestedWords,
+      HttpClient client,
+      java.util.LinkedHashSet<String> discovered,
+      List<Map<String, Object>> evidence) {
+    List<String> words = expandPathWords(requestedWords);
+    if (words.isEmpty()) return;
+    // 软-404 基线：请求一个几乎不可能存在的路径。
+    long[] baseline = probePath(client, base + "/xzy404-" + Long.toHexString(System.nanoTime()) + "/");
+    int found = 0;
+    int limit = 400;
+    for (String word : words) {
+      if (limit-- <= 0) break;
+      String url = base + "/" + word.replaceFirst("^/+", "");
+      long[] r = probePath(client, url);
+      if (r == null) continue;
+      int status = (int) r[0];
+      long len = r[1];
+      boolean exists;
+      if (baseline == null) {
+        exists = status > 0 && status < 400;
+      } else {
+        exists = status != (int) baseline[0] || Math.abs(len - baseline[1]) > 24;
+      }
+      if (exists && status > 0 && status < 500 && status != 404) {
+        if (discoveredPaths.record(target, projectId, url, "ACTIVE_ENUM", status, len, "目录字典枚举")) {
+          discovered.add(url);
+          found++;
+        }
+      }
+    }
+    evidence.add(
+        Map.of("source", "PATH_ENUM", "available", true, "candidates", words.size(), "found", found));
+  }
+
+  private void crawlLinks(
+      Long projectId,
+      AuthorizedTarget target,
+      String base,
+      HttpClient client,
+      java.util.LinkedHashSet<String> discovered,
+      List<Map<String, Object>> evidence) {
+    int found = 0;
+    try {
+      HttpRequest req =
+          HttpRequest.newBuilder(URI.create(base + "/"))
+              .timeout(Duration.ofSeconds(8))
+              .header("User-Agent", USER_AGENT)
+              .GET()
+              .build();
+      HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
+      String body = resp.body() == null ? "" : resp.body();
+      Matcher m =
+          Pattern.compile("(?i)(?:href|src|action)\\s*=\\s*[\"']([^\"'#>]+)[\"']").matcher(body);
+      int limit = 200;
+      while (m.find() && limit-- > 0) {
+        String link = m.group(1).trim();
+        if (link.isBlank() || link.startsWith("javascript:") || link.startsWith("mailto:")
+            || link.startsWith("data:")) continue;
+        String url = resolveLink(base, link);
+        if (url == null) continue;
+        if (discoveredPaths.record(target, projectId, url, "PASSIVE_LINK", null, null, "页面源码链接提取")) {
+          discovered.add(url);
+          found++;
+        }
+      }
+    } catch (Exception ex) {
+      log.debug("站点链接提取失败 base={} : {}", base, ex.getMessage());
+    }
+    evidence.add(Map.of("source", "SITE_CRAWL", "available", true, "found", found));
+  }
+
+  /**
+   * 参数探测：对本次已发现的端点（目录/动态页面）逐个补测常见 GET 参数。若注入单引号后
+   * 出现后端 SQL 报错回显（而合法值不报错），则把带合法值的 URL 作为疑似可注入候选登记进
+   * 已发现路径，交由后续 sqlmap 主动检测复核确认——用以降低「站点存在注入却因未带参数
+   * 而漏报」的情况。全部请求仅在授权 host:端口 内进行，且受端点数、命中数与请求预算约束。
+   */
+  private void mineInjectableParameters(
+      Long projectId,
+      AuthorizedTarget target,
+      String base,
+      java.util.LinkedHashSet<String> discovered,
+      List<Map<String, Object>> evidence) {
+    if (!paramProbeEnabled || paramProbeMaxEndpoints <= 0 || paramProbeMaxFindings <= 0) {
+      return;
+    }
+    HttpClient client =
+        HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(4))
+            .version(HttpClient.Version.HTTP_1_1)
+            // 跟随同源目录 301（如 /Less-2 → /Less-2/），否则注入报错会被重定向掩盖。
+            .followRedirects(HttpClient.Redirect.NORMAL)
+            .build();
+
+    // 候选端点：基址本身 + 本次已发现、非静态资源的 URL。
+    // 端点数受 maxPathsPerScan 上限约束，直接按发现顺序截断会漏掉排在后面的可注入端点，
+    // 因此先按「可注入可能性」排序再截断：已带查询串 > 脚本后缀(.php/.asp/...) > 其它动态目录，
+    // 让有限的请求预算优先花在更可能存在注入的端点上，降低规模化站点下的漏报。
+    java.util.LinkedHashSet<String> candidates = new java.util.LinkedHashSet<>();
+    candidates.add(base + "/");
+    for (String url : discovered) {
+      if (url == null || url.isBlank() || isStaticAsset(url)) continue;
+      candidates.add(url);
+    }
+    List<String> ordered = new ArrayList<>(candidates);
+    ordered.sort(java.util.Comparator.comparingInt(this::injectionLikelihoodRank));
+    java.util.LinkedHashSet<String> endpoints = new java.util.LinkedHashSet<>();
+    for (String url : ordered) {
+      if (endpoints.size() >= paramProbeMaxEndpoints) break;
+      // 已带查询串的端点，去掉查询串后作为探测基址（避免把探测参数拼到已有 query 上重复）。
+      endpoints.add(url.contains("?") ? url.substring(0, url.indexOf('?')) : url);
+    }
+
+    String targetHost = URI.create(base + "/").getHost();
+    int tested = 0;
+    int found = 0;
+    int budget = paramProbeMaxEndpoints * 6 + 24; // 请求预算兜底，避免探测放大。
+    outer:
+    for (String endpoint : endpoints) {
+      if (found >= paramProbeMaxFindings) break;
+      for (String param : MINE_PARAM_NAMES) {
+        if (found >= paramProbeMaxFindings) break outer;
+        if (budget-- <= 0) break outer;
+        MineResponse baseResp = mineProbe(client, appendParam(endpoint, param, "1"), targetHost);
+        if (baseResp == null || baseResp.status() >= 500) continue;
+        tested++;
+        MineResponse brkResp = mineProbe(client, appendParam(endpoint, param, "1'"), targetHost);
+        if (brkResp == null) continue;
+        boolean errorTriggered =
+            SQL_ERROR_SIGNATURE.matcher(brkResp.body()).find()
+                && !SQL_ERROR_SIGNATURE.matcher(baseResp.body()).find();
+        if (!errorTriggered) continue;
+        String candidate =
+            baseResp.finalUrl() != null ? baseResp.finalUrl() : appendParam(endpoint, param, "1");
+        String note =
+            "疑似可注入参数(" + param + ")：注入单引号触发后端 SQL 报错回显，建议用 sqlmap 复核确认";
+        if (discoveredPaths.record(
+            target,
+            projectId,
+            candidate,
+            "ACTIVE_ENUM",
+            baseResp.status(),
+            (long) baseResp.body().length(),
+            note)) {
+          discovered.add(candidate);
+          found++;
+        }
+        continue outer; // 每个端点命中一个可注入参数即足够，避免重复登记。
+      }
+    }
+    evidence.add(
+        Map.of("source", "PARAM_PROBE", "available", true, "tested", tested, "found", found));
+  }
+
+  /** 参数探测的单次响应快照（状态码、跟随重定向后的最终 URL、受限正文）。 */
+  private record MineResponse(int status, String finalUrl, String body) {}
+
+  private MineResponse mineProbe(HttpClient client, String url, String targetHost) {
+    try {
+      HttpRequest req =
+          HttpRequest.newBuilder(URI.create(url))
+              .timeout(Duration.ofSeconds(6))
+              .header("User-Agent", USER_AGENT)
+              .GET()
+              .build();
+      HttpResponse<byte[]> resp = client.send(req, HttpResponse.BodyHandlers.ofByteArray());
+      URI finalUri = resp.uri();
+      // 重定向可能被跟随到其它主机——越界则丢弃，登记环节也会再兜底一次。
+      if (finalUri == null
+          || finalUri.getHost() == null
+          || (targetHost != null && !targetHost.equalsIgnoreCase(finalUri.getHost()))) {
+        return null;
+      }
+      byte[] raw = resp.body() == null ? new byte[0] : resp.body();
+      int len = Math.min(raw.length, 200_000);
+      String body = new String(raw, 0, len, StandardCharsets.UTF_8);
+      return new MineResponse(resp.statusCode(), finalUri.toString(), body);
+    } catch (Exception ex) {
+      return null;
+    }
+  }
+
+  private String appendParam(String endpoint, String name, String value) {
+    String encoded = URLEncoder.encode(value, StandardCharsets.UTF_8);
+    String sep = endpoint.contains("?") ? "&" : "?";
+    return endpoint + sep + name + "=" + encoded;
+  }
+
+  /**
+   * 端点可注入可能性排序权重（越小越优先探测）：已带查询参数(0) > 常见脚本后缀(1) >
+   * 其它动态目录/路径(2)。仅用于在预算受限时决定探测顺序，不代表判定注入与否。
+   */
+  private int injectionLikelihoodRank(String url) {
+    if (url == null) return 3;
+    String lower = url.toLowerCase(Locale.ROOT);
+    int q = lower.indexOf('?');
+    String pathPart = q >= 0 ? lower.substring(0, q) : lower;
+    if (q >= 0 && lower.substring(q).contains("=")) {
+      return 0; // 已带 key=value 查询串，最可能可注入
+    }
+    if (pathPart.matches(".*\\.(?:php|asp|aspx|jsp|jspx|do|action|cgi|pl|py|rb)$")) {
+      return 1; // 动态脚本后缀
+    }
+    return 2;
+  }
+
+  private boolean isStaticAsset(String url) {
+    String lower = url.toLowerCase(Locale.ROOT);
+    int q = lower.indexOf('?');
+    if (q >= 0) lower = lower.substring(0, q);
+    return lower.matches(
+        ".*\\.(?:css|js|mjs|png|jpe?g|gif|svg|ico|webp|bmp|woff2?|ttf|eot|otf|map"
+            + "|pdf|zip|gz|tar|rar|7z|mp4|mp3|avi|mov|wav|ogg)$");
+  }
+
+  private void aggregateProxyPaths(
+      Long projectId,
+      AuthorizedTarget target,
+      String host,
+      java.util.LinkedHashSet<String> discovered,
+      List<Map<String, Object>> evidence) {
+    if (host == null) return;
+    int found = 0;
+    try {
+      for (Object[] row : trafficPackets.findDistinctEndpointsByHost(host)) {
+        String scheme = row[0] == null ? "http" : String.valueOf(row[0]);
+        Integer port = row[2] == null ? null : ((Number) row[2]).intValue();
+        String path = row[3] == null ? "/" : String.valueOf(row[3]);
+        String url =
+            scheme + "://" + host + (port != null && port > 0 ? ":" + port : "") + path;
+        if (discoveredPaths.record(target, projectId, url, "PROXY", null, null, "代理会话路径聚合")) {
+          discovered.add(url);
+          found++;
+        }
+      }
+    } catch (Exception ex) {
+      log.debug("代理路径聚合失败 host={} : {}", host, ex.getMessage());
+    }
+    evidence.add(Map.of("source", "PROXY_PATHS", "available", true, "found", found));
+  }
+
+  private long[] probePath(HttpClient client, String url) {
+    try {
+      HttpRequest req =
+          HttpRequest.newBuilder(URI.create(url))
+              .timeout(Duration.ofSeconds(6))
+              .header("User-Agent", USER_AGENT)
+              .GET()
+              .build();
+      HttpResponse<byte[]> resp = client.send(req, HttpResponse.BodyHandlers.ofByteArray());
+      long len = resp.body() == null ? 0 : resp.body().length;
+      return new long[] {resp.statusCode(), len};
+    } catch (Exception ex) {
+      return null;
+    }
+  }
+
+  private String resolveLink(String base, String link) {
+    try {
+      URI baseUri = URI.create(base + "/");
+      URI resolved = baseUri.resolve(link);
+      if (resolved.getHost() == null) return null;
+      // 仅同源（同 host）链接；端口授权由 discoveredPaths.record 兜底。
+      if (!resolved.getHost().equalsIgnoreCase(baseUri.getHost())) return null;
+      if (!"http".equalsIgnoreCase(resolved.getScheme())
+          && !"https".equalsIgnoreCase(resolved.getScheme())) return null;
+      return resolved.toString();
+    } catch (Exception ex) {
+      return null;
+    }
+  }
+
+  private List<String> expandPathWords(List<String> requested) {
+    List<String> raw =
+        (requested == null || requested.isEmpty()) ? loadDefaultPathWords() : requested;
+    java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<>();
+    Pattern range = Pattern.compile("(.*?)\\[(\\d+)-(\\d+)\\](.*)");
+    for (String w : raw) {
+      if (w == null) continue;
+      String word = w.trim();
+      if (word.isEmpty() || word.startsWith("#")) continue;
+      Matcher rm = range.matcher(word);
+      if (rm.matches()) {
+        int from = Integer.parseInt(rm.group(2));
+        int to = Integer.parseInt(rm.group(3));
+        if (to - from > 500) to = from + 500; // 上限保护
+        for (int i = from; i <= to; i++) {
+          out.add(rm.group(1) + i + rm.group(4));
+        }
+      } else {
+        out.add(word);
+      }
+      if (out.size() >= 600) break;
+    }
+    return List.copyOf(out);
+  }
+
+  private List<String> loadDefaultPathWords() {
+    try {
+      ClassPathResource resource = new ClassPathResource("wordlists/web-paths.txt");
+      if (!resource.exists()) return List.of();
+      try (var in = resource.getInputStream()) {
+        String text = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        return Arrays.stream(text.split("\\R"))
+            .map(String::trim)
+            .filter(s -> !s.isEmpty() && !s.startsWith("#"))
+            .toList();
+      }
+    } catch (Exception ex) {
+      log.debug("加载默认路径字典失败: {}", ex.getMessage());
+      return List.of();
+    }
   }
 
   private void validateIcpBatchRequest(IcpBatchRequest request) {

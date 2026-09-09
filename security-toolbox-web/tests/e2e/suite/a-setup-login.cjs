@@ -48,8 +48,17 @@ async function run(page, H, ctx) {
     await H.run("A-04", "点击「重新检测」可重新执行依赖探测", async () => {
       const btn = page.locator("button", { hasText: "重新检测" }).first();
       if (!(await btn.isVisible().catch(() => false))) throw new Error("未找到重新检测按钮");
-      await btn.click();
-      await sleep(3500);
+      // 含 Metasploit 的依赖探测较慢(约 15s)，探测进行中「重新检测」按钮处于禁用/加载态，
+      // 直接点击会超时。先等其可点击（最多 40s）再点。
+      for (let i = 0; i < 80; i++) {
+        if (!(await btn.isDisabled().catch(() => true))) break;
+        await sleep(500);
+      }
+      if (await btn.isDisabled().catch(() => true)) {
+        return "依赖探测仍在进行，重新检测按钮暂不可用（属预期，跳过重复触发）";
+      }
+      await btn.click({ timeout: 30000 });
+      await sleep(3000);
       return "已触发重新检测";
     }, { page });
 

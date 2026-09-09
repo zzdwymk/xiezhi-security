@@ -24,6 +24,7 @@ public class TrafficProxyController {
   private final TrafficCaptureFilterService filters;
   private final TrafficAiChatService chat;
   private final TrafficFuzzService fuzz;
+  private final TrafficScanService scanService;
 
   public TrafficProxyController(
       TrafficProxyService proxy,
@@ -31,13 +32,15 @@ public class TrafficProxyController {
       TrafficReplayService replay,
       TrafficCaptureFilterService filters,
       TrafficAiChatService chat,
-      TrafficFuzzService fuzz) {
+      TrafficFuzzService fuzz,
+      TrafficScanService scanService) {
     this.proxy = proxy;
     this.analysis = analysis;
     this.replay = replay;
     this.filters = filters;
     this.chat = chat;
     this.fuzz = fuzz;
+    this.scanService = scanService;
   }
 
   @GetMapping("/status")
@@ -91,6 +94,23 @@ public class TrafficProxyController {
   public TrafficReplayService.ReplayResponse replay(
       @PathVariable Long id, @Valid @RequestBody TrafficReplayService.ReplayRequest request) {
     return replay.replay(id, request);
+  }
+
+  @GetMapping("/fuzz/presets")
+  public List<TrafficFuzzService.FuzzPreset> fuzzPresets() {
+    return fuzz.getPresets();
+  }
+
+  @PostMapping("/packets/{id}/zap-scan")
+  public TrafficScanService.TargetedScanResult zapScan(
+      @PathVariable Long id, @RequestBody(required = false) TrafficScanService.ZapScanRequest request) {
+    return scanService.zapScan(id, request);
+  }
+
+  @PostMapping("/packets/{id}/xray-scan")
+  public TrafficScanService.TargetedScanResult xrayScan(
+      @PathVariable Long id, @RequestBody(required = false) TrafficScanService.XrayScanRequest request) {
+    return scanService.xrayScan(id, request);
   }
 
   @PostMapping("/packets/{id}/fuzz")

@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from "vue";
+import { computed, ref, watch, nextTick, onMounted, onUnmounted } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { endpoints, type DiscoveryResult } from "../api";
+import { formatDateTime } from "../utils/dateTime";
 import FluentIcon from "./FluentIcon.vue";
 
 const props = withDefaults(
@@ -23,6 +24,7 @@ const emit = defineEmits<{
 
 // 容器与视口
 const containerRef = ref<HTMLElement | null>(null);
+const canvasWrapRef = ref<HTMLElement | null>(null);
 const svgRef = ref<SVGSVGElement | null>(null);
 const viewportWidth = ref(1100);
 const viewportHeight = ref(660);
@@ -42,10 +44,9 @@ const nodeDragStart = ref({ clientX: 0, clientY: 0, initX: 0, initY: 0 });
 
 // 视图模式与动效
 type LayoutMode = "orbit" | "tree";
-const layoutMode = ref<LayoutMode>("orbit");
-const enableFlowAnim = ref(true);
-const isSonarScanning = ref(false);
-const showMinimap = ref(true);
+const layoutMode = ref<LayoutMode>("tree");
+const enableFlowAnim = ref(false);
+const showMinimap = ref(false);
 
 // 聚光灯过滤维度 (null 为无，'waf', 'https', 'http')
 const spotlightFilter = ref<string | null>(null);
@@ -150,11 +151,21 @@ const selectedAsset = computed(() => {
   return props.assets.find((a) => a.id === selectedNodeId.value) || null;
 });
 
-// 尺寸规范：宽敞呼吸感，杜绝文字被挡
-const HUB_W = 200;
-const HUB_H = 62;
-const CARD_W = 184;
-const CARD_H = 52;
+const HUB_W = 216;
+const HUB_H = 68;
+const CARD_W = 228;
+const CARD_H = 68;
+
+function compactLabel(value: string, limit: number) {
+  let units = 0;
+  let label = "";
+  for (const character of value) {
+    units += character.charCodeAt(0) > 255 ? 2 : 1;
+    if (units > limit) return `${label.slice(0, -1)}…`;
+    label += character;
+  }
+  return label;
+}
 
 // 布局数据类型
 interface LayoutNode {
@@ -213,54 +224,161 @@ function getRectIntersection(
   }
 }
 
+// AABB 矩形防重叠碰撞分离器 (保证卡片之间与中心卡片绝对不产生任何物理压叠)
+function resolveNodeCollisions(
+  nodes: LayoutNode[],
+  center: { x: number; y: number },
+  customMap: Record<number, { x: number; y: number }>,
+) {
+  if (nodes.length <= 1) return;
+  const maxIterations = 24;
+  const paddingX = 26; // 卡片间水平安全距离
+  const paddingY = 18; // 卡片间垂直安全距离
+  const minHubDistX = (HUB_W + CARD_W) / 2 + 32;
+  const minHubDistY = (HUB_H + CARD_H) / 2 + 24;
+
+  for (let iter = 0; iter < maxIterations; iter++) {
+    let hasCollision = false;
+
+    // 1. 避让中心卡片
+    for (const node of nodes) {
+      if (customMap[node.id] != null) continue;
+      const dx = node.x - center.x;
+      const dy = node.y - center.y;
+      const overlapX = minHubDistX - Math.abs(dx);
+      const overlapY = minHubDistY - Math.abs(dy);
+
+      if (overlapX > 0 && overlapY > 0) {
+        hasCollision = true;
+        if (overlapX < overlapY) {
+          node.x += (dx >= 0 ? 1 : -1) * overlapX;
+        } else {
+          node.y += (dy >= 0 ? 1 : -1) * overlapY;
+        }
+      }
+    }
+
+    // 2. 节点相互碰撞避让 (AABB)
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i];
+        const b = nodes[j];
+
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const overlapX = CARD_W + paddingX - Math.abs(dx);
+        const overlapY = CARD_H + paddingY - Math.abs(dy);
+
+        if (overlapX > 0 && overlapY > 0) {
+          hasCollision = true;
+          const aCustom = customMap[a.id] != null;
+          const bCustom = customMap[b.id] != null;
+
+          if (overlapX < overlapY) {
+            const push = overlapX * 0.52;
+            const sign = dx >= 0 ? 1 : -1;
+            if (!aCustom && !bCustom) {
+              a.x -= sign * push;
+              b.x += sign * push;
+            } else if (!aCustom) {
+              a.x -= sign * overlapX;
+            } else if (!bCustom) {
+              b.x += sign * overlapX;
+            }
+          } else {
+            const push = overlapY * 0.52;
+            const sign = dy >= 0 ? 1 : -1;
+            if (!aCustom && !bCustom) {
+              a.y -= sign * push;
+              b.y += sign * push;
+            } else if (!aCustom) {
+              a.y -= sign * overlapY;
+            } else if (!bCustom) {
+              b.y += sign * overlapY;
+            }
+          }
+        }
+      }
+    }
+
+    if (!hasCollision) break;
+  }
+}
+
 const cx = computed(() => viewportWidth.value / 2);
 const cy = computed(() => viewportHeight.value / 2);
+
+// 科学椭圆环轨：契合 16:9 宽屏及 224x64 矩形卡片物理几何，彻底告别内外圈撞车
+const orbitRings = computed(() => {
+  const count = props.assets.filter((asset) => asset.id != null).length;
+  if (!count) return [];
+
+  const ringCounts = count <= 5
+    ? [count]
+    : count <= 12
+      ? [Math.min(5, Math.ceil(count * 0.4)), count - Math.min(5, Math.ceil(count * 0.4))]
+      : [5, Math.min(10, count - 5), Math.max(0, count - 15)].filter((c) => c > 0);
+
+  const minRx0 = (HUB_W + CARD_W) / 2 + 56;
+  const minRy0 = (HUB_H + CARD_H) / 2 + 48;
+
+  let prevRx = 0;
+  let prevRy = 0;
+  let startIdx = 0;
+
+  return ringCounts.map((ringCount, index) => {
+    const chordRx = ringCount > 1
+      ? ((CARD_W + 36) * ringCount) / (2 * Math.PI)
+      : 0;
+    const chordRy = ringCount > 1
+      ? ((CARD_H + 28) * ringCount) / (2 * Math.PI)
+      : 0;
+
+    const rx = Math.max(
+      minRx0,
+      chordRx,
+      index > 0 ? prevRx + CARD_W + 52 : 0,
+    );
+    const ry = Math.max(
+      minRy0,
+      chordRy,
+      index > 0 ? prevRy + CARD_H + 56 : 0,
+    );
+
+    const angleOffset = (index % 2 === 1 ? Math.PI / Math.max(1, ringCount) : 0) - Math.PI / 2;
+
+    const ring = { rx, ry, count: ringCount, startIdx, angleOffset };
+    prevRx = rx;
+    prevRy = ry;
+    startIdx += ringCount;
+    return ring;
+  });
+});
 
 // 计算全部节点坐标与连线
 const layoutData = computed<{ nodes: LayoutNode[]; edges: LayoutEdge[] }>(() => {
   const q = searchQuery.value.trim().toLowerCase();
-  const allAssets = props.assets.filter((a) => a.id != null);
+  const allAssets = props.assets.filter((a) => a.id != null).sort((a, b) =>
+    parseHost(a.url).host.localeCompare(parseHost(b.url).host) || a.id! - b.id!,
+  );
   const nodes: LayoutNode[] = [];
   const edges: LayoutEdge[] = [];
 
   if (!allAssets.length) return { nodes, edges };
 
   const centerPoint = {
-    x: layoutMode.value === "orbit" ? cx.value : 180,
+    x: cx.value,
     y: cy.value,
   };
 
   if (layoutMode.value === "orbit") {
-    // 辐射环轨：拉大半径，确保 184px 卡片绝不互相遮挡
-    const count = allAssets.length;
-    let rings: Array<{ radius: number; count: number; startIdx: number }> = [];
-
-    if (count <= 6) {
-      rings = [{ radius: 240, count, startIdx: 0 }];
-    } else if (count <= 16) {
-      const inner = Math.min(6, Math.ceil(count * 0.4));
-      rings = [
-        { radius: 230, count: inner, startIdx: 0 },
-        { radius: 370, count: count - inner, startIdx: inner },
-      ];
-    } else {
-      const r1 = 6;
-      const r2 = 12;
-      rings = [
-        { radius: 230, count: Math.min(count, r1), startIdx: 0 },
-        { radius: 370, count: Math.min(Math.max(0, count - r1), r2), startIdx: r1 },
-        { radius: 510, count: Math.max(0, count - r1 - r2), startIdx: r1 + r2 },
-      ];
-    }
-
-    rings.forEach((ring, rIdx) => {
+    orbitRings.value.forEach((ring) => {
       const ringAssets = allAssets.slice(ring.startIdx, ring.startIdx + ring.count);
-      const angleOffset = (rIdx % 2 === 1 ? Math.PI / ring.count : 0) - Math.PI / 2;
 
       ringAssets.forEach((asset, idx) => {
-        const angle = angleOffset + (2 * Math.PI * idx) / Math.max(1, ring.count);
-        const autoX = centerPoint.x + ring.radius * Math.cos(angle);
-        const autoY = centerPoint.y + ring.radius * Math.sin(angle);
+        const angle = ring.angleOffset + (2 * Math.PI * idx) / Math.max(1, ring.count);
+        const autoX = centerPoint.x + ring.rx * Math.cos(angle);
+        const autoY = centerPoint.y + ring.ry * Math.sin(angle);
 
         const custom = customPositions.value[asset.id!];
         const nx = custom ? custom.x : autoX;
@@ -273,7 +391,9 @@ const layoutData = computed<{ nodes: LayoutNode[]; edges: LayoutEdge[] }>(() => 
           !q ||
           (asset.url || "").toLowerCase().includes(q) ||
           host.toLowerCase().includes(q) ||
-          badges.some((b) => b.toLowerCase().includes(q));
+          [asset.server, asset.framework, asset.wafName, ...badges].some((value) =>
+            typeof value === "string" && value.toLowerCase().includes(q),
+          );
 
         let isSpotlight = true;
         if (focusedDomain.value) {
@@ -300,30 +420,35 @@ const layoutData = computed<{ nodes: LayoutNode[]; edges: LayoutEdge[] }>(() => 
           isMatch,
           isSpotlight,
         });
+      });
+    });
 
-        // 精确计算连接线在中心卡片边界与目标卡片边界的交点，形成真实的物理插接！
-        const p1 = getRectIntersection(centerPoint.x, centerPoint.y, HUB_W, HUB_H, nx, ny);
-        const p2 = getRectIntersection(nx, ny, CARD_W, CARD_H, centerPoint.x, centerPoint.y);
+    // 运行防重叠碰撞松弛分离
+    resolveNodeCollisions(nodes, centerPoint, customPositions.value);
 
-        const midX = (p1.x + p2.x) / 2 + Math.sin(angle) * 12;
-        const midY = (p1.y + p2.y) / 2 - Math.cos(angle) * 12;
-        const path = `M ${p1.x} ${p1.y} Q ${midX} ${midY} ${p2.x} ${p2.y}`;
+    // 节点位置稳定确定后，精准计算物理插接连线
+    nodes.forEach((node) => {
+      const p1 = getRectIntersection(centerPoint.x, centerPoint.y, HUB_W, HUB_H, node.x, node.y);
+      const p2 = getRectIntersection(node.x, node.y, CARD_W, CARD_H, centerPoint.x, centerPoint.y);
+      const currentAngle = Math.atan2(node.y - centerPoint.y, node.x - centerPoint.x);
+      const midX = (p1.x + p2.x) / 2 + Math.sin(currentAngle) * 10;
+      const midY = (p1.y + p2.y) / 2 - Math.cos(currentAngle) * 10;
+      const path = `M ${p1.x} ${p1.y} Q ${midX} ${midY} ${p2.x} ${p2.y}`;
 
-        edges.push({
-          id: `edge-${asset.id}`,
-          sourceId: "hub",
-          targetId: asset.id!,
-          x1: p1.x,
-          y1: p1.y,
-          x2: p2.x,
-          y2: p2.y,
-          path,
-        });
+      edges.push({
+        id: `edge-${node.id}`,
+        sourceId: "hub",
+        targetId: node.id,
+        x1: p1.x,
+        y1: p1.y,
+        x2: p2.x,
+        y2: p2.y,
+        path,
       });
     });
   } else {
-    // 树状流向布局 (Hierarchical Tree)
-    const hubX = 180;
+    // 树状模式：严密贴合中心卡片两侧，保持上下充足间隙
+    const hubX = centerPoint.x;
     const hubY = centerPoint.y;
 
     const hostGroups = new Map<string, DiscoveryResult[]>();
@@ -333,16 +458,21 @@ const layoutData = computed<{ nodes: LayoutNode[]; edges: LayoutEdge[] }>(() => 
       hostGroups.get(h)!.push(a);
     });
 
-    const totalAssets = allAssets.length;
-    const verticalGap = Math.max(64, Math.min(90, 560 / Math.max(1, totalAssets)));
-    const startY = Math.max(80, hubY - (totalAssets * verticalGap) / 2 + 30);
+    const groupedAssets = Array.from(hostGroups.values()).flat();
+    const leftCount = Math.ceil(groupedAssets.length / 2);
+    const sideGroups = [groupedAssets.slice(0, leftCount), groupedAssets.slice(leftCount)];
+    const verticalGap = CARD_H + 20; // 严防垂直重叠，保底 20px 间距
+    const horizontalOffset = Math.max(
+      (HUB_W + CARD_W) / 2 + 96,
+      Math.min(380, (viewportWidth.value - CARD_W) / 2 - 48),
+    );
 
-    let currentY = startY;
-    Array.from(hostGroups.entries()).forEach(([, groupAssets]) => {
-      groupAssets.forEach((asset) => {
-        const autoX = hubX + 400;
-        const autoY = currentY;
-        currentY += verticalGap;
+    sideGroups.forEach((groupAssets, sideIndex) => {
+      const direction = sideIndex === 0 ? -1 : 1;
+      const startY = hubY - ((groupAssets.length - 1) * verticalGap) / 2;
+      groupAssets.forEach((asset, index) => {
+        const autoX = hubX + direction * horizontalOffset;
+        const autoY = startY + index * verticalGap;
 
         const custom = customPositions.value[asset.id!];
         const nx = custom ? custom.x : autoX;
@@ -355,7 +485,9 @@ const layoutData = computed<{ nodes: LayoutNode[]; edges: LayoutEdge[] }>(() => 
           !q ||
           (asset.url || "").toLowerCase().includes(q) ||
           host.toLowerCase().includes(q) ||
-          badges.some((b) => b.toLowerCase().includes(q));
+          [asset.server, asset.framework, asset.wafName, ...badges].some((value) =>
+            typeof value === "string" && value.toLowerCase().includes(q),
+          );
 
         let isSpotlight = true;
         if (focusedDomain.value) {
@@ -382,25 +514,31 @@ const layoutData = computed<{ nodes: LayoutNode[]; edges: LayoutEdge[] }>(() => 
           isMatch,
           isSpotlight,
         });
+      });
+    });
 
-        // 树状模式：严密贴合中心卡片右侧边缘中点与目标卡片左侧边缘中点！
-        const x1 = hubX + HUB_W / 2;
-        const y1 = hubY;
-        const x2 = nx - CARD_W / 2;
-        const y2 = ny;
-        const dx = x2 - x1;
-        const path = `M ${x1} ${y1} C ${x1 + dx * 0.45} ${y1}, ${x2 - dx * 0.45} ${y2}, ${x2} ${y2}`;
+    // 运行防重叠碰撞松弛分离
+    resolveNodeCollisions(nodes, centerPoint, customPositions.value);
 
-        edges.push({
-          id: `edge-${asset.id}`,
-          sourceId: "hub",
-          targetId: asset.id!,
-          x1,
-          y1,
-          x2,
-          y2,
-          path,
-        });
+    // 计算树状模式连接线
+    nodes.forEach((node) => {
+      const edgeDirection = node.x >= hubX ? 1 : -1;
+      const x1 = hubX + (edgeDirection * HUB_W) / 2;
+      const y1 = hubY;
+      const x2 = node.x - (edgeDirection * CARD_W) / 2;
+      const y2 = node.y;
+      const dx = x2 - x1;
+      const path = `M ${x1} ${y1} C ${x1 + dx * 0.45} ${y1}, ${x2 - dx * 0.45} ${y2}, ${x2} ${y2}`;
+
+      edges.push({
+        id: `edge-${node.id}`,
+        sourceId: "hub",
+        targetId: node.id,
+        x1,
+        y1,
+        x2,
+        y2,
+        path,
       });
     });
   }
@@ -408,45 +546,82 @@ const layoutData = computed<{ nodes: LayoutNode[]; edges: LayoutEdge[] }>(() => 
   return { nodes, edges };
 });
 
-// 鹰眼雷达取景框坐标与几何计算（与主画布视口精确同步）
-const minimapViewfinder = computed(() => {
-  const scale = 0.14;
-  const z = zoom.value || 1;
-  const sceneLeft = -pan.value.x / z;
-  const sceneTop = -pan.value.y / z;
-  const sceneWidth = viewportWidth.value / z;
-  const sceneHeight = viewportHeight.value / z;
+const matchedNodeIds = computed(() => new Set(
+  layoutData.value.nodes.filter((node) => node.isMatch).map((node) => node.id),
+));
 
-  const x = 100 + (sceneLeft - cx.value) * scale;
-  const y = 60 + (sceneTop - cy.value) * scale;
-  const width = Math.max(12, sceneWidth * scale);
-  const height = Math.max(8, sceneHeight * scale);
-
-  return { x, y, width, height };
+const sceneBounds = computed(() => {
+  const nodes = layoutData.value.nodes;
+  const left = Math.min(cx.value - HUB_W / 2, ...nodes.map((node) => node.x - CARD_W / 2));
+  const right = Math.max(cx.value + HUB_W / 2, ...nodes.map((node) => node.x + CARD_W / 2));
+  const top = Math.min(cy.value - HUB_H / 2, ...nodes.map((node) => node.y - CARD_H / 2));
+  const bottom = Math.max(cy.value + HUB_H / 2, ...nodes.map((node) => node.y + CARD_H / 2));
+  return { left, top, width: right - left, height: bottom - top };
 });
 
-// 缩放与平移操作
+const minimapTransform = computed(() => {
+  const bounds = sceneBounds.value;
+  const scale = Math.min(180 / bounds.width, 100 / bounds.height);
+  return {
+    scale,
+    x: 100 - (bounds.left + bounds.width / 2) * scale,
+    y: 60 - (bounds.top + bounds.height / 2) * scale,
+  };
+});
+
+const minimapViewfinder = computed(() => {
+  const map = minimapTransform.value;
+  return {
+    x: map.x - pan.value.x / zoom.value * map.scale,
+    y: map.y - pan.value.y / zoom.value * map.scale,
+    width: viewportWidth.value / zoom.value * map.scale,
+    height: viewportHeight.value / zoom.value * map.scale,
+  };
+});
+
+function setZoom(value: number, anchor = { x: cx.value, y: cy.value }) {
+  const nextZoom = Math.min(2.5, Math.max(0.1, value));
+  pan.value = {
+    x: anchor.x - (anchor.x - pan.value.x) / zoom.value * nextZoom,
+    y: anchor.y - (anchor.y - pan.value.y) / zoom.value * nextZoom,
+  };
+  zoom.value = nextZoom;
+}
+
 function zoomIn() {
-  zoom.value = Math.min(2.5, +(zoom.value + 0.15).toFixed(2));
+  setZoom(zoom.value + 0.15);
 }
 
 function zoomOut() {
-  zoom.value = Math.max(0.3, +(zoom.value - 0.15).toFixed(2));
+  setZoom(zoom.value - 0.15);
 }
 
-function resetView() {
-  zoom.value = 1;
-  pan.value = { x: 0, y: 0 };
+function fitView() {
+  const bounds = sceneBounds.value;
+  const scale = Math.min(
+    1,
+    Math.max(1, viewportWidth.value - 48) / bounds.width,
+    Math.max(1, viewportHeight.value - 88) / bounds.height,
+  );
+  zoom.value = scale;
+  pan.value = {
+    x: cx.value - (bounds.left + bounds.width / 2) * scale,
+    y: cy.value - 12 - (bounds.top + bounds.height / 2) * scale,
+  };
+}
+
+async function resetView() {
   customPositions.value = {};
-  focusedDomain.value = null;
-  spotlightFilter.value = null;
+  await nextTick();
+  fitView();
 }
 
 function onWheel(e: WheelEvent) {
   e.preventDefault();
+  const rect = canvasWrapRef.value?.getBoundingClientRect();
+  if (!rect) return;
   const delta = e.deltaY < 0 ? 0.08 : -0.08;
-  const newZoom = Math.min(2.5, Math.max(0.35, +(zoom.value + delta).toFixed(2)));
-  zoom.value = newZoom;
+  setZoom(zoom.value + delta, { x: e.clientX - rect.left, y: e.clientY - rect.top });
 }
 
 // 画布背景拖拽平移
@@ -476,6 +651,7 @@ function onNodeMouseDown(e: MouseEvent, node: LayoutNode) {
 // 全局鼠标移动
 function onGlobalMouseMove(e: MouseEvent) {
   if (draggingNodeId.value != null) {
+    if (!hasDragged.value && Math.hypot(e.clientX - nodeDragStart.value.clientX, e.clientY - nodeDragStart.value.clientY) < 3) return;
     hasDragged.value = true;
     const dx = (e.clientX - nodeDragStart.value.clientX) / zoom.value;
     const dy = (e.clientY - nodeDragStart.value.clientY) / zoom.value;
@@ -502,8 +678,8 @@ function onGlobalMouseUp() {
 }
 
 // 节点点击交互
-function handleNodeClick(node: LayoutNode) {
-  if (hasDragged.value) return;
+function handleNodeClick(node: LayoutNode, fromKeyboard = false) {
+  if (hasDragged.value && !fromKeyboard) return;
   selectedNodeId.value = node.id;
   drawerVisible.value = true;
 }
@@ -512,12 +688,12 @@ function handleNodeClick(node: LayoutNode) {
 function onNodeContextMenu(e: MouseEvent, node: LayoutNode) {
   e.preventDefault();
   e.stopPropagation();
-  if (!containerRef.value) return;
-  const rect = containerRef.value.getBoundingClientRect();
+  if (!canvasWrapRef.value) return;
+  const rect = canvasWrapRef.value.getBoundingClientRect();
   contextMenu.value = {
     visible: true,
-    x: e.clientX - rect.left,
-    y: e.clientY - rect.top,
+    x: Math.max(8, Math.min(e.clientX - rect.left, rect.width - 220)),
+    y: Math.max(8, Math.min(e.clientY - rect.top, rect.height - 240)),
     node,
   };
 }
@@ -549,47 +725,53 @@ function toggleSpotlight(type: string) {
   }
 }
 
-// 触发声呐雷达探测脉冲动画
-function triggerSonarScan() {
-  if (isSonarScanning.value) return;
-  isSonarScanning.value = true;
-  ElMessage.success("正在向资产拓扑广播探测脉冲…");
-  setTimeout(() => {
-    isSonarScanning.value = false;
-  }, 2600);
-}
-
 // 导出拓扑为高清图片
 async function exportTopologyImage() {
   if (!svgRef.value) return;
+  let objectUrl: string | undefined;
   try {
     const svgEl = svgRef.value;
-    const svgData = new XMLSerializer().serializeToString(svgEl);
-    const svgBlob = new Blob([svgData], { type: "image/svg+xml;charset=utf-8" });
-    const url = URL.createObjectURL(svgBlob);
-
-    const img = new Image();
-    img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = viewportWidth.value * 2;
-      canvas.height = viewportHeight.value * 2;
-      const ctx = canvas.getContext("2d");
-      if (ctx) {
-        ctx.scale(2, 2);
-        ctx.fillStyle = "#ffffff";
-        ctx.fillRect(0, 0, viewportWidth.value, viewportHeight.value);
-        ctx.drawImage(img, 0, 0);
-        const a = document.createElement("a");
-        a.download = `资产拓扑-${props.hubLabel}-${Date.now()}.png`;
-        a.href = canvas.toDataURL("image/png");
-        a.click();
-        URL.revokeObjectURL(url);
-        ElMessage.success("已导出拓扑高清图片");
+    const exportedSvg = svgEl.cloneNode(true) as SVGSVGElement;
+    const originals = [svgEl, ...svgEl.querySelectorAll("*")];
+    const copies = [exportedSvg, ...exportedSvg.querySelectorAll("*")];
+    const styleProperties = [
+      "fill", "fill-opacity", "stroke", "stroke-width", "stroke-opacity",
+      "stroke-linecap", "stroke-dasharray", "opacity", "font-family",
+      "font-size", "font-weight", "letter-spacing", "text-anchor",
+    ];
+    // Standalone SVG images cannot inherit the page's scoped styles or theme variables.
+    originals.forEach((original, index) => {
+      const style = getComputedStyle(original);
+      const copy = copies[index] as SVGElement;
+      for (const property of styleProperties) {
+        const value = style.getPropertyValue(property);
+        if (!value.includes("url(")) copy.style.setProperty(property, value);
       }
-    };
-    img.src = url;
+    });
+    const svgData = new XMLSerializer().serializeToString(exportedSvg);
+    const svgBlob = new Blob([svgData], { type: "image/svg+xml;charset=utf-8" });
+    objectUrl = URL.createObjectURL(svgBlob);
+    const img = new Image();
+    img.src = objectUrl;
+    await img.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = viewportWidth.value * 2;
+    canvas.height = viewportHeight.value * 2;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas unavailable");
+    ctx.scale(2, 2);
+    ctx.fillStyle = getComputedStyle(containerRef.value!).backgroundColor;
+    ctx.fillRect(0, 0, viewportWidth.value, viewportHeight.value);
+    ctx.drawImage(img, 0, 0);
+    const a = document.createElement("a");
+    a.download = `资产拓扑-${props.hubLabel}-${Date.now()}.png`;
+    a.href = canvas.toDataURL("image/png");
+    a.click();
+    ElMessage.success("已导出拓扑图片");
   } catch {
     ElMessage.error("导出图片失败");
+  } finally {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
   }
 }
 
@@ -615,7 +797,7 @@ async function confirmRemoveNode(id: number, hostName?: string) {
     }
     emit("change");
   } catch (err: any) {
-    if (err !== "cancel") {
+    if (err !== "cancel" && err !== "close") {
       ElMessage.error(err?.response?.data?.message || err?.message || "删除失败");
     }
   }
@@ -633,44 +815,155 @@ async function copyUrl(url?: string) {
   }
 }
 
-// 全屏切换
-function toggleFullscreen() {
-  if (!containerRef.value) return;
-  if (!document.fullscreenElement) {
-    containerRef.value.requestFullscreen?.().catch(() => {});
-    isFullscreen.value = true;
-  } else {
-    document.exitFullscreen?.().catch(() => {});
-    isFullscreen.value = false;
+// 规范化外部资产 URL (自动补全缺省协议，防止相对路由解析错误)
+function normalizeAssetUrl(url?: string): string {
+  if (!url) return "";
+  const trimmed = url.trim();
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed;
   }
+  return `http://${trimmed}`;
+}
+
+// 在新窗口/系统默认外部浏览器打开资产
+async function openAssetInNewWindow(url?: string) {
+  closeContextMenu();
+  if (!url) return;
+  const targetUrl = normalizeAssetUrl(url);
+  try {
+    const desktop = (window as any).toolboxDesktop;
+    if (desktop?.openExternal) {
+      const opened = await desktop.openExternal(targetUrl);
+      if (opened) return;
+    }
+  } catch {
+    // fallback
+  }
+  window.open(targetUrl, "_blank", "noopener,noreferrer");
+}
+
+// 格式化证据 JSON
+function formatEvidence(evidence: unknown): string {
+  if (!evidence) return "";
+  if (typeof evidence === "string") {
+    try {
+      const parsed = JSON.parse(evidence);
+      return JSON.stringify(parsed, null, 2);
+    } catch {
+      return evidence;
+    }
+  }
+  return JSON.stringify(evidence, null, 2);
+}
+
+interface FingerprintItem {
+  id?: string;
+  name?: string;
+  category?: string;
+  confidence?: number;
+  evidence?: string[];
+}
+
+interface ParsedEvidence {
+  title?: string;
+  status?: number | string;
+  ruleCatalog?: {
+    version?: string;
+    ruleCount?: number;
+  };
+  fingerprints?: FingerprintItem[];
+  headers?: string[];
+}
+
+const parsedEvidence = computed<ParsedEvidence | null>(() => {
+  const raw = selectedAsset.value?.evidence || selectedAsset.value?.technologies;
+  if (!raw) return null;
+  if (typeof raw === "object") return raw as ParsedEvidence;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") return parsed as ParsedEvidence;
+  } catch {
+    return null;
+  }
+  return null;
+});
+
+async function copyEvidence() {
+  const raw = selectedAsset.value?.evidence || selectedAsset.value?.technologies;
+  if (!raw) return;
+  const text = formatEvidence(raw);
+  try {
+    await navigator.clipboard.writeText(text);
+    ElMessage.success("已复制证据数据");
+  } catch {
+    ElMessage.error("复制失败，请手动复制");
+  }
+}
+
+// 全屏切换
+async function toggleFullscreen() {
+  if (!containerRef.value) return;
+  try {
+    if (!document.fullscreenElement) await containerRef.value.requestFullscreen();
+    else await document.exitFullscreen();
+  } catch {
+    ElMessage.error("无法切换全屏视图");
+  }
+}
+
+function onFullscreenChange() {
+  isFullscreen.value = document.fullscreenElement === containerRef.value;
 }
 
 // 监听容器尺寸
 function updateContainerSize() {
-  if (containerRef.value) {
-    viewportWidth.value = Math.max(760, containerRef.value.clientWidth);
-    viewportHeight.value = Math.max(560, containerRef.value.clientHeight);
+  if (canvasWrapRef.value) {
+    viewportWidth.value = Math.max(1, canvasWrapRef.value.clientWidth);
+    viewportHeight.value = Math.max(1, canvasWrapRef.value.clientHeight);
   }
 }
 
 let resizeObserver: ResizeObserver | null = null;
+watch([viewportWidth, viewportHeight], fitView, { flush: "post" });
+watch(layoutMode, resetView);
+watch(() => props.projectId, () => {
+  selectedNodeId.value = null;
+  hoveredNodeId.value = null;
+  drawerVisible.value = false;
+  searchQuery.value = "";
+  spotlightFilter.value = null;
+  focusedDomain.value = null;
+  closeContextMenu();
+  void resetView();
+});
+watch(() => props.assets.map((asset) => asset.id).join(","), () => {
+  if (!props.assets.some((asset) => asset.id === selectedNodeId.value)) {
+    selectedNodeId.value = null;
+    drawerVisible.value = false;
+  }
+  void resetView();
+}, { flush: "post" });
+
 onMounted(() => {
   updateContainerSize();
-  if (containerRef.value && window.ResizeObserver) {
+  if (canvasWrapRef.value && window.ResizeObserver) {
     resizeObserver = new ResizeObserver(() => {
       updateContainerSize();
     });
-    resizeObserver.observe(containerRef.value);
+    resizeObserver.observe(canvasWrapRef.value);
   }
-  document.addEventListener("fullscreenchange", () => {
-    isFullscreen.value = !!document.fullscreenElement;
-  });
+  document.addEventListener("fullscreenchange", onFullscreenChange);
+  document.addEventListener("mousemove", onGlobalMouseMove);
+  document.addEventListener("mouseup", onGlobalMouseUp);
 });
 
 onUnmounted(() => {
   if (resizeObserver) {
     resizeObserver.disconnect();
   }
+  document.removeEventListener("fullscreenchange", onFullscreenChange);
+  document.removeEventListener("mousemove", onGlobalMouseMove);
+  document.removeEventListener("mouseup", onGlobalMouseUp);
 });
 </script>
 
@@ -684,52 +977,56 @@ onUnmounted(() => {
     <!-- 顶部 Fluent CommandBar 控制栏 -->
     <header class="topology-toolbar fluent-command-bar">
       <div class="toolbar-left">
-        <!-- 统计与聚光灯聚焦胶囊条 -->
+        <!-- 统计与聚光灯聚焦胶囊条 (Fluent 2 Filter Chips) -->
         <div class="stats-pills">
-          <div
-            class="stat-pill fluent-pill"
+          <button
+            type="button"
+            class="stat-pill fluent-chip"
             :class="{ active: spotlightFilter === null && !focusedDomain }"
-            title="点击重置为全量视角"
+            :aria-pressed="spotlightFilter === null && !focusedDomain"
             @click="spotlightFilter = null; focusedDomain = null"
           >
             <span class="stat-dot dot-accent" />
             <span class="stat-label">全部资产</span>
-            <span class="stat-value">{{ stats.total }}</span>
-          </div>
+            <span class="stat-badge">{{ stats.total }}</span>
+          </button>
 
-          <div
-            class="stat-pill fluent-pill"
+          <button
+            type="button"
+            class="stat-pill fluent-chip"
             :class="{ active: spotlightFilter === 'https' }"
-            title="聚光灯高亮 HTTPS 资产"
+            :aria-pressed="spotlightFilter === 'https'"
             @click="toggleSpotlight('https')"
           >
             <span class="stat-dot dot-success" />
             <span class="stat-label">HTTPS</span>
-            <span class="stat-value">{{ stats.httpsCount }}</span>
-          </div>
+            <span class="stat-badge badge-success">{{ stats.httpsCount }}</span>
+          </button>
 
-          <div
-            class="stat-pill fluent-pill"
+          <button
+            type="button"
+            class="stat-pill fluent-chip"
             :class="{ active: spotlightFilter === 'http' }"
-            title="聚光灯高亮 HTTP 资产"
+            :aria-pressed="spotlightFilter === 'http'"
             @click="toggleSpotlight('http')"
           >
             <span class="stat-dot dot-info" />
             <span class="stat-label">HTTP</span>
-            <span class="stat-value">{{ stats.httpCount }}</span>
-          </div>
+            <span class="stat-badge badge-info">{{ stats.httpCount }}</span>
+          </button>
 
-          <div
+          <button
+            type="button"
             v-if="stats.wafCount > 0"
-            class="stat-pill fluent-pill"
+            class="stat-pill fluent-chip"
             :class="{ active: spotlightFilter === 'waf' }"
-            title="聚光灯高亮 WAF 保护目标"
+            :aria-pressed="spotlightFilter === 'waf'"
             @click="toggleSpotlight('waf')"
           >
             <span class="stat-dot dot-warning" />
-            <span class="stat-label">WAF防护</span>
-            <span class="stat-value">{{ stats.wafCount }}</span>
-          </div>
+            <span class="stat-label">WAF</span>
+            <span class="stat-badge badge-warning">{{ stats.wafCount }}</span>
+          </button>
 
           <el-tag
             v-if="focusedDomain"
@@ -741,12 +1038,17 @@ onUnmounted(() => {
             聚焦主域: {{ focusedDomain }}
           </el-tag>
         </div>
+        <div class="host-meta-badge" title="当前拓扑覆盖独立主机数">
+          <FluentIcon name="server" :size="12" />
+          <span>{{ stats.uniqueHosts }} 个主机</span>
+        </div>
       </div>
 
       <div class="toolbar-center">
         <el-input
           v-model="searchQuery"
-          placeholder="搜索域名/服务/技术栈..."
+          placeholder="搜索域名、服务或技术栈"
+          aria-label="搜索资产"
           clearable
           size="small"
           class="topology-search-input fluent-input"
@@ -758,76 +1060,58 @@ onUnmounted(() => {
       </div>
 
       <div class="toolbar-right">
-        <!-- 布局模式切换 -->
-        <el-radio-group v-model="layoutMode" size="small" class="mode-switch fluent-segmented">
-          <el-radio-button value="orbit">
-            <span class="btn-inner"><FluentIcon name="globe" :size="13" /> 环轨</span>
-          </el-radio-button>
-          <el-radio-button value="tree">
-            <span class="btn-inner"><FluentIcon name="branch-fork" :size="13" /> 树状</span>
-          </el-radio-button>
-        </el-radio-group>
-
-        <!-- 声呐探测脉冲 -->
-        <el-tooltip content="发射声呐雷达探测脉冲" placement="top">
+        <!-- Fluent 2 标准分段控件 (Segmented Control) -->
+        <div class="fluent-segmented-control" role="tablist" aria-label="布局模式">
           <button
-            class="fluent-command-btn sonar-btn"
-            :class="{ active: isSonarScanning }"
-            @click="triggerSonarScan"
+            type="button"
+            role="tab"
+            class="segmented-item"
+            :class="{ 'is-active': layoutMode === 'tree' }"
+            :aria-selected="layoutMode === 'tree'"
+            title="树状拓扑布局"
+            @click="layoutMode = 'tree'"
           >
-            <FluentIcon name="rocket" :size="14" />
+            <FluentIcon name="branch-fork" :size="13" />
+            <span>树状</span>
           </button>
-        </el-tooltip>
-
-        <!-- 动效流光开关 -->
-        <el-tooltip content="流光光效" placement="top">
           <button
-            class="fluent-command-btn"
-            :class="{ active: enableFlowAnim }"
-            @click="enableFlowAnim = !enableFlowAnim"
+            type="button"
+            role="tab"
+            class="segmented-item"
+            :class="{ 'is-active': layoutMode === 'orbit' }"
+            :aria-selected="layoutMode === 'orbit'"
+            title="环轨拓扑布局"
+            @click="layoutMode = 'orbit'"
           >
-            <FluentIcon name="sparkle" :size="14" />
-          </button>
-        </el-tooltip>
-
-        <div class="divider-v" />
-
-        <!-- 缩放控制 -->
-        <div class="zoom-controls fluent-zoom-box">
-          <button class="fluent-command-btn compact" title="缩小" @click="zoomOut">
-            <FluentIcon name="subtract" :size="13" />
-          </button>
-          <span class="zoom-level">{{ Math.round(zoom * 100) }}%</span>
-          <button class="fluent-command-btn compact" title="放大" @click="zoomIn">
-            <FluentIcon name="add" :size="13" />
-          </button>
-          <button class="fluent-command-btn compact" title="自适应居中" @click="resetView">
-            <FluentIcon name="fit" :size="14" />
+            <FluentIcon name="globe" :size="13" />
+            <span>环轨</span>
           </button>
         </div>
 
-        <!-- 小地图切换 -->
-        <el-tooltip content="显示/隐藏雷达小地图" placement="top">
-          <button
-            class="fluent-command-btn"
-            :class="{ active: showMinimap }"
-            @click="showMinimap = !showMinimap"
-          >
-            <FluentIcon name="map" :size="14" />
-          </button>
-        </el-tooltip>
-
-        <!-- 导出图片 -->
-        <el-tooltip content="导出拓扑高清图 (PNG)" placement="top">
-          <button class="fluent-command-btn" @click="exportTopologyImage">
-            <FluentIcon name="arrow-download" :size="14" />
-          </button>
-        </el-tooltip>
+        <el-popover placement="bottom-end" :width="208" trigger="click" :teleported="!isFullscreen">
+          <template #reference>
+            <button class="fluent-command-btn" title="视图选项" aria-label="视图选项">
+              <FluentIcon name="settings" />
+            </button>
+          </template>
+          <div class="view-options">
+            <el-checkbox v-model="enableFlowAnim">连接动画</el-checkbox>
+            <el-checkbox v-model="showMinimap">显示缩略图</el-checkbox>
+            <div class="menu-divider" />
+            <button class="view-option-action" @click="resetView">
+              <FluentIcon name="arrow-reset" /> 重置节点位置
+            </button>
+            <button class="view-option-action" :disabled="!assets.length" @click="exportTopologyImage">
+              <FluentIcon name="arrow-download" /> 导出 PNG
+            </button>
+          </div>
+        </el-popover>
 
         <!-- 全屏模式 -->
         <button
           class="fluent-command-btn"
           :title="isFullscreen ? '退出全屏' : '全屏模式'"
+          :aria-label="isFullscreen ? '退出全屏' : '全屏模式'"
           @click="toggleFullscreen"
         >
           <FluentIcon :name="isFullscreen ? 'fullscreen-exit' : 'fullscreen'" :size="14" />
@@ -837,6 +1121,7 @@ onUnmounted(() => {
 
     <!-- 主画布区域 -->
     <div
+      ref="canvasWrapRef"
       class="topology-canvas-wrap"
       :class="{
         'cursor-grab': !isDraggingCanvas && draggingNodeId == null,
@@ -844,15 +1129,12 @@ onUnmounted(() => {
       }"
       @wheel="onWheel"
       @mousedown="onCanvasMouseDown"
-      @mousemove="onGlobalMouseMove"
-      @mouseup="onGlobalMouseUp"
-      @mouseleave="onGlobalMouseUp"
-      @dblclick="resetView"
+      @dblclick="fitView"
     >
       <!-- 加载遮罩 -->
       <div v-if="loading" class="topology-state-overlay">
-        <el-icon class="is-loading" :size="24"><FluentIcon name="arrow-sync" /></el-icon>
-        <span class="state-copy">正在加载安全资产拓扑…</span>
+        <el-icon class="is-loading" :size="24"><FluentIcon name="arrow-clockwise" /></el-icon>
+        <span class="state-copy">正在加载资产…</span>
       </div>
 
       <!-- 空数据提示 -->
@@ -861,7 +1143,7 @@ onUnmounted(() => {
           <FluentIcon name="globe-search" :size="36" />
         </div>
         <h4>暂无资产节点</h4>
-        <p>运行资产探测或 ZAP 爬虫任务后，发现的 Web 目标与服务将自动在此构建拓扑。</p>
+        <p>当前项目暂无资产记录</p>
       </div>
 
       <!-- SVG 拓扑网络画布 -->
@@ -880,33 +1162,47 @@ onUnmounted(() => {
             height="24"
             patternUnits="userSpaceOnUse"
           >
-            <circle cx="12" cy="12" r="1.2" fill="var(--app-border, #cbd5e1)" opacity="0.75" />
+            <circle cx="12" cy="12" r="0.8" fill="var(--app-border, #d8dadd)" opacity="0.45" />
           </pattern>
 
-          <!-- 柔和阴影滤镜 -->
-          <filter id="fluentCardShadow" x="-10%" y="-10%" width="120%" height="130%">
-            <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.08" />
+          <!-- 现代卡片微阴影 -->
+          <filter id="nodeCardShadow" x="-15%" y="-20%" width="130%" height="150%">
+            <feDropShadow dx="0" dy="1.5" stdDeviation="3" flood-color="#0f172a" flood-opacity="0.06" />
           </filter>
 
-          <filter id="fluentHubShadow" x="-20%" y="-20%" width="140%" height="150%">
-            <feDropShadow dx="0" dy="4" stdDeviation="10" flood-color="var(--app-accent, #0078d4)" flood-opacity="0.22" />
+          <!-- 节点选中态柔和微光光晕阴影 (Fluent Selection Halo) -->
+          <filter id="nodeCardSelectedShadow" x="-25%" y="-30%" width="150%" height="170%">
+            <feDropShadow dx="0" dy="2" stdDeviation="5" flood-color="#0078d4" flood-opacity="0.22" />
+            <feDropShadow dx="0" dy="1" stdDeviation="1.5" flood-color="#0f172a" flood-opacity="0.08" />
           </filter>
 
-          <!-- 连线动态渐变 -->
-          <linearGradient id="linkGradient" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%" stop-color="var(--app-accent, #0078d4)" stop-opacity="0.7" />
-            <stop offset="50%" stop-color="var(--app-accent-soft-strong, #60a5fa)" stop-opacity="0.5" />
-            <stop offset="100%" stop-color="var(--app-accent, #0078d4)" stop-opacity="0.25" />
+          <!-- 中心指挥核心深邃立体阴影 -->
+          <filter id="hubCardShadow" x="-20%" y="-25%" width="140%" height="160%">
+            <feDropShadow dx="0" dy="3" stdDeviation="7" flood-color="#0078d4" flood-opacity="0.16" />
+            <feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#0f172a" flood-opacity="0.06" />
+          </filter>
+
+          <!-- 中心节点品牌徽章渐变 -->
+          <linearGradient id="hubIconGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#0086f0" />
+            <stop offset="100%" stop-color="#0067b8" />
           </linearGradient>
 
-          <!-- 高亮连线渐变 -->
-          <linearGradient id="linkHighlight" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%" stop-color="var(--app-accent, #0078d4)" stop-opacity="1" />
-            <stop offset="100%" stop-color="#00b7c3" stop-opacity="0.9" />
+          <!-- HTTPS 绿色品牌渐变 -->
+          <linearGradient id="httpsGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#168b48" />
+            <stop offset="100%" stop-color="#0f6d37" />
+          </linearGradient>
+
+          <!-- HTTP 蓝色品牌渐变 -->
+          <linearGradient id="httpGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#2d8fd5" />
+            <stop offset="100%" stop-color="#1867a5" />
           </linearGradient>
         </defs>
 
-        <!-- 底层网格背景 -->
+        <!-- 底层实心纯色背景与网格点阵 (杜绝全屏下透出底层暗色) -->
+        <rect width="100%" height="100%" fill="var(--app-surface-strong, #ffffff)" pointer-events="none" />
         <rect width="100%" height="100%" fill="url(#dotGrid)" pointer-events="none" />
 
         <!-- 缩放与平移视口容器 -->
@@ -914,22 +1210,18 @@ onUnmounted(() => {
           class="topology-scene"
           :transform="`translate(${pan.x}, ${pan.y}) scale(${zoom})`"
         >
-          <!-- 轨道环背景线 (仅辐射模式展示) -->
-          <g v-if="layoutMode === 'orbit'" class="orbit-rings" pointer-events="none">
-            <circle :cx="cx" :cy="cy" r="230" class="orbit-circle" />
-            <circle v-if="assets.length > 6" :cx="cx" :cy="cy" r="370" class="orbit-circle dashed" />
-            <circle v-if="assets.length > 16" :cx="cx" :cy="cy" r="510" class="orbit-circle dashed" />
-          </g>
-
-          <!-- 声呐雷达扫描扩散波 -->
-          <g
-            v-if="isSonarScanning"
-            :transform="`translate(${layoutMode === 'orbit' ? cx : 180}, ${cy})`"
-            pointer-events="none"
-          >
-            <circle cx="0" cy="0" r="10" class="sonar-wave wave-1" />
-            <circle cx="0" cy="0" r="10" class="sonar-wave wave-2" />
-            <circle cx="0" cy="0" r="10" class="sonar-wave wave-3" />
+          <!-- 环轨背景同心线 (仅在环轨模式展示，提供优雅纵深感) -->
+          <g v-if="layoutMode === 'orbit'" class="orbit-rings-layer" pointer-events="none">
+            <ellipse
+              v-for="(ring, rIdx) in orbitRings"
+              :key="`ring-${rIdx}`"
+              :cx="cx"
+              :cy="cy"
+              :rx="ring.rx"
+              :ry="ring.ry"
+              class="orbit-guide-circle"
+              :class="{ 'is-dashed': rIdx > 0 }"
+            />
           </g>
 
           <!-- ==================== 图层 1: 连线图层 (真实端点物理接驳) ==================== -->
@@ -942,34 +1234,32 @@ onUnmounted(() => {
                 'is-hovered': hoveredNodeId === edge.targetId,
                 'is-selected': selectedNodeId === edge.targetId,
                 'is-flowing': enableFlowAnim,
-                'is-sonar-active': isSonarScanning,
+                'is-dimmed': !matchedNodeIds.has(edge.targetId),
               }"
             >
               <!-- 基础连线与光效连线 -->
               <path :d="edge.path" class="edge-base-line" />
-              <path :d="edge.path" class="edge-flow-line" />
+              <path v-if="enableFlowAnim" :d="edge.path" class="edge-flow-line" />
 
               <!-- 起止物理接驳端点 (Connection Ports)，消除假连感！ -->
-              <circle :cx="edge.x1" :cy="edge.y1" r="2.5" class="edge-port-dot port-source" />
               <circle :cx="edge.x2" :cy="edge.y2" r="3" class="edge-port-dot port-target" />
             </g>
           </g>
 
           <!-- ==================== 图层 2: 中心项目核心 (Fluent Command Hub Card) ==================== -->
-          <!-- 彻底告别丑陋圆球，采用现代 Fluent 宽幅指挥核心卡片，文字绝对清晰不挡！ -->
           <g
             class="topology-hub-node"
-            :transform="`translate(${layoutMode === 'orbit' ? cx : 180}, ${cy})`"
+            :transform="`translate(${cx}, ${cy})`"
             @mouseenter="hoveredNodeId = null"
           >
-            <!-- 外层呼吸微光光环 (必须 pointer-events="none"，防止抖动抽搐) -->
+            <!-- 外部柔和呼吸微光光晕 -->
             <rect
-              :x="-HUB_W / 2 - 8"
-              :y="-HUB_H / 2 - 8"
-              :width="HUB_W + 16"
-              :height="HUB_H + 16"
-              rx="12"
-              class="hub-glow-halo"
+              :x="-HUB_W / 2 - 3"
+              :y="-HUB_H / 2 - 3"
+              :width="HUB_W + 6"
+              :height="HUB_H + 6"
+              rx="10"
+              class="hub-card-halo"
               pointer-events="none"
             />
 
@@ -981,38 +1271,42 @@ onUnmounted(() => {
               :height="HUB_H"
               rx="8"
               class="hub-card-bg"
-              filter="url(#fluentHubShadow)"
+              filter="url(#hubCardShadow)"
             />
 
-            <!-- 左侧品牌色图标底座 (36x36 圆角小块) -->
-            <g :transform="`translate(${-HUB_W / 2 + 12}, ${-18})`" pointer-events="none">
+            <!-- 左侧品牌色图标底座 (36x36 渐变圆角底座) -->
+            <g :transform="`translate(${-HUB_W / 2 + 12}, -18)`" pointer-events="none">
               <rect
                 x="0"
                 y="0"
                 width="36"
                 height="36"
-                rx="6"
+                rx="8"
                 class="hub-icon-base"
+                fill="url(#hubIconGrad)"
               />
-              <!-- Fluent 安全盾牌图标 -->
-              <path
-                d="M18 7L8 11V18C8 23.5 12.2 28.5 18 30C23.8 28.5 28 23.5 28 18V11L18 7Z"
-                fill="#ffffff"
-              />
+              <!-- 微软官方 Fluent System Icon: shield_24_filled -->
+              <svg x="6" y="6" width="24" height="24" viewBox="0 0 24 24">
+                <path
+                  d="M3 5.75c0-.41.34-.75.75-.75 2.66 0 5.26-.94 7.8-2.85.27-.2.63-.2.9 0C14.99 4.05 17.59 5 20.25 5c.41 0 .75.34.75.75V11c0 5-2.96 8.68-8.73 10.95a.75.75 0 0 1-.54 0C5.96 19.68 3 16 3 11V5.75Z"
+                  fill="#ffffff"
+                />
+              </svg>
             </g>
 
-            <!-- 右侧文字区域：垂直分层，字阶疏朗，绝对不会互相遮挡！ -->
+            <!-- 右侧文字区域：垂直分层，字阶疏朗 -->
             <g :transform="`translate(${-HUB_W / 2 + 58}, 0)`" pointer-events="none">
-              <!-- 第一行：项目名称 (完整清晰展示) -->
-              <text y="-4" class="hub-title-text" text-anchor="start">
-                {{ hubLabel }}
+              <title>{{ hubLabel }}</title>
+              <!-- 第一行：项目名称 -->
+              <text y="-5" class="hub-title-text" text-anchor="start">
+                {{ compactLabel(hubLabel, 18) }}
               </text>
 
               <!-- 第二行：状态微标与资产计数 -->
               <g transform="translate(0, 15)">
-                <circle cx="4" cy="-3" r="3" class="hub-status-dot" />
-                <text x="12" y="0" class="hub-subtitle-text" text-anchor="start">
-                  测绘中心 · {{ assets.length }} 资产
+                <circle cx="4" cy="-3.5" r="3.5" class="hub-status-dot" />
+                <text x="13" y="0" class="hub-subtitle-text" text-anchor="start">
+                  {{ assets.length }} 资产 · {{ stats.uniqueHosts }} 主机
                 </text>
               </g>
             </g>
@@ -1028,91 +1322,116 @@ onUnmounted(() => {
                 'is-dimmed': !node.isMatch,
                 'is-hovered': hoveredNodeId === node.id,
                 'is-selected': selectedNodeId === node.id,
-                'is-sonar-pinged': isSonarScanning,
                 'is-custom-dragged': customPositions[node.id] != null,
               }"
+              role="button"
+              tabindex="0"
+              :aria-label="node.asset.url || node.host"
               :transform="`translate(${node.x}, ${node.y})`"
               @mouseenter="hoveredNodeId = node.id"
               @mouseleave="hoveredNodeId = null"
               @mousedown="onNodeMouseDown($event, node)"
               @click.stop="handleNodeClick(node)"
+              @keydown.enter.prevent="handleNodeClick(node, true)"
+              @keydown.space.prevent="handleNodeClick(node, true)"
               @contextmenu="onNodeContextMenu($event, node)"
             >
-              <!-- 实心卡片背景 (不透明实心遮盖底层连线，确保文字绝无穿透干扰) -->
+              <title>{{ node.asset.url || node.host }}</title>
+              <!-- 实心卡片背景 (立体浮起微投影，选中态使用 Fluent 光晕) -->
               <rect
                 :x="-CARD_W / 2"
                 :y="-CARD_H / 2"
                 :width="CARD_W"
                 :height="CARD_H"
-                rx="6"
+                rx="8"
                 class="node-card-bg"
-                filter="url(#fluentCardShadow)"
+                :filter="selectedNodeId === node.id ? 'url(#nodeCardSelectedShadow)' : 'url(#nodeCardShadow)'"
               />
 
-              <!-- Fluent 3 标准 Selection Slider (宽 3px，高度居中 24px，圆角胶囊状) -->
-              <rect
-                :x="-CARD_W / 2"
-                :y="-12"
-                width="3"
-                height="24"
-                rx="1.5"
-                class="node-selection-slider"
-              />
-
-              <!-- 自定义手动拖拽后的微指示器 -->
+              <!-- 自定义位置图钉指示微点 -->
               <circle
-                v-if="customPositions[node.id]"
-                :cx="CARD_W / 2 - 8"
-                :cy="-CARD_H / 2 + 8"
+                v-if="customPositions[node.id] != null"
+                :cx="CARD_W / 2 - 10"
+                :cy="-CARD_H / 2 + 10"
                 r="3"
-                fill="var(--app-accent, #0078d4)"
-              />
+                class="node-pinned-indicator"
+              >
+                <title>已自定义摆放位置</title>
+              </circle>
 
-              <!-- 左侧协议微图标区 (24x24 Fluent 风格小盒) -->
-              <g :transform="`translate(${-CARD_W / 2 + 12}, ${-12})`">
+              <!-- 左侧协议微图标区 (官方 @fluentui/svg-icons 系统图标) -->
+              <g :transform="`translate(${-CARD_W / 2 + 12}, -14)`">
                 <rect
                   x="0"
                   y="0"
-                  width="24"
-                  height="24"
-                  rx="4"
+                  width="28"
+                  height="28"
+                  rx="6"
                   :class="['node-icon-box', `box-${node.protocol}`]"
                 />
-                <!-- 内部状态指示小点 -->
-                <circle cx="12" cy="12" r="3.5" fill="#ffffff" />
+                <!-- HTTPS: 官方 lock_closed_24_regular 矢量图标 -->
+                <svg
+                  v-if="node.protocol === 'https'"
+                  x="5"
+                  y="5"
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  class="icon-glyph-https"
+                >
+                  <path
+                    d="M12 1a5 5 0 0 1 5 5v2.01c1.68.13 3 1.53 3 3.24v7.5c0 1.8-1.46 3.25-3.25 3.25h-9.5A3.25 3.25 0 0 1 4 18.75v-7.5a3.25 3.25 0 0 1 3-3.24V6a5 5 0 0 1 5-5ZM7.25 9.5c-.97 0-1.75.78-1.75 1.75v7.5c0 .97.78 1.75 1.75 1.75h9.5c.97 0 1.75-.78 1.75-1.75v-7.5c0-.97-.78-1.75-1.75-1.75h-9.5ZM12 13.75a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5ZM12 2.5A3.5 3.5 0 0 0 8.5 6v2h7V6A3.5 3.5 0 0 0 12 2.5Z"
+                    class="glyph-fill"
+                  />
+                </svg>
+                <!-- HTTP: 官方 globe_24_regular 矢量图标 (彻底废除无语义实心白圆点) -->
+                <svg
+                  v-else
+                  x="5"
+                  y="5"
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  class="icon-glyph-http"
+                >
+                  <path
+                    d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20Zm2.94 14.5H9.06c.65 2.41 1.79 4 2.94 4s2.29-1.59 2.94-4Zm-7.43 0H4.79a8.53 8.53 0 0 0 4.09 3.41c-.52-.82-.95-1.85-1.27-3.02l-.1-.39Zm11.7 0H16.5c-.32 1.33-.79 2.5-1.37 3.41a8.53 8.53 0 0 0 3.9-3.13l.2-.28ZM7.1 10H3.74v.02a8.52 8.52 0 0 0 .3 4.98h3.18a20.3 20.3 0 0 1-.13-5Zm8.3 0H8.6a18.97 18.97 0 0 0 .14 5h6.52a18.5 18.5 0 0 0 .14-5Zm4.87 0h-3.35a20.85 20.85 0 0 1-.13 5h3.18a8.48 8.48 0 0 0 .3-5ZM8.88 4.09h-.02a8.53 8.53 0 0 0-4.61 4.4l3.05.01c.31-1.75.86-3.28 1.58-4.41Zm3.12-.6-.12.01c-1.26.12-2.48 2.12-3.05 5h6.34c-.56-2.87-1.78-4.87-3.04-5H12Zm3.12.6.1.17A12.64 12.64 0 0 1 16.7 8.5h3.05a8.53 8.53 0 0 0-4.34-4.29l-.29-.12Z"
+                    class="glyph-fill"
+                  />
+                </svg>
               </g>
 
               <!-- 右侧文字排版区域 (左对齐，层级分明，不与图标或连线挤压) -->
-              <g :transform="`translate(${-CARD_W / 2 + 44}, 0)`">
+              <g :transform="`translate(${-CARD_W / 2 + 48}, 0)`">
                 <!-- 第一行：主机名 / 域名 (主标题，字号清晰，留足显示空间) -->
                 <text
                   y="-5"
                   class="node-title-text"
                   text-anchor="start"
                 >
-                  {{ node.host.length > 18 ? node.host.slice(0, 17) + '…' : node.host }}
+                  {{ compactLabel(node.host, 22) }}
                 </text>
 
-                <!-- 第二行：标签微徽标组 (下移充足距离，绝不侵占标题) -->
-                <g transform="translate(0, 13)">
+                <!-- 第二行：标签微徽标组 (Fluent 2 标准字阶与留白) -->
+                <g transform="translate(0, 14)">
                   <!-- 标签 1 (协议) -->
                   <g v-if="node.badges[0]" transform="translate(0, 0)">
-                    <rect x="0" y="-8" width="40" height="14" rx="2" class="node-tag-bg" />
-                    <text x="20" y="2" text-anchor="middle" class="node-tag-text">{{ node.badges[0] }}</text>
+                    <rect x="0" y="-8.5" width="44" height="17" rx="3.5" class="node-tag-bg tag-protocol" />
+                    <text x="22" y="3.5" text-anchor="middle" class="node-tag-text">{{ node.badges[0] }}</text>
                   </g>
                   <!-- 标签 2 (服务/WAF) -->
-                  <g v-if="node.badges[1]" transform="translate(44, 0)">
+                  <g v-if="node.badges[1]" transform="translate(48, 0)">
                     <rect
                       x="0"
-                      y="-8"
-                      :width="node.badges[1].length > 5 ? 48 : 38"
-                      height="14"
-                      rx="2"
-                      :class="['node-tag-bg', node.badges[1] === 'WAF' ? 'tag-waf' : '']"
+                      y="-8.5"
+                      :width="node.badges[1].length > 5 ? 54 : 42"
+                      height="17"
+                      rx="3.5"
+                      :class="['node-tag-bg', node.badges[1] === 'WAF' ? 'tag-waf' : 'tag-generic']"
                     />
                     <text
-                      :x="node.badges[1].length > 5 ? 24 : 19"
-                      y="2"
+                      :x="node.badges[1].length > 5 ? 27 : 21"
+                      y="3.5"
                       text-anchor="middle"
                       class="node-tag-text"
                     >
@@ -1122,30 +1441,32 @@ onUnmounted(() => {
                 </g>
               </g>
 
-              <!-- 悬停快捷删除操作按钮 (仅在 hover 时优雅显现于右上角) -->
-              <g
-                class="node-action-delete"
-                :transform="`translate(${CARD_W / 2 - 14}, ${-CARD_H / 2 + 14})`"
-                @click.stop="confirmRemoveNode(node.id, node.host)"
-              >
-                <circle cx="0" cy="0" r="9" class="delete-btn-bg" />
-                <path
-                  d="M-3 -3 L3 3 M3 -3 L-3 3"
-                  stroke="#ffffff"
-                  stroke-width="1.6"
-                  stroke-linecap="round"
-                />
-              </g>
             </g>
           </g>
         </g>
       </svg>
 
+      <div v-if="assets.length" class="canvas-controls" @mousedown.stop @dblclick.stop @wheel.stop>
+        <div class="zoom-controls">
+          <button class="fluent-command-btn" title="缩小" aria-label="缩小" @click="zoomOut">
+            <FluentIcon name="subtract" />
+          </button>
+          <span class="zoom-level">{{ Math.round(zoom * 100) }}%</span>
+          <button class="fluent-command-btn" title="放大" aria-label="放大" @click="zoomIn">
+            <FluentIcon name="add" />
+          </button>
+          <span class="divider-v" />
+          <button class="fluent-command-btn" title="适应画布" aria-label="适应画布" @click="fitView">
+            <FluentIcon name="fit" />
+          </button>
+        </div>
+      </div>
+
       <!-- 鹰眼雷达微型小地图 (Fluent Overlay) -->
-      <div v-if="showMinimap && assets.length > 0" class="topology-minimap fluent-overlay-card">
+      <div v-if="showMinimap && assets.length > 0" class="topology-minimap" @mousedown.stop @dblclick.stop @wheel.stop>
         <div class="minimap-header">
-          <span>雷达巡航</span>
-          <button class="minimap-close" @click="showMinimap = false">×</button>
+          <span>缩略图</span>
+          <button class="minimap-close" title="隐藏缩略图" aria-label="隐藏缩略图" @click="showMinimap = false"><FluentIcon name="dismiss" /></button>
         </div>
         <div class="minimap-body">
           <svg viewBox="0 0 200 120" class="minimap-svg">
@@ -1159,8 +1480,8 @@ onUnmounted(() => {
             />
             <!-- 中心宿主小方块 (置于取景框上方) -->
             <rect
-              :x="layoutMode === 'orbit' ? 95 : 35"
-              y="55"
+              :x="minimapTransform.x + cx * minimapTransform.scale - 5"
+              :y="minimapTransform.y + cy * minimapTransform.scale - 5"
               width="10"
               height="10"
               rx="2"
@@ -1170,8 +1491,8 @@ onUnmounted(() => {
             <circle
               v-for="node in layoutData.nodes"
               :key="`mini-${node.id}`"
-              :cx="100 + (node.x - cx) * 0.14"
-              :cy="60 + (node.y - cy) * 0.14"
+              :cx="minimapTransform.x + node.x * minimapTransform.scale"
+              :cy="minimapTransform.y + node.y * minimapTransform.scale"
               r="2.5"
               :fill="node.protocol === 'https' ? '#107c41' : 'var(--app-accent, #0078d4)'"
               stroke="#ffffff"
@@ -1188,11 +1509,12 @@ onUnmounted(() => {
         class="topology-context-menu fluent-flyout"
         :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
         @click.stop
+        @mousedown.stop
       >
         <div class="menu-header">
           <span class="menu-host">{{ contextMenu.node.host }}</span>
         </div>
-        <div class="menu-item fluent-menu-item" @click="handleNodeClick(contextMenu.node!)">
+        <div class="menu-item fluent-menu-item" @click="handleNodeClick(contextMenu.node!, true)">
           <FluentIcon name="eye" :size="14" />
           <span>查看资产详情</span>
         </div>
@@ -1208,17 +1530,14 @@ onUnmounted(() => {
           <FluentIcon name="target" :size="14" />
           <span>{{ focusedDomain === contextMenu.node.rootDomain ? '取消聚焦同域' : '仅聚焦同主域资产' }}</span>
         </div>
-        <a
+        <div
           v-if="contextMenu.node.asset.url"
-          :href="contextMenu.node.asset.url"
-          target="_blank"
-          rel="noopener noreferrer"
           class="menu-item fluent-menu-item link-item"
-          @click="closeContextMenu"
+          @click="openAssetInNewWindow(contextMenu.node!.asset.url)"
         >
           <FluentIcon name="globe" :size="14" />
           <span>在新窗口打开</span>
-        </a>
+        </div>
         <div class="menu-divider fluent-divider" />
         <div
           class="menu-item fluent-menu-item text-danger"
@@ -1234,9 +1553,9 @@ onUnmounted(() => {
     <el-drawer
       v-model="drawerVisible"
       title="资产详情"
-      size="420px"
+      size="min(420px, 100vw)"
       direction="rtl"
-      :append-to-body="true"
+      :append-to-body="!isFullscreen"
       custom-class="asset-detail-drawer"
     >
       <div v-if="selectedAsset" class="drawer-body">
@@ -1281,14 +1600,15 @@ onUnmounted(() => {
             <span class="prop-key">完整 URL:</span>
             <div class="prop-val url-val">
               <span class="url-text" :title="selectedAsset.url">{{ selectedAsset.url || '-' }}</span>
-              <el-button
-                link
-                type="primary"
-                size="small"
+              <button
+                type="button"
+                class="url-copy-btn"
+                title="复制完整 URL"
                 @click="copyUrl(selectedAsset.url)"
               >
-                <FluentIcon name="copy" :size="13" /> 复制
-              </el-button>
+                <FluentIcon name="copy" :size="12" />
+                <span>复制</span>
+              </button>
             </div>
           </div>
 
@@ -1314,19 +1634,54 @@ onUnmounted(() => {
 
           <div v-if="selectedAsset.detectedAt || selectedAsset.createdAt" class="detail-prop-row">
             <span class="prop-key">探测入库时间:</span>
-            <span class="prop-val">{{ selectedAsset.detectedAt || selectedAsset.createdAt }}</span>
+            <span class="prop-val">{{ formatDateTime(selectedAsset.detectedAt || selectedAsset.createdAt) }}</span>
           </div>
         </div>
 
-        <!-- 证据 / 指纹详情 -->
+        <!-- 证据 / 指纹详情 (符合 Fluent 2 规范的数据呈现体系) -->
         <div v-if="selectedAsset.evidence || selectedAsset.technologies" class="detail-section">
           <h4 class="section-title">指纹与匹配证据</h4>
-          <div class="evidence-box">
-            <pre class="evidence-pre">{{
-              typeof selectedAsset.evidence === 'string'
-                ? selectedAsset.evidence
-                : JSON.stringify(selectedAsset.evidence || selectedAsset.technologies, null, 2)
-            }}</pre>
+
+          <!-- 结构化指纹匹配实体卡片 (Fluent Entity List) -->
+          <div v-if="parsedEvidence?.fingerprints?.length" class="evidence-entity-list">
+            <div
+              v-for="(fp, idx) in parsedEvidence.fingerprints"
+              :key="idx"
+              class="evidence-entity-card"
+            >
+              <div class="entity-card-header">
+                <span class="entity-name">{{ fp.name || fp.id }}</span>
+                <span v-if="fp.category" class="fluent-badge-category">{{ fp.category }}</span>
+                <span v-if="fp.confidence" class="fluent-badge-confidence">{{ fp.confidence }}% 置信</span>
+              </div>
+              <div v-if="fp.evidence?.length" class="entity-evidence-tags">
+                <span v-for="(ev, eIdx) in fp.evidence" :key="eIdx" class="entity-tag">
+                  {{ ev }}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Fluent 2 标准 Code Snippet 容器 -->
+          <div class="fluent-code-container">
+            <div class="fluent-code-header">
+              <span class="code-header-title">
+                <FluentIcon name="document" :size="13" />
+                <span>原始数据 (JSON)</span>
+              </span>
+              <button
+                type="button"
+                class="fluent-subtle-btn"
+                title="复制原始 JSON"
+                @click="copyEvidence"
+              >
+                <FluentIcon name="copy" :size="12" />
+                <span>复制</span>
+              </button>
+            </div>
+            <div class="fluent-code-body">
+              <pre class="fluent-code-pre">{{ formatEvidence(selectedAsset.evidence || selectedAsset.technologies) }}</pre>
+            </div>
           </div>
         </div>
 
@@ -1334,13 +1689,9 @@ onUnmounted(() => {
         <div class="drawer-actions">
           <el-button
             v-if="selectedAsset.url"
-            tag="a"
-            :href="selectedAsset.url"
-            target="_blank"
-            rel="noopener noreferrer"
             type="primary"
-            plain
-            class="fluent-action-btn"
+            class="fluent-action-btn fluent-primary-btn"
+            @click="openAssetInNewWindow(selectedAsset.url)"
           >
             在新窗口访问
           </el-button>
@@ -1365,39 +1716,52 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   height: 100%;
-  min-height: 580px;
-  background: var(--app-surface, #ffffff);
+  min-height: 0;
+  min-width: 0;
+  background: var(--app-surface-strong, #ffffff);
   border: 1px solid var(--app-border, #e2e8f0);
-  border-radius: var(--fluent-radius-card, 8px);
+  border-radius: 6px;
   overflow: hidden;
-  box-shadow: var(--fluent-shadow-4);
+  box-shadow: none;
   font-family: var(--fluent-font);
+  container-type: inline-size;
 }
 
-.asset-topology-container.is-fullscreen {
+.asset-topology-container.is-fullscreen,
+.asset-topology-container:fullscreen {
   position: fixed;
   inset: 0;
   z-index: 2500;
   border-radius: 0;
   border: none;
+  background: var(--app-surface-strong, #ffffff) !important;
 }
 
 /* 顶部 Fluent CommandBar 控制栏 */
 .topology-toolbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  padding: 8px 14px;
+  padding: 10px 16px 0;
   background: var(--app-surface-strong, #ffffff);
   border-bottom: 1px solid var(--app-border, #e2e8f0);
   z-index: 10;
-  gap: 12px;
-  flex-wrap: wrap;
+  gap: 8px 16px;
+  flex-shrink: 0;
 }
 
 .toolbar-left {
+  grid-column: 1 / -1;
+  grid-row: 2;
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  margin: 0 -16px;
+  padding: 6px 16px;
+  border-top: 1px solid var(--app-border, #e2e8f0);
+  background: var(--app-surface-soft, #fbfcfe);
 }
 
 .stats-pills {
@@ -1407,33 +1771,56 @@ onUnmounted(() => {
   flex-wrap: wrap;
 }
 
-/* Fluent 胶囊标签 (Pills) */
+/* Fluent 2 胶囊标签 (Filter Chips) */
 .stat-pill {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 10px;
-  background: var(--app-surface-soft, #f3f4f6);
-  border: 1px solid transparent;
-  border-radius: var(--fluent-radius-circular, 9999px);
-  font-size: var(--fluent-caption1-size, 12px);
-  color: var(--app-muted);
+  padding: 3px 8px;
+  height: 26px;
+  background: var(--app-surface-strong, #ffffff);
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: var(--fluent-radius-control, 4px);
+  font: inherit;
+  font-size: 12px;
+  color: var(--app-muted, #64748b);
   cursor: pointer;
-  transition: all var(--fluent-fast, 150ms ease);
+  transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
   user-select: none;
+  box-sizing: border-box;
 }
 
 .stat-pill:hover {
-  background: var(--app-accent-soft, #e0f2fe);
-  border-color: var(--fluent3-reveal-border, #bae6fd);
-  color: var(--app-text);
+  background: var(--app-surface-soft, #f8fafc);
+  border-color: var(--app-border-strong, #cbd5e1);
+  color: var(--app-text, #0f172a);
 }
 
 .stat-pill.active {
-  background: var(--app-accent-soft-strong, #bae6fd);
+  background: var(--app-accent-soft, #edf5fb);
   border-color: var(--app-accent, #0078d4);
   color: var(--app-accent, #0078d4);
   font-weight: var(--fluent-weight-semibold, 600);
+}
+
+.stat-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 9999px;
+  background: rgba(0, 0, 0, 0.05);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--app-text, #0f172a);
+}
+
+.stat-pill.active .stat-badge {
+  background: color-mix(in srgb, var(--app-accent, #0078d4) 16%, transparent);
+  color: var(--app-accent, #0078d4);
 }
 
 .focused-domain-tag {
@@ -1442,43 +1829,51 @@ onUnmounted(() => {
 }
 
 .stat-dot {
-  width: 7px;
-  height: 7px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
 }
 
 .dot-accent {
   background: var(--app-accent, #0078d4);
-  box-shadow: 0 0 6px rgba(0, 120, 212, 0.4);
 }
 
 .dot-success {
   background: #107c41;
-  box-shadow: 0 0 6px rgba(16, 124, 65, 0.4);
 }
 
 .dot-info {
-  background: #00b7c3;
-  box-shadow: 0 0 6px rgba(0, 183, 195, 0.4);
+  background: #507b98;
 }
 
 .dot-warning {
-  background: #d83b01;
-  box-shadow: 0 0 6px rgba(216, 59, 1, 0.4);
+  background: #aa8a42;
 }
 
 .stat-label {
   font-weight: var(--fluent-weight-regular, 400);
 }
 
-.stat-value {
-  font-weight: var(--fluent-weight-semibold, 600);
-  color: var(--app-text);
+.host-meta-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  height: 24px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--app-muted, #64748b);
+  background: var(--app-surface-strong, #ffffff);
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: var(--fluent-radius-control, 4px);
+  user-select: none;
 }
 
 .toolbar-center {
-  flex: 1;
-  max-width: 240px;
+  grid-row: 1;
+  width: 280px;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .topology-search-input :deep(.el-input__wrapper) {
@@ -1486,21 +1881,53 @@ onUnmounted(() => {
 }
 
 .toolbar-right {
+  grid-row: 1;
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
-.mode-switch :deep(.el-radio-button__inner) {
-  padding: 5px 10px;
-  border-radius: var(--fluent-radius-control, 4px);
-  font-size: var(--fluent-caption1-size, 12px);
-}
-
-.btn-inner {
+/* Fluent 2 标准分段控件 (Segmented Control) */
+.fluent-segmented-control {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  padding: 2px;
+  background: var(--app-surface-soft, #f1f5f9);
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: var(--fluent-radius-control, 4px);
+  gap: 2px;
+  user-select: none;
+}
+
+.segmented-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--app-muted, #64748b);
+  font-family: var(--fluent-font);
+  font-size: 12px;
+  font-weight: var(--fluent-weight-medium, 500);
+  cursor: pointer;
+  transition: color 120ms cubic-bezier(0.33, 1, 0.68, 1), background-color 120ms cubic-bezier(0.33, 1, 0.68, 1), box-shadow 120ms cubic-bezier(0.33, 1, 0.68, 1);
+  box-sizing: border-box;
+}
+
+.segmented-item:hover:not(.is-active) {
+  color: var(--app-text, #0f172a);
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.segmented-item.is-active {
+  background: var(--app-surface-strong, #ffffff);
+  color: var(--app-text, #0f172a);
+  font-weight: var(--fluent-weight-semibold, 600);
+  border-color: rgba(0, 0, 0, 0.06);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 0 1px rgba(0, 0, 0, 0.04);
 }
 
 .divider-v {
@@ -1510,15 +1937,25 @@ onUnmounted(() => {
   margin: 0 4px;
 }
 
-/* Fluent 控件组 */
+/* Fluent 浮动 Acrylic 控件组 */
 .zoom-controls {
   display: flex;
   align-items: center;
-  background: var(--app-surface-soft, #f3f4f6);
-  border-radius: var(--fluent-radius-control, 4px);
-  border: 1px solid var(--app-border, #e2e8f0);
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  border-radius: var(--fluent-radius-control, 6px);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.07), 0 1px 3px rgba(0, 0, 0, 0.03);
   padding: 2px 4px;
   gap: 2px;
+}
+
+.canvas-controls {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  z-index: 12;
 }
 
 .zoom-level {
@@ -1535,14 +1972,17 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  padding: 0;
   border: none;
   background: transparent;
   border-radius: var(--fluent-radius-control, 4px);
   color: var(--app-text);
   cursor: pointer;
-  transition: all var(--fluent-fast, 150ms ease);
+  font-size: 17px;
+  transition: color 120ms ease, background-color 120ms ease;
 }
 
 .fluent-command-btn:hover {
@@ -1555,21 +1995,38 @@ onUnmounted(() => {
   color: var(--app-accent, #0078d4);
 }
 
-.fluent-command-btn.compact {
-  width: 22px;
-  height: 22px;
+.view-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.sonar-btn.active {
-  color: #d83b01;
-  background: #fff7ed;
-  animation: pulseRotate 1s infinite;
+.view-options :deep(.el-checkbox) {
+  margin-right: 0;
 }
 
-@keyframes pulseRotate {
-  0% { transform: scale(1); }
-  50% { transform: scale(1.15); }
-  100% { transform: scale(1); }
+.view-option-action {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: 0;
+  border-radius: 4px;
+  padding: 8px;
+  background: transparent;
+  color: var(--app-text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.view-option-action:hover {
+  background: var(--app-surface-soft);
+}
+
+.view-option-action:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* 画布容器 */
@@ -1577,9 +2034,10 @@ onUnmounted(() => {
   position: relative;
   flex: 1;
   width: 100%;
-  height: 100%;
+  min-height: 220px;
   overflow: hidden;
   user-select: none;
+  background: var(--app-surface-strong, #ffffff);
 }
 
 .cursor-grab {
@@ -1607,8 +2065,7 @@ onUnmounted(() => {
   gap: 12px;
   color: var(--app-muted);
   font-size: var(--fluent-body1-size, 14px);
-  background: var(--app-surface-soft);
-  backdrop-filter: blur(4px);
+  background: var(--app-surface);
   z-index: 5;
   text-align: center;
   padding: 20px;
@@ -1641,66 +2098,36 @@ onUnmounted(() => {
   line-height: var(--fluent-caption1-line, 16px);
 }
 
-/* 环轨样式 */
-.orbit-circle {
+/* 环轨引导同心线 */
+.orbit-guide-circle {
   fill: none;
   stroke: var(--app-border, #cbd5e1);
   stroke-width: 1;
-  opacity: 0.6;
+  opacity: 0.4;
 }
 
-.orbit-circle.dashed {
-  stroke-dasharray: 4 4;
+.orbit-guide-circle.is-dashed {
+  stroke-dasharray: 4 6;
+  opacity: 0.28;
 }
 
-/* 声呐雷达波纹 */
-.sonar-wave {
-  fill: none;
-  stroke: var(--app-accent, #0078d4);
-  stroke-width: 2;
-  opacity: 0.8;
-  animation: sonarPing 2.2s cubic-bezier(0, 0.2, 0.8, 1) infinite;
-  pointer-events: none;
-}
-
-.sonar-wave.wave-2 {
-  animation-delay: 0.6s;
-}
-
-.sonar-wave.wave-3 {
-  animation-delay: 1.2s;
-}
-
-@keyframes sonarPing {
-  0% {
-    r: 10px;
-    opacity: 0.9;
-    stroke-width: 3;
-  }
-  100% {
-    r: 520px;
-    opacity: 0;
-    stroke-width: 1;
-  }
-}
-
-/* 连接线样式：严格处于底层，绝不遮盖卡片上的字 */
+/* Geometry updates immediately so dragged nodes stay attached to their edges. */
 .edge-base-line {
   fill: none;
-  stroke: var(--app-border, #cbd5e1);
-  stroke-width: 1.4;
+  stroke: var(--app-border-strong, #c8cdd1);
+  stroke-width: 1.2;
   stroke-linecap: round;
-  transition: all var(--fluent-fast);
+  transition: stroke 120ms ease, opacity 120ms ease;
 }
 
 .edge-flow-line {
   fill: none;
-  stroke: url(#linkGradient);
-  stroke-width: 1.8;
+  stroke: var(--app-accent, #0078d4);
+  stroke-width: 1.4;
   stroke-linecap: round;
   stroke-dasharray: 6 12;
-  opacity: 0.5;
-  transition: all var(--fluent-fast);
+  opacity: 0.45;
+  transition: opacity 120ms ease;
 }
 
 .edge-group.is-flowing .edge-flow-line {
@@ -1716,32 +2143,28 @@ onUnmounted(() => {
   }
 }
 
-.edge-group.is-sonar-active .edge-flow-line {
-  stroke: url(#linkHighlight);
-  stroke-width: 3;
-  opacity: 1;
-  animation: cyberFlow 0.8s linear infinite;
-}
-
 .edge-group.is-hovered .edge-base-line,
 .edge-group.is-selected .edge-base-line {
   stroke: var(--app-accent, #0078d4);
-  stroke-width: 2.2;
+  stroke-width: 1.6;
 }
 
 .edge-group.is-hovered .edge-flow-line,
 .edge-group.is-selected .edge-flow-line {
-  stroke: url(#linkHighlight);
-  stroke-width: 2.8;
-  opacity: 1;
+  opacity: 0.8;
+}
+
+.edge-group.is-dimmed {
+  opacity: 0.12;
 }
 
 /* 真实物理端点端口 (Connection Sockets)，彻底告别悬空假连 */
 .edge-port-dot {
   fill: var(--app-surface-strong, #ffffff);
   stroke: var(--app-border, #cbd5e1);
-  stroke-width: 1.4;
-  transition: all var(--fluent-fast);
+  stroke-width: 1.2;
+  opacity: 0;
+  transition: fill 120ms ease, stroke 120ms ease, opacity 120ms ease;
 }
 
 .port-target {
@@ -1753,7 +2176,7 @@ onUnmounted(() => {
 .edge-group.is-selected .edge-port-dot {
   fill: var(--app-accent, #0078d4);
   stroke: #ffffff;
-  stroke-width: 1.5;
+  opacity: 1;
 }
 
 /* ==================== 中心宿主 Fluent Command Core 卡片 ==================== */
@@ -1761,36 +2184,32 @@ onUnmounted(() => {
   cursor: default;
 }
 
-.hub-glow-halo {
+.hub-card-halo {
   fill: none;
   stroke: var(--app-accent, #0078d4);
   stroke-width: 1.5;
-  opacity: 0.3;
-  animation: hubPulseGlow 3.6s ease-in-out infinite;
-  pointer-events: none;
+  opacity: 0.15;
+  transition: opacity 180ms ease, stroke-width 180ms ease;
 }
 
-@keyframes hubPulseGlow {
-  0% { opacity: 0.2; stroke-width: 1.5; }
-  50% { opacity: 0.55; stroke-width: 3; }
-  100% { opacity: 0.2; stroke-width: 1.5; }
+.topology-hub-node:hover .hub-card-halo {
+  opacity: 0.35;
+  stroke-width: 2.5;
 }
 
 .hub-card-bg {
   fill: var(--app-surface-strong, #ffffff);
   stroke: var(--app-accent, #0078d4);
-  stroke-width: 1.8;
-  transition: all var(--fluent-fast);
+  stroke-width: 1.5;
+  transition: stroke 150ms ease, fill 150ms ease;
 }
 
 .topology-hub-node:hover .hub-card-bg {
   stroke: var(--fluent3-reveal-border, #0078d4);
-  stroke-width: 2.2;
-  filter: drop-shadow(0 6px 20px rgba(0, 120, 212, 0.32));
 }
 
 .hub-icon-base {
-  fill: var(--app-accent, #0078d4);
+  filter: drop-shadow(0 2px 4px rgba(0, 120, 212, 0.28));
 }
 
 .hub-title-text {
@@ -1803,28 +2222,28 @@ onUnmounted(() => {
 }
 
 .hub-status-dot {
-  fill: #107c41; /* Fluent Success Green */
-  animation: dotPulse 2s infinite;
+  fill: #107c41;
+  animation: hubDotPulse 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
-@keyframes dotPulse {
-  0% { opacity: 0.6; }
-  50% { opacity: 1; }
-  100% { opacity: 0.6; }
+@keyframes hubDotPulse {
+  0%, 100% { opacity: 0.7; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.15); }
 }
 
 .hub-subtitle-text {
   fill: var(--app-muted, #64748b);
   font-size: 11px;
-  font-weight: var(--fluent-weight-regular, 400);
+  font-weight: var(--fluent-weight-medium, 500);
   font-family: var(--fluent-font);
   pointer-events: none;
 }
 
-/* ==================== Fluent 2 资产节点微卡片 ==================== */
+/* ==================== Fluent 2/3 资产节点微卡片 ==================== */
 .node-card-group {
   cursor: grab;
   transition: opacity var(--fluent-fast);
+  outline: none;
 }
 
 .node-card-group:active {
@@ -1835,114 +2254,103 @@ onUnmounted(() => {
   fill: var(--app-surface-strong, #ffffff);
   stroke: var(--app-border, #cbd5e1);
   stroke-width: 1.2;
-  transition: all var(--fluent-fast);
+  transition: fill 150ms ease, stroke 150ms ease;
 }
 
 /* Fluent 3 Reveal 悬停效果 */
 .node-card-group:hover .node-card-bg {
-  stroke: var(--fluent3-reveal-border, #0078d4);
-  stroke-width: 1.6;
-  fill: var(--fluent3-reveal-bg, #f8fafc);
-  filter: drop-shadow(0 6px 16px rgba(0, 120, 212, 0.16));
-}
-
-.node-card-group.is-selected .node-card-bg {
   stroke: var(--app-accent, #0078d4);
-  stroke-width: 2;
-  fill: var(--app-accent-soft, #eff6ff);
-  filter: drop-shadow(0 0 10px rgba(0, 120, 212, 0.3));
+  stroke-width: 1.5;
+  fill: var(--app-surface-strong, #ffffff);
 }
 
-.node-card-group.is-sonar-pinged .node-card-bg {
-  stroke: #00b7c3;
-  filter: drop-shadow(0 0 12px rgba(0, 183, 195, 0.5));
+.node-card-group.is-selected .node-card-bg,
+.node-card-group:focus-visible .node-card-bg {
+  stroke: var(--app-accent, #0078d4);
+  stroke-width: 1.5;
+  fill: #fafdff;
 }
 
 .node-card-group.is-dimmed {
-  opacity: 0.2;
+  opacity: 0.18;
 }
 
-/* Fluent 3 Selection Slider (垂直居中 3px 胶囊滑块，严格符合规范) */
-.node-selection-slider {
-  fill: var(--fluent3-slider-accent, var(--app-accent, #0078d4));
-  opacity: 0;
-  transform: scaleY(0.4);
-  transform-origin: left center;
-  transition:
-    opacity var(--fluent-fast),
-    transform var(--fluent3-slider-ease, 220ms cubic-bezier(0.2, 0.8, 0.2, 1));
+.node-pinned-indicator {
+  fill: var(--app-accent, #0078d4);
+  opacity: 0.85;
 }
 
-.node-card-group:hover .node-selection-slider {
-  opacity: 0.6;
-  transform: scaleY(0.75);
-}
-
-.node-card-group.is-selected .node-selection-slider {
-  opacity: 1;
-  transform: scaleY(1);
-}
-
-/* 图标容器小方块 */
+/* 图标容器小方块 (Fluent Subtle Tint 风格) */
 .node-icon-box {
-  transition: fill var(--fluent-fast);
+  transition: filter var(--fluent-fast);
 }
 
 .box-https {
-  fill: #107c41;
+  fill: #e8f5ed;
+  stroke: #c8e6d2;
+  stroke-width: 0.8;
 }
 
 .box-http {
-  fill: var(--app-accent, #0078d4);
+  fill: #e6f2fb;
+  stroke: #c2e0f7;
+  stroke-width: 0.8;
 }
 
-/* 域名标题：清晰字阶，绝不重叠 */
+.icon-glyph-https .glyph-fill {
+  fill: #107c41;
+}
+
+.icon-glyph-http .glyph-fill {
+  fill: #0078d4;
+}
+
+.node-card-group:hover .node-icon-box {
+  filter: brightness(0.97);
+}
+
+/* 域名标题：清晰字阶，使用 Fluent 规范系统字体 */
 .node-title-text {
   fill: var(--app-text, #0f172a);
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: var(--fluent-weight-semibold, 600);
-  font-family: var(--fluent-font);
+  font-family: var(--fluent-font, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif);
+  letter-spacing: -0.01em;
   pointer-events: none;
 }
 
+/* Fluent Badge 标签组 */
 .node-tag-bg {
   fill: var(--app-surface-soft, #f1f5f9);
+  stroke: var(--app-border, #e2e8f0);
+  stroke-width: 0.8;
+}
+
+.node-tag-bg.tag-protocol {
+  fill: rgba(0, 0, 0, 0.035);
+  stroke: rgba(0, 0, 0, 0.08);
+}
+
+.node-tag-bg.tag-generic {
+  fill: var(--app-surface-soft, #f1f5f9);
+  stroke: var(--app-border, #e2e8f0);
 }
 
 .node-tag-bg.tag-waf {
-  fill: #fff4ce; /* Fluent Light Orange */
+  fill: #fff4ce;
+  stroke: #fde39a;
 }
 
 .node-tag-text {
-  fill: var(--app-muted, #64748b);
-  font-size: 9px;
+  fill: var(--app-muted, #475569);
+  font-size: 10px;
   font-weight: var(--fluent-weight-semibold, 600);
   font-family: var(--fluent-font);
   pointer-events: none;
 }
 
 .node-tag-bg.tag-waf + .node-tag-text {
-  fill: #d83b01;
-}
-
-/* 快捷删除按钮 */
-.node-action-delete {
-  opacity: 0;
-  transition: opacity var(--fluent-fast);
-}
-
-.node-card-group:hover .node-action-delete {
-  opacity: 1;
-}
-
-.delete-btn-bg {
-  fill: #d83b01;
-  transition: fill var(--fluent-fast);
-}
-
-.node-action-delete:hover .delete-btn-bg {
-  fill: #a80000;
-  transform: scale(1.15);
+  fill: #8a4d00;
 }
 
 /* 鹰眼雷达微型小地图 (Fluent Overlay) */
@@ -1954,7 +2362,7 @@ onUnmounted(() => {
   background: var(--app-surface-strong, #ffffff);
   border: 1px solid var(--app-border, #cbd5e1);
   border-radius: var(--fluent-radius-card, 8px);
-  box-shadow: var(--fluent-shadow-16);
+  box-shadow: none;
   overflow: hidden;
   z-index: 15;
   user-select: none;
@@ -2122,26 +2530,29 @@ onUnmounted(() => {
   font-size: var(--fluent-body1-size, 14px);
   font-weight: var(--fluent-weight-semibold, 600);
   color: var(--app-text);
-  border-left: 3px solid var(--app-accent, #0078d4);
-  padding-left: 8px;
+  line-height: 20px;
 }
 
 .detail-prop-row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
+  min-height: 24px;
   gap: 8px;
   font-size: var(--fluent-caption1-size, 12px);
+  line-height: 20px;
 }
 
 .prop-key {
   color: var(--app-muted);
   min-width: 86px;
   flex-shrink: 0;
+  line-height: 20px;
 }
 
 .prop-val {
   color: var(--app-text);
   word-break: break-all;
+  line-height: 20px;
 }
 
 .prop-val.bold {
@@ -2164,6 +2575,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 6px;
+  line-height: 20px;
 }
 
 .url-text {
@@ -2171,22 +2583,190 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: 20px;
 }
 
-.evidence-box {
-  background: var(--app-surface-soft, #0f172a);
-  border: 1px solid var(--app-border);
-  border-radius: var(--fluent-radius-control, 4px);
-  padding: 10px 12px;
-  max-height: 200px;
-  overflow-y: auto;
-}
-
-.evidence-pre {
-  margin: 0;
-  color: var(--app-text);
+.url-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  height: 20px;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: var(--app-accent, #0078d4);
   font-size: 11px;
-  font-family: "Cascadia Code", "Consolas", monospace;
+  font-family: inherit;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 120ms ease;
+  user-select: none;
+}
+
+.url-copy-btn:hover {
+  background: var(--app-accent-soft, #e0f2fe);
+  color: var(--app-accent-dark, #005a9e);
+}
+
+/* Fluent 2 结构化指纹匹配卡片 */
+.evidence-entity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.evidence-entity-card {
+  padding: 8px 12px;
+  background: var(--app-surface-soft, #f8fafc);
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: var(--fluent-radius-control, 4px);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.entity-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.entity-name {
+  font-size: 12px;
+  font-weight: var(--fluent-weight-semibold, 600);
+  color: var(--app-text);
+}
+
+.fluent-badge-category {
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: var(--fluent-weight-medium, 500);
+  background: var(--app-accent-soft, #e0f2fe);
+  color: var(--app-accent, #0078d4);
+}
+
+.fluent-badge-confidence {
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: var(--fluent-weight-medium, 500);
+  background: #f0fdf4;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+
+.entity-evidence-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.entity-tag {
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10.5px;
+  font-family: var(--font-mono, "Cascadia Code", "Consolas", monospace);
+  background: var(--app-surface-strong, #ffffff);
+  border: 1px solid var(--app-border, #e2e8f0);
+  color: var(--app-muted, #64748b);
+}
+
+/* Fluent 2 标准 Code Snippet 容器 (带有 Fluent 标志性底部 2px 品牌蓝条) */
+.fluent-code-container {
+  position: relative;
+  background: var(--app-surface-strong, #ffffff);
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-bottom: 2px solid var(--app-accent, #0078d4);
+  border-radius: var(--fluent-radius-control, 4px);
+  overflow: hidden;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.fluent-code-container:hover,
+.fluent-code-container:focus-within {
+  border-color: var(--app-border-strong, #cbd5e1);
+  border-bottom-color: var(--app-accent, #0078d4);
+  box-shadow: 0 2px 8px rgba(0, 120, 212, 0.08);
+}
+
+.fluent-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: var(--app-surface-soft, #f8fafc);
+  border-bottom: 1px solid var(--app-border, #e2e8f0);
+  font-size: 11px;
+}
+
+.code-header-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--app-muted, #64748b);
+  font-weight: var(--fluent-weight-medium, 500);
+}
+
+.fluent-subtle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: var(--app-muted, #64748b);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+
+.fluent-subtle-btn:hover {
+  background: var(--app-surface-strong, #ffffff);
+  color: var(--app-accent, #0078d4);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.fluent-code-body {
+  padding: 10px 12px;
+  max-height: 180px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.fluent-code-body::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.fluent-code-body::-webkit-scrollbar-thumb {
+  background: var(--app-border, #cbd5e1);
+  border-radius: 3px;
+}
+
+.fluent-code-body::-webkit-scrollbar-thumb:hover {
+  background: var(--app-muted, #94a3b8);
+}
+
+.fluent-code-pre,
+:deep(.fluent-code-pre),
+:deep(pre.fluent-code-pre),
+:deep(.evidence-box pre),
+:deep(.evidence-pre) {
+  margin: 0 !important;
+  border: none !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  color: var(--app-text, #1e293b);
+  font-size: 11.5px;
+  line-height: 1.55;
+  font-family: var(--font-mono, "Cascadia Code", "Consolas", monospace);
   white-space: pre-wrap;
   word-break: break-all;
 }
@@ -2201,7 +2781,98 @@ onUnmounted(() => {
   border-top: 1px solid var(--app-border, #f1f5f9);
 }
 
-.fluent-action-btn {
+.fluent-action-btn,
+:deep(.fluent-action-btn) {
   border-radius: var(--fluent-radius-control, 4px);
+  text-decoration: none !important;
+}
+
+.fluent-action-btn:hover,
+.fluent-action-btn:focus,
+.fluent-action-btn:active,
+:deep(.fluent-action-btn:hover),
+:deep(.fluent-action-btn:focus),
+:deep(.fluent-action-btn:active) {
+  text-decoration: none !important;
+}
+
+.drawer-actions :deep(a.fluent-action-btn),
+.drawer-actions a.fluent-action-btn {
+  text-decoration: none !important;
+}
+
+/* 保证主按钮悬浮不发生刺眼变色与下划线跳变 */
+.fluent-action-btn.fluent-primary-btn,
+:deep(.fluent-action-btn.fluent-primary-btn) {
+  background-color: var(--app-accent, #0078d4) !important;
+  border-color: var(--app-accent, #0078d4) !important;
+  color: #ffffff !important;
+  text-decoration: none !important;
+}
+
+.fluent-action-btn.fluent-primary-btn:hover,
+.fluent-action-btn.fluent-primary-btn:focus,
+.fluent-action-btn.fluent-primary-btn:active,
+:deep(.fluent-action-btn.fluent-primary-btn:hover),
+:deep(.fluent-action-btn.fluent-primary-btn:focus),
+:deep(.fluent-action-btn.fluent-primary-btn:active) {
+  background-color: var(--app-accent, #0078d4) !important;
+  border-color: var(--app-accent, #0078d4) !important;
+  color: #ffffff !important;
+  text-decoration: none !important;
+  box-shadow: none !important;
+}
+
+.fluent-action-btn.fluent-primary-btn :deep(span),
+:deep(.fluent-action-btn.fluent-primary-btn span) {
+  color: #ffffff !important;
+  text-decoration: none !important;
+}
+
+@container (max-width: 560px) {
+  .topology-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 10px 12px 0;
+    gap: 8px;
+  }
+
+  .toolbar-center {
+    width: 100%;
+  }
+
+  .toolbar-right {
+    grid-row: 2;
+    justify-content: flex-end;
+  }
+
+  .mode-switch {
+    margin-right: auto;
+  }
+
+  .toolbar-left {
+    grid-row: 3;
+    margin: 0 -12px;
+    padding: 6px 8px;
+  }
+
+  .stat-pill {
+    gap: 4px;
+    padding: 4px 6px;
+  }
+
+  .host-count {
+    display: none;
+  }
+
+  .topology-minimap {
+    bottom: 64px;
+    right: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .edge-flow-line {
+    animation: none !important;
+  }
 }
 </style>

@@ -55,6 +55,15 @@ toolbox:
     # ppocr_keys_v1.txt). When present, the built-in query attempts automatic
     # captcha solving first and falls back to the manual data source otherwise.
     icp-ocr-models-path: ${ICP_OCR_MODELS:./data/models/icp}
+    # Active-mode parameter probing: for each discovered endpoint, try common GET
+    # parameters and, when injecting a single quote triggers a back-end SQL error
+    # (while the legitimate value does not), register the parameterized URL as a
+    # suspected-injectable path for sqlmap to confirm. Reduces "site is injectable
+    # but was missed because no parameter was supplied" false negatives. Bounded by
+    # endpoint/finding caps and an internal request budget; authorized host:port only.
+    param-probe-enabled: ${RECON_PARAM_PROBE_ENABLED:true}
+    param-probe-max-endpoints: ${RECON_PARAM_PROBE_MAX_ENDPOINTS:16}
+    param-probe-max-findings: ${RECON_PARAM_PROBE_MAX_FINDINGS:8}
   auth:
     admin-password: ${ADMIN_PASSWORD:admin123}
     jwt-secret: ${JWT_SECRET:development-only-jwt-secret-change-me-32-bytes}
@@ -107,6 +116,9 @@ toolbox:
     fscan-path: ${FSCAN_PATH:fscan}
     max-fscan-ports-per-task: 65535
     fscan-timeout-seconds: 600
+    sqlmap-path: ${SQLMAP_PATH:sqlmap}
+    sqlmap-timeout-seconds: ${SQLMAP_TIMEOUT_SECONDS:900}
+    max-paths-per-scan: ${MAX_PATHS_PER_SCAN:50}
     msf-path: ${MSF_PATH:msfconsole}
     msf-timeout-seconds: 600
     zap-path: ${ZAP_PATH:zap}

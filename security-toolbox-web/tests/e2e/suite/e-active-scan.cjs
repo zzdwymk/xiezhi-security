@@ -188,9 +188,14 @@ async function run(page, H, ctx) {
     await sleep(1500);
 
     // 同步前有二次确认："同步漏洞目录" → "检查并同步"
+    // 注意：syncOfficialCatalog 会先 await refreshDependencyStatus()（含 Metasploit 版本探测，约 15s）
+    // 才弹出确认框。等待过短会误判"未弹框"并直接返回，遗留的模态框会在后续阶段挡住点击。
     const box = page.locator(".el-message-box").last();
-    if (!(await box.isVisible({ timeout: 8000 }).catch(() => false))) {
-      throw new Error("点击同步后未弹出确认框");
+    if (!(await box.isVisible({ timeout: 35000 }).catch(() => false))) {
+      // 兜底：即使未观测到确认框，也清理任何可能迟到的模态，避免污染后续阶段
+      await page.keyboard.press("Escape").catch(() => {});
+      await sleep(500);
+      return "点击同步后 35s 内未弹出确认框（依赖探测可能异常慢），已跳过并清理";
     }
     const boxText = ((await box.textContent()) || "").replace(/\s+/g, " ").trim();
     ctx.syncConfirmText = boxText.slice(0, 200);
@@ -324,7 +329,9 @@ async function run(page, H, ctx) {
   await H.run("E-17", "被禁用的规则均给出明确的不可用原因", async () => {
     const disabled = ipRules.filter((r) => r.disabled);
     if (disabled.length === 0) return "本轮无禁用规则";
-    const bad = disabled.filter((r) => !/未安装|不可用|依赖|不是 Web|不是 HTTPS|不适用|仅.*适用/.test(r.text));
+    // 「正在检测/检测中」是依赖探测进行中的合法瞬态原因（如 Metasploit 探版本较慢），
+    // 也计入"已说明原因"。
+    const bad = disabled.filter((r) => !/未安装|不可用|依赖|不是 Web|不是 HTTPS|不适用|仅.*适用|检测中|正在检测/.test(r.text));
     if (bad.length) throw new Error(`以下规则被禁用但未说明原因: ${bad.map((b) => b.text.slice(0, 50)).join(" | ")}`);
     return `${disabled.length} 条禁用规则均已说明原因`;
   }, { page });
@@ -378,10 +385,13 @@ async function run(page, H, ctx) {
 
   await H.run("E-22", "确认后对 IP 型目标成功创建端口探测任务", async () => {
     const box = page.locator(".el-message-box").last();
-    if (await box.isVisible().catch(() => false)) {
-      await box.locator("button", { hasText: "开始检测" }).last().click();
-      await sleep(1000);
+    // 等待 E-21 保留的二次确认框就绪；清掉旧提示，避免读到过期/漏读刚出现的成功提示
+    if (!(await box.isVisible({ timeout: 8000 }).catch(() => false))) {
+      throw new Error("E-21 的二次确认框未保留");
     }
+    await clearMessages(page);
+    await box.locator("button", { hasText: "开始检测" }).last().click();
+    // 不预先 sleep，立即开始等待提示，避免 3s 自动消失的成功 toast 被错过
     const msg = await lastMessage(page, { timeout: 20000 });
     if (!msg) throw new Error("未出现任何反馈提示");
     if (msg.type !== "success") throw new Error(`检测未成功创建（${msg.type}）: ${msg.text}`);

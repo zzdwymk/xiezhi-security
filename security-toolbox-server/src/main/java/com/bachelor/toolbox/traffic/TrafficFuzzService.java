@@ -621,6 +621,48 @@ public class TrafficFuzzService {
       Integer effectiveStatus,
       boolean changed) {}
 
+  public record FuzzPreset(String id, String name, String category, List<String> payloads) {}
+
+  public List<FuzzPreset> getPresets() {
+    return List.of(
+        new FuzzPreset("SQLI_BASIC", "SQL 注入基础探针 (FuzzDB)", "SQL Injection", List.of(
+            "'", "\"", "''", "1' OR '1'='1", "1 OR 1=1", "admin' --", "1' AND SLEEP(5)--", "1' UNION SELECT NULL--", "') OR ('1'='1"
+        )),
+        new FuzzPreset("XSS_CORE", "XSS 跨站脚本载荷 (FuzzDB)", "Cross-Site Scripting", List.of(
+            "<script>alert(1)</script>",
+            "\"><img src=x onerror=alert(1)>",
+            "<svg/onload=alert(1)>",
+            "javascript:alert(1)",
+            "'><script>alert(1)</script>",
+            "\"><svg onload=confirm(1)>",
+            "<details open ontoggle=alert(1)>"
+        )),
+        new FuzzPreset("PATH_TRAVERSAL", "目录穿越与敏感文件 (FuzzDB)", "Path Traversal", List.of(
+            "../../../../etc/passwd",
+            "..\\..\\..\\..\\windows\\win.ini",
+            "....//....//....//etc/passwd",
+            "%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+            "/WEB-INF/web.xml",
+            "/.env",
+            "/.git/config"
+        )),
+        new FuzzPreset("CMD_INJECTION", "OS 命令注入探针 (FuzzDB)", "Command Injection", List.of(
+            "; id",
+            "| whoami",
+            "& ping -c 1 127.0.0.1",
+            "`id`",
+            "$(whoami)",
+            "; type C:\\Windows\\win.ini"
+        )),
+        new FuzzPreset("AUTH_WORDLIST", "常见用户名与弱口令", "Authentication", List.of(
+            "admin", "root", "guest", "test", "password", "123456", "admin123", "default"
+        )),
+        new FuzzPreset("BOUNDARY_FORMAT", "边界异常与特殊截断字符", "Format & Special", List.of(
+            "%00", "\\u0000", "%0d%0a", "%0a", "%20", "%ff", "{{7*7}}", "${7*7}", "<%= 7*7 %>"
+        ))
+    );
+  }
+
   public record FuzzResponse(
       Long packetId,
       String method,

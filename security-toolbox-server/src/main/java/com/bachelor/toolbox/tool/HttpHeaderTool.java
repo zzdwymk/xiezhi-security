@@ -61,7 +61,8 @@ public class HttpHeaderTool implements SecurityTool {
   public ToolExecutionResult execute(
       AuthorizedTarget target, Map<String, Object> parameters, ToolExecutionObserver observer)
       throws Exception {
-    URI uri = policyService.validatedHttpUri(target);
+    String path = java.util.Objects.toString(parameters.getOrDefault("path", ""), "").trim();
+    URI uri = policyService.validatedHttpUri(target, path.isBlank() ? null : path);
     HttpRequest request =
         HttpRequest.newBuilder(uri)
             .timeout(Duration.ofSeconds(10))

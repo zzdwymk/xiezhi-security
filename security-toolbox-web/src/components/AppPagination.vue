@@ -7,10 +7,12 @@ withDefaults(
     total: number;
     pageSizes?: number[];
     layout?: string;
+    small?: boolean;
   }>(),
   {
     pageSizes: () => [20, 50, 100],
     layout: "total, sizes, prev, pager, next",
+    small: false,
   },
 );
 
@@ -27,6 +29,7 @@ const emit = defineEmits<{
       v-model:page-size="pageSize"
       :page-sizes="pageSizes"
       :layout="layout"
+      :small="small"
       :total="total"
       @current-change="emit('currentChange', $event)"
       @size-change="emit('sizeChange', $event)"

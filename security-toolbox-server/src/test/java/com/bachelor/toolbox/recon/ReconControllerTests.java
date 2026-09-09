@@ -29,7 +29,9 @@ class ReconControllerTests {
   @BeforeEach
   void setUp() {
     mockMvc =
-        MockMvcBuilders.standaloneSetup(new ReconController(service))
+        MockMvcBuilders.standaloneSetup(
+                new ReconController(
+                    service, mock(com.bachelor.toolbox.asset.DiscoveredPathService.class)))
             .setControllerAdvice(new GlobalExceptionHandler())
             .build();
   }

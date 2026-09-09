@@ -1,0 +1,42 @@
+# 默认 Web 目录/路径字典（每行一个候选，追加到目标基址后探测）。
+# 支持数字区间模板：形如 Less-[1-65] 会展开为 Less-1 .. Less-65。
+# 以 # 开头或空行忽略。此列表仅在授权 host:端口 范围内探测。
+admin/
+login/
+manage/
+manager/
+console/
+dashboard/
+api/
+api/v1/
+test/
+demo/
+backup/
+db/
+sql/
+upload/
+uploads/
+files/
+download/
+static/
+assets/
+js/
+css/
+images/
+img/
+config/
+conf/
+setup/
+install/
+info.php
+phpinfo.php
+robots.txt
+sitemap.xml
+.git/
+.env
+readme.txt
+README.md
+index.html
+index.php
+# sqli-labs / 编号型练习路径（数字区间模板）
+Less-[1-65]/

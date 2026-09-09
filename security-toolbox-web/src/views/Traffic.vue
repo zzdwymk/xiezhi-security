@@ -4,6 +4,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
+  ArrowDown,
   CircleCheck,
   Connection,
   Delete,
@@ -312,7 +313,6 @@ const FUZZ_PAYLOAD_PRESETS = [
 ];
 
 const fuzzPayloadGroups = ref<Record<string, string>>({});
-const fuzzGroupOrder = ref<string[]>([]);
 const fuzzCombination = ref<FuzzCombinationType>("SNIPER");
 const fuzzSharedPayload = ref("test\ndebug\nadmin");
 const activeFuzzGroup = ref("");
@@ -336,7 +336,7 @@ const fuzzVariables = computed(() => {
   const found = new Set<string>();
   const scan = (value: string | undefined) => {
     const text = String(value || "");
-    const re = /§([^§]+)§/g;
+    const re = /§([^§\r\n]+)§/g;
     let m;
     while ((m = re.exec(text))) {
       const name = m[1].trim();
@@ -349,6 +349,13 @@ const fuzzVariables = computed(() => {
   if (fuzzForm.value.body) scan(fuzzForm.value.body);
   return [...found];
 });
+
+function getFuzzPayload(name: string): string {
+  if (fuzzPayloadGroups.value[name] === undefined) {
+    fuzzPayloadGroups.value[name] = fuzzSharedPayload.value || "test\ndebug\nadmin";
+  }
+  return fuzzPayloadGroups.value[name];
+}
 
 const estimatedFuzzRequests = computed(() => {
   const vars = fuzzVariables.value;
@@ -367,7 +374,7 @@ const estimatedFuzzRequests = computed(() => {
     return vars.length * count;
   } else {
     const counts = vars.map((name) => {
-      const text = fuzzPayloadGroups.value[name] || "";
+      const text = getFuzzPayload(name);
       return text
         .split(/\r?\n/)
         .map((s) => s.trim())
@@ -389,21 +396,19 @@ const estimatedFuzzRequests = computed(() => {
 
 function ensureFuzzGroups() {
   const vars = fuzzVariables.value;
-  const order: string[] = [];
-  const groups: Record<string, string> = {};
   for (const name of vars) {
-    if (!Object.prototype.hasOwnProperty.call(fuzzPayloadGroups.value, name)) {
+    if (fuzzPayloadGroups.value[name] === undefined) {
       fuzzPayloadGroups.value[name] = fuzzSharedPayload.value || "test\ndebug\nadmin";
     }
-    order.push(name);
-    groups[name] = fuzzPayloadGroups.value[name];
   }
-  fuzzGroupOrder.value = order;
-  fuzzPayloadGroups.value = groups;
+  if (vars.length && (!activeFuzzGroup.value || !vars.includes(activeFuzzGroup.value))) {
+    activeFuzzGroup.value = vars[0];
+  }
 }
 
 const totalMultiPayloadLines = computed(() => {
-  return Object.values(fuzzPayloadGroups.value).reduce((sum, text) => {
+  return fuzzVariables.value.reduce((sum, name) => {
+    const text = getFuzzPayload(name);
     return sum + (text || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean).length;
   }, 0);
 });
@@ -463,6 +468,10 @@ function syncUrlEditorScroll() {
 watch(fuzzRawPacket, () => {
   nextTick(syncRawEditorScroll);
 });
+
+watch(fuzzVariables, () => {
+  ensureFuzzGroups();
+}, { immediate: true });
 
 watch(
   () => fuzzForm.value.url,
@@ -890,7 +899,14 @@ points.push({
       level: changed ? "warn" : "ok",
     });
   }
-  return points;
+  const levelPriority: Record<string, number> = {
+    ok: 1,
+    info: 2,
+    warn: 3,
+  };
+  return points.sort(
+    (a, b) => (levelPriority[a.level] ?? 99) - (levelPriority[b.level] ?? 99)
+  );
 });
 
 function resetCaptureFilterForm() {
@@ -1779,10 +1795,10 @@ function splitFuzzPacket() {
 }
 
 function currentFuzzGroupName(): string | undefined {
-  if (activeFuzzGroup.value && fuzzGroupOrder.value.includes(activeFuzzGroup.value)) {
+  if (activeFuzzGroup.value && fuzzVariables.value.includes(activeFuzzGroup.value)) {
     return activeFuzzGroup.value;
   }
-  if (fuzzGroupOrder.value.length) return fuzzGroupOrder.value[0];
+  if (fuzzVariables.value.length) return fuzzVariables.value[0];
   return undefined;
 }
 
@@ -1800,21 +1816,30 @@ function appendToFuzzGroup(text: string) {
   }
   const name = currentFuzzGroupName();
   if (!name) return false;
-  const current = fuzzPayloadGroups.value[name] || "";
+  const current = getFuzzPayload(name) || "";
   fuzzPayloadGroups.value[name] = [current, ...lines].filter(Boolean).join("\n");
   return true;
 }
 
-function clearFuzzGroups() {
-  if (isSinglePayloadMode.value) {
-    fuzzSharedPayload.value = "";
+function clearFuzzGroups(clearAll = false) {
+  if (isSinglePayloadMode.value || clearAll) {
+    if (isSinglePayloadMode.value) {
+      fuzzSharedPayload.value = "";
+    }
+    for (const name of fuzzVariables.value) {
+      fuzzPayloadGroups.value[name] = "";
+    }
+    ElMessage.success("已清空所有 Payload 字典");
   } else {
     const name = currentFuzzGroupName();
     if (name) {
       fuzzPayloadGroups.value[name] = "";
+      ElMessage.success(`已清空 §${name}§ 的 Payload 字典`);
     } else {
-      fuzzPayloadGroups.value = {};
-      fuzzGroupOrder.value = [];
+      for (const v of fuzzVariables.value) {
+        fuzzPayloadGroups.value[v] = "";
+      }
+      ElMessage.success("已清空所有 Payload 字典");
     }
   }
 }
@@ -2008,12 +2033,13 @@ async function runFuzz() {
       .split(/\r?\n/)
       .map((item) => item.trim())
       .filter(Boolean);
-    for (const name of fuzzGroupOrder.value) {
+    for (const name of fuzzVariables.value) {
       multiPayloads[name] = singleList;
     }
   } else {
-    for (const name of fuzzGroupOrder.value) {
-      const items = (fuzzPayloadGroups.value[name] || "")
+    for (const name of fuzzVariables.value) {
+      const text = getFuzzPayload(name);
+      const items = text
         .split(/\r?\n/)
         .map((item) => item.trim())
         .filter(Boolean);
@@ -2100,9 +2126,196 @@ function fuzzHitStatus(hit: FuzzHit) {
   return `HTTP ${hit.effectiveStatus}`;
 }
 
+interface TargetedScanHit {
+  title: string;
+  severity: string;
+  description: string;
+  parameter?: string;
+  evidence?: string;
+  solution?: string;
+}
+
+interface TargetedScanResult {
+  packetId: number;
+  engine: string;
+  status: string;
+  hits: TargetedScanHit[];
+  message: string;
+}
+
+const targetedScanVisible = ref(false);
+const targetedScanLoading = ref(false);
+const targetedScanResult = ref<TargetedScanResult | null>(null);
+const targetedScanEngine = ref<"ZAP" | "XRAY">("ZAP");
+
+const fuzzPresets = ref<
+  Array<{ id: string; name: string; category: string; payloads: string[] }>
+>([]);
+const selectedFuzzPreset = ref("");
+
+async function loadFuzzPresets() {
+  try {
+    const { data } = await api.get<
+      Array<{ id: string; name: string; category: string; payloads: string[] }>
+    >("/traffic/fuzz/presets");
+    if (data && data.length) {
+      fuzzPresets.value = data;
+    }
+  } catch {
+    fuzzPresets.value = [
+      {
+        id: "SQLI_BASIC",
+        name: "SQL 注入基础探针 (FuzzDB)",
+        category: "SQL Injection",
+        payloads: [
+          "'",
+          "\"",
+          "1' OR '1'='1",
+          "1 OR 1=1",
+          "admin' --",
+          "1' AND SLEEP(5)--",
+          "1' UNION SELECT NULL--",
+        ],
+      },
+      {
+        id: "XSS_CORE",
+        name: "XSS 跨站脚本载荷 (FuzzDB)",
+        category: "Cross-Site Scripting",
+        payloads: [
+          "<script>alert(1)<\/script>",
+          "\"><img src=x onerror=alert(1)>",
+          "<svg/onload=alert(1)>",
+          "javascript:alert(1)",
+        ],
+      },
+      {
+        id: "PATH_TRAVERSAL",
+        name: "目录穿越与敏感文件 (FuzzDB)",
+        category: "Path Traversal",
+        payloads: [
+          "../../../../etc/passwd",
+          "..\\..\\..\\..\\windows\\win.ini",
+          "....//....//....//etc/passwd",
+          "/WEB-INF/web.xml",
+          "/.env",
+        ],
+      },
+      {
+        id: "CMD_INJECTION",
+        name: "OS 命令注入探针 (FuzzDB)",
+        category: "Command Injection",
+        payloads: ["; id", "| whoami", "& ping -c 1 127.0.0.1", "`id`", "$(whoami)"],
+      },
+      {
+        id: "AUTH_WORDLIST",
+        name: "常见用户名与弱口令",
+        category: "Authentication",
+        payloads: [
+          "admin",
+          "root",
+          "guest",
+          "test",
+          "password",
+          "123456",
+          "admin123",
+        ],
+      },
+      {
+        id: "BOUNDARY_FORMAT",
+        name: "边界异常与特殊截断字符",
+        category: "Format & Special",
+        payloads: [
+          "%00",
+          "\\u0000",
+          "%0d%0a",
+          "%0a",
+          "%20",
+          "%ff",
+          "{{7*7}}",
+        ],
+      },
+    ];
+  }
+}
+
+function applySelectedFuzzPreset(presetId?: string) {
+  if (!presetId) return;
+  const preset = fuzzPresets.value.find((p) => p.id === presetId);
+  if (!preset) return;
+  fuzzSharedPayload.value = preset.payloads.join("\n");
+  for (const name of fuzzVariables.value) {
+    fuzzPayloadGroups.value[name] = fuzzSharedPayload.value;
+  }
+  ElMessage.success(`已载入「${preset.name}」共 ${preset.payloads.length} 项载荷`);
+}
+
+async function runZapScan(item?: TrafficSession | null) {
+  const targetItem = item || selected.value;
+  if (!targetItem?.id) return ElMessage.warning("请先选择一条流量记录");
+  targetedScanEngine.value = "ZAP";
+  targetedScanLoading.value = true;
+  targetedScanResult.value = null;
+  targetedScanVisible.value = true;
+  try {
+    const { data } = await api.post<TargetedScanResult>(
+      `/traffic/packets/${targetItem.id}/zap-scan`,
+      {
+        strength: "MEDIUM",
+        policy: "Default Policy",
+      },
+    );
+    targetedScanResult.value = data;
+    if (data.hits && data.hits.length > 0) {
+      ElMessage.warning(`ZAP 扫描完成，发现 ${data.hits.length} 项风险`);
+    } else {
+      ElMessage.success("ZAP 定向检测完成，未发现高危注入漏洞");
+    }
+  } catch (err: any) {
+    ElMessage.error(toErrorMessage(err, "ZAP 定向扫描失败"));
+  } finally {
+    targetedScanLoading.value = false;
+  }
+}
+
+async function runXrayScan(item?: TrafficSession | null) {
+  const targetItem = item || selected.value;
+  if (!targetItem?.id) return ElMessage.warning("请先选择一条流量记录");
+  targetedScanEngine.value = "XRAY";
+  targetedScanLoading.value = true;
+  targetedScanResult.value = null;
+  targetedScanVisible.value = true;
+  try {
+    const { data } = await api.post<TargetedScanResult>(
+      `/traffic/packets/${targetItem.id}/xray-scan`,
+      {
+        allPocs: true,
+      },
+    );
+    targetedScanResult.value = data;
+    if (data.hits && data.hits.length > 0) {
+      ElMessage.warning(`Xray 靶向探测完成，命中 ${data.hits.length} 项漏洞`);
+    } else {
+      ElMessage.success("Xray 靶向探测完成，未命中已知组件漏洞");
+    }
+  } catch (err: any) {
+    ElMessage.error(toErrorMessage(err, "Xray 靶向探测失败"));
+  } finally {
+    targetedScanLoading.value = false;
+  }
+}
+
+function handleSecurityProbeCommand(cmd: string | number | object) {
+  if (cmd === "zap") {
+    runZapScan(selected.value);
+  } else if (cmd === "xray") {
+    runXrayScan(selected.value);
+  }
+}
+
 onMounted(() => {
   void load();
   void loadCaptureFilters();
+  void loadFuzzPresets();
   window.addEventListener("pointerdown", onWindowPointerDown);
   if (window.toolboxDesktop?.onCaptureBrowserClosed) {
     removeCaptureBrowserListener = window.toolboxDesktop.onCaptureBrowserClosed(
@@ -2265,7 +2478,11 @@ onUnmounted(() => {
                   ? deleteSessionAction(item)
                   : cmd === 'replay'
                     ? sendSelectedToReplay()
-                    : openFuzz()
+                    : cmd === 'zap'
+                      ? runZapScan(item)
+                      : cmd === 'xray'
+                        ? runXrayScan(item)
+                        : openFuzz()
           "
         >
           <div
@@ -2335,6 +2552,16 @@ onUnmounted(() => {
                 ></el-dropdown-item
               >
               <el-dropdown-item
+                command="zap"
+                :disabled="clearingSessions"
+                >ZAP 定向探测</el-dropdown-item
+              >
+              <el-dropdown-item
+                command="xray"
+                :disabled="clearingSessions"
+                >Xray 靶向探测</el-dropdown-item
+              >
+              <el-dropdown-item
                 divided
                 command="mark"
                 :disabled="markingId === item.id || clearingSessions"
@@ -2354,6 +2581,7 @@ onUnmounted(() => {
           v-model:page-size="sessionPageSize"
           :total="filteredSessions.length"
           layout="prev, pager, next"
+          small
           class="traffic-session-pagination"
         />
       </section>
@@ -2366,8 +2594,8 @@ onUnmounted(() => {
         <template v-else>
           <header class="traffic-detail-head">
             <div class="packet-title">
-              <b>{{ selected.method || "GET" }}</b
-              ><strong>{{
+              <b>{{ selected.method || "GET" }}</b>
+              <strong :title="selected.url || `${selected.host || ''}${selected.path || ''}`">{{
                 selected.url || `${selected.host || ""}${selected.path || ""}`
               }}</strong>
             </div>
@@ -2383,6 +2611,27 @@ onUnmounted(() => {
                   >{{ selected.durationMs }} ms</span
                 >
               </div>
+              <el-dropdown
+                trigger="click"
+                @command="handleSecurityProbeCommand"
+              >
+                <el-button
+                  size="small"
+                  :loading="targetedScanLoading"
+                >
+                  安全探测<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+                </el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="zap">
+                      <span style="font-weight: 500">ZAP 定向注入探测</span>
+                    </el-dropdown-item>
+                    <el-dropdown-item command="xray">
+                      <span style="font-weight: 500">Xray 靶向 PoC 探测</span>
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
               <el-tooltip
                 content="把这条流量转交给 AI 智能体：可跨工具规划并派发授权检测任务（需已绑定授权目标）"
                 placement="bottom"
@@ -2626,6 +2875,21 @@ onUnmounted(() => {
                   <el-radio-button value="loop">内置循环</el-radio-button>
                 </el-radio-group>
                 <el-select
+                  v-model="selectedFuzzPreset"
+                  size="small"
+                  placeholder="载荷预设 (FuzzDB)"
+                  style="width: 190px"
+                  @change="applySelectedFuzzPreset"
+                  clearable
+                >
+                  <el-option
+                    v-for="preset in fuzzPresets"
+                    :key="preset.id"
+                    :label="preset.name"
+                    :value="preset.id"
+                  />
+                </el-select>
+                <el-select
                   v-if="fuzzBatchWithSelection && Object.keys(fuzzBatchResults).length"
                   v-model="fuzzFocusPacketId"
                   size="small"
@@ -2786,6 +3050,16 @@ onUnmounted(() => {
                 <div v-if="fuzzVariables.length" class="fuzz-ribbon-vars">
                   <span class="fuzz-ribbon-var-label">标记点:</span>
                   <span v-for="name in fuzzVariables" :key="name" class="fuzz-ph-pill">§{{ name }}§</span>
+                  <el-button
+                    v-if="isSinglePayloadMode && fuzzVariables.length > 1"
+                    link
+                    type="primary"
+                    size="small"
+                    style="margin-left: 8px; font-size: 11px"
+                    @click="fuzzCombination = 'CLUSTER_BOMB'"
+                  >
+                    切换为多字典模式 (集束炸弹) ➔
+                  </el-button>
                 </div>
                 <span v-else class="fuzz-ribbon-novars">未标记占位符（在上方请求报文中选中文本点击“添加占位符”）</span>
               </div>
@@ -2794,7 +3068,7 @@ onUnmounted(() => {
               <div class="fuzz-editor-toolbar">
                 <div class="fuzz-editor-meta">
                   <span class="fuzz-editor-title">
-                    {{ isSinglePayloadMode ? "通用字典列表" : `字典集合 (${fuzzGroupOrder.length} 组)` }}
+                    {{ isSinglePayloadMode ? "通用字典列表" : `字典集合 (${fuzzVariables.length} 组)` }}
                   </span>
                   <span class="fuzz-editor-lines">
                     {{ isSinglePayloadMode ? (fuzzSharedPayload.split(/\r?\n/).filter(Boolean)).length : totalMultiPayloadLines }} 行
@@ -2846,13 +3120,25 @@ onUnmounted(() => {
                     @change="onFuzzFileSelected"
                   />
 
+                  <el-dropdown v-if="!isSinglePayloadMode && fuzzVariables.length > 1" trigger="click" :disabled="fuzzRunning" @command="(c) => clearFuzzGroups(c === 'all')">
+                    <el-button size="small" link type="danger" class="fuzz-clear-btn" :disabled="fuzzRunning">
+                      清空 ▾
+                    </el-button>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item command="current">清空当前 Set (§{{ currentFuzzGroupName() || '选中' }}§)</el-dropdown-item>
+                        <el-dropdown-item command="all" divided>清空全部 Set</el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
                   <el-button
+                    v-else
                     size="small"
                     link
                     type="danger"
                     class="fuzz-clear-btn"
                     :disabled="fuzzRunning"
-                    @click="clearFuzzGroups"
+                    @click="clearFuzzGroups(false)"
                   >清空</el-button>
                 </div>
               </div>
@@ -2870,22 +3156,23 @@ onUnmounted(() => {
                   />
                 </div>
 
-                <div v-else-if="fuzzGroupOrder.length" class="fuzz-multi-list">
+                <div v-else-if="fuzzVariables.length" class="fuzz-multi-list">
                   <div
-                    v-for="(name, index) in fuzzGroupOrder"
+                    v-for="(name, index) in fuzzVariables"
                     :key="name"
                     class="fuzz-multi-item"
                     :class="{ 'is-focused': activeFuzzGroup === name }"
+                    @click="activeFuzzGroup = name"
                   >
                     <div class="fuzz-multi-head">
                       <span class="fuzz-set-badge">Set {{ index + 1 }}</span>
                       <span class="fuzz-set-name">§{{ name }}§</span>
                       <span class="fuzz-set-count">
-                        {{ ((fuzzPayloadGroups[name] || '').split(/\r?\n/).filter(Boolean)).length }} 行
+                        {{ ((getFuzzPayload(name) || '').split(/\r?\n/).filter(Boolean)).length }} 行
                       </span>
                     </div>
                     <el-input
-                      :model-value="fuzzPayloadGroups[name]"
+                      :model-value="getFuzzPayload(name)"
                       type="textarea"
                       :rows="3"
                       :disabled="fuzzRunning"
@@ -3095,6 +3382,73 @@ onUnmounted(() => {
         </footer>
       </aside>
     </div>
+
+    <el-dialog
+      v-model="targetedScanVisible"
+      :title="targetedScanEngine === 'ZAP' ? 'OWASP ZAP 定向主动探测' : 'Xray 靶向 PoC 探测'"
+      width="680px"
+      append-to-body
+      class="app-dialog"
+      align-center
+    >
+      <div v-loading="targetedScanLoading" style="min-height: 160px">
+        <div v-if="targetedScanLoading" style="text-align: center; padding: 40px 0; color: var(--app-muted)">
+          <el-icon class="is-loading" style="font-size: 24px; margin-bottom: 12px"><Refresh /></el-icon>
+          <div>正在针对当前报文上下文运行 {{ targetedScanEngine === 'ZAP' ? 'ZAP 深度注入与语法探针' : 'Xray 漏洞组件验证' }}...</div>
+        </div>
+        <div v-else-if="targetedScanResult">
+          <el-alert
+            :type="targetedScanResult.hits && targetedScanResult.hits.length ? 'warning' : 'success'"
+            :closable="false"
+            show-icon
+            style="margin-bottom: 14px"
+          >
+            <template #title>
+              <strong>{{ targetedScanResult.message }}</strong>
+            </template>
+          </el-alert>
+
+          <div v-if="targetedScanResult.hits && targetedScanResult.hits.length" class="targeted-hits-list">
+            <el-collapse accordion>
+              <el-collapse-item
+                v-for="(hit, idx) in targetedScanResult.hits"
+                :key="idx"
+                :name="idx"
+              >
+                <template #title>
+                  <div style="display: flex; align-items: center; gap: 8px; width: 100%">
+                    <el-tag :type="hit.severity === 'HIGH' || hit.severity === 'CRITICAL' ? 'danger' : 'warning'" size="small">
+                      {{ hit.severity }}
+                    </el-tag>
+                    <strong style="font-size: 13px">{{ hit.title }}</strong>
+                    <small v-if="hit.parameter" style="color: var(--app-muted); margin-left: auto; margin-right: 12px">参数: {{ hit.parameter }}</small>
+                  </div>
+                </template>
+                <div style="font-size: 12px; line-height: 1.6; padding: 4px 8px">
+                  <p><strong>描述：</strong>{{ hit.description }}</p>
+                  <p v-if="hit.evidence" style="margin-top: 4px"><strong>证据：</strong><code>{{ hit.evidence }}</code></p>
+                  <p v-if="hit.solution" style="margin-top: 4px; color: var(--el-color-success-dark-2)"><strong>修复建议：</strong>{{ hit.solution }}</p>
+                </div>
+              </el-collapse-item>
+            </el-collapse>
+          </div>
+          <div v-else style="text-align: center; padding: 24px 0; color: var(--app-muted)">
+            未发现明确的注入点或匹配漏洞，建议结合业务逻辑继续使用 Fuzz 模块进行变异测试。
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button size="small" @click="targetedScanVisible = false">关闭</el-button>
+        <el-button
+          size="small"
+          type="primary"
+          :disabled="targetedScanLoading"
+          @click="targetedScanEngine === 'ZAP' ? runZapScan() : runXrayScan()"
+        >
+          重新测试
+        </el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog
       v-model="numbersGenDialogVisible"
@@ -3500,7 +3854,7 @@ onUnmounted(() => {
 .traffic-session-rail {
   position: relative;
   display: flex;
-  padding-bottom: 8px;
+  padding-bottom: 0;
   flex-direction: column;
   background: var(--app-surface);
 }
@@ -3516,11 +3870,13 @@ onUnmounted(() => {
   z-index: 3;
   bottom: 0;
   flex: none;
-  padding: 6px 8px 2px;
+  margin-top: auto;
+  padding: 6px 8px;
   border-top: var(--traffic-pane-divider, 1px solid var(--app-border));
   background: var(--app-surface);
 }
-.traffic-session-rail > .traffic-session-pagination > .el-pagination {
+.traffic-session-rail > .traffic-session-pagination > .el-pagination,
+.traffic-session-rail > .traffic-session-pagination :deep(.el-pagination) {
   justify-content: center;
   flex-wrap: nowrap;
   margin: 0;
@@ -3698,14 +4054,18 @@ onUnmounted(() => {
   overflow: hidden;
   color: var(--app-text);
   font-size: 12px;
+  line-height: 1.5;
+  padding-bottom: 2px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .session-row-main > small {
   overflow: hidden;
-  margin-top: 5px;
+  margin-top: 3px;
   color: var(--app-muted);
   font-size: 11px;
+  line-height: 1.45;
+  padding-bottom: 1px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3775,8 +4135,12 @@ onUnmounted(() => {
 }
 .traffic-detail-head {
   position: static;
-  min-height: 54px;
-  padding: 8px 14px;
+  min-height: 46px;
+  padding: 6px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 .inline-replay-editor {
   min-height: 0;
@@ -4408,6 +4772,7 @@ onUnmounted(() => {
 }
 .packet-title {
   display: flex;
+  flex: 1;
   min-width: 0;
   align-items: center;
   gap: 8px;
@@ -4426,11 +4791,14 @@ onUnmounted(() => {
     monospace;
 }
 .packet-title > strong {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   color: var(--app-text);
   font-size: 12px;
   font-weight: 500;
-  line-height: 1.3;
+  line-height: 1.45;
+  padding-bottom: 1px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

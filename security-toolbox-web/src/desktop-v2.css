@@ -1052,11 +1052,15 @@ body.sidebar-resizing * {
 .traffic-row > span strong {
   color: #344149;
   font-size: 12px;
+  line-height: 1.5;
+  padding-bottom: 2px;
 }
 .traffic-row > span small {
   margin-top: 3px;
   color: #919ca2;
   font-size: 10px;
+  line-height: 1.45;
+  padding-bottom: 1px;
 }
 .traffic-row code {
   color: #637078;
