@@ -43,7 +43,7 @@ class DependencyDetectionServiceTests {
     DependencyStatus nmap = find(response, "Nmap");
     DependencyStatus httpx = find(response, "ProjectDiscovery httpx");
 
-    assertThat(response.dependencies()).hasSize(14);
+    assertThat(response.dependencies()).hasSize(15);
     assertThat(response.dependencies())
         .extracting(DependencyStatus::name)
         .containsExactly(
@@ -53,6 +53,7 @@ class DependencyDetectionServiceTests {
             "OpenSSL",
             "curl",
             "Python",
+            "sqlmap",
             "PostgreSQL",
             "Nuclei",
             "Afrog",
