@@ -2263,6 +2263,7 @@ async function runZapScan(item?: TrafficSession | null) {
         strength: "MEDIUM",
         policy: "Default Policy",
       },
+      { timeout: 180_000 },
     );
     targetedScanResult.value = data;
     if (data.hits && data.hits.length > 0) {
@@ -2290,6 +2291,7 @@ async function runXrayScan(item?: TrafficSession | null) {
       {
         allPocs: true,
       },
+      { timeout: 180_000 },
     );
     targetedScanResult.value = data;
     if (data.hits && data.hits.length > 0) {
@@ -2359,7 +2361,6 @@ onUnmounted(() => {
           v-if="captureBrowserAvailable && !browserRunning"
           :content="captureBrowserTooltip"
           placement="bottom"
-          effect="light"
           :show-arrow="false"
           :show-after="350"
           popper-class="traffic-tooltip traffic-tooltip--wide"
@@ -2389,7 +2390,6 @@ onUnmounted(() => {
         <el-tooltip
           content="刷新流量"
           placement="bottom"
-          effect="light"
           :show-arrow="false"
           :show-after="350"
           popper-class="traffic-tooltip"
@@ -2732,7 +2732,6 @@ onUnmounted(() => {
                 <el-tooltip
                   content="关闭标签"
                   placement="top"
-                  effect="light"
                   :show-arrow="false"
                   :show-after="350"
                   popper-class="traffic-tooltip"
@@ -2745,7 +2744,6 @@ onUnmounted(() => {
               <el-tooltip
                 content="新建请求"
                 placement="top"
-                effect="light"
                 :show-arrow="false"
                 :show-after="350"
                 popper-class="traffic-tooltip"
@@ -3531,7 +3529,7 @@ onUnmounted(() => {
         class="capture-filter-table"
         empty-text="暂无抓包黑白名单规则"
       >
-        <el-table-column label="名单" width="86"
+        <el-table-column label="名单" width="75"
           ><template #default="scope"
             ><el-tag
               size="small"
@@ -3542,7 +3540,7 @@ onUnmounted(() => {
             ></template
           ></el-table-column
         >
-        <el-table-column label="匹配方式" width="92"
+        <el-table-column label="匹配方式" width="85"
           ><template #default="scope">{{
             captureFilterTypeLabel(scope.row.type)
           }}</template></el-table-column
@@ -3550,22 +3548,17 @@ onUnmounted(() => {
         <el-table-column
           prop="pattern"
           label="匹配内容"
-          min-width="260"
-          :show-overflow-tooltip="{
-            effect: 'light',
-            placement: 'top',
-            popperClass: 'traffic-tooltip',
-            showArrow: false,
-            showAfter: 350,
-          }"
+          min-width="160"
+          show-overflow-tooltip
         />
-        <el-table-column label="启用" width="72"
+        <el-table-column label="启用" width="65"
           ><template #default="scope"
             ><el-switch
               v-model="scope.row.enabled"
               @change="toggleCaptureFilter(scope.row)" /></template
-        ></el-table-column>
-        <el-table-column label="操作" width="112"
+        ></el-table-column
+        >
+        <el-table-column label="操作" width="100"
           ><template #default="scope"
             ><el-button
               link

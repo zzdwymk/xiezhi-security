@@ -37,8 +37,10 @@ public class ReconController {
 
   @GetMapping("/paths")
   public List<DiscoveredPath> paths(
-      @PathVariable Long projectId, @RequestParam Long targetId) {
-    return discoveredPaths.list(projectId, targetId);
+      @PathVariable Long projectId, @RequestParam(required = false) Long targetId) {
+    return targetId == null
+        ? discoveredPaths.listByProject(projectId)
+        : discoveredPaths.list(projectId, targetId);
   }
 
   @PostMapping("/icp/batch")

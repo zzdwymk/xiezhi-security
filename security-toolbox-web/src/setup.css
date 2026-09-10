@@ -902,6 +902,144 @@
   line-height: 1.45;
 }
 
+/* Dark mode contrast guarantees for setup page */
+:root[data-system-theme="dark"] .setup-page {
+  --setup-bg: var(--app-bg);
+  --setup-panel: var(--app-surface);
+  --setup-panel-strong: var(--app-surface-strong);
+  --setup-panel-soft: var(--app-surface-soft);
+  --setup-side: var(--app-sidebar);
+  --setup-border: var(--app-border);
+  --setup-text: var(--app-text);
+  --setup-muted: var(--app-muted);
+  --setup-accent: var(--app-accent);
+  --setup-accent-dark: var(--app-accent-dark);
+}
+
+:root[data-system-theme="dark"] .setup-steps li {
+  color: var(--app-muted);
+}
+
+:root[data-system-theme="dark"] .setup-steps li span {
+  color: var(--app-text);
+}
+
+:root[data-system-theme="dark"] .setup-steps li.active {
+  background: var(--app-accent-soft);
+  color: var(--app-text);
+}
+
+:root[data-system-theme="dark"] .setup-steps li.active span {
+  color: var(--app-text);
+}
+
+:root[data-system-theme="dark"] .setup-steps li i {
+  border-color: var(--app-border-strong);
+  background: var(--app-surface-strong);
+  color: var(--app-text);
+}
+
+:root[data-system-theme="dark"] .setup-steps li.done i {
+  border-color: color-mix(in srgb, var(--app-accent) 40%, var(--app-border));
+  background: var(--app-accent-soft);
+  color: var(--app-accent);
+}
+
+:root[data-system-theme="dark"] .setup-steps li.active i {
+  border-color: var(--app-accent);
+  background: var(--app-accent);
+  color: var(--system-accent-foreground);
+}
+
+:root[data-system-theme="dark"] .dep-status {
+  background: color-mix(in srgb, #ef4444 18%, var(--app-surface));
+  color: #fca5a5;
+}
+
+:root[data-system-theme="dark"] .dep-status.ready {
+  background: color-mix(in srgb, #10b981 18%, var(--app-surface));
+  color: #6ee7b7;
+}
+
+:root[data-system-theme="dark"] .dep-status.detecting,
+:root[data-system-theme="dark"] .dep-status.msf-pending-status {
+  background: color-mix(in srgb, var(--app-accent) 20%, var(--app-surface));
+  color: var(--app-accent);
+}
+
+:root[data-system-theme="dark"] .dependency-group {
+  border-color: var(--app-border);
+  background: var(--app-surface);
+}
+
+:root[data-system-theme="dark"] .dependency-group-head {
+  border-bottom-color: var(--app-border);
+  background: var(--app-surface);
+}
+
+:root[data-system-theme="dark"] .dependency-group-head h3 {
+  color: var(--app-text);
+}
+
+:root[data-system-theme="dark"] .dependency-row {
+  border-bottom-color: var(--app-border);
+  background: var(--app-surface);
+}
+
+:root[data-system-theme="dark"] .dependency-row:hover {
+  background: var(--app-surface-soft);
+}
+
+:root[data-system-theme="dark"] .dep-main b {
+  color: var(--app-text);
+}
+
+:root[data-system-theme="dark"] .dep-main .dep-path,
+:root[data-system-theme="dark"] .dep-main .dep-hash,
+:root[data-system-theme="dark"] .dep-main .dep-note,
+:root[data-system-theme="dark"] .dep-version,
+:root[data-system-theme="dark"] .dep-install-progress {
+  color: var(--app-muted);
+}
+
+:root[data-system-theme="dark"] .setup-storage,
+:root[data-system-theme="dark"] .setup-download-source,
+:root[data-system-theme="dark"] .setup-toolbox-card {
+  border-color: var(--app-border);
+  background: var(--app-surface);
+  color: var(--app-text);
+}
+
+:root[data-system-theme="dark"] .setup-toolbox-divider {
+  background: var(--app-border);
+}
+
+:root[data-system-theme="dark"] .setup-storage-title {
+  color: var(--app-text);
+}
+
+:root[data-system-theme="dark"] .setup-storage code,
+:root[data-system-theme="dark"] .setup-toolbox-card code,
+:root[data-system-theme="dark"] .setup-download-source-hint,
+:root[data-system-theme="dark"] .setup-toolbox-card .setup-download-source-hint {
+  color: var(--app-muted);
+}
+
+:root[data-system-theme="dark"] .setup-content > footer {
+  color: var(--app-muted);
+}
+
+:root[data-system-theme="dark"] .setup-footer-copy :deep(.el-checkbox),
+:root[data-system-theme="dark"] .setup-footer-copy :deep(.el-checkbox__label) {
+  color: var(--app-muted);
+}
+
+:root[data-system-theme="dark"] .setup-logo {
+  border-color: var(--app-border);
+  background: var(--app-surface);
+  color: var(--app-accent);
+}
+
 @media (forced-colors: active) {
   .dep-manual-link {
     border-color: ButtonText;

@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld(
     getWindowMaterial: () => ipcRenderer.invoke("toolbox:get-window-material"),
     setWindowMaterial: (material) =>
       ipcRenderer.invoke("toolbox:set-window-material", material),
+    getThemeMode: () => ipcRenderer.invoke("toolbox:get-theme-mode"),
+    setThemeMode: (mode) => ipcRenderer.invoke("toolbox:set-theme-mode", mode),
     minimizeWindow: () => ipcRenderer.invoke("toolbox:window-minimize"),
     toggleMaximizeWindow: () =>
       ipcRenderer.invoke("toolbox:window-toggle-maximize"),

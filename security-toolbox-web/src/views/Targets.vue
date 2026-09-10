@@ -508,6 +508,116 @@ async function batchCreate() {
   }
 }
 
+const selectedTargets = ref<Target[]>([]);
+const batchRemoveDialog = ref(false);
+const batchRemoveProjectId = ref<number | undefined>();
+const batchMoving = ref(false);
+
+function onSelectionChange(selection: Target[]) {
+  selectedTargets.value = selection;
+}
+
+async function batchDeleteTargets() {
+  if (!selectedTargets.value.length) {
+    ElMessage.warning("请先勾选要删除的目标");
+    return;
+  }
+  const targets = [...selectedTargets.value];
+  try {
+    await ElMessageBox.confirm(
+      `确认删除选中的 ${targets.length} 个授权目标？删除后不可恢复，涉及它们的授权记录与审计数据将一并失效。`,
+      "批量删除授权目标",
+      {
+        confirmButtonText: "批量删除",
+        cancelButtonText: "取消",
+        type: "warning",
+      },
+    );
+  } catch (error) {
+    if (error !== "cancel" && error !== "close") ElMessage.error("批量删除已取消");
+    return;
+  }
+  let successCount = 0;
+  let failedCount = 0;
+  for (const row of targets) {
+    try {
+      await endpoints.deleteTarget(row.id);
+      successCount++;
+    } catch {
+      failedCount++;
+    }
+  }
+  if (failedCount === 0) {
+    ElMessage.success(`已批量删除 ${successCount} 个授权目标`);
+  } else {
+    ElMessage.warning(`批量删除完成：成功 ${successCount} 个，失败 ${failedCount} 个`);
+  }
+  await load();
+}
+
+function openBatchMove() {
+  if (!selectedTargets.value.length) {
+    ElMessage.warning("请先勾选要移出项目的目标");
+    return;
+  }
+  batchRemoveProjectId.value = undefined;
+  batchRemoveDialog.value = true;
+}
+
+function batchCandidatesForProject(projectId?: number) {
+  if (!projectId) return selectedTargets.value;
+  return selectedTargets.value.filter((row) =>
+    (projectIdsByTarget.value[row.id] || []).includes(projectId),
+  );
+}
+
+async function batchRemoveFromProject() {
+  if (!batchRemoveProjectId.value) {
+    ElMessage.warning("请选择要移出的评估项目");
+    return;
+  }
+  const projectId = batchRemoveProjectId.value;
+  const project = projects.value.find((item) => item.id === projectId);
+  const candidates = batchCandidatesForProject(projectId);
+  if (!candidates.length) {
+    ElMessage.warning("所选目标均不属于该项目，无需移出");
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确认将选中的 ${candidates.length} 个目标从项目“${project?.name || projectId}”移出？移出后将不再属于该项目，也不再受该项目的授权边界约束。`,
+      "批量移出项目",
+      {
+        type: "warning",
+        confirmButtonText: "确认移出",
+        cancelButtonText: "取消",
+      },
+    );
+  } catch (error) {
+    if (error !== "cancel" && error !== "close") ElMessage.error("移出操作已取消");
+    return;
+  }
+  batchMoving.value = true;
+  let successCount = 0;
+  let failedCount = 0;
+  for (const row of candidates) {
+    try {
+      await endpoints.removeProjectTarget(projectId, row.id);
+      successCount++;
+    } catch {
+      failedCount++;
+    }
+  }
+  batchMoving.value = false;
+  if (failedCount === 0) {
+    ElMessage.success(`已将 ${successCount} 个目标移出项目`);
+  } else {
+    ElMessage.warning(`移出项目完成：成功 ${successCount} 个，失败 ${failedCount} 个`);
+  }
+  batchRemoveDialog.value = false;
+  await load();
+}
+
 async function remove(row: Target) {
   try {
     await ElMessageBox.confirm(`删除目标“${row.name}”？`, "确认删除", {
@@ -667,7 +777,26 @@ onMounted(load);
         <h3>目标</h3>
         <p>仅保存已获授权的地址和允许检测的端口。</p>
       </div>
-      <el-button type="primary" @click="openCreate">新增目标</el-button>
+      <div class="target-head-actions">
+        <span v-if="selectedTargets.length" class="target-batch-hint">
+          已选 {{ selectedTargets.length }} 个
+        </span>
+        <el-button
+          v-if="selectedTargets.length"
+          :disabled="batchMoving"
+          @click="openBatchMove"
+          >批量移出项目</el-button
+        >
+        <el-button
+          v-if="selectedTargets.length"
+          type="danger"
+          plain
+          :disabled="batchMoving"
+          @click="batchDeleteTargets"
+          >批量删除</el-button
+        >
+        <el-button type="primary" @click="openCreate">新增目标</el-button>
+      </div>
     </div>
     <OfflineState
       v-if="offline || !rows.length"
@@ -676,18 +805,19 @@ onMounted(load);
         offline ? '无法连接后端服务。' : '新增目标后才能创建检测任务。'
       "
     />
-    <el-table v-else :data="pagedRows">
-      <el-table-column prop="name" label="名称" min-width="130" />
-      <el-table-column prop="targetValue" label="地址" min-width="190" />
-      <el-table-column prop="targetType" label="类型" width="90" />
-      <el-table-column prop="allowedPorts" label="端口" min-width="120" />
+    <el-table v-else :data="pagedRows" @selection-change="onSelectionChange">
+      <el-table-column type="selection" width="40" />
+      <el-table-column prop="name" label="名称" min-width="110" show-overflow-tooltip />
+      <el-table-column prop="targetValue" label="地址" min-width="130" show-overflow-tooltip />
+      <el-table-column prop="targetType" label="类型" width="70" />
+      <el-table-column prop="allowedPorts" label="端口" min-width="90" show-overflow-tooltip />
       <el-table-column
         prop="authorizationNote"
         label="授权记录"
-        min-width="220"
+        min-width="120"
         show-overflow-tooltip
       />
-      <el-table-column label="授权有效期" min-width="176">
+      <el-table-column label="授权有效期" min-width="135">
         <template #default="scope">
           <div
             class="target-authorization-window"
@@ -711,7 +841,7 @@ onMounted(load);
           </div>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="90"
+      <el-table-column label="状态" width="80"
         ><template #default="scope"
           ><el-tag
             size="small"
@@ -720,7 +850,7 @@ onMounted(load);
           ></template
         ></el-table-column
       >
-      <el-table-column label="操作" width="285"
+      <el-table-column label="操作" min-width="250"
         ><template #default="scope"
           ><el-button
             class="target-action-ai"
@@ -950,7 +1080,7 @@ onMounted(load);
           class="batch-preview-table"
           max-height="240"
         >
-          <el-table-column label="目标地址" min-width="160">
+          <el-table-column label="目标地址" min-width="130">
             <template #default="{ row }">
               <div class="preview-target-cell">
                 <span class="preview-target-val" :title="row.targetValue">{{ row.targetValue }}</span>
@@ -961,7 +1091,7 @@ onMounted(load);
             </template>
           </el-table-column>
 
-          <el-table-column label="端口模式 / 允许端口" min-width="280">
+          <el-table-column label="端口模式 / 允许端口" min-width="200">
             <template #default="{ row }">
               <div v-if="batchForm.fullPortAccess" class="preview-inherit-row">
                 <el-tag size="small" type="warning" effect="plain">整机全端口（继承统一 1-65535）</el-tag>
@@ -1259,6 +1389,54 @@ onMounted(load);
       >
     </template>
   </el-dialog>
+
+  <el-dialog
+    v-model="batchRemoveDialog"
+    title="批量移出项目"
+    class="app-dialog app-dialog--md target-dialog"
+    align-center
+  >
+    <el-alert
+      type="info"
+      show-icon
+      :closable="false"
+      title="移出项目不会删除授权目标本身，只是解除该目标与所选评估项目的归属关系。"
+    />
+    <el-form label-position="top" class="target-form">
+      <el-form-item label="选择要移出的评估项目" required>
+        <el-select
+          v-model="batchRemoveProjectId"
+          placeholder="选择评估项目"
+          style="width: 100%"
+        >
+          <el-option
+            v-for="p in projects"
+            :key="p.id"
+            :disabled="!batchCandidatesForProject(p.id).length"
+            :label="`${p.name}（${projectStatusLabel(p.status)}）`"
+            :value="p.id"
+          />
+        </el-select>
+      </el-form-item>
+      <p
+        v-if="batchRemoveProjectId"
+        class="target-time-hint"
+      >
+        该项目下将移出
+        {{ batchCandidatesForProject(batchRemoveProjectId).length }} 个目标。
+      </p>
+    </el-form>
+    <template #footer>
+      <el-button @click="batchRemoveDialog = false">取消</el-button>
+      <el-button
+        type="primary"
+        :loading="batchMoving"
+        :disabled="!batchRemoveProjectId"
+        @click="batchRemoveFromProject"
+        >确认移出</el-button
+      >
+    </template>
+  </el-dialog>
 </template>
 
 <style scoped>
@@ -1276,6 +1454,18 @@ onMounted(load);
 }
 .targets-page .section-head :deep(.el-button) {
   font-size: 12px;
+}
+.target-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.target-batch-hint {
+  color: var(--app-accent);
+  font-size: 12px;
+  font-weight: 600;
+  margin-right: 2px;
 }
 .targets-page :deep(.el-table .cell) {
   line-height: 1.45;

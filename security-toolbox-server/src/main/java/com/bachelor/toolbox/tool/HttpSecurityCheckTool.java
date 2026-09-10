@@ -3,6 +3,7 @@ package com.bachelor.toolbox.tool;
 import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.TargetPolicyService;
+import com.bachelor.toolbox.target.WebTargetResolver;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpHeaders;
@@ -77,57 +78,104 @@ public class HttpSecurityCheckTool implements SecurityTool {
       throws Exception {
     String check = validateCheck(parameters);
     String path = java.util.Objects.toString(parameters.getOrDefault("path", ""), "").trim();
-    URI uri = policyService.validatedHttpUri(target, path.isBlank() ? null : path);
-    HttpRequest.Builder request =
-        HttpRequest.newBuilder(uri)
-            .timeout(Duration.ofSeconds(10))
-            .header("User-Agent", "Xiezhi-Authorized-Security/0.2");
-    if ("cors".equals(check)) {
-      request.header("Origin", TEST_ORIGIN).GET();
-    } else if ("methods".equals(check)) {
-      request.method("OPTIONS", HttpRequest.BodyPublishers.noBody());
-    } else {
-      request.GET();
+    // 优先采用工作流/主动检测预解析出的真实 Web 基址；否则回退到授权目标的默认 http(s) 基址。
+    List<URI> bases = WebTargetResolver.basesFromParameters(parameters);
+    if (bases.isEmpty()) {
+      bases = List.of(policyService.validatedHttpUri(target, path.isBlank() ? null : path));
     }
-    String method = "methods".equals(check) ? "OPTIONS" : "GET";
-    observer.operation(
-        "HTTP "
-            + method
-            + " "
-            + uri
-            + ("cors".equals(check) ? " Origin=" + TEST_ORIGIN : "")
-            + " check="
-            + check);
+    List<FindingDraft> findingsAll = new ArrayList<>();
+    List<Map<String, Object>> results = new ArrayList<>();
+    int total = 0;
+    for (URI base : bases) {
+      URI uri = join(base, path);
+      HttpRequest.Builder request =
+          HttpRequest.newBuilder(uri)
+              .timeout(Duration.ofSeconds(10))
+              .header("User-Agent", "Xiezhi-Authorized-Security/0.2");
+      if ("cors".equals(check)) {
+        request.header("Origin", TEST_ORIGIN).GET();
+      } else if ("methods".equals(check)) {
+        request.method("OPTIONS", HttpRequest.BodyPublishers.noBody());
+      } else {
+        request.GET();
+      }
+      String method = "methods".equals(check) ? "OPTIONS" : "GET";
+      observer.operation(
+          "HTTP "
+              + method
+              + " "
+              + uri
+              + ("cors".equals(check) ? " Origin=" + TEST_ORIGIN : "")
+              + " check="
+              + check);
 
-    observer.progress(0, 2, "正在执行 " + checkName(check));
-    HttpResponse<Void> response =
-        httpClient.send(request.build(), HttpResponse.BodyHandlers.discarding());
-    observer.progress(1, 2, "已收到 HTTP 响应，正在分析 " + checkName(check));
-    List<FindingDraft> findings =
-        switch (check) {
-          case "cookies" -> analyzeCookies(uri, response.headers());
-          case "cors" -> analyzeCors(response.headers(), TEST_ORIGIN);
-          case "methods" -> analyzeMethods(response.headers());
-          case "disclosure" -> analyzeDisclosure(response.headers());
-          default -> throw new ApiException("不支持的 HTTP 检查类型");
-        };
-    observer.progress(2, 2, checkName(check) + "完成");
+      observer.progress(total, bases.size() * 2, "正在执行 " + checkName(check));
+      HttpResponse<Void> response =
+          httpClient.send(request.build(), HttpResponse.BodyHandlers.discarding());
+      total++;
+      observer.progress(total * 2, bases.size() * 2, "已收到 HTTP 响应，正在分析 " + checkName(check));
+      List<FindingDraft> findings =
+          switch (check) {
+            case "cookies" -> analyzeCookies(uri, response.headers());
+            case "cors" -> analyzeCors(response.headers(), TEST_ORIGIN);
+            case "methods" -> analyzeMethods(response.headers());
+            case "disclosure" -> analyzeDisclosure(response.headers());
+            default -> throw new ApiException("不支持的 HTTP 检查类型");
+          };
+      findingsAll.addAll(findings);
+      Map<String, Object> result = new LinkedHashMap<>();
+      result.put("url", uri.toString());
+      result.put("check", check);
+      result.put("status", response.statusCode());
+      result.put("headers", sanitizedHeaders(response.headers()));
+      results.add(result);
+    }
+    observer.progress(bases.size() * 2, bases.size() * 2, checkName(check) + "完成");
 
     Map<String, Object> data = new LinkedHashMap<>();
-    data.put("url", uri.toString());
     data.put("check", check);
-    data.put("status", response.statusCode());
-    data.put("headers", sanitizedHeaders(response.headers()));
+    data.put("results", results);
+    if (!results.isEmpty()) {
+      Map<String, Object> first = results.get(0);
+      data.put("url", first.get("url"));
+      data.put("status", first.get("status"));
+      data.put("headers", first.get("headers"));
+    }
     return new ToolExecutionResult(
         "HTTP "
-            + response.statusCode()
+            + (results.isEmpty() ? "无" : results.get(0).get("status"))
             + "，"
             + checkName(check)
             + "发现 "
-            + findings.size()
+            + findingsAll.size()
             + " 项潜在问题",
         data,
-        findings);
+        findingsAll);
+  }
+
+  private URI join(URI base, String path) {
+    if (path == null || path.isBlank() || "/".equals(path.trim())) return base;
+    String p = path.trim();
+    if (p.startsWith("http://") || p.startsWith("https://")) {
+      try {
+        return URI.create(p);
+      } catch (RuntimeException ex) {
+        return base;
+      }
+    }
+    if (!p.startsWith("/")) p = "/" + p;
+    String rawPath = p;
+    String rawQuery = null;
+    int q = p.indexOf('?');
+    if (q >= 0) {
+      rawPath = p.substring(0, q);
+      rawQuery = p.substring(q + 1);
+    }
+    try {
+      return new URI(base.getScheme(), null, base.getHost(), base.getPort(), rawPath, rawQuery, null);
+    } catch (Exception ex) {
+      return base;
+    }
   }
 
   List<FindingDraft> analyzeCookies(URI uri, HttpHeaders headers) {

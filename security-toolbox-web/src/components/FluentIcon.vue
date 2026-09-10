@@ -23,6 +23,7 @@ import clock from "@fluentui/svg-icons/icons/clock_24_regular.svg?url";
 import copy from "@fluentui/svg-icons/icons/copy_24_regular.svg?url";
 import dataBar from "@fluentui/svg-icons/icons/data_bar_vertical_24_regular.svg?url";
 import deleteIcon from "@fluentui/svg-icons/icons/delete_24_regular.svg?url";
+import diagram from "@fluentui/svg-icons/icons/diagram_24_regular.svg?url";
 import dismiss from "@fluentui/svg-icons/icons/dismiss_24_regular.svg?url";
 import document from "@fluentui/svg-icons/icons/document_24_regular.svg?url";
 import documentCheckmark from "@fluentui/svg-icons/icons/document_checkmark_24_regular.svg?url";
@@ -93,6 +94,8 @@ const iconUrls: Record<string, string> = {
   copy,
   data: dataBar,
   delete: deleteIcon,
+  diagram,
+  mindmap: diagram,
   dismiss,
   document,
   "document-checkmark": documentCheckmark,

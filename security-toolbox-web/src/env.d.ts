@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 type WindowMaterial = "none" | "mica" | "acrylic";
+type ThemeMode = "system" | "light" | "dark";
 
 interface ToolboxDesktopBridge {
   readonly isDesktop: true;
@@ -13,6 +14,8 @@ interface ToolboxDesktopBridge {
   readonly setWindowMaterial?: (
     material: WindowMaterial,
   ) => Promise<WindowMaterial>;
+  readonly getThemeMode?: () => Promise<ThemeMode>;
+  readonly setThemeMode?: (mode: ThemeMode) => Promise<ThemeMode>;
   readonly minimizeWindow?: () => Promise<void>;
   readonly toggleMaximizeWindow?: () => Promise<boolean>;
   readonly isWindowMaximized?: () => Promise<boolean>;

@@ -476,24 +476,24 @@ onBeforeUnmount(() => {
       <el-table-column
         prop="title"
         label="名称"
-        min-width="230"
+        min-width="150"
         show-overflow-tooltip
       />
-      <el-table-column label="等级" width="100"
+      <el-table-column label="等级" width="75"
         ><template #default="scope"
           ><el-tag size="small" :type="severityType(scope.row.severity)">{{
             scope.row.severity
           }}</el-tag></template
         ></el-table-column
       >
-      <el-table-column prop="sourceTool" label="工具" width="130" />
-      <el-table-column prop="targetId" label="目标" width="75" />
-      <el-table-column label="发现时间" min-width="180"
+      <el-table-column prop="sourceTool" label="工具" width="100" show-overflow-tooltip />
+      <el-table-column prop="targetId" label="目标" width="65" />
+      <el-table-column label="发现时间" min-width="140"
         ><template #default="scope">{{
           formatDateTime(scope.row.createdAt)
         }}</template></el-table-column
       >
-      <el-table-column label="状态" width="155"
+      <el-table-column label="状态" width="115"
         ><template #default="scope"
           ><el-select
             size="small"
@@ -507,7 +507,7 @@ onBeforeUnmount(() => {
               label="已修复"
               value="FIXED" /></el-select></template
       ></el-table-column>
-      <el-table-column label="操作" width="330">
+      <el-table-column label="操作" min-width="260">
         <template #default="scope">
           <div class="finding-row-actions">
             <el-button
@@ -769,7 +769,7 @@ onBeforeUnmount(() => {
         :closable="false"
       />
       <el-table :data="pagedDiffItems" size="small" max-height="360">
-        <el-table-column label="变化" width="120">
+        <el-table-column label="变化" width="90">
           <template #default="scope">
             <el-tag
               size="small"
@@ -780,8 +780,8 @@ onBeforeUnmount(() => {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="title" label="漏洞" min-width="220" />
-        <el-table-column label="等级" width="140"
+        <el-table-column prop="title" label="漏洞" min-width="150" show-overflow-tooltip />
+        <el-table-column label="等级" width="130"
           ><template #default="scope"
             >{{ scope.row.previousSeverity || "-" }} →
             {{ scope.row.currentSeverity || "-" }}</template

@@ -8,6 +8,7 @@ import {
   type AuditLogRecord,
   type AssessmentProject,
   type DiscoveryResult,
+  type DiscoveredPath,
   type FingerprintCatalogInfo,
   type IcpBatchResult,
   type MemoryDoc,
@@ -1814,14 +1815,34 @@ function openReportMetric(targetTab: string, query?: Record<string, string>) {
 async function loadDiscovery() {
   discoveryLoading.value = true;
   try {
-    discoveryRows.value = (
-      await endpoints.projectDiscoveryResults(id, discoveryTarget.value)
-    ).data;
+    const [probeResults, webPaths] = await Promise.all([
+      endpoints.projectDiscoveryResults(id, discoveryTarget.value),
+      endpoints.projectDiscoveredPaths(id, discoveryTarget.value),
+    ]);
+    const pathAssets = asWebPathAssets(webPaths.data || []);
+    discoveryRows.value = [...(probeResults.data || []), ...pathAssets];
   } catch (error: any) {
     ElMessage.error(errorMessage(error, "探测结果加载失败"));
   } finally {
     discoveryLoading.value = false;
   }
+}
+
+// 把 DiscoveredPath（Web URL 资产）规整为拓扑可消费的 DiscoveryResult 形态。
+// 位移 id 空间，避免与 probe_results 自增 id 碰撞。
+function asWebPathAssets(paths: DiscoveredPath[]): DiscoveryResult[] {
+  const BASE = 10_000_000_000;
+  return paths
+    .map((p) => (p.id == null ? null : { p, rawId: p.id as number }))
+    .filter((x): x is { p: DiscoveredPath; rawId: number } => x != null)
+    .map(({ p, rawId }) => ({
+      id: BASE + rawId,
+      projectId: p.projectId,
+      targetId: p.targetId,
+      url: p.url || p.path || "",
+      _webPath: true,
+      _webPathId: rawId,
+    }));
 }
 
 /**
@@ -2916,6 +2937,25 @@ async function runWorkflow() {
     };
     const { data: preflight } = await endpoints.preflightWorkflowRun(identity);
     const skippedNodeIds = preflight.issues.map((issue) => issue.nodeId);
+    const resolvedTargets = preflight.resolvedTargets ?? {};
+    if (Object.keys(resolvedTargets).length) {
+      const lines = Object.entries(resolvedTargets)
+        .map(
+          ([nodeId, urls]) =>
+            `· ${nodeId}: ${(urls ?? []).join("、") || "（无可达地址）"}`,
+        )
+        .join("\n");
+      const resolved = await ElMessageBox.confirm(
+        `已为以下 Web 步骤解析出将实际检测的可达地址（将作为资产汇入资产拓扑）：\n${lines}`,
+        "解析的 Web 检测目标",
+        {
+          type: "warning",
+          confirmButtonText: "确认并继续",
+          cancelButtonText: "取消执行",
+        },
+      ).catch(() => false);
+      if (resolved !== "confirm") return;
+    }
     if (preflight.issues.length) {
       const issueText = preflight.issues
         .map((issue) => `${issue.label}：${issue.reason}`)
@@ -3140,15 +3180,16 @@ onUnmounted(() => {
           description="项目暂无授权目标，先新建或加入一个目标"
         />
         <el-table v-else :data="pagedLinkedTargets" stripe>
-          <el-table-column prop="name" label="名称" min-width="140" />
-          <el-table-column prop="targetValue" label="地址" min-width="180" />
-          <el-table-column prop="targetType" label="类型" width="90" />
+          <el-table-column prop="name" label="名称" min-width="110" show-overflow-tooltip />
+          <el-table-column prop="targetValue" label="地址" min-width="130" show-overflow-tooltip />
+          <el-table-column prop="targetType" label="类型" width="70" />
           <el-table-column
             prop="allowedPorts"
             label="授权端口"
-            min-width="140"
+            min-width="90"
+            show-overflow-tooltip
           />
-          <el-table-column label="操作" width="110"
+          <el-table-column label="操作" width="100"
             ><template #default="s"
               ><el-button
                 link
@@ -3286,7 +3327,7 @@ onUnmounted(() => {
                 class="batch-preview-table"
                 max-height="240"
               >
-                <el-table-column label="目标地址" min-width="160">
+                <el-table-column label="目标地址" min-width="130">
                   <template #default="{ row }">
                     <div class="preview-target-cell">
                       <span class="preview-target-val" :title="row.targetValue">{{ row.targetValue }}</span>
@@ -3297,7 +3338,7 @@ onUnmounted(() => {
                   </template>
                 </el-table-column>
 
-                <el-table-column label="端口模式 / 允许端口" min-width="280">
+                <el-table-column label="端口模式 / 允许端口" min-width="200">
                   <template #default="{ row }">
                     <div v-if="targetBatchForm.fullPortAccess" class="preview-inherit-row">
                       <el-tag size="small" type="warning" effect="plain">整机全端口（继承统一 1-65535）</el-tag>
@@ -3629,12 +3670,12 @@ onUnmounted(() => {
         <template v-if="!showDiscoveryTopology">
           <el-empty v-if="!discoveryRows.length" description="暂无探测结果" />
         <el-table v-else :data="pagedDiscoveryRows" stripe>
-          <el-table-column label="目标" min-width="170"
+          <el-table-column label="目标" min-width="120" show-overflow-tooltip
             ><template #default="s">{{
               s.row.targetValue || s.row.url || taskTargetName(s.row.targetId)
             }}</template></el-table-column
           >
-          <el-table-column label="网站指纹" min-width="220"
+          <el-table-column label="网站指纹" min-width="160"
             ><template #default="s">
               <div class="fingerprint-cell">
                 <div
@@ -3658,14 +3699,14 @@ onUnmounted(() => {
               </div>
             </template></el-table-column
           >
-          <el-table-column label="WAF" width="140"
+          <el-table-column label="WAF" width="100" show-overflow-tooltip
             ><template #default="s">{{
               typeof s.row.waf === "string"
                 ? s.row.waf
                 : s.row.wafName || "未识别"
             }}</template></el-table-column
           >
-          <el-table-column label="证据" width="120"
+          <el-table-column label="证据" width="90"
             ><template #default="s"
               ><el-popover trigger="click" width="420"
                 ><template #reference
@@ -3681,7 +3722,7 @@ onUnmounted(() => {
               </el-popover></template
             ></el-table-column
           >
-          <el-table-column label="安全检测建议" width="150"
+          <el-table-column label="安全检测建议" width="130"
             ><template #default="s">
               <el-button
                 link
@@ -3766,7 +3807,7 @@ onUnmounted(() => {
             max-height="440"
             class="poc-recommendation-table"
           >
-            <el-table-column label="等级" width="95"
+            <el-table-column label="等级" width="75"
               ><template #default="s"
                 ><el-tag
                   size="small"
@@ -3778,12 +3819,12 @@ onUnmounted(() => {
             <el-table-column
               prop="name"
               label="检测规则 / PoC"
-              min-width="240"
+              min-width="150"
               show-overflow-tooltip
             />
             <el-table-column
               label="模板 ID"
-              min-width="180"
+              min-width="120"
               show-overflow-tooltip
               ><template #default="s"
                 ><code>{{
@@ -3791,14 +3832,14 @@ onUnmounted(() => {
                 }}</code></template
               ></el-table-column
             >
-            <el-table-column label="真实性" width="140"
+            <el-table-column label="真实性" width="100"
               ><template #default="s">{{
                 pocVerificationLabel(s.row.verificationStatus)
               }}</template></el-table-column
             >
             <el-table-column
               label="模板摘要"
-              min-width="220"
+              min-width="140"
               show-overflow-tooltip
               ><template #default="s"
                 ><code>{{ s.row.sha256 || "未提供" }}</code></template
@@ -3937,15 +3978,16 @@ onUnmounted(() => {
           size="small"
           stripe
           class="icp-table"
-          ><el-table-column label="目标" min-width="110"
+          ><el-table-column label="目标" min-width="95" show-overflow-tooltip
             ><template #default="scope">{{
               taskTargetName(scope.row.targetId) || scope.row.domain
             }}</template></el-table-column
           ><el-table-column
             prop="domain"
             label="域名"
-            min-width="110"
-          /><el-table-column label="状态" width="150"
+            min-width="95"
+            show-overflow-tooltip
+          /><el-table-column label="状态" width="110"
             ><template #default="scope"
               ><el-tag size="small" :type="icpStatusType(scope.row.status)">{{
                 icpStatusLabel(scope.row.status)
@@ -3955,7 +3997,7 @@ onUnmounted(() => {
             prop="reason"
             label="说明"
             show-overflow-tooltip
-          /><el-table-column label="备案数据" min-width="220"
+          /><el-table-column label="备案数据" min-width="150"
             ><template #default="scope">
               <div
                 v-if="icpRecordCount(scope.row) > 0"
@@ -3969,7 +4011,7 @@ onUnmounted(() => {
               </div>
               <el-tag v-else size="small" type="info">暂无数据</el-tag>
             </template></el-table-column
-          ><el-table-column label="操作" width="150" align="right"
+          ><el-table-column label="操作" width="130" align="right"
             ><template #default="scope">
               <el-button
                 v-if="desktopIcpAvailable()"
@@ -4289,21 +4331,21 @@ onUnmounted(() => {
           size="small"
           class="project-table"
         >
-          <el-table-column prop="id" label="ID" width="70" />
-          <el-table-column prop="toolCode" label="工具" min-width="140" />
-          <el-table-column label="目标" min-width="150"
+          <el-table-column prop="id" label="ID" width="55" />
+          <el-table-column prop="toolCode" label="工具" min-width="110" show-overflow-tooltip />
+          <el-table-column label="目标" min-width="110" show-overflow-tooltip
             ><template #default="scope">{{
               taskTargetName(scope.row.targetId)
             }}</template></el-table-column
           >
-          <el-table-column label="状态" width="110"
+          <el-table-column label="状态" width="85"
             ><template #default="scope"
               ><el-tag size="small" :type="taskStatusType(scope.row.status)">{{
                 taskStatusLabel(scope.row.status)
               }}</el-tag></template
             ></el-table-column
           >
-          <el-table-column label="进度" min-width="220"
+          <el-table-column label="进度" min-width="140"
             ><template #default="scope"
               ><div class="live-task-progress">
                 <el-progress
@@ -4317,12 +4359,12 @@ onUnmounted(() => {
               </div></template
             ></el-table-column
           >
-          <el-table-column label="创建时间" min-width="170"
+          <el-table-column label="创建时间" min-width="140"
             ><template #default="scope">{{
               formatDateTime(scope.row.createdAt)
             }}</template></el-table-column
           >
-          <el-table-column label="操作" width="280">
+          <el-table-column label="操作" min-width="180">
             <template #default="scope">
               <el-button link type="primary" @click="showTaskDetail(scope.row)"
                 >实时日志</el-button
@@ -4397,14 +4439,14 @@ onUnmounted(() => {
           size="small"
           class="project-table"
         >
-          <el-table-column prop="id" label="ID" width="70" />
+          <el-table-column prop="id" label="ID" width="55" />
           <el-table-column
             prop="title"
             label="漏洞"
-            min-width="240"
+            min-width="150"
             show-overflow-tooltip
           />
-          <el-table-column label="等级" width="100"
+          <el-table-column label="等级" width="75"
             ><template #default="scope"
               ><el-tag
                 size="small"
@@ -4413,8 +4455,8 @@ onUnmounted(() => {
               ></template
             ></el-table-column
           >
-          <el-table-column prop="sourceTool" label="来源" width="120" />
-          <el-table-column label="状态" width="150"
+          <el-table-column prop="sourceTool" label="来源" width="95" show-overflow-tooltip />
+          <el-table-column label="状态" width="115"
             ><template #default="scope"
               ><el-select
                 size="small"
@@ -4427,13 +4469,14 @@ onUnmounted(() => {
                   value="FALSE_POSITIVE" /><el-option
                   label="已修复"
                   value="FIXED" /></el-select></template
-          ></el-table-column>
-          <el-table-column label="发现时间" min-width="170"
+          ></el-table-column
+          >
+          <el-table-column label="发现时间" min-width="140"
             ><template #default="scope">{{
               formatDateTime(scope.row.createdAt)
             }}</template></el-table-column
           >
-          <el-table-column label="操作" width="180"
+          <el-table-column label="操作" width="150"
             ><template #default="scope"
               ><el-button
                 link
@@ -4519,10 +4562,10 @@ onUnmounted(() => {
           size="small"
           class="project-table security-action-table"
         >
-          <el-table-column prop="id" label="ID" width="65" />
+          <el-table-column prop="id" label="ID" width="55" />
           <el-table-column
             label="安全行动"
-            min-width="220"
+            min-width="140"
             show-overflow-tooltip
           >
             <template #default="scope"
@@ -4532,12 +4575,12 @@ onUnmounted(() => {
               }}</small></template
             >
           </el-table-column>
-          <el-table-column label="授权目标" min-width="150"
+          <el-table-column label="授权目标" min-width="110" show-overflow-tooltip
             ><template #default="scope">{{
               taskTargetName(scope.row.targetId)
             }}</template></el-table-column
           >
-          <el-table-column label="风险" width="90"
+          <el-table-column label="风险" width="70"
             ><template #default="scope"
               ><el-tag
                 size="small"
@@ -4546,7 +4589,7 @@ onUnmounted(() => {
               ></template
             ></el-table-column
           >
-          <el-table-column label="审批/执行状态" width="135"
+          <el-table-column label="审批/执行状态" width="105"
             ><template #default="scope"
               ><el-tag
                 size="small"
@@ -4555,7 +4598,7 @@ onUnmounted(() => {
               ></template
             ></el-table-column
           >
-          <el-table-column label="批准时间窗" min-width="220">
+          <el-table-column label="批准时间窗" min-width="140">
             <template #default="scope"
               ><span class="security-action-window"
                 >{{ formatDateTime(scope.row.windowStart) }}<br />至
@@ -4563,7 +4606,7 @@ onUnmounted(() => {
               ></template
             >
           </el-table-column>
-          <el-table-column label="申请/审批" min-width="150"
+          <el-table-column label="申请/审批" min-width="110"
             ><template #default="scope"
               ><span class="security-action-actors"
                 >申请：{{ scope.row.requestedBy }}<br />审批：{{
@@ -4572,7 +4615,7 @@ onUnmounted(() => {
               ></template
             ></el-table-column
           >
-          <el-table-column label="操作" width="310" fixed="right">
+          <el-table-column label="操作" min-width="180">
             <template #default="scope">
               <el-button
                 link
@@ -4687,13 +4730,13 @@ onUnmounted(() => {
           size="small"
           class="project-table"
         >
-          <el-table-column prop="id" label="ID" width="65" /><el-table-column
+          <el-table-column prop="id" label="ID" width="55" /><el-table-column
             label="动作"
-            width="120"
+            width="90"
             ><template #default="scope">{{
               formatApprovalAction(scope.row.action)
             }}</template></el-table-column
-          ><el-table-column label="状态" width="110"
+          ><el-table-column label="状态" width="85"
             ><template #default="scope"
               ><el-tag
                 size="small"
@@ -4704,26 +4747,26 @@ onUnmounted(() => {
           ><el-table-column
             prop="requestedBy"
             label="申请人"
-            width="120"
+            width="90"
           /><el-table-column
             prop="approvedBy"
             label="决定人"
-            width="120"
+            width="90"
           /><el-table-column
             prop="comment"
             label="备注"
-            min-width="180"
+            min-width="110"
             show-overflow-tooltip
           /><el-table-column
             prop="authorizationSnapshotHash"
             label="授权快照哈希"
-            min-width="180"
+            min-width="110"
             show-overflow-tooltip
-          /><el-table-column label="申请时间" min-width="170"
+          /><el-table-column label="申请时间" min-width="140"
             ><template #default="scope">{{
               formatDateTime(scope.row.createdAt)
             }}</template></el-table-column
-          ><el-table-column label="操作" width="170"
+          ><el-table-column label="操作" width="120"
             ><template #default="scope"
               ><template v-if="scope.row.status === 'PENDING'"
                 ><el-button
@@ -4765,7 +4808,7 @@ onUnmounted(() => {
           ><el-table-column
             prop="action"
             label="操作"
-            min-width="160"
+            min-width="110"
             show-overflow-tooltip
           >
             <template #default="scope">
@@ -4775,7 +4818,7 @@ onUnmounted(() => {
           ><el-table-column
             prop="resourceType"
             label="资源"
-            width="120"
+            width="90"
           >
             <template #default="scope">
               {{ formatAuditResource(scope.row.resourceType) }}
@@ -4784,7 +4827,7 @@ onUnmounted(() => {
           ><el-table-column
             prop="result"
             label="结果"
-            width="100"
+            width="80"
           >
             <template #default="scope">
               <el-tag size="small" :type="auditResultTagType(scope.row.result)" effect="light">
@@ -4795,8 +4838,9 @@ onUnmounted(() => {
           ><el-table-column
             prop="operator"
             label="操作人"
-            width="120"
-          /><el-table-column label="授权快照哈希" min-width="180">
+            width="90"
+            show-overflow-tooltip
+          /><el-table-column label="授权快照哈希" min-width="110" show-overflow-tooltip>
             <template #default="scope">
               <span
                 :class="{
@@ -4810,12 +4854,12 @@ onUnmounted(() => {
           </el-table-column>
           <el-table-column
             label="详情"
-            min-width="220"
+            min-width="140"
             show-overflow-tooltip
             ><template #default="scope">{{
               formatAuditDetail(scope.row.detail)
             }}</template></el-table-column
-          ><el-table-column label="时间" min-width="170"
+          ><el-table-column label="时间" min-width="140"
             ><template #default="scope">{{
               formatDateTime(scope.row.createdAt)
             }}</template></el-table-column
@@ -4868,21 +4912,21 @@ onUnmounted(() => {
           ><el-table-column
             prop="title"
             label="摘要"
-            min-width="260"
+            min-width="160"
             show-overflow-tooltip
-          /><el-table-column label="来源" width="160"
+          /><el-table-column label="来源" width="100"
             ><template #default="scope">{{
               memorySourceLabel(scope.row.source)
             }}</template></el-table-column
           ><el-table-column
             prop="chars"
             label="字符数"
-            width="90"
-          /><el-table-column label="创建时间" min-width="170"
+            width="75"
+          /><el-table-column label="创建时间" min-width="140"
             ><template #default="scope">{{
               formatDateTime(scope.row.createdAt)
             }}</template></el-table-column
-          ><el-table-column label="操作" width="100"
+          ><el-table-column label="操作" width="70"
             ><template #default="scope"
               ><el-button link type="danger" @click="deleteMemory(scope.row.id)"
                 >删除</el-button
@@ -5077,19 +5121,20 @@ onUnmounted(() => {
             class="project-table"
             style="cursor: pointer"
             @row-click="showTaskDetail"
-            ><el-table-column prop="id" label="ID" width="65" /><el-table-column
+            ><el-table-column prop="id" label="ID" width="55" /><el-table-column
               prop="toolCode"
               label="工具"
-              min-width="140"
+              min-width="110"
+              show-overflow-tooltip
             /><el-table-column
               prop="status"
               label="状态"
-              width="110"
-            /><el-table-column label="创建时间" min-width="170"
+              width="85"
+            /><el-table-column label="创建时间" min-width="140"
               ><template #default="scope">{{
                 formatDateTime(scope.row.createdAt)
               }}</template></el-table-column
-            ><el-table-column label="快照" min-width="220"
+            ><el-table-column label="快照" min-width="150" show-overflow-tooltip
               ><template #default="scope"
                 ><span class="snapshot-summary"
                   >{{ scope.row.toolVersionSnapshot || "工具版本未记录" }} ·
@@ -5299,7 +5344,7 @@ onUnmounted(() => {
           max-height="380"
           class="project-table"
         >
-          <el-table-column label="变化" width="120">
+          <el-table-column label="变化" width="90">
             <template #default="scope">
               <el-tag
                 size="small"
@@ -5310,14 +5355,14 @@ onUnmounted(() => {
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="title" label="漏洞" min-width="240" />
-          <el-table-column label="等级" width="160">
+          <el-table-column prop="title" label="漏洞" min-width="150" show-overflow-tooltip />
+          <el-table-column label="等级" width="130">
             <template #default="scope">
               {{ scope.row.previousSeverity || "-" }} →
               {{ scope.row.currentSeverity || "-" }}
             </template>
           </el-table-column>
-          <el-table-column prop="ruleCode" label="规则" min-width="150" />
+          <el-table-column prop="ruleCode" label="规则" min-width="110" show-overflow-tooltip />
         </el-table>
         <AppPagination
           v-model:page="diffPage"

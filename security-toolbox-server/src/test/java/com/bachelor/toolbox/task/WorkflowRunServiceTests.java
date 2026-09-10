@@ -23,8 +23,10 @@ import com.bachelor.toolbox.dependency.SystemDependenciesResponse.DependencyStat
 import com.bachelor.toolbox.project.AssessmentProjectService;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.TargetService;
+import com.bachelor.toolbox.target.WebTargetResolver;
 import com.bachelor.toolbox.tool.ScannerPocSelectionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.net.URI;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -54,6 +56,7 @@ class WorkflowRunServiceTests {
   private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
   private final WorkflowRunStopTransactionService stopTransactions =
       mock(WorkflowRunStopTransactionService.class);
+  private final WebTargetResolver webTargetResolver = mock(WebTargetResolver.class);
   private final List<SecurityTask> createdTasks = new ArrayList<>();
   private final List<CreateTaskRequest> createdRequests = new ArrayList<>();
   private final Map<String, List<Long>> createdDependencies = new LinkedHashMap<>();
@@ -74,13 +77,16 @@ class WorkflowRunServiceTests {
             scannerPocs,
             audit,
             objectMapper,
-            stopTransactions);
+            stopTransactions,
+            webTargetResolver);
     AuthorizedTarget target = new AuthorizedTarget();
     target.setId(TARGET_ID);
     target.setTargetValue("http://127.0.0.1:8000");
     target.setAllowedPorts("80,443,8000-8002");
     when(targets.getCurrentlyAuthorized(TARGET_ID, PROJECT_ID)).thenReturn(target);
     when(dependencies.detect()).thenReturn(availableDependencies());
+    when(webTargetResolver.tryResolve(any()))
+        .thenReturn(List.of(URI.create("http://127.0.0.1:8000")));
     when(runs.save(any(WorkflowRun.class)))
         .thenAnswer(
             invocation -> {
@@ -198,7 +204,8 @@ class WorkflowRunServiceTests {
             issue -> {
               assertThat(issue.nodeId()).isEqualTo("tls");
               assertThat(issue.toolCode()).isEqualTo("tls_config");
-              assertThat(issue.reason()).isEqualTo("目标不是 HTTPS，TLS 检查不可用");
+              assertThat(issue.reason())
+                  .isEqualTo("目标上无法确认可访问的 HTTPS Web 服务地址(scheme:port)，TLS 检查不可用");
             });
   }
 
@@ -212,7 +219,7 @@ class WorkflowRunServiceTests {
 
     assertThatThrownBy(() -> service.start(startRequest(List.of(), List.of())))
         .isInstanceOf(ApiException.class)
-        .hasMessageContaining("目标不是 HTTPS，TLS 检查不可用");
+        .hasMessageContaining("无法确认可访问的 HTTPS Web 服务地址");
     assertThat(createdTasks).isEmpty();
 
     SecurityTask skipped = workflowTask(12L, "tls", "tls_config");
@@ -242,6 +249,8 @@ class WorkflowRunServiceTests {
     target.setTargetValue("https://127.0.0.1:8443");
     target.setAllowedPorts("8443");
     when(targets.getCurrentlyAuthorized(TARGET_ID, PROJECT_ID)).thenReturn(target);
+    when(webTargetResolver.tryResolve(target))
+        .thenReturn(List.of(URI.create("https://127.0.0.1:8443")));
     List<Map<String, Object>> steps =
         List.of(step("tls", "tls_config", 0, false, List.of(), Map.of()));
     stubSnapshot(steps);

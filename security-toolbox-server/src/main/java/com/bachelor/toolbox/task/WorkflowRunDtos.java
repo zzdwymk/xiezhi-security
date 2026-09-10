@@ -30,7 +30,8 @@ public final class WorkflowRunDtos {
       String workflowId,
       Long workflowRevision,
       String workflowDigest,
-      List<NodeIssue> issues) {}
+      List<NodeIssue> issues,
+      Map<String, List<String>> resolvedTargets) {}
 
   public record Summary(
       Long id,

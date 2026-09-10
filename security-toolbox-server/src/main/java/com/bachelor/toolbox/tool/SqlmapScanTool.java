@@ -5,6 +5,7 @@ import com.bachelor.toolbox.common.ProcessEnvironmentSanitizer;
 import com.bachelor.toolbox.dependency.ExecutableLocator;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.TargetPolicyService;
+import com.bachelor.toolbox.target.WebTargetResolver;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URI;
@@ -86,7 +87,7 @@ public class SqlmapScanTool implements SecurityTool {
       AuthorizedTarget target, Map<String, Object> parameters, ToolExecutionObserver observer)
       throws Exception {
     String path = Objects.toString(parameters.getOrDefault("path", ""), "").trim();
-    URI uri = policy.validatedHttpUri(target, path.isBlank() ? null : path);
+    URI uri = resolveTarget(target, parameters, path);
     String url = uri.toString();
     int level = clampInt(parameters.get("level"), 1, 5, 1);
     int risk = clampInt(parameters.get("risk"), 1, 3, 1);
@@ -129,6 +130,39 @@ public class SqlmapScanTool implements SecurityTool {
       }
     } finally {
       deleteRecursive(outputDir);
+    }
+  }
+
+  private URI resolveTarget(AuthorizedTarget target, Map<String, Object> parameters, String path) {
+    List<URI> bases = WebTargetResolver.basesFromParameters(parameters);
+    if (!bases.isEmpty()) {
+      return joinBase(bases.get(0), path);
+    }
+    return policy.validatedHttpUri(target, path.isBlank() ? null : path);
+  }
+
+  private URI joinBase(URI base, String path) {
+    if (path == null || path.isBlank() || "/".equals(path.trim())) return base;
+    String p = path.trim();
+    if (p.startsWith("http://") || p.startsWith("https://")) {
+      try {
+        return URI.create(p);
+      } catch (RuntimeException ex) {
+        return base;
+      }
+    }
+    if (!p.startsWith("/")) p = "/" + p;
+    String rawPath = p;
+    String rawQuery = null;
+    int q = p.indexOf('?');
+    if (q >= 0) {
+      rawPath = p.substring(0, q);
+      rawQuery = p.substring(q + 1);
+    }
+    try {
+      return new URI(base.getScheme(), null, base.getHost(), base.getPort(), rawPath, rawQuery, null);
+    } catch (Exception ex) {
+      return base;
     }
   }
 

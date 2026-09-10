@@ -96,6 +96,20 @@ class XrayScanToolTests {
         .hasMessageContaining("授权范围外");
   }
 
+  @Test
+  void copiesConfigTemplatesSuccessfully() throws Exception {
+    Path tempDir = java.nio.file.Files.createTempDirectory("xray-test-config-");
+    try {
+      tool.copyConfigTemplates(tempDir, "xray");
+      assertThat(tempDir.resolve("config.yaml")).exists();
+      assertThat(tempDir.resolve("module.xray.yaml")).exists();
+      assertThat(tempDir.resolve("plugin.xray.yaml")).exists();
+      assertThat(tempDir.resolve("xray.yaml")).exists();
+    } finally {
+      org.springframework.util.FileSystemUtils.deleteRecursively(tempDir);
+    }
+  }
+
   private ScannerPocSelectionService.SelectedPoc poc(String externalId) {
     return poc(externalId, "XP-1234567890ABCDEF12345678");
   }

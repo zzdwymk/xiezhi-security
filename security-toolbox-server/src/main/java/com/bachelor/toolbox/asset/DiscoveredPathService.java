@@ -35,6 +35,11 @@ public class DiscoveredPathService {
     return repository.findByTargetIdOrderByDiscoveredAtDescIdDesc(targetId);
   }
 
+  /** 返回某项目下全部已发现 Web URL 资产（跨目标），用于资产拓扑等聚合视图。 */
+  public List<DiscoveredPath> listByProject(Long projectId) {
+    return repository.findByProjectIdOrderByDiscoveredAtDescIdDesc(projectId);
+  }
+
   /**
    * 记录一条发现的 URL。仅当 host 与目标一致、端口在授权范围内、且未重复时落库。返回是否新增。
    */

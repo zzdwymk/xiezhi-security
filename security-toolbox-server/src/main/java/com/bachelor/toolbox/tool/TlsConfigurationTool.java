@@ -3,6 +3,7 @@ package com.bachelor.toolbox.tool;
 import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.TargetPolicyService;
+import com.bachelor.toolbox.target.WebTargetResolver;
 import java.net.URI;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
@@ -43,11 +44,23 @@ public class TlsConfigurationTool implements SecurityTool {
     return execute(target, parameters, ToolExecutionObserver.NOOP);
   }
 
+  /**
+   * 优先采用工作流/主动检测预解析出的真实 Web 基址（第一个 https 基址）；否则回退到授权目标的默认
+   * http(s) 基址。
+   */
+  private URI resolveBase(AuthorizedTarget target, Map<String, Object> parameters) {
+    List<URI> bases = WebTargetResolver.basesFromParameters(parameters);
+    for (URI base : bases) {
+      if ("https".equalsIgnoreCase(base.getScheme())) return base;
+    }
+    return policyService.validatedHttpUri(target);
+  }
+
   @Override
   public ToolExecutionResult execute(
       AuthorizedTarget target, Map<String, Object> parameters, ToolExecutionObserver observer)
       throws Exception {
-    URI uri = policyService.validatedHttpUri(target);
+    URI uri = resolveBase(target, parameters);
     if (!"https".equalsIgnoreCase(uri.getScheme())) {
       throw new ApiException("TLS 检查要求目标使用 https://");
     }

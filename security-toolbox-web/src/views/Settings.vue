@@ -14,7 +14,9 @@ import {
   MagicStick,
   Setting,
   Tools,
+  View,
 } from "../components/fluentIcons";
+import { getThemeMode, setThemeMode } from "../system-theme";
 import { useCopilotStore } from "../stores/copilot";
 import { useAuthStore } from "../stores/auth";
 import { useConversationStore } from "../stores/conversations";
@@ -75,6 +77,8 @@ const aiLoading = ref(false);
 const aiTesting = ref(false);
 const embeddingTesting = ref(false);
 const aiSaving = ref(false);
+const themeMode = ref<ThemeMode>("system");
+const themeSaving = ref(false);
 const windowMaterial = ref<WindowMaterial>("mica");
 const materialSaving = ref(false);
 const aiStatus = ref<AiSettingsStatus>();
@@ -277,6 +281,29 @@ async function clearBusinessData() {
     ElMessage.error(message);
   } finally {
     clearingData.value = false;
+  }
+}
+
+async function loadThemeModeSetting() {
+  themeMode.value = await getThemeMode();
+}
+
+async function changeThemeMode(mode: ThemeMode) {
+  const previous = themeMode.value;
+  themeSaving.value = true;
+  try {
+    themeMode.value = await setThemeMode(mode);
+    const labels: Record<ThemeMode, string> = {
+      system: "跟随系统",
+      light: "浅色模式",
+      dark: "深色模式",
+    };
+    ElMessage.success(`主题已切换为 ${labels[themeMode.value]}`);
+  } catch (error) {
+    themeMode.value = previous;
+    ElMessage.error(errorText(error, "无法修改主题模式"));
+  } finally {
+    themeSaving.value = false;
   }
 }
 
@@ -623,6 +650,7 @@ async function clearGithubToken() {
 }
 
 onMounted(() => {
+  void loadThemeModeSetting();
   void loadAiSettings();
   void loadIcpSettings();
   void loadGithubTokenSettings();
@@ -652,6 +680,24 @@ watch(
       <section class="settings-group">
         <header class="settings-group-title">外观</header>
         <div class="settings-list">
+          <div class="settings-row settings-row--control">
+            <el-icon class="settings-row-icon"><View /></el-icon>
+            <span class="settings-row-copy">
+              <strong>色彩主题</strong>
+              <small>选择界面色彩偏好，或自动跟随系统设置</small>
+            </span>
+            <el-select
+              v-model="themeMode"
+              class="material-select"
+              size="default"
+              :disabled="themeSaving"
+              @change="changeThemeMode"
+            >
+              <el-option label="跟随系统" value="system" />
+              <el-option label="浅色模式" value="light" />
+              <el-option label="深色模式" value="dark" />
+            </el-select>
+          </div>
           <div class="settings-row settings-row--control">
             <el-icon class="settings-row-icon"><Setting /></el-icon>
             <span class="settings-row-copy">
