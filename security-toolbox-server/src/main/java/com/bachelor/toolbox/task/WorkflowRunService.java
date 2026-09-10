@@ -8,6 +8,7 @@ import com.bachelor.toolbox.dependency.DependencyDetectionService;
 import com.bachelor.toolbox.project.AssessmentProjectService;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.TargetService;
+import com.bachelor.toolbox.target.WebTargetResolver;
 import com.bachelor.toolbox.tool.ScannerPocSelectionService;
 import com.bachelor.toolbox.vulnerability.ScannerPocCatalogService;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -37,6 +38,17 @@ public class WorkflowRunService {
   private static final Set<String> TERMINAL_STATUSES =
       Set.of("SUCCESS", "FAILED", "TIMEOUT", "REJECTED", "CANCELLED", "SKIPPED");
   private static final Set<String> FAILED_STATUSES = Set.of("FAILED", "TIMEOUT", "REJECTED");
+  /** 需要真实 http(s) URL 基址才能生效的 Web 类工具。 */
+  private static final Set<String> WEB_TOOLS =
+      Set.of(
+          "http_headers",
+          "http_security_check",
+          "tls_config",
+          "nuclei_scan",
+          "afrog_scan",
+          "xray_scan",
+          "zap_scan",
+          "sqlmap_scan");
 
   private final WorkflowRunRepository runs;
   private final SecurityTaskRepository tasks;
@@ -49,6 +61,7 @@ public class WorkflowRunService {
   private final AuditService audit;
   private final ObjectMapper objectMapper;
   private final WorkflowRunStopTransactionService stopTransactions;
+  private final WebTargetResolver webTargetResolver;
 
   public WorkflowRunService(
       WorkflowRunRepository runs,
@@ -61,7 +74,8 @@ public class WorkflowRunService {
       ScannerPocSelectionService scannerPocs,
       AuditService audit,
       ObjectMapper objectMapper,
-      WorkflowRunStopTransactionService stopTransactions) {
+      WorkflowRunStopTransactionService stopTransactions,
+      WebTargetResolver webTargetResolver) {
     this.runs = runs;
     this.tasks = tasks;
     this.taskService = taskService;
@@ -73,6 +87,7 @@ public class WorkflowRunService {
     this.audit = audit;
     this.objectMapper = objectMapper;
     this.stopTransactions = stopTransactions;
+    this.webTargetResolver = webTargetResolver;
   }
 
   @Transactional(readOnly = true)
@@ -104,11 +119,13 @@ public class WorkflowRunService {
     AuthorizedTarget target =
         targets.getCurrentlyAuthorized(request.targetId(), request.projectId());
     AgentWorkflowSpecService.WorkflowSnapshot snapshot = snapshot(request);
+    PreflightOutcome outcome = analyze(snapshot, target);
     return new WorkflowRunDtos.PreflightResponse(
         snapshot.workflowId(),
         snapshot.revision(),
         snapshot.specDigest(),
-        preflightIssues(snapshot, target));
+        outcome.issues(),
+        outcome.resolvedTargets());
   }
 
   @Transactional
@@ -121,8 +138,9 @@ public class WorkflowRunService {
     List<Map<String, Object>> steps = workflowSpecs.executableSteps(snapshot);
     if (steps.isEmpty()) throw new ApiException("工作流没有可执行步骤");
 
+    PreflightOutcome preflight = analyze(snapshot, target);
     Map<String, WorkflowRunDtos.NodeIssue> issues =
-        preflightIssues(snapshot, target).stream()
+        preflight.issues().stream()
             .collect(
                 Collectors.toMap(
                     WorkflowRunDtos.NodeIssue::nodeId,
@@ -188,12 +206,15 @@ public class WorkflowRunService {
       if ("retrieve_project_context".equals(toolCode)) continue;
       List<Long> dependencyTaskIds =
           resolveDependencyTaskIds(step, stepByNode, taskByNode, new LinkedHashSet<>());
+      Map<String, Object> createParameters = executionParameters(step, allowedPorts);
+      List<String> resolvedBases = preflight.resolvedTargets().get(nodeId);
+      if (resolvedBases != null && !resolvedBases.isEmpty()) {
+        createParameters.put(WebTargetResolver.PARAM_RESOLVED_BASES, resolvedBases);
+        recordResolvedAssets(target, request.projectId(), resolvedBases);
+      }
       CreateTaskRequest createRequest =
           new CreateTaskRequest(
-              request.projectId(),
-              request.targetId(),
-              toolCode,
-              executionParameters(step, allowedPorts));
+              request.projectId(), request.targetId(), toolCode, createParameters);
       String nodeRunId = "workflow-run-" + run.getId() + "." + nodeId;
       WorkflowRunDtos.NodeIssue issue = issues.get(nodeId);
       SecurityTask task;
@@ -306,6 +327,15 @@ public class WorkflowRunService {
 
   private List<WorkflowRunDtos.NodeIssue> preflightIssues(
       AgentWorkflowSpecService.WorkflowSnapshot snapshot, AuthorizedTarget target) {
+    return analyze(snapshot, target).issues();
+  }
+
+  /** 预检结果：不可用节点 + 各 web 节点解析出的真实可达 Web 基址。 */
+  private record PreflightOutcome(
+      List<WorkflowRunDtos.NodeIssue> issues, Map<String, List<String>> resolvedTargets) {}
+
+  private PreflightOutcome analyze(
+      AgentWorkflowSpecService.WorkflowSnapshot snapshot, AuthorizedTarget target) {
     String allowedPorts = target.getAllowedPorts();
     Map<String, String> dependencyStatus =
         dependencies.detect().dependencies().stream()
@@ -316,18 +346,10 @@ public class WorkflowRunService {
                     (left, right) -> left,
                     LinkedHashMap::new));
     List<WorkflowRunDtos.NodeIssue> issues = new ArrayList<>();
+    Map<String, List<String>> resolvedTargets = new LinkedHashMap<>();
     for (Map<String, Object> step : workflowSpecs.executableSteps(snapshot)) {
       String toolCode = requiredText(step, "tool");
       if ("retrieve_project_context".equals(toolCode)) continue;
-      if ("tls_config".equals(toolCode) && !isHttpsTarget(target)) {
-        issues.add(
-            new WorkflowRunDtos.NodeIssue(
-                requiredText(step, "nodeId"),
-                toolCode,
-                label(step),
-                "目标不是 HTTPS，TLS 检查不可用"));
-        continue;
-      }
       String dependencyName = dependencyName(toolCode);
       if (dependencyName != null
           && !"AVAILABLE".equals(dependencyStatus.getOrDefault(dependencyName, "MISSING"))) {
@@ -338,6 +360,37 @@ public class WorkflowRunService {
                 label(step),
                 dependencyName + " 未安装或不可用"));
         continue;
+      }
+      if (WEB_TOOLS.contains(toolCode)) {
+        List<URI> bases = webTargetResolver.tryResolve(target);
+        // TLS 检查要求 https 基址；过滤出 https 才算可用。
+        if ("tls_config".equals(toolCode)) {
+          List<URI> httpsBases =
+              bases.stream().filter(b -> "https".equalsIgnoreCase(b.getScheme())).toList();
+          if (httpsBases.isEmpty()) {
+            issues.add(
+                new WorkflowRunDtos.NodeIssue(
+                    requiredText(step, "nodeId"),
+                    toolCode,
+                    label(step),
+                    "目标上无法确认可访问的 HTTPS Web 服务地址(scheme:port)，TLS 检查不可用"));
+            continue;
+          }
+          resolvedTargets.put(
+              requiredText(step, "nodeId"), httpsBases.stream().map(URI::toString).toList());
+          continue;
+        }
+        if (bases.isEmpty()) {
+          issues.add(
+              new WorkflowRunDtos.NodeIssue(
+                  requiredText(step, "nodeId"),
+                  toolCode,
+                  label(step),
+                  "目标上无法确认可访问的 Web 服务地址(scheme:port)，该检测将空跑"));
+          continue;
+        }
+        resolvedTargets.put(
+            requiredText(step, "nodeId"), bases.stream().map(URI::toString).toList());
       }
       if ("afrog_scan".equals(toolCode) || "xray_scan".equals(toolCode)) {
         try {
@@ -354,15 +407,19 @@ public class WorkflowRunService {
         }
       }
     }
-    return List.copyOf(issues);
+    return new PreflightOutcome(List.copyOf(issues), Map.copyOf(resolvedTargets));
   }
 
-  private boolean isHttpsTarget(AuthorizedTarget target) {
-    try {
-      return "https".equalsIgnoreCase(URI.create(target.getTargetValue()).getScheme());
-    } catch (IllegalArgumentException | NullPointerException ignored) {
-      return false;
+  private void recordResolvedAssets(AuthorizedTarget target, Long projectId, List<String> bases) {
+    List<URI> uris = new ArrayList<>();
+    for (String base : bases) {
+      try {
+        uris.add(URI.create(base));
+      } catch (RuntimeException ignored) {
+        // skip malformed
+      }
     }
+    webTargetResolver.recordAssets(target, projectId, uris);
   }
 
   private void refresh(WorkflowRun run, List<SecurityTask> runTasks) {

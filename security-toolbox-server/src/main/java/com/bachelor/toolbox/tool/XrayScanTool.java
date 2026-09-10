@@ -4,6 +4,7 @@ import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.common.ProcessEnvironmentSanitizer;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.TargetPolicyService;
+import com.bachelor.toolbox.target.WebTargetResolver;
 import com.bachelor.toolbox.vulnerability.ScannerPocCatalogService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -77,16 +78,17 @@ public class XrayScanTool implements SecurityTool {
   public ToolExecutionResult execute(
       AuthorizedTarget target, Map<String, Object> parameters, ToolExecutionObserver observer)
       throws Exception {
-    URI targetUri = policy.validatedHttpUri(target);
+    URI targetUri = resolveBase(target, parameters);
     List<ScannerPocSelectionService.SelectedPoc> selected =
         pocSelection.resolve(ScannerPocCatalogService.XRAY, parameters, false);
     boolean allPocs = pocSelection.selectsAll(parameters);
-    assertExecutableIfAbsolute();
+    String resolvedExe = resolveExecutable(executable);
+    assertExecutableIfAbsolute(resolvedExe);
     Path work = Files.createTempDirectory("xiezhi-xray-");
     Path output = work.resolve("result.json");
     try {
-      initializeConfig(work);
-      List<String> command = buildCommand(targetUri, selected, output, allPocs);
+      initializeConfig(work, resolvedExe);
+      List<String> command = buildCommand(resolvedExe, targetUri, selected, output, allPocs);
       observer.command(command);
       ProcessBuilder builder = new ProcessBuilder(command).directory(work.toFile()).redirectErrorStream(true);
       Process process = ProcessEnvironmentSanitizer.sanitize(builder).start();
@@ -101,9 +103,16 @@ public class XrayScanTool implements SecurityTool {
     }
   }
 
+  /** 优先采用预解析基址，否则回退到授权目标默认 http(s) 基址。 */
+  private URI resolveBase(AuthorizedTarget target, Map<String, Object> parameters) {
+    List<URI> bases = WebTargetResolver.basesFromParameters(parameters);
+    if (!bases.isEmpty()) return bases.get(0);
+    return policy.validatedHttpUri(target);
+  }
+
   List<String> buildCommand(
       URI target, List<ScannerPocSelectionService.SelectedPoc> selected, Path jsonOutput) {
-    return buildCommand(target, selected, jsonOutput, false);
+    return buildCommand(executable, target, selected, jsonOutput, false);
   }
 
   List<String> buildCommand(
@@ -111,8 +120,17 @@ public class XrayScanTool implements SecurityTool {
       List<ScannerPocSelectionService.SelectedPoc> selected,
       Path jsonOutput,
       boolean allPocs) {
+    return buildCommand(executable, target, selected, jsonOutput, allPocs);
+  }
+
+  List<String> buildCommand(
+      String exe,
+      URI target,
+      List<ScannerPocSelectionService.SelectedPoc> selected,
+      Path jsonOutput,
+      boolean allPocs) {
     List<String> command = new ArrayList<>();
-    command.add(executable);
+    command.add(exe);
     command.add("--log-level");
     command.add("warn");
     command.add("webscan");
@@ -177,12 +195,68 @@ public class XrayScanTool implements SecurityTool {
     return new ToolExecutionResult("Xray 扫描完成，匹配 " + matches.size() + " 项潜在问题", data, findings);
   }
 
-  private void initializeConfig(Path work) throws Exception {
-    List<String> command = List.of(executable, "version");
+  private static final List<String> XRAY_CONFIG_FILES =
+      List.of("config.yaml", "module.xray.yaml", "plugin.xray.yaml", "xray.yaml");
+
+  private void initializeConfig(Path work, String resolvedExe) throws Exception {
+    copyConfigTemplates(work, resolvedExe);
+    List<String> command = List.of(resolvedExe, "version");
     ProcessBuilder builder = new ProcessBuilder(command).directory(work.toFile()).redirectErrorStream(true);
     Process process = ProcessEnvironmentSanitizer.sanitize(builder).start();
-    waitFor(process, ToolExecutionObserver.NOOP, "正在初始化 Xray 隔离配置", 15);
-    if (process.exitValue() != 0) throw new ApiException("Xray 隔离配置初始化失败");
+    String stdout = waitFor(process, ToolExecutionObserver.NOOP, "正在初始化 Xray 隔离配置", 15);
+    if (process.exitValue() != 0) {
+      throw new ApiException("Xray 隔离配置初始化失败: " + abbreviate(stdout, 300));
+    }
+  }
+
+  void copyConfigTemplates(Path work, String resolvedExe) {
+    List<Path> searchDirs = new ArrayList<>();
+    if (resolvedExe != null && !resolvedExe.isBlank()) {
+      try {
+        Path exePath = Path.of(resolvedExe);
+        if (exePath.isAbsolute() && exePath.getParent() != null) {
+          searchDirs.add(exePath.getParent());
+        }
+      } catch (Exception ignored) {}
+    }
+    String toolsDirVal = System.getenv("TOOLBOX_TOOLS_DIR");
+    if (toolsDirVal != null && !toolsDirVal.isBlank()) {
+      searchDirs.add(Path.of(toolsDirVal.trim(), "xray"));
+    }
+    searchRoots(searchDirs);
+
+    for (String fileName : XRAY_CONFIG_FILES) {
+      Path targetFile = work.resolve(fileName);
+      boolean copied = false;
+      for (Path dir : searchDirs) {
+        try {
+          Path candidate = dir.resolve(fileName);
+          if (Files.isRegularFile(candidate)) {
+            Files.copy(candidate, targetFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            copied = true;
+            break;
+          }
+        } catch (Exception ignored) {}
+      }
+      if (!copied) {
+        try (var in = getClass().getResourceAsStream("/xray/" + fileName)) {
+          if (in != null) {
+            Files.copy(in, targetFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+          }
+        } catch (Exception ignored) {}
+      }
+    }
+  }
+
+  private void searchRoots(List<Path> targetList) {
+    targetList.add(Path.of("tools", "xray"));
+    targetList.add(Path.of("..", "tools", "xray"));
+    targetList.add(Path.of("security-toolbox-web", "tools", "xray"));
+    targetList.add(Path.of("..", "security-toolbox-web", "tools", "xray"));
+    targetList.add(Path.of("security-toolbox-web", "desktop-release", "win-unpacked", "tools", "xray"));
+    targetList.add(Path.of("..", "security-toolbox-web", "desktop-release", "win-unpacked", "tools", "xray"));
+    targetList.add(Path.of("."));
+    targetList.add(Path.of(".."));
   }
 
   private List<JsonNode> resultItems(JsonNode root) {
@@ -315,11 +389,47 @@ public class XrayScanTool implements SecurityTool {
         : "INFO";
   }
 
-  private void assertExecutableIfAbsolute() {
-    Path path = Path.of(executable);
+  private void assertExecutableIfAbsolute(String pathStr) {
+    Path path = Path.of(pathStr);
     if (path.isAbsolute() && !Files.isRegularFile(path)) {
       throw new ApiException("未找到 Xray 可执行文件：" + path);
     }
+  }
+
+  private String resolveExecutable(String exe) {
+    if (exe != null && !exe.isBlank() && !"xray".equalsIgnoreCase(exe.trim())) {
+      Path p = Path.of(exe);
+      if (Files.isRegularFile(p)) {
+        return p.toAbsolutePath().normalize().toString();
+      }
+    }
+    String toolsDirVal = System.getenv("TOOLBOX_TOOLS_DIR");
+    List<Path> searchRoots = new ArrayList<>();
+    if (toolsDirVal != null && !toolsDirVal.isBlank()) {
+      searchRoots.add(Path.of(toolsDirVal.trim()));
+    }
+    searchRoots.add(Path.of("tools"));
+    searchRoots.add(Path.of("..", "tools"));
+    searchRoots.add(Path.of("security-toolbox-web", "tools"));
+    searchRoots.add(Path.of("..", "security-toolbox-web", "tools"));
+    searchRoots.add(Path.of("security-toolbox-web", "desktop-release", "win-unpacked", "tools"));
+    searchRoots.add(Path.of("..", "security-toolbox-web", "desktop-release", "win-unpacked", "tools"));
+
+    boolean isWin = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+    List<String> names = isWin ? List.of("xray_windows_amd64.exe", "xray.exe") : List.of("xray");
+    for (Path root : searchRoots) {
+      try {
+        if (!Files.isDirectory(root)) continue;
+        Path xrayDir = root.resolve("xray");
+        if (Files.isDirectory(xrayDir)) {
+          for (String name : names) {
+            Path p = xrayDir.resolve(name);
+            if (Files.isRegularFile(p)) return p.toAbsolutePath().normalize().toString();
+          }
+        }
+      } catch (Exception ignored) {}
+    }
+    return exe;
   }
 
   private void deleteTree(Path root) {

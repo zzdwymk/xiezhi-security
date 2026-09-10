@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { endpoints, safeGet, type AssessmentProject, type DiscoveryResult } from "../api";
+import {
+  endpoints,
+  safeGet,
+  type AssessmentProject,
+  type DiscoveredPath,
+  type DiscoveryResult,
+} from "../api";
 import AssetTopology from "../components/AssetTopology.vue";
 import FluentIcon from "../components/FluentIcon.vue";
 import { toErrorMessage } from "../utils/errorMessage";
@@ -11,6 +17,9 @@ const projectId = ref<number>();
 const assets = ref<DiscoveryResult[]>([]);
 const loading = ref(false);
 const assetsLoading = ref(false);
+
+// Web URL 资产的拓扑节点 id 偏移，避免与 probe_results 自增 id 撞号。
+const WEB_PATH_ID_BASE = 10_000_000_000;
 
 const activeProjects = computed(() =>
   projects.value.filter((p) => p.status === "ACTIVE"),
@@ -34,18 +43,40 @@ async function loadProjects() {
 }
 
 async function loadAssets() {
-  if (!projectId.value) {
+  const pid = projectId.value;
+  if (!pid) {
     assets.value = [];
     return;
   }
   assetsLoading.value = true;
   try {
-    assets.value = (await endpoints.projectDiscoveryResults(projectId.value)).data;
+    const [probeResults, webPaths] = await Promise.all([
+      endpoints.projectDiscoveryResults(pid),
+      safeGet(() => endpoints.projectDiscoveredPaths(pid), [] as DiscoveredPath[]),
+    ]);
+    // 资产拓扑 = 主机级探测结果 + Web URL 资产（discovered_paths），两者都带唯一 id 可直接作为拓扑节点。
+    assets.value = [...(probeResults.data || []), ...asPathAssets(webPaths.data || [])];
   } catch (error) {
     ElMessage.error(toErrorMessage(error, "资产加载失败"));
   } finally {
     assetsLoading.value = false;
   }
+}
+
+// 把 DiscoveredPath 规整为拓扑可直接消费的 DiscoveryResult 形态（保留 id/url/归属）。
+// 位移 id 空间，避免与 probe_results 的自增 id 碰撞（两条独立主键）。原始 id 保留在原 id。
+function asPathAssets(paths: DiscoveredPath[]): DiscoveryResult[] {
+  return paths
+    .map((p) => (p.id == null ? null : { p, rawId: p.id as number }))
+    .filter((x): x is { p: DiscoveredPath; rawId: number } => x != null)
+    .map(({ p, rawId }) => ({
+      id: WEB_PATH_ID_BASE + rawId,
+      projectId: p.projectId,
+      targetId: p.targetId,
+      url: p.url || p.path || "",
+      _webPath: true,
+      _webPathId: rawId,
+    }));
 }
 
 watch(projectId, loadAssets);

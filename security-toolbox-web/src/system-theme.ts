@@ -48,9 +48,75 @@ function contrastColor(hex: string) {
   return darkContrast >= lightContrast ? darkForeground : lightForeground;
 }
 
+const THEME_MODE_KEY = "security_toolbox_theme_mode_v1";
+
+let activeThemeMode: ThemeMode = "system";
+let lastThemeState: SystemThemeState | null = null;
+
+export function getStoredThemeMode(): ThemeMode {
+  try {
+    const value = localStorage.getItem(THEME_MODE_KEY);
+    return value === "light" || value === "dark" ? value : "system";
+  } catch {
+    return "system";
+  }
+}
+
+export async function getThemeMode(): Promise<ThemeMode> {
+  const bridge = window.toolboxDesktop;
+  if (bridge?.getThemeMode) {
+    try {
+      activeThemeMode = await bridge.getThemeMode();
+      return activeThemeMode;
+    } catch {
+      // Fallback to local mode
+    }
+  }
+  activeThemeMode = getStoredThemeMode();
+  return activeThemeMode;
+}
+
+export async function setThemeMode(mode: ThemeMode): Promise<ThemeMode> {
+  const targetMode = mode === "light" || mode === "dark" ? mode : "system";
+  activeThemeMode = targetMode;
+
+  const bridge = window.toolboxDesktop;
+  if (bridge?.setThemeMode) {
+    const result = await bridge.setThemeMode(targetMode);
+    activeThemeMode = result;
+    return result;
+  }
+
+  try {
+    localStorage.setItem(THEME_MODE_KEY, targetMode);
+  } catch {
+    // Ignore storage quota or disabled storage
+  }
+
+  if (lastThemeState) {
+    applySystemTheme(lastThemeState);
+  }
+  return targetMode;
+}
+
 function applySystemTheme(theme: SystemThemeState) {
-  const accent = normalizeAccent(theme.accentColor);
-  const caption = normalizeAccent(theme.captionColor);
+  lastThemeState = theme;
+  const effectiveDark =
+    activeThemeMode === "dark"
+      ? true
+      : activeThemeMode === "light"
+        ? false
+        : theme.dark;
+
+  const effectiveTheme: SystemThemeState = {
+    ...theme,
+    dark: effectiveDark,
+    appsUseLightTheme: !effectiveDark,
+    systemUsesLightTheme: !effectiveDark,
+  };
+
+  const accent = normalizeAccent(effectiveTheme.accentColor);
+  const caption = normalizeAccent(effectiveTheme.captionColor);
   const themeAccent = accent;
   const root = document.documentElement;
   root.style.setProperty("--system-accent", accent);
@@ -61,27 +127,33 @@ function applySystemTheme(theme: SystemThemeState) {
     contrastColor(themeAccent),
   );
   const chromeSurface =
-    !theme.transparencyEnabled ||
-    theme.highContrast ||
-    theme.windowMaterial === "none"
-      ? theme.dark
+    !effectiveTheme.transparencyEnabled ||
+    effectiveTheme.highContrast ||
+    effectiveTheme.windowMaterial === "none"
+      ? effectiveTheme.dark
         ? "#202020"
         : "#f3f3f3"
-      : theme.windowMaterial === "acrylic"
+      : effectiveTheme.windowMaterial === "acrylic"
         ? "color-mix(in srgb, Canvas 14%, transparent)"
         : "transparent";
   root.style.setProperty("--shared-chrome-surface", chromeSurface);
-  root.style.colorScheme = theme.dark ? "dark" : "light";
-  root.dataset.systemTheme = theme.dark ? "dark" : "light";
-  root.dataset.captionMode = theme.captionMode;
+  root.style.colorScheme = effectiveTheme.dark ? "dark" : "light";
+  root.dataset.systemTheme = effectiveTheme.dark ? "dark" : "light";
+  root.dataset.captionMode = effectiveTheme.captionMode;
   root.dataset.windowMaterial =
-    theme.windowMaterial || (theme.captionMode === "mica" ? "mica" : "none");
-  root.dataset.autoColorization = theme.autoColorization ? "true" : "false";
-  root.dataset.transparency = theme.transparencyEnabled ? "true" : "false";
-  root.dataset.highContrast = theme.highContrast ? "true" : "false";
+    effectiveTheme.windowMaterial ||
+    (effectiveTheme.captionMode === "mica" ? "mica" : "none");
+  root.dataset.autoColorization = effectiveTheme.autoColorization
+    ? "true"
+    : "false";
+  root.dataset.transparency = effectiveTheme.transparencyEnabled
+    ? "true"
+    : "false";
+  root.dataset.highContrast = effectiveTheme.highContrast ? "true" : "false";
 }
 
 export async function initializeSystemTheme() {
+  activeThemeMode = getStoredThemeMode();
   const media = window.matchMedia("(prefers-color-scheme: dark)");
   const fallback = () =>
     applySystemTheme({
@@ -99,10 +171,20 @@ export async function initializeSystemTheme() {
     });
 
   fallback();
+
+  media.addEventListener?.("change", () => {
+    if (!window.toolboxDesktop?.getSystemTheme) {
+      fallback();
+    }
+  });
+
   const bridge = window.toolboxDesktop;
   if (!bridge?.getSystemTheme) return;
 
   try {
+    if (bridge.getThemeMode) {
+      activeThemeMode = await bridge.getThemeMode();
+    }
     applySystemTheme(await bridge.getSystemTheme());
   } catch {
     fallback();

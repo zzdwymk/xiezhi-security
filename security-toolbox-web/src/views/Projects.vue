@@ -275,9 +275,9 @@ onMounted(load);
       "
     />
     <el-table v-else v-loading="loading" :data="pagedRows">
-      <el-table-column prop="name" label="项目名称" />
-      <el-table-column prop="owner" label="负责人" width="130" />
-      <el-table-column label="状态" width="130">
+      <el-table-column prop="name" label="项目名称" min-width="140" show-overflow-tooltip />
+      <el-table-column prop="owner" label="负责人" width="100" show-overflow-tooltip />
+      <el-table-column label="状态" width="95">
         <template #default="scope">
           <el-tag
             size="small"
@@ -292,7 +292,7 @@ onMounted(load);
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="授权有效期" min-width="230">
+      <el-table-column label="授权有效期" min-width="190">
         <template #default="scope">
           <span>
             {{ formatDateTime(scope.row.authorizationValidFrom) }} 至
@@ -300,7 +300,7 @@ onMounted(load);
           </span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="180">
+      <el-table-column label="操作" width="140">
         <template #default="scope">
           <el-button
             link

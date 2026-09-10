@@ -841,17 +841,17 @@ onUnmounted(() => {
       "
     />
     <el-table v-else :data="pagedRows">
-      <el-table-column prop="id" label="ID" width="70" />
-      <el-table-column prop="toolCode" label="工具" min-width="130" />
-      <el-table-column prop="targetId" label="目标" width="80" />
-      <el-table-column label="状态" width="105"
+      <el-table-column prop="id" label="ID" width="55" />
+      <el-table-column prop="toolCode" label="工具" min-width="110" show-overflow-tooltip />
+      <el-table-column prop="targetId" label="目标" width="65" />
+      <el-table-column label="状态" width="85"
         ><template #default="scope"
           ><el-tag size="small" :type="statusType(scope.row.status)">{{
             statusLabel(scope.row.status)
           }}</el-tag></template
         ></el-table-column
       >
-      <el-table-column label="进度" min-width="220"
+      <el-table-column label="进度" min-width="140"
         ><template #default="scope"
           ><div class="live-task-progress">
             <el-progress
@@ -865,12 +865,12 @@ onUnmounted(() => {
           </div></template
         ></el-table-column
       >
-      <el-table-column label="创建时间" min-width="180"
+      <el-table-column label="创建时间" min-width="140"
         ><template #default="scope">{{
           formatDateTime(scope.row.createdAt)
         }}</template></el-table-column
       >
-      <el-table-column label="操作" width="325"
+      <el-table-column label="操作" min-width="210"
         ><template #default="scope"
           ><el-button link type="primary" @click="showDetail(scope.row)"
             >详情</el-button
@@ -1148,8 +1148,8 @@ onUnmounted(() => {
         max-height="260"
         class="schedule-table"
       >
-        <el-table-column prop="id" label="ID" width="54" />
-        <el-table-column label="项目 / 授权目标" min-width="220">
+        <el-table-column prop="id" label="ID" width="50" />
+        <el-table-column label="项目 / 授权目标" min-width="130">
           <template #default="scope"
             ><div class="schedule-context">
               <strong>{{ scheduleProjectName(scope.row.projectId) }}</strong
@@ -1157,8 +1157,8 @@ onUnmounted(() => {
             </div></template
           >
         </el-table-column>
-        <el-table-column label="工具 / 参数" min-width="155"
-          ><template #default="scope"
+        <el-table-column label="工具 / 参数" min-width="110">
+          <template #default="scope"
             ><div class="schedule-tool-context">
               <strong>{{ scheduleToolLabel(scope.row.toolCode) }}</strong>
               <small v-if="scheduleParameterSummary(scope.row)">{{
@@ -1166,18 +1166,18 @@ onUnmounted(() => {
               }}</small>
             </div></template></el-table-column
         >
-        <el-table-column label="规则" min-width="115"
-          ><template #default="scope">{{
+        <el-table-column label="规则" min-width="90">
+          <template #default="scope">{{
             scheduleRule(scope.row)
           }}</template></el-table-column
         >
-        <el-table-column label="下次执行" min-width="145"
-          ><template #default="scope">{{
+        <el-table-column label="下次执行" min-width="115">
+          <template #default="scope">{{
             scheduleTime(scope.row.nextRunAt)
           }}</template></el-table-column
         >
-        <el-table-column label="状态 / 最近错误" min-width="170"
-          ><template #default="scope"
+        <el-table-column label="状态 / 最近错误" min-width="120">
+          <template #default="scope"
             ><div class="schedule-status-context">
               <el-tag
                 size="small"
@@ -1190,7 +1190,7 @@ onUnmounted(() => {
             </div></template
           ></el-table-column
         >
-        <el-table-column label="操作" width="178" fixed="right">
+        <el-table-column label="操作" width="130">
           <template #default="scope">
             <el-button
               link

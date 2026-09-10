@@ -462,12 +462,24 @@ body,
 
 /* Tables */
 .desktop-v2-app-frame :where(.el-table) {
+  width: 100% !important;
+  max-width: 100%;
   overflow: hidden;
   border: var(--fluent-stroke-thin) solid var(--app-border);
   border-radius: var(--fluent-radius-card);
   background: var(--app-surface);
   color: var(--app-text);
   font-size: var(--fluent-body1-size);
+}
+
+.desktop-v2-app-frame .el-table .cell {
+  padding-left: 8px !important;
+  padding-right: 8px !important;
+  box-sizing: border-box;
+}
+
+.desktop-v2-app-frame .el-table .cell .el-button + .el-button {
+  margin-left: 6px;
 }
 
 .desktop-v2-app-frame :where(.el-table th.el-table__cell) {

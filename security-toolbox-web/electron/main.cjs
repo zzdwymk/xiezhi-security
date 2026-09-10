@@ -147,6 +147,17 @@ function configuredWindowMaterial(settings = readDesktopSettings()) {
   return settings.micaEnabled === false ? "none" : "mica";
 }
 
+function configuredThemeMode(settings = readDesktopSettings()) {
+  return ["system", "light", "dark"].includes(settings.themeMode)
+    ? settings.themeMode
+    : "system";
+}
+
+function applyThemeMode(mode) {
+  const resolved = ["light", "dark"].includes(mode) ? mode : "system";
+  nativeTheme.themeSource = resolved;
+}
+
 function computeSystemTheme() {
   const rawAccent = String(systemPreferences.getAccentColor() || "").replace(
     /^#/,
@@ -4897,6 +4908,20 @@ handleRendererIpc("toolbox:set-window-material", (event, material) => {
   broadcastSystemTheme();
   return configuredWindowMaterial();
 });
+handleRendererIpc("toolbox:get-theme-mode", (event) => {
+  assertMainRenderer(event);
+  return configuredThemeMode();
+});
+handleRendererIpc("toolbox:set-theme-mode", (event, mode) => {
+  assertMainRenderer(event);
+  if (!["system", "light", "dark"].includes(mode))
+    throw new UserFacingError("不支持的外观模式");
+  const settings = readDesktopSettings();
+  writeDesktopSettings({ ...settings, themeMode: mode });
+  applyThemeMode(mode);
+  broadcastSystemTheme();
+  return configuredThemeMode();
+});
 function updateTaskbarProgress(progress, options) {
   const win = mainWindow || startupWindow;
   if (!win || win.isDestroyed()) return;
@@ -6340,6 +6365,7 @@ function createMainWindow(port) {
 async function boot() {
   desktopLoginCredentialsIssued = false;
   let mitmCaMigration;
+  applyThemeMode(configuredThemeMode());
   createStartupWindow();
   try {
     updateStartup("检查并启动运行环境", "正在检查本地运行环境和服务文件。");

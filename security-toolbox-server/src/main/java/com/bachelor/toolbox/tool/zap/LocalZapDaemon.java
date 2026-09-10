@@ -69,6 +69,7 @@ final class LocalZapDaemon implements ZapDaemon {
       awaitReady();
       return;
     }
+    cleanupZombieZapProcesses(port);
     this.executable = resolveExecutable(this.executable);
     ensureExecutable();
     Path logFile = Files.createTempFile("zap-daemon-", ".log");
@@ -531,10 +532,38 @@ final class LocalZapDaemon implements ZapDaemon {
   public void kill() throws Exception {
     Process current = process;
     if (current != null) {
+      try {
+        current.descendants().forEach(ProcessHandle::destroyForcibly);
+      } catch (Exception ignored) {
+      }
       current.destroyForcibly();
       process = null;
     }
     reader.shutdownNow();
+  }
+
+  private void cleanupZombieZapProcesses(int targetPort) {
+    try {
+      ProcessHandle.allProcesses()
+          .filter(
+              ph -> {
+                try {
+                  String cmd = ph.info().commandLine().orElse("");
+                  return cmd.contains("zap") && cmd.contains(Integer.toString(targetPort));
+                } catch (Exception ignored) {
+                  return false;
+                }
+              })
+          .forEach(
+              ph -> {
+                try {
+                  LOGGER.warn("检测到遗留的 ZAP 进程 pid={}，强制清理以释放端口 {}", ph.pid(), targetPort);
+                  ph.destroyForcibly();
+                } catch (Exception ignored) {
+                }
+              });
+    } catch (Exception ignored) {
+    }
   }
 
   @Override

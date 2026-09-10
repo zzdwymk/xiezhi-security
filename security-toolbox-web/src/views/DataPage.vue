@@ -149,26 +149,26 @@ watch(() => props.kind, load);
     />
     <el-table v-else :data="rows">
       <template v-if="kind === 'audits'">
-        <el-table-column prop="action" label="操作" min-width="160" show-overflow-tooltip>
+        <el-table-column prop="action" label="操作" min-width="120" show-overflow-tooltip>
           <template #default="scope">
             <strong>{{ formatAuditAction(scope.row.action) }}</strong>
           </template>
         </el-table-column>
-        <el-table-column prop="resourceType" label="资源类型" width="130">
+        <el-table-column prop="resourceType" label="资源类型" width="100">
           <template #default="scope">
             {{ formatAuditResource(scope.row.resourceType) }}
           </template>
         </el-table-column>
-        <el-table-column prop="result" label="结果" width="110">
+        <el-table-column prop="result" label="结果" width="85">
           <template #default="scope">
             <el-tag size="small" :type="auditResultTagType(scope.row.result)" effect="light">
               {{ formatAuditResult(scope.row.result) }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="operator" label="操作人" width="120" show-overflow-tooltip />
-        <el-table-column prop="detail" label="详情" min-width="200" show-overflow-tooltip />
-        <el-table-column prop="createdAt" label="时间" min-width="170">
+        <el-table-column prop="operator" label="操作人" width="95" show-overflow-tooltip />
+        <el-table-column prop="detail" label="详情" min-width="150" show-overflow-tooltip />
+        <el-table-column prop="createdAt" label="时间" min-width="140">
           <template #default="scope">
             {{ formatDateTime(scope.row.createdAt) }}
           </template>
@@ -180,7 +180,7 @@ watch(() => props.kind, load);
           :key="column[0]"
           :prop="column[0]"
           :label="column[1]"
-          min-width="140"
+          min-width="120"
           show-overflow-tooltip
         >
           <template #default="scope">{{
@@ -190,7 +190,7 @@ watch(() => props.kind, load);
           }}</template>
         </el-table-column>
       </template>
-      <el-table-column v-if="kind === 'audits'" label="操作" width="120">
+      <el-table-column v-if="kind === 'audits'" label="操作" width="95">
         <template #default="scope">
           <el-button
             v-if="canAnalyzeAudit(scope.row)"

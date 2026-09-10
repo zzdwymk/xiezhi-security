@@ -1181,6 +1181,16 @@ async function startScan() {
       paths: selectedPaths.value.length ? selectedPaths.value : undefined,
     });
     ElMessage.success(`已创建 ${data.taskCount} 个检测任务`);
+    const resolvedUrls = (data.resolvedUrls ?? {}) as Record<string, string[]>;
+    const urlTotal = Object.values(resolvedUrls).reduce(
+      (sum: number, list: string[]) => sum + (Array.isArray(list) ? list.length : 0),
+      0,
+    );
+    if (urlTotal > 0) {
+      ElMessage.info(
+        `已为 ${Object.keys(resolvedUrls).length} 条 Web 规则解析出 ${urlTotal} 个可达地址，将作为资产汇入资产拓扑`,
+      );
+    }
   } catch (error: any) {
     if (error !== "cancel" && error !== "close") {
       ElMessage.error(toErrorMessage(error, "主动检测启动失败"));

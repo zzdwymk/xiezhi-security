@@ -3201,6 +3201,25 @@ async function executeWorkflow() {
     };
     const { data: preflight } = await endpoints.preflightWorkflowRun(identity);
     const skippedNodeIds = preflight.issues.map((issue) => issue.nodeId);
+    const resolvedTargets = preflight.resolvedTargets ?? {};
+    if (Object.keys(resolvedTargets).length) {
+      const lines = Object.entries(resolvedTargets)
+        .map(
+          ([nodeId, urls]) =>
+            `· ${nodeId}: ${(urls ?? []).join("、") || "（无可达地址）"}`,
+        )
+        .join("\n");
+      const confirmed = await ElMessageBox.confirm(
+        `已为以下 Web 步骤解析出将实际检测的可达地址（将作为资产汇入资产拓扑）：\n${lines}`,
+        "解析的 Web 检测目标",
+        {
+          type: "warning",
+          confirmButtonText: "确认并继续",
+          cancelButtonText: "取消执行",
+        },
+      ).catch(() => false);
+      if (confirmed !== "confirm") return;
+    }
     if (preflight.issues.length) {
       const issueText = preflight.issues
         .map((issue) => `${issue.label}：${issue.reason}`)

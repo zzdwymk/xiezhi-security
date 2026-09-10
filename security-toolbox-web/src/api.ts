@@ -350,6 +350,7 @@ export interface WorkflowRunPreflight {
   workflowRevision: number;
   workflowDigest: string;
   issues: WorkflowRunNodeIssue[];
+  resolvedTargets?: Record<string, string[]>;
 }
 
 export interface WorkflowRunSummary {
@@ -1284,6 +1285,10 @@ export const endpoints = {
     api.get<DiscoveredPath[]>(`/targets/${targetId}/discovered-paths`),
   projectReconResults: (projectId: number, targetId?: number) =>
     api.get<ReconResult[]>(`/projects/${projectId}/recon/results`, {
+      params: targetId ? { targetId } : undefined,
+    }),
+  projectDiscoveredPaths: (projectId: number, targetId?: number) =>
+    api.get<DiscoveredPath[]>(`/projects/${projectId}/recon/paths`, {
       params: targetId ? { targetId } : undefined,
     }),
   projectIcpBatch: (projectId: number, targetIds: number[]) =>

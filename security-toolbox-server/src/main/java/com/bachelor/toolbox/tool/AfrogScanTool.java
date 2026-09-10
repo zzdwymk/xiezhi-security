@@ -4,6 +4,7 @@ import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.common.ProcessEnvironmentSanitizer;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.TargetPolicyService;
+import com.bachelor.toolbox.target.WebTargetResolver;
 import com.bachelor.toolbox.vulnerability.ScannerPocCatalogService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -78,7 +79,7 @@ public class AfrogScanTool implements SecurityTool {
   public ToolExecutionResult execute(
       AuthorizedTarget target, Map<String, Object> parameters, ToolExecutionObserver observer)
       throws Exception {
-    URI targetUri = policy.validatedHttpUri(target);
+    URI targetUri = resolveBase(target, parameters);
     List<ScannerPocSelectionService.SelectedPoc> selected =
         pocSelection.resolve(ScannerPocCatalogService.AFROG, parameters, false);
     assertExecutableIfAbsolute();
@@ -104,6 +105,13 @@ public class AfrogScanTool implements SecurityTool {
     } finally {
       deleteTree(work);
     }
+  }
+
+  /** 优先采用预解析基址，否则回退到授权目标默认 http(s) 基址。 */
+  private URI resolveBase(AuthorizedTarget target, Map<String, Object> parameters) {
+    List<URI> bases = WebTargetResolver.basesFromParameters(parameters);
+    if (!bases.isEmpty()) return bases.get(0);
+    return policy.validatedHttpUri(target);
   }
 
   List<String> buildCommand(URI target, Path pocsDirectory, Path jsonOutput) {

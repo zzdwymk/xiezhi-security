@@ -130,26 +130,26 @@ onMounted(load);
       <el-table-column
         prop="name"
         label="评估项目"
-        min-width="220"
+        min-width="150"
         show-overflow-tooltip
       />
-      <el-table-column prop="owner" label="负责人" width="140">
+      <el-table-column prop="owner" label="负责人" width="100">
         <template #default="scope">{{ scope.row.owner || "未填写" }}</template>
       </el-table-column>
-      <el-table-column label="状态" width="110">
+      <el-table-column label="状态" width="95">
         <template #default="scope">
           <el-tag :type="statusType(scope.row.status)" effect="light">{{
             statusLabel(scope.row.status)
           }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="授权有效期" min-width="300">
+      <el-table-column label="授权有效期" min-width="190">
         <template #default="scope">
           {{ formatDateTime(scope.row.authorizationValidFrom) }} 至
           {{ formatDateTime(scope.row.authorizationExpiresAt) }}
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="150" align="right">
+      <el-table-column label="操作" width="130" align="right">
         <template #default="scope">
           <el-button type="primary" @click="openRecon(scope.row.id)"
             >进入信息收集</el-button
