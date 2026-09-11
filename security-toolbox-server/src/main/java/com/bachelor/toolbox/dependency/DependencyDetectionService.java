@@ -480,7 +480,7 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
         descriptorWithExtractor(
             "sqlmap",
             scannerCandidates("SQLMAP_PATH", "sqlmap.bat", "sqlmap"),
-            List.of("--version", "--batch"),
+            List.of("--version", "--non-interactive", "--batch"),
             false,
             "SCANNER",
             output -> output != null && output.matches("(?s).*\\d+\\.\\d+\\.\\d+.*"),

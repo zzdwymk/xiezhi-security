@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { Search } from "../components/fluentIcons";
 import { endpoints, safeGet, type AssessmentProject } from "../api";
 import AppPagination from "../components/AppPagination.vue";
 import OfflineState from "../components/OfflineState.vue";
@@ -101,12 +102,22 @@ const formCreateValid = computed(() => {
   );
 });
 const formCanSubmit = formCreateValid;
+const searchQuery = ref("");
+const filteredRows = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase();
+  if (!q) return rows.value;
+  return rows.value.filter((row) =>
+    [row.name, row.owner, row.description, row.authorizationStatement]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(q)),
+  );
+});
 const {
   page,
   pageSize,
   total,
   pagedItems: pagedRows,
-} = useClientPagination(rows);
+} = useClientPagination(filteredRows);
 const form = ref({
   name: "",
   description: "",
@@ -259,6 +270,14 @@ onMounted(load);
         <p>以项目统一管理授权范围、目标、检测任务、漏洞和审计记录。</p>
       </div>
       <div class="section-head-actions">
+        <el-input
+          v-model="searchQuery"
+          class="list-search-input"
+          placeholder="搜索项目名称 / 负责人 / 说明"
+          clearable
+          :prefix-icon="Search"
+          style="width: 240px"
+        />
         <el-button type="primary" @click="visible = true"
           >新建评估项目</el-button
         >

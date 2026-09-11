@@ -1419,10 +1419,16 @@ onUnmounted(() => {
             @change="searchCatalog"
           >
             <el-option
-              v-for="value in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']"
-              :key="value"
-              :label="value"
-              :value="value"
+              v-for="item in [
+                { label: '严重 (CRITICAL)', value: 'CRITICAL' },
+                { label: '高危 (HIGH)', value: 'HIGH' },
+                { label: '中危 (MEDIUM)', value: 'MEDIUM' },
+                { label: '低危 (LOW)', value: 'LOW' },
+                { label: '提示 (INFO)', value: 'INFO' },
+              ]"
+              :key="item.value"
+              :label="item.label"
+              :value="item.value"
             />
           </el-select>
           <el-select

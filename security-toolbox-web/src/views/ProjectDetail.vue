@@ -33,11 +33,13 @@ import { formatDateTime, formatExecutionLog } from "../utils/dateTime";
 import {
   formatAuditAction,
   formatAuditDetail,
+  formatAuditOperator,
   formatAuditResource,
   formatAuditResult,
   formatApprovalAction,
   auditResultTagType,
 } from "../utils/auditFormat";
+import { aiToolLabel } from "../utils/aiPresentation";
 import {
   taskProgressIndeterminate,
   taskProgressPercentage,
@@ -53,6 +55,7 @@ import {
   ArrowDown,
   MagicStick,
   Refresh,
+  Search,
   UploadFilled,
 } from "../components/fluentIcons";
 import { useClientPagination } from "../composables/useClientPagination";
@@ -190,11 +193,72 @@ const {
   pageSize: taskPageSize,
   pagedItems: pagedProjectTasks,
 } = useClientPagination(projectTasks);
+const findingTargetFilter = ref<number | undefined>(
+  route.query.targetId ? Number(route.query.targetId) : undefined,
+);
+const findingSeverityFilter = ref(
+  typeof route.query.severity === "string" ? route.query.severity : "",
+);
+const findingStatusFilter = ref(
+  typeof route.query.status === "string" ? route.query.status : "",
+);
+const findingSearchQuery = ref(
+  typeof route.query.q === "string" ? route.query.q : "",
+);
+
+watch(
+  () => [
+    route.query.severity,
+    route.query.status,
+    route.query.q,
+    route.query.targetId,
+  ],
+  ([sev, st, q, tid]) => {
+    if (typeof sev === "string") findingSeverityFilter.value = sev;
+    else if (!sev && tab.value === "findings")
+      findingSeverityFilter.value = "";
+
+    if (typeof st === "string") findingStatusFilter.value = st;
+    else if (!st && tab.value === "findings") findingStatusFilter.value = "";
+
+    if (typeof q === "string") findingSearchQuery.value = q;
+    else if (!q && tab.value === "findings") findingSearchQuery.value = "";
+
+    if (tid) findingTargetFilter.value = Number(tid);
+    else if (!tid && tab.value === "findings")
+      findingTargetFilter.value = undefined;
+  },
+);
+
+const filteredProjectFindings = computed(() => {
+  const targetId = findingTargetFilter.value;
+  const severity = findingSeverityFilter.value;
+  const status = findingStatusFilter.value;
+  const q = findingSearchQuery.value.trim().toLowerCase();
+  return projectFindings.value.filter((finding) => {
+    if (targetId && finding.targetId !== targetId) return false;
+    if (severity && finding.severity !== severity) return false;
+    if (status && finding.status !== status) return false;
+    if (
+      q &&
+      ![
+        finding.title,
+        finding.sourceTool,
+        finding.ruleCode,
+        finding.vulnerabilityCode,
+      ]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(q))
+    )
+      return false;
+    return true;
+  });
+});
 const {
   page: findingPage,
   pageSize: findingPageSize,
   pagedItems: pagedProjectFindings,
-} = useClientPagination(projectFindings);
+} = useClientPagination(filteredProjectFindings);
 const auditPage = ref(1);
 const auditPageSize = ref(20);
 const projectAuditTotal = ref(0);
@@ -369,27 +433,56 @@ const pendingTasks = computed(() =>
     ["PENDING", "QUEUED", "RUNNING"].includes(task.status),
   ),
 );
-const reportSeverityRows = computed(() =>
-  Object.entries(reportSummary.value?.severityCounts || {}).map(
-    ([severity, count]) => ({ severity, count }),
-  ),
-);
+const currentReportTasks = computed(() => {
+  const allTasks = projectTasks.value.length
+    ? projectTasks.value
+    : (reportSummary.value?.vulnerabilityDiscovery || []);
+  if (reportTargetId.value === "ALL") return allTasks;
+  return allTasks.filter((task) => task.targetId === reportTargetId.value);
+});
+const currentReportFindings = computed(() => {
+  const allFindings = projectFindings.value.length
+    ? projectFindings.value
+    : (reportSummary.value?.findings || []);
+  if (reportTargetId.value === "ALL") return allFindings;
+  return allFindings.filter((finding) => finding.targetId === reportTargetId.value);
+});
+const reportSeverityRows = computed(() => {
+  const counts: Record<string, number> = {
+    CRITICAL: 0,
+    HIGH: 0,
+    MEDIUM: 0,
+    LOW: 0,
+    INFO: 0,
+  };
+  for (const f of currentReportFindings.value) {
+    const sev = (f.severity || "INFO").toUpperCase();
+    if (counts[sev] !== undefined) counts[sev]++;
+    else counts[sev] = 1;
+  }
+  return Object.entries(counts).map(([severity, count]) => ({ severity, count }));
+});
 const reportVulnerabilityCount = computed(
-  () =>
-    (reportSummary.value?.findings || []).filter(findingIsVulnerability).length,
+  () => currentReportFindings.value.filter(findingIsVulnerability).length,
 );
 const reportInformationalCount = computed(
   () =>
-    (reportSummary.value?.findings || []).length -
-    reportVulnerabilityCount.value,
+    currentReportFindings.value.filter(
+      (finding) => !findingIsVulnerability(finding),
+    ).length,
 );
+const reportRetestedCount = computed(() => {
+  return currentReportFindings.value.filter((item) =>
+    ["VERIFIED", "FIXED", "REOPENED"].includes(item.status),
+  ).length;
+});
 const recentStatusFilter = ref("");
 const recentToolFilter = ref("");
 const projectToolOptions = computed(() => [
-  ...new Set(projectTasks.value.map((task) => task.toolCode).filter(Boolean)),
+  ...new Set(currentReportTasks.value.map((task) => task.toolCode).filter(Boolean)),
 ]);
 const filteredRecentTasks = computed(() =>
-  projectTasks.value
+  currentReportTasks.value
     .filter(
       (task) =>
         !recentStatusFilter.value || task.status === recentStatusFilter.value,
@@ -703,31 +796,36 @@ function mergeProjectTask(task: ProjectTaskRecord) {
   taskbarProgress.syncTasks(projectTasks.value);
 }
 
-const ASSET_OBSERVATION_TOOLS = new Set([
+const BASELINE_RISK_TOOLS = new Set([
+  "http_headers",
   "tcp_ports",
   "nmap_service_scan",
-  "fscan_scan",
 ]);
-// Mirror of the server-side FindingClassification: an open port (INFO, no vulnerabilityCode,
-// from tcp_ports/nmap) is attack-surface information, not a vulnerability, so it must not be
-// counted under 漏洞发现.
+const BASELINE_RISK_CODES = new Set([
+  "STB-WEB-001",
+  "STB-WEB-005",
+  "STB-TLS-001",
+  "STB-NET-001",
+  "STB-SMB-SMBV1",
+]);
+// 对齐服务端的 FindingClassification 规范：
+// 1. 安全响应头缺失 (http_headers, STB-WEB-001) / 技术栈版本泄露 (STB-WEB-005) / 端口暴露 / SMBv1 等
+//    属于安全配置缺陷与加固弱点（风险点 / 基线缺陷），不作为高危可利用漏洞处理。
+// 2. 只有 CRITICAL / HIGH，或具有明确非配置类漏洞编号的项，才归类为「漏洞发现」。
 function findingIsVulnerability(finding: {
   severity?: string;
   sourceTool?: string;
   vulnerabilityCode?: string | null;
 }) {
-  if (finding.vulnerabilityCode && String(finding.vulnerabilityCode).trim())
-    return true;
-  if (
-    finding.sourceTool &&
-    ASSET_OBSERVATION_TOOLS.has(String(finding.sourceTool).toLowerCase())
-  )
-    return false;
-  return (
-    String(finding.severity || "")
-      .trim()
-      .toUpperCase() !== "INFO"
-  );
+  const tool = String(finding.sourceTool || "").trim().toLowerCase();
+  const code = String(finding.vulnerabilityCode || "").trim().toUpperCase();
+  const sev = String(finding.severity || "").trim().toUpperCase();
+
+  if (BASELINE_RISK_TOOLS.has(tool)) return false;
+  if (BASELINE_RISK_CODES.has(code)) return false;
+  if (sev === "LOW" || sev === "INFO") return false;
+  if (sev === "CRITICAL" || sev === "HIGH") return true;
+  return Boolean(code);
 }
 
 function applyReportSummary(data: ProjectReportSummary) {
@@ -1731,6 +1829,54 @@ async function removeTargetFromProject(targetId: number) {
     ElMessage.error(errorMessage(error, "移出失败"));
   }
 }
+const selectedLinkedTargets = ref<Target[]>([]);
+const linkedTargetMoving = ref(false);
+function onLinkedTargetSelectionChange(selection: Target[]) {
+  selectedLinkedTargets.value = selection;
+}
+async function batchRemoveTargetsFromProject() {
+  if (!selectedLinkedTargets.value.length) {
+    ElMessage.warning("请先勾选要移出项目的目标");
+    return;
+  }
+  const targets = [...selectedLinkedTargets.value];
+  try {
+    await ElMessageBox.confirm(
+      `确认将选中的 ${targets.length} 个目标从本项目移出？移出后将不再属于本项目，也不再受本项目的授权边界约束。`,
+      "批量移出项目",
+      {
+        confirmButtonText: "确认移出",
+        cancelButtonText: "取消",
+        type: "warning",
+      },
+    );
+  } catch (error) {
+    if (error !== "cancel" && error !== "close")
+      ElMessage.error("移出操作已取消");
+    return;
+  }
+  linkedTargetMoving.value = true;
+  let successCount = 0;
+  let failedCount = 0;
+  for (const row of targets) {
+    try {
+      await endpoints.removeProjectTarget(id, row.id);
+      successCount++;
+    } catch {
+      failedCount++;
+    }
+  }
+  linkedTargetMoving.value = false;
+  if (failedCount === 0) {
+    ElMessage.success(`已将 ${successCount} 个目标移出项目`);
+  } else {
+    ElMessage.warning(
+      `移出项目完成：成功 ${successCount} 个，失败 ${failedCount} 个`,
+    );
+  }
+  selectedLinkedTargets.value = [];
+  await load();
+}
 
 const memoryRows = ref<MemoryDoc[]>([]);
 const {
@@ -1796,19 +1942,44 @@ async function clearMemories() {
   }
 }
 
-function openReportMetric(targetTab: string, query?: Record<string, string>) {
+function openReportMetric(
+  targetTab: string,
+  query?: Record<string, string | undefined>,
+) {
   tab.value = targetTab;
   if (targetTab === "tasks") void loadProjectTasks();
-  if (targetTab === "findings") void load();
+  if (targetTab === "findings") {
+    findingSeverityFilter.value = query?.severity || "";
+    findingStatusFilter.value = query?.status || "";
+    findingSearchQuery.value = query?.q || "";
+    findingTargetFilter.value = query?.targetId
+      ? Number(query.targetId)
+      : undefined;
+    void load();
+  }
   if (targetTab === "audits") {
     void loadProjectApprovals();
     void loadProjectAudits();
   }
-  const nextQuery = {
+  const nextQuery: Record<string, any> = {
     ...route.query,
     tab: targetTab === "overview" ? undefined : targetTab,
-    ...(query || {}),
   };
+  if (targetTab === "findings") {
+    if (query?.severity) nextQuery.severity = query.severity;
+    else delete nextQuery.severity;
+    if (query?.status) nextQuery.status = query.status;
+    else delete nextQuery.status;
+    if (query?.q) nextQuery.q = query.q;
+    else delete nextQuery.q;
+    if (query?.targetId) nextQuery.targetId = query.targetId;
+    else delete nextQuery.targetId;
+  } else {
+    for (const [k, v] of Object.entries(query || {})) {
+      if (v !== undefined) nextQuery[k] = v;
+      else delete nextQuery[k];
+    }
+  }
   void router.replace({ path: route.path, query: nextQuery });
 }
 
@@ -3174,12 +3345,26 @@ onUnmounted(() => {
           </el-select>
           <el-button type="primary" @click="add">加入项目</el-button>
           <el-button @click="openTargetCreate">新建授权目标</el-button>
+          <el-button
+            v-if="selectedLinkedTargets.length"
+            type="danger"
+            plain
+            :disabled="linkedTargetMoving"
+            @click="batchRemoveTargetsFromProject"
+            >批量移出项目 ({{ selectedLinkedTargets.length }})</el-button
+          >
         </div>
         <el-empty
           v-if="!linkedTargets.length"
           description="项目暂无授权目标，先新建或加入一个目标"
         />
-        <el-table v-else :data="pagedLinkedTargets" stripe>
+        <el-table
+          v-else
+          :data="pagedLinkedTargets"
+          stripe
+          @selection-change="onLinkedTargetSelectionChange"
+        >
+          <el-table-column type="selection" width="44" />
           <el-table-column prop="name" label="名称" min-width="110" show-overflow-tooltip />
           <el-table-column prop="targetValue" label="地址" min-width="130" show-overflow-tooltip />
           <el-table-column prop="targetType" label="类型" width="70" />
@@ -4332,7 +4517,11 @@ onUnmounted(() => {
           class="project-table"
         >
           <el-table-column prop="id" label="ID" width="55" />
-          <el-table-column prop="toolCode" label="工具" min-width="110" show-overflow-tooltip />
+          <el-table-column label="工具" min-width="120" show-overflow-tooltip>
+            <template #default="scope">
+              {{ aiToolLabel(scope.row.toolCode) }}
+            </template>
+          </el-table-column>
           <el-table-column label="目标" min-width="110" show-overflow-tooltip
             ><template #default="scope">{{
               taskTargetName(scope.row.targetId)
@@ -4428,9 +4617,84 @@ onUnmounted(() => {
             >
           </div>
         </div>
+        <div class="project-tab-filters">
+          <el-input
+            v-model="findingSearchQuery"
+            placeholder="搜索漏洞标题 / 来源 / 规则"
+            clearable
+            :prefix-icon="Search"
+            style="width: 220px"
+          />
+          <el-select
+            v-model="findingTargetFilter"
+            placeholder="全部目标"
+            clearable
+            style="width: 150px"
+          >
+            <el-option
+              v-for="t in linkedTargets"
+              :key="t.id"
+              :label="t.name || t.targetValue"
+              :value="t.id"
+            />
+          </el-select>
+          <el-select
+            v-model="findingSeverityFilter"
+            placeholder="等级"
+            clearable
+            style="width: 120px"
+          >
+            <el-option label="严重" value="CRITICAL" />
+            <el-option label="高危" value="HIGH" />
+            <el-option label="中危" value="MEDIUM" />
+            <el-option label="低危" value="LOW" />
+            <el-option label="提示" value="INFO" />
+          </el-select>
+          <el-select
+            v-model="findingStatusFilter"
+            placeholder="状态"
+            clearable
+            style="width: 120px"
+          >
+            <el-option label="待确认" value="OPEN" />
+            <el-option label="已确认" value="CONFIRMED" />
+            <el-option label="误报" value="FALSE_POSITIVE" />
+            <el-option label="已修复" value="FIXED" />
+          </el-select>
+          <el-button
+            v-if="
+              findingSeverityFilter ||
+              findingStatusFilter ||
+              findingSearchQuery ||
+              findingTargetFilter
+            "
+            link
+            type="primary"
+            size="small"
+            @click="
+              findingSeverityFilter = '';
+              findingStatusFilter = '';
+              findingSearchQuery = '';
+              findingTargetFilter = undefined;
+            "
+          >
+            重置筛选
+          </el-button>
+          <span
+            v-if="filteredProjectFindings.length !== projectFindings.length"
+            class="finding-filter-hint"
+          >
+            已筛选 {{ filteredProjectFindings.length }} /
+            {{ projectFindings.length }} 条
+          </span>
+        </div>
         <el-empty
           v-if="!projectFindings.length"
           description="本项目暂无漏洞发现"
+        />
+        <el-empty
+          v-else-if="!filteredProjectFindings.length"
+          description="没有符合筛选条件的漏洞"
         />
         <el-table
           v-else
@@ -4500,7 +4764,7 @@ onUnmounted(() => {
           v-model:page="findingPage"
           v-model:page-size="findingPageSize"
           class="project-table-pagination"
-          :total="projectFindings.length"
+          :total="filteredProjectFindings.length"
         />
       </el-tab-pane>
       <el-tab-pane label="安全行动" name="security-actions">
@@ -4838,9 +5102,14 @@ onUnmounted(() => {
           ><el-table-column
             prop="operator"
             label="操作人"
-            width="90"
+            width="100"
             show-overflow-tooltip
-          /><el-table-column label="授权快照哈希" min-width="110" show-overflow-tooltip>
+          >
+            <template #default="scope">
+              {{ formatAuditOperator(scope.row.operator) }}
+            </template>
+          </el-table-column
+          ><el-table-column label="授权快照哈希" min-width="110" show-overflow-tooltip>
             <template #default="scope">
               <span
                 :class="{
@@ -4967,10 +5236,13 @@ onUnmounted(() => {
         </div>
         <div class="target-report-toolbar">
           <div>
-            <strong>单目标附录</strong>
-            <span
-              >默认查看全部目标；选择单个目标后可导出该目标的任务与漏洞附录。</span
-            >
+            <strong>{{ reportTarget ? `${reportTarget.name} · 资产报告与附录` : '按资产目标筛选查看' }}</strong>
+            <span v-if="reportTargetId === 'ALL'">
+              当前展示项目全量资产汇总指标。您可通过右侧下拉框选择单个资产，查看该资产专属检测数据并导出单目标附录。
+            </span>
+            <span v-else>
+              当前已过滤显示「{{ reportTarget?.name || '指定目标' }}」的专属检测数据与任务记录，支持单独导出该目标的专项报告。
+            </span>
           </div>
           <div class="toolbar-inline">
             <el-select
@@ -5015,13 +5287,20 @@ onUnmounted(() => {
               class="report-card report-card--link"
               @click="openReportMetric('tasks')"
             >
-              <strong>{{ reportSummary.vulnerabilityDiscovery.length }}</strong>
+              <strong>{{ currentReportTasks.length }}</strong>
               <span>任务总数</span>
             </button>
             <button
               type="button"
               class="report-card report-card--link"
-              @click="openReportMetric('findings')"
+              @click="
+                openReportMetric('findings', {
+                  targetId:
+                    reportTargetId !== 'ALL'
+                      ? String(reportTargetId)
+                      : undefined,
+                })
+              "
             >
               <strong>{{ reportVulnerabilityCount }}</strong>
               <span>漏洞发现</span>
@@ -5029,7 +5308,14 @@ onUnmounted(() => {
             <button
               type="button"
               class="report-card report-card--link"
-              @click="openReportMetric('findings')"
+              @click="
+                openReportMetric('findings', {
+                  targetId:
+                    reportTargetId !== 'ALL'
+                      ? String(reportTargetId)
+                      : undefined,
+                })
+              "
             >
               <strong>{{ reportInformationalCount }}</strong>
               <span>风险点</span>
@@ -5037,11 +5323,17 @@ onUnmounted(() => {
             <button
               type="button"
               class="report-card report-card--link"
-              @click="openReportMetric('findings')"
+              @click="
+                openReportMetric('findings', {
+                  status: 'FIXED',
+                  targetId:
+                    reportTargetId !== 'ALL'
+                      ? String(reportTargetId)
+                      : undefined,
+                })
+              "
             >
-              <strong>{{
-                reportSummary.verification?.retestedFindings || 0
-              }}</strong>
+              <strong>{{ reportRetestedCount }}</strong>
               <span>已复测</span>
             </button>
             <button
@@ -5062,7 +5354,15 @@ onUnmounted(() => {
               :key="item.severity"
               type="button"
               class="report-severity-chip report-severity--link"
-              @click="openReportMetric('findings', { severity: item.severity })"
+              @click="
+                openReportMetric('findings', {
+                  severity: item.severity,
+                  targetId:
+                    reportTargetId !== 'ALL'
+                      ? String(reportTargetId)
+                      : undefined,
+                })
+              "
             >
               <el-tag size="small" :type="findingSeverityType(item.severity)">{{
                 item.severity
@@ -5090,8 +5390,8 @@ onUnmounted(() => {
                 ><el-option
                   v-for="code in projectToolOptions"
                   :key="code"
-                  :label="code"
-                  :value="code" /></el-select
+                  :label="aiToolLabel(code)"
+                  :value="code" /></el-select>
               ><el-select
                 v-model="recentStatusFilter"
                 size="small"
@@ -5109,7 +5409,7 @@ onUnmounted(() => {
                     'REJECTED',
                   ]"
                   :key="s"
-                  :label="s"
+                  :label="taskStatusLabel(s)"
                   :value="s"
               /></el-select>
             </div>
@@ -5122,15 +5422,19 @@ onUnmounted(() => {
             style="cursor: pointer"
             @row-click="showTaskDetail"
             ><el-table-column prop="id" label="ID" width="55" /><el-table-column
-              prop="toolCode"
               label="工具"
-              min-width="110"
+              min-width="120"
               show-overflow-tooltip
-            /><el-table-column
-              prop="status"
-              label="状态"
-              width="85"
-            /><el-table-column label="创建时间" min-width="140"
+            ><template #default="scope">{{
+              aiToolLabel(scope.row.toolCode)
+            }}</template></el-table-column
+            ><el-table-column label="状态" width="85"
+              ><template #default="scope"
+                ><el-tag size="small" :type="taskStatusType(scope.row.status)">{{
+                  taskStatusLabel(scope.row.status)
+                }}</el-tag></template
+              ></el-table-column
+            ><el-table-column label="创建时间" min-width="140"
               ><template #default="scope">{{
                 formatDateTime(scope.row.createdAt)
               }}</template></el-table-column
@@ -5967,6 +6271,17 @@ onUnmounted(() => {
   flex: none;
   align-items: center;
   gap: 8px;
+}
+.project-tab-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.finding-filter-hint {
+  color: var(--app-muted, var(--el-text-color-secondary));
+  font-size: 12px;
 }
 .project-table {
   margin-top: 12px;

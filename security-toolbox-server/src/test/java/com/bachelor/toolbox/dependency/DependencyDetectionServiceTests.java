@@ -275,6 +275,21 @@ class DependencyDetectionServiceTests {
   }
 
   @Test
+  void usesNonInteractiveBatchArgumentsForSqlmapVersionProbe() {
+    ExecutableLocator locator = locateCandidate("sqlmap.bat", Path.of("test-data/tools/sqlmap/sqlmap.bat"));
+    CommandRunner runner =
+        (executable, arguments, timeout) -> {
+          assertThat(arguments).containsExactly("--version", "--non-interactive", "--batch");
+          return CommandResult.completed(0, "1.10.9#stable");
+        };
+
+    DependencyStatus sqlmap = find(service(locator, runner).detect(), "sqlmap");
+
+    assertThat(sqlmap.status()).isEqualTo("AVAILABLE");
+    assertThat(sqlmap.version()).isEqualTo("1.10.9#stable");
+  }
+
+  @Test
   void reportsCommandFailureWithoutLeakingRunnerDetails() {
     ExecutableLocator locator = locateCandidate("nmap", Path.of("test-data/tools/nmap"));
     CommandRunner runner =

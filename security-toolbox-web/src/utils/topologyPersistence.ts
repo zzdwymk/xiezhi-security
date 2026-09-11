@@ -43,22 +43,22 @@ export function saveGlobalPrefs(prefs: TopologyGlobalPrefs) {
 }
 
 export function loadNodePositions(
-  projectId: number,
-): Record<number, { x: number; y: number }> {
-  return safeRead<Record<number, { x: number; y: number }>>(
+  projectId: number | string,
+): Record<string | number, { x: number; y: number }> {
+  return safeRead<Record<string | number, { x: number; y: number }>>(
     `${POSITIONS_PREFIX}${projectId}`,
     {},
   );
 }
 
 export function saveNodePositions(
-  projectId: number,
-  positions: Record<number, { x: number; y: number }>,
+  projectId: number | string,
+  positions: Record<string | number, { x: number; y: number }>,
 ) {
   safeWrite(`${POSITIONS_PREFIX}${projectId}`, positions);
 }
 
-export function clearNodePositions(projectId: number) {
+export function clearNodePositions(projectId: number | string) {
   try {
     window.localStorage.removeItem(`${POSITIONS_PREFIX}${projectId}`);
   } catch {

@@ -13,7 +13,7 @@ import { toErrorMessage } from "../utils/errorMessage";
 import { ElMessage } from "element-plus";
 
 const projects = ref<AssessmentProject[]>([]);
-const projectId = ref<number>();
+const projectId = ref<number | "all">();
 const assets = ref<DiscoveryResult[]>([]);
 const loading = ref(false);
 const assetsLoading = ref(false);
@@ -26,6 +26,7 @@ const activeProjects = computed(() =>
 );
 
 const selectedProjectName = computed(() => {
+  if (projectId.value === "all") return "全部项目总览";
   const found = projects.value.find((p) => p.id === projectId.value);
   return found?.name || "项目中心";
 });
@@ -50,12 +51,34 @@ async function loadAssets() {
   }
   assetsLoading.value = true;
   try {
-    const [probeResults, webPaths] = await Promise.all([
-      endpoints.projectDiscoveryResults(pid),
-      safeGet(() => endpoints.projectDiscoveredPaths(pid), [] as DiscoveredPath[]),
-    ]);
-    // 资产拓扑 = 主机级探测结果 + Web URL 资产（discovered_paths），两者都带唯一 id 可直接作为拓扑节点。
-    assets.value = [...(probeResults.data || []), ...asPathAssets(webPaths.data || [])];
+    if (pid === "all") {
+      const list = activeProjects.value.length ? activeProjects.value : projects.value;
+      const allResults = await Promise.allSettled(
+        list.map(async (p) => {
+          const [probeResults, webPaths] = await Promise.all([
+            safeGet(() => endpoints.projectDiscoveryResults(p.id), [] as DiscoveryResult[]),
+            safeGet(() => endpoints.projectDiscoveredPaths(p.id), [] as DiscoveredPath[]),
+          ]);
+          return [
+            ...(probeResults.data || []).map((item) => ({ ...item, projectId: p.id })),
+            ...asPathAssets(webPaths.data || []).map((item) => ({ ...item, projectId: p.id })),
+          ];
+        }),
+      );
+      const combined: DiscoveryResult[] = [];
+      allResults.forEach((res) => {
+        if (res.status === "fulfilled") {
+          combined.push(...res.value);
+        }
+      });
+      assets.value = combined;
+    } else {
+      const [probeResults, webPaths] = await Promise.all([
+        endpoints.projectDiscoveryResults(pid),
+        safeGet(() => endpoints.projectDiscoveredPaths(pid), [] as DiscoveredPath[]),
+      ]);
+      assets.value = [...(probeResults.data || []), ...asPathAssets(webPaths.data || [])];
+    }
   } catch (error) {
     ElMessage.error(toErrorMessage(error, "资产加载失败"));
   } finally {
@@ -82,8 +105,8 @@ function asPathAssets(paths: DiscoveredPath[]): DiscoveryResult[] {
 watch(projectId, loadAssets);
 onMounted(async () => {
   await loadProjects();
-  if (!projectId.value && activeProjects.value.length) {
-    projectId.value = activeProjects.value[0].id;
+  if (projectId.value === undefined) {
+    projectId.value = "all";
   }
 });
 </script>
@@ -101,9 +124,12 @@ onMounted(async () => {
           :loading="loading"
           placeholder="选择评估项目"
           aria-label="评估项目"
-          clearable
           class="project-picker"
         >
+          <el-option
+            label="全部项目 (总览)"
+            value="all"
+          />
           <el-option
             v-for="project in projects"
             :key="project.id"
@@ -133,6 +159,7 @@ onMounted(async () => {
         :assets="assets"
         :loading="assetsLoading"
         :hub-label="selectedProjectName"
+        :projects="projects"
         @change="loadAssets"
       />
 

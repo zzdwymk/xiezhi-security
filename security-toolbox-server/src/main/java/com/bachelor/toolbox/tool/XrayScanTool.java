@@ -242,10 +242,177 @@ public class XrayScanTool implements SecurityTool {
         try (var in = getClass().getResourceAsStream("/xray/" + fileName)) {
           if (in != null) {
             Files.copy(in, targetFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            copied = true;
           }
         } catch (Exception ignored) {}
       }
+      if (!copied) {
+        String fallback = fallbackConfig(fileName);
+        if (fallback != null) {
+          try {
+            Files.writeString(targetFile, fallback, java.nio.charset.StandardCharsets.UTF_8);
+          } catch (Exception ignored) {}
+        }
+      }
     }
+  }
+
+  private String fallbackConfig(String fileName) {
+    if ("module.xray.yaml".equals(fileName)) {
+      return """
+Client:
+    active_paths: []
+    allow_methods:
+        - HEAD
+        - GET
+        - POST
+        - PUT
+        - PATCH
+        - DELETE
+        - OPTIONS
+        - CONNECT
+        - TRACE
+        - MOVE
+        - PROPFIND
+    dial_timeout: 5
+    enable_http2: false
+    fail_retries: 0
+    headers: {}
+    max_conns_per_host: 50
+    max_qps: 500
+    max_redirect: 5
+    max_resp_body_size: 2.097152e+06
+    passive_mode: false
+    pkcs12:
+        Password: ""
+        Path: ""
+    proxy: ""
+    proxy_rule: null
+    read_timeout: 10
+Pool:
+    size: 100
+Reverse:
+    client:
+        dns_server_ip: ""
+        http_base_url: ""
+        remote_server: false
+        reverse_api: ""
+        reverse_server_url: ""
+        rmi_server_addr: ""
+    db_file_path: ""
+    dns:
+        domain: ""
+        enabled: false
+        is_domain_name_server: false
+        listen_ip: 0.0.0.0
+        resolve:
+            - record: localhost
+              ttl: 60
+              type: A
+              value: 127.0.0.1
+    http:
+        enabled: false
+        ip_header: ""
+        listen_ip: 0.0.0.0
+        listen_port: ""
+    rmi:
+        enabled: false
+        listen_ip: 127.0.0.1
+        listen_port: ""
+    token: ""
+""";
+    }
+    if ("plugin.xray.yaml".equals(fileName)) {
+      return """
+printer:
+    disable_host_print: false
+    disable_port_print: false
+    disable_service_print: false
+    disable_website_print: false
+service-scan:
+    bandwidth: 1000
+    flag:
+        bandwidth: bandwidth,bw
+        max_service_per_host: max-srv,ms
+        port: port,p
+        skip_fingerprint: skip-fingerprint,sf
+        skip_live: skip-live,sl
+        skip_syn: skip-syn,ss
+        skip_web_fingerprint: skip-web,sw
+        timeout: timeout
+    max_service_per_host: 0
+    port: 22,80,443
+    skip_fingerprint: false
+    skip_live: false
+    skip_syn: false
+    skip_web_fingerprint: false
+    timeout: 2
+target-parser:
+    flag:
+        target: target,t
+    group_size: 256
+    target: ""
+vuln-scan:
+    config_file: config.yaml
+    flag:
+        config_file: config
+        html_output: html-output,ho
+        json_output: json_output,jo
+        level: level
+        log_level: log-level
+        plugins: plugins
+        poc: poc
+        stdout: stdout
+        tags: tags
+        text_output: text-output,to
+        webhook_output: webhook-output,wo
+    html_output: ""
+    json_output: ""
+    level: ""
+    log_level: ""
+    plugins: ""
+    poc: ""
+    stdout: true
+    tags: ""
+    text_output: ""
+    webhook_output: ""
+""";
+    }
+    if ("xray.yaml".equals(fileName)) {
+      return """
+- name: x
+  description: |-
+    A command that enables all plugins.
+    You can customize new commands or modify the plugins enabled by a command in the configuration file.
+  enabled_plugins:
+    - printer
+    - service-scan
+    - target-parser
+    - vuln-scan
+  disabled_plugins: []
+  plugin_path:
+    - ./plugin
+  module_config: module.xray.yaml
+  plugin_config: plugin.xray.yaml
+""";
+    }
+    if ("config.yaml".equals(fileName)) {
+      return """
+version: 4.0
+parallel: 30
+http:
+  proxy: ""
+  dial_timeout: 5
+  read_timeout: 10
+  max_conns_per_host: 50
+  enable_http2: false
+  fail_retries: 0
+  max_redirect: 5
+  max_resp_body_size: 2097152
+  max_qps: 500
+""";
+    }
+    return null;
   }
 
   private void searchRoots(List<Path> targetList) {

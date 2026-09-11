@@ -347,6 +347,52 @@ body,
   );
 }
 
+/* In dark mode the translucent surfaces were too see-through over the native
+   Mica/Acrylic backdrop, washing out text and leaving hover/selected items
+   almost invisible (no contrast). Keep the material blur alive but make the
+   panels near-opaque so the running text and the reveal tint stay readable.
+   This also covers plain web mode, where the transparent low-opacity Canvas
+   base would otherwise sit over a blank (white) chrome surface. */
+:root[data-system-theme="dark"] {
+  --app-bg: color-mix(in srgb, Canvas 92%, transparent);
+  --app-surface: color-mix(in srgb, Canvas 96%, transparent);
+  --app-surface-strong: color-mix(in srgb, Canvas 98%, transparent);
+  --app-surface-soft: color-mix(in srgb, CanvasText 7%, transparent);
+  --app-workspace-surface: var(--app-surface);
+  --app-content-surface: var(--app-bg);
+  --app-chrome-surface: var(--app-bg);
+  --app-sidebar: color-mix(in srgb, Canvas 94%, transparent);
+  --v2-glass-panel: var(--app-surface);
+  --v2-glass-hover: var(--app-surface-soft);
+  /* Lift muted text against the opaque dark panels so hint copy and secondary
+     labels never drop below a readable contrast. */
+  --app-muted: color-mix(in srgb, CanvasText 82%, transparent);
+  --el-text-color-regular: color-mix(in srgb, CanvasText 90%, transparent);
+  --el-text-color-secondary: color-mix(in srgb, CanvasText 82%, transparent);
+  /* Keep the near-opaque surface tokens even when Mica is explicitly off. */
+}
+:root[data-system-theme="dark"][data-window-material="none"] {
+  --app-bg: Canvas;
+  --app-surface: Canvas;
+  --app-surface-strong: Canvas;
+  --app-surface-soft: color-mix(in srgb, CanvasText 6%, Canvas);
+  --app-workspace-surface: Canvas;
+  --app-content-surface: Canvas;
+  --app-chrome-surface: Canvas;
+  --app-sidebar: Canvas;
+}
+
+/* Stronger hover / selection tint in dark mode so hover states pop over the
+   near-opaque surfaces (8% accent is invisible against a dark backdrop). */
+:root[data-system-theme="dark"] {
+  --fluent3-reveal-bg: color-mix(in srgb, var(--app-accent) 16%, transparent);
+  --fluent3-reveal-border: color-mix(
+    in srgb,
+    var(--app-accent) 50%,
+    var(--app-border-strong)
+  );
+}
+
 /* Opaque fallback used when Windows transparency/backdrop effects are off. */
 :root[data-caption-mode="solid"] {
   --app-bg: Canvas;

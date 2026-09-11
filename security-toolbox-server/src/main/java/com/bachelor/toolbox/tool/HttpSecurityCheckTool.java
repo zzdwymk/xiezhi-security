@@ -286,7 +286,14 @@ public class HttpSecurityCheckTool implements SecurityTool {
   }
 
   private String validateCheck(Map<String, Object> parameters) {
-    if (parameters == null || parameters.size() != 1 || !parameters.containsKey("check")) {
+    if (parameters == null || !parameters.containsKey("check")) {
+      throw new ApiException("HTTP 漏洞检查要求且仅允许 check 参数");
+    }
+    long userParamCount =
+        parameters.keySet().stream()
+            .filter(k -> !k.startsWith("__") && !"path".equals(k))
+            .count();
+    if (userParamCount != 1) {
       throw new ApiException("HTTP 漏洞检查要求且仅允许 check 参数");
     }
     String check = Objects.toString(parameters.get("check"), "").trim().toLowerCase(Locale.ROOT);

@@ -101,6 +101,7 @@ public class SqlmapScanTool implements SecurityTool {
       command.add("-u");
       command.add(url);
       command.add("--batch");
+      command.add("--non-interactive");
       command.add("--disable-coloring");
       command.add("--flush-session");
       command.add("--level=" + level);
