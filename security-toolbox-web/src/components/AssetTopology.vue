@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick, onMounted, onUnmounted } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { endpoints, type DiscoveryResult } from "../api";
+import { endpoints, type AssessmentProject, type DiscoveryResult } from "../api";
 import { formatDateTime } from "../utils/dateTime";
 import {
   clearNodePositions,
@@ -14,14 +14,16 @@ import FluentIcon from "./FluentIcon.vue";
 
 const props = withDefaults(
   defineProps<{
-    projectId: number;
+    projectId: number | "all";
     assets: DiscoveryResult[];
     hubLabel?: string;
     loading?: boolean;
+    projects?: AssessmentProject[];
   }>(),
   {
     hubLabel: "项目中心",
     loading: false,
+    projects: () => [],
   },
 );
 
@@ -44,9 +46,10 @@ const isDraggingCanvas = ref(false);
 const canvasDragStart = ref({ x: 0, y: 0 });
 const hasDragged = ref(false);
 
-// 节点自定义拖拽位置记录: Map<nodeId, { x, y }> (按项目持久化为本地)
-const customPositions = ref<Record<number, { x: number; y: number }>>({});
+// 节点与中心卡片自定义拖拽位置记录: Map<id, { x, y }> (按项目持久化为本地)
+const customPositions = ref<Record<string | number, { x: number; y: number }>>({});
 const draggingNodeId = ref<number | null>(null);
+const draggingHubId = ref<string | null>(null);
 const nodeDragStart = ref({ clientX: 0, clientY: 0, initX: 0, initY: 0 });
 
 // 视图模式与动效 (全局偏好持久化为本地)
@@ -59,6 +62,10 @@ const showMinimap = ref(persistedPrefs.showMinimap);
 // 聚光灯过滤维度 (null 为无，'waf', 'https', 'http')
 const spotlightFilter = ref<string | null>(null);
 const focusedDomain = ref<string | null>(null);
+const isFocusedDomainIp = computed(() => {
+  if (!focusedDomain.value) return false;
+  return isIpAddress(focusedDomain.value);
+});
 const searchQuery = ref("");
 
 // 选中与悬停
@@ -80,30 +87,68 @@ const contextMenu = ref<ContextMenuState>({
   node: null,
 });
 
+// 判断是否为 IPv4 地址
+const IPV4_REGEX = /^(?:(?:\d|[1-9]\d|1\d\d|2[0-4]\d|25[0-5])\.){3}(?:\d|[1-9]\d|1\d\d|2[0-4]\d|25[0-5])$/;
+
+// 常见复合后缀 (二重顶级域名)
+const DOUBLE_TLDS = new Set([
+  "com.cn", "org.cn", "net.cn", "gov.cn", "edu.cn", "ac.cn", "mil.cn",
+  "co.uk", "org.uk", "me.uk", "ltd.uk", "plc.uk",
+  "com.hk", "org.hk", "net.hk", "edu.hk",
+  "com.tw", "org.tw", "net.tw", "edu.tw",
+  "com.au", "net.au", "org.au", "edu.au",
+  "co.jp", "ne.jp", "ac.jp", "go.jp",
+]);
+
+function isIpAddress(hostOrIp: string): boolean {
+  if (!hostOrIp) return false;
+  const clean = hostOrIp.replace(/^\[|\]$/g, "").split(":")[0];
+  return IPV4_REGEX.test(clean) || clean.includes(":") || clean.toLowerCase() === "localhost";
+}
+
+function extractRootDomain(rawHostname: string): { rootDomain: string; isIp: boolean } {
+  if (!rawHostname) return { rootDomain: "未知", isIp: false };
+  const clean = rawHostname.replace(/^\[|\]$/g, "").split(":")[0].trim();
+  if (isIpAddress(clean)) {
+    return { rootDomain: clean, isIp: true };
+  }
+  const parts = clean.split(".");
+  if (parts.length <= 2) {
+    return { rootDomain: clean, isIp: false };
+  }
+  const lastTwo = parts.slice(-2).join(".").toLowerCase();
+  if (DOUBLE_TLDS.has(lastTwo) && parts.length >= 3) {
+    return { rootDomain: parts.slice(-3).join("."), isIp: false };
+  }
+  return { rootDomain: parts.slice(-2).join("."), isIp: false };
+}
+
 // 解析 URL 主机与协议
-function parseHost(url?: string): { host: string; protocol: string; path: string; rootDomain: string } {
-  if (!url) return { host: "未知资产", protocol: "http", path: "", rootDomain: "未知" };
+function parseHost(url?: string): { host: string; protocol: string; path: string; rootDomain: string; isIp: boolean } {
+  if (!url) return { host: "未知资产", protocol: "http", path: "", rootDomain: "未知", isIp: false };
   try {
     const parsed = new URL(url.startsWith("http") ? url : `http://${url}`);
     const host = parsed.hostname + (parsed.port ? `:${parsed.port}` : "");
-    const parts = parsed.hostname.split(".");
-    const rootDomain = parts.length >= 2 ? parts.slice(-2).join(".") : parsed.hostname;
+    const { rootDomain, isIp } = extractRootDomain(parsed.hostname);
     return {
       host,
       protocol: parsed.protocol.replace(":", "").toLowerCase(),
       path: parsed.pathname === "/" ? "" : parsed.pathname,
       rootDomain,
+      isIp,
     };
   } catch {
     const clean = url.replace(/^https?:\/\//, "");
     const parts = clean.split("/");
     const host = parts[0] || "资产";
-    const hParts = host.split(".");
+    const hostname = host.split(":")[0];
+    const { rootDomain, isIp } = extractRootDomain(hostname);
     return {
       host,
       protocol: url.startsWith("https") ? "https" : "http",
       path: parts.slice(1).join("/"),
-      rootDomain: hParts.length >= 2 ? hParts.slice(-2).join(".") : host,
+      rootDomain,
+      isIp,
     };
   }
 }
@@ -163,7 +208,7 @@ const HUB_W = 216;
 const HUB_H = 68;
 const CARD_W = 228;
 const CARD_H = 68;
-const DOMAIN_BRANCH_W = 164;
+const DOMAIN_BRANCH_W = 180;
 const DOMAIN_BRANCH_H = 34;
 
 function compactLabel(value: string, limit: number) {
@@ -177,6 +222,43 @@ function compactLabel(value: string, limit: number) {
   return label;
 }
 
+export interface HubTheme {
+  id: string;
+  name: string;
+  gradStart: string;
+  gradEnd: string;
+  haloColor: string;
+  shadowColor: string;
+  iconPath: string;
+}
+
+// 微软 Fluent 2 统一规范：所有中心节点共用同一套克制的 Communication Blue 品牌 + 官方盾牌图标，
+// 用项目标题区分不同中心卡片，避免多色多图标造成的视觉噪音。
+const FLUENT_HUB_THEMES: HubTheme[] = [
+  {
+    id: "blue",
+    name: "Communication Blue",
+    gradStart: "#0078d4",
+    gradEnd: "#005a9e",
+    haloColor: "rgba(0, 120, 212, 0.14)",
+    shadowColor: "#0078d4",
+    // @fluentui/svg-icons: shield_24_filled
+    iconPath:
+      "M3 5.75c0-.41.34-.75.75-.75 2.66 0 5.26-.94 7.8-2.85.27-.2.63-.2.9 0C14.99 4.05 17.59 5 20.25 5c.41 0 .75.34.75.75V11c0 5-2.96 8.68-8.73 10.95a.75.75 0 0 1-.54 0C5.96 19.68 3 16 3 11V5.75Z",
+  },
+];
+
+export interface LayoutHub {
+  id: string;
+  projectId: number;
+  name: string;
+  theme: HubTheme;
+  x: number;
+  y: number;
+  assetCount: number;
+  hostCount: number;
+}
+
 // 布局数据类型
 interface LayoutNode {
   id: number;
@@ -187,6 +269,7 @@ interface LayoutNode {
   protocol: string;
   badges: string[];
   rootDomain: string;
+  isIp: boolean;
   isMatch: boolean;
   isSpotlight: boolean;
   statusKind?: "waf" | "https" | "http";
@@ -195,6 +278,7 @@ interface LayoutNode {
 interface MindmapDomainNode {
   id: string;
   domain: string;
+  isIp: boolean;
   x: number;
   y: number;
   w: number;
@@ -205,6 +289,7 @@ interface MindmapDomainNode {
 
 interface DomainClusterEnclosure {
   domain: string;
+  isIp: boolean;
   x: number;
   y: number;
   width: number;
@@ -257,13 +342,13 @@ function getRectIntersection(
   }
 }
 
-// AABB 矩形防重叠碰撞分离器 (保证卡片之间与中心卡片绝对不产生任何物理压叠)
+// AABB 矩形防重叠碰撞分离器 (保证卡片之间与各中心卡片绝对不产生任何物理压叠)
 function resolveNodeCollisions(
   nodes: LayoutNode[],
-  center: { x: number; y: number },
-  customMap: Record<number, { x: number; y: number }>,
+  hubs: LayoutHub[],
+  customMap: Record<string | number, { x: number; y: number }>,
 ) {
-  if (nodes.length <= 1) return;
+  if (nodes.length <= 1 && hubs.length <= 1) return;
   const maxIterations = 24;
   const paddingX = 26; // 卡片间水平安全距离
   const paddingY = 18; // 卡片间垂直安全距离
@@ -273,20 +358,22 @@ function resolveNodeCollisions(
   for (let iter = 0; iter < maxIterations; iter++) {
     let hasCollision = false;
 
-    // 1. 避让中心卡片
-    for (const node of nodes) {
-      if (customMap[node.id] != null) continue;
-      const dx = node.x - center.x;
-      const dy = node.y - center.y;
-      const overlapX = minHubDistX - Math.abs(dx);
-      const overlapY = minHubDistY - Math.abs(dy);
+    // 1. 避让所有中心卡片
+    for (const hub of hubs) {
+      for (const node of nodes) {
+        if (customMap[node.id] != null) continue;
+        const dx = node.x - hub.x;
+        const dy = node.y - hub.y;
+        const overlapX = minHubDistX - Math.abs(dx);
+        const overlapY = minHubDistY - Math.abs(dy);
 
-      if (overlapX > 0 && overlapY > 0) {
-        hasCollision = true;
-        if (overlapX < overlapY) {
-          node.x += (dx >= 0 ? 1 : -1) * overlapX;
-        } else {
-          node.y += (dy >= 0 ? 1 : -1) * overlapY;
+        if (overlapX > 0 && overlapY > 0) {
+          hasCollision = true;
+          if (overlapX < overlapY) {
+            node.x += (dx >= 0 ? 1 : -1) * overlapX;
+          } else {
+            node.y += (dy >= 0 ? 1 : -1) * overlapY;
+          }
         }
       }
     }
@@ -405,8 +492,9 @@ const hubPosition = computed(() => {
   return { x: cx.value, y: cy.value };
 });
 
-// 计算全部节点坐标与连线
+// 计算全部中心节点与资产节点坐标与连线 (支持单项目模式与全部项目多中心模式)
 const layoutData = computed<{
+  hubs: LayoutHub[];
   nodes: LayoutNode[];
   edges: LayoutEdge[];
   domainNodes: MindmapDomainNode[];
@@ -419,329 +507,474 @@ const layoutData = computed<{
   const edges: LayoutEdge[] = [];
   const domainNodes: MindmapDomainNode[] = [];
 
-  if (!allAssets.length) return { nodes, edges, domainNodes };
+  const isAll = props.projectId === "all";
+  const hubs: LayoutHub[] = [];
 
-  const centerPoint = hubPosition.value;
-
-  if (layoutMode.value === "orbit") {
-    orbitRings.value.forEach((ring) => {
-      const ringAssets = allAssets.slice(ring.startIdx, ring.startIdx + ring.count);
-
-      ringAssets.forEach((asset, idx) => {
-        const angle = ring.angleOffset + (2 * Math.PI * idx) / Math.max(1, ring.count);
-        const autoX = centerPoint.x + ring.rx * Math.cos(angle);
-        const autoY = centerPoint.y + ring.ry * Math.sin(angle);
-
-        const custom = customPositions.value[asset.id!];
-        const nx = custom ? custom.x : autoX;
-        const ny = custom ? custom.y : autoY;
-
-        const { host, protocol, rootDomain } = parseHost(asset.url);
-        const badges = getNodeBadges(asset);
-
-        const isSearchMatch =
-          !q ||
-          (asset.url || "").toLowerCase().includes(q) ||
-          host.toLowerCase().includes(q) ||
-          [asset.server, asset.framework, asset.wafName, ...badges].some((value) =>
-            typeof value === "string" && value.toLowerCase().includes(q),
-          );
-
-        let isSpotlight = true;
-        if (focusedDomain.value) {
-          isSpotlight = rootDomain === focusedDomain.value || host.includes(focusedDomain.value);
-        } else if (spotlightFilter.value === "waf") {
-          isSpotlight = Boolean(asset.wafName || asset.waf);
-        } else if (spotlightFilter.value === "https") {
-          isSpotlight = protocol === "https";
-        } else if (spotlightFilter.value === "http") {
-          isSpotlight = protocol === "http";
-        }
-
-        const isMatch = isSearchMatch && isSpotlight;
-        const statusKind = getAssetStatusKind(asset, protocol);
-
-        nodes.push({
-          id: asset.id!,
-          asset,
-          x: nx,
-          y: ny,
-          host,
-          protocol,
-          badges,
-          rootDomain,
-          isMatch,
-          isSpotlight,
-          statusKind,
-        });
-      });
-    });
-
-    // 运行防重叠碰撞松弛分离
-    resolveNodeCollisions(nodes, centerPoint, customPositions.value);
-
-    // 节点位置稳定确定后，精准计算物理插接连线
-    nodes.forEach((node) => {
-      const p1 = getRectIntersection(centerPoint.x, centerPoint.y, HUB_W, HUB_H, node.x, node.y);
-      const p2 = getRectIntersection(node.x, node.y, CARD_W, CARD_H, centerPoint.x, centerPoint.y);
-      const currentAngle = Math.atan2(node.y - centerPoint.y, node.x - centerPoint.x);
-      const midX = (p1.x + p2.x) / 2 + Math.sin(currentAngle) * 10;
-      const midY = (p1.y + p2.y) / 2 - Math.cos(currentAngle) * 10;
-      const path = `M ${p1.x} ${p1.y} Q ${midX} ${midY} ${p2.x} ${p2.y}`;
-
-      edges.push({
-        id: `edge-${node.id}`,
-        sourceId: "hub",
-        targetId: node.id,
-        x1: p1.x,
-        y1: p1.y,
-        x2: p2.x,
-        y2: p2.y,
-        path,
-      });
-    });
-  } else if (layoutMode.value === "mindmap") {
-    // 思维导图模式：从中心项目向右多级分层树状展开 (Hub -> RootDomain 分支 -> 资产卡片)
-    const hubX = centerPoint.x;
-    const hubY = centerPoint.y;
-
-    const domainGroups = new Map<string, DiscoveryResult[]>();
-    allAssets.forEach((a) => {
-      const rd = parseHost(a.url).rootDomain;
-      if (!domainGroups.has(rd)) domainGroups.set(rd, []);
-      domainGroups.get(rd)!.push(a);
-    });
-
-    const sortedDomains = Array.from(domainGroups.keys()).sort((a, b) => a.localeCompare(b));
-    const domainX = hubX + HUB_W / 2 + 130;
-    const leafX = domainX + DOMAIN_BRANCH_W / 2 + 160;
-    const verticalGap = CARD_H + 20;
-    const domainSeparation = 26;
-
-    let totalHeight = 0;
-    const groupHeights = sortedDomains.map((d) => {
-      const count = domainGroups.get(d)!.length;
-      const h = Math.max(DOMAIN_BRANCH_H + 16, count * verticalGap);
-      totalHeight += h;
-      return h;
-    });
-    totalHeight += Math.max(0, sortedDomains.length - 1) * domainSeparation;
-
-    let currentY = hubY - totalHeight / 2;
-
-    sortedDomains.forEach((rootDomain, dIdx) => {
-      const groupAssets = domainGroups.get(rootDomain)!;
-      const blockHeight = groupHeights[dIdx];
-      const startLeafY = currentY + (blockHeight - (groupAssets.length - 1) * verticalGap) / 2;
-      const branchY = currentY + blockHeight / 2;
-
-      let anyAssetMatch = false;
-
-      groupAssets.forEach((asset, idx) => {
-        const autoX = leafX;
-        const autoY = startLeafY + idx * verticalGap;
-
-        const custom = customPositions.value[asset.id!];
-        const nx = custom ? custom.x : autoX;
-        const ny = custom ? custom.y : autoY;
-
-        const { host, protocol } = parseHost(asset.url);
-        const badges = getNodeBadges(asset);
-
-        const isSearchMatch =
-          !q ||
-          (asset.url || "").toLowerCase().includes(q) ||
-          host.toLowerCase().includes(q) ||
-          [asset.server, asset.framework, asset.wafName, ...badges].some((value) =>
-            typeof value === "string" && value.toLowerCase().includes(q),
-          );
-
-        let isSpotlight = true;
-        if (focusedDomain.value) {
-          isSpotlight = rootDomain === focusedDomain.value || host.includes(focusedDomain.value);
-        } else if (spotlightFilter.value === "waf") {
-          isSpotlight = Boolean(asset.wafName || asset.waf);
-        } else if (spotlightFilter.value === "https") {
-          isSpotlight = protocol === "https";
-        } else if (spotlightFilter.value === "http") {
-          isSpotlight = protocol === "http";
-        }
-
-        const isMatch = isSearchMatch && isSpotlight;
-        if (isMatch) anyAssetMatch = true;
-        const statusKind = getAssetStatusKind(asset, protocol);
-
-        nodes.push({
-          id: asset.id!,
-          asset,
-          x: nx,
-          y: ny,
-          host,
-          protocol,
-          badges,
-          rootDomain,
-          isMatch,
-          isSpotlight,
-          statusKind,
-        });
-
-        // 连线：主域分支 -> 资产叶子卡片 (水平平滑 S 曲线)
-        const lx1 = domainX + DOMAIN_BRANCH_W / 2;
-        const ly1 = branchY;
-        const lx2 = nx - CARD_W / 2;
-        const ly2 = ny;
-        const ldx = lx2 - lx1;
-        const leafPath = `M ${lx1} ${ly1} C ${lx1 + ldx * 0.5} ${ly1}, ${lx2 - ldx * 0.5} ${ly2}, ${lx2} ${ly2}`;
-
-        edges.push({
-          id: `edge-branch-${asset.id}`,
-          sourceId: `domain-${rootDomain}`,
-          targetId: asset.id!,
-          x1: lx1,
-          y1: ly1,
-          x2: lx2,
-          y2: ly2,
-          path: leafPath,
-        });
-      });
-
-      // 主域分支中继胶囊节点
-      const branchId = `domain-${rootDomain}`;
-      domainNodes.push({
-        id: branchId,
-        domain: rootDomain,
-        x: domainX,
-        y: branchY,
-        w: DOMAIN_BRANCH_W,
-        h: DOMAIN_BRANCH_H,
-        nodeCount: groupAssets.length,
-        isMatch: anyAssetMatch,
-      });
-
-      // 连线：Hub -> 主域分支节点 (水平平滑 S 曲线)
-      const hx1 = hubX + HUB_W / 2;
-      const hy1 = hubY;
-      const hx2 = domainX - DOMAIN_BRANCH_W / 2;
-      const hy2 = branchY;
-      const hdx = hx2 - hx1;
-      const hubPath = `M ${hx1} ${hy1} C ${hx1 + hdx * 0.5} ${hy1}, ${hx2 - hdx * 0.5} ${hy2}, ${hx2} ${hy2}`;
-
-      edges.push({
-        id: `edge-hub-${branchId}`,
-        sourceId: "hub",
-        targetId: branchId,
-        x1: hx1,
-        y1: hy1,
-        x2: hx2,
-        y2: hy2,
-        path: hubPath,
-      });
-
-      currentY += blockHeight + domainSeparation;
-    });
-
-    // 运行防重叠碰撞松弛分离
-    resolveNodeCollisions(nodes, centerPoint, customPositions.value);
-  } else {
-    // 树状模式：严密贴合中心卡片两侧，保持上下充足间隙
-    const hubX = centerPoint.x;
-    const hubY = centerPoint.y;
-
-    const hostGroups = new Map<string, DiscoveryResult[]>();
+  if (!isAll) {
+    // 单项目模式：仅展示 1 个中心节点
+    const hostSet = new Set<string>();
     allAssets.forEach((a) => {
       const h = parseHost(a.url).host;
-      if (!hostGroups.has(h)) hostGroups.set(h, []);
-      hostGroups.get(h)!.push(a);
+      if (h) hostSet.add(h);
+    });
+    const hubId = "hub";
+    const custom = customPositions.value[hubId];
+    hubs.push({
+      id: hubId,
+      projectId: typeof props.projectId === "number" ? props.projectId : 0,
+      name: props.hubLabel || "项目中心",
+      theme: FLUENT_HUB_THEMES[0],
+      x: custom ? custom.x : hubPosition.value.x,
+      y: custom ? custom.y : hubPosition.value.y,
+      assetCount: allAssets.length,
+      hostCount: hostSet.size,
+    });
+  } else {
+    // 全部项目模式：为每个评估项目生成独立的专属中心节点
+    const projectMap = new Map<number, string>();
+    (props.projects || []).forEach((p) => {
+      projectMap.set(p.id, p.name);
+    });
+    allAssets.forEach((a) => {
+      if (a.projectId != null && !projectMap.has(a.projectId)) {
+        projectMap.set(a.projectId, (a.projectName as string) || `项目 #${a.projectId}`);
+      }
     });
 
-    const groupedAssets = Array.from(hostGroups.values()).flat();
-    const leftCount = Math.ceil(groupedAssets.length / 2);
-    const sideGroups = [groupedAssets.slice(0, leftCount), groupedAssets.slice(leftCount)];
-    const verticalGap = CARD_H + 20; // 严防垂直重叠，保底 20px 间距
-    const horizontalOffset = Math.max(
-      (HUB_W + CARD_W) / 2 + 96,
-      Math.min(380, (viewportWidth.value - CARD_W) / 2 - 48),
-    );
-
-    sideGroups.forEach((groupAssets, sideIndex) => {
-      const direction = sideIndex === 0 ? -1 : 1;
-      const startY = hubY - ((groupAssets.length - 1) * verticalGap) / 2;
-      groupAssets.forEach((asset, index) => {
-        const autoX = hubX + direction * horizontalOffset;
-        const autoY = startY + index * verticalGap;
-
-        const custom = customPositions.value[asset.id!];
-        const nx = custom ? custom.x : autoX;
-        const ny = custom ? custom.y : autoY;
-
-        const { host, protocol, rootDomain } = parseHost(asset.url);
-        const badges = getNodeBadges(asset);
-
-        const isSearchMatch =
-          !q ||
-          (asset.url || "").toLowerCase().includes(q) ||
-          host.toLowerCase().includes(q) ||
-          [asset.server, asset.framework, asset.wafName, ...badges].some((value) =>
-            typeof value === "string" && value.toLowerCase().includes(q),
-          );
-
-        let isSpotlight = true;
-        if (focusedDomain.value) {
-          isSpotlight = rootDomain === focusedDomain.value || host.includes(focusedDomain.value);
-        } else if (spotlightFilter.value === "waf") {
-          isSpotlight = Boolean(asset.wafName || asset.waf);
-        } else if (spotlightFilter.value === "https") {
-          isSpotlight = protocol === "https";
-        } else if (spotlightFilter.value === "http") {
-          isSpotlight = protocol === "http";
-        }
-
-        const isMatch = isSearchMatch && isSpotlight;
-        const statusKind = getAssetStatusKind(asset, protocol);
-
-        nodes.push({
-          id: asset.id!,
-          asset,
-          x: nx,
-          y: ny,
-          host,
-          protocol,
-          badges,
-          rootDomain,
-          isMatch,
-          isSpotlight,
-          statusKind,
+    const projectIds = Array.from(projectMap.keys());
+    if (projectIds.length === 0) {
+      const hubId = "hub-all";
+      const custom = customPositions.value[hubId];
+      hubs.push({
+        id: hubId,
+        projectId: 0,
+        name: "全部项目总览",
+        theme: FLUENT_HUB_THEMES[0],
+        x: custom ? custom.x : cx.value,
+        y: custom ? custom.y : cy.value,
+        assetCount: 0,
+        hostCount: 0,
+      });
+    } else {
+      projectIds.forEach((pid, idx) => {
+        const pAssets = allAssets.filter((a) => a.projectId === pid);
+        const hostSet = new Set<string>();
+        pAssets.forEach((a) => {
+          const h = parseHost(a.url).host;
+          if (h) hostSet.add(h);
+        });
+        const hubId = `hub-${pid}`;
+        const custom = customPositions.value[hubId];
+        hubs.push({
+          id: hubId,
+          projectId: pid,
+          name: projectMap.get(pid) || `项目 #${pid}`,
+          theme: FLUENT_HUB_THEMES[0],
+          x: custom ? custom.x : cx.value,
+          y: custom ? custom.y : cy.value,
+          assetCount: pAssets.length,
+          hostCount: hostSet.size,
         });
       });
-    });
-
-    // 运行防重叠碰撞松弛分离
-    resolveNodeCollisions(nodes, centerPoint, customPositions.value);
-
-    // 计算树状模式连接线
-    nodes.forEach((node) => {
-      const edgeDirection = node.x >= hubX ? 1 : -1;
-      const x1 = hubX + (edgeDirection * HUB_W) / 2;
-      const y1 = hubY;
-      const x2 = node.x - (edgeDirection * CARD_W) / 2;
-      const y2 = node.y;
-      const dx = x2 - x1;
-      const path = `M ${x1} ${y1} C ${x1 + dx * 0.45} ${y1}, ${x2 - dx * 0.45} ${y2}, ${x2} ${y2}`;
-
-      edges.push({
-        id: `edge-${node.id}`,
-        sourceId: "hub",
-        targetId: node.id,
-        x1,
-        y1,
-        x2,
-        y2,
-        path,
-      });
-    });
+    }
   }
 
-  return { nodes, edges, domainNodes };
+  if (!allAssets.length) return { hubs, nodes, edges, domainNodes };
+
+  // 节点生成帮助函数
+  function createLayoutNode(
+    asset: DiscoveryResult,
+    autoX: number,
+    autoY: number,
+  ): LayoutNode {
+    const custom = customPositions.value[asset.id!];
+    const nx = custom ? custom.x : autoX;
+    const ny = custom ? custom.y : autoY;
+
+    const { host, protocol, rootDomain, isIp } = parseHost(asset.url);
+    const badges = getNodeBadges(asset);
+
+    const isSearchMatch =
+      !q ||
+      (asset.url || "").toLowerCase().includes(q) ||
+      host.toLowerCase().includes(q) ||
+      [asset.server, asset.framework, asset.wafName, ...badges].some((value) =>
+        typeof value === "string" && value.toLowerCase().includes(q),
+      );
+
+    let isSpotlight = true;
+    if (focusedDomain.value) {
+      isSpotlight = rootDomain === focusedDomain.value || host.includes(focusedDomain.value);
+    } else if (spotlightFilter.value === "waf") {
+      isSpotlight = Boolean(asset.wafName || asset.waf);
+    } else if (spotlightFilter.value === "https") {
+      isSpotlight = protocol === "https";
+    } else if (spotlightFilter.value === "http") {
+      isSpotlight = protocol === "http";
+    }
+
+    const isMatch = isSearchMatch && isSpotlight;
+    const statusKind = getAssetStatusKind(asset, protocol);
+
+    return {
+      id: asset.id!,
+      asset,
+      x: nx,
+      y: ny,
+      host,
+      protocol,
+      badges,
+      rootDomain,
+      isIp,
+      isMatch,
+      isSpotlight,
+      statusKind,
+    };
+  }
+
+  // ------------------------- 布局算法分支 -------------------------
+  if (layoutMode.value === "orbit") {
+    if (hubs.length === 1) {
+      // 单中心环轨
+      const centerPoint = { x: hubs[0].x, y: hubs[0].y };
+      orbitRings.value.forEach((ring) => {
+        const ringAssets = allAssets.slice(ring.startIdx, ring.startIdx + ring.count);
+        ringAssets.forEach((asset, idx) => {
+          const angle = ring.angleOffset + (2 * Math.PI * idx) / Math.max(1, ring.count);
+          const autoX = centerPoint.x + ring.rx * Math.cos(angle);
+          const autoY = centerPoint.y + ring.ry * Math.sin(angle);
+          const node = createLayoutNode(asset, autoX, autoY);
+          nodes.push(node);
+        });
+      });
+
+      resolveNodeCollisions(nodes, hubs, customPositions.value);
+
+      nodes.forEach((node) => {
+        const p1 = getRectIntersection(centerPoint.x, centerPoint.y, HUB_W, HUB_H, node.x, node.y);
+        const p2 = getRectIntersection(node.x, node.y, CARD_W, CARD_H, centerPoint.x, centerPoint.y);
+        const currentAngle = Math.atan2(node.y - centerPoint.y, node.x - centerPoint.x);
+        const midX = (p1.x + p2.x) / 2 + Math.sin(currentAngle) * 10;
+        const midY = (p1.y + p2.y) / 2 - Math.cos(currentAngle) * 10;
+        const path = `M ${p1.x} ${p1.y} Q ${midX} ${midY} ${p2.x} ${p2.y}`;
+
+        edges.push({
+          id: `edge-${node.id}`,
+          sourceId: hubs[0].id,
+          targetId: node.id,
+          x1: p1.x,
+          y1: p1.y,
+          x2: p2.x,
+          y2: p2.y,
+          path,
+        });
+      });
+    } else {
+      // 多中心星座环轨模式 (Multi-Hub Constellation Orbit)
+      const M = hubs.length;
+      const constellationRadius = Math.max(380, M * 150);
+
+      hubs.forEach((hub, i) => {
+        const angle = (2 * Math.PI * i) / M - Math.PI / 2;
+        const autoHubX = cx.value + constellationRadius * Math.cos(angle);
+        const autoHubY = cy.value + constellationRadius * Math.sin(angle);
+        if (customPositions.value[hub.id] == null) {
+          hub.x = autoHubX;
+          hub.y = autoHubY;
+        }
+
+        const pAssets = allAssets.filter((a) => a.projectId === hub.projectId);
+        const count = pAssets.length;
+        if (count > 0) {
+          const ringRx = Math.max((HUB_W + CARD_W) / 2 + 54, ((CARD_W + 36) * count) / (2 * Math.PI));
+          const ringRy = Math.max((HUB_H + CARD_H) / 2 + 44, ((CARD_H + 28) * count) / (2 * Math.PI));
+          pAssets.forEach((asset, idx) => {
+            const assetAngle = -Math.PI / 2 + (2 * Math.PI * idx) / count;
+            const autoX = hub.x + ringRx * Math.cos(assetAngle);
+            const autoY = hub.y + ringRy * Math.sin(assetAngle);
+            const node = createLayoutNode(asset, autoX, autoY);
+            nodes.push(node);
+          });
+        }
+      });
+
+      resolveNodeCollisions(nodes, hubs, customPositions.value);
+
+      const hubsMap = new Map(hubs.map((h) => [h.projectId, h]));
+      nodes.forEach((node) => {
+        const targetHub = hubsMap.get(node.asset.projectId) || hubs[0];
+        const p1 = getRectIntersection(targetHub.x, targetHub.y, HUB_W, HUB_H, node.x, node.y);
+        const p2 = getRectIntersection(node.x, node.y, CARD_W, CARD_H, targetHub.x, targetHub.y);
+        const currentAngle = Math.atan2(node.y - targetHub.y, node.x - targetHub.x);
+        const midX = (p1.x + p2.x) / 2 + Math.sin(currentAngle) * 10;
+        const midY = (p1.y + p2.y) / 2 - Math.cos(currentAngle) * 10;
+        const path = `M ${p1.x} ${p1.y} Q ${midX} ${midY} ${p2.x} ${p2.y}`;
+
+        edges.push({
+          id: `edge-${node.id}`,
+          sourceId: targetHub.id,
+          targetId: node.id,
+          x1: p1.x,
+          y1: p1.y,
+          x2: p2.x,
+          y2: p2.y,
+          path,
+        });
+      });
+    }
+  } else if (layoutMode.value === "mindmap") {
+    // 思维导图模式 (支持多项目各自分支)
+    const leftAnchor = Math.max(HUB_W / 2 + 60, cx.value - (viewportWidth.value > 1200 ? 440 : 380));
+
+    // 计算各项目的思维导图高度
+    const clusterHeights = hubs.map((hub) => {
+      const pAssets = allAssets.filter((a) => a.projectId === hub.projectId);
+      const rootDomains = new Set(pAssets.map((a) => parseHost(a.url).rootDomain));
+      return Math.max(HUB_H + 40, rootDomains.size * 56 + pAssets.length * (CARD_H + 18));
+    });
+    const totalHeight = clusterHeights.reduce((a, b) => a + b, 0) + (hubs.length - 1) * 60;
+    let currentClusterY = cy.value - totalHeight / 2;
+
+    hubs.forEach((hub, hIdx) => {
+      const clusterHeight = clusterHeights[hIdx];
+      const autoHubY = currentClusterY + clusterHeight / 2;
+      const autoHubX = leftAnchor;
+      if (customPositions.value[hub.id] == null) {
+        hub.x = autoHubX;
+        hub.y = autoHubY;
+      }
+
+      const pAssets = allAssets.filter((a) => a.projectId === hub.projectId);
+      const domainGroups = new Map<string, DiscoveryResult[]>();
+      pAssets.forEach((a) => {
+        const rd = parseHost(a.url).rootDomain;
+        if (!domainGroups.has(rd)) domainGroups.set(rd, []);
+        domainGroups.get(rd)!.push(a);
+      });
+
+      const sortedDomains = Array.from(domainGroups.keys()).sort((a, b) => a.localeCompare(b));
+      const domainX = hub.x + HUB_W / 2 + 130;
+      const leafX = domainX + DOMAIN_BRANCH_W / 2 + 160;
+      const verticalGap = CARD_H + 20;
+      const domainSeparation = 26;
+
+      let subTotalHeight = 0;
+      const groupHeights = sortedDomains.map((d) => {
+        const count = domainGroups.get(d)!.length;
+        const h = Math.max(DOMAIN_BRANCH_H + 16, count * verticalGap);
+        subTotalHeight += h;
+        return h;
+      });
+      subTotalHeight += Math.max(0, sortedDomains.length - 1) * domainSeparation;
+
+      let currentDomainY = hub.y - subTotalHeight / 2;
+
+      sortedDomains.forEach((rootDomain, dIdx) => {
+        const groupAssets = domainGroups.get(rootDomain)!;
+        const blockHeight = groupHeights[dIdx];
+        const startLeafY = currentDomainY + (blockHeight - (groupAssets.length - 1) * verticalGap) / 2;
+        const branchY = currentDomainY + blockHeight / 2;
+
+        let anyAssetMatch = false;
+
+        groupAssets.forEach((asset, idx) => {
+          const autoX = leafX;
+          const autoY = startLeafY + idx * verticalGap;
+          const node = createLayoutNode(asset, autoX, autoY);
+          if (node.isMatch) anyAssetMatch = true;
+          nodes.push(node);
+
+          const lx1 = domainX + DOMAIN_BRANCH_W / 2;
+          const ly1 = branchY;
+          const lx2 = node.x - CARD_W / 2;
+          const ly2 = node.y;
+          const ldx = lx2 - lx1;
+          const leafPath = `M ${lx1} ${ly1} C ${lx1 + ldx * 0.5} ${ly1}, ${lx2 - ldx * 0.5} ${ly2}, ${lx2} ${ly2}`;
+
+          edges.push({
+            id: `edge-branch-${asset.id}`,
+            sourceId: `domain-${hub.id}-${rootDomain}`,
+            targetId: asset.id!,
+            x1: lx1,
+            y1: ly1,
+            x2: lx2,
+            y2: ly2,
+            path: leafPath,
+          });
+        });
+
+        const branchId = `domain-${hub.id}-${rootDomain}`;
+        const isDomainIp = isIpAddress(rootDomain);
+        domainNodes.push({
+          id: branchId,
+          domain: rootDomain,
+          isIp: isDomainIp,
+          x: domainX,
+          y: branchY,
+          w: DOMAIN_BRANCH_W,
+          h: DOMAIN_BRANCH_H,
+          nodeCount: groupAssets.length,
+          isMatch: anyAssetMatch,
+        });
+
+        const hx1 = hub.x + HUB_W / 2;
+        const hy1 = hub.y;
+        const hx2 = domainX - DOMAIN_BRANCH_W / 2;
+        const hy2 = branchY;
+        const hdx = hx2 - hx1;
+        const hubPath = `M ${hx1} ${hy1} C ${hx1 + hdx * 0.5} ${hy1}, ${hx2 - hdx * 0.5} ${hy2}, ${hx2} ${hy2}`;
+
+        edges.push({
+          id: `edge-hub-${branchId}`,
+          sourceId: hub.id,
+          targetId: branchId,
+          x1: hx1,
+          y1: hy1,
+          x2: hx2,
+          y2: hy2,
+          path: hubPath,
+        });
+
+        currentDomainY += blockHeight + domainSeparation;
+      });
+
+      currentClusterY += clusterHeight + 60;
+    });
+
+    resolveNodeCollisions(nodes, hubs, customPositions.value);
+  } else {
+    // 树状模式 (Tree Mode)
+    if (hubs.length === 1) {
+      // 单中心树状
+      const hub = hubs[0];
+      const hostGroups = new Map<string, DiscoveryResult[]>();
+      allAssets.forEach((a) => {
+        const h = parseHost(a.url).host;
+        if (!hostGroups.has(h)) hostGroups.set(h, []);
+        hostGroups.get(h)!.push(a);
+      });
+
+      const groupedAssets = Array.from(hostGroups.values()).flat();
+      const leftCount = Math.ceil(groupedAssets.length / 2);
+      const sideGroups = [groupedAssets.slice(0, leftCount), groupedAssets.slice(leftCount)];
+      const verticalGap = CARD_H + 20;
+      const horizontalOffset = Math.max(
+        (HUB_W + CARD_W) / 2 + 96,
+        Math.min(380, (viewportWidth.value - CARD_W) / 2 - 48),
+      );
+
+      sideGroups.forEach((groupAssets, sideIndex) => {
+        const direction = sideIndex === 0 ? -1 : 1;
+        const startY = hub.y - ((groupAssets.length - 1) * verticalGap) / 2;
+        groupAssets.forEach((asset, index) => {
+          const autoX = hub.x + direction * horizontalOffset;
+          const autoY = startY + index * verticalGap;
+          const node = createLayoutNode(asset, autoX, autoY);
+          nodes.push(node);
+        });
+      });
+
+      resolveNodeCollisions(nodes, hubs, customPositions.value);
+
+      nodes.forEach((node) => {
+        const edgeDirection = node.x >= hub.x ? 1 : -1;
+        const x1 = hub.x + (edgeDirection * HUB_W) / 2;
+        const y1 = hub.y;
+        const x2 = node.x - (edgeDirection * CARD_W) / 2;
+        const y2 = node.y;
+        const dx = x2 - x1;
+        const path = `M ${x1} ${y1} C ${x1 + dx * 0.45} ${y1}, ${x2 - dx * 0.45} ${y2}, ${x2} ${y2}`;
+
+        edges.push({
+          id: `edge-${node.id}`,
+          sourceId: hub.id,
+          targetId: node.id,
+          x1,
+          y1,
+          x2,
+          y2,
+          path,
+        });
+      });
+    } else {
+      // 多中心树状集群模式 (Multi-Project Tree Clusters)
+      let totalTreeHeight = 0;
+      const clusterHeights = hubs.map((hub) => {
+        const pAssets = allAssets.filter((a) => a.projectId === hub.projectId);
+        const rows = Math.max(1, Math.ceil(pAssets.length / 2));
+        const h = Math.max(HUB_H + 40, rows * (CARD_H + 20) + 40);
+        totalTreeHeight += h;
+        return h;
+      });
+      totalTreeHeight += (hubs.length - 1) * 80;
+
+      let currentTreeY = cy.value - totalTreeHeight / 2;
+
+      hubs.forEach((hub, hIdx) => {
+        const clusterHeight = clusterHeights[hIdx];
+        const autoHubY = currentTreeY + clusterHeight / 2;
+        const autoHubX = cx.value;
+        if (customPositions.value[hub.id] == null) {
+          hub.x = autoHubX;
+          hub.y = autoHubY;
+        }
+
+        const pAssets = allAssets.filter((a) => a.projectId === hub.projectId);
+        const hostGroups = new Map<string, DiscoveryResult[]>();
+        pAssets.forEach((a) => {
+          const h = parseHost(a.url).host;
+          if (!hostGroups.has(h)) hostGroups.set(h, []);
+          hostGroups.get(h)!.push(a);
+        });
+
+        const groupedAssets = Array.from(hostGroups.values()).flat();
+        const leftCount = Math.ceil(groupedAssets.length / 2);
+        const sideGroups = [groupedAssets.slice(0, leftCount), groupedAssets.slice(leftCount)];
+        const verticalGap = CARD_H + 20;
+        const horizontalOffset = Math.max((HUB_W + CARD_W) / 2 + 96, 360);
+
+        sideGroups.forEach((groupAssets, sideIndex) => {
+          const direction = sideIndex === 0 ? -1 : 1;
+          const startY = hub.y - ((groupAssets.length - 1) * verticalGap) / 2;
+          groupAssets.forEach((asset, index) => {
+            const autoX = hub.x + direction * horizontalOffset;
+            const autoY = startY + index * verticalGap;
+            const node = createLayoutNode(asset, autoX, autoY);
+            nodes.push(node);
+          });
+        });
+
+        currentTreeY += clusterHeight + 80;
+      });
+
+      resolveNodeCollisions(nodes, hubs, customPositions.value);
+
+      const hubsMap = new Map(hubs.map((h) => [h.projectId, h]));
+      nodes.forEach((node) => {
+        const targetHub = hubsMap.get(node.asset.projectId) || hubs[0];
+        const edgeDirection = node.x >= targetHub.x ? 1 : -1;
+        const x1 = targetHub.x + (edgeDirection * HUB_W) / 2;
+        const y1 = targetHub.y;
+        const x2 = node.x - (edgeDirection * CARD_W) / 2;
+        const y2 = node.y;
+        const dx = x2 - x1;
+        const path = `M ${x1} ${y1} C ${x1 + dx * 0.45} ${y1}, ${x2 - dx * 0.45} ${y2}, ${x2} ${y2}`;
+
+        edges.push({
+          id: `edge-${node.id}`,
+          sourceId: targetHub.id,
+          targetId: node.id,
+          x1,
+          y1,
+          x2,
+          y2,
+          path,
+        });
+      });
+    }
+  }
+
+  return { hubs, nodes, edges, domainNodes };
 });
 
 // 计算同主域半透明聚类围栏 (>= 2 个节点时绘制气泡底板，理顺资产星系)
@@ -766,6 +999,7 @@ const clusterEnclosures = computed<DomainClusterEnclosure[]>(() => {
     let minY = Infinity;
     let maxY = -Infinity;
     let isMatch = false;
+    const isIp = domainNodes[0]?.isIp ?? isIpAddress(domain);
 
     for (const n of domainNodes) {
       minX = Math.min(minX, n.x - CARD_W / 2);
@@ -775,11 +1009,12 @@ const clusterEnclosures = computed<DomainClusterEnclosure[]>(() => {
       if (n.isMatch) isMatch = true;
     }
 
-    const label = `${domain} (${domainNodes.length})`;
-    const labelWidth = Math.min(220, Math.max(100, label.length * 7.2 + 20));
+    const label = `${domain} · ${domainNodes.length} 资产`;
+    const labelWidth = Math.min(260, Math.max(110, label.length * 7.5 + 24));
 
     clusters.push({
       domain,
+      isIp,
       x: minX - padX,
       y: minY - padY,
       width: maxX - minX + padX * 2,
@@ -805,13 +1040,20 @@ const matchedNodeIds = computed(() => {
 
 const sceneBounds = computed(() => {
   const nodes = layoutData.value.nodes;
+  const hubs = layoutData.value.hubs;
   const dNodes = layoutData.value.domainNodes || [];
-  const hx = hubPosition.value.x;
-  const hy = hubPosition.value.y;
-  let left = hx - HUB_W / 2;
-  let right = hx + HUB_W / 2;
-  let top = hy - HUB_H / 2;
-  let bottom = hy + HUB_H / 2;
+
+  let left = Infinity;
+  let right = -Infinity;
+  let top = Infinity;
+  let bottom = -Infinity;
+
+  for (const hub of hubs) {
+    left = Math.min(left, hub.x - HUB_W / 2);
+    right = Math.max(right, hub.x + HUB_W / 2);
+    top = Math.min(top, hub.y - HUB_H / 2);
+    bottom = Math.max(bottom, hub.y + HUB_H / 2);
+  }
 
   for (const node of nodes) {
     left = Math.min(left, node.x - CARD_W / 2);
@@ -825,6 +1067,13 @@ const sceneBounds = computed(() => {
     right = Math.max(right, dn.x + dn.w / 2);
     top = Math.min(top, dn.y - dn.h / 2);
     bottom = Math.max(bottom, dn.y + dn.h / 2);
+  }
+
+  if (!Number.isFinite(left)) {
+    left = cx.value - HUB_W / 2;
+    right = cx.value + HUB_W / 2;
+    top = cy.value - HUB_H / 2;
+    bottom = cy.value + HUB_H / 2;
   }
 
   const padX = 64;
@@ -912,6 +1161,21 @@ function onCanvasMouseDown(e: MouseEvent) {
   canvasDragStart.value = { x: e.clientX - pan.value.x, y: e.clientY - pan.value.y };
 }
 
+// 中心节点拖拽定位
+function onHubMouseDown(e: MouseEvent, hub: LayoutHub) {
+  if (e.button !== 0) return;
+  e.stopPropagation();
+  closeContextMenu();
+  draggingHubId.value = hub.id;
+  hasDragged.value = false;
+  nodeDragStart.value = {
+    clientX: e.clientX,
+    clientY: e.clientY,
+    initX: hub.x,
+    initY: hub.y,
+  };
+}
+
 // 节点拖拽定位
 function onNodeMouseDown(e: MouseEvent, node: LayoutNode) {
   if (e.button !== 0) return;
@@ -929,7 +1193,19 @@ function onNodeMouseDown(e: MouseEvent, node: LayoutNode) {
 
 // 全局鼠标移动
 function onGlobalMouseMove(e: MouseEvent) {
-  if (draggingNodeId.value != null) {
+  if (draggingHubId.value != null) {
+    if (!hasDragged.value && Math.hypot(e.clientX - nodeDragStart.value.clientX, e.clientY - nodeDragStart.value.clientY) < 3) return;
+    hasDragged.value = true;
+    const dx = (e.clientX - nodeDragStart.value.clientX) / zoom.value;
+    const dy = (e.clientY - nodeDragStart.value.clientY) / zoom.value;
+    customPositions.value = {
+      ...customPositions.value,
+      [draggingHubId.value]: {
+        x: nodeDragStart.value.initX + dx,
+        y: nodeDragStart.value.initY + dy,
+      },
+    };
+  } else if (draggingNodeId.value != null) {
     if (!hasDragged.value && Math.hypot(e.clientX - nodeDragStart.value.clientX, e.clientY - nodeDragStart.value.clientY) < 3) return;
     hasDragged.value = true;
     const dx = (e.clientX - nodeDragStart.value.clientX) / zoom.value;
@@ -954,6 +1230,7 @@ function onGlobalMouseMove(e: MouseEvent) {
 function onGlobalMouseUp() {
   isDraggingCanvas.value = false;
   draggingNodeId.value = null;
+  draggingHubId.value = null;
 }
 
 // 节点点击交互
@@ -981,15 +1258,16 @@ function closeContextMenu() {
   contextMenu.value.visible = false;
 }
 
-// 聚焦同域名资产
+// 聚焦同域名或同主机资产
 function focusSameDomain(node: LayoutNode | null) {
   if (!node) return;
   if (focusedDomain.value === node.rootDomain) {
     focusedDomain.value = null;
-    ElMessage.info("已取消聚焦同域");
+    ElMessage.info("已取消聚焦");
   } else {
     focusedDomain.value = node.rootDomain;
-    ElMessage.success(`已聚焦「${node.rootDomain}」同域名资产`);
+    const desc = node.isIp ? `主机「${node.rootDomain}」` : `主域「${node.rootDomain}」`;
+    ElMessage.success(`已聚焦${desc}关联资产`);
   }
   closeContextMenu();
 }
@@ -1075,7 +1353,15 @@ async function confirmRemoveNode(id: number, hostName?: string) {
         confirmButtonClass: "el-button--danger",
       },
     );
-    await endpoints.deleteDiscoveryResult(props.projectId, id);
+    const targetProjectId =
+      typeof props.projectId === "number"
+        ? props.projectId
+        : (target as any)?.projectId;
+    if (typeof targetProjectId !== "number") {
+      ElMessage.warning("全局汇总视图下不支持直接删除，请进入具体项目后操作");
+      return;
+    }
+    await endpoints.deleteDiscoveryResult(targetProjectId, id);
     ElMessage.success("已成功删除资产节点");
     if (selectedNodeId.value === id) {
       drawerVisible.value = false;
@@ -1349,12 +1635,16 @@ onUnmounted(() => {
             class="focused-domain-tag fluent-tag"
             @close="focusedDomain = null"
           >
-            聚焦主域: {{ focusedDomain }}
+            {{ isFocusedDomainIp ? `聚焦主机: ${focusedDomain}` : `聚焦主域: ${focusedDomain}` }}
           </el-tag>
         </div>
         <div class="host-meta-badge" title="当前拓扑覆盖独立主机数">
           <FluentIcon name="server" :size="12" />
           <span>{{ stats.uniqueHosts }} 个主机</span>
+        </div>
+        <div v-if="props.projectId === 'all'" class="host-meta-badge" title="当前拓扑覆盖项目数">
+          <FluentIcon name="folder" :size="12" />
+          <span>{{ layoutData.hubs.length }} 个项目</span>
         </div>
       </div>
 
@@ -1523,10 +1813,10 @@ onUnmounted(() => {
             <feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#0f172a" flood-opacity="0.06" />
           </filter>
 
-          <!-- 中心节点品牌徽章渐变 -->
+          <!-- 中心节点品牌徽章统一渐变 (Fluent Communication Blue) -->
           <linearGradient id="hubIconGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#0086f0" />
-            <stop offset="100%" stop-color="#0067b8" />
+            <stop offset="0%" stop-color="#0078d4" />
+            <stop offset="100%" stop-color="#005a9e" />
           </linearGradient>
 
           <!-- HTTPS 绿色品牌渐变 -->
@@ -1551,12 +1841,14 @@ onUnmounted(() => {
           class="topology-scene"
           :transform="`translate(${pan.x}, ${pan.y}) scale(${zoom})`"
         >
-          <!-- 画布核心柔和纵深微光 -->
+          <!-- 画布各中心节点柔和纵深微光 -->
           <ellipse
-            :cx="hubPosition.x"
-            :cy="hubPosition.y"
-            :rx="HUB_W * 1.8"
-            :ry="HUB_H * 2.8"
+            v-for="hub in layoutData.hubs"
+            :key="`ambient-${hub.id}`"
+            :cx="hub.x"
+            :cy="hub.y"
+            :rx="HUB_W * 1.6"
+            :ry="HUB_H * 2.4"
             fill="url(#centerAmbientGlow)"
             pointer-events="none"
           />
@@ -1644,13 +1936,17 @@ onUnmounted(() => {
             </g>
           </g>
 
-          <!-- ==================== 图层 2: 中心项目核心 (Fluent Command Hub Card) ==================== -->
+          <!-- ==================== 图层 2: 中心项目核心 (Fluent Command Hub Cards) ==================== -->
           <g
+            v-for="hub in layoutData.hubs"
+            :key="hub.id"
             class="topology-hub-node"
-            :transform="`translate(${hubPosition.x}, ${hubPosition.y})`"
+            :class="{ 'is-custom-dragged': customPositions[hub.id] != null }"
+            :transform="`translate(${hub.x}, ${hub.y})`"
             @mouseenter="hoveredNodeId = null"
+            @mousedown="onHubMouseDown($event, hub)"
           >
-            <!-- 外部柔和呼吸微光光晕 -->
+            <!-- 外部柔和呼吸微光光晕 (使用各自主题的主题色) -->
             <rect
               :x="-HUB_W / 2 - 3"
               :y="-HUB_H / 2 - 3"
@@ -1658,6 +1954,7 @@ onUnmounted(() => {
               :height="HUB_H + 6"
               rx="10"
               class="hub-card-halo"
+              :style="{ fill: hub.theme.haloColor }"
               pointer-events="none"
             />
 
@@ -1683,10 +1980,10 @@ onUnmounted(() => {
                 class="hub-icon-base"
                 fill="url(#hubIconGrad)"
               />
-              <!-- 微软官方 Fluent System Icon: shield_24_filled -->
+              <!-- 微软官方 Fluent System Icon: 官方矢量路径 -->
               <svg x="6" y="6" width="24" height="24" viewBox="0 0 24 24">
                 <path
-                  d="M3 5.75c0-.41.34-.75.75-.75 2.66 0 5.26-.94 7.8-2.85.27-.2.63-.2.9 0C14.99 4.05 17.59 5 20.25 5c.41 0 .75.34.75.75V11c0 5-2.96 8.68-8.73 10.95a.75.75 0 0 1-.54 0C5.96 19.68 3 16 3 11V5.75Z"
+                  :d="hub.theme.iconPath"
                   fill="#ffffff"
                 />
               </svg>
@@ -1694,17 +1991,17 @@ onUnmounted(() => {
 
             <!-- 右侧文字区域：垂直分层，字阶疏朗 -->
             <g :transform="`translate(${-HUB_W / 2 + 58}, 0)`" pointer-events="none">
-              <title>{{ hubLabel }}</title>
+              <title>{{ hub.name }}</title>
               <!-- 第一行：项目名称 -->
               <text y="-5" class="hub-title-text" text-anchor="start">
-                {{ compactLabel(hubLabel, 18) }}
+                {{ compactLabel(hub.name, 18) }}
               </text>
 
               <!-- 第二行：状态微标与资产计数 -->
               <g transform="translate(0, 15)">
-                <circle cx="4" cy="-3.5" r="3.5" class="hub-status-dot" />
+                <circle cx="4" cy="-3.5" r="3.5" class="hub-status-dot" :style="{ fill: hub.theme.gradStart }" />
                 <text x="13" y="0" class="hub-subtitle-text" text-anchor="start">
-                  {{ assets.length }} 资产 · {{ stats.uniqueHosts }} 主机
+                  {{ hub.assetCount }} 资产 · {{ hub.hostCount }} 主机
                 </text>
               </g>
             </g>
@@ -1725,7 +2022,7 @@ onUnmounted(() => {
               tabindex="0"
               @click.stop="focusedDomain = focusedDomain === dNode.domain ? null : dNode.domain"
             >
-              <title>{{ dNode.domain }} ({{ dNode.nodeCount }} 资产，点击聚焦)</title>
+              <title>{{ dNode.isIp ? `主机: ${dNode.domain}` : `主域: ${dNode.domain}` }} ({{ dNode.nodeCount }} 资产，点击聚焦)</title>
               <!-- 分支胶囊背景 -->
               <rect
                 :x="-dNode.w / 2"
@@ -1740,19 +2037,25 @@ onUnmounted(() => {
                 <circle cx="8" cy="8" r="8" class="domain-icon-dot" />
                 <svg x="2" y="2" width="12" height="12" viewBox="0 0 24 24" fill="none">
                   <path
+                    v-if="dNode.isIp"
+                    d="M4 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5Zm2-.5a.5.5 0 0 0-.5.5v3a.5.5 0 0 0 .5.5h12a.5.5 0 0 0 .5-.5V5a.5.5 0 0 0-.5-.5H6Zm-2 9.5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3Zm2-.5a.5.5 0 0 0-.5.5v3a.5.5 0 0 0 .5.5h12a.5.5 0 0 0 .5-.5v-3a.5.5 0 0 0-.5-.5H6Z"
+                    class="glyph-fill"
+                  />
+                  <path
+                    v-else
                     d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20Zm2.94 14.5H9.06c.65 2.41 1.79 4 2.94 4s2.29-1.59 2.94-4Zm-7.43 0H4.79a8.53 8.53 0 0 0 4.09 3.41c-.52-.82-.95-1.85-1.27-3.02l-.1-.39Zm11.7 0H16.5c-.32 1.33-.79 2.5-1.37 3.41a8.53 8.53 0 0 0 3.9-3.13l.2-.28ZM7.1 10H3.74v.02a8.52 8.52 0 0 0 .3 4.98h3.18a20.3 20.3 0 0 1-.13-5Zm8.3 0H8.6a18.97 18.97 0 0 0 .14 5h6.52a18.5 18.5 0 0 0 .14-5Zm4.87 0h-3.35a20.85 20.85 0 0 1-.13 5h3.18a8.48 8.48 0 0 0 .3-5Z"
                     class="glyph-fill"
                   />
                 </svg>
               </g>
-              <!-- 主域名称 -->
+              <!-- 主域 / 主机名称 -->
               <text
                 :x="-dNode.w / 2 + 32"
                 y="4"
                 class="domain-branch-title"
                 text-anchor="start"
               >
-                {{ compactLabel(dNode.domain, 14) }}
+                {{ compactLabel(dNode.domain, 18) }}
               </text>
               <!-- 数量徽标 -->
               <rect
@@ -1808,16 +2111,6 @@ onUnmounted(() => {
                 rx="8"
                 class="node-card-bg"
                 :filter="selectedNodeId === node.id ? 'url(#nodeCardSelectedShadow)' : hoveredNodeId === node.id ? 'url(#nodeCardHoverShadow)' : 'url(#nodeCardShadow)'"
-              />
-
-              <!-- 态势状态指示微条 (符合 Fluent UI 规范，呼应红队工作流节点侧边色彩) -->
-              <rect
-                :x="-CARD_W / 2"
-                :y="-CARD_H / 2 + 8"
-                width="3.5"
-                :height="CARD_H - 16"
-                rx="1.75"
-                :class="['node-status-bar', `bar-${node.statusKind}`]"
               />
 
               <!-- 卡片上沿 1px 亚克力微高光反射线 -->
@@ -1959,14 +2252,16 @@ onUnmounted(() => {
               :height="minimapViewfinder.height"
               class="minimap-viewfinder"
             />
-            <!-- 中心宿主小方块 (置于取景框上方) -->
+            <!-- 中心宿主小方块群 (置于取景框上方) -->
             <rect
-              :x="minimapTransform.x + hubPosition.x * minimapTransform.scale - 5"
-              :y="minimapTransform.y + hubPosition.y * minimapTransform.scale - 5"
+              v-for="hub in layoutData.hubs"
+              :key="`mini-${hub.id}`"
+              :x="minimapTransform.x + hub.x * minimapTransform.scale - 5"
+              :y="minimapTransform.y + hub.y * minimapTransform.scale - 5"
               width="10"
               height="10"
               rx="2"
-              fill="var(--app-accent, #0078d4)"
+              :fill="hub.theme.shadowColor"
             />
             <!-- 导图分支中继微点 (仅在导图模式呈现) -->
             <rect
@@ -2021,7 +2316,7 @@ onUnmounted(() => {
         </div>
         <div class="menu-item fluent-menu-item" @click="focusSameDomain(contextMenu.node)">
           <FluentIcon name="target" :size="14" />
-          <span>{{ focusedDomain === contextMenu.node.rootDomain ? '取消聚焦同域' : '仅聚焦同主域资产' }}</span>
+          <span>{{ focusedDomain === contextMenu.node.rootDomain ? '取消聚焦' : contextMenu.node.isIp ? '仅聚焦该主机资产' : '仅聚焦同主域资产' }}</span>
         </div>
         <div
           v-if="contextMenu.node.asset.url"
@@ -2674,7 +2969,13 @@ onUnmounted(() => {
 
 /* ==================== 中心宿主 Fluent Command Core 卡片 ==================== */
 .topology-hub-node {
-  cursor: default;
+  cursor: grab;
+  outline: none;
+  user-select: none;
+}
+
+.topology-hub-node:active {
+  cursor: grabbing;
 }
 
 .hub-card-halo {
@@ -2785,7 +3086,7 @@ onUnmounted(() => {
 .domain-branch-group {
   cursor: pointer;
   outline: none;
-  transition: opacity 160ms ease, transform 160ms cubic-bezier(0.33, 1, 0.68, 1);
+  transition: opacity 160ms ease;
 }
 
 .domain-branch-group.is-dimmed {
@@ -2839,16 +3140,12 @@ onUnmounted(() => {
 /* ==================== Fluent 2/3 资产节点微卡片 ==================== */
 .node-card-group {
   cursor: grab;
-  transition: opacity var(--fluent-fast), transform 180ms cubic-bezier(0.33, 1, 0.68, 1);
+  transition: opacity var(--fluent-fast);
   outline: none;
 }
 
 .node-card-group:active {
   cursor: grabbing;
-}
-
-.node-card-group:hover {
-  transform: translateY(-2px);
 }
 
 .node-card-bg {
@@ -2874,23 +3171,6 @@ onUnmounted(() => {
 
 .node-card-group.is-dimmed {
   opacity: 0.18;
-}
-
-/* 态势色彩指示微条 (呼应红队工作流侧边色彩) */
-.node-status-bar {
-  transition: fill var(--fluent-fast), opacity var(--fluent-fast);
-}
-
-.node-status-bar.bar-waf {
-  fill: #0078d4;
-}
-
-.node-status-bar.bar-https {
-  fill: #107c41;
-}
-
-.node-status-bar.bar-http {
-  fill: #d83b01;
 }
 
 /* 亚克力微高光边缘 */

@@ -264,7 +264,7 @@ async function run(page, H, ctx) {
 
   await H.run("M-22", "审计日志记录了本次测试执行的真实业务操作", async () => {
     const body = ((await page.locator(".el-table").first().textContent()) || "").replace(/\s+/g, " ");
-    const hits = ["TASK", "SCAN", "TARGET", "PROJECT", "FINDING", "APPROVAL"].filter((k) => body.toUpperCase().includes(k));
+    const hits = ["TASK", "SCAN", "TARGET", "PROJECT", "FINDING", "APPROVAL", "任务", "目标", "项目", "漏洞", "审批", "扫描"].filter((k) => body.toUpperCase().includes(k));
     if (hits.length === 0) {
       throw new Error(`审计记录中未见业务操作类型: ${body.slice(0, 250)}`);
     }

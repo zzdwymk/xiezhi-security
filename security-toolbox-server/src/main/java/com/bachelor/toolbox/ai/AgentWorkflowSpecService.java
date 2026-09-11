@@ -61,7 +61,8 @@ public class AgentWorkflowSpecService {
           "afrog_scan",
           "xray_scan",
           "zap_scan",
-          "fscan_scan");
+          "fscan_scan",
+          "sqlmap_scan");
   private static final Set<String> PHASES =
       Set.of(
           "engagement",
@@ -387,7 +388,10 @@ public class AgentWorkflowSpecService {
           "parameters",
           raw.get("parameters") instanceof Map<?, ?> ? raw.get("parameters") : Map.of());
       normalized.put("risk", text(raw.get("risk")) == null ? "SAFE" : text(raw.get("risk")));
-      normalized.put("requiresApproval", Boolean.TRUE.equals(raw.get("requiresApproval")));
+      boolean userApproval = Boolean.TRUE.equals(raw.get("requiresApproval"));
+      normalized.put(
+          "requiresApproval",
+          "sqlmap_scan".equals(tool) ? true : userApproval);
       result.add(normalized);
     }
     return result;

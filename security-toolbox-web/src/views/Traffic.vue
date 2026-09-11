@@ -3389,12 +3389,12 @@ onUnmounted(() => {
       class="app-dialog"
       align-center
     >
-      <div v-loading="targetedScanLoading" style="min-height: 160px">
-        <div v-if="targetedScanLoading" style="text-align: center; padding: 40px 0; color: var(--app-muted)">
-          <el-icon class="is-loading" style="font-size: 24px; margin-bottom: 12px"><Refresh /></el-icon>
-          <div>正在针对当前报文上下文运行 {{ targetedScanEngine === 'ZAP' ? 'ZAP 深度注入与语法探针' : 'Xray 漏洞组件验证' }}...</div>
-        </div>
-        <div v-else-if="targetedScanResult">
+      <div
+        v-loading="targetedScanLoading"
+        :element-loading-text="targetedScanEngine === 'ZAP' ? '正在针对当前报文上下文运行 ZAP 深度注入与语法探针...' : '正在针对当前报文上下文运行 Xray 漏洞组件验证...'"
+        style="min-height: 160px"
+      >
+        <div v-if="targetedScanResult">
           <el-alert
             :type="targetedScanResult.hits && targetedScanResult.hits.length ? 'warning' : 'success'"
             :closable="false"

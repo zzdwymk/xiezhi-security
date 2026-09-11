@@ -277,7 +277,7 @@ async function run(page, H, ctx) {
     if (!toolSel && !statusSel) return "未渲染工具/状态筛选下拉，跳过";
     const before = await pane.locator(".el-table__row").count();
     if (statusSel) {
-      await selectOn(page, statusSel, "SUCCESS");
+      await selectOn(page, statusSel, /成功|SUCCESS/);
       await sleep(2000);
     }
     const after = await pane.locator(".el-table__row").count();

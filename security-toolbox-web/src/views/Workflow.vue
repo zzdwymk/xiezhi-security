@@ -275,6 +275,14 @@ const SUBAGENTS: {
     phase: "discovery",
   },
   {
+    tool: "sqlmap_scan",
+    name: "sqlmap SQL 注入检测",
+    icon: "shield-task",
+    desc: "使用 sqlmap 对已发现 Web URL 参数执行 SQL 注入探测（默认仅探测不导出数据），执行前需人工确认",
+    risk: "CAUTION",
+    phase: "validation",
+  },
+  {
     tool: "msf_scan",
     name: "Metasploit 模块执行",
     icon: "shield-task",
@@ -975,7 +983,7 @@ function phaseToolMap(code: PresetCode): Record<PhaseCode, string[]> {
         "xray_scan",
         "zap_scan",
       ],
-      validation: [],
+      validation: ["sqlmap_scan"],
       impact: [],
       retest: [],
       report: [],

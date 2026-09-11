@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { MagicStick } from "../components/fluentIcons";
+import { MagicStick, Search } from "../components/fluentIcons";
 import {
   endpoints,
   safeGet,
@@ -63,12 +63,22 @@ const editForm = reactive({
 });
 const editSelectedPorts = ref<string[]>(["80", "443"]);
 const editFullPortAccess = ref(false);
+const searchQuery = ref("");
+const filteredRows = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase();
+  if (!q) return rows.value;
+  return rows.value.filter((row) =>
+    [row.name, row.targetValue, row.targetType, row.authorizationNote]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(q)),
+  );
+});
 const {
   page,
   pageSize,
   total,
   pagedItems: pagedRows,
-} = useClientPagination(rows);
+} = useClientPagination(filteredRows);
 const form = reactive({
   projectId: undefined as number | undefined,
   name: "",
@@ -509,9 +519,6 @@ async function batchCreate() {
 }
 
 const selectedTargets = ref<Target[]>([]);
-const batchRemoveDialog = ref(false);
-const batchRemoveProjectId = ref<number | undefined>();
-const batchMoving = ref(false);
 
 function onSelectionChange(selection: Target[]) {
   selectedTargets.value = selection;
@@ -552,69 +559,6 @@ async function batchDeleteTargets() {
   } else {
     ElMessage.warning(`批量删除完成：成功 ${successCount} 个，失败 ${failedCount} 个`);
   }
-  await load();
-}
-
-function openBatchMove() {
-  if (!selectedTargets.value.length) {
-    ElMessage.warning("请先勾选要移出项目的目标");
-    return;
-  }
-  batchRemoveProjectId.value = undefined;
-  batchRemoveDialog.value = true;
-}
-
-function batchCandidatesForProject(projectId?: number) {
-  if (!projectId) return selectedTargets.value;
-  return selectedTargets.value.filter((row) =>
-    (projectIdsByTarget.value[row.id] || []).includes(projectId),
-  );
-}
-
-async function batchRemoveFromProject() {
-  if (!batchRemoveProjectId.value) {
-    ElMessage.warning("请选择要移出的评估项目");
-    return;
-  }
-  const projectId = batchRemoveProjectId.value;
-  const project = projects.value.find((item) => item.id === projectId);
-  const candidates = batchCandidatesForProject(projectId);
-  if (!candidates.length) {
-    ElMessage.warning("所选目标均不属于该项目，无需移出");
-    return;
-  }
-  try {
-    await ElMessageBox.confirm(
-      `确认将选中的 ${candidates.length} 个目标从项目“${project?.name || projectId}”移出？移出后将不再属于该项目，也不再受该项目的授权边界约束。`,
-      "批量移出项目",
-      {
-        type: "warning",
-        confirmButtonText: "确认移出",
-        cancelButtonText: "取消",
-      },
-    );
-  } catch (error) {
-    if (error !== "cancel" && error !== "close") ElMessage.error("移出操作已取消");
-    return;
-  }
-  batchMoving.value = true;
-  let successCount = 0;
-  let failedCount = 0;
-  for (const row of candidates) {
-    try {
-      await endpoints.removeProjectTarget(projectId, row.id);
-      successCount++;
-    } catch {
-      failedCount++;
-    }
-  }
-  batchMoving.value = false;
-  if (failedCount === 0) {
-    ElMessage.success(`已将 ${successCount} 个目标移出项目`);
-  } else {
-    ElMessage.warning(`移出项目完成：成功 ${successCount} 个，失败 ${failedCount} 个`);
-  }
-  batchRemoveDialog.value = false;
   await load();
 }
 
@@ -781,17 +725,18 @@ onMounted(load);
         <span v-if="selectedTargets.length" class="target-batch-hint">
           已选 {{ selectedTargets.length }} 个
         </span>
-        <el-button
-          v-if="selectedTargets.length"
-          :disabled="batchMoving"
-          @click="openBatchMove"
-          >批量移出项目</el-button
-        >
+        <el-input
+          v-model="searchQuery"
+          class="list-search-input"
+          placeholder="搜索名称 / 地址 / 类型 / 授权记录"
+          clearable
+          :prefix-icon="Search"
+          style="width: 240px"
+        />
         <el-button
           v-if="selectedTargets.length"
           type="danger"
           plain
-          :disabled="batchMoving"
           @click="batchDeleteTargets"
           >批量删除</el-button
         >
@@ -1386,54 +1331,6 @@ onMounted(load);
         "
         @click="saveEditTarget"
         >保存修改</el-button
-      >
-    </template>
-  </el-dialog>
-
-  <el-dialog
-    v-model="batchRemoveDialog"
-    title="批量移出项目"
-    class="app-dialog app-dialog--md target-dialog"
-    align-center
-  >
-    <el-alert
-      type="info"
-      show-icon
-      :closable="false"
-      title="移出项目不会删除授权目标本身，只是解除该目标与所选评估项目的归属关系。"
-    />
-    <el-form label-position="top" class="target-form">
-      <el-form-item label="选择要移出的评估项目" required>
-        <el-select
-          v-model="batchRemoveProjectId"
-          placeholder="选择评估项目"
-          style="width: 100%"
-        >
-          <el-option
-            v-for="p in projects"
-            :key="p.id"
-            :disabled="!batchCandidatesForProject(p.id).length"
-            :label="`${p.name}（${projectStatusLabel(p.status)}）`"
-            :value="p.id"
-          />
-        </el-select>
-      </el-form-item>
-      <p
-        v-if="batchRemoveProjectId"
-        class="target-time-hint"
-      >
-        该项目下将移出
-        {{ batchCandidatesForProject(batchRemoveProjectId).length }} 个目标。
-      </p>
-    </el-form>
-    <template #footer>
-      <el-button @click="batchRemoveDialog = false">取消</el-button>
-      <el-button
-        type="primary"
-        :loading="batchMoving"
-        :disabled="!batchRemoveProjectId"
-        @click="batchRemoveFromProject"
-        >确认移出</el-button
       >
     </template>
   </el-dialog>

@@ -66,6 +66,8 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   CREATE_TRAFFIC_CAPTURE_FILTER: "新增抓包过滤",
   UPDATE_TRAFFIC_CAPTURE_FILTER: "更新抓包过滤",
   DELETE_TRAFFIC_CAPTURE_FILTER: "删除抓包过滤",
+  TRAFFIC_XRAY_SCAN: "流量联动 Xray 扫描",
+  TRAFFIC_ZAP_SCAN: "流量联动 ZAP 扫描",
 
   // 安全管控与审批
   REQUEST_SECURITY_ACTION: "申请受控动作",
@@ -151,35 +153,132 @@ export const APPROVAL_STATUS_LABELS: Record<string, string> = {
   REJECTED: "已拒绝",
 };
 
+export const FINDING_STATUS_LABELS: Record<string, string> = {
+  OPEN: "待确认",
+  CONFIRMED: "已确认",
+  FALSE_POSITIVE: "误报",
+  FIXED: "已修复",
+};
+
+export const TASK_STATUS_LABELS: Record<string, string> = {
+  PENDING: "待执行",
+  QUEUED: "排队中",
+  BLOCKED: "等待前置",
+  RUNNING: "执行中",
+  SUCCESS: "成功",
+  FAILED: "失败",
+  TIMEOUT: "超时",
+  CANCELLED: "已取消",
+  REJECTED: "已拒绝",
+  SKIPPED: "已跳过",
+};
+
 export function formatApprovalAction(action?: string): string {
   if (!action) return "未知动作";
   const key = String(action).trim().toUpperCase();
   return APPROVAL_ACTION_LABELS[key] || action;
 }
 
+export function formatAuditOperator(operator?: string): string {
+  if (!operator) return "系统";
+  const op = String(operator).trim();
+  if (op === "anonymousUser" || op === "anonymous") return "未认证用户";
+  if (op === "system" || op === "SYSTEM") return "系统进程";
+  return op;
+}
+
 export function formatAuditDetail(detail?: string): string {
   if (!detail) return "-";
   let text = String(detail).trim();
   if (!text) return "-";
-  // 结构化片段：approvalId=1;status=APPROVED / approvalId=1
+
+  // 结构化前缀处理
   text = text.replace(/approvalId\s*=\s*(\d+)/gi, "审批单#$1");
   text = text.replace(/projectId\s*=\s*(\d+)/gi, "项目#$1");
   text = text.replace(/taskId\s*=\s*(\d+)/gi, "任务#$1");
   text = text.replace(/actionId\s*=\s*(\d+)/gi, "动作#$1");
+  text = text.replace(/targetId\s*=\s*(\d+)/gi, "目标#$1");
+  text = text.replace(/runId\s*=\s*(\d+)/gi, "运行#$1");
+  text = text.replace(/baselineTaskId\s*=\s*(\d+)/gi, "基线任务#$1");
+  text = text.replace(/retestTaskId\s*=\s*(\d+)/gi, "复测任务#$1");
+  text = text.replace(/pathId\s*=\s*(\d+)/gi, "路径#$1");
+  text = text.replace(/sessionId\s*=\s*(\d+)/gi, "会话#$1");
+  text = text.replace(/sourceTaskId\s*=\s*(\d+)/gi, "源任务#$1");
+  text = text.replace(/workflowNodeId\s*=\s*([a-zA-Z0-9_-]+)/gi, "工作流节点#$1");
+
+  // 指标统计与字段键名
+  text = text.replace(/\bhits\s*=\s*(\d+)/gi, "检出漏洞=$1");
+  text = text.replace(/\bdeletedCount\s*=\s*(\d+)/gi, "已删除=$1");
+  text = text.replace(/\bretainedCount\s*=\s*(\d+)/gi, "已保留=$1");
+  text = text.replace(/\bdiscovered\s*=\s*(\d+)/gi, "已发现=$1");
+  text = text.replace(/\bimported\s*=\s*(\d+)/gi, "已导入=$1");
+  text = text.replace(/\bupdated\s*=\s*(\d+)/gi, "已更新=$1");
+  text = text.replace(/\bremoved\s*=\s*(\d+)/gi, "已移除=$1");
+  text = text.replace(/\bdeletedPaths\s*=\s*(\d+)/gi, "已删除路径=$1");
+  text = text.replace(/\bmissingPaths\s*=\s*(\d+)/gi, "缺失路径=$1");
+  text = text.replace(/\bautomatedSteps\s*=\s*(\d+)/gi, "自动化步骤=$1");
+
+  text = text.replace(/\btaskIds\s*=/gi, "关联任务=");
+  text = text.replace(/\bfindingIds\s*=/gi, "关联漏洞=");
+  text = text.replace(/\bprovider\s*=\s*local-rule-fallback/gi, "服务源=本地规则兜底");
+  text = text.replace(/\bprovider\s*=\s*local-rule/gi, "服务源=本地规则引擎");
+  text = text.replace(/\bprovider\s*=\s*local-model/gi, "服务源=本地大模型");
+  text = text.replace(/\bprovider\s*=\s*remote-api/gi, "服务源=远程接口");
+  text = text.replace(/\bprovider\s*=/gi, "服务源=");
+  text = text.replace(/\bprompt\s*=/gi, "提示词=");
+  text = text.replace(/\berror\s*=/gi, "错误=");
+  text = text.replace(/\breason\s*=/gi, "原因=");
+  text = text.replace(/\bport\s*=/gi, "端口=");
+  text = text.replace(/\bsource\s*=\s*nuclei/gi, "数据源=Nuclei");
+  text = text.replace(/\bsource\s*=\s*afrog/gi, "数据源=Afrog");
+  text = text.replace(/\bsource\s*=\s*xray/gi, "数据源=Xray");
+  text = text.replace(/\bsource\s*=\s*msf/gi, "数据源=Metasploit");
+  text = text.replace(/\bsource\s*=/gi, "数据源=");
+  text = text.replace(/\bmode\s*=/gi, "模式=");
+
+  text = text.replace(/\bcapturing\s*=\s*true/gi, "拦截开启");
+  text = text.replace(/\bcapturing\s*=\s*false/gi, "拦截停止");
+  text = text.replace(/\bmarked\s*=\s*true/gi, "重点标记=是");
+  text = text.replace(/\bmarked\s*=\s*false/gi, "重点标记=否");
+  text = text.replace(/\benabled\s*=\s*true/gi, "启用=是");
+  text = text.replace(/\benabled\s*=\s*false/gi, "启用=否");
+  text = text.replace(/\bcleared\s*=\s*true/gi, "已清空");
+  text = text.replace(/\bcleared\s*=\s*false/gi, "未清空");
+
+  // 工具名称中文化
+  text = text.replace(/\btcp_ports\b/g, "TCP 端口探测");
+  text = text.replace(/\bnmap_service_scan\b/g, "Nmap 服务识别");
+  text = text.replace(/\bhttp_headers\b/g, "HTTP 响应头检查");
+  text = text.replace(/\bhttp_security_check\b/g, "HTTP 常见安全检查");
+  text = text.replace(/\btls_config\b/g, "TLS 配置检查");
+  text = text.replace(/\bnuclei_scan\b/g, "Nuclei 漏洞扫描");
+  text = text.replace(/\bafrog_scan\b/g, "Afrog 漏洞扫描");
+  text = text.replace(/\bxray_scan\b/g, "Xray 漏洞扫描");
+  text = text.replace(/\bzap_scan\b/g, "OWASP ZAP 扫描");
+  text = text.replace(/\bfscan_scan\b/g, "fscan 主机扫描");
+  text = text.replace(/\bmsf_scan\b/g, "Metasploit 模块扫描");
+
   // 统一中文化所有已知英文枚举（大小写不敏感，使用单词边界）
   const tokenMap: Record<string, string> = {
     ...PROJECT_STATUS_LABELS,
     ...APPROVAL_STATUS_LABELS,
     ...APPROVAL_ACTION_LABELS,
+    ...FINDING_STATUS_LABELS,
+    ...TASK_STATUS_LABELS,
+    NONE: "无",
+    STOPPED: "已停止",
+    IGNORED: "已忽略",
   };
   Object.entries(tokenMap).forEach(([en, zh]) => {
     text = text.replace(new RegExp(`\\b${en}\\b`, "gi"), zh);
   });
+
   // key=value 形式残留的英文 key 也中文化
   text = text
     .replace(/\bstatus\s*=/gi, "状态=")
     .replace(/\baction\s*=/gi, "动作=")
     .replace(/\bdecision\s*=/gi, "决定=");
+
   return text;
 }
 

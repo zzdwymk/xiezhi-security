@@ -15,8 +15,11 @@ import java.util.Set;
  * label agree without deleting any historical finding rows.
  */
 public final class FindingClassification {
-  private static final Set<String> ASSET_OBSERVATION_TOOLS =
-      Set.of("tcp_ports", "nmap_service_scan");
+  private static final Set<String> RISK_POINT_TOOLS =
+      Set.of("http_headers", "tcp_ports", "nmap_service_scan");
+
+  private static final Set<String> RISK_POINT_CODES =
+      Set.of("STB-WEB-001", "STB-WEB-005", "STB-TLS-001", "STB-NET-001", "STB-SMB-SMBV1");
 
   private FindingClassification() {}
 
@@ -28,11 +31,28 @@ public final class FindingClassification {
 
   public static boolean isVulnerability(
       String severity, String sourceTool, String vulnerabilityCode) {
-    if (vulnerabilityCode != null && !vulnerabilityCode.isBlank()) return true;
-    if (sourceTool != null && ASSET_OBSERVATION_TOOLS.contains(sourceTool.toLowerCase(Locale.ROOT)))
+    String normalizedTool = sourceTool == null ? "" : sourceTool.trim().toLowerCase(Locale.ROOT);
+    String normalizedCode = vulnerabilityCode == null ? "" : vulnerabilityCode.trim().toUpperCase(Locale.ROOT);
+    String normalizedSev = severity == null ? "" : severity.trim().toUpperCase(Locale.ROOT);
+
+    // 1. 安全响应头检查、端口开放探测等纯基线与暴露面工具，归为风险点（非直接漏洞）
+    if (RISK_POINT_TOOLS.contains(normalizedTool)) {
       return false;
-    String normalized = severity == null ? "" : severity.trim().toUpperCase(Locale.ROOT);
-    return !"INFO".equals(normalized);
+    }
+    // 2. 属于安全响应头缺失、技术栈暴露、TLS配置、SMBv1协议等基线配置与暴露面编号的，归为风险点
+    if (RISK_POINT_CODES.contains(normalizedCode)) {
+      return false;
+    }
+    // 3. LOW 或 INFO 级别的配置加固项归为风险点
+    if ("LOW".equals(normalizedSev) || "INFO".equals(normalizedSev)) {
+      return false;
+    }
+
+    // 4. CRITICAL 或 HIGH 等高威胁项，或具备非基线漏洞代码的项，判定为漏洞发现
+    if ("CRITICAL".equals(normalizedSev) || "HIGH".equals(normalizedSev)) {
+      return true;
+    }
+    return !normalizedCode.isBlank();
   }
 
   public static long vulnerabilityCount(Collection<Finding> findings) {

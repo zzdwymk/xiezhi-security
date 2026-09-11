@@ -38,6 +38,10 @@ public class ProcessCommandRunner implements CommandRunner {
         builder.directory(executable.getParent().toFile());
       }
       process = ProcessEnvironmentSanitizer.sanitize(builder).start();
+      try {
+        process.getOutputStream().close();
+      } catch (Exception ignored) {
+      }
       InputStream processOutput = process.getInputStream();
       output = reader.submit(() -> readOutput(processOutput));
       if (!process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)) {

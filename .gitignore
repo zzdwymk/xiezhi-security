@@ -110,6 +110,8 @@ htmlcov/
 # Xray scanner runtime configs generated at repo root
 xray.yaml
 *.xray.yaml
+!security-toolbox-server/src/main/resources/xray/**
+
 
 # Local reports, test output and browser automation artifacts
 /reports/

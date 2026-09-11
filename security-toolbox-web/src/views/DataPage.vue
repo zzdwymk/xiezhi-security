@@ -8,6 +8,8 @@ import OfflineState from "../components/OfflineState.vue";
 import { formatDateTime } from "../utils/dateTime";
 import {
   formatAuditAction,
+  formatAuditDetail,
+  formatAuditOperator,
   formatAuditResource,
   formatAuditResult,
   auditResultTagType,
@@ -166,8 +168,16 @@ watch(() => props.kind, load);
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="operator" label="操作人" width="95" show-overflow-tooltip />
-        <el-table-column prop="detail" label="详情" min-width="150" show-overflow-tooltip />
+        <el-table-column prop="operator" label="操作人" width="105" show-overflow-tooltip>
+          <template #default="scope">
+            {{ formatAuditOperator(scope.row.operator) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="详情" min-width="160" show-overflow-tooltip>
+          <template #default="scope">
+            {{ formatAuditDetail(scope.row.detail) }}
+          </template>
+        </el-table-column>
         <el-table-column prop="createdAt" label="时间" min-width="140">
           <template #default="scope">
             {{ formatDateTime(scope.row.createdAt) }}

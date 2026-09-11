@@ -614,6 +614,7 @@ public class WorkflowRunService {
       case "afrog_scan" -> "Afrog";
       case "xray_scan" -> "Xray";
       case "zap_scan" -> "ZAP";
+      case "sqlmap_scan" -> "sqlmap";
       default -> null;
     };
   }
