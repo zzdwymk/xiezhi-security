@@ -155,6 +155,9 @@ function applySystemTheme(theme: SystemThemeState) {
 export async function initializeSystemTheme() {
   activeThemeMode = getStoredThemeMode();
   const media = window.matchMedia("(prefers-color-scheme: dark)");
+  const isDark =
+    activeThemeMode === "dark" ||
+    (activeThemeMode === "system" && media.matches);
   const fallback = () =>
     applySystemTheme({
       accentColor: "#0078d4",
@@ -164,9 +167,9 @@ export async function initializeSystemTheme() {
       forcedCaptionAccent: false,
       transparencyEnabled: false,
       autoColorization: false,
-      appsUseLightTheme: !media.matches,
-      systemUsesLightTheme: !media.matches,
-      dark: media.matches,
+      appsUseLightTheme: !isDark,
+      systemUsesLightTheme: !isDark,
+      dark: isDark,
       highContrast: window.matchMedia("(forced-colors: active)").matches,
     });
 

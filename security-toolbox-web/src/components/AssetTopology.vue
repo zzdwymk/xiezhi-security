@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick, onMounted, onUnmounted } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { endpoints, type AssessmentProject, type DiscoveryResult } from "../api";
+import {
+  endpoints,
+  type AssessmentProject,
+  type DiscoveryResult,
+  type ProjectFindingRecord,
+} from "../api";
 import { formatDateTime } from "../utils/dateTime";
 import {
   clearNodePositions,
@@ -19,11 +24,13 @@ const props = withDefaults(
     hubLabel?: string;
     loading?: boolean;
     projects?: AssessmentProject[];
+    findings?: ProjectFindingRecord[];
   }>(),
   {
     hubLabel: "项目中心",
     loading: false,
     projects: () => [],
+    findings: () => [],
   },
 );
 
@@ -68,6 +75,11 @@ const isFocusedDomainIp = computed(() => {
 });
 const searchQuery = ref("");
 
+// 鹰眼小地图交互状态
+const minimapSvgRef = ref<SVGSVGElement | null>(null);
+const isDraggingMinimap = ref(false);
+const minimapDragStart = ref({ clientX: 0, clientY: 0, initPanX: 0, initPanY: 0 });
+
 // 选中与悬停
 const selectedNodeId = ref<number | null>(null);
 const hoveredNodeId = ref<number | null>(null);
@@ -102,13 +114,25 @@ const DOUBLE_TLDS = new Set([
 
 function isIpAddress(hostOrIp: string): boolean {
   if (!hostOrIp) return false;
-  const clean = hostOrIp.replace(/^\[|\]$/g, "").split(":")[0];
-  return IPV4_REGEX.test(clean) || clean.includes(":") || clean.toLowerCase() === "localhost";
+  const clean = stripHostPort(hostOrIp);
+  return IPV4_REGEX.test(clean) || clean.split(":").length >= 3 || clean.toLowerCase() === "localhost";
+}
+
+function stripHostPort(rawHost: string): string {
+  let clean = String(rawHost || "").trim();
+  if (clean.startsWith("[")) {
+    const closingBracket = clean.indexOf("]");
+    if (closingBracket >= 0) return clean.slice(1, closingBracket);
+  }
+  const colonCount = (clean.match(/:/g) || []).length;
+  if (colonCount >= 2) return clean.replace(/^\[|\]$/g, "");
+  if (colonCount === 1) return clean.slice(0, clean.lastIndexOf(":"));
+  return clean;
 }
 
 function extractRootDomain(rawHostname: string): { rootDomain: string; isIp: boolean } {
   if (!rawHostname) return { rootDomain: "未知", isIp: false };
-  const clean = rawHostname.replace(/^\[|\]$/g, "").split(":")[0].trim();
+  const clean = stripHostPort(rawHostname);
   if (isIpAddress(clean)) {
     return { rootDomain: clean, isIp: true };
   }
@@ -127,7 +151,7 @@ function extractRootDomain(rawHostname: string): { rootDomain: string; isIp: boo
 function parseHost(url?: string): { host: string; protocol: string; path: string; rootDomain: string; isIp: boolean } {
   if (!url) return { host: "未知资产", protocol: "http", path: "", rootDomain: "未知", isIp: false };
   try {
-    const parsed = new URL(url.startsWith("http") ? url : `http://${url}`);
+    const parsed = new URL(normalizeAssetUrl(url));
     const host = parsed.hostname + (parsed.port ? `:${parsed.port}` : "");
     const { rootDomain, isIp } = extractRootDomain(parsed.hostname);
     return {
@@ -138,14 +162,14 @@ function parseHost(url?: string): { host: string; protocol: string; path: string
       isIp,
     };
   } catch {
-    const clean = url.replace(/^https?:\/\//, "");
+    const clean = url.replace(/^https?:\/\//i, "");
     const parts = clean.split("/");
     const host = parts[0] || "资产";
-    const hostname = host.split(":")[0];
+    const hostname = stripHostPort(host);
     const { rootDomain, isIp } = extractRootDomain(hostname);
     return {
       host,
-      protocol: url.startsWith("https") ? "https" : "http",
+      protocol: /^https/i.test(url) ? "https" : "http",
       path: parts.slice(1).join("/"),
       rootDomain,
       isIp,
@@ -203,6 +227,61 @@ const selectedAsset = computed(() => {
   if (selectedNodeId.value == null) return null;
   return props.assets.find((a) => a.id === selectedNodeId.value) || null;
 });
+
+const BASELINE_RISK_TOOLS = new Set([
+  "http_headers",
+  "tcp_ports",
+  "nmap_service_scan",
+]);
+const BASELINE_RISK_CODES = new Set([
+  "STB-WEB-001",
+  "STB-WEB-005",
+  "STB-TLS-001",
+  "STB-NET-001",
+  "STB-SMB-SMBV1",
+]);
+
+function findingIsVulnerability(finding: {
+  severity?: string;
+  sourceTool?: string;
+  vulnerabilityCode?: string | null;
+}) {
+  const tool = String(finding.sourceTool || "").trim().toLowerCase();
+  const code = String(finding.vulnerabilityCode || "").trim().toUpperCase();
+  const sev = String(finding.severity || "").trim().toUpperCase();
+
+  if (BASELINE_RISK_TOOLS.has(tool)) return false;
+  if (BASELINE_RISK_CODES.has(code)) return false;
+  if (sev === "LOW" || sev === "INFO") return false;
+  if (sev === "CRITICAL" || sev === "HIGH") return true;
+  return Boolean(code);
+}
+
+// 总览中相同目标可以归属不同项目，卡片和详情只关联本项目的发现。
+function getAssetFindings(asset: DiscoveryResult) {
+  const targetId = Number(asset.targetId);
+  const host = stripHostPort(parseHost(asset.url).host).toLowerCase();
+  const url = (asset.url || "").toLowerCase();
+  return (props.findings || []).filter((f) => {
+    const findingProjectId = f.projectId ?? (typeof props.projectId === "number" ? props.projectId : undefined);
+    if (Number(findingProjectId) !== Number(asset.projectId)) return false;
+    // Findings are target-scoped in the report API. Keep this association
+    // while retaining the project guard above; URL/evidence matching below
+    // also supports path-specific findings.
+    if (Number(f.targetId) === targetId && targetId > 0) return true;
+    const cleanHost = host;
+    const fEvidence = String(f.evidence || "").toLowerCase();
+    const fDesc = String(f.description || "").toLowerCase();
+    const fTitle = String(f.title || "").toLowerCase();
+    if (cleanHost && (fEvidence.includes(cleanHost) || fDesc.includes(cleanHost) || fTitle.includes(cleanHost))) return true;
+    if (url && fEvidence.includes(url)) return true;
+    return false;
+  });
+}
+
+const selectedNodeFindings = computed(() =>
+  selectedAsset.value ? getAssetFindings(selectedAsset.value) : [],
+);
 
 const HUB_W = 216;
 const HUB_H = 68;
@@ -273,6 +352,63 @@ interface LayoutNode {
   isMatch: boolean;
   isSpotlight: boolean;
   statusKind?: "waf" | "https" | "http";
+  urlPath?: string;
+  vulnCount: number;
+  riskCount: number;
+  findings: ProjectFindingRecord[];
+}
+
+type AssetKind = "target" | "probe" | "path";
+
+function getAssetKind(asset: DiscoveryResult | null | undefined): AssetKind {
+  if (asset?._assetKind === "target" || asset?._isTargetAsset === true) {
+    return "target";
+  }
+  if (asset?._assetKind === "path" || asset?._webPath === true) {
+    return "path";
+  }
+  return "probe";
+}
+
+function isWebPathAsset(asset: DiscoveryResult | null | undefined): boolean {
+  return getAssetKind(asset) === "path";
+}
+
+function getAssetRemovalAction(asset: DiscoveryResult | null | undefined): "probe" | "target" | "none" {
+  if (!asset || props.projectId === "all") return "none";
+  const kind = getAssetKind(asset);
+  // Discovered paths are maintained by recon collectors and have no single
+  // delete endpoint. Ignore stale IDs from merged records instead of
+  // treating a path as an authorized target.
+  if (kind === "path") return "none";
+  if (kind === "target") {
+    const targetLinkId = Number(asset._targetLinkId);
+    return Number.isSafeInteger(targetLinkId) && targetLinkId > 0 ? "target" : "none";
+  }
+  // ProjectDetail feeds the component's original discovery rows directly,
+  // before the all-project loader adds `_probeResultId`.  For an untagged
+  // probe, its own primary key is the safe fallback; path and target records
+  // were returned above and never reach this branch.
+  const probeId = Number(asset._probeResultId ?? asset.id);
+  if (Number.isSafeInteger(probeId) && probeId > 0) return "probe";
+  return "none";
+}
+
+function assetRemovalLabel(asset: DiscoveryResult | null | undefined): string {
+  if (props.projectId === "all") return "全部项目总览不可删除";
+  const action = getAssetRemovalAction(asset);
+  if (action === "probe") return "移除探测记录";
+  if (action === "target") return "解除项目授权目标";
+  if (getAssetKind(asset) === "path") return "测绘路径由系统维护";
+  return "无法移除该资产";
+}
+
+function statusBadgeWidth(node: Pick<LayoutNode, "vulnCount" | "riskCount">): number {
+  if (node.vulnCount > 0 || node.riskCount > 0) {
+    const count = node.vulnCount > 0 ? node.vulnCount : node.riskCount;
+    return 58 + Math.max(0, String(count).length - 1) * 6;
+  }
+  return 48;
 }
 
 interface MindmapDomainNode {
@@ -542,13 +678,19 @@ const layoutData = computed<{
     });
 
     const projectIds = Array.from(projectMap.keys());
-    if (projectIds.length === 0) {
+    // 仅保留包含实际资产的项目（防止未关联资产的空项目在中心扎堆堆叠）
+    const pidsWithAssets = projectIds.filter((pid) =>
+      allAssets.some((a) => a.projectId === pid),
+    );
+    const targetProjectIds = pidsWithAssets.length > 0 ? pidsWithAssets : (projectIds.slice(0, 1));
+
+    if (targetProjectIds.length === 0) {
       const hubId = "hub-all";
       const custom = customPositions.value[hubId];
       hubs.push({
         id: hubId,
         projectId: 0,
-        name: "全部项目总览",
+        name: "全部项目",
         theme: FLUENT_HUB_THEMES[0],
         x: custom ? custom.x : cx.value,
         y: custom ? custom.y : cy.value,
@@ -556,7 +698,7 @@ const layoutData = computed<{
         hostCount: 0,
       });
     } else {
-      projectIds.forEach((pid, idx) => {
+      targetProjectIds.forEach((pid, idx) => {
         const pAssets = allAssets.filter((a) => a.projectId === pid);
         const hostSet = new Set<string>();
         pAssets.forEach((a) => {
@@ -594,10 +736,31 @@ const layoutData = computed<{
     const { host, protocol, rootDomain, isIp } = parseHost(asset.url);
     const badges = getNodeBadges(asset);
 
+    // 解析 URL 路径（如有）
+    let urlPath = "";
+    if (asset.url) {
+      try {
+        const u = new URL(normalizeAssetUrl(asset.url));
+        if (u.pathname && u.pathname !== "/") {
+          urlPath = u.pathname + (u.search || "");
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // 匹配关联在该资产上的漏洞与风险发现项
+    const nodeFindings = getAssetFindings(asset);
+
+    const vulnCount = nodeFindings.filter(findingIsVulnerability).length;
+    const riskCount = nodeFindings.length - vulnCount;
+
     const isSearchMatch =
       !q ||
       (asset.url || "").toLowerCase().includes(q) ||
       host.toLowerCase().includes(q) ||
+      urlPath.toLowerCase().includes(q) ||
+      nodeFindings.some((f) => (f.title || "").toLowerCase().includes(q)) ||
       [asset.server, asset.framework, asset.wafName, ...badges].some((value) =>
         typeof value === "string" && value.toLowerCase().includes(q),
       );
@@ -629,6 +792,10 @@ const layoutData = computed<{
       isMatch,
       isSpotlight,
       statusKind,
+      urlPath,
+      vulnCount,
+      riskCount,
+      findings: nodeFindings,
     };
   }
 
@@ -727,12 +894,15 @@ const layoutData = computed<{
     const leftAnchor = Math.max(HUB_W / 2 + 60, cx.value - (viewportWidth.value > 1200 ? 440 : 380));
 
     // 计算各项目的思维导图高度
+    const clusterSeparation = 120;
     const clusterHeights = hubs.map((hub) => {
       const pAssets = allAssets.filter((a) => a.projectId === hub.projectId);
       const rootDomains = new Set(pAssets.map((a) => parseHost(a.url).rootDomain));
-      return Math.max(HUB_H + 40, rootDomains.size * 56 + pAssets.length * (CARD_H + 18));
+      return Math.max(HUB_H + 80, rootDomains.size * 64 + pAssets.length * (CARD_H + 22));
     });
-    const totalHeight = clusterHeights.reduce((a, b) => a + b, 0) + (hubs.length - 1) * 60;
+    const totalHeight =
+      clusterHeights.reduce((a, b) => a + b, 0) +
+      Math.max(0, hubs.length - 1) * clusterSeparation;
     let currentClusterY = cy.value - totalHeight / 2;
 
     hubs.forEach((hub, hIdx) => {
@@ -838,7 +1008,7 @@ const layoutData = computed<{
         currentDomainY += blockHeight + domainSeparation;
       });
 
-      currentClusterY += clusterHeight + 60;
+      currentClusterY += clusterHeight + clusterSeparation;
     });
 
     resolveNodeCollisions(nodes, hubs, customPositions.value);
@@ -1217,6 +1387,20 @@ function onGlobalMouseMove(e: MouseEvent) {
         y: nodeDragStart.value.initY + dy,
       },
     };
+  } else if (isDraggingMinimap.value && minimapSvgRef.value) {
+    const rect = minimapSvgRef.value.getBoundingClientRect();
+    const map = minimapTransform.value;
+    if (rect.width > 0 && rect.height > 0 && map.scale > 0) {
+      // 鼠标在小地图屏幕上的移动量 -> 小地图 SVG viewBox 坐标增量
+      const dMinimapX = ((e.clientX - minimapDragStart.value.clientX) / rect.width) * 200;
+      const dMinimapY = ((e.clientY - minimapDragStart.value.clientY) / rect.height) * 120;
+      // 取景框在小地图向右下移动，主画布应向左上平移，系数为 zoom / scale
+      const ratio = zoom.value / map.scale;
+      pan.value = {
+        x: minimapDragStart.value.initPanX - dMinimapX * ratio,
+        y: minimapDragStart.value.initPanY - dMinimapY * ratio,
+      };
+    }
   } else if (isDraggingCanvas.value) {
     hasDragged.value = true;
     pan.value = {
@@ -1229,8 +1413,56 @@ function onGlobalMouseMove(e: MouseEvent) {
 // 全局鼠标松开
 function onGlobalMouseUp() {
   isDraggingCanvas.value = false;
+  isDraggingMinimap.value = false;
   draggingNodeId.value = null;
   draggingHubId.value = null;
+}
+
+// 小地图坐标换算到主画布平移
+function panToMinimapPoint(minimapX: number, minimapY: number) {
+  const map = minimapTransform.value;
+  if (!map.scale) return;
+  // 小地图坐标反求拓扑场景中点坐标 (sceneX, sceneY)
+  const sceneX = (minimapX - map.x) / map.scale;
+  const sceneY = (minimapY - map.y) / map.scale;
+  // 让视口中心 (cx, cy) 对准 (sceneX, sceneY)
+  pan.value = {
+    x: cx.value - sceneX * zoom.value,
+    y: cy.value - sceneY * zoom.value,
+  };
+}
+
+// 小地图鼠标按下：支持点击跳转与拖拽取景框快速移动
+function onMinimapMouseDown(e: MouseEvent) {
+  if (e.button !== 0 || !minimapSvgRef.value) return;
+  e.stopPropagation();
+  e.preventDefault();
+  closeContextMenu();
+
+  const rect = minimapSvgRef.value.getBoundingClientRect();
+  const clickX = ((e.clientX - rect.left) / rect.width) * 200;
+  const clickY = ((e.clientY - rect.top) / rect.height) * 120;
+
+  const vf = minimapViewfinder.value;
+  const inViewfinder =
+    clickX >= vf.x &&
+    clickX <= vf.x + vf.width &&
+    clickY >= vf.y &&
+    clickY <= vf.y + vf.height;
+
+  if (!inViewfinder) {
+    // 点击了取景框外部，直接将视野中心移动到点击位置
+    panToMinimapPoint(clickX, clickY);
+  }
+
+  // 记录拖拽初始状态
+  isDraggingMinimap.value = true;
+  minimapDragStart.value = {
+    clientX: e.clientX,
+    clientY: e.clientY,
+    initPanX: pan.value.x,
+    initPanY: pan.value.y,
+  };
 }
 
 // 节点点击交互
@@ -1336,16 +1568,68 @@ async function exportTopologyImage() {
 async function confirmRemoveNode(id: number, hostName?: string) {
   closeContextMenu();
   const target = props.assets.find((a) => a.id === id);
-  if (target?._webPath === true) {
+  const action = getAssetRemovalAction(target);
+  if (!target || action === "none") {
+    if (props.projectId === "all") {
+      ElMessage.warning("全部项目总览仅支持查看，请进入具体项目后操作");
+    } else if (getAssetKind(target) === "path") {
+      ElMessage.info("测绘路径由系统自动维护，当前没有单条删除接口");
+    } else {
+      ElMessage.warning("该资产没有可用的后端记录，无法删除");
+    }
+    return;
+  }
+
+  const targetProjectId =
+    typeof props.projectId === "number" ? props.projectId : target.projectId;
+  if (!Number.isSafeInteger(targetProjectId)) {
+    ElMessage.warning("无法确定资产所属项目");
+    return;
+  }
+
+  if (action === "target") {
+    const targetId = Number(target.targetId);
+    if (!Number.isSafeInteger(targetId) || targetId <= 0) {
+      ElMessage.warning("该授权目标缺少有效目标编号");
+      return;
+    }
+    try {
+      await ElMessageBox.confirm(
+        `确定解除项目「${props.hubLabel || "当前项目"}」与目标「${hostName || "该目标"}」的授权绑定吗？`,
+        "解除项目授权目标",
+        {
+          confirmButtonText: "解除绑定",
+          cancelButtonText: "取消",
+          type: "warning",
+          confirmButtonClass: "el-button--danger",
+        },
+      );
+      await endpoints.removeProjectTarget(targetProjectId, targetId);
+      ElMessage.success("已解除项目授权目标");
+      if (selectedNodeId.value === id) {
+        drawerVisible.value = false;
+        selectedNodeId.value = null;
+      }
+      emit("change");
+    } catch (err: any) {
+      if (err !== "cancel" && err !== "close") {
+        ElMessage.error(err?.response?.data?.message || err?.message || "解除绑定失败");
+      }
+    }
+    return;
+  }
+
+  const probeId = Number(target._probeResultId ?? target.id);
+  if (!Number.isSafeInteger(probeId) || probeId <= 0) {
     ElMessage.info(
-      "Web URL 资产由主动/被动测绘自动维护，请在最细粒度是目标的测绘入口中清理",
+      "该资产没有可删除的探测记录，测绘路径由系统自动维护",
     );
     return;
   }
   try {
     await ElMessageBox.confirm(
-      `确定要删除资产节点「${hostName || "该节点"}」吗？删除后将从当前项目的资产测绘拓扑中移除。`,
-      "移除资产节点",
+      `确定要删除资产节点「${hostName || "该节点"}」对应的探测记录吗？`,
+      "移除探测记录",
       {
         confirmButtonText: "确定移除",
         cancelButtonText: "取消",
@@ -1353,15 +1637,7 @@ async function confirmRemoveNode(id: number, hostName?: string) {
         confirmButtonClass: "el-button--danger",
       },
     );
-    const targetProjectId =
-      typeof props.projectId === "number"
-        ? props.projectId
-        : (target as any)?.projectId;
-    if (typeof targetProjectId !== "number") {
-      ElMessage.warning("全局汇总视图下不支持直接删除，请进入具体项目后操作");
-      return;
-    }
-    await endpoints.deleteDiscoveryResult(targetProjectId, id);
+    await endpoints.deleteDiscoveryResult(targetProjectId, probeId);
     ElMessage.success("已成功删除资产节点");
     if (selectedNodeId.value === id) {
       drawerVisible.value = false;
@@ -1391,10 +1667,17 @@ async function copyUrl(url?: string) {
 function normalizeAssetUrl(url?: string): string {
   if (!url) return "";
   const trimmed = url.trim();
-  if (/^https?:\/\//i.test(trimmed)) {
-    return trimmed;
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  const match = /^(https?:\/\/)([^/?#]*)([\s\S]*)$/i.exec(withScheme);
+  if (!match) return withScheme;
+  const [, scheme, authority, suffix] = match;
+  const userInfoEnd = authority.lastIndexOf("@");
+  const userInfo = userInfoEnd >= 0 ? authority.slice(0, userInfoEnd + 1) : "";
+  const host = userInfoEnd >= 0 ? authority.slice(userInfoEnd + 1) : authority;
+  if (host.startsWith("[") || (host.match(/:/g) || []).length < 2) {
+    return withScheme;
   }
-  return `http://${trimmed}`;
+  return `${scheme}${userInfo}[${host}]${suffix}`;
 }
 
 // 在新窗口/系统默认外部浏览器打开资产
@@ -1638,13 +1921,15 @@ onUnmounted(() => {
             {{ isFocusedDomainIp ? `聚焦主机: ${focusedDomain}` : `聚焦主域: ${focusedDomain}` }}
           </el-tag>
         </div>
-        <div class="host-meta-badge" title="当前拓扑覆盖独立主机数">
-          <FluentIcon name="server" :size="12" />
-          <span>{{ stats.uniqueHosts }} 个主机</span>
-        </div>
-        <div v-if="props.projectId === 'all'" class="host-meta-badge" title="当前拓扑覆盖项目数">
-          <FluentIcon name="folder" :size="12" />
-          <span>{{ layoutData.hubs.length }} 个项目</span>
+        <div class="toolbar-meta-group">
+          <div class="host-meta-badge" title="当前拓扑覆盖独立主机数">
+            <FluentIcon name="server" :size="12" />
+            <span>{{ stats.uniqueHosts }} 个主机</span>
+          </div>
+          <div v-if="props.projectId === 'all'" class="host-meta-badge" title="当前拓扑覆盖项目数">
+            <FluentIcon name="folder" :size="12" />
+            <span>{{ layoutData.hubs.length }} 个项目</span>
+          </div>
         </div>
       </div>
 
@@ -1759,7 +2044,7 @@ onUnmounted(() => {
           <FluentIcon name="globe-search" :size="36" />
         </div>
         <h4>暂无资产节点</h4>
-        <p>当前项目暂无资产记录</p>
+        <p>{{ props.projectId === 'all' ? '全部项目暂无资产记录' : '当前项目暂无资产记录' }}</p>
       </div>
 
       <!-- SVG 拓扑网络画布 -->
@@ -1781,10 +2066,10 @@ onUnmounted(() => {
             <circle cx="12" cy="12" r="0.8" fill="var(--app-border, #d8dadd)" opacity="0.45" />
           </pattern>
 
-          <!-- 画布中心柔和科技纵深环境光 -->
+          <!-- 画布中心柔和科技纵深环境光 (内聚低饱和度，不抢占主体视觉) -->
           <radialGradient id="centerAmbientGlow" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stop-color="#0078d4" stop-opacity="0.08" />
-            <stop offset="60%" stop-color="#0078d4" stop-opacity="0.02" />
+            <stop offset="0%" stop-color="#0078d4" stop-opacity="0.05" />
+            <stop offset="50%" stop-color="#0078d4" stop-opacity="0.015" />
             <stop offset="100%" stop-color="#0078d4" stop-opacity="0" />
           </radialGradient>
 
@@ -1841,14 +2126,14 @@ onUnmounted(() => {
           class="topology-scene"
           :transform="`translate(${pan.x}, ${pan.y}) scale(${zoom})`"
         >
-          <!-- 画布各中心节点柔和纵深微光 -->
+          <!-- 画布各中心节点柔和纵深微光 (紧密内聚在中心卡片周围，不向外漫散) -->
           <ellipse
             v-for="hub in layoutData.hubs"
             :key="`ambient-${hub.id}`"
             :cx="hub.x"
             :cy="hub.y"
-            :rx="HUB_W * 1.6"
-            :ry="HUB_H * 2.4"
+            :rx="HUB_W * 0.85"
+            :ry="HUB_H * 1.15"
             fill="url(#centerAmbientGlow)"
             pointer-events="none"
           />
@@ -2102,7 +2387,7 @@ onUnmounted(() => {
               @contextmenu="onNodeContextMenu($event, node)"
             >
               <title>{{ node.asset.url || node.host }}</title>
-              <!-- 实心卡片背景 (立体浮起微投影，选中态使用 Fluent 光晕) -->
+              <!-- 实心卡片背景 (立体浮起微投影，高危漏洞红光晕，风险橙光晕) -->
               <rect
                 :x="-CARD_W / 2"
                 :y="-CARD_H / 2"
@@ -2110,17 +2395,78 @@ onUnmounted(() => {
                 :height="CARD_H"
                 rx="8"
                 class="node-card-bg"
+                :class="{
+                  'card--has-vuln': node.vulnCount > 0,
+                  'card--has-risk': node.riskCount > 0 && node.vulnCount === 0,
+                }"
                 :filter="selectedNodeId === node.id ? 'url(#nodeCardSelectedShadow)' : hoveredNodeId === node.id ? 'url(#nodeCardHoverShadow)' : 'url(#nodeCardShadow)'"
               />
 
-              <!-- 卡片上沿 1px 亚克力微高光反射线 -->
-              <line
-                :x1="-CARD_W / 2 + 10"
-                :y1="-CARD_H / 2 + 1"
-                :x2="CARD_W / 2 - 10"
-                :y2="-CARD_H / 2 + 1"
-                class="node-card-highlight-line"
-              />
+              <!-- 右上角态势徽标 (宽度随计数增长，使用 Fluent 图形而非 emoji) -->
+              <g
+                v-if="node.vulnCount > 0"
+                :transform="`translate(${CARD_W / 2 - statusBadgeWidth(node) - 8}, ${-CARD_H / 2 + 7})`"
+              >
+                <rect
+                  x="0"
+                  y="0"
+                  :width="statusBadgeWidth(node)"
+                  height="18"
+                  rx="4"
+                  class="node-badge-bg badge--vuln"
+                />
+                <svg x="5" y="1" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                  <path
+                    d="M8.35 2.15a.5.5 0 0 0-.7 0A5.72 5.72 0 0 1 3.5 4a.5.5 0 0 0-.5.5v3c0 3.22 1.64 5.4 4.84 6.47.1.04.22.04.32 0C11.36 12.91 13 10.72 13 7.5v-3a.5.5 0 0 0-.5-.5c-1.53 0-2.9-.61-4.15-1.85ZM4 4.98a6.65 6.65 0 0 0 4-1.8 6.64 6.64 0 0 0 4 1.8V7.5c0 1.43-.36 2.57-1.02 3.45A6.13 6.13 0 0 1 8 12.97a6.13 6.13 0 0 1-2.98-2.02A5.57 5.57 0 0 1 4 7.5V4.98Zm4.5.52a.5.5 0 0 0-1 0v3a.5.5 0 0 0 1 0v-3Zm.25 5.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Z"
+                    class="node-badge-icon"
+                  />
+                </svg>
+                <text x="23" y="12.5" text-anchor="start" class="node-badge-text">
+                  {{ node.vulnCount }} 漏洞
+                </text>
+              </g>
+              <g
+                v-else-if="node.riskCount > 0"
+                :transform="`translate(${CARD_W / 2 - statusBadgeWidth(node) - 8}, ${-CARD_H / 2 + 7})`"
+              >
+                <rect
+                  x="0"
+                  y="0"
+                  :width="statusBadgeWidth(node)"
+                  height="18"
+                  rx="4"
+                  class="node-badge-bg badge--risk"
+                />
+                <svg x="5" y="1" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                  <path
+                    d="M5.82 2.28a2.5 2.5 0 0 1 4.36 0l4.5 8A2.5 2.5 0 0 1 12.5 14h-9a2.5 2.5 0 0 1-2.18-3.72l4.5-8Zm3.49.48a1.5 1.5 0 0 0-2.62 0l-4.5 8a1.5 1.5 0 0 0 1.31 2.24h9a1.5 1.5 0 0 0 1.3-2.23l-4.5-8ZM8 9.5A.75.75 0 1 1 8 11a.75.75 0 0 1 0-1.5ZM8 5c.28 0 .5.22.5.5V8a.5.5 0 0 1-1 0V5.5c0-.28.22-.5.5-.5Z"
+                    class="node-badge-icon"
+                  />
+                </svg>
+                <text x="23" y="12.5" text-anchor="start" class="node-badge-text">
+                  {{ node.riskCount }} 风险
+                </text>
+              </g>
+              <g
+                v-else
+                :transform="`translate(${CARD_W / 2 - statusBadgeWidth(node) - 8}, ${-CARD_H / 2 + 7})`"
+              >
+                <rect
+                  x="0"
+                  y="0"
+                  :width="statusBadgeWidth(node)"
+                  height="18"
+                  rx="4"
+                  class="node-badge-bg badge--safe"
+                />
+                <svg x="5" y="1" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                  <path
+                    d="M2 8a6 6 0 1 1 12 0A6 6 0 0 1 2 8Zm6-7a7 7 0 1 0 0 14A7 7 0 0 0 8 1Zm2.85 5.85a.5.5 0 0 0-.7-.7l-2.9 2.9-1.4-1.4a.5.5 0 1 0-.7.7L6.9 10.1c.2.2.5.2.7 0l3.25-3.25Z"
+                    class="node-badge-icon"
+                  />
+                </svg>
+                <text x="23" y="12.5" text-anchor="start" class="node-badge-text">安全</text>
+              </g>
 
               <!-- 自定义位置图钉指示微点 -->
               <circle
@@ -2177,24 +2523,32 @@ onUnmounted(() => {
 
               <!-- 右侧文字排版区域 (左对齐，层级分明，不与图标或连线挤压) -->
               <g :transform="`translate(${-CARD_W / 2 + 48}, 0)`">
-                <!-- 第一行：主机名 / 域名 (主标题，字号清晰，留足显示空间) -->
+                <!-- 第一行：URL 路径（若有）或 主机名 / 域名 (主标题，字号清晰，留足显示空间) -->
                 <text
                   y="-5"
                   class="node-title-text"
                   text-anchor="start"
                 >
-                  {{ compactLabel(node.host, 22) }}
+                  {{ node.urlPath ? compactLabel(node.urlPath, 16) : compactLabel(node.host, 16) }}
                 </text>
 
                 <!-- 第二行：标签微徽标组 (Fluent 2 标准字阶与留白) -->
                 <g transform="translate(0, 14)">
-                  <!-- 标签 1 (协议) -->
-                  <g v-if="node.badges[0]" transform="translate(0, 0)">
+                  <!-- 标签 1 (URL 或 协议) -->
+                  <g v-if="node.urlPath" transform="translate(0, 0)">
+                    <rect x="0" y="-8.5" width="38" height="17" rx="3.5" class="node-tag-bg tag-url" />
+                    <text x="19" y="3.5" text-anchor="middle" class="node-tag-text">URL</text>
+                  </g>
+                  <g v-else-if="node.badges[0]" transform="translate(0, 0)">
                     <rect x="0" y="-8.5" width="44" height="17" rx="3.5" class="node-tag-bg tag-protocol" />
                     <text x="22" y="3.5" text-anchor="middle" class="node-tag-text">{{ node.badges[0] }}</text>
                   </g>
-                  <!-- 标签 2 (服务/WAF) -->
-                  <g v-if="node.badges[1]" transform="translate(48, 0)">
+                  <!-- 标签 2 (主机或服务) -->
+                  <g v-if="node.urlPath" transform="translate(42, 0)">
+                    <rect x="0" y="-8.5" width="76" height="17" rx="3.5" class="node-tag-bg tag-generic" />
+                    <text x="38" y="3.5" text-anchor="middle" class="node-tag-text">{{ compactLabel(node.host, 10) }}</text>
+                  </g>
+                  <g v-else-if="node.badges[1]" transform="translate(48, 0)">
                     <rect
                       x="0"
                       y="-8.5"
@@ -2237,13 +2591,19 @@ onUnmounted(() => {
       </div>
 
       <!-- 鹰眼雷达微型小地图 (Fluent Overlay) -->
-      <div v-if="showMinimap && assets.length > 0" class="topology-minimap" @mousedown.stop @dblclick.stop @wheel.stop>
+      <div v-if="showMinimap && assets.length > 0" class="topology-minimap" @dblclick.stop @wheel.stop>
         <div class="minimap-header">
           <span>缩略图</span>
           <button class="minimap-close" title="隐藏缩略图" aria-label="隐藏缩略图" @click="showMinimap = false"><FluentIcon name="dismiss" /></button>
         </div>
         <div class="minimap-body">
-          <svg viewBox="0 0 200 120" class="minimap-svg">
+          <svg
+            ref="minimapSvgRef"
+            viewBox="0 0 200 120"
+            class="minimap-svg"
+            :class="{ 'is-dragging': isDraggingMinimap }"
+            @mousedown="onMinimapMouseDown"
+          >
             <!-- 视口取景框 (置于底层，半透明高亮展示当前视野范围) -->
             <rect
               :x="minimapViewfinder.x"
@@ -2332,7 +2692,7 @@ onUnmounted(() => {
           @click="confirmRemoveNode(contextMenu.node!.id, contextMenu.node!.host)"
         >
           <FluentIcon name="delete" :size="14" />
-          <span>移除该资产节点</span>
+          <span>{{ assetRemovalLabel(contextMenu.node.asset) }}</span>
         </div>
       </div>
     </div>
@@ -2362,6 +2722,40 @@ onUnmounted(() => {
                 {{ parseHost(selectedAsset.url).protocol.toUpperCase() }}
               </el-tag>
               <el-tag
+                v-if="isWebPathAsset(selectedAsset)"
+                size="small"
+                effect="plain"
+                type="success"
+              >
+                Web 路径资产
+              </el-tag>
+              <el-tag
+                v-if="selectedNodeFindings.filter(findingIsVulnerability).length > 0"
+                size="small"
+                effect="dark"
+                type="danger"
+              >
+                <FluentIcon name="shield" />
+                {{ selectedNodeFindings.filter(findingIsVulnerability).length }} 漏洞
+              </el-tag>
+              <el-tag
+                v-else-if="selectedNodeFindings.length > 0"
+                size="small"
+                effect="plain"
+                type="warning"
+              >
+                <FluentIcon name="warning" />
+                {{ selectedNodeFindings.length }} 风险
+              </el-tag>
+              <el-tag
+                v-else
+                size="small"
+                effect="plain"
+                type="success"
+              >
+                安全
+              </el-tag>
+              <el-tag
                 v-if="selectedAsset.wafName || selectedAsset.waf"
                 size="small"
                 effect="dark"
@@ -2377,6 +2771,37 @@ onUnmounted(() => {
               >
                 置信度: {{ selectedAsset.confidence }}%
               </el-tag>
+            </div>
+          </div>
+        </div>
+
+        <!-- 关联安全发现 (漏洞与风险) -->
+        <div v-if="selectedNodeFindings.length" class="detail-section">
+          <h4 class="section-title">
+            <span>关联安全发现 ({{ selectedNodeFindings.length }} 项)</span>
+          </h4>
+          <div class="topology-findings-list">
+            <div
+              v-for="f in selectedNodeFindings"
+              :key="f.id"
+              class="topology-finding-card"
+              :class="findingIsVulnerability(f) ? 'card--vuln' : 'card--risk'"
+            >
+              <div class="finding-card-header">
+                <el-tag
+                  size="small"
+                  effect="light"
+                  :type="findingIsVulnerability(f) ? 'danger' : 'warning'"
+                  class="finding-type-badge"
+                >
+                  {{ findingIsVulnerability(f) ? "漏洞" : "风险点" }}
+                </el-tag>
+                <span class="finding-card-title" :title="f.title">{{ f.title }}</span>
+              </div>
+              <p class="finding-card-desc">{{ f.description }}</p>
+              <div v-if="f.evidence" class="finding-card-evidence">
+                <code>{{ f.evidence.slice(0, 160) }}</code>
+              </div>
             </div>
           </div>
         </div>
@@ -2450,9 +2875,9 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <!-- Fluent 2 标准 Code Snippet 容器 -->
-          <div class="fluent-code-container">
-            <div class="fluent-code-header">
+          <!-- Fluent 2 标准 Code Snippet 容器 (改造为支持底边高亮的只读文本域) -->
+          <div class="raw-data-section">
+            <div class="raw-data-header">
               <span class="code-header-title">
                 <FluentIcon name="document" :size="13" />
                 <span>原始数据 (JSON)</span>
@@ -2467,9 +2892,14 @@ onUnmounted(() => {
                 <span>复制</span>
               </button>
             </div>
-            <div class="fluent-code-body">
-              <pre class="fluent-code-pre">{{ formatEvidence(selectedAsset.evidence || selectedAsset.technologies) }}</pre>
-            </div>
+            <el-input
+              :model-value="formatEvidence(selectedAsset.evidence || selectedAsset.technologies)"
+              type="textarea"
+              :autosize="{ minRows: 6, maxRows: 12 }"
+              readonly
+              placeholder="暂无原始数据"
+              class="raw-data-textarea"
+            />
           </div>
         </div>
 
@@ -2489,7 +2919,7 @@ onUnmounted(() => {
             class="fluent-action-btn"
             @click="confirmRemoveNode(selectedAsset.id!, parseHost(selectedAsset.url).host)"
           >
-            删除此资产节点
+            {{ assetRemovalLabel(selectedAsset) }}
           </el-button>
         </div>
       </div>
@@ -2642,6 +3072,13 @@ onUnmounted(() => {
   font-weight: var(--fluent-weight-regular, 400);
 }
 
+.toolbar-meta-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .host-meta-badge {
   display: inline-flex;
   align-items: center;
@@ -2725,18 +3162,26 @@ onUnmounted(() => {
   margin: 0 4px;
 }
 
-/* Fluent 浮动 Acrylic 控件组 */
+/* Fluent 浮动控件组：深浅主题高对比度自适应 */
 .zoom-controls {
   display: flex;
   align-items: center;
-  background: rgba(255, 255, 255, 0.85);
-  backdrop-filter: blur(16px) saturate(180%);
-  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  background: var(--app-surface-strong, #ffffff);
+  border: 1px solid var(--app-border-strong, #cbd5e1);
   border-radius: var(--fluent-radius-control, 6px);
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.07), 0 1px 3px rgba(0, 0, 0, 0.03);
-  padding: 2px 4px;
-  gap: 2px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18), 0 1px 3px rgba(0, 0, 0, 0.1);
+  padding: 3px 6px;
+  gap: 4px;
+  color: var(--app-text, #0f172a);
+}
+
+:root[data-system-theme="dark"] .zoom-controls,
+html.dark .zoom-controls,
+[data-theme="dark"] .zoom-controls {
+  background: rgba(30, 32, 44, 0.95) !important;
+  border: 1px solid rgba(255, 255, 255, 0.22) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5) !important;
+  color: #ffffff !important;
 }
 
 .canvas-controls {
@@ -2748,11 +3193,17 @@ onUnmounted(() => {
 
 .zoom-level {
   font-size: var(--fluent-caption2-size, 11px);
-  font-weight: var(--fluent-weight-semibold, 600);
-  color: var(--app-muted);
+  font-weight: 700;
+  color: var(--app-text, #0f172a);
   min-width: 38px;
   text-align: center;
   user-select: none;
+}
+
+:root[data-system-theme="dark"] .zoom-level,
+html.dark .zoom-level,
+[data-theme="dark"] .zoom-level {
+  color: #f8fafc !important;
 }
 
 /* Fluent Command 按钮规范 */
@@ -2781,6 +3232,38 @@ onUnmounted(() => {
 .fluent-command-btn.active {
   background: var(--app-accent-soft-strong, #bae6fd);
   color: var(--app-accent, #0078d4);
+}
+
+.zoom-controls .fluent-command-btn {
+  color: var(--app-text, #0f172a);
+}
+
+:root[data-system-theme="dark"] .zoom-controls .fluent-command-btn,
+html.dark .zoom-controls .fluent-command-btn,
+[data-theme="dark"] .zoom-controls .fluent-command-btn {
+  color: #f8fafc !important;
+}
+
+.zoom-controls .fluent-command-btn:hover {
+  background: var(--app-accent-soft, rgba(0, 120, 212, 0.1));
+  color: var(--app-accent, #0078d4);
+}
+
+:root[data-system-theme="dark"] .zoom-controls .fluent-command-btn:hover,
+html.dark .zoom-controls .fluent-command-btn:hover,
+[data-theme="dark"] .zoom-controls .fluent-command-btn:hover {
+  background: rgba(255, 255, 255, 0.14) !important;
+  color: #38bdf8 !important;
+}
+
+.zoom-controls .divider-v {
+  background: var(--app-border, #cbd5e1);
+}
+
+:root[data-system-theme="dark"] .zoom-controls .divider-v,
+html.dark .zoom-controls .divider-v,
+[data-theme="dark"] .zoom-controls .divider-v {
+  background: rgba(255, 255, 255, 0.2) !important;
 }
 
 .view-options {
@@ -3011,7 +3494,7 @@ onUnmounted(() => {
   font-size: 14px;
   font-weight: var(--fluent-weight-semibold, 600);
   font-family: var(--fluent-font);
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   pointer-events: none;
 }
 
@@ -3152,7 +3635,115 @@ onUnmounted(() => {
   fill: var(--app-surface-strong, #ffffff);
   stroke: var(--app-border, #cbd5e1);
   stroke-width: 1.2;
-  transition: fill 150ms ease, stroke 150ms ease;
+  transition: fill 150ms ease, stroke 150ms ease, filter 150ms ease;
+}
+
+/* 漏洞态势与风险态势显式边框 */
+.node-card-bg.card--has-vuln {
+  stroke: var(--fluent-danger-bg, #b42318) !important;
+  stroke-width: 1.8px !important;
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--fluent-danger-bg, #b42318) 28%, transparent));
+}
+
+.node-card-bg.card--has-risk {
+  stroke: var(--fluent-warning-bg, #8a4b08) !important;
+  stroke-width: 1.5px !important;
+}
+
+/* 态势徽标 (右上角) */
+.node-badge-bg.badge--vuln {
+  fill: var(--fluent-danger-bg, #b42318);
+}
+
+.node-badge-bg.badge--risk {
+  fill: var(--fluent-warning-bg, #8a4b08);
+}
+
+.node-badge-bg.badge--safe {
+  fill: var(--fluent-success-bg, #107c41);
+}
+
+.node-badge-icon,
+.node-badge-text {
+  fill: #ffffff;
+  pointer-events: none;
+}
+
+.node-badge-text {
+  font-size: 10px;
+  font-weight: 600;
+  font-family: var(--fluent-font);
+  letter-spacing: 0;
+}
+
+.node-tag-bg.tag-url {
+  fill: rgba(0, 120, 212, 0.12);
+  stroke: rgba(0, 120, 212, 0.28);
+}
+
+/* 抽屉内关联漏洞/风险卡片列表：遵循 Fluent 2 Card / MessageBar 规范，绝无左侧厚边条 */
+.topology-findings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.topology-finding-card {
+  padding: 12px 14px;
+  border-radius: var(--fluent-radius-card, 8px);
+  border: 1px solid var(--app-border, #e2e8f0);
+  background: var(--app-surface-soft, rgba(0, 0, 0, 0.02));
+  transition: all var(--fluent-fast, 150ms ease);
+}
+
+.topology-finding-card.card--vuln {
+  border: 1px solid light-dark(rgba(239, 68, 68, 0.32), rgba(239, 68, 68, 0.45)) !important;
+  background: light-dark(rgba(239, 68, 68, 0.04), rgba(239, 68, 68, 0.1)) !important;
+}
+
+.topology-finding-card.card--risk {
+  border: 1px solid light-dark(rgba(245, 158, 11, 0.32), rgba(245, 158, 11, 0.45)) !important;
+  background: light-dark(rgba(245, 158, 11, 0.04), rgba(245, 158, 11, 0.1)) !important;
+}
+
+.finding-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.finding-type-badge {
+  font-weight: 600;
+  border-radius: 4px;
+}
+
+.finding-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--app-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.finding-card-desc {
+  font-size: 12px;
+  color: var(--app-muted, #64748b);
+  margin: 0 0 8px 0;
+  line-height: 1.45;
+}
+
+.finding-card-evidence {
+  font-size: 11px;
+  background: light-dark(rgba(0, 0, 0, 0.04), rgba(255, 255, 255, 0.06));
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: 1px solid light-dark(rgba(0, 0, 0, 0.06), rgba(255, 255, 255, 0.08));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Fluent 3 Reveal 悬停效果 */
@@ -3164,20 +3755,13 @@ onUnmounted(() => {
 
 .node-card-group.is-selected .node-card-bg,
 .node-card-group:focus-visible .node-card-bg {
-  stroke: var(--app-accent, #0078d4);
-  stroke-width: 1.5;
-  fill: #fafdff;
+  stroke: var(--app-accent, #0078d4) !important;
+  stroke-width: 2px !important;
+  filter: drop-shadow(0 0 10px color-mix(in srgb, var(--app-accent) 45%, transparent)) !important;
 }
 
 .node-card-group.is-dimmed {
   opacity: 0.18;
-}
-
-/* 亚克力微高光边缘 */
-.node-card-highlight-line {
-  stroke: rgba(255, 255, 255, 0.85);
-  stroke-width: 1;
-  pointer-events: none;
 }
 
 .node-pinned-indicator {
@@ -3191,23 +3775,23 @@ onUnmounted(() => {
 }
 
 .box-https {
-  fill: #e8f5ed;
-  stroke: #c8e6d2;
+  fill: color-mix(in srgb, #10b981 16%, var(--app-surface));
+  stroke: color-mix(in srgb, #10b981 32%, var(--app-border));
   stroke-width: 0.8;
 }
 
 .box-http {
-  fill: #e6f2fb;
-  stroke: #c2e0f7;
+  fill: color-mix(in srgb, #0078d4 16%, var(--app-surface));
+  stroke: color-mix(in srgb, #0078d4 32%, var(--app-border));
   stroke-width: 0.8;
 }
 
 .icon-glyph-https .glyph-fill {
-  fill: #107c41;
+  fill: #10b981;
 }
 
 .icon-glyph-http .glyph-fill {
-  fill: #0078d4;
+  fill: #38bdf8;
 }
 
 .node-card-group:hover .node-icon-box {
@@ -3220,7 +3804,7 @@ onUnmounted(() => {
   font-size: 12.5px;
   font-weight: var(--fluent-weight-semibold, 600);
   font-family: var(--fluent-font, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif);
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   pointer-events: none;
 }
 
@@ -3305,12 +3889,27 @@ onUnmounted(() => {
   height: 90px;
   background: var(--app-surface-soft, #f8fafc);
   border-radius: var(--fluent-radius-control, 4px);
+  cursor: crosshair;
+}
+
+.minimap-svg.is-dragging {
+  cursor: grabbing;
 }
 
 .minimap-viewfinder {
   fill: color-mix(in srgb, var(--app-accent, #0078d4) 14%, transparent);
   stroke: var(--app-accent, #0078d4);
   stroke-width: 1.2;
+  cursor: grab;
+  transition: fill 120ms ease;
+}
+
+.minimap-svg:hover .minimap-viewfinder {
+  fill: color-mix(in srgb, var(--app-accent, #0078d4) 22%, transparent);
+}
+
+.minimap-svg.is-dragging .minimap-viewfinder {
+  cursor: grabbing;
 }
 
 /* 右键 Fluent Flyout 上下文菜单 */
@@ -3389,9 +3988,9 @@ onUnmounted(() => {
   align-items: center;
   gap: 14px;
   padding: 16px;
-  background: var(--app-accent-soft, #f0f7ff);
+  background: transparent;
   border-radius: var(--fluent-radius-card, 8px);
-  border: 1px solid var(--app-border, #bfdbfe);
+  border: 1px solid var(--app-border, #e2e8f0);
 }
 
 .hero-icon-box {
@@ -3579,33 +4178,19 @@ onUnmounted(() => {
   color: var(--app-muted, #64748b);
 }
 
-/* Fluent 2 标准 Code Snippet 容器 */
-.fluent-code-container {
-  position: relative;
-  background: var(--app-surface-strong, #ffffff);
-  border: 1px solid var(--app-border, #e2e8f0);
-  border-radius: var(--fluent-radius-control, 4px);
-  overflow: hidden;
-  transition: border-color 150ms ease, box-shadow 150ms ease;
+/* 原始数据 (JSON) 文本域容器 */
+.raw-data-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
 }
 
-.fluent-code-container:hover {
-  border-color: var(--app-border-strong, #cbd5e1);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
-}
-
-.fluent-code-container:focus-within {
-  border-color: var(--app-border-strong, #cbd5e1);
-  box-shadow: 0 2px 8px rgba(0, 120, 212, 0.08);
-}
-
-.fluent-code-header {
+.raw-data-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 10px;
-  background: var(--app-surface-soft, #f8fafc);
-  border-bottom: 1px solid var(--app-border, #e2e8f0);
+  padding: 0 2px;
   font-size: 11px;
 }
 
@@ -3632,50 +4217,34 @@ onUnmounted(() => {
 }
 
 .fluent-subtle-btn:hover {
-  background: var(--app-surface-strong, #ffffff);
+  background: var(--app-surface-soft, #f1f5f9);
   color: var(--app-accent, #0078d4);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
-.fluent-code-body {
-  padding: 10px 12px;
-  max-height: 180px;
-  overflow-y: auto;
-  scrollbar-width: thin;
-}
-
-.fluent-code-body::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
-}
-
-.fluent-code-body::-webkit-scrollbar-thumb {
-  background: var(--app-border, #cbd5e1);
-  border-radius: 3px;
-}
-
-.fluent-code-body::-webkit-scrollbar-thumb:hover {
-  background: var(--app-muted, #94a3b8);
-}
-
-.fluent-code-pre,
-:deep(.fluent-code-pre),
-:deep(pre.fluent-code-pre),
-:deep(.evidence-box pre),
-:deep(.evidence-pre) {
-  margin: 0 !important;
-  border: none !important;
-  border-radius: 0 !important;
-  background: transparent !important;
-  padding: 0 !important;
-  box-shadow: none !important;
-  outline: none !important;
-  color: var(--app-text, #1e293b);
+.raw-data-textarea :deep(.el-textarea__inner) {
+  font-family: var(--font-mono, "Cascadia Code", "Consolas", monospace);
   font-size: 11.5px;
   line-height: 1.55;
-  font-family: var(--font-mono, "Cascadia Code", "Consolas", monospace);
-  white-space: pre-wrap;
-  word-break: break-all;
+  white-space: pre;
+  color: var(--app-text, #1e293b);
+  background: var(--app-surface-strong, #ffffff) !important;
+  border: 0 !important;
+  border-radius: var(--fluent-radius-control, 4px) !important;
+  box-shadow: 0 0 0 1px var(--app-border, #e2e8f0) inset !important;
+  transition: box-shadow 150ms ease;
+}
+
+.raw-data-textarea :deep(.el-textarea__inner:hover) {
+  box-shadow: 0 0 0 1px var(--app-border-strong, #cbd5e1) inset !important;
+}
+
+.raw-data-textarea :deep(.el-textarea__inner:focus),
+.raw-data-textarea :deep(.el-textarea__inner:focus-within) {
+  outline: none !important;
+  box-shadow:
+    inset 0 0 0 1px var(--app-border, #cbd5e1),
+    inset 0 -2px 0 0 var(--app-accent, #0078d4) !important;
 }
 
 .drawer-actions {

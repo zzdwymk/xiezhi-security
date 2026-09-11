@@ -6,8 +6,10 @@ import com.bachelor.toolbox.dependency.DependencyDetectionService;
 import com.bachelor.toolbox.dependency.SystemDependenciesResponse;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.AuthorizedTargetRepository;
+import com.bachelor.toolbox.target.PortRangeParser;
 import com.bachelor.toolbox.target.TargetPolicyService;
 import com.bachelor.toolbox.target.TargetService;
+import com.bachelor.toolbox.target.WebTargetResolver;
 import com.bachelor.toolbox.tool.FindingDraft;
 import com.bachelor.toolbox.tool.ToolExecutionResult;
 import com.bachelor.toolbox.tool.XrayScanTool;
@@ -58,6 +60,7 @@ public class TrafficScanService {
   private final DependencyDetectionService dependencies;
   private final XrayScanTool xrayTool;
   private final AuditService audit;
+  private final PortRangeParser portRangeParser;
   private final HttpClient httpClient;
 
   @Autowired
@@ -69,7 +72,8 @@ public class TrafficScanService {
       @Autowired(required = false) ZapDaemonSupplier zapDaemonSupplier,
       DependencyDetectionService dependencies,
       XrayScanTool xrayTool,
-      AuditService audit) {
+      AuditService audit,
+      PortRangeParser portRangeParser) {
     this.packets = packets;
     this.targets = targets;
     this.policy = policy;
@@ -78,6 +82,7 @@ public class TrafficScanService {
     this.dependencies = dependencies;
     this.xrayTool = xrayTool;
     this.audit = audit;
+    this.portRangeParser = portRangeParser;
     this.httpClient =
         HttpClient.newBuilder()
             .connectTimeout(PROBE_TIMEOUT)
@@ -152,6 +157,10 @@ public class TrafficScanService {
     List<TargetedScanHit> hits = new ArrayList<>();
     try {
       Map<String, Object> params = new java.util.HashMap<>();
+      String url = buildUrl(packet);
+      if (url != null && !url.isBlank()) {
+        params.put(WebTargetResolver.PARAM_RESOLVED_BASES, List.of(url));
+      }
       if (request != null && request.allPocs()) {
         params.put("allPocs", true);
       } else if (request != null && request.pocCodes() != null && !request.pocCodes().isEmpty()) {
@@ -266,14 +275,58 @@ public class TrafficScanService {
   }
 
   private AuthorizedTarget resolveTarget(TrafficPacket packet) {
+    int packetPort =
+        packet.getPort() > 0
+            ? packet.getPort()
+            : ("https".equalsIgnoreCase(packet.getScheme()) ? 443 : 80);
     if (packet.getTargetId() != null && packet.getTargetId() > 0) {
-      return targets.get(packet.getTargetId());
+      AuthorizedTarget direct = targets.get(packet.getTargetId());
+      if (direct != null && direct.isEnabled() && isPortAuthorized(direct, packetPort)) {
+        return direct;
+      }
     }
     String host = packet.getHost();
-    return targetRepository.findAll().stream()
-        .filter(t -> t.getTargetValue() != null && (t.getTargetValue().equalsIgnoreCase(host) || host.contains(t.getTargetValue()) || t.getTargetValue().contains(host)))
+    List<AuthorizedTarget> matches =
+        targetRepository.findAll().stream()
+            .filter(AuthorizedTarget::isEnabled)
+            .filter(t -> t.getTargetValue() != null && isHostMatch(t.getTargetValue(), host))
+            .toList();
+
+    if (matches.isEmpty()) {
+      throw new ApiException("该流量记录所属主机 [" + host + "] 未绑定授权目标，无法执行主动安全测试");
+    }
+
+    // 优先匹配包含该流量端口的目标，并按 id 倒序优先匹配最新配置
+    return matches.stream()
+        .sorted(java.util.Comparator.comparing(AuthorizedTarget::getId).reversed())
+        .filter(t -> isPortAuthorized(t, packetPort))
         .findFirst()
-        .orElseThrow(() -> new ApiException("该流量记录所属主机 [" + host + "] 未绑定授权目标，无法执行主动安全测试"));
+        .orElseGet(() -> matches.stream().max(java.util.Comparator.comparing(AuthorizedTarget::getId)).orElse(matches.get(0)));
+  }
+
+  private boolean isPortAuthorized(AuthorizedTarget target, int port) {
+    if (target == null || target.getAllowedPorts() == null || target.getAllowedPorts().isBlank()) {
+      return false;
+    }
+    try {
+      return portRangeParser.parse(target.getAllowedPorts()).contains(port);
+    } catch (Exception ex) {
+      return false;
+    }
+  }
+
+  private boolean isHostMatch(String targetValue, String host) {
+    if (targetValue == null || host == null) return false;
+    if (targetValue.equalsIgnoreCase(host) || host.contains(targetValue) || targetValue.contains(host)) {
+      return true;
+    }
+    try {
+      String cleanTarget = targetValue.replaceFirst("^https?://", "").split("/")[0].split(":")[0];
+      String cleanHost = host.replaceFirst("^https?://", "").split("/")[0].split(":")[0];
+      return cleanTarget.equalsIgnoreCase(cleanHost);
+    } catch (Exception ex) {
+      return false;
+    }
   }
 
   private boolean zapAvailable() {

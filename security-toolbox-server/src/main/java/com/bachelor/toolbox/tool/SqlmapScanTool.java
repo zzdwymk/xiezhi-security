@@ -114,6 +114,14 @@ public class SqlmapScanTool implements SecurityTool {
       observer.heartbeat("sqlmap 已启动，正在探测 SQL 注入");
 
       ProcessBuilder builder = ProcessEnvironmentSanitizer.sanitize(new ProcessBuilder(command));
+      builder.environment().remove("HTTP_PROXY");
+      builder.environment().remove("http_proxy");
+      builder.environment().remove("HTTPS_PROXY");
+      builder.environment().remove("https_proxy");
+      builder.environment().remove("ALL_PROXY");
+      builder.environment().remove("all_proxy");
+      builder.environment().put("NO_PROXY", "*");
+      builder.environment().put("no_proxy", "*");
       builder.redirectErrorStream(true);
       Process process = builder.start();
       // sqlmap 在 --batch 下不需交互输入；关闭 stdin 让任何读取立即 EOF。

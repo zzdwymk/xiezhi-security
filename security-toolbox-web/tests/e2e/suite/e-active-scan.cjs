@@ -268,7 +268,7 @@ async function run(page, H, ctx) {
     if (n === 0) throw new Error("未渲染筛选下拉");
     const before = await catalog.locator(".catalog-list button").count();
     // 第一个下拉为严重度
-    await selectOn(page, filters.first(), "HIGH").catch(() => {});
+    await selectOn(page, filters.first(), /高危|HIGH/).catch(() => {});
     await sleep(2500);
     const after = await catalog.locator(".catalog-list button").count();
     return `筛选前 ${before} 条，按 HIGH 严重度筛选后 ${after} 条`;

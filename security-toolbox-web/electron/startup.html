@@ -45,6 +45,48 @@
         font-synthesis: none;
       }
 
+      :root[data-system-theme="dark"] {
+        color-scheme: dark;
+        --bg: #121216;
+        --panel: #1c1c24;
+        --sidebar: #16161e;
+        --sidebar-active: color-mix(in srgb, var(--accent) 26%, #16161e);
+        --border: rgba(255, 255, 255, 0.14);
+        --text: #f8fafc;
+        --muted: #cbd5e1;
+        --subtle: #94a3b8;
+        --accent-soft: rgba(255, 255, 255, 0.08);
+      }
+
+      :root[data-system-theme="dark"] .step.active {
+        background: color-mix(in srgb, var(--accent) 26%, #16161e) !important;
+        color: #ffffff !important;
+      }
+      :root[data-system-theme="dark"] .step.active span:last-child {
+        color: #ffffff !important;
+      }
+      :root[data-system-theme="dark"] .step-index {
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(255, 255, 255, 0.2);
+        color: #cbd5e1;
+      }
+      :root[data-system-theme="dark"] .step.active .step-index {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #ffffff;
+      }
+      :root[data-system-theme="dark"] .step.complete {
+        color: #cbd5e1;
+      }
+      :root[data-system-theme="dark"] .step.complete .step-index {
+        background: color-mix(in srgb, var(--accent) 20%, transparent);
+        border-color: var(--accent);
+        color: #60a5fa;
+      }
+      :root[data-system-theme="dark"] .progress-track {
+        background: rgba(255, 255, 255, 0.14);
+      }
+
       :root[data-window-material="none"] {
         --bg: Canvas;
         --panel: Canvas;
@@ -118,14 +160,14 @@
       }
       .brand-copy small {
         margin-top: 2px;
-        color: #888983;
+        color: var(--muted);
         font-size: 11px;
         white-space: nowrap;
       }
 
       .stage-label {
         margin: 31px 12px 8px;
-        color: #8a8b85;
+        color: var(--muted);
         font-size: 11px;
         font-weight: 600;
         letter-spacing: 0.02em;
@@ -147,7 +189,7 @@
         gap: 8px;
         padding: 0 12px;
         border-radius: 8px;
-        color: #777873;
+        color: var(--muted);
         transition:
           background 0.18s ease,
           color 0.18s ease;
@@ -158,10 +200,10 @@
         width: 22px;
         height: 22px;
         place-items: center;
-        border: 1px solid #d6d6d1;
+        border: 1px solid var(--border);
         border-radius: 50%;
-        background: #fff;
-        color: #888983;
+        background: var(--panel);
+        color: var(--muted);
         font-size: 10px;
         font-weight: 650;
       }
@@ -171,21 +213,24 @@
       }
       .step:hover:not(.active) {
         background: var(--accent-soft);
-        color: #1e1f1c;
+        color: var(--text);
       }
       .step.active {
         background: var(--sidebar-active);
-        color: #1e1f1c;
+        color: var(--text);
         font-weight: 600;
         box-shadow: none !important;
       }
-.step.active .step-index {
+      .step.active span:last-child {
+        color: var(--text);
+      }
+      .step.active .step-index {
         border-color: var(--accent);
         background: var(--accent);
         color: #fff;
       }
       .step.complete {
-        color: #555650;
+        color: var(--muted);
       }
       .step.complete .step-index {
         border-color: #bdd7cd;
@@ -260,17 +305,17 @@
         align-items: center;
         justify-content: space-between;
         padding: 0 24px;
-        border-bottom: 1px solid #eeeeeb;
+        border-bottom: 1px solid var(--border);
         background: var(--panel);
       }
 
       .topbar strong {
-        color: #2b2c29;
+        color: var(--text);
         font-size: 14px;
         font-weight: 620;
       }
       .topbar span {
-        color: #8a8b86;
+        color: var(--muted);
         font-size: 11px;
       }
 
@@ -317,7 +362,7 @@
       }
       h1 {
         margin: 7px 0 9px;
-        color: #252622;
+        color: var(--text);
         font-size: 24px;
         font-weight: 650;
         letter-spacing: -0.02em;
@@ -335,7 +380,7 @@
         overflow: hidden;
         margin-top: 25px;
         border-radius: 999px;
-        background: #ecece8;
+        background: var(--border);
       }
 
       .progress-bar {

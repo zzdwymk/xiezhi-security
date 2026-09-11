@@ -10,7 +10,7 @@ import {
 } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import zhCn from "element-plus/es/locale/lang/zh-cn";
-import { ElMessage, ElMessageBox } from "element-plus";
+import { ElMessage, ElMessageBox, ElNotification } from "element-plus";
 import {
   Aim,
   ArrowDown,
@@ -34,7 +34,8 @@ import { useAuthStore } from "./stores/auth";
 import { useConversationStore } from "./stores/conversations";
 import { useEngineStore } from "./stores/engine";
 import { AUTH_EXPIRED_EVENT } from "./authToken";
-import { endpoints } from "./api";
+import { endpoints, connectTaskEventFeed, type TaskProgressEvent } from "./api";
+import { aiToolLabel } from "./utils/aiPresentation";
 import { toErrorMessage } from "./utils/errorMessage";
 import { useSelectionIndicator } from "./composables/useSelectionIndicator";
 import { taskbarProgress } from "./utils/taskbarProgress";
@@ -65,7 +66,8 @@ function navigationGroupForPath(path: string) {
   if (
     path.startsWith("/projects") ||
     path.startsWith("/targets") ||
-    path.startsWith("/recon")
+    path.startsWith("/recon") ||
+    path.startsWith("/assets/topology")
   )
     return "projects-assets";
   if (
@@ -529,7 +531,105 @@ function onTooltipLeave(e: Event) {
   hideFluentTooltip();
 }
 
+const TERMINAL_TASK_STATUSES: Record<string, string> = {
+  SUCCESS: "执行成功",
+  FAILED: "执行失败",
+  TIMEOUT: "已超时",
+  REJECTED: "已拒绝",
+  CANCELLED: "已取消",
+};
+let stopGlobalTaskFeed: (() => void) | undefined;
+const notifiedTaskIds = new Set<number>();
+
+function handleGlobalTaskEvent(event: TaskProgressEvent) {
+  if (!event || !event.taskId || !event.status) return;
+  const status = String(event.status).toUpperCase();
+  if (TERMINAL_TASK_STATUSES[status] && !notifiedTaskIds.has(event.taskId)) {
+    notifiedTaskIds.add(event.taskId);
+    const toolName = aiToolLabel(event.toolCode) || event.toolCode || "安全检测工具";
+    const statusText = TERMINAL_TASK_STATUSES[status];
+    const isSuccess = status === "SUCCESS";
+
+    ElNotification({
+      title: isSuccess ? "安全检测任务完成" : "检测任务状态更新",
+      message: `任务 #${event.taskId}（${toolName}）已${statusText}${event.errorMessage ? '：' + event.errorMessage : ''}`,
+      type: isSuccess ? "success" : status === "FAILED" ? "error" : "warning",
+      position: "bottom-right",
+      duration: 5000,
+      onClick: () => {
+        if (router.currentRoute.value.path !== "/tasks") {
+          router.push("/tasks");
+        }
+      },
+    });
+
+    // 系统级桌面通知（窗口隐藏或最小化时）
+    if (
+      typeof window !== "undefined" &&
+      "Notification" in window &&
+      Notification.permission === "granted" &&
+      document.hidden
+    ) {
+      try {
+        new Notification("獬豸安全测试平台", {
+          body: `任务 #${event.taskId}（${toolName}）已${statusText}`,
+          silent: false,
+        });
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
+let mouseMoveRaf = 0;
+let lastRevealTarget: HTMLElement | null = null;
+
+function onGlobalCursorMove(e: PointerEvent) {
+  const clientX = e.clientX;
+  const clientY = e.clientY;
+  if (mouseMoveRaf) return;
+  mouseMoveRaf = window.requestAnimationFrame(() => {
+    mouseMoveRaf = 0;
+    const x = Math.round(clientX);
+    const y = Math.round(clientY);
+    document.documentElement.style.setProperty("--fluent-cursor-x", `${x}px`);
+    document.documentElement.style.setProperty("--fluent-cursor-y", `${y}px`);
+
+    // Track relative coordinates on interactive target for Fluent Reveal Light Field
+    const target = (document.elementFromPoint(x, y) as HTMLElement | null)?.closest?.(
+      ".desktop-v2-nav-item, .desktop-v2-nav button, .desktop-v2-recent-item, .settings-row, .settings-list > button, .el-button, .report-card, .report-severity-chip, .start-action, .catalog-list button, .traffic-row, .quiet-icon-button, .workflow-node, .stat-pill, .el-segmented__item"
+    ) as HTMLElement | null;
+
+    if (target) {
+      const rect = target.getBoundingClientRect();
+      const relX = Math.round(x - rect.left);
+      const relY = Math.round(y - rect.top);
+      target.style.setProperty("--reveal-x", `${relX}px`);
+      target.style.setProperty("--reveal-y", `${relY}px`);
+      if (lastRevealTarget && lastRevealTarget !== target) {
+        lastRevealTarget.style.removeProperty("--reveal-x");
+        lastRevealTarget.style.removeProperty("--reveal-y");
+      }
+      lastRevealTarget = target;
+    } else if (lastRevealTarget) {
+      lastRevealTarget.style.removeProperty("--reveal-x");
+      lastRevealTarget.style.removeProperty("--reveal-y");
+      lastRevealTarget = null;
+    }
+  });
+}
+
 onMounted(() => {
+  window.addEventListener("pointermove", onGlobalCursorMove, { passive: true });
+  stopGlobalTaskFeed = connectTaskEventFeed(handleGlobalTaskEvent);
+  if (
+    typeof window !== "undefined" &&
+    "Notification" in window &&
+    Notification.permission === "default"
+  ) {
+    Notification.requestPermission().catch(() => {});
+  }
   window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
   engine.startPolling();
   migrateNativeTooltips(document);
@@ -566,6 +666,9 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener("pointermove", onGlobalCursorMove);
+  if (mouseMoveRaf) window.cancelAnimationFrame(mouseMoveRaf);
+  stopGlobalTaskFeed?.();
   window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
   window.clearTimeout(workspaceRouteAnimationTimer);
   engine.stopPolling();

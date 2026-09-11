@@ -26,7 +26,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -182,6 +184,37 @@ class AssessmentProjectServiceTests {
         .isEqualTo(org.springframework.data.domain.Sort.Order.desc("createdAt"));
     assertThat(pageable.getSort().getOrderFor("id"))
         .isEqualTo(org.springframework.data.domain.Sort.Order.desc("id"));
+  }
+
+  @Test
+  void listsProjectsBeyondTheFirstPage() {
+    AssessmentProject first = project("DRAFT");
+    first.setId(1L);
+    AssessmentProject second = project("ACTIVE");
+    second.setId(2L);
+    when(projects.findAll(any(Pageable.class)))
+        .thenAnswer(
+            invocation -> {
+              Pageable pageable = invocation.getArgument(0);
+              if (pageable.getPageNumber() == 0) {
+                return new PageImpl<>(
+                    List.of(first),
+                    PageRequest.of(0, 1, pageable.getSort()),
+                    2);
+              }
+              return new PageImpl<>(
+                  List.of(second),
+                  PageRequest.of(1, 1, pageable.getSort()),
+                  2);
+            });
+
+    assertThat(service.list()).containsExactly(first, second);
+    verify(projects)
+        .findAll(
+            PageRequest.of(
+                1,
+                1000,
+                Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id"))));
   }
 
   @Test

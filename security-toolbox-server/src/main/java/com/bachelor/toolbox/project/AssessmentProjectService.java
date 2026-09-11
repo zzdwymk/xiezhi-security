@@ -12,8 +12,12 @@ import com.bachelor.toolbox.target.AuthorizedTargetRepository;
 import com.bachelor.toolbox.task.SecurityTask;
 import com.bachelor.toolbox.task.SecurityTaskRepository;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Function;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -55,11 +59,33 @@ public class AssessmentProjectService {
 
   public List<AssessmentProject> list() {
     if (authorization.isAdmin()) {
-      return projects.findAll(PageRequests.firstPage(LIST_SORT)).getContent();
+      return loadAll(pageable -> projects.findAll(pageable));
     }
-    return projects
-        .findByOwner(authorization.currentUsername(), PageRequests.firstPage(LIST_SORT))
-        .getContent();
+    String owner = authorization.currentUsername();
+    return loadAll(pageable -> projects.findByOwner(owner, pageable));
+  }
+
+  /**
+   * The list endpoint intentionally keeps its historical array response shape, but must not
+   * silently stop at the shared 1000-row page limit.  Iterating pages here also keeps the owner
+   * filter inside the repository query, so an ordinary user never receives another owner's rows.
+   */
+  private <T> List<T> loadAll(Function<Pageable, Page<T>> pageLoader) {
+    List<T> result = new ArrayList<>();
+    for (int page = 0; ; page++) {
+      Page<T> batch =
+          pageLoader.apply(
+              PageRequests.bounded(
+                  page,
+                  PageRequests.MAX_PAGE_SIZE,
+                  1,
+                  PageRequests.MAX_PAGE_SIZE,
+                  LIST_SORT));
+      result.addAll(batch.getContent());
+      if (!batch.hasNext()) {
+        return List.copyOf(result);
+      }
+    }
   }
 
   public AssessmentProject get(Long id) {

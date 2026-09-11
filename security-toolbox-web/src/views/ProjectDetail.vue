@@ -39,7 +39,7 @@ import {
   formatApprovalAction,
   auditResultTagType,
 } from "../utils/auditFormat";
-import { aiToolLabel } from "../utils/aiPresentation";
+import { aiToolLabel, severityLabel } from "../utils/aiPresentation";
 import {
   taskProgressIndeterminate,
   taskProgressPercentage,
@@ -193,6 +193,12 @@ const {
   pageSize: taskPageSize,
   pagedItems: pagedProjectTasks,
 } = useClientPagination(projectTasks);
+const findingCategoryFilter = ref<"" | "vulnerability" | "risk">(
+  typeof route.query.category === "string" &&
+    ["vulnerability", "risk"].includes(route.query.category)
+    ? (route.query.category as "vulnerability" | "risk")
+    : "",
+);
 const findingTargetFilter = ref<number | undefined>(
   route.query.targetId ? Number(route.query.targetId) : undefined,
 );
@@ -208,12 +214,19 @@ const findingSearchQuery = ref(
 
 watch(
   () => [
+    route.query.category,
     route.query.severity,
     route.query.status,
     route.query.q,
     route.query.targetId,
   ],
-  ([sev, st, q, tid]) => {
+  ([cat, sev, st, q, tid]) => {
+    if (typeof cat === "string" && ["vulnerability", "risk"].includes(cat)) {
+      findingCategoryFilter.value = cat as "vulnerability" | "risk";
+    } else if (!cat && tab.value === "findings") {
+      findingCategoryFilter.value = "";
+    }
+
     if (typeof sev === "string") findingSeverityFilter.value = sev;
     else if (!sev && tab.value === "findings")
       findingSeverityFilter.value = "";
@@ -234,25 +247,39 @@ const filteredProjectFindings = computed(() => {
   const targetId = findingTargetFilter.value;
   const severity = findingSeverityFilter.value;
   const status = findingStatusFilter.value;
+  const category = findingCategoryFilter.value;
   const q = findingSearchQuery.value.trim().toLowerCase();
-  return projectFindings.value.filter((finding) => {
-    if (targetId && finding.targetId !== targetId) return false;
-    if (severity && finding.severity !== severity) return false;
-    if (status && finding.status !== status) return false;
-    if (
-      q &&
-      ![
-        finding.title,
-        finding.sourceTool,
-        finding.ruleCode,
-        finding.vulnerabilityCode,
-      ]
-        .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(q))
-    )
-      return false;
-    return true;
-  });
+  return projectFindings.value
+    .filter((finding) => {
+      if (targetId && finding.targetId !== targetId) return false;
+      if (severity && finding.severity !== severity) return false;
+      if (status && finding.status !== status) return false;
+      if (category === "vulnerability" && !findingIsVulnerability(finding))
+        return false;
+      if (category === "risk" && findingIsVulnerability(finding))
+        return false;
+      if (
+        q &&
+        ![
+          finding.title,
+          finding.sourceTool,
+          finding.ruleCode,
+          finding.vulnerabilityCode,
+        ]
+          .filter(Boolean)
+          .some((value) => String(value).toLowerCase().includes(q))
+      )
+        return false;
+      return true;
+    })
+    .slice()
+    .sort((a, b) => {
+      // 严格倒序排列：最新发现的漏洞/风险项排在最前（按 ID 降序或发现时间降序）
+      const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      if (timeB !== timeA) return timeB - timeA;
+      return (b.id || 0) - (a.id || 0);
+    });
 });
 const {
   page: findingPage,
@@ -1949,6 +1976,10 @@ function openReportMetric(
   tab.value = targetTab;
   if (targetTab === "tasks") void loadProjectTasks();
   if (targetTab === "findings") {
+    findingCategoryFilter.value =
+      query?.category && ["vulnerability", "risk"].includes(query.category)
+        ? (query.category as "vulnerability" | "risk")
+        : "";
     findingSeverityFilter.value = query?.severity || "";
     findingStatusFilter.value = query?.status || "";
     findingSearchQuery.value = query?.q || "";
@@ -1966,6 +1997,8 @@ function openReportMetric(
     tab: targetTab === "overview" ? undefined : targetTab,
   };
   if (targetTab === "findings") {
+    if (query?.category) nextQuery.category = query.category;
+    else delete nextQuery.category;
     if (query?.severity) nextQuery.severity = query.severity;
     else delete nextQuery.severity;
     if (query?.status) nextQuery.status = query.status;
@@ -3997,7 +4030,7 @@ onUnmounted(() => {
                 ><el-tag
                   size="small"
                   :type="findingSeverityType(s.row.severity)"
-                  >{{ s.row.severity }}</el-tag
+                  >{{ severityLabel(s.row.severity) }}</el-tag
                 ></template
               ></el-table-column
             >
@@ -4596,8 +4629,8 @@ onUnmounted(() => {
       <el-tab-pane label="漏洞与复测" name="findings">
         <div class="project-tab-toolbar">
           <span
-            >项目漏洞 {{ projectFindings.length }} 条 · 已复测
-            {{ summary?.retestCount || 0 }} 条</span
+            >项目发现 {{ projectFindings.length }} 项（漏洞 {{ summary?.vulnerabilityCount || 0 }} 项 · 风险点 {{ summary?.informationalCount || 0 }} 项）· 已复测
+            {{ summary?.retestCount || 0 }} 项</span
           >
           <div class="toolbar-inline">
             <el-button size="small" @click="loadProjectReportSummary(true)"
@@ -4623,8 +4656,18 @@ onUnmounted(() => {
             placeholder="搜索漏洞标题 / 来源 / 规则"
             clearable
             :prefix-icon="Search"
-            style="width: 220px"
+            style="width: 200px"
           />
+          <el-select
+            v-model="findingCategoryFilter"
+            placeholder="全部类型"
+            clearable
+            style="width: 120px"
+          >
+            <el-option label="全部类型" value="" />
+            <el-option label="漏洞发现" value="vulnerability" />
+            <el-option label="风险点" value="risk" />
+          </el-select>
           <el-select
             v-model="findingTargetFilter"
             placeholder="全部目标"
@@ -4642,7 +4685,7 @@ onUnmounted(() => {
             v-model="findingSeverityFilter"
             placeholder="等级"
             clearable
-            style="width: 120px"
+            style="width: 110px"
           >
             <el-option label="严重" value="CRITICAL" />
             <el-option label="高危" value="HIGH" />
@@ -4654,7 +4697,7 @@ onUnmounted(() => {
             v-model="findingStatusFilter"
             placeholder="状态"
             clearable
-            style="width: 120px"
+            style="width: 110px"
           >
             <el-option label="待确认" value="OPEN" />
             <el-option label="已确认" value="CONFIRMED" />
@@ -4663,6 +4706,7 @@ onUnmounted(() => {
           </el-select>
           <el-button
             v-if="
+              findingCategoryFilter ||
               findingSeverityFilter ||
               findingStatusFilter ||
               findingSearchQuery ||
@@ -4672,6 +4716,7 @@ onUnmounted(() => {
             type="primary"
             size="small"
             @click="
+              findingCategoryFilter = '';
               findingSeverityFilter = '';
               findingStatusFilter = '';
               findingSearchQuery = '';
@@ -4715,11 +4760,15 @@ onUnmounted(() => {
               ><el-tag
                 size="small"
                 :type="findingSeverityType(scope.row.severity)"
-                >{{ scope.row.severity }}</el-tag
+                >{{ severityLabel(scope.row.severity) }}</el-tag
               ></template
             ></el-table-column
           >
-          <el-table-column prop="sourceTool" label="来源" width="95" show-overflow-tooltip />
+          <el-table-column label="来源" min-width="110" show-overflow-tooltip>
+            <template #default="scope">
+              {{ aiToolLabel(scope.row.sourceTool) }}
+            </template>
+          </el-table-column>
           <el-table-column label="状态" width="115"
             ><template #default="scope"
               ><el-select
@@ -5295,6 +5344,7 @@ onUnmounted(() => {
               class="report-card report-card--link"
               @click="
                 openReportMetric('findings', {
+                  category: 'vulnerability',
                   targetId:
                     reportTargetId !== 'ALL'
                       ? String(reportTargetId)
@@ -5310,6 +5360,7 @@ onUnmounted(() => {
               class="report-card report-card--link"
               @click="
                 openReportMetric('findings', {
+                  category: 'risk',
                   targetId:
                     reportTargetId !== 'ALL'
                       ? String(reportTargetId)
@@ -5365,7 +5416,7 @@ onUnmounted(() => {
               "
             >
               <el-tag size="small" :type="findingSeverityType(item.severity)">{{
-                item.severity
+                severityLabel(item.severity)
               }}</el-tag>
               <b>{{ item.count }}</b>
             </button>
@@ -5572,30 +5623,33 @@ onUnmounted(() => {
       align-center
       destroy-on-close
     >
-      <el-descriptions v-if="findingDetail" :column="1" border
-        ><el-descriptions-item label="名称">{{
-          findingDetail.title
-        }}</el-descriptions-item
-        ><el-descriptions-item label="等级/状态"
-          ><el-tag
-            size="small"
-            :type="findingSeverityType(findingDetail.severity)"
-            >{{ findingDetail.severity }}</el-tag
-          >
-          <el-tag size="small">{{
-            findingStatusLabel(findingDetail.status)
-          }}</el-tag></el-descriptions-item
-        ><el-descriptions-item label="说明">{{
-          findingDetail.description || "未提供"
-        }}</el-descriptions-item
-        ><el-descriptions-item label="证据">
+      <el-descriptions v-if="findingDetail" :column="1" border>
+        <el-descriptions-item label="名称">
+          {{ findingDetail.title }}
+        </el-descriptions-item>
+        <el-descriptions-item label="等级/状态">
+          <div class="finding-detail-tags">
+            <el-tag
+              size="small"
+              :type="findingSeverityType(findingDetail.severity)"
+            >{{ severityLabel(findingDetail.severity) }}</el-tag>
+            <el-tag size="small">{{
+              findingStatusLabel(findingDetail.status)
+            }}</el-tag>
+          </div>
+        </el-descriptions-item>
+        <el-descriptions-item label="说明">
+          {{ findingDetail.description || "未提供" }}
+        </el-descriptions-item>
+        <el-descriptions-item label="证据">
           <pre class="project-json-block">{{
             findingDetail.evidence || "未提供"
-          }}</pre></el-descriptions-item
-        ><el-descriptions-item label="修复建议">{{
-          findingDetail.remediation || "未提供"
-        }}</el-descriptions-item></el-descriptions
-      >
+          }}</pre>
+        </el-descriptions-item>
+        <el-descriptions-item label="修复建议">
+          {{ findingDetail.remediation || "未提供" }}
+        </el-descriptions-item>
+      </el-descriptions>
       <template #footer>
         <el-button @click="findingDetailVisible = false">关闭</el-button>
       </template>
@@ -5608,35 +5662,44 @@ onUnmounted(() => {
       align-center
       destroy-on-close
     >
-      <el-form inline label-position="top" class="diff-form"
-        ><el-form-item label="基线成功任务"
-          ><el-select
+      <el-form inline label-position="top" class="diff-form">
+        <el-form-item label="基线成功任务">
+          <el-select
             v-model="diffBaselineTaskId"
-            placeholder="选择基线"
+            placeholder="选择基线任务"
             filterable
-            ><el-option
+          >
+            <el-option
               v-for="task in successfulTasks"
               :key="`base-${task.id}`"
               :label="`#${task.id} · ${task.toolCode} · ${formatDateTime(task.createdAt)}`"
-              :value="task.id" /></el-select></el-form-item
-        ><el-form-item label="当前成功任务"
-          ><el-select
+              :value="task.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="当前成功任务">
+          <el-select
             v-model="diffCurrentTaskId"
-            placeholder="选择当前"
+            placeholder="选择当前任务"
             filterable
-            ><el-option
+          >
+            <el-option
               v-for="task in successfulTasks"
               :key="`current-${task.id}`"
               :label="`#${task.id} · ${task.toolCode} · ${formatDateTime(task.createdAt)}`"
-              :value="task.id" /></el-select></el-form-item
-        ><el-form-item class="diff-compare-item"
-          ><el-button type="primary" :loading="diffLoading" @click="loadDiff"
-            >比较</el-button
-          ></el-form-item
-        ></el-form
-      >
+              :value="task.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item class="diff-compare-item">
+          <el-button type="primary" :loading="diffLoading" @click="loadDiff">
+            比较
+          </el-button>
+        </el-form-item>
+      </el-form>
       <template v-if="diff">
         <el-alert
+          class="diff-summary-alert"
           :title="`新增 ${diff.summary.added} · 持续 ${diff.summary.persistent} · 已修复 ${diff.summary.resolved} · 等级变化 ${diff.summary.severityChanged}`"
           type="info"
           :closable="false"
@@ -5662,8 +5725,8 @@ onUnmounted(() => {
           <el-table-column prop="title" label="漏洞" min-width="150" show-overflow-tooltip />
           <el-table-column label="等级" width="130">
             <template #default="scope">
-              {{ scope.row.previousSeverity || "-" }} →
-              {{ scope.row.currentSeverity || "-" }}
+              {{ (scope.row.previousSeverity && severityLabel(scope.row.previousSeverity)) || "-" }} →
+              {{ (scope.row.currentSeverity && severityLabel(scope.row.currentSeverity)) || "-" }}
             </template>
           </el-table-column>
           <el-table-column prop="ruleCode" label="规则" min-width="110" show-overflow-tooltip />
@@ -6321,6 +6384,11 @@ onUnmounted(() => {
 .project-json-block {
   max-height: 280px;
 }
+.finding-detail-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
 .target-report-toolbar {
   display: flex;
   align-items: center;
@@ -6411,16 +6479,31 @@ onUnmounted(() => {
   align-items: flex-end;
   flex-wrap: wrap;
   gap: 16px;
+  margin-bottom: 20px;
+  padding: 16px;
+  background: var(--app-surface-soft, rgba(0, 0, 0, 0.02));
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: var(--fluent-radius-card, 8px);
 }
 .app-dialog .diff-form :deep(.el-form-item) {
-  margin-right: 0;
-  margin-bottom: 0;
+  margin-right: 0 !important;
+  margin-bottom: 0 !important;
+}
+.diff-form :deep(.el-form-item__label) {
+  font-weight: 600;
+  margin-bottom: 6px;
+  line-height: 1.4;
+  color: var(--app-text);
 }
 .diff-form :deep(.el-select) {
-  width: 290px;
+  width: 280px;
 }
 .diff-compare-item {
   align-self: flex-end;
+}
+.diff-summary-alert {
+  margin: 14px 0 16px 0;
+  border-radius: var(--fluent-radius-card, 6px);
 }
 @media (max-width: 900px) {
   .project-tab-toolbar,
@@ -7282,8 +7365,8 @@ onUnmounted(() => {
   padding: 4px 10px 4px 4px;
   border: 1px solid var(--app-border, var(--el-border-color));
   border-radius: 999px;
-  background: var(--app-surface, #fff);
-  color: inherit;
+  background: var(--app-surface-soft, rgba(255, 255, 255, 0.06));
+  color: var(--app-text);
   font: inherit;
   cursor: pointer;
   transition:
@@ -7298,19 +7381,19 @@ onUnmounted(() => {
   line-height: 22px;
 }
 .report-severity-chip b {
-  color: var(--app-text, #111827);
+  color: var(--app-text);
   font-size: 13px;
   font-weight: 650;
 }
 .report-severity--link:hover,
 .report-severity--link:focus-visible {
   border-color: var(--app-accent);
-  background: var(
-    --app-accent-soft,
-    color-mix(in srgb, var(--app-accent) 10%, #fff)
-  );
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--app-accent) 22%, transparent);
+  background: var(--app-accent-soft);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--app-accent) 26%, transparent);
   outline: none;
+}
+.report-severity--link:hover b {
+  color: #ffffff;
 }
 @media (max-width: 1100px) {
   .report-cards {

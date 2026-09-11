@@ -345,52 +345,578 @@ body,
     var(--system-caption-color) 8%,
     transparent
   );
-}
 
-/* In dark mode the translucent surfaces were too see-through over the native
-   Mica/Acrylic backdrop, washing out text and leaving hover/selected items
-   almost invisible (no contrast). Keep the material blur alive but make the
-   panels near-opaque so the running text and the reveal tint stay readable.
-   This also covers plain web mode, where the transparent low-opacity Canvas
-   base would otherwise sit over a blank (white) chrome surface. */
-:root[data-system-theme="dark"] {
-  --app-bg: color-mix(in srgb, Canvas 92%, transparent);
-  --app-surface: color-mix(in srgb, Canvas 96%, transparent);
-  --app-surface-strong: color-mix(in srgb, Canvas 98%, transparent);
-  --app-surface-soft: color-mix(in srgb, CanvasText 7%, transparent);
+  /* Solid, high-contrast dark theme text tokens */
+  --app-text: #f8fafc;
+  --app-muted: #cbd5e1;
+  --app-text-muted: #cbd5e1;
+  --v2-text: #f8fafc;
+  --v2-muted: #cbd5e1;
+  --el-text-color-primary: #f8fafc;
+  --el-text-color-regular: #e2e8f0;
+  --el-text-color-secondary: #cbd5e1;
+  --el-text-color-placeholder: #94a3b8;
+  --el-text-color-disabled: #64748b;
+  --fluent-control-fg: #f8fafc;
+  --fluent-control-muted-fg: #cbd5e1;
+  --fluent-overlay-fg: #f8fafc;
+  --fluent-overlay-muted-fg: #cbd5e1;
+  --fluent-link-fg: #60a5fa;
+  --app-accent-dark: #60a5fa;
+
+  /* Overlays & popups */
+  --app-overlay-bg: #1a1a22;
+  --app-overlay-text: #f8fafc;
+  --app-overlay-border: rgba(255, 255, 255, 0.16);
+  --fluent-overlay-bg: #1a1a22;
+  --fluent-overlay-hover-bg: rgba(255, 255, 255, 0.12);
+  --fluent-overlay-selected-bg: color-mix(in srgb, var(--app-accent) 28%, #1a1a22);
+  --app-hover-popup-bg: #181820;
+  --app-hover-popup-text: #ffffff;
+  --app-hover-popup-border: rgba(255, 255, 255, 0.22);
+
+  /* High contrast borders */
+  --app-border: rgba(255, 255, 255, 0.14);
+  --app-border-strong: rgba(255, 255, 255, 0.22);
+  --v2-border: rgba(255, 255, 255, 0.14);
+  --el-border-color: rgba(255, 255, 255, 0.14);
+  --el-border-color-light: rgba(255, 255, 255, 0.10);
+  --el-border-color-lighter: rgba(255, 255, 255, 0.07);
+
+  /* Near-opaque surfaces with crisp contrast over Mica/Acrylic */
+  --app-bg: color-mix(in srgb, #121216 94%, transparent);
+  --app-surface: color-mix(in srgb, #1c1c24 97%, transparent);
+  --app-surface-strong: color-mix(in srgb, #242430 98%, transparent);
+  --app-surface-soft: rgba(255, 255, 255, 0.08);
   --app-workspace-surface: var(--app-surface);
   --app-content-surface: var(--app-bg);
   --app-chrome-surface: var(--app-bg);
-  --app-sidebar: color-mix(in srgb, Canvas 94%, transparent);
+  --app-sidebar: color-mix(in srgb, #16161e 95%, transparent);
+  --v2-panel: var(--app-surface);
   --v2-glass-panel: var(--app-surface);
-  --v2-glass-hover: var(--app-surface-soft);
-  /* Lift muted text against the opaque dark panels so hint copy and secondary
-     labels never drop below a readable contrast. */
-  --app-muted: color-mix(in srgb, CanvasText 82%, transparent);
-  --el-text-color-regular: color-mix(in srgb, CanvasText 90%, transparent);
-  --el-text-color-secondary: color-mix(in srgb, CanvasText 82%, transparent);
-  /* Keep the near-opaque surface tokens even when Mica is explicitly off. */
-}
-:root[data-system-theme="dark"][data-window-material="none"] {
-  --app-bg: Canvas;
-  --app-surface: Canvas;
-  --app-surface-strong: Canvas;
-  --app-surface-soft: color-mix(in srgb, CanvasText 6%, Canvas);
-  --app-workspace-surface: Canvas;
-  --app-content-surface: Canvas;
-  --app-chrome-surface: Canvas;
-  --app-sidebar: Canvas;
+  --v2-glass-hover: rgba(255, 255, 255, 0.09);
+  --v2-sidebar: var(--app-sidebar);
+  --v2-sidebar-active: color-mix(in srgb, var(--app-accent) 26%, #16161e);
+
+  /* High-contrast hover and selection */
+  --fluent3-hover-bg: rgba(255, 255, 255, 0.08);
+  --fluent3-reveal-bg: rgba(255, 255, 255, 0.09);
+  --fluent3-reveal-border: rgba(255, 255, 255, 0.24);
+  --fluent3-select-bg: color-mix(in srgb, var(--app-accent) 26%, #16161e);
+  --fluent3-select-border: var(--app-accent);
 }
 
-/* Stronger hover / selection tint in dark mode so hover states pop over the
-   near-opaque surfaces (8% accent is invisible against a dark backdrop). */
-:root[data-system-theme="dark"] {
-  --fluent3-reveal-bg: color-mix(in srgb, var(--app-accent) 16%, transparent);
-  --fluent3-reveal-border: color-mix(
-    in srgb,
-    var(--app-accent) 50%,
-    var(--app-border-strong)
+:root[data-system-theme="dark"][data-window-material="none"] {
+  --app-bg: #121216;
+  --app-surface: #1c1c24;
+  --app-surface-strong: #242430;
+  --app-surface-soft: rgba(255, 255, 255, 0.08);
+  --app-workspace-surface: #1c1c24;
+  --app-content-surface: #121216;
+  --app-chrome-surface: #121216;
+  --app-sidebar: #16161e;
+  --v2-panel: #1c1c24;
+  --v2-sidebar: #16161e;
+}
+
+/* =================================================================
+   Dark mode hover & interactive state contrast guarantees
+   Ensure text and icons brighten sharply and never wash out on hover
+   ================================================================= */
+:root[data-system-theme="dark"] .desktop-v2-nav button,
+:root[data-system-theme="dark"] .desktop-v2-nav-item {
+  color: #e2e8f0;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-nav button:hover,
+:root[data-system-theme="dark"] .desktop-v2-nav-item:hover {
+  background: rgba(255, 255, 255, 0.09) !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+  color: #ffffff !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-nav button:hover span,
+:root[data-system-theme="dark"] .desktop-v2-nav-item:hover span {
+  color: #ffffff !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-nav button:hover .el-icon,
+:root[data-system-theme="dark"] .desktop-v2-nav-item:hover .el-icon {
+  color: #ffffff !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-nav button.active,
+:root[data-system-theme="dark"] .desktop-v2-nav-item.active {
+  color: #ffffff !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-nav button.active span,
+:root[data-system-theme="dark"] .desktop-v2-nav-item.active span {
+  color: #ffffff !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-nav button.active .el-icon,
+:root[data-system-theme="dark"] .desktop-v2-nav-item.active .el-icon {
+  color: var(--app-accent) !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-nav-group-toggle {
+  color: #cbd5e1 !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-nav-group-toggle:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: #ffffff !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-nav-group-toggle:hover .el-icon {
+  color: #ffffff !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-recent-item:hover {
+  background: rgba(255, 255, 255, 0.09) !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-recent-open {
+  color: #e2e8f0 !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-recent-item:hover .desktop-v2-recent-open {
+  color: #ffffff !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-recent-item strong {
+  color: #f8fafc !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-recent-item:hover strong {
+  color: #ffffff !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-recent-item small {
+  color: #cbd5e1 !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-recent-item:hover small {
+  color: #f1f5f9 !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-recent-item .el-icon {
+  color: #94a3b8 !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-recent-item:hover .el-icon {
+  color: #60a5fa !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-recents-toggle {
+  color: #cbd5e1 !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-recents-toggle:hover {
+  color: #ffffff !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-recents-count {
+  background: rgba(255, 255, 255, 0.12) !important;
+  color: #f8fafc !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-user {
+  color: #f8fafc !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-user strong {
+  color: #f8fafc !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-user small {
+  color: #cbd5e1 !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-user:hover {
+  background: rgba(255, 255, 255, 0.09) !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-user:hover strong {
+  color: #ffffff !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-user:hover small {
+  color: #f1f5f9 !important;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-user:hover > .el-icon {
+  color: #ffffff !important;
+}
+
+/* Sidebar engine status badge in dark mode */
+:root[data-system-theme="dark"] .desktop-v2-scope {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+:root[data-system-theme="dark"] .desktop-v2-scope strong {
+  color: #f8fafc !important;
+  font-weight: 600;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-scope small {
+  color: #cbd5e1 !important;
+  font-weight: 500;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-online-dot {
+  background: var(--app-accent) !important;
+  box-shadow: 0 0 0 3px var(--app-accent-soft) !important;
+}
+
+/* Settings rows hover contrast */
+:root[data-system-theme="dark"] .settings-list > button:hover,
+:root[data-system-theme="dark"] button.settings-row:hover {
+  background: rgba(255, 255, 255, 0.09) !important;
+  border-color: rgba(255, 255, 255, 0.22) !important;
+}
+
+:root[data-system-theme="dark"] .settings-list strong,
+:root[data-system-theme="dark"] .settings-row-copy strong {
+  color: #f8fafc !important;
+}
+
+:root[data-system-theme="dark"] .settings-list > button:hover strong,
+:root[data-system-theme="dark"] button.settings-row:hover .settings-row-copy strong {
+  color: #ffffff !important;
+}
+
+:root[data-system-theme="dark"] .settings-list small,
+:root[data-system-theme="dark"] .settings-row-copy small {
+  color: #cbd5e1 !important;
+}
+
+:root[data-system-theme="dark"] .settings-list > button:hover small,
+:root[data-system-theme="dark"] button.settings-row:hover .settings-row-copy small {
+  color: #f1f5f9 !important;
+}
+
+:root[data-system-theme="dark"] button.settings-row:hover .settings-row-chevron,
+:root[data-system-theme="dark"] .settings-list > button:hover .settings-row-chevron {
+  color: #ffffff !important;
+}
+
+/* Dropdown and Select options hover contrast */
+:root[data-system-theme="dark"] .el-select-dropdown__item,
+:root[data-system-theme="dark"] .el-dropdown-menu__item,
+:root[data-system-theme="dark"] .el-cascader-node {
+  color: #e2e8f0 !important;
+}
+
+:root[data-system-theme="dark"] .el-select-dropdown__item:hover,
+:root[data-system-theme="dark"] .el-select-dropdown__item.hover,
+:root[data-system-theme="dark"] .el-select-dropdown__item.is-hovering,
+:root[data-system-theme="dark"] .el-dropdown-menu__item:hover,
+:root[data-system-theme="dark"] .el-cascader-node:not(.is-disabled):hover {
+  background: rgba(255, 255, 255, 0.12) !important;
+  color: #ffffff !important;
+}
+
+:root[data-system-theme="dark"] .el-select-dropdown__item.is-selected {
+  background: color-mix(in srgb, var(--app-accent) 28%, #1a1a22) !important;
+  color: #93c5fd !important;
+  font-weight: 600 !important;
+}
+
+:root[data-system-theme="dark"] .el-select-dropdown__item.is-selected:hover,
+:root[data-system-theme="dark"] .el-select-dropdown__item.is-selected.hover,
+:root[data-system-theme="dark"] .el-select-dropdown__item.is-selected.is-hovering {
+  background: color-mix(in srgb, var(--app-accent) 40%, #1a1a22) !important;
+  color: #ffffff !important;
+}
+
+/* Table and list item hover contrast */
+:root[data-system-theme="dark"] .el-table__body tr:hover > td.el-table__cell,
+:root[data-system-theme="dark"] .traffic-row:hover,
+:root[data-system-theme="dark"] .dependency-row:hover,
+:root[data-system-theme="dark"] .catalog-list button:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+
+:root[data-system-theme="dark"] .traffic-row:hover > span strong {
+  color: #ffffff !important;
+}
+
+:root[data-system-theme="dark"] .traffic-row:hover > span small {
+  color: #e2e8f0 !important;
+}
+
+:root[data-system-theme="dark"] .catalog-list button:hover b {
+  color: #ffffff !important;
+}
+
+:root[data-system-theme="dark"] .catalog-list button:hover small {
+  color: #e2e8f0 !important;
+}
+
+:root[data-system-theme="dark"] .catalog-list button:hover i {
+  color: #cbd5e1 !important;
+}
+
+:root[data-system-theme="dark"] .recent-row:hover strong {
+  color: #ffffff !important;
+}
+
+:root[data-system-theme="dark"] .recent-row:hover small {
+  color: #e2e8f0 !important;
+}
+
+/* Buttons in dark mode */
+:root[data-system-theme="dark"] .el-button:not(.el-button--primary):not(.is-link):not(.is-text) {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #f8fafc !important;
+}
+
+:root[data-system-theme="dark"] .el-button:not(.el-button--primary):not(.is-link):not(.is-text):hover {
+  background: rgba(255, 255, 255, 0.12) !important;
+  border-color: rgba(255, 255, 255, 0.32) !important;
+  color: #ffffff !important;
+}
+
+/* Inputs in dark mode */
+:root[data-system-theme="dark"] .el-input__wrapper,
+:root[data-system-theme="dark"] .el-select__wrapper,
+:root[data-system-theme="dark"] .el-textarea__inner {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  color: #f8fafc !important;
+}
+
+:root[data-system-theme="dark"] .el-input__wrapper:hover,
+:root[data-system-theme="dark"] .el-select__wrapper:hover,
+:root[data-system-theme="dark"] .el-textarea__inner:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(255, 255, 255, 0.32) !important;
+}
+
+:root[data-system-theme="dark"] .el-input__inner,
+:root[data-system-theme="dark"] .el-select__input {
+  color: #f8fafc !important;
+}
+
+:root[data-system-theme="dark"] .el-input__inner::placeholder,
+:root[data-system-theme="dark"] .el-textarea__inner::placeholder {
+  color: #94a3b8 !important;
+}
+
+/* =================================================================
+   Dark mode semantic tag & badge styling (harmonious dark pills)
+   ================================================================= */
+:root[data-system-theme="dark"] .el-tag--danger {
+  background: rgba(239, 68, 68, 0.18) !important;
+  border: 1px solid rgba(239, 68, 68, 0.38) !important;
+  color: #fca5a5 !important;
+}
+
+:root[data-system-theme="dark"] .el-tag--warning {
+  background: rgba(245, 158, 11, 0.18) !important;
+  border: 1px solid rgba(245, 158, 11, 0.38) !important;
+  color: #fcd34d !important;
+}
+
+:root[data-system-theme="dark"] .el-tag--primary {
+  background: rgba(59, 130, 246, 0.18) !important;
+  border: 1px solid rgba(59, 130, 246, 0.38) !important;
+  color: #93c5fd !important;
+}
+
+:root[data-system-theme="dark"] .el-tag--success {
+  background: rgba(16, 185, 129, 0.18) !important;
+  border: 1px solid rgba(16, 185, 129, 0.38) !important;
+  color: #6ee7b7 !important;
+}
+
+:root[data-system-theme="dark"] .el-tag--info {
+  background: rgba(148, 163, 184, 0.14) !important;
+  border: 1px solid rgba(148, 163, 184, 0.28) !important;
+  color: #e2e8f0 !important;
+}
+
+/* Project report severity chips in dark mode */
+:root[data-system-theme="dark"] .report-severity-chip {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+}
+
+:root[data-system-theme="dark"] .report-severity-chip b {
+  color: #f8fafc !important;
+}
+
+:root[data-system-theme="dark"] .report-severity-chip:hover {
+  background: rgba(255, 255, 255, 0.12) !important;
+  border-color: var(--app-accent) !important;
+  box-shadow: 0 0 12px color-mix(in srgb, var(--app-accent) 26%, transparent) !important;
+}
+
+/* =================================================================
+   Dark mode alert banners (sleek translucent banners, no white glare)
+   ================================================================= */
+:root[data-system-theme="dark"] .el-alert--info {
+  background: rgba(148, 163, 184, 0.10) !important;
+  border: 1px solid rgba(148, 163, 184, 0.24) !important;
+  color: #e2e8f0 !important;
+}
+:root[data-system-theme="dark"] .el-alert--info .el-alert__title,
+:root[data-system-theme="dark"] .el-alert--info .el-alert__description {
+  color: #e2e8f0 !important;
+}
+:root[data-system-theme="dark"] .el-alert--info .el-alert__icon {
+  color: #60a5fa !important;
+}
+
+:root[data-system-theme="dark"] .el-alert--warning {
+  background: rgba(245, 158, 11, 0.12) !important;
+  border: 1px solid rgba(245, 158, 11, 0.28) !important;
+  color: #fef3c7 !important;
+}
+:root[data-system-theme="dark"] .el-alert--warning .el-alert__title,
+:root[data-system-theme="dark"] .el-alert--warning .el-alert__description {
+  color: #fde68a !important;
+}
+:root[data-system-theme="dark"] .el-alert--warning .el-alert__icon {
+  color: #fbbf24 !important;
+}
+
+:root[data-system-theme="dark"] .el-alert--error {
+  background: rgba(239, 68, 68, 0.12) !important;
+  border: 1px solid rgba(239, 68, 68, 0.28) !important;
+  color: #fee2e2 !important;
+}
+:root[data-system-theme="dark"] .el-alert--error .el-alert__title,
+:root[data-system-theme="dark"] .el-alert--error .el-alert__description {
+  color: #fca5a5 !important;
+}
+:root[data-system-theme="dark"] .el-alert--error .el-alert__icon {
+  color: #f87171 !important;
+}
+
+:root[data-system-theme="dark"] .el-alert--success {
+  background: rgba(16, 185, 129, 0.12) !important;
+  border: 1px solid rgba(16, 185, 129, 0.28) !important;
+  color: #d1fae5 !important;
+}
+:root[data-system-theme="dark"] .el-alert--success .el-alert__title,
+:root[data-system-theme="dark"] .el-alert--success .el-alert__description {
+  color: #6ee7b7 !important;
+}
+:root[data-system-theme="dark"] .el-alert--success .el-alert__icon {
+  color: #34d399 !important;
+}
+
+/* =================================================================
+   Dark mode segmented controls (clean dark track, accent blue slider)
+   ================================================================= */
+:root[data-system-theme="dark"] .el-segmented {
+  --el-segmented-color: #cbd5e1;
+  --el-segmented-bg-color: rgba(255, 255, 255, 0.06);
+  --el-segmented-item-selected-color: #ffffff;
+  --el-segmented-item-selected-bg-color: var(--app-accent);
+  --el-segmented-item-hover-color: #ffffff;
+  --el-segmented-item-hover-bg-color: rgba(255, 255, 255, 0.08);
+  --el-segmented-item-active-bg-color: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+
+:root[data-system-theme="dark"] .el-segmented__item-selected {
+  background: var(--app-accent) !important;
+  color: #ffffff !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4) !important;
+  border: none !important;
+}
+
+:root[data-system-theme="dark"] .el-segmented__item {
+  color: #cbd5e1 !important;
+}
+
+:root[data-system-theme="dark"] .el-segmented__item:hover {
+  color: #ffffff !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+
+:root[data-system-theme="dark"] .el-segmented__item.is-selected {
+  color: #ffffff !important;
+}
+
+/* Quiet icon buttons in dark mode (Traffic refresh, etc.) */
+:root[data-system-theme="dark"] .quiet-icon-button {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  color: #f8fafc !important;
+}
+
+:root[data-system-theme="dark"] .quiet-icon-button:hover {
+  background: rgba(255, 255, 255, 0.12) !important;
+  border-color: var(--app-accent) !important;
+  color: var(--app-accent) !important;
+}
+
+/* Vulnerabilities search panel color harmony */
+:root[data-system-theme="dark"] .catalog-search {
+  background: rgba(255, 255, 255, 0.02) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.10) !important;
+}
+
+:root[data-system-theme="dark"] .catalog-search .el-input__wrapper,
+:root[data-system-theme="dark"] .catalog-search .el-select__wrapper {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  box-shadow: none !important;
+}
+
+:root[data-system-theme="dark"] .catalog-search .el-input__wrapper:hover,
+:root[data-system-theme="dark"] .catalog-search .el-select__wrapper:hover {
+  border-color: rgba(255, 255, 255, 0.30) !important;
+}
+
+:root[data-system-theme="dark"] .catalog-search .el-input__wrapper.is-focus,
+:root[data-system-theme="dark"] .catalog-search .el-select__wrapper.is-focused {
+  border-color: var(--app-accent) !important;
+  box-shadow: 0 0 0 1px var(--app-accent) !important;
+}
+
+:root[data-system-theme="dark"] .catalog-search .el-checkbox__label {
+  color: #cbd5e1 !important;
+}
+
+/* =================================================================
+   Fluent 2 Cursor Reveal Glow / Illumination Halo (Windows 11 effect)
+   Soft illumination follows mouse cursor across the dark canvas (内聚精微光场)
+   ================================================================= */
+:root[data-system-theme="dark"]::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  z-index: 999999;
+  background: radial-gradient(
+    220px circle at var(--fluent-cursor-x, -999px) var(--fluent-cursor-y, -999px),
+    color-mix(in srgb, var(--app-accent) 14%, transparent) 0%,
+    color-mix(in srgb, var(--app-accent) 5%, transparent) 45%,
+    transparent 75%
   );
+  mix-blend-mode: screen;
+  transition: opacity 0.2s ease;
+}
+
+:root[data-system-theme="dark"] .desktop-v2-nav-item:hover,
+:root[data-system-theme="dark"] .desktop-v2-recent-item:hover,
+:root[data-system-theme="dark"] button.settings-row:hover,
+:root[data-system-theme="dark"] .report-card:hover,
+:root[data-system-theme="dark"] .el-button:not(.is-disabled):hover,
+:root[data-system-theme="dark"] .catalog-list button:hover {
+  box-shadow: 0 0 14px color-mix(in srgb, var(--app-accent) 22%, transparent),
+              0 0 2px color-mix(in srgb, var(--app-accent) 50%, transparent) !important;
 }
 
 /* Opaque fallback used when Windows transparency/backdrop effects are off. */

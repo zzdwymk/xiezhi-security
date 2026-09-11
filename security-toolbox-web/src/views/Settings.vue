@@ -1528,6 +1528,18 @@ button.settings-row:hover {
   transform: none !important;
 }
 
+button.settings-row:hover .settings-row-copy strong {
+  color: var(--app-text) !important;
+}
+
+button.settings-row:hover .settings-row-copy small {
+  color: var(--app-text) !important;
+}
+
+button.settings-row:hover .settings-row-chevron {
+  color: var(--app-text) !important;
+}
+
 button.settings-row:active {
   transform: none !important;
 }

@@ -94,3 +94,17 @@ export function readableAiConversationError(
 ): string {
   return localizeAiRuntimeFailure(toErrorMessage(error, fallback));
 }
+
+export const SEVERITY_LABELS: Readonly<Record<string, string>> = {
+  CRITICAL: "严重",
+  HIGH: "高危",
+  MEDIUM: "中危",
+  LOW: "低危",
+  INFO: "提示",
+};
+
+export function severityLabel(severity?: string): string {
+  if (!severity) return "未知";
+  const key = String(severity).trim().toUpperCase();
+  return SEVERITY_LABELS[key] || severity;
+}

@@ -1068,9 +1068,25 @@ export const endpoints = {
   tasks: () => api.get<ProjectTaskRecord[]>("/tasks"),
   taskControlStatus: () => api.get<TaskControlStatus>("/tasks/control/status"),
   task: (id: number) => api.get<ProjectTaskRecord>(`/tasks/${id}`),
-  findings: (page = 0, size = 20, query = "") =>
+  findings: (
+    page = 0,
+    size = 20,
+    query = "",
+    targetId?: number,
+    severity?: string,
+    status?: string,
+    category?: string,
+  ) =>
     api.get<PageResponse<ProjectFindingRecord>>("/findings", {
-      params: { page, size, query },
+      params: {
+        page,
+        size,
+        query: query || undefined,
+        targetId: targetId || undefined,
+        severity: severity || undefined,
+        status: status || undefined,
+        category: category || undefined,
+      },
     }),
   updateFindingStatus: (id: number, status: string) =>
     api.put(`/findings/${id}/status`, { status }),
