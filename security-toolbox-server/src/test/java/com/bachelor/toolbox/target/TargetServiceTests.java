@@ -23,7 +23,9 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 
 class TargetServiceTests {
   @AfterEach
@@ -96,6 +98,50 @@ class TargetServiceTests {
     assertThat(pageableCaptor.getValue().getPageSize()).isLessThanOrEqualTo(1000);
     verify(repository, never()).findAll(any(Pageable.class));
     verify(projectTargets, never()).findByTargetId(any());
+  }
+
+  @Test
+  void listsTargetsBeyondTheFirstPage() {
+    AuthorizedTargetRepository repository = mock(AuthorizedTargetRepository.class);
+    AuditService auditService = mock(AuditService.class);
+    AssessmentProjectRepository projects = mock(AssessmentProjectRepository.class);
+    ProjectTargetRepository projectTargets = mock(ProjectTargetRepository.class);
+    ProjectAuthorizationService authorization = mock(ProjectAuthorizationService.class);
+    AuthorizedTarget first = new AuthorizedTarget();
+    AuthorizedTarget second = new AuthorizedTarget();
+    when(authorization.isAdmin()).thenReturn(true);
+    when(repository.findAll(any(Pageable.class)))
+        .thenAnswer(
+            invocation -> {
+              Pageable pageable = invocation.getArgument(0);
+              if (pageable.getPageNumber() == 0) {
+                return new PageImpl<>(
+                    List.of(first),
+                    PageRequest.of(0, 1, pageable.getSort()),
+                    2);
+              }
+              return new PageImpl<>(
+                  List.of(second),
+                  PageRequest.of(1, 1, pageable.getSort()),
+                  2);
+            });
+    TargetService service =
+        new TargetService(
+            repository,
+            auditService,
+            new PortRangeParser(),
+            projects,
+            projectTargets,
+            authorization,
+            65535);
+
+    assertThat(service.list()).containsExactly(first, second);
+    verify(repository)
+        .findAll(
+            PageRequest.of(
+                1,
+                1000,
+                Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id"))));
   }
 
   @Test

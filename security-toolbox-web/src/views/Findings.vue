@@ -17,6 +17,7 @@ import {
   type ProjectFindingRecord,
   type ProjectTaskRecord,
   type ScanDiff,
+  type Target,
 } from "../api";
 import AppPagination from "../components/AppPagination.vue";
 import OfflineState from "../components/OfflineState.vue";
@@ -25,7 +26,7 @@ import { formatDateTime } from "../utils/dateTime";
 import { toErrorMessage } from "../utils/errorMessage";
 import { useCopilotStore } from "../stores/copilot";
 import { downloadBlob, EmptyDownloadError } from "../utils/download";
-import { aiToolLabel } from "../utils/aiPresentation";
+import { aiToolLabel, severityLabel } from "../utils/aiPresentation";
 
 function postScanStatusLabel(status?: string) {
   const map: Record<string, string> = {
@@ -164,7 +165,51 @@ const page = ref(1);
 // Keep the result center compact and predictable: ten findings per page.
 const pageSize = ref(10);
 const total = ref(0);
-const searchQuery = ref("");
+const targets = ref<Target[]>([]);
+
+const searchQuery = ref(
+  typeof route.query.q === "string" ? route.query.q.trim() : "",
+);
+const categoryFilter = ref<"" | "vulnerability" | "risk">(
+  typeof route.query.category === "string" && ["vulnerability", "risk"].includes(route.query.category)
+    ? (route.query.category as "vulnerability" | "risk")
+    : "",
+);
+const targetFilter = ref<number | undefined>(
+  route.query.targetId ? Number(route.query.targetId) : undefined,
+);
+const severityFilter = ref<string>(
+  typeof route.query.severity === "string" ? route.query.severity : "",
+);
+const statusFilter = ref<string>(
+  typeof route.query.status === "string" ? route.query.status : "",
+);
+
+const hasActiveFilters = computed(() =>
+  Boolean(
+    searchQuery.value.trim() ||
+      categoryFilter.value ||
+      targetFilter.value !== undefined ||
+      severityFilter.value ||
+      statusFilter.value,
+  ),
+);
+
+function resetFilters() {
+  searchQuery.value = "";
+  categoryFilter.value = "";
+  targetFilter.value = undefined;
+  severityFilter.value = "";
+  statusFilter.value = "";
+  page.value = 1;
+  void load();
+}
+
+async function loadTargets() {
+  const result = await safeGet<Target[]>(endpoints.targets, []);
+  targets.value = result.data || [];
+}
+
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 let loadSequence = 0;
 
@@ -183,6 +228,10 @@ async function load() {
           page.value - 1,
           pageSize.value,
           searchQuery.value.trim(),
+          targetFilter.value,
+          severityFilter.value || undefined,
+          statusFilter.value || undefined,
+          categoryFilter.value || undefined,
         ),
       { content: [], totalElements: 0 },
     );
@@ -423,15 +472,54 @@ async function executePostScanPath() {
 }
 
 onMounted(() => {
-  const seed = route.query.q;
-  if (typeof seed === "string" && seed) searchQuery.value = seed;
+  void loadTargets();
+  const seedQ = route.query.q;
+  if (typeof seedQ === "string" && seedQ) searchQuery.value = seedQ.trim();
+  if (typeof route.query.severity === "string")
+    severityFilter.value = route.query.severity.trim();
+  if (
+    typeof route.query.category === "string" &&
+    ["vulnerability", "risk"].includes(route.query.category)
+  )
+    categoryFilter.value = route.query.category as "vulnerability" | "risk";
+  if (route.query.targetId) targetFilter.value = Number(route.query.targetId);
+  if (typeof route.query.status === "string")
+    statusFilter.value = route.query.status.trim();
   load();
 });
+
+watch(
+  () => [
+    route.query.q,
+    route.query.severity,
+    route.query.category,
+    route.query.targetId,
+    route.query.status,
+  ],
+  ([q, sev, cat, tid, st]) => {
+    if (typeof q === "string") searchQuery.value = q.trim();
+    if (typeof sev === "string") severityFilter.value = sev.trim();
+    if (typeof cat === "string" && ["vulnerability", "risk"].includes(cat))
+      categoryFilter.value = cat as "vulnerability" | "risk";
+    if (tid) targetFilter.value = Number(tid);
+    if (typeof st === "string") statusFilter.value = st.trim();
+  },
+);
+
+watch(
+  [targetFilter, categoryFilter, severityFilter, statusFilter],
+  () => {
+    page.value = 1;
+    void load();
+  },
+);
+
 watch(searchQuery, () => {
   page.value = 1;
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(() => void load(), 250);
 });
+
 onBeforeUnmount(() => {
   if (searchTimer) clearTimeout(searchTimer);
 });
@@ -441,16 +529,10 @@ onBeforeUnmount(() => {
   <section class="panel findings-page workspace-list-page" v-loading="loading">
     <div class="section-head">
       <div>
-        <h3>风险</h3>
-        <p>查看证据并记录人工确认结果。</p>
+        <h3>结果中心</h3>
+        <p>统一管理全量授权目标的漏洞发现、安全基线风险与技术证据。</p>
       </div>
       <div class="finding-head-actions section-head-actions">
-        <el-input
-          v-model="searchQuery"
-          :prefix-icon="Search"
-          clearable
-          placeholder="搜索名称、等级、工具、目标或状态"
-        />
         <el-button @click="load">刷新</el-button>
         <el-button type="warning" plain @click="diffVisible = true"
           >扫描 Diff</el-button
@@ -464,6 +546,73 @@ onBeforeUnmount(() => {
           >清空</el-button
         >
       </div>
+    </div>
+
+    <!-- 多维组合检索与过滤栏 -->
+    <div class="findings-filter-toolbar">
+      <el-input
+        v-model="searchQuery"
+        :prefix-icon="Search"
+        clearable
+        placeholder="搜索名称、等级、工具、规则..."
+        style="width: 220px"
+      />
+      <el-select
+        v-model="categoryFilter"
+        placeholder="全部类型"
+        clearable
+        style="width: 120px"
+      >
+        <el-option label="全部类型" value="" />
+        <el-option label="漏洞发现" value="vulnerability" />
+        <el-option label="风险点" value="risk" />
+      </el-select>
+      <el-select
+        v-model="targetFilter"
+        placeholder="全部目标"
+        clearable
+        style="width: 170px"
+      >
+        <el-option
+          v-for="t in targets"
+          :key="t.id"
+          :label="`${t.name || t.targetValue} (#${t.id})`"
+          :value="t.id"
+        />
+      </el-select>
+      <el-select
+        v-model="severityFilter"
+        placeholder="全部等级"
+        clearable
+        style="width: 110px"
+      >
+        <el-option label="严重" value="CRITICAL" />
+        <el-option label="高危" value="HIGH" />
+        <el-option label="中危" value="MEDIUM" />
+        <el-option label="低危" value="LOW" />
+        <el-option label="提示" value="INFO" />
+      </el-select>
+      <el-select
+        v-model="statusFilter"
+        placeholder="全部状态"
+        clearable
+        style="width: 110px"
+      >
+        <el-option label="待确认" value="OPEN" />
+        <el-option label="已确认" value="CONFIRMED" />
+        <el-option label="误报" value="FALSE_POSITIVE" />
+        <el-option label="已修复" value="FIXED" />
+      </el-select>
+      <el-button
+        v-if="hasActiveFilters"
+        link
+        type="primary"
+        size="small"
+        @click="resetFilters"
+      >
+        重置筛选
+      </el-button>
+      <span class="finding-filter-count-badge">共 {{ total }} 条</span>
     </div>
     <OfflineState
       v-if="offline || !rows.length"
@@ -482,11 +631,15 @@ onBeforeUnmount(() => {
       <el-table-column label="等级" width="75"
         ><template #default="scope"
           ><el-tag size="small" :type="severityType(scope.row.severity)">{{
-            scope.row.severity
+            severityLabel(scope.row.severity)
           }}</el-tag></template
         ></el-table-column
       >
-      <el-table-column prop="sourceTool" label="工具" width="100" show-overflow-tooltip />
+      <el-table-column label="工具" min-width="110" show-overflow-tooltip>
+        <template #default="scope">
+          {{ aiToolLabel(scope.row.sourceTool) }}
+        </template>
+      </el-table-column>
       <el-table-column prop="targetId" label="目标" width="65" />
       <el-table-column label="发现时间" min-width="140"
         ><template #default="scope">{{
@@ -507,7 +660,7 @@ onBeforeUnmount(() => {
               label="已修复"
               value="FIXED" /></el-select></template
       ></el-table-column>
-      <el-table-column label="操作" min-width="260">
+      <el-table-column label="操作" min-width="288">
         <template #default="scope">
           <div class="finding-row-actions">
             <el-button
@@ -783,8 +936,8 @@ onBeforeUnmount(() => {
         <el-table-column prop="title" label="漏洞" min-width="150" show-overflow-tooltip />
         <el-table-column label="等级" width="130"
           ><template #default="scope"
-            >{{ scope.row.previousSeverity || "-" }} →
-            {{ scope.row.currentSeverity || "-" }}</template
+            >{{ (scope.row.previousSeverity && severityLabel(scope.row.previousSeverity)) || "-" }} →
+            {{ (scope.row.currentSeverity && severityLabel(scope.row.currentSeverity)) || "-" }}</template
           ></el-table-column
         >
       </el-table>
@@ -805,18 +958,53 @@ onBeforeUnmount(() => {
 .findings-page .section-head h3 {
   font-size: var(--type-section-title);
 }
+.findings-filter-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 12px 0 16px;
+  padding: 12px 14px;
+  background: var(--app-surface-soft, rgba(0, 0, 0, 0.02));
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: var(--fluent-radius-card, 8px);
+}
+.finding-filter-count-badge {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--app-muted, #64748b);
+  font-weight: 500;
+}
 .diff-form {
   display: flex;
   align-items: flex-end;
   flex-wrap: wrap;
-  gap: 16px;
+  gap: 14px;
+  margin-bottom: 18px;
+  padding: 16px;
+  background: var(--app-surface-soft, rgba(0, 0, 0, 0.02));
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: var(--fluent-radius-card, 8px);
 }
 .app-dialog .diff-form :deep(.el-form-item) {
-  margin-right: 0;
-  margin-bottom: 0;
+  margin-right: 0 !important;
+  margin-bottom: 0 !important;
+}
+.diff-form :deep(.el-form-item__label) {
+  font-weight: 600;
+  margin-bottom: 6px;
+  line-height: 1.4;
+  color: var(--app-text);
+}
+.diff-form :deep(.el-select) {
+  width: 270px;
 }
 .diff-compare-item {
   align-self: flex-end;
+}
+.diff-summary-alert {
+  margin: 14px 0 16px 0;
+  border-radius: var(--fluent-radius-card, 6px);
 }
 .findings-page .section-head p {
   font-size: var(--type-section-desc);
@@ -854,18 +1042,33 @@ onBeforeUnmount(() => {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: center;
   gap: 6px;
-  white-space: normal;
+  box-sizing: border-box;
 }
+.finding-row-actions :deep(.el-button),
+.finding-row-actions :deep(.el-button + .el-button),
 .finding-row-actions :deep(.finding-action) {
-  width: 100%;
-  height: 32px;
-  margin: 0;
-  padding: 0 8px;
+  width: 100% !important;
+  height: 28px;
+  margin: 0 !important;
+  margin-left: 0 !important;
+  padding: 0 4px !important;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
   border-color: var(--app-border-strong);
   background: var(--app-surface-strong);
   color: var(--app-text);
   font-size: 12px;
   font-weight: 600;
+}
+.finding-row-actions :deep(.el-button > span) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  white-space: nowrap;
 }
 .finding-row-actions :deep(.finding-action:hover),
 .finding-row-actions :deep(.finding-action:focus-visible) {

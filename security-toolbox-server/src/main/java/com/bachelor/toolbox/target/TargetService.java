@@ -8,9 +8,12 @@ import com.bachelor.toolbox.project.ProjectTarget;
 import com.bachelor.toolbox.project.ProjectTargetRepository;
 import com.bachelor.toolbox.project.ProjectAuthorizationService;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -50,12 +53,29 @@ public class TargetService {
 
   public List<AuthorizedTarget> list() {
     if (authorization.isAdmin()) {
-      return repository.findAll(PageRequests.firstPage(LIST_SORT)).getContent();
+      return loadAll(pageable -> repository.findAll(pageable));
     }
-    return repository
-        .findAccessibleByProjectOwner(
-            authorization.currentUsername(), PageRequests.firstPage(LIST_SORT))
-        .getContent();
+    String owner = authorization.currentUsername();
+    return loadAll(pageable -> repository.findAccessibleByProjectOwner(owner, pageable));
+  }
+
+  /** Keep the array API compatible while reading every accessible page, not only the first 1000. */
+  private <T> List<T> loadAll(java.util.function.Function<Pageable, Page<T>> pageLoader) {
+    List<T> result = new ArrayList<>();
+    for (int page = 0; ; page++) {
+      Page<T> batch =
+          pageLoader.apply(
+              PageRequests.bounded(
+                  page,
+                  PageRequests.MAX_PAGE_SIZE,
+                  1,
+                  PageRequests.MAX_PAGE_SIZE,
+                  LIST_SORT));
+      result.addAll(batch.getContent());
+      if (!batch.hasNext()) {
+        return List.copyOf(result);
+      }
+    }
   }
 
   public AuthorizedTarget get(Long id) {

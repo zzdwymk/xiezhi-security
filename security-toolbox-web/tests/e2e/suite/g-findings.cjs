@@ -41,10 +41,10 @@ async function run(page, H, ctx) {
   await H.run("G-03", "漏洞记录展示等级、来源工具与目标信息", async () => {
     const row = page.locator(".el-table__row").first();
     const text = ((await row.textContent()) || "").replace(/\s+/g, " ").trim();
-    if (!/CRITICAL|HIGH|MEDIUM|LOW|INFO/.test(text)) {
+    if (!/CRITICAL|HIGH|MEDIUM|LOW|INFO|严重|高危|中危|低危|提示/.test(text)) {
       throw new Error(`未展示风险等级: ${text.slice(0, 160)}`);
     }
-    if (!/tcp_ports|http_headers|http_security_check|tls_config|nmap/.test(text)) {
+    if (!/tcp_ports|http_headers|http_security_check|tls_config|nmap|端口|响应头|HTTP|主机|服务识别/.test(text)) {
       throw new Error(`未展示来源工具: ${text.slice(0, 160)}`);
     }
     return `首行: ${text.slice(0, 150)}`;

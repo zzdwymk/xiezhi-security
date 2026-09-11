@@ -64,6 +64,7 @@ import { toErrorMessage } from "../utils/errorMessage";
 import { taskbarProgress } from "../utils/taskbarProgress";
 import WorkflowEdge from "./WorkflowEdge.vue";
 import { COMMON_PORT_OPTIONS, normalizeAllowedPorts } from "../utils/ports";
+import { aiToolLabel, severityLabel } from "../utils/aiPresentation";
 
 type PhaseCode =
   | "engagement"
@@ -2622,8 +2623,12 @@ async function save(): Promise<WorkflowSpecV2 | undefined> {
     ElMessage.success("红队工作流已保存：连线依赖决定顺序，分叉节点可并行执行");
     graphNotice.value = "已保存。之后 AI 会按图中的依赖顺序组织受控任务。";
     return data;
-  } catch {
-    ElMessage.error("保存失败，请检查后端工作流服务");
+  } catch (err: any) {
+    const msg =
+      err?.response?.data?.message ||
+      err?.message ||
+      "保存失败，请检查后端工作流服务";
+    ElMessage.error(msg);
     return undefined;
   } finally {
     saving.value = false;
@@ -4686,7 +4691,7 @@ onBeforeUnmount(() => {
                         </span>
                         <span class="workflow-poc-option-tags">
                           <el-tag size="small" :type="pocSeverityTagType(poc.severity)" effect="plain">
-                            {{ poc.severity }}
+                            {{ severityLabel(poc.severity) }}
                           </el-tag>
                           <el-tag
                             v-if="poc.scanSafety && poc.scanSafety !== 'SAFE'"
@@ -4769,7 +4774,7 @@ onBeforeUnmount(() => {
                         effect="plain"
                         class="end-severity-tag"
                       >
-                        {{ sev }} {{ endNodeSummary.severity[sev] }}
+                        {{ severityLabel(sev) }} {{ endNodeSummary.severity[sev] }}
                       </el-tag>
                     </div>
                     <h6 class="end-finding-head">发现明细</h6>
@@ -4788,7 +4793,7 @@ onBeforeUnmount(() => {
                           :type="endFindingTagType(finding.severity)"
                           effect="plain"
                           class="end-finding-sev"
-                          >{{ (finding.severity || 'info').toUpperCase() }}</el-tag
+                          >{{ severityLabel(finding.severity) }}</el-tag
                         >
                         <span class="end-finding-title">{{ finding.title }}</span>
                       </li>
@@ -5272,10 +5277,10 @@ onBeforeUnmount(() => {
       <div v-if="endFindingDetail" class="end-finding-detail">
         <div class="node-detail-meta">
           <el-tag :type="endFindingTagType(endFindingDetail.severity)" effect="dark">
-            {{ (endFindingDetail.severity || 'info').toUpperCase() }}
+            {{ severityLabel(endFindingDetail.severity) }}
           </el-tag>
           <span v-if="endFindingDetail.sourceTool"
-            >来源：{{ endFindingDetail.sourceTool }}</span
+            >来源：{{ aiToolLabel(endFindingDetail.sourceTool) }}</span
           >
           <span v-if="endFindingDetail.vulnerabilityCode"
             >{{ endFindingDetail.vulnerabilityCode }}</span
@@ -6308,9 +6313,9 @@ onBeforeUnmount(() => {
 .workflow-library-tabs :deep(.el-segmented) {
   --el-segmented-color: var(--app-muted);
   --el-segmented-bg-color: var(--app-surface-soft);
-  --el-segmented-item-selected-color: var(--app-text);
-  --el-segmented-item-selected-bg-color: var(--app-surface-strong);
-  --el-segmented-item-hover-color: var(--app-text);
+  --el-segmented-item-selected-color: #ffffff;
+  --el-segmented-item-selected-bg-color: var(--app-accent);
+  --el-segmented-item-hover-color: #ffffff;
   --el-segmented-item-hover-bg-color: transparent;
   --el-segmented-item-active-bg-color: transparent;
   --el-border-radius-base: var(--fluent-radius-circular);
@@ -6330,20 +6335,22 @@ onBeforeUnmount(() => {
   min-height: 28px;
   border-radius: var(--fluent-radius-circular);
   color: var(--app-muted);
+  background: transparent !important;
   font-weight: 500;
   transition: color var(--fluent-duration-fast, 150ms)
     var(--fluent-curve-standard, ease);
 }
 .workflow-library-tabs :deep(.el-segmented__item:hover) {
   color: var(--app-text);
+  background: rgba(255, 255, 255, 0.08) !important;
 }
 .workflow-library-tabs :deep(.el-segmented__item.is-selected) {
-  color: var(--el-segmented-item-selected-color);
+  color: #ffffff !important;
   font-weight: 600;
 }
 .workflow-library-tabs :deep(.el-segmented__item-selected) {
-  background: var(--el-segmented-item-selected-bg-color);
-  border: 1px solid var(--app-border);
+  background: var(--app-accent) !important;
+  border: none !important;
   border-radius: var(--fluent-radius-circular);
   box-shadow: var(--fluent-shadow-2);
   box-sizing: border-box;
@@ -6376,6 +6383,9 @@ onBeforeUnmount(() => {
   height: 6px;
   border-radius: 50%;
   background-color: var(--app-accent);
+}
+.workflow-library-tabs :deep(.el-segmented__item.is-selected) .tab-node-badge {
+  background-color: #ffffff;
 }
 .node-info-list {
   display: flex;

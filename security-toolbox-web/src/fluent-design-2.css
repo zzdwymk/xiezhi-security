@@ -3086,6 +3086,8 @@ body,
   :where(.el-input__wrapper, .el-select__wrapper, .el-textarea__inner),
 .el-overlay-dialog
   :where(.el-input__wrapper, .el-select__wrapper, .el-textarea__inner),
+.el-drawer
+  :where(.el-input__wrapper, .el-select__wrapper, .el-textarea__inner),
 .el-popup-parent--hidden :where(.el-input__wrapper, .el-select__wrapper) {
   border: 0 !important;
   min-height: var(--fluent-control-height);
@@ -3108,7 +3110,8 @@ body,
     .el-select__wrapper:hover,
     .el-textarea__inner:hover
   ),
-.el-overlay-dialog :where(.el-input__wrapper:hover, .el-select__wrapper:hover) {
+.el-overlay-dialog :where(.el-input__wrapper:hover, .el-select__wrapper:hover, .el-textarea__inner:hover),
+.el-drawer :where(.el-input__wrapper:hover, .el-select__wrapper:hover, .el-textarea__inner:hover) {
   box-shadow: 0 0 0 var(--fluent-stroke-thin) var(--app-border) inset !important;
 }
 
@@ -3127,6 +3130,12 @@ body,
     .el-textarea__inner:focus
   ),
 .el-overlay-dialog
+  :where(
+    .el-input__wrapper.is-focus,
+    .el-select__wrapper.is-focused,
+    .el-textarea__inner:focus
+  ),
+.el-drawer
   :where(
     .el-input__wrapper.is-focus,
     .el-select__wrapper.is-focused,

@@ -28,6 +28,7 @@ import AppPagination from "../components/AppPagination.vue";
 import { useClientPagination } from "../composables/useClientPagination";
 import { useCopilotStore } from "../stores/copilot";
 import { toErrorMessage } from "../utils/errorMessage";
+import { severityLabel } from "../utils/aiPresentation";
 import { renderMarkdown } from "../utils/markdown";
 import { useSelectionIndicator } from "../composables/useSelectionIndicator";
 
@@ -3416,7 +3417,7 @@ onUnmounted(() => {
                 <template #title>
                   <div style="display: flex; align-items: center; gap: 8px; width: 100%">
                     <el-tag :type="hit.severity === 'HIGH' || hit.severity === 'CRITICAL' ? 'danger' : 'warning'" size="small">
-                      {{ hit.severity }}
+                      {{ severityLabel(hit.severity) }}
                     </el-tag>
                     <strong style="font-size: 13px">{{ hit.title }}</strong>
                     <small v-if="hit.parameter" style="color: var(--app-muted); margin-left: auto; margin-right: 12px">参数: {{ hit.parameter }}</small>

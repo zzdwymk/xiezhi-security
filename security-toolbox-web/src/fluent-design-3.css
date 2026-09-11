@@ -95,11 +95,16 @@
 .desktop-v2-nav-item:hover {
   border-color: var(--fluent3-reveal-border) !important;
   background: var(--fluent3-reveal-bg) !important;
+  color: var(--app-text) !important;
   box-shadow: none !important;
+}
+.desktop-v2-nav-item:hover > .el-icon {
+  color: var(--app-accent) !important;
 }
 .desktop-v2-nav-item.active {
   border-color: var(--fluent3-select-border) !important;
   background: var(--fluent3-select-bg) !important;
+  color: var(--app-text) !important;
   box-shadow: none !important;
 }
 
@@ -232,6 +237,18 @@ html .el-button.el-button--danger.is-link:not(.is-disabled):hover {
   background: var(--fluent3-reveal-bg) !important;
   box-shadow: none !important;
 }
+.desktop-v2-recent-item:hover .desktop-v2-recent-open {
+  color: var(--app-text) !important;
+}
+.desktop-v2-recent-item:hover strong {
+  color: var(--app-text) !important;
+}
+.desktop-v2-recent-item:hover small {
+  color: var(--app-text) !important;
+}
+.desktop-v2-recent-item:hover .el-icon {
+  color: var(--app-accent) !important;
+}
 .desktop-v2-recent-item.active {
   background: var(--fluent3-select-bg) !important;
 }
@@ -244,6 +261,12 @@ html .el-button.el-button--danger.is-link:not(.is-disabled):hover {
   border-color: var(--fluent3-reveal-border) !important;
   background: var(--fluent3-reveal-bg) !important;
   box-shadow: none !important;
+}
+.desktop-v2-app-frame .desktop-v2-content .settings-list > button:hover strong {
+  color: var(--app-text) !important;
+}
+.desktop-v2-app-frame .desktop-v2-content .settings-list > button:hover small {
+  color: var(--app-text) !important;
 }
 
 .start-action {

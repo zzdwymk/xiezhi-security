@@ -240,6 +240,13 @@ function applyNativeBackdrop(window, theme = currentSystemTheme()) {
         : "none",
     );
   }
+  if (typeof window.setTitleBarOverlay === "function") {
+    try {
+      window.setTitleBarOverlay(titleBarOverlay(theme));
+    } catch {
+      // ignore
+    }
+  }
 }
 
 function applySystemThemeToStaticWindow(window, theme = currentSystemTheme()) {
@@ -6234,6 +6241,9 @@ function createStartupWindow() {
   startupWindow.webContents.on("will-redirect", guardStartupNavigation);
   startupWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   startupWindow.loadFile(startupEntry);
+  startupWindow.webContents.on("did-finish-load", () => {
+    applySystemThemeToStaticWindow(startupWindow);
+  });
   startupWindow.once("ready-to-show", () => {
     applySystemThemeToStaticWindow(startupWindow);
     startupWindow.show();
@@ -6272,6 +6282,8 @@ function createMainWindow(port) {
     minWidth: 1000,
     minHeight: 700,
     show: false,
+    titleBarStyle: "hidden",
+    titleBarOverlay: titleBarOverlay(initialTheme),
     backgroundColor: windowBackgroundColor(initialTheme),
     backgroundMaterial:
       initialTheme.transparencyEnabled && !initialTheme.highContrast

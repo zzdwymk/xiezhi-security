@@ -22,6 +22,7 @@ import { formatDateTime, formatExecutionLog } from "../utils/dateTime";
 import { useCopilotStore } from "../stores/copilot";
 import { toErrorMessage } from "../utils/errorMessage";
 import { downloadBlob, EmptyDownloadError } from "../utils/download";
+import { severityLabel } from "../utils/aiPresentation";
 import {
   taskProgressIndeterminate,
   taskProgressPercentage,
@@ -1046,7 +1047,7 @@ onUnmounted(() => {
                     <el-tag
                       size="small"
                       :type="scheduleSeverityType(poc.severity)"
-                      >{{ poc.severity }}</el-tag
+                      >{{ severityLabel(poc.severity) }}</el-tag
                     >
                     <el-tag
                       size="small"

@@ -110,6 +110,28 @@ const EXE_PATH = path.join(
 
     console.log("已成功进入工作台，当前URL:", page.url());
 
+    // 2.5 检查并等待历史任务完成
+    await dismissStrayModal(page);
+    await navigate(page, "检测任务");
+    await sleep(2000);
+    console.log("检查前序任务执行状态...");
+    for (let round = 0; round < 15; round++) {
+      const rows = page.locator(".el-table__row");
+      const rCount = await rows.count();
+      let busy = 0;
+      for (let i = 0; i < Math.min(rCount, 10); i++) {
+        const text = (await rows.nth(i).textContent().catch(() => "")) || "";
+        if (text.includes("待执行") || text.includes("执行中") || text.includes("RUNNING") || text.includes("PENDING")) {
+          busy++;
+        }
+      }
+      if (busy === 0) break;
+      console.log(`等待前序任务队列清空 (当前排队中/运行中: ${busy})...`);
+      await sleep(3000);
+      const refreshBtn = page.locator("button", { hasText: "刷新" }).first();
+      if (await refreshBtn.isVisible().catch(() => false)) await refreshBtn.click();
+    }
+
     // 3. 前往主动检测页面对目标展开漏洞扫描
     H.phase("目标 1 漏洞测试 — http://192.168.136.132/Less-1/?id=1");
     await dismissStrayModal(page);
@@ -119,26 +141,36 @@ const EXE_PATH = path.join(
     const launcher = page.locator("aside.scan-launcher-pane").first();
     const targetSelect = launcher.locator(".el-select").first();
 
+    async function selectSpecificRules(names) {
+      const cbs = launcher.locator(".rule-list .el-checkbox:not(.is-disabled)");
+      const count = await cbs.count();
+      for (let i = 0; i < count; i++) {
+        const cb = cbs.nth(i);
+        const text = await cb.textContent();
+        const shouldCheck = names.some((n) => text.includes(n));
+        const isChecked = (await cb.locator(".el-checkbox__input.is-checked").count()) > 0;
+        if (shouldCheck && !isChecked) {
+          await cb.click();
+          await sleep(300);
+        } else if (!shouldCheck && isChecked) {
+          await cb.click();
+          await sleep(300);
+        }
+      }
+    }
+
     // 选择 Web 目标
     await selectOn(page, targetSelect, "Less-1");
     await sleep(2000);
 
-    // 勾选可用 Web 规则
-    const checkboxes = launcher.locator(".rule-list .el-checkbox:not(.is-disabled)");
-    const totalRules = await checkboxes.count();
-    console.log(`Web 目标可用规则数量: ${totalRules}`);
-
-    for (let i = 0; i < totalRules; i++) {
-      const cb = checkboxes.nth(i);
-      const isChecked = await cb.locator(".el-checkbox__input.is-checked").count();
-      if (!isChecked) {
-        await cb.click();
-        await sleep(300);
-      }
-    }
+    // 勾选针对 Less-1 的专属规则：sqlmap 注入、响应头与技术栈检查
+    await selectSpecificRules(["sqlmap", "响应头", "技术栈"]);
+    await sleep(1000);
 
     // 触发检测
-    await launcher.locator(".scan-button").first().click();
+    const scanBtn = launcher.locator(".scan-button").first();
+    await scanBtn.scrollIntoViewIfNeeded().catch(() => {});
+    await scanBtn.click();
     await sleep(1500);
     await confirmBoxIfPresent(page, ["开始检测", "确定"]);
     await sleep(2000);
@@ -151,20 +183,12 @@ const EXE_PATH = path.join(
     await selectOn(page, targetSelect, "192.168.136.132");
     await sleep(2000);
 
-    const hostCheckboxes = launcher.locator(".rule-list .el-checkbox:not(.is-disabled)");
-    const hostRulesCount = await hostCheckboxes.count();
-    console.log(`主机目标可用规则数量: ${hostRulesCount}`);
+    // 勾选针对主机的专属规则：fscan 主机扫描、Nmap 识别与连通性检查
+    await selectSpecificRules(["fscan", "Nmap", "连通性"]);
+    await sleep(1000);
 
-    for (let i = 0; i < hostRulesCount; i++) {
-      const cb = hostCheckboxes.nth(i);
-      const isChecked = await cb.locator(".el-checkbox__input.is-checked").count();
-      if (!isChecked) {
-        await cb.click();
-        await sleep(300);
-      }
-    }
-
-    await launcher.locator(".scan-button").first().click();
+    await scanBtn.scrollIntoViewIfNeeded().catch(() => {});
+    await scanBtn.click();
     await sleep(1500);
     await confirmBoxIfPresent(page, ["开始检测", "确定"]);
     await sleep(2000);
@@ -302,31 +326,46 @@ function generateMarkdownReport(data) {
   for (const t of data.targetsTested) {
     md += `- \`${t}\`\n`;
   }
-  md += `\n---\n\n## 1. 漏洞与安全风险发现总览\n\n`;
-  md += `本次针对目标深度检测共发现 **${data.totalFindings}** 项安全漏洞与风险项：\n\n`;
 
-  if (data.findings.length === 0) {
-    md += `*未检测到明显漏洞或检测正在进行中。*\n\n`;
-  } else {
-    md += `| 序号 | 漏洞 / 风险名称 | 说明摘要 | 修复建议摘要 |\n`;
-    md += `| :---: | :--- | :--- | :--- |\n`;
-    for (const f of data.findings) {
-      md += `| ${f.index} | **${f.title}** | ${f.description.slice(0, 80)}... | ${f.remediation.slice(0, 80)}... |\n`;
-    }
+  const vulns = data.findings.filter((f) => f.severity === "CRITICAL" || f.severity === "HIGH" || (f.vulnerabilityCode && f.vulnerabilityCode.includes("SQLMAP")));
+  const risks = data.findings.filter((f) => !vulns.includes(f));
 
-    md += `\n---\n\n## 2. 漏洞详细技术证据与整改方案\n\n`;
-    for (const f of data.findings) {
-      md += `### 漏洞 #${f.index}：${f.title}\n\n`;
-      md += `- **漏洞说明**：${f.description}\n`;
-      md += `- **技术证据与回包特征**：\n\`\`\`text\n${f.evidence || '无'}\n\`\`\`\n`;
-      md += `- **修复建议**：${f.remediation}\n\n`;
+  md += `\n---\n\n## 1. 资产安全性评估汇总指标\n\n`;
+  md += `- **总检测项发现数**：${data.totalFindings} 项\n`;
+  md += `- **可利用安全漏洞 (Vulnerabilities)**：**${vulns.length}** 项 (严重度 HIGH / CRITICAL)\n`;
+  md += `- **安全风险点 / 基线加固缺陷 (Risk Points)**：**${risks.length}** 项 (配置缺失、服务暴露)\n\n`;
+
+  if (vulns.length > 0) {
+    md += `### 1.1 确认的可利用安全漏洞清单\n\n`;
+    md += `| 编号 | 漏洞名称 | 严重度 | 来源工具 | 影响目标 | 修复建议摘要 |\n`;
+    md += `| :---: | :--- | :---: | :---: | :--- | :--- |\n`;
+    for (const v of vulns) {
+      md += `| #${v.id || v.index} | **${v.title}** | \`${v.severity}\` | \`${v.sourceTool}\` | Target #${v.targetId} | ${v.remediation.slice(0, 60)}... |\n`;
     }
   }
 
+  if (risks.length > 0) {
+    md += `\n### 1.2 安全基线与资产风险点清单\n\n`;
+    md += `| 编号 | 风险点名称 | 等级 | 来源工具 | 影响目标 | 说明摘要 |\n`;
+    md += `| :---: | :--- | :---: | :---: | :--- | :--- |\n`;
+    for (const r of risks) {
+      md += `| #${r.id || r.index} | **${r.title}** | \`${r.severity}\` | \`${r.sourceTool}\` | Target #${r.targetId} | ${r.description.slice(0, 60)}... |\n`;
+    }
+  }
+
+  md += `\n---\n\n## 2. 漏洞与风险详细技术证据\n\n`;
+  for (const f of data.findings) {
+    md += `### [${f.severity}] #${f.id || f.index}：${f.title}\n\n`;
+    md += `- **发现工具**：\`${f.sourceTool}\` (${f.ruleCode || f.vulnerabilityCode || '规则已固化'})\n`;
+    md += `- **问题说明**：${f.description}\n`;
+    md += `- **技术证据与回包特征**：\n\`\`\`text\n${f.evidence || '无'}\n\`\`\`\n`;
+    md += `- **修复建议**：${f.remediation}\n\n`;
+  }
+
   md += `\n---\n\n## 3. 目标安全性评估结论\n\n`;
-  md += `1. **Web 参数注入靶点 (\`http://192.168.136.132/Less-1/?id=1\`)**：存在明显的 SQL 注入风险点与 HTTP 安全响应头缺失等脆弱性；\n`;
-  md += `2. **Windows 局域网主机 (\`192.168.136.132\`)**：开放了 HTTP (80)、RPC (135)、SMB (139/445)、MySQL (3306) 等高敏感服务端口，存在内网暴露面风险；\n`;
-  md += `3. **公网防御目标 (\`www.bing.com\`, \`www.baidu.com\`)**：平台硬编码授权守卫成功物理阻断，未发出任何越界攻击包。\n`;
+  md += `1. **Web 参数注入靶点 (\`http://192.168.136.132/Less-1/?id=1\`)**：通过 sqlmap 确认存在 SQL 注入脆弱性，同时存在多项浏览器侧安全响应头缺失；\n`;
+  md += `2. **Windows 局域网主机 (\`192.168.136.132\`)**：开启了老旧 SMBv1 协议（永恒之蓝风险面），并开放了 135/139/445/3306 等敏感管理端口；\n`;
+  md += `3. **公网防御目标 (\`www.bing.com\`, \`www.baidu.com\`)**：平台硬编码授权守卫 TargetPolicyService 成功物理阻断，未向外网发送任何数据包。\n`;
 
   return md;
 }

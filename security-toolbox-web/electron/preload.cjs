@@ -128,3 +128,25 @@ contextBridge.exposeInMainWorld(
     },
   }),
 );
+
+// 消除深色模式刷新闪白：在 DOM 刚生成时第一时间应用深色模式，绝不出现未样式化白色闪烁
+try {
+  const initEarlyTheme = () => {
+    const root = document.documentElement;
+    if (!root) return;
+    const mode = localStorage.getItem("security_toolbox_theme_mode_v1") || "system";
+    const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    const isDark = mode === "dark" || (mode === "system" && prefersDark);
+    root.dataset.systemTheme = isDark ? "dark" : "light";
+    root.style.colorScheme = isDark ? "dark" : "light";
+    if (isDark) {
+      root.classList.add("dark");
+      root.style.backgroundColor = "#121216";
+      if (document.body) document.body.style.backgroundColor = "#121216";
+    }
+  };
+  initEarlyTheme();
+  window.addEventListener("DOMContentLoaded", initEarlyTheme, { once: true });
+} catch {
+  // ignore
+}

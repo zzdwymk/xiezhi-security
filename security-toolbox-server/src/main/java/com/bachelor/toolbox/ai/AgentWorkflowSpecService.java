@@ -62,7 +62,8 @@ public class AgentWorkflowSpecService {
           "xray_scan",
           "zap_scan",
           "fscan_scan",
-          "sqlmap_scan");
+          "sqlmap_scan",
+          "msf_scan");
   private static final Set<String> PHASES =
       Set.of(
           "engagement",

@@ -31,6 +31,7 @@ const STAGES = [
   ["g", "g-findings.cjs"],
   ["h", "h-reports.cjs"],
   ["i", "i-traffic.cjs"],
+  ["j", "j-topology.cjs"],
   ["k", "k-ai-assistant.cjs"],
   ["l", "l-offline-tools.cjs"],
   ["m", "m-settings-audit.cjs"],

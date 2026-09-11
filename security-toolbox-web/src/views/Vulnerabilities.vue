@@ -28,6 +28,7 @@ import {
   type ScannerSource,
 } from "../stores/catalogSync";
 import { toErrorMessage } from "../utils/errorMessage";
+import { severityLabel } from "../utils/aiPresentation";
 
 const copilot = useCopilotStore();
 const router = useRouter();
@@ -1420,11 +1421,11 @@ onUnmounted(() => {
           >
             <el-option
               v-for="item in [
-                { label: '严重 (CRITICAL)', value: 'CRITICAL' },
-                { label: '高危 (HIGH)', value: 'HIGH' },
-                { label: '中危 (MEDIUM)', value: 'MEDIUM' },
-                { label: '低危 (LOW)', value: 'LOW' },
-                { label: '提示 (INFO)', value: 'INFO' },
+                { label: '严重', value: 'CRITICAL' },
+                { label: '高危', value: 'HIGH' },
+                { label: '中危', value: 'MEDIUM' },
+                { label: '低危', value: 'LOW' },
+                { label: '提示', value: 'INFO' },
               ]"
               :key="item.value"
               :label="item.label"
@@ -1487,7 +1488,7 @@ onUnmounted(() => {
         >
           <span class="catalog-item-meta"
             ><el-tag size="small" :type="severityType(item.severity)">{{
-              item.severity
+              severityLabel(item.severity)
             }}</el-tag
             ><span :class="sourceChipClass(item.sourceType)">{{
               sourceLabel(item.sourceType)
@@ -1544,7 +1545,7 @@ onUnmounted(() => {
             <el-tag v-if="selected.knownExploited" type="danger"
               >CISA KEV</el-tag
             ><el-tag :type="severityType(selected.severity)">{{
-              selected.severity
+              severityLabel(selected.severity)
             }}</el-tag>
           </div>
         </header>
@@ -1750,7 +1751,7 @@ onUnmounted(() => {
                 </span>
                 <span class="poc-option-tags">
                   <el-tag size="small" :type="severityType(poc.severity)">{{
-                    poc.severity
+                    severityLabel(poc.severity)
                   }}</el-tag>
                   <el-tag size="small" :type="safetyType(poc.scanSafety)">{{
                     poc.scanSafety || "SAFE"
@@ -1844,8 +1845,8 @@ onUnmounted(() => {
         </template>
         <template v-if="includesSqlmap">
           <label>sqlmap 检测强度</label>
-          <div class="fscan-mode">
-            <el-select v-model="sqlmapLevel" style="width: 120px">
+          <div class="sqlmap-mode">
+            <el-select v-model="sqlmapLevel">
               <el-option
                 v-for="l in ['1', '2', '3', '4', '5']"
                 :key="l"
@@ -1853,7 +1854,7 @@ onUnmounted(() => {
                 :value="l"
               />
             </el-select>
-            <el-select v-model="sqlmapRisk" style="width: 120px">
+            <el-select v-model="sqlmapRisk">
               <el-option
                 v-for="r in ['1', '2', '3']"
                 :key="r"
@@ -2013,7 +2014,7 @@ onUnmounted(() => {
 .catalog-reveal-status {
   padding: 6px 13px 8px;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--app-muted);
 }
 .catalog-list button {
   position: relative;
@@ -2023,16 +2024,16 @@ onUnmounted(() => {
   gap: 6px;
   padding: 12px 13px;
   border: 0;
-  border-bottom: 1px solid #edf0f4;
+  border-bottom: 1px solid var(--app-border);
   background: transparent;
   text-align: left;
   cursor: pointer;
 }
 .catalog-list button:hover {
-  background: #f1f5f9;
+  background: var(--app-surface-soft);
 }
 .catalog-list button.active {
-  background: #eaf1fd;
+  background: var(--app-accent-soft);
 }
 .catalog-list button::before {
   content: "";
@@ -2061,22 +2062,22 @@ onUnmounted(() => {
   min-width: 0;
 }
 .catalog-list i {
-  color: #8b95a3;
+  color: var(--app-muted);
   font-size: 10px;
   font-style: normal;
 }
 .catalog-empty {
   padding: 22px 16px;
-  color: #8b95a3;
+  color: var(--app-muted);
   font-size: 12px;
   line-height: 1.6;
 }
 .catalog-list b {
-  color: #334155;
+  color: var(--app-text);
   font-size: 12px;
 }
 .catalog-list small {
-  color: #94a3b8;
+  color: var(--app-muted);
   font-size: 10px;
 }
 .vuln-detail-pane {
@@ -2186,6 +2187,14 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   margin-top: 8px;
+}
+.sqlmap-mode {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sqlmap-mode :deep(.el-select) {
+  flex: 1;
 }
 .scan-summary {
   display: flex;

@@ -54,16 +54,78 @@ public class FindingController {
   public Page<Finding> list(
       @RequestParam(defaultValue = "0") int page,
       @RequestParam(defaultValue = "20") int size,
-      @RequestParam(defaultValue = "") String query) {
+      @RequestParam(defaultValue = "") String query,
+      @RequestParam(required = false) Long targetId,
+      @RequestParam(required = false) String severity,
+      @RequestParam(required = false) String status,
+      @RequestParam(required = false) String category) {
     var pageable =
         PageRequests.bounded(page, size, 10, 100, Sort.by(Sort.Direction.DESC, "createdAt"));
     String keyword = query == null ? "" : query.trim();
     Specification<Finding> scope = accessibleScope();
-    Specification<Finding> spec =
-        keyword.isEmpty() ? scope : Specification.allOf(scope, buildSpecification(keyword));
+    Specification<Finding> filterSpec =
+        buildFilterSpecification(targetId, severity, status, category);
+    Specification<Finding> searchSpec = keyword.isEmpty() ? null : buildSpecification(keyword);
+    Specification<Finding> spec = Specification.allOf(scope, filterSpec, searchSpec);
     Page<Finding> result = repository.findAll(spec, pageable);
     populateProjectId(result.getContent());
     return result;
+  }
+
+  private Specification<Finding> buildFilterSpecification(
+      Long targetId, String severity, String status, String category) {
+    return (root, criteriaQuery, builder) -> {
+      List<Predicate> predicates = new ArrayList<>();
+      if (targetId != null) {
+        predicates.add(builder.equal(root.get("targetId"), targetId));
+      }
+      if (severity != null && !severity.isBlank()) {
+        predicates.add(
+            builder.equal(
+                builder.upper(root.get("severity")),
+                severity.trim().toUpperCase(Locale.ROOT)));
+      }
+      if (status != null && !status.isBlank()) {
+        predicates.add(
+            builder.equal(
+                builder.upper(root.get("status")),
+                status.trim().toUpperCase(Locale.ROOT)));
+      }
+      if ("vulnerability".equalsIgnoreCase(category)) {
+        Predicate isHighOrCritical = builder.upper(root.get("severity")).in("CRITICAL", "HIGH");
+        Predicate notLowOrInfo = builder.not(builder.upper(root.get("severity")).in("LOW", "INFO"));
+        Predicate hasCode =
+            builder.and(
+                builder.isNotNull(root.get("vulnerabilityCode")),
+                builder.notEqual(root.get("vulnerabilityCode"), ""));
+        Predicate notBaselineTool =
+            builder.not(
+                builder
+                    .lower(root.get("sourceTool"))
+                    .in("http_headers", "tcp_ports", "nmap_service_scan"));
+        Predicate notBaselineCode =
+            builder.not(
+                builder
+                    .upper(root.get("vulnerabilityCode"))
+                    .in("STB-WEB-001", "STB-WEB-005", "STB-TLS-001", "STB-NET-001", "STB-SMB-SMBV1"));
+        Predicate nonBaselineVuln = builder.and(notLowOrInfo, hasCode, notBaselineTool, notBaselineCode);
+        predicates.add(builder.or(isHighOrCritical, nonBaselineVuln));
+      } else if ("risk".equalsIgnoreCase(category)) {
+        Predicate isLowOrInfo = builder.upper(root.get("severity")).in("LOW", "INFO");
+        Predicate isBaselineTool =
+            builder
+                .lower(root.get("sourceTool"))
+                .in("http_headers", "tcp_ports", "nmap_service_scan");
+        Predicate isBaselineCode =
+            builder
+                .upper(root.get("vulnerabilityCode"))
+                .in("STB-WEB-001", "STB-WEB-005", "STB-TLS-001", "STB-NET-001", "STB-SMB-SMBV1");
+        predicates.add(builder.or(isLowOrInfo, isBaselineTool, isBaselineCode));
+      }
+      return predicates.isEmpty()
+          ? builder.conjunction()
+          : builder.and(predicates.toArray(Predicate[]::new));
+    };
   }
 
   /**

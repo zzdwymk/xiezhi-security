@@ -1820,25 +1820,43 @@ onBeforeUnmount(() => {
         role="group"
         aria-label="工作区实时概览"
       >
-        <div class="welcome-stat">
+        <button
+          type="button"
+          class="welcome-stat welcome-stat--link"
+          title="点击查看授权目标管理"
+          @click="router.push('/targets')"
+        >
           <strong>{{ dashboardStats.targets }}</strong
           ><small>授权目标</small>
-        </div>
-        <div class="welcome-stat">
+        </button>
+        <button
+          type="button"
+          class="welcome-stat welcome-stat--link"
+          title="点击查看检测任务与实时进度"
+          @click="router.push('/tasks')"
+        >
           <strong>{{ dashboardStats.running }}</strong
           ><small>进行中任务</small>
-        </div>
-        <div class="welcome-stat">
+        </button>
+        <button
+          type="button"
+          class="welcome-stat welcome-stat--link"
+          title="点击查看结果中心全部发现项"
+          @click="router.push('/findings')"
+        >
           <strong>{{ dashboardStats.findings }}</strong
           ><small>累计发现</small>
-        </div>
-        <div
-          class="welcome-stat"
+        </button>
+        <button
+          type="button"
+          class="welcome-stat welcome-stat--link"
           :class="{ warn: dashboardStats.critical > 0 }"
+          title="点击查看高危漏洞发现项"
+          @click="router.push({ path: '/findings', query: { q: 'HIGH' } })"
         >
           <strong>{{ dashboardStats.critical }}</strong
           ><small>高危发现</small>
-        </div>
+        </button>
       </div>
 
       <div class="welcome-composer">
@@ -3613,6 +3631,22 @@ a.agent-citation-bubble {
   border: 1px solid var(--app-border);
   border-radius: var(--fluent-radius-card);
   background: var(--app-surface-soft);
+}
+.welcome-stat--link {
+  cursor: pointer;
+  font-family: inherit;
+  text-align: center;
+  outline: none;
+  transition: all var(--fluent-fast, 150ms ease);
+}
+.welcome-stat--link:hover {
+  background: var(--app-surface-hover, rgba(0, 120, 212, 0.04));
+  border-color: var(--fluent-primary, #0078d4);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.07);
+}
+.welcome-stat--link:active {
+  transform: translateY(0);
 }
 .welcome-stat strong {
   color: var(--app-text);
