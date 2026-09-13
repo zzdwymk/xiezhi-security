@@ -240,13 +240,6 @@ function applyNativeBackdrop(window, theme = currentSystemTheme()) {
         : "none",
     );
   }
-  if (typeof window.setTitleBarOverlay === "function") {
-    try {
-      window.setTitleBarOverlay(titleBarOverlay(theme));
-    } catch {
-      // ignore
-    }
-  }
 }
 
 function applySystemThemeToStaticWindow(window, theme = currentSystemTheme()) {
@@ -6282,8 +6275,6 @@ function createMainWindow(port) {
     minWidth: 1000,
     minHeight: 700,
     show: false,
-    titleBarStyle: "hidden",
-    titleBarOverlay: titleBarOverlay(initialTheme),
     backgroundColor: windowBackgroundColor(initialTheme),
     backgroundMaterial:
       initialTheme.transparencyEnabled && !initialTheme.highContrast
