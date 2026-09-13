@@ -135,6 +135,11 @@ interface ToolboxDesktopBridge {
   readonly onDependencyInstallProgress?: (
     callback: (event: DependencyInstallProgressEvent) => void,
   ) => () => void;
+  readonly showTaskNotification?: (payload: {
+    title?: string;
+    body?: string;
+    type?: "info" | "error";
+  }) => Promise<void>;
 }
 
 interface SystemThemeState {

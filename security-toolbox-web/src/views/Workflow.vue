@@ -59,6 +59,8 @@ import {
   type WorkflowSuggestion,
   type WorkflowSuggestStreamEvent,
   type VulnerabilityDefinition,
+  type MsfModuleCatalog,
+  type MsfModuleOption,
 } from "../api";
 import { toErrorMessage } from "../utils/errorMessage";
 import { taskbarProgress } from "../utils/taskbarProgress";
@@ -778,14 +780,70 @@ function updateSelectedToolParameters(
   });
 }
 
-const selectedPortsInput = computed({
-  get: () =>
-    String(
-      selectedToolNode.value?.data.parameters?.ports ||
-        selectedTarget.value?.allowedPorts ||
-        "80,443",
-    ),
-  set: (value: string) => updateSelectedToolParameters({ ports: value.trim() }),
+// 端口以字符串参数存储（如 "80,443,8443"）；在节点编辑中通过多选下拉编辑。
+// 节点未配置端口时保持空数组，执行时由 parametersForExecution 继承目标 allowedPorts。
+const FULL_PORT_VALUE = "1-65535";
+
+function inheritPortValues(): string[] {
+  return String(selectedTarget.value?.allowedPorts || "")
+    .split(/[,，;；、\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+const portOptions = computed(() => {
+  const map = new Map<string, string>();
+  for (const opt of COMMON_PORT_OPTIONS) map.set(opt.value, opt.label);
+  map.set(FULL_PORT_VALUE, "全端口 · 1-65535");
+  const targetPorts = new Set(inheritPortValues());
+  for (const token of targetPorts) {
+    if (!map.has(token)) map.set(token, `目标端口 ${token}`);
+  }
+  return [...map.entries()].map(([value, label]) => ({ value, label }));
+});
+
+const selectedPortsList = computed({
+  get: () => {
+    const raw = String(selectedToolNode.value?.data.parameters?.ports || "");
+    if (!raw.trim()) return [];
+    return raw
+      .split(/[,，;；、\s]+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  },
+  set: (values: string[]) =>
+    updateSelectedToolParameters({
+      ports: [...new Set(values.map((v) => v.trim()).filter(Boolean))].join(","),
+    }),
+});
+
+function selectAllPorts() {
+  selectedPortsList.value = COMMON_PORT_OPTIONS.map((opt) => opt.value);
+}
+
+function selectFullPorts() {
+  selectedPortsList.value = [FULL_PORT_VALUE];
+}
+
+function inheritTargetPorts() {
+  const inherited = inheritPortValues();
+  if (!inherited.length) {
+    ElMessage.warning("当前目标未配置允许端口，无法继承");
+    return;
+  }
+  selectedPortsList.value = inherited;
+  ElMessage.success(`已继承目标端口：${inherited.join(",")}`);
+}
+
+function clearSelectedPorts() {
+  selectedPortsList.value = [];
+}
+
+const portsInheritPlaceholder = computed(() => {
+  const inherited = inheritPortValues().join(",");
+  return inherited
+    ? `留空继承目标端口：${inherited}`
+    : "选择端口，或输入自定义端口";
 });
 
 const selectedNmapMode = computed({
@@ -808,20 +866,60 @@ const selectedHttpCheck = computed({
   set: (value: string) => updateSelectedToolParameters({ check: value }),
 });
 
+const msfCatalog = ref<MsfModuleCatalog>({
+  available: false,
+  categories: [],
+});
+const msfCatalogLoading = ref(false);
+const msfCatalogFailed = ref(false);
+let msfCatalogGen = 0;
+let msfCatalogLoaded = false;
+const MSF_ALLOWED = 5000;
+
+function msfCategoryModules(category: string): string[] {
+  return (
+    msfCatalog.value.categories.find((c) => c.category === category)?.modules.map(
+      (m) => m.modulePath,
+    ) || []
+  );
+}
+
+function msfAllModules(): string[] {
+  return msfCatalog.value.categories.flatMap((c) =>
+    c.modules.map((m) => m.modulePath),
+  );
+}
+
+async function loadMsfCatalog() {
+  const generation = ++msfCatalogGen;
+  msfCatalogLoading.value = true;
+  try {
+    const { data } = await endpoints.getMsfModules();
+    if (generation !== msfCatalogGen) return;
+    msfCatalog.value = data;
+    msfCatalogFailed.value = false;
+    msfCatalogLoaded = true;
+  } catch (error) {
+    if (generation !== msfCatalogGen) return;
+    msfCatalogFailed.value = true;
+    msfCatalog.value = { available: false, categories: [] };
+    msfCatalogLoaded = true;
+    console.warn(toErrorMessage(error, "无法加载 Metasploit 模块目录"));
+  } finally {
+    if (generation === msfCatalogGen) msfCatalogLoading.value = false;
+  }
+}
+
 const selectedMsfModule = computed({
   get: () => {
     const value = selectedToolNode.value?.data.parameters?.modules;
-    if (Array.isArray(value)) return value.join(", ");
-    return String(
-      selectedToolNode.value?.data.parameters?.module || "",
-    );
+    if (Array.isArray(value)) return value.map(String);
+    const single = selectedToolNode.value?.data.parameters?.module;
+    return single ? [String(single)] : [];
   },
-  set: (value: string) => {
-    const modules = value
-      .split(/[,，\s]+/)
-      .map((item) => item.trim().toLowerCase())
-      .filter(Boolean)
-      .slice(0, 25);
+  set: (value: string[]) => {
+    const modules = [...new Set(value.map((item) => item.trim().toLowerCase()).filter(Boolean))]
+      .slice(0, MSF_ALLOWED);
     updateSelectedToolParameters(
       modules.length
         ? { modules, module: undefined }
@@ -829,6 +927,139 @@ const selectedMsfModule = computed({
     );
   },
 });
+
+// 全选：除开始/结束等特殊要求外，逐分类追加当前分类全部模块（受单次数量上限约束）。
+function selectAllMsfModules() {
+  const all = msfAllModules();
+  selectMsfModules(all);
+}
+
+function selectMsfCategory(category: string) {
+  selectMsfModules(msfCategoryModules(category));
+}
+
+function selectMsfModules(modules: string[]) {
+  const existing = new Set(selectedMsfModule.value.map((m) => m.toLowerCase()));
+  for (const m of modules) existing.add(m.toLowerCase());
+  const merged = [...existing].slice(0, MSF_ALLOWED);
+  if (existing.size > MSF_ALLOWED) {
+    ElMessage.warning(`Metasploit 单次最多选择 ${MSF_ALLOWED} 个模块，已截取前 ${MSF_ALLOWED} 个`);
+  }
+  selectedMsfModule.value = merged;
+}
+
+function isMsfCategoryAllSelected(category: string) {
+  const group = msfCategoryModules(category);
+  if (!group.length) return false;
+  const current = new Set(selectedMsfModule.value.map((m) => m.toLowerCase()));
+  return group.every((m) => current.has(m.toLowerCase()));
+}
+
+// ---- 模块必要配置：按需读取单个模块的 Datastore 选项并自动回填 ----
+const msfFocusedModule = ref<string>("");
+const msfOptionsLoading = ref(false);
+const msfOptionsError = ref("");
+const msfOptions = ref<MsfModuleOption[]>([]);
+
+// 选中模块变化时，自动把首个模块设为配置焦点并识别其选项（扫描类模块的 RHOSTS 等服务端自动填充）。
+watch(
+  () => selectedMsfModule.value,
+  (modules) => {
+    const list = modules || [];
+    if (!list.length) {
+      msfFocusedModule.value = "";
+      msfOptions.value = [];
+      msfOptionsError.value = "";
+      return;
+    }
+    if (!msfFocusedModule.value || !list.includes(msfFocusedModule.value.toLowerCase())) {
+      msfFocusedModule.value = String(list[0]).toLowerCase();
+    }
+    void loadMsfModuleOptions(msfFocusedModule.value);
+  },
+  { immediate: true },
+);
+
+async function loadMsfModuleOptions(module: string) {
+  if (!module) return;
+  msfOptionsLoading.value = true;
+  msfOptionsError.value = "";
+  try {
+    const { data } = await endpoints.getMsfModuleOptions(module);
+    msfOptions.value = data.options || [];
+  } catch (error) {
+    msfOptions.value = [];
+    msfOptionsError.value = `无法识别该模块的必要配置：${toErrorMessage(error, "未知错误")}`;
+  } finally {
+    msfOptionsLoading.value = false;
+  }
+}
+
+function focusMsfModule(module: string) {
+  msfFocusedModule.value = String(module).toLowerCase();
+  void loadMsfModuleOptions(msfFocusedModule.value);
+}
+
+function msfSavedOptions(): Record<string, string> {
+  if (!msfFocusedModule.value) return {};
+  const raw = selectedToolNode.value?.data.parameters?.msfOptions;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const perModule = (raw as Record<string, Record<string, unknown>>)[msfFocusedModule.value];
+  if (!perModule || typeof perModule !== "object") return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(perModule)) out[key] = String(value ?? "");
+  return out;
+}
+
+function msfOptionValue(opt: MsfModuleOption): string {
+  const saved = msfSavedOptions();
+  return saved[opt.name] ?? opt.defaultValue ?? "";
+}
+
+function setMsfOptionValue(opt: MsfModuleOption, value: string) {
+  const module = msfFocusedModule.value;
+  if (!module) return;
+  const raw = selectedToolNode.value?.data.parameters?.msfOptions;
+  const base =
+    raw && typeof raw === "object" && !Array.isArray(raw)
+      ? JSON.parse(JSON.stringify(raw)) as Record<string, Record<string, string>>
+      : {};
+  const moduleOptions: Record<string, string> = { ...(base[module] || {}) };
+  const trimmed = value.trim();
+  if (trimmed) moduleOptions[opt.name] = trimmed;
+  else delete moduleOptions[opt.name];
+  base[module] = moduleOptions;
+  updateSelectedToolParameters({ msfOptions: base });
+}
+
+const editableMsfOptions = computed(() =>
+  msfOptions.value.filter((opt) => opt.name && opt.name.trim()),
+);
+
+function rankLabel(rank?: string) {
+  const aliases: Record<string, string> = {
+    manual: "手动",
+    low: "低",
+    normal: "普通",
+    average: "中等",
+    good: "良好",
+    great: "优秀",
+    excellent: "极佳",
+  };
+  return aliases[String(rank || "").toLowerCase()] || String(rank || "");
+}
+
+function moduleOptionLabel(mod: {
+  modulePath: string;
+  name: string;
+  rank: string;
+  description: string;
+}) {
+  const tag = rankLabel(mod.rank);
+  const name =
+    mod.name && mod.name.trim() ? ` · ${mod.name.trim()}` : "";
+  return `[${tag}] ${mod.modulePath}${name}`;
+}
 
 const selectedAllPocs = computed({
   get: () =>
@@ -926,6 +1157,7 @@ watch(
     } else {
       pocOptions.value = [];
     }
+    if (tool === "msf_scan" && !msfCatalogLoaded) void loadMsfCatalog();
   },
   { immediate: true },
 );
@@ -1693,9 +1925,19 @@ function canCopyNode(node?: EditorNode | null) {
   );
 }
 
+// 仅把节点快照写入内部剪贴板，不创建节点；真正的“复制”由 Ctrl+V 完成。
+function snapshotToClipboard(source: EditorNode) {
+  clipboardNode.value = {
+    ...source,
+    data: JSON.parse(JSON.stringify(source.data)),
+    position: { ...source.position },
+  } as EditorNode;
+}
+
 function copyAndPasteNode(
   nodeId?: string,
   atFlowPosition?: { x: number; y: number },
+  inPlace = false,
 ) {
   const sourceId = nodeId || selectedNodeId.value || contextMenuNode.value?.id;
   const source = nodes.value.find((n) => n.id === sourceId);
@@ -1720,12 +1962,8 @@ function copyAndPasteNode(
     );
     return null;
   }
-  clipboardNode.value = {
-    ...source,
-    data: JSON.parse(JSON.stringify(source.data)),
-    position: { ...source.position },
-  } as EditorNode;
-  const newNode = pasteNode(atFlowPosition);
+  snapshotToClipboard(source);
+  const newNode = pasteNode(atFlowPosition, inPlace);
   if (newNode) {
     ElMessage.success(`已复制并创建“${newNode.data.label}”`);
   }
@@ -1742,7 +1980,7 @@ function copyContextNode() {
   closeWorkflowContextMenu();
 }
 
-function pasteNode(atFlowPosition?: { x: number; y: number }) {
+function pasteNode(atFlowPosition?: { x: number; y: number }, inPlace = false) {
   const source = clipboardNode.value;
   if (!source) {
     ElMessage.warning("剪贴板为空，请先复制节点");
@@ -1767,11 +2005,18 @@ function pasteNode(atFlowPosition?: { x: number; y: number }) {
   } else {
     newId = uniqueId(`node-${safeId(source.data.label)}`);
   }
-  const offset = 36 + pasteOffset.value * 18;
-  const basePos = atFlowPosition
-    ? { x: atFlowPosition.x, y: atFlowPosition.y }
-    : { x: source.position.x + offset, y: source.position.y + offset };
-  pasteOffset.value = (pasteOffset.value + 1) % 8;
+  const offset = atFlowPosition
+    ? 0
+    : inPlace
+      ? 0
+      : 36 + pasteOffset.value * 18;
+  const basePos =
+    atFlowPosition || inPlace
+      ? { x: source.position.x, y: source.position.y }
+      : { x: source.position.x + offset, y: source.position.y + offset };
+  if (!atFlowPosition && !inPlace) {
+    pasteOffset.value = (pasteOffset.value + 1) % 8;
+  }
   const parameters = source.data.parameters ? JSON.parse(JSON.stringify(source.data.parameters)) : undefined;
   const newNode = makeNode(
     newId,
@@ -2268,7 +2513,7 @@ function onNodeDragStop(event: NodeDragEvent) {
   isAligning.value = false;
 }
 
-function copySelectedNodes() {
+function copySelectedNodes(inPlace = false) {
   const targetIds = selectedNodeIds.value.length
     ? [...selectedNodeIds.value]
     : selectedNodeId.value
@@ -2282,8 +2527,24 @@ function copySelectedNodes() {
     ElMessage.warning("请先选择要复制的节点");
     return;
   }
+
+  // 指针不在画布内按 Ctrl+C：只复制到内部剪贴板，不立即克隆；由 Ctrl+V 粘贴。
+  if (!inPlace) {
+    const first = nodes.value.find(
+      (n) =>
+        unionIds.includes(n.id) && n.id !== "__start__" && n.id !== "__end__",
+    );
+    if (!first) {
+      ElMessage.info("所选节点不可复制");
+      return;
+    }
+    snapshotToClipboard(first);
+    ElMessage.success(`已复制“${first.data.label}”，按 Ctrl+V 粘贴`);
+    return;
+  }
+
   if (unionIds.length === 1) {
-    copyAndPasteNode(unionIds[0]);
+    copyAndPasteNode(unionIds[0], undefined, true);
     return;
   }
 
@@ -2296,12 +2557,11 @@ function copySelectedNodes() {
     return;
   }
   if (validNodes.length === 1 && unionIds.length > 1) {
-    copyAndPasteNode(validNodes[0].id);
+    copyAndPasteNode(validNodes[0].id, undefined, true);
     return;
   }
 
-  const offset = 36 + pasteOffset.value * 18;
-  pasteOffset.value = (pasteOffset.value + 1) % 8;
+  const offset = 0;
   const newNodes: EditorNode[] = [];
   const newIds: string[] = [];
   const cloneIdMap = new Map<string, string>();
@@ -3711,6 +3971,20 @@ function isTypingTarget(target: EventTarget | null) {
       ))
   );
 }
+
+// 鼠标是否位于编辑画布（flowCanvas）内：用于“在画布内才原地克隆”的判定。
+// 用鼠标指针位置（而非事件 target 的焦点）判断，避免在画布外点击不可聚焦区域时
+// 焦点仍停留在画布导致误判为“在画布内”。
+const pointerInCanvas = ref(false);
+
+function onCanvasPointerEnter() {
+  pointerInCanvas.value = true;
+}
+
+function onCanvasPointerLeave() {
+  pointerInCanvas.value = false;
+}
+
 function onWorkflowKeydown(event: KeyboardEvent) {
   if (event.key === "Escape") {
     if (workflowContextMenu.value.visible) {
@@ -3751,14 +4025,14 @@ function onWorkflowKeydown(event: KeyboardEvent) {
     ) {
       if (canCopyNode()) {
         event.preventDefault();
-        copySelectedNodes();
+        copySelectedNodes(pointerInCanvas.value);
       }
       return;
     }
     if (key === "v" && clipboardNode.value) {
       if (!viewingRunSnapshot.value && !executing.value) {
         event.preventDefault();
-        pasteNode();
+        pasteNode(undefined, pointerInCanvas.value);
       }
       return;
     }
@@ -4073,6 +4347,8 @@ onBeforeUnmount(() => {
           ref="flowCanvas"
           v-loading="loading"
           class="flow-canvas"
+          @pointerenter="onCanvasPointerEnter"
+          @pointerleave="onCanvasPointerLeave"
           @drop.prevent="onCanvasDrop"
           @dragover.prevent
         >
@@ -4587,12 +4863,67 @@ onBeforeUnmount(() => {
                 "
                 label="扫描端口"
               >
-                <el-input
-                  v-model="selectedPortsInput"
-                  placeholder="例如 80,443,8000-8100"
-                />
+                <el-select
+                  v-model="selectedPortsList"
+                  multiple
+                  filterable
+                  allow-create
+                  default-first-option
+                  :placeholder="
+                    portsInheritPlaceholder
+                  "
+                >
+                  <el-option
+                    v-for="opt in portOptions"
+                    :key="opt.value"
+                    :label="opt.label"
+                    :value="opt.value"
+                  />
+                </el-select>
+                <div class="quick-action-toolbar port-toolbar">
+                  <button
+                    type="button"
+                    class="fluent-quick-btn"
+                    :disabled="executing || viewingRunSnapshot"
+                    @click="selectAllPorts"
+                  >
+                    <FluentIcon name="checkmark-circle" />
+                    <span>全选</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="fluent-quick-btn is-warning"
+                    :disabled="executing || viewingRunSnapshot"
+                    @click="selectFullPorts"
+                  >
+                    <FluentIcon name="server" />
+                    <span>全端口</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="fluent-quick-btn"
+                    :disabled="executing || viewingRunSnapshot"
+                    @click="inheritTargetPorts"
+                  >
+                    <FluentIcon name="arrow-download" />
+                    <span>继承目标端口</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="fluent-quick-btn is-danger"
+                    :disabled="executing || viewingRunSnapshot"
+                    @click="clearSelectedPorts"
+                  >
+                    <FluentIcon name="dismiss" />
+                    <span>清空</span>
+                  </button>
+                </div>
                 <small class="input-hint">
-                  必须是当前授权目标端口范围的子集。
+                  必须为目标授权端口范围的子集。留空时执行自动继承目标允许端口{{
+                    selectedTarget?.allowedPorts
+                      ? `（${selectedTarget.allowedPorts}）`
+                      : "（当前目标未配置）"
+                  }}。
                 </small>
               </el-form-item>
 
@@ -4626,13 +4957,145 @@ onBeforeUnmount(() => {
                 v-if="selectedToolNode.data.tool === 'msf_scan'"
                 label="Metasploit 模块"
               >
-                <el-input
-                  v-model="selectedMsfModule"
-                  placeholder="例如 auxiliary/scanner/ssh/ssh_login"
-                />
+                <div v-if="msfCatalogLoading" class="msf-catalog-status">
+                  <el-icon class="is-loading"><Loading /></el-icon>
+                  正在枚举本机 Metasploit 模块…
+                </div>
+                <template v-else-if="msfCatalog.available && msfCatalog.categories.some((cat) => cat.modules.length)">
+                  <el-select
+                    v-model="selectedMsfModule"
+                    popper-class="workflow-msf-select-popper"
+                    multiple
+                    filterable
+                    clearable
+                    collapse-tags
+                    :collapse-tags-tooltip="true"
+                    placeholder="选择 Metasploit 模块（可输入自定模块）"
+                  >
+                    <el-option-group
+                      v-for="cat in msfCatalog.categories"
+                      :key="cat.category"
+                      :label="cat.label"
+                    >
+                      <el-option
+                        v-for="mod in cat.modules"
+                        :key="mod.modulePath"
+                        :label="moduleOptionLabel(mod)"
+                        :value="mod.modulePath"
+                      />
+                    </el-option-group>
+                  </el-select>
+                  <div class="quick-action-toolbar msf-catalog-tools">
+                    <button
+                      type="button"
+                      class="fluent-quick-btn"
+                      :disabled="executing || viewingRunSnapshot"
+                      @click="selectAllMsfModules"
+                    >
+                      <FluentIcon name="checkmark-circle" />
+                      <span>全选全部</span>
+                    </button>
+                    <button
+                      v-for="cat in msfCatalog.categories"
+                      :key="cat.category"
+                      type="button"
+                      class="fluent-quick-btn"
+                      :disabled="executing || viewingRunSnapshot"
+                      @click="selectMsfCategory(cat.category)"
+                    >
+                      <FluentIcon name="checkmark" />
+                      <span>全选{{ cat.label }}</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="fluent-quick-btn is-danger"
+                      :disabled="executing || viewingRunSnapshot"
+                      @click="selectedMsfModule = []"
+                    >
+                      <FluentIcon name="dismiss" />
+                      <span>清空</span>
+                    </button>
+                  </div>
+                </template>
+                <div v-else class="msf-catalog-status is-warn">
+                  <el-icon><WarningFilled /></el-icon>
+                  {{ msfCatalogFailed ? "无法加载 Metasploit 模块目录" : "未检测到 MetasploitFramework 模块" }}
+                </div>
+                <template v-if="!(msfCatalog.available && msfCatalog.categories.some((cat) => cat.modules.length))">
+                  <el-select
+                    v-model="selectedMsfModule"
+                    popper-class="workflow-msf-select-popper"
+                    multiple
+                    filterable
+                    allow-create
+                    collapse-tags
+                    :collapse-tags-tooltip="true"
+                    default-first-option
+                    placeholder="手动输入模块路径（auxiliary/... 或 exploit/...）"
+                  />
+                </template>
                 <small class="input-hint">
-                  支持以英文逗号分隔多个模块（auxiliary/... 或 exploit/...）；仅作用于授权主机与端口。
+                  单次最多选择 {{ MSF_ALLOWED }} 个模块，支持 auxiliary/exploit 分类；仅作用于授权主机与端口。
                 </small>
+
+                <div v-if="selectedMsfModule.length" class="msf-options-panel">
+                  <div class="msf-options-head">
+                    <span class="msf-options-title">模块必要配置（自动识别）</span>
+                    <el-select
+                      v-model="msfFocusedModule"
+                      size="small"
+                      class="msf-options-module"
+                      placeholder="选择要配置的模块"
+                      @change="focusMsfModule"
+                    >
+                      <el-option
+                        v-for="m in selectedMsfModule"
+                        :key="m"
+                        :label="m"
+                        :value="String(m).toLowerCase()"
+                      />
+                    </el-select>
+                  </div>
+                  <div v-if="msfOptionsLoading" class="msf-catalog-status">
+                    <el-icon class="is-loading"><Loading /></el-icon>
+                    正在识别该模块选项…
+                  </div>
+                  <div v-else-if="msfOptionsError" class="msf-options-status is-warn">
+                    <FluentIcon name="info" :size="13" />
+                    <span>{{ msfOptionsError }}</span>
+                  </div>
+                  <div v-else-if="editableMsfOptions.length" class="msf-option-fields">
+                    <div
+                      v-for="opt in editableMsfOptions"
+                      :key="opt.name"
+                      class="msf-option-row"
+                    >
+                      <div class="msf-option-meta">
+                        <span class="msf-option-name">{{ opt.name }}</span>
+                        <el-tag
+                          v-if="opt.required"
+                          size="small"
+                          type="danger"
+                          effect="plain"
+                        >
+                          必填
+                        </el-tag>
+                        <small v-if="opt.description" class="msf-option-desc">
+                          {{ opt.description }}
+                        </small>
+                      </div>
+                      <el-input
+                        :model-value="msfOptionValue(opt)"
+                        size="small"
+                        :placeholder="opt.defaultValue || '留空'"
+                        @update:model-value="(v: string | number) => setMsfOptionValue(opt, String(v))"
+                      />
+                    </div>
+                  </div>
+                  <div v-else class="msf-options-status">
+                    该模块无需额外配置（目标/端口已由系统按授权范围自动填充）。
+                  </div>
+                </div>
               </el-form-item>
 
               <el-form-item
@@ -6470,6 +6933,172 @@ onBeforeUnmount(() => {
   font-size: var(--type-micro);
   line-height: 1.5;
 }
+.quick-action-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+/* Fluent 2 快捷操作按钮：轻量次级按钮，悬停高亮、点击下沉 */
+.quick-action-toolbar .fluent-quick-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--app-text);
+  background: var(--app-surface-strong, #ffffff);
+  border: 1px solid var(--app-border-strong, #cbd5e1);
+  border-radius: var(--fluent-radius-control, 4px);
+  cursor: pointer;
+  transition:
+    background-color var(--fluent-fast, 150ms ease),
+    border-color var(--fluent-fast, 150ms ease),
+    color var(--fluent-fast, 150ms ease),
+    box-shadow var(--fluent-fast, 150ms ease);
+}
+
+.quick-action-toolbar .fluent-quick-btn :deep(.fluent-system-icon) {
+  font-size: 14px;
+}
+
+.quick-action-toolbar .fluent-quick-btn:hover:not(:disabled) {
+  color: var(--app-accent, #0078d4);
+  border-color: color-mix(in srgb, var(--app-accent, #0078d4) 55%, var(--app-border-strong, #cbd5e1));
+  background: var(--app-accent-soft, rgba(0, 120, 212, 0.08));
+}
+
+.quick-action-toolbar .fluent-quick-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.quick-action-toolbar .fluent-quick-btn:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px var(--app-surface-strong, #ffffff),
+    0 0 0 4px color-mix(in srgb, var(--app-accent, #0078d4) 55%, transparent);
+}
+
+.quick-action-toolbar .fluent-quick-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.quick-action-toolbar .fluent-quick-btn.is-danger {
+  color: var(--app-danger, #c42b1c);
+  border-color: color-mix(in srgb, var(--app-danger, #c42b1c) 35%, var(--app-border-strong, #cbd5e1));
+}
+
+.quick-action-toolbar .fluent-quick-btn.is-danger:hover:not(:disabled) {
+  color: var(--app-danger, #c42b1c);
+  border-color: var(--app-danger, #c42b1c);
+  background: color-mix(in srgb, var(--app-danger, #c42b1c) 10%, transparent);
+}
+
+.quick-action-toolbar .fluent-quick-btn.is-warning {
+  color: var(--app-warning, #9a5b00);
+  border-color: color-mix(in srgb, var(--app-warning, #9a5b00) 35%, var(--app-border-strong, #cbd5e1));
+}
+
+.quick-action-toolbar .fluent-quick-btn.is-warning:hover:not(:disabled) {
+  color: var(--app-warning, #9a5b00);
+  border-color: var(--app-warning, #9a5b00);
+  background: color-mix(in srgb, var(--app-warning, #9a5b00) 10%, transparent);
+}
+.msf-catalog-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--app-elevated);
+  color: var(--app-muted);
+  font-size: var(--type-micro);
+  line-height: 1.5;
+}
+.msf-catalog-status.is-warn {
+  color: var(--app-danger, #c42b1c);
+}
+.msf-catalog-status .el-icon {
+  flex: none;
+}
+.msf-options-panel {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: var(--fluent-radius-card, 8px);
+  background: var(--app-surface-soft, rgba(0, 0, 0, 0.02));
+}
+.msf-options-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.msf-options-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-text);
+}
+.msf-options-module {
+  width: 210px;
+}
+.msf-options-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+  color: var(--app-muted);
+  font-size: var(--type-micro, 12px);
+  line-height: 1.5;
+}
+.msf-options-status.is-warn {
+  color: var(--app-danger, #c42b1c);
+}
+.msf-option-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.msf-option-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.msf-option-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 40%;
+}
+.msf-option-name {
+  font-family: var(--font-mono, "Cascadia Code", "Consolas", monospace);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-text);
+  white-space: nowrap;
+}
+.msf-option-desc {
+  font-size: var(--type-micro, 11px);
+  color: var(--app-muted);
+  line-height: 1.4;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.msf-option-row > .el-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .workflow-poc-option {
   display: flex;
   align-items: center;
@@ -6510,6 +7139,45 @@ onBeforeUnmount(() => {
   height: auto !important;
   min-height: 42px !important;
   padding: 6px 14px !important;
+  line-height: 1.4 !important;
+}
+:global(.workflow-msf-select-popper) {
+  min-width: 360px !important;
+  max-width: min(560px, calc(100vw - 32px)) !important;
+}
+:global(.workflow-msf-select-popper .el-select-dropdown__item) {
+  height: auto !important;
+  min-height: 32px !important;
+  padding: 6px 14px !important;
+  line-height: 1.4 !important;
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  word-break: break-all !important;
+}
+:global(.workflow-msf-select-popper .el-select__selection) {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 4px !important;
+  max-width: min(560px, calc(100vw - 48px)) !important;
+  max-height: min(60vh, 520px) !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+}
+:global(.workflow-msf-select-popper .el-select__selected-item) {
+  max-width: 100% !important;
+  min-width: 0 !important;
+}
+:global(.workflow-msf-select-popper .el-select__selection .el-tag) {
+  max-width: 100% !important;
+  height: auto !important;
+  white-space: normal !important;
+}
+:global(.workflow-msf-select-popper .el-select__selection .el-select__tags-text) {
+  white-space: normal !important;
+  word-break: break-all !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
   line-height: 1.4 !important;
 }
 .node-editor-header {

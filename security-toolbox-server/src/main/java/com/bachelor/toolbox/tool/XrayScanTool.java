@@ -21,10 +21,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -71,36 +73,156 @@ public class XrayScanTool implements SecurityTool {
   @Override
   public ToolExecutionResult execute(AuthorizedTarget target, Map<String, Object> parameters)
       throws Exception {
-    return execute(target, parameters, ToolExecutionObserver.NOOP);
+    return execute(target, parameters, ToolExecutionObserver.NOOP, null);
   }
 
   @Override
   public ToolExecutionResult execute(
       AuthorizedTarget target, Map<String, Object> parameters, ToolExecutionObserver observer)
       throws Exception {
+    return execute(target, parameters, observer, null);
+  }
+
+  /**
+   * 执行 Xray 扫描。若提供 {@code onFinding}，则在扫描过程中轮询 Xray 的 JSON 输出文件，
+   * 每解析出一条新结果就立即回调，便于上层实时展示，而不是等进程结束才一次性返回。
+   */
+  public ToolExecutionResult execute(
+      AuthorizedTarget target,
+      Map<String, Object> parameters,
+      ToolExecutionObserver observer,
+      Consumer<FindingDraft> onFinding)
+      throws Exception {
     URI targetUri = resolveBase(target, parameters);
     List<ScannerPocSelectionService.SelectedPoc> selected =
-        pocSelection.resolve(ScannerPocCatalogService.XRAY, parameters, false);
+        pocSelection.resolve(
+            ScannerPocCatalogService.XRAY, WebTargetResolver.scanParameters(parameters), false);
     boolean allPocs = pocSelection.selectsAll(parameters);
     String resolvedExe = resolveExecutable(executable);
     assertExecutableIfAbsolute(resolvedExe);
     Path work = Files.createTempDirectory("xiezhi-xray-");
     Path output = work.resolve("result.json");
+    Thread tailer = null;
+    Set<String> emitted = ConcurrentHashMap.newKeySet();
     try {
       initializeConfig(work, resolvedExe);
       List<String> command = buildCommand(resolvedExe, targetUri, selected, output, allPocs);
       observer.command(command);
       ProcessBuilder builder = new ProcessBuilder(command).directory(work.toFile()).redirectErrorStream(true);
       Process process = ProcessEnvironmentSanitizer.sanitize(builder).start();
+      if (onFinding != null) {
+        tailer =
+            new Thread(
+                () -> tailOutput(output, targetUri, selected, emitted, onFinding), "xray-result-tail");
+        tailer.setDaemon(true);
+        tailer.start();
+      }
       String stdout = waitFor(process, observer, "Xray 正在执行已选择的 PoC", timeoutSeconds);
       if (process.exitValue() != 0) {
         throw new ApiException("Xray 执行失败，退出码 " + process.exitValue() + "：" + abbreviate(stdout, 500));
       }
+      if (tailer != null) {
+        tailer.interrupt();
+        tailer = null;
+      }
       observer.progressPercent(100d, "Xray 扫描完成，正在解析结果");
-      return parseOutput(targetUri, selected, readJson(output));
+      ToolExecutionResult result = parseOutput(targetUri, selected, readJson(output));
+      if (onFinding != null) {
+        for (FindingDraft finding : result.findings()) {
+          if (emitted.add(findingKey(finding))) {
+            onFinding.accept(finding);
+          }
+        }
+      }
+      return result;
     } finally {
+      if (tailer != null) {
+        tailer.interrupt();
+      }
       deleteTree(work);
     }
+  }
+
+  // 轮询 Xray 的 JSON 输出文件，提取已完整写入的结果对象并逐条回调。
+  private void tailOutput(
+      Path file,
+      URI expectedTarget,
+      List<ScannerPocSelectionService.SelectedPoc> selected,
+      Set<String> emitted,
+      Consumer<FindingDraft> sink) {
+    while (!Thread.currentThread().isInterrupted()) {
+      try {
+        if (Files.isRegularFile(file)) {
+          String content = Files.readString(file, StandardCharsets.UTF_8);
+          scanJsonObjects(
+              content,
+              node -> {
+                try {
+                  for (JsonNode item : resultItems(node)) {
+                    FindingDraft draft = toFindingDraft(item, selected, expectedTarget);
+                    if (emitted.add(findingKey(draft))) {
+                      sink.accept(draft);
+                    }
+                  }
+                } catch (Exception ignored) {
+                  // 未完成/越权/无法映射的对象跳过，最终解析阶段再严格处理。
+                }
+              });
+        }
+        Thread.sleep(500);
+      } catch (InterruptedException ex) {
+        Thread.currentThread().interrupt();
+        return;
+      } catch (Exception ignored) {
+        // 文件暂时不可读时继续轮询。
+      }
+    }
+  }
+
+  // 从可能仍在写入的文本中扫描出所有花括号平衡的 JSON 对象（兼容数组与 JSONL）。
+  private void scanJsonObjects(String content, Consumer<JsonNode> consumer) {
+    int depth = 0;
+    boolean inString = false;
+    boolean escaped = false;
+    int start = -1;
+    for (int i = 0; i < content.length(); i++) {
+      char c = content.charAt(i);
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (c == '\\') {
+          escaped = true;
+        } else if (c == '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (c == '"') {
+        inString = true;
+      } else if (c == '{') {
+        if (depth == 0) {
+          start = i;
+        }
+        depth++;
+      } else if (c == '}') {
+        if (depth > 0) {
+          depth--;
+          if (depth == 0 && start >= 0) {
+            String candidate = content.substring(start, i + 1);
+            try {
+              consumer.accept(objectMapper.readTree(candidate));
+            } catch (Exception ignored) {
+              // 片段尚不完整或非法，忽略。
+            }
+            start = -1;
+          }
+        }
+      }
+    }
+  }
+
+  private String findingKey(FindingDraft finding) {
+    return finding.title() + "|" + finding.evidence();
   }
 
   /** 优先采用预解析基址，否则回退到授权目标默认 http(s) 基址。 */
@@ -167,14 +289,7 @@ public class XrayScanTool implements SecurityTool {
         if (title.isBlank()) title = poc.name();
         String severity = normalizeSeverity(firstText(detail.path("level"), item.path("level"), item.path("severity")));
         if (findings.size() < MAX_FINDINGS) {
-          findings.add(
-              new FindingDraft(
-                  title,
-                  severity,
-                  "Xray PoC 在授权目标上匹配到潜在安全问题，需结合组件版本和业务环境人工确认。",
-                  "poc=" + poc.externalId() + "; target=" + matched,
-                  "依据 Xray PoC 引用与厂商公告确认影响，修复后使用同一 PoC 复测。",
-                  poc.vulnerabilityCode()));
+          findings.add(toFindingDraft(item, selected, expectedTarget));
         }
         matches.add(
             Map.of(
@@ -193,6 +308,27 @@ public class XrayScanTool implements SecurityTool {
     data.put("matchCount", matches.size());
     data.put("matches", matches);
     return new ToolExecutionResult("Xray 扫描完成，匹配 " + matches.size() + " 项潜在问题", data, findings);
+  }
+
+  private FindingDraft toFindingDraft(
+      JsonNode item,
+      List<ScannerPocSelectionService.SelectedPoc> selected,
+      URI expectedTarget) {
+    ScannerPocSelectionService.SelectedPoc poc = resolvePoc(item, selected);
+    String matched = matchedTarget(item);
+    assertAuthorized(expectedTarget, matched);
+    JsonNode detail = item.path("detail");
+    String title = firstText(detail.path("vuln_class"), item.path("vuln_class"), item.path("name"));
+    if (title.isBlank()) title = poc.name();
+    String severity =
+        normalizeSeverity(firstText(detail.path("level"), item.path("level"), item.path("severity")));
+    return new FindingDraft(
+        title,
+        severity,
+        "Xray PoC 在授权目标上匹配到潜在安全问题，需结合组件版本和业务环境人工确认。",
+        "poc=" + poc.externalId() + "; target=" + matched,
+        "依据 Xray PoC 引用与厂商公告确认影响，修复后使用同一 PoC 复测。",
+        poc.vulnerabilityCode());
   }
 
   private static final List<String> XRAY_CONFIG_FILES =

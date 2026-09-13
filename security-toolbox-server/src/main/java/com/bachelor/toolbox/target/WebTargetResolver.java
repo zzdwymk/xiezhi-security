@@ -116,6 +116,9 @@ public class WebTargetResolver {
    * 从任务参数中取出预解析的 Web 基址列表（由工作流/主动检测在创建任务时注入）。无则返回空列表。
    * 工具可通过静态方式调用，无需注入 resolver。
    */
+  /** 从任务参数中取出预解析的 Web 基址列表（由工作流/主动检测在创建任务时注入）。无则返回空列表。
+   * 工具可通过静态方式调用，无需注入 resolver。
+   */
   public static List<URI> basesFromParameters(Map<String, Object> parameters) {
     if (parameters == null) return List.of();
     Object value = parameters.get(PARAM_RESOLVED_BASES);
@@ -131,6 +134,17 @@ public class WebTargetResolver {
       }
     }
     return bases;
+  }
+
+  /**
+   * 返回移除了框架内部传输参数（预解析基址）后的扫描参数副本，供参数白名单校验（如 PoC 选择）使用。
+   * 工具仍需调用 {@link #basesFromParameters} 读取完整参数里的基址，因此这里不改写入参。
+   */
+  public static Map<String, Object> scanParameters(Map<String, Object> parameters) {
+    if (parameters == null || !parameters.containsKey(PARAM_RESOLVED_BASES)) return parameters;
+    Map<String, Object> copy = new java.util.HashMap<>(parameters);
+    copy.remove(PARAM_RESOLVED_BASES);
+    return copy;
   }
 
   /** 把一个基址（或直接给定的 URL 基址）与可选路径拼成可请求的 URI。 */

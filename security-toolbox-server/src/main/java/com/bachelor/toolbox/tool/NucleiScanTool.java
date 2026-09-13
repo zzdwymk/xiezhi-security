@@ -5,6 +5,7 @@ import com.bachelor.toolbox.common.ProcessEnvironmentSanitizer;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.PortRangeParser;
 import com.bachelor.toolbox.target.TargetPolicyService;
+import com.bachelor.toolbox.target.WebTargetResolver;
 import com.bachelor.toolbox.vulnerability.NucleiTemplateCatalogService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -147,7 +148,10 @@ public class NucleiScanTool implements SecurityTool {
     List<ScannerPocSelectionService.SelectedPoc> selected =
         pocSelection == null
             ? List.of()
-            : pocSelection.resolve(NucleiTemplateCatalogService.SOURCE_TYPE, parameters, true);
+            : pocSelection.resolve(
+                NucleiTemplateCatalogService.SOURCE_TYPE,
+                WebTargetResolver.scanParameters(parameters),
+                true);
     boolean allPocs = pocSelection != null && pocSelection.selectsAll(parameters);
     String canonicalPorts = ports.canonicalizeCompact(target.getAllowedPorts(), maxPorts);
     assertExecutableIfAbsolute();

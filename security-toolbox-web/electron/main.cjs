@@ -5,6 +5,7 @@ const {
   ipcMain,
   nativeTheme,
   net: electronNet,
+  Notification,
   safeStorage,
   session: electronSession,
   shell,
@@ -4949,6 +4950,49 @@ function updateTaskbarProgress(progress, options) {
 handleRendererIpc("toolbox:set-progress-bar", (event, progress, options) => {
   assertMainRenderer(event);
   updateTaskbarProgress(progress, options);
+});
+
+handleRendererIpc("toolbox:show-task-notification", (event, payload) => {
+  assertMainRenderer(event);
+  const { title, body, type } = payload || {};
+  const textTitle =
+    typeof title === "string" && title?.trim()
+      ? title
+      : type === "error"
+        ? "任务执行失败"
+        : "任务已完成";
+  const textBody =
+    typeof body === "string" && body?.trim()
+      ? body
+      : "任务已完成，可在「任务控制中心」查看详情。";
+  const win = mainWindow || startupWindow;
+  if (win && !win.isDestroyed() && !win.isFocused()) {
+    void win.show();
+    void win.focus();
+  }
+  if (Notification.isSupported()) {
+    const notification = new Notification({
+      title: textTitle,
+      body: textBody,
+      silent: false,
+    });
+    notification.on("click", () => {
+      const target = mainWindow || startupWindow;
+      if (target && !target.isDestroyed()) {
+        void target.show();
+        void target.focus();
+      }
+    });
+    notification.show();
+    return;
+  }
+  void dialog.showMessageBox(mainWindow || startupWindow, {
+    type: type === "error" ? "error" : "info",
+    title: textTitle,
+    message: textTitle,
+    detail: textBody,
+    buttons: ["知道了"],
+  });
 });
 
 handleRendererIpc("toolbox:choose-tools-directory", async (event) => {

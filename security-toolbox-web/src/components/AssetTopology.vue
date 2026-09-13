@@ -262,7 +262,7 @@ function getAssetFindings(asset: DiscoveryResult) {
   const targetId = Number(asset.targetId);
   const host = stripHostPort(parseHost(asset.url).host).toLowerCase();
   const url = (asset.url || "").toLowerCase();
-  return (props.findings || []).filter((f) => {
+  const matched = (props.findings || []).filter((f) => {
     const findingProjectId = f.projectId ?? (typeof props.projectId === "number" ? props.projectId : undefined);
     if (Number(findingProjectId) !== Number(asset.projectId)) return false;
     // Findings are target-scoped in the report API. Keep this association
@@ -277,11 +277,23 @@ function getAssetFindings(asset: DiscoveryResult) {
     if (url && fEvidence.includes(url)) return true;
     return false;
   });
+
+  // 完全相同的发现项才去重：同一记录（按 id）只保留一次，保持原有顺序。
+  const seen = new Set<number>();
+  return matched.filter((f) => {
+    if (seen.has(f.id)) return false;
+    seen.add(f.id);
+    return true;
+  });
 }
 
-const selectedNodeFindings = computed(() =>
-  selectedAsset.value ? getAssetFindings(selectedAsset.value) : [],
-);
+const selectedNodeFindings = computed(() => {
+  if (!selectedAsset.value) return [];
+  // 漏洞优先排在前面，同类内保持原有顺序（sort 稳定）。
+  return [...getAssetFindings(selectedAsset.value)].sort(
+    (a, b) => Number(findingIsVulnerability(b)) - Number(findingIsVulnerability(a)),
+  );
+});
 
 const HUB_W = 216;
 const HUB_H = 68;
@@ -353,6 +365,7 @@ interface LayoutNode {
   isSpotlight: boolean;
   statusKind?: "waf" | "https" | "http";
   urlPath?: string;
+  parentId?: number | null;
   vulnCount: number;
   riskCount: number;
   findings: ProjectFindingRecord[];
@@ -372,6 +385,44 @@ function getAssetKind(asset: DiscoveryResult | null | undefined): AssetKind {
 
 function isWebPathAsset(asset: DiscoveryResult | null | undefined): boolean {
   return getAssetKind(asset) === "path";
+}
+
+// 取资产 URL 的路径部分；主机/授权目标节点为空，探测路径/子页面非空。
+function assetUrlPathOf(asset: DiscoveryResult | null | undefined): string {
+  if (!asset?.url) return "";
+  try {
+    const parsed = new URL(normalizeAssetUrl(asset.url));
+    return parsed.pathname === "/" ? "" : parsed.pathname + (parsed.search || "");
+  } catch {
+    return "";
+  }
+}
+
+// 依据项目 + 授权目标 (targetId) 建立主机与子资产的父子关系：
+// 授权目标或根 URL 资产作为父节点，其余路径/探测结果挂在它之下。
+function resolveAssetParents(assets: DiscoveryResult[]): Map<number, number> {
+  const groups = new Map<string, DiscoveryResult[]>();
+  for (const asset of assets) {
+    if (asset.id == null) continue;
+    const key = `${asset.projectId}:${asset.targetId}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(asset);
+  }
+
+  const parentOf = new Map<number, number>();
+  groups.forEach((group) => {
+    if (group.length < 2) return;
+    const host =
+      group.find((asset) => getAssetKind(asset) === "target") ||
+      group.find((asset) => assetUrlPathOf(asset) === "") ||
+      null;
+    if (!host || host.id == null) return;
+    for (const asset of group) {
+      if (asset.id == null || asset.id === host.id) continue;
+      parentOf.set(asset.id, host.id);
+    }
+  });
+  return parentOf;
 }
 
 function getAssetRemovalAction(asset: DiscoveryResult | null | undefined): "probe" | "target" | "none" {
@@ -565,8 +616,7 @@ const cx = computed(() => viewportWidth.value / 2);
 const cy = computed(() => viewportHeight.value / 2);
 
 // 科学椭圆环轨：契合 16:9 宽屏及 224x64 矩形卡片物理几何，彻底告别内外圈撞车
-const orbitRings = computed(() => {
-  const count = props.assets.filter((asset) => asset.id != null).length;
+function orbitRingsFor(count: number) {
   if (!count) return [];
 
   const ringCounts = count <= 5
@@ -609,6 +659,15 @@ const orbitRings = computed(() => {
     startIdx += ringCount;
     return ring;
   });
+}
+
+// 环轨背景参考线：仅统计主机/根节点，与节点实际摆放保持一致。
+const orbitRings = computed(() => {
+  const assets = props.assets.filter((asset) => asset.id != null);
+  if (!assets.length) return [];
+  const parentOf = resolveAssetParents(assets);
+  const rootCount = assets.filter((asset) => !parentOf.has(asset.id!)).length;
+  return orbitRingsFor(rootCount);
 });
 
 function getAssetStatusKind(asset: DiscoveryResult, protocol: string): "waf" | "https" | "http" {
@@ -800,46 +859,127 @@ const layoutData = computed<{
   }
 
   // ------------------------- 布局算法分支 -------------------------
+  // 主机(授权目标/根 URL 资产) 与其下挂路径、探测结果建立父子关系，
+  // 让 URL/路径节点挂在所属主机之下，而不是平级直连项目中心。
+  const assetById = new Map<number, DiscoveryResult>();
+  allAssets.forEach((asset) => {
+    if (asset.id != null) assetById.set(asset.id, asset);
+  });
+  const parentOf = resolveAssetParents(allAssets);
+  const childrenByParent = new Map<number, DiscoveryResult[]>();
+  allAssets.forEach((asset) => {
+    const parentId = parentOf.get(asset.id!);
+    if (parentId == null) return;
+    if (!childrenByParent.has(parentId)) childrenByParent.set(parentId, []);
+    childrenByParent.get(parentId)!.push(asset);
+  });
+  const rootAssets = allAssets.filter((asset) => !parentOf.has(asset.id!));
+  const childrenOf = (asset: DiscoveryResult) => childrenByParent.get(asset.id!) || [];
+  const hostAssetOf = (asset: DiscoveryResult) => {
+    const parentId = parentOf.get(asset.id!);
+    return parentId != null ? assetById.get(parentId) : undefined;
+  };
+  // 子节点归属到其主机的根域分组，保证父子始终落在同一思维导图分支内。
+  const domainKeyOf = (asset: DiscoveryResult) =>
+    parseHost((hostAssetOf(asset) ?? asset).url).rootDomain;
+
+  // 连接任意源锚点到目标节点 (物理接驳点 + 贝塞尔曲线)
+  function connect(
+    sourceId: number | string,
+    sx: number,
+    sy: number,
+    sw: number,
+    sh: number,
+    target: LayoutNode,
+  ) {
+    const p1 = getRectIntersection(sx, sy, sw, sh, target.x, target.y);
+    const p2 = getRectIntersection(target.x, target.y, CARD_W, CARD_H, sx, sy);
+    const angle = Math.atan2(target.y - sy, target.x - sx);
+    const midX = (p1.x + p2.x) / 2 + Math.sin(angle) * 10;
+    const midY = (p1.y + p2.y) / 2 - Math.cos(angle) * 10;
+    edges.push({
+      id: `edge-${target.id}`,
+      sourceId,
+      targetId: target.id,
+      x1: p1.x,
+      y1: p1.y,
+      x2: p2.x,
+      y2: p2.y,
+      path: `M ${p1.x} ${p1.y} Q ${midX} ${midY} ${p2.x} ${p2.y}`,
+    });
+  }
+
+  // 统一接线：有父节点的连父节点，否则连所属项目中心。
+  function connectAssetNodes(hubForAsset: (asset: DiscoveryResult) => LayoutHub) {
+    const byId = new Map<number, LayoutNode>();
+    nodes.forEach((node) => byId.set(node.id, node));
+    nodes.forEach((node) => {
+      const parentId = parentOf.get(node.id);
+      const parentNode = parentId != null ? byId.get(parentId) : undefined;
+      if (parentNode) {
+        connect(parentNode.id, parentNode.x, parentNode.y, CARD_W, CARD_H, node);
+        return;
+      }
+      const hub = hubForAsset(node.asset);
+      connect(hub.id, hub.x, hub.y, HUB_W, HUB_H, node);
+    });
+  }
+
+  // 在根节点周围按父节点方向摆放其子节点（环轨/星座模式共用）。
+  function placeChildrenAround(
+    roots: LayoutNode[],
+    hubOf: (asset: DiscoveryResult) => { x: number; y: number },
+    baseRx: number,
+    baseRy: number,
+  ) {
+    roots.forEach((root) => {
+      const kids = childrenOf(root.asset);
+      if (!kids.length) return;
+      const center = hubOf(root.asset);
+      const outerRx = baseRx + CARD_W + 64;
+      const outerRy = baseRy + CARD_H + 56;
+      const baseAngle = Math.atan2(root.y - center.y, root.x - center.x);
+      const step = Math.max(0.2, Math.min(0.5, (2 * Math.PI) / Math.max(8, kids.length * 3)));
+      kids.forEach((child, idx) => {
+        const angle = baseAngle + (idx - (kids.length - 1) / 2) * step;
+        nodes.push(
+          createLayoutNode(
+            child,
+            center.x + outerRx * Math.cos(angle),
+            center.y + outerRy * Math.sin(angle),
+          ),
+        );
+      });
+    });
+  }
+
   if (layoutMode.value === "orbit") {
     if (hubs.length === 1) {
-      // 单中心环轨
-      const centerPoint = { x: hubs[0].x, y: hubs[0].y };
-      orbitRings.value.forEach((ring) => {
-        const ringAssets = allAssets.slice(ring.startIdx, ring.startIdx + ring.count);
+      // 单中心环轨：主机排布在环轨上，路径子节点分布到更外圈
+      const hub = hubs[0];
+      const centerPoint = { x: hub.x, y: hub.y };
+      const rings = orbitRingsFor(rootAssets.length);
+      rings.forEach((ring) => {
+        const ringAssets = rootAssets.slice(ring.startIdx, ring.startIdx + ring.count);
         ringAssets.forEach((asset, idx) => {
           const angle = ring.angleOffset + (2 * Math.PI * idx) / Math.max(1, ring.count);
           const autoX = centerPoint.x + ring.rx * Math.cos(angle);
           const autoY = centerPoint.y + ring.ry * Math.sin(angle);
-          const node = createLayoutNode(asset, autoX, autoY);
-          nodes.push(node);
+          nodes.push(createLayoutNode(asset, autoX, autoY));
         });
       });
+
+      const outerRx = rings.length ? Math.max(...rings.map((r) => r.rx)) : 320;
+      const outerRy = rings.length ? Math.max(...rings.map((r) => r.ry)) : 220;
+      placeChildrenAround([...nodes], () => centerPoint, outerRx, outerRy);
 
       resolveNodeCollisions(nodes, hubs, customPositions.value);
-
-      nodes.forEach((node) => {
-        const p1 = getRectIntersection(centerPoint.x, centerPoint.y, HUB_W, HUB_H, node.x, node.y);
-        const p2 = getRectIntersection(node.x, node.y, CARD_W, CARD_H, centerPoint.x, centerPoint.y);
-        const currentAngle = Math.atan2(node.y - centerPoint.y, node.x - centerPoint.x);
-        const midX = (p1.x + p2.x) / 2 + Math.sin(currentAngle) * 10;
-        const midY = (p1.y + p2.y) / 2 - Math.cos(currentAngle) * 10;
-        const path = `M ${p1.x} ${p1.y} Q ${midX} ${midY} ${p2.x} ${p2.y}`;
-
-        edges.push({
-          id: `edge-${node.id}`,
-          sourceId: hubs[0].id,
-          targetId: node.id,
-          x1: p1.x,
-          y1: p1.y,
-          x2: p2.x,
-          y2: p2.y,
-          path,
-        });
-      });
+      connectAssetNodes(() => hub);
     } else {
       // 多中心星座环轨模式 (Multi-Hub Constellation Orbit)
       const M = hubs.length;
       const constellationRadius = Math.max(380, M * 150);
+      const ringRadiusByHub = new Map<string, { rx: number; ry: number }>();
 
       hubs.forEach((hub, i) => {
         const angle = (2 * Math.PI * i) / M - Math.PI / 2;
@@ -850,55 +990,47 @@ const layoutData = computed<{
           hub.y = autoHubY;
         }
 
-        const pAssets = allAssets.filter((a) => a.projectId === hub.projectId);
-        const count = pAssets.length;
+        const pRoots = rootAssets.filter((a) => a.projectId === hub.projectId);
+        const count = pRoots.length;
         if (count > 0) {
           const ringRx = Math.max((HUB_W + CARD_W) / 2 + 54, ((CARD_W + 36) * count) / (2 * Math.PI));
           const ringRy = Math.max((HUB_H + CARD_H) / 2 + 44, ((CARD_H + 28) * count) / (2 * Math.PI));
-          pAssets.forEach((asset, idx) => {
+          ringRadiusByHub.set(hub.id, { rx: ringRx, ry: ringRy });
+          pRoots.forEach((asset, idx) => {
             const assetAngle = -Math.PI / 2 + (2 * Math.PI * idx) / count;
             const autoX = hub.x + ringRx * Math.cos(assetAngle);
             const autoY = hub.y + ringRy * Math.sin(assetAngle);
-            const node = createLayoutNode(asset, autoX, autoY);
-            nodes.push(node);
+            nodes.push(createLayoutNode(asset, autoX, autoY));
           });
         }
       });
 
+      const hubOfAsset = (asset: DiscoveryResult) =>
+        hubs.find((h) => h.projectId === asset.projectId) || hubs[0];
+      placeChildrenAround(
+        [...nodes],
+        hubOfAsset,
+        Math.max(...Array.from(ringRadiusByHub.values(), (r) => r.rx), (HUB_W + CARD_W) / 2 + 54),
+        Math.max(...Array.from(ringRadiusByHub.values(), (r) => r.ry), (HUB_H + CARD_H) / 2 + 44),
+      );
+
       resolveNodeCollisions(nodes, hubs, customPositions.value);
-
       const hubsMap = new Map(hubs.map((h) => [h.projectId, h]));
-      nodes.forEach((node) => {
-        const targetHub = hubsMap.get(node.asset.projectId) || hubs[0];
-        const p1 = getRectIntersection(targetHub.x, targetHub.y, HUB_W, HUB_H, node.x, node.y);
-        const p2 = getRectIntersection(node.x, node.y, CARD_W, CARD_H, targetHub.x, targetHub.y);
-        const currentAngle = Math.atan2(node.y - targetHub.y, node.x - targetHub.x);
-        const midX = (p1.x + p2.x) / 2 + Math.sin(currentAngle) * 10;
-        const midY = (p1.y + p2.y) / 2 - Math.cos(currentAngle) * 10;
-        const path = `M ${p1.x} ${p1.y} Q ${midX} ${midY} ${p2.x} ${p2.y}`;
-
-        edges.push({
-          id: `edge-${node.id}`,
-          sourceId: targetHub.id,
-          targetId: node.id,
-          x1: p1.x,
-          y1: p1.y,
-          x2: p2.x,
-          y2: p2.y,
-          path,
-        });
-      });
+      connectAssetNodes((asset) => hubsMap.get(asset.projectId) || hubs[0]);
     }
   } else if (layoutMode.value === "mindmap") {
-    // 思维导图模式 (支持多项目各自分支)
+    // 思维导图模式：中心 → 主域/主机分支 → 主机(授权目标) → 路径子节点
     const leftAnchor = Math.max(HUB_W / 2 + 60, cx.value - (viewportWidth.value > 1200 ? 440 : 380));
 
-    // 计算各项目的思维导图高度
     const clusterSeparation = 120;
+    const verticalGap = CARD_H + 20;
+    const blockGap = 18;
+    const domainSeparation = 26;
+
     const clusterHeights = hubs.map((hub) => {
       const pAssets = allAssets.filter((a) => a.projectId === hub.projectId);
-      const rootDomains = new Set(pAssets.map((a) => parseHost(a.url).rootDomain));
-      return Math.max(HUB_H + 80, rootDomains.size * 64 + pAssets.length * (CARD_H + 22));
+      const domains = new Set(pAssets.map((a) => domainKeyOf(a)));
+      return Math.max(HUB_H + 80, domains.size * (DOMAIN_BRANCH_H + 40) + pAssets.length * verticalGap);
     });
     const totalHeight =
       clusterHeights.reduce((a, b) => a + b, 0) +
@@ -917,7 +1049,7 @@ const layoutData = computed<{
       const pAssets = allAssets.filter((a) => a.projectId === hub.projectId);
       const domainGroups = new Map<string, DiscoveryResult[]>();
       pAssets.forEach((a) => {
-        const rd = parseHost(a.url).rootDomain;
+        const rd = domainKeyOf(a);
         if (!domainGroups.has(rd)) domainGroups.set(rd, []);
         domainGroups.get(rd)!.push(a);
       });
@@ -925,65 +1057,58 @@ const layoutData = computed<{
       const sortedDomains = Array.from(domainGroups.keys()).sort((a, b) => a.localeCompare(b));
       const domainX = hub.x + HUB_W / 2 + 130;
       const leafX = domainX + DOMAIN_BRANCH_W / 2 + 160;
-      const verticalGap = CARD_H + 20;
-      const domainSeparation = 26;
+      const childX = leafX + CARD_W + 56;
 
-      let subTotalHeight = 0;
-      const groupHeights = sortedDomains.map((d) => {
-        const count = domainGroups.get(d)!.length;
-        const h = Math.max(DOMAIN_BRANCH_H + 16, count * verticalGap);
-        subTotalHeight += h;
-        return h;
+      const domainBlocks = sortedDomains.map((domain) => {
+        const groupAssets = domainGroups.get(domain)!;
+        const roots = groupAssets.filter((a) => !parentOf.has(a.id!));
+        const blocks = roots.map((asset) => ({ asset, kids: childrenOf(asset) }));
+        const contentHeight =
+          blocks.reduce((sum, b) => sum + Math.max(1, b.kids.length) * verticalGap, 0) +
+          Math.max(0, blocks.length - 1) * blockGap;
+        return { domain, blocks, contentHeight, height: Math.max(DOMAIN_BRANCH_H + 16, contentHeight) };
       });
-      subTotalHeight += Math.max(0, sortedDomains.length - 1) * domainSeparation;
 
+      const subTotalHeight =
+        domainBlocks.reduce((sum, d) => sum + d.height, 0) +
+        Math.max(0, domainBlocks.length - 1) * domainSeparation;
       let currentDomainY = hub.y - subTotalHeight / 2;
 
-      sortedDomains.forEach((rootDomain, dIdx) => {
-        const groupAssets = domainGroups.get(rootDomain)!;
-        const blockHeight = groupHeights[dIdx];
-        const startLeafY = currentDomainY + (blockHeight - (groupAssets.length - 1) * verticalGap) / 2;
-        const branchY = currentDomainY + blockHeight / 2;
-
+      domainBlocks.forEach(({ domain, blocks, contentHeight, height }) => {
+        const startY = currentDomainY;
+        const branchY = startY + height / 2;
+        const branchId = `domain-${hub.id}-${domain}`;
         let anyAssetMatch = false;
+        let cursor = startY + (height - contentHeight) / 2;
 
-        groupAssets.forEach((asset, idx) => {
-          const autoX = leafX;
-          const autoY = startLeafY + idx * verticalGap;
-          const node = createLayoutNode(asset, autoX, autoY);
-          if (node.isMatch) anyAssetMatch = true;
-          nodes.push(node);
+        blocks.forEach(({ asset, kids }) => {
+          const blockHeight = Math.max(1, kids.length) * verticalGap;
+          const rootY = cursor + blockHeight / 2;
+          const rootNode = createLayoutNode(asset, leafX, rootY);
+          if (rootNode.isMatch) anyAssetMatch = true;
+          nodes.push(rootNode);
+          connect(branchId, domainX, branchY, DOMAIN_BRANCH_W, DOMAIN_BRANCH_H, rootNode);
 
-          const lx1 = domainX + DOMAIN_BRANCH_W / 2;
-          const ly1 = branchY;
-          const lx2 = node.x - CARD_W / 2;
-          const ly2 = node.y;
-          const ldx = lx2 - lx1;
-          const leafPath = `M ${lx1} ${ly1} C ${lx1 + ldx * 0.5} ${ly1}, ${lx2 - ldx * 0.5} ${ly2}, ${lx2} ${ly2}`;
-
-          edges.push({
-            id: `edge-branch-${asset.id}`,
-            sourceId: `domain-${hub.id}-${rootDomain}`,
-            targetId: asset.id!,
-            x1: lx1,
-            y1: ly1,
-            x2: lx2,
-            y2: ly2,
-            path: leafPath,
+          const startLeafY = rootY - ((kids.length - 1) * verticalGap) / 2;
+          kids.forEach((child, idx) => {
+            const childNode = createLayoutNode(child, childX, startLeafY + idx * verticalGap);
+            if (childNode.isMatch) anyAssetMatch = true;
+            nodes.push(childNode);
+            connect(rootNode.id, rootNode.x, rootNode.y, CARD_W, CARD_H, childNode);
           });
+
+          cursor += blockHeight + blockGap;
         });
 
-        const branchId = `domain-${hub.id}-${rootDomain}`;
-        const isDomainIp = isIpAddress(rootDomain);
         domainNodes.push({
           id: branchId,
-          domain: rootDomain,
-          isIp: isDomainIp,
+          domain,
+          isIp: isIpAddress(domain),
           x: domainX,
           y: branchY,
           w: DOMAIN_BRANCH_W,
           h: DOMAIN_BRANCH_H,
-          nodeCount: groupAssets.length,
+          nodeCount: domainGroups.get(domain)!.length,
           isMatch: anyAssetMatch,
         });
 
@@ -992,8 +1117,6 @@ const layoutData = computed<{
         const hx2 = domainX - DOMAIN_BRANCH_W / 2;
         const hy2 = branchY;
         const hdx = hx2 - hx1;
-        const hubPath = `M ${hx1} ${hy1} C ${hx1 + hdx * 0.5} ${hy1}, ${hx2 - hdx * 0.5} ${hy2}, ${hx2} ${hy2}`;
-
         edges.push({
           id: `edge-hub-${branchId}`,
           sourceId: hub.id,
@@ -1002,10 +1125,10 @@ const layoutData = computed<{
           y1: hy1,
           x2: hx2,
           y2: hy2,
-          path: hubPath,
+          path: `M ${hx1} ${hy1} C ${hx1 + hdx * 0.5} ${hy1}, ${hx2 - hdx * 0.5} ${hy2}, ${hx2} ${hy2}`,
         });
 
-        currentDomainY += blockHeight + domainSeparation;
+        currentDomainY += height + domainSeparation;
       });
 
       currentClusterY += clusterHeight + clusterSeparation;
@@ -1013,104 +1136,97 @@ const layoutData = computed<{
 
     resolveNodeCollisions(nodes, hubs, customPositions.value);
   } else {
-    // 树状模式 (Tree Mode)
+    // 树状模式 (Tree Mode)：主机成列，路径子节点挂在主机外侧
+    const verticalGap = CARD_H + 20;
+    const blockGap = 18;
+
     if (hubs.length === 1) {
       // 单中心树状
       const hub = hubs[0];
-      const hostGroups = new Map<string, DiscoveryResult[]>();
-      allAssets.forEach((a) => {
-        const h = parseHost(a.url).host;
-        if (!hostGroups.has(h)) hostGroups.set(h, []);
-        hostGroups.get(h)!.push(a);
-      });
-
-      const groupedAssets = Array.from(hostGroups.values()).flat();
-      const leftCount = Math.ceil(groupedAssets.length / 2);
-      const sideGroups = [groupedAssets.slice(0, leftCount), groupedAssets.slice(leftCount)];
-      const verticalGap = CARD_H + 20;
       const horizontalOffset = Math.max(
         (HUB_W + CARD_W) / 2 + 96,
         Math.min(380, (viewportWidth.value - CARD_W) / 2 - 48),
       );
+      const childOffset = horizontalOffset + CARD_W + 56;
 
-      sideGroups.forEach((groupAssets, sideIndex) => {
+      const leftCount = Math.ceil(rootAssets.length / 2);
+      const sideRoots = [rootAssets.slice(0, leftCount), rootAssets.slice(leftCount)];
+
+      sideRoots.forEach((sideAssets, sideIndex) => {
         const direction = sideIndex === 0 ? -1 : 1;
-        const startY = hub.y - ((groupAssets.length - 1) * verticalGap) / 2;
-        groupAssets.forEach((asset, index) => {
-          const autoX = hub.x + direction * horizontalOffset;
-          const autoY = startY + index * verticalGap;
-          const node = createLayoutNode(asset, autoX, autoY);
-          nodes.push(node);
+        const blocks = sideAssets.map((asset) => ({ asset, kids: childrenOf(asset) }));
+        const contentHeight =
+          blocks.reduce((sum, b) => sum + Math.max(1, b.kids.length) * verticalGap, 0) +
+          Math.max(0, blocks.length - 1) * blockGap;
+        let cursor = hub.y - contentHeight / 2;
+
+        blocks.forEach(({ asset, kids }) => {
+          const blockHeight = Math.max(1, kids.length) * verticalGap;
+          const rootY = cursor + blockHeight / 2;
+          nodes.push(createLayoutNode(asset, hub.x + direction * horizontalOffset, rootY));
+
+          const startY = rootY - ((kids.length - 1) * verticalGap) / 2;
+          kids.forEach((child, idx) => {
+            nodes.push(
+              createLayoutNode(child, hub.x + direction * childOffset, startY + idx * verticalGap),
+            );
+          });
+
+          cursor += blockHeight + blockGap;
         });
       });
 
       resolveNodeCollisions(nodes, hubs, customPositions.value);
-
-      nodes.forEach((node) => {
-        const edgeDirection = node.x >= hub.x ? 1 : -1;
-        const x1 = hub.x + (edgeDirection * HUB_W) / 2;
-        const y1 = hub.y;
-        const x2 = node.x - (edgeDirection * CARD_W) / 2;
-        const y2 = node.y;
-        const dx = x2 - x1;
-        const path = `M ${x1} ${y1} C ${x1 + dx * 0.45} ${y1}, ${x2 - dx * 0.45} ${y2}, ${x2} ${y2}`;
-
-        edges.push({
-          id: `edge-${node.id}`,
-          sourceId: hub.id,
-          targetId: node.id,
-          x1,
-          y1,
-          x2,
-          y2,
-          path,
-        });
-      });
+      connectAssetNodes(() => hub);
     } else {
       // 多中心树状集群模式 (Multi-Project Tree Clusters)
-      let totalTreeHeight = 0;
-      const clusterHeights = hubs.map((hub) => {
-        const pAssets = allAssets.filter((a) => a.projectId === hub.projectId);
-        const rows = Math.max(1, Math.ceil(pAssets.length / 2));
-        const h = Math.max(HUB_H + 40, rows * (CARD_H + 20) + 40);
-        totalTreeHeight += h;
-        return h;
-      });
-      totalTreeHeight += (hubs.length - 1) * 80;
+      const horizontalOffset = Math.max((HUB_W + CARD_W) / 2 + 96, 360);
+      const childOffset = horizontalOffset + CARD_W + 56;
 
+      const clusters = hubs.map((hub) => {
+        const pRoots = rootAssets.filter((a) => a.projectId === hub.projectId);
+        const blocks = pRoots.map((asset) => ({ asset, kids: childrenOf(asset) }));
+        const contentHeight =
+          blocks.reduce((sum, b) => sum + Math.max(1, b.kids.length) * verticalGap, 0) +
+          Math.max(0, blocks.length - 1) * blockGap;
+        return { hub, blocks, contentHeight };
+      });
+
+      const totalTreeHeight =
+        clusters.reduce((sum, c) => sum + Math.max(HUB_H + 40, c.contentHeight), 0) +
+        (hubs.length - 1) * 80;
       let currentTreeY = cy.value - totalTreeHeight / 2;
 
-      hubs.forEach((hub, hIdx) => {
-        const clusterHeight = clusterHeights[hIdx];
-        const autoHubY = currentTreeY + clusterHeight / 2;
-        const autoHubX = cx.value;
+      clusters.forEach(({ hub, blocks, contentHeight }) => {
+        const clusterHeight = Math.max(HUB_H + 40, contentHeight);
         if (customPositions.value[hub.id] == null) {
-          hub.x = autoHubX;
-          hub.y = autoHubY;
+          hub.x = cx.value;
+          hub.y = currentTreeY + clusterHeight / 2;
         }
 
-        const pAssets = allAssets.filter((a) => a.projectId === hub.projectId);
-        const hostGroups = new Map<string, DiscoveryResult[]>();
-        pAssets.forEach((a) => {
-          const h = parseHost(a.url).host;
-          if (!hostGroups.has(h)) hostGroups.set(h, []);
-          hostGroups.get(h)!.push(a);
-        });
+        const leftCount = Math.ceil(blocks.length / 2);
+        const sideBlocks = [blocks.slice(0, leftCount), blocks.slice(leftCount)];
 
-        const groupedAssets = Array.from(hostGroups.values()).flat();
-        const leftCount = Math.ceil(groupedAssets.length / 2);
-        const sideGroups = [groupedAssets.slice(0, leftCount), groupedAssets.slice(leftCount)];
-        const verticalGap = CARD_H + 20;
-        const horizontalOffset = Math.max((HUB_W + CARD_W) / 2 + 96, 360);
-
-        sideGroups.forEach((groupAssets, sideIndex) => {
+        sideBlocks.forEach((sideAssets, sideIndex) => {
           const direction = sideIndex === 0 ? -1 : 1;
-          const startY = hub.y - ((groupAssets.length - 1) * verticalGap) / 2;
-          groupAssets.forEach((asset, index) => {
-            const autoX = hub.x + direction * horizontalOffset;
-            const autoY = startY + index * verticalGap;
-            const node = createLayoutNode(asset, autoX, autoY);
-            nodes.push(node);
+          const sideHeight =
+            sideAssets.reduce((sum, b) => sum + Math.max(1, b.kids.length) * verticalGap, 0) +
+            Math.max(0, sideAssets.length - 1) * blockGap;
+          let cursor = hub.y - sideHeight / 2;
+
+          sideAssets.forEach(({ asset, kids }) => {
+            const blockHeight = Math.max(1, kids.length) * verticalGap;
+            const rootY = cursor + blockHeight / 2;
+            nodes.push(createLayoutNode(asset, hub.x + direction * horizontalOffset, rootY));
+
+            const startY = rootY - ((kids.length - 1) * verticalGap) / 2;
+            kids.forEach((child, idx) => {
+              nodes.push(
+                createLayoutNode(child, hub.x + direction * childOffset, startY + idx * verticalGap),
+              );
+            });
+
+            cursor += blockHeight + blockGap;
           });
         });
 
@@ -1118,29 +1234,8 @@ const layoutData = computed<{
       });
 
       resolveNodeCollisions(nodes, hubs, customPositions.value);
-
       const hubsMap = new Map(hubs.map((h) => [h.projectId, h]));
-      nodes.forEach((node) => {
-        const targetHub = hubsMap.get(node.asset.projectId) || hubs[0];
-        const edgeDirection = node.x >= targetHub.x ? 1 : -1;
-        const x1 = targetHub.x + (edgeDirection * HUB_W) / 2;
-        const y1 = targetHub.y;
-        const x2 = node.x - (edgeDirection * CARD_W) / 2;
-        const y2 = node.y;
-        const dx = x2 - x1;
-        const path = `M ${x1} ${y1} C ${x1 + dx * 0.45} ${y1}, ${x2 - dx * 0.45} ${y2}, ${x2} ${y2}`;
-
-        edges.push({
-          id: `edge-${node.id}`,
-          sourceId: targetHub.id,
-          targetId: node.id,
-          x1,
-          y1,
-          x2,
-          y2,
-          path,
-        });
-      });
+      connectAssetNodes((asset) => hubsMap.get(asset.projectId) || hubs[0]);
     }
   }
 
@@ -2800,7 +2895,14 @@ onUnmounted(() => {
               </div>
               <p class="finding-card-desc">{{ f.description }}</p>
               <div v-if="f.evidence" class="finding-card-evidence">
-                <code>{{ f.evidence.slice(0, 160) }}</code>
+                <el-input
+                  :model-value="f.evidence"
+                  type="textarea"
+                  :autosize="{ minRows: 1, maxRows: 8 }"
+                  resize="none"
+                  readonly
+                  class="finding-evidence-textarea"
+                />
               </div>
             </div>
           </div>
@@ -3736,14 +3838,36 @@ html.dark .zoom-controls .divider-v,
 }
 
 .finding-card-evidence {
+  margin-top: 2px;
+}
+
+/* Fluent 2 只读文本框：完整展示证据内容，长文本自动换行 */
+.finding-evidence-textarea :deep(.el-textarea__inner) {
+  font-family: var(--font-mono, "Cascadia Code", "Consolas", monospace);
   font-size: 11px;
-  background: light-dark(rgba(0, 0, 0, 0.04), rgba(255, 255, 255, 0.06));
+  line-height: 1.5;
+  color: var(--app-text, #1e293b);
+  background: light-dark(rgba(0, 0, 0, 0.03), rgba(255, 255, 255, 0.05)) !important;
+  border: 0 !important;
+  border-radius: var(--fluent-radius-control, 4px) !important;
+  box-shadow: 0 0 0 1px light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.1)) inset !important;
   padding: 6px 8px;
-  border-radius: 4px;
-  border: 1px solid light-dark(rgba(0, 0, 0, 0.06), rgba(255, 255, 255, 0.08));
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  resize: none;
+  transition: box-shadow 150ms ease;
+}
+
+.finding-evidence-textarea :deep(.el-textarea__inner:hover) {
+  box-shadow: 0 0 0 1px light-dark(rgba(0, 0, 0, 0.16), rgba(255, 255, 255, 0.18)) inset !important;
+}
+
+.finding-evidence-textarea :deep(.el-textarea__inner:focus) {
+  outline: none !important;
+  box-shadow:
+    inset 0 0 0 1px var(--app-border-strong, #cbd5e1),
+    inset 0 -2px 0 0 var(--app-accent, #0078d4) !important;
 }
 
 /* Fluent 3 Reveal 悬停效果 */

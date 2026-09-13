@@ -351,7 +351,7 @@ function sourceChipClass(source?: string) {
   return ["source-chip", `source-chip--${normalized}`];
 }
 
-// 主动检测规则里内置的扫描工具（ZAP/MSF/fscan/Nmap）与外部扫描器一样着主色，
+// 主动检测规则里内置的扫描工具（ZAP/MSF/fscan/Nmap/sqlmap）与外部扫描器一样着主色，
 // 而不是笼统归到默认灰色“内置”chip。
 function ruleSourceChipClass(rule: DetectionRule): string[] {
   const toolKey =
@@ -361,9 +361,12 @@ function ruleSourceChipClass(rule: DetectionRule): string[] {
         ? "msf"
         : rule.toolCode === "fscan_scan"
           ? "fscan"
-          : rule.toolCode === "nmap_service_scan" || rule.toolCode === "tcp_ports"
+          : rule.toolCode === "nmap_service_scan" ||
+              rule.toolCode === "tcp_ports"
             ? "nmap"
-            : undefined;
+            : rule.toolCode === "sqlmap_scan"
+              ? "sqlmap"
+              : undefined;
   if (toolKey) return ["source-chip", `source-chip--${toolKey}`];
   return sourceChipClass(scannerSourceForTool(rule.toolCode) || rule.sourceType);
 }
@@ -536,12 +539,14 @@ function isRuleDisabled(rule: DetectionRule) {
 }
 
 function ruleSourceLabel(rule: DetectionRule) {
-  // ZAP 主动扫描/模糊测试是内置规则（sourceType=BUILTIN），按工具显示为「ZAP」而非笼统的“内置”。
-  if (rule.toolCode === "zap_scan" || rule.toolCode === "zap_fuzz") return "ZAP";
+  // ZAP 主动扫描/模糊测试等是内置规则（sourceType=BUILTIN），按工具显示为对应工具而非笼统的“内置”。
+  if (rule.toolCode === "zap_scan" || rule.toolCode === "zap_fuzz")
+    return "ZAP";
   if (rule.toolCode === "msf_scan") return "Metasploit";
   if (rule.toolCode === "fscan_scan") return "fscan";
   if (rule.toolCode === "nmap_service_scan" || rule.toolCode === "tcp_ports")
     return "Nmap";
+  if (rule.toolCode === "sqlmap_scan") return "sqlmap";
   return sourceLabel(scannerSourceForTool(rule.toolCode) || rule.sourceType);
 }
 
@@ -2390,7 +2395,8 @@ onUnmounted(() => {
 .source-chip--zap,
 .source-chip--msf,
 .source-chip--fscan,
-.source-chip--nmap {
+.source-chip--nmap,
+.source-chip--sqlmap {
   border-color: color-mix(in srgb, var(--app-accent) 34%, var(--app-border));
   background: var(--app-accent-soft);
   color: var(--app-accent);

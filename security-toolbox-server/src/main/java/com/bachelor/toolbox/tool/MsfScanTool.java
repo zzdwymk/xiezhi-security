@@ -101,9 +101,10 @@ public class MsfScanTool implements SecurityTool {
     if (modules != null) {
       Map<String, Object> engineOptions = new java.util.HashMap<>();
       engineOptions.putAll(sanitizedOptions(parameters));
+      Map<String, Map<String, Object>> perModuleOptions = sanitizedPerModuleOptions(parameters);
       return engineProvider
           .getObject()
-          .runMany(target, modules, engineOptions, observer);
+          .runMany(target, modules, engineOptions, perModuleOptions, observer);
     }
     String host = policy.validatedHost(target);
     String module = requireModule(parameters);
@@ -176,6 +177,38 @@ public class MsfScanTool implements SecurityTool {
         throw new ApiException("MSF 模块参数不合法");
       }
       result.put(key, value);
+    }
+    return result;
+  }
+
+  private Map<String, Map<String, Object>> sanitizedPerModuleOptions(
+      Map<String, Object> parameters) {
+    Map<String, Map<String, Object>> result = new LinkedHashMap<>();
+    Object raw = parameters.get("msfOptions");
+    if (!(raw instanceof Map<?, ?>)) {
+      return result;
+    }
+    for (Map.Entry<?, ?> outer : ((Map<?, ?>) raw).entrySet()) {
+      String module = String.valueOf(outer.getKey()).trim().toLowerCase(Locale.ROOT);
+      Object moduleRaw = outer.getValue();
+      if (!(moduleRaw instanceof Map<?, ?>)) {
+        continue;
+      }
+      Map<String, Object> clean = new LinkedHashMap<>();
+      for (Map.Entry<?, ?> entry : ((Map<?, ?>) moduleRaw).entrySet()) {
+        String key = String.valueOf(entry.getKey()).trim();
+        if (FORBIDDEN_OPTION_KEYS.contains(key.toUpperCase(Locale.ROOT))) {
+          throw new ApiException("不允许覆盖 MSF 选项：" + key);
+        }
+        String value = Objects.toString(entry.getValue(), "").trim();
+        if (key.isBlank() || value.contains(";") || value.contains("\n")) {
+          throw new ApiException("MSF 模块参数不合法");
+        }
+        clean.put(key, value);
+      }
+      if (!clean.isEmpty()) {
+        result.put(module, clean);
+      }
     }
     return result;
   }
