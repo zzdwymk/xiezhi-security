@@ -424,6 +424,7 @@ function toolDependencyName(toolCode: string): string | undefined {
   if (toolCode === "nmap_service_scan") return "Nmap";
   if (toolCode === "fscan_scan") return "fscan";
   if (toolCode === "msf_scan") return "Metasploit";
+  if (toolCode === "sqlmap_scan") return "sqlmap";
   return undefined;
 }
 
@@ -480,6 +481,9 @@ function isDependencyDetecting(name: string): boolean {
   return dependencyLoading.value;
 }
 
+// 规则的“检测中”只统计真正还在探测、尚未得出结果的依赖（无状态/哈希）。
+// 已确认缺失（MISSING/ERROR 等有状态）不再视为“检测中”，落到 ruleDisabledReason 的
+// “未安装/不可用”提示里。
 function isRulePending(rule: DetectionRule): boolean {
   if (
     Boolean(selectedTarget.value) &&
@@ -491,9 +495,9 @@ function isRulePending(rule: DetectionRule): boolean {
   if (!depName) return false;
   const source = scannerSourceForTool(rule.toolCode);
   if (source) {
-    return !sourceDependencyReady(source);
+    return isDependencyDetecting(dependencyNameForSource(source));
   }
-  return !isDependencyReady(dependencyByName(depName));
+  return isDependencyDetecting(depName);
 }
 
 function isRuleDetecting(rule: DetectionRule): boolean {
@@ -512,9 +516,13 @@ function ruleDisabledReason(rule: DetectionRule) {
   }
   if (isFullPortTarget.value && rule.toolCode === "tcp_ports")
     return "全端口不能使用逐端口 TCP 探测，请改用 Nmap";
+  const depName = ruleRequiredDependency(rule);
   if (isRulePending(rule)) {
-    const depName = ruleRequiredDependency(rule);
     return `正在检测 ${depName || "环境依赖"}...`;
+  }
+  // 依赖已检测完但未就绪（如 MISSING/ERROR/未安装），给出明确的缺失提示而非“检测中”。
+  if (depName && !isDependencyReady(dependencyByName(depName))) {
+    return `缺少依赖 ${depName}，相关功能不可用`;
   }
   const source = scannerSourceForTool(rule.toolCode);
   if (source && !sourceCatalogReady(source)) {
