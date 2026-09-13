@@ -28,7 +28,7 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class MsfScanEngine {
-  private static final int MAX_MODULES = 25;
+  private static final int MAX_MODULES = 5000;
   private final MsfScanTool tool;
   private final TargetPolicyService policy;
 
@@ -42,6 +42,7 @@ public class MsfScanEngine {
       AuthorizedTarget target,
       List<String> modules,
       Map<String, Object> options,
+      Map<String, Map<String, Object>> perModuleOptions,
       ToolExecutionObserver observer) {
     String host = policy.validatedHost(target);
     List<String> normalized = normalize(modules);
@@ -58,7 +59,7 @@ public class MsfScanEngine {
       observer.heartbeat("Metasploit 批量执行：" + (i + 1) + "/" + normalized.size() + " " + module);
       ToolExecutionResult result;
       try {
-        result = tool.execute(target, params(module, options), observer);
+        result = tool.execute(target, params(module, options, perModuleOptions), observer);
       } catch (Exception ex) {
         perModule.put(module, Map.of("module", module, "error", abbreviate(ex.getMessage(), 200)));
         runs.add(new ModuleRun(module, 0, true));
@@ -87,11 +88,24 @@ public class MsfScanEngine {
         List.copyOf(deduped));
   }
 
-  private Map<String, Object> params(String module, Map<String, Object> options) {
+  private Map<String, Object> params(
+      String module,
+      Map<String, Object> options,
+      Map<String, Map<String, Object>> perModuleOptions) {
     Map<String, Object> parameters = new HashMap<>();
     parameters.put("module", module);
+    Map<String, Object> merged = new HashMap<>();
     if (options != null && !options.isEmpty()) {
-      parameters.put("options", Map.copyOf(options));
+      merged.putAll(options);
+    }
+    if (perModuleOptions != null) {
+      Map<String, Object> specific = perModuleOptions.get(module);
+      if (specific != null && !specific.isEmpty()) {
+        merged.putAll(specific);
+      }
+    }
+    if (!merged.isEmpty()) {
+      parameters.put("options", Map.copyOf(merged));
     }
     return parameters;
   }

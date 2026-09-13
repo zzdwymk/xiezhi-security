@@ -81,7 +81,8 @@ public class AfrogScanTool implements SecurityTool {
       throws Exception {
     URI targetUri = resolveBase(target, parameters);
     List<ScannerPocSelectionService.SelectedPoc> selected =
-        pocSelection.resolve(ScannerPocCatalogService.AFROG, parameters, false);
+        pocSelection.resolve(
+            ScannerPocCatalogService.AFROG, WebTargetResolver.scanParameters(parameters), false);
     assertExecutableIfAbsolute();
     Path work = Files.createTempDirectory("xiezhi-afrog-");
     Path pocs = Files.createDirectory(work.resolve("pocs"));

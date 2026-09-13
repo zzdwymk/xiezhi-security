@@ -23,7 +23,7 @@ import {
   VideoPlay,
   Warning,
 } from "../components/fluentIcons";
-import { api, type Target } from "../api";
+import { api, streamXrayScan, streamZapScan, type Target } from "../api";
 import AppPagination from "../components/AppPagination.vue";
 import { useClientPagination } from "../composables/useClientPagination";
 import { useCopilotStore } from "../stores/copilot";
@@ -2136,11 +2136,23 @@ interface TargetedScanHit {
   solution?: string;
 }
 
+interface TargetedScanProbe {
+  name: string;
+  method: string;
+  target: string;
+  payload?: string;
+  statusCode?: number | null;
+  responseSnippet?: string;
+  triggered: boolean;
+  note?: string;
+}
+
 interface TargetedScanResult {
   packetId: number;
   engine: string;
   status: string;
   hits: TargetedScanHit[];
+  probes?: TargetedScanProbe[];
   message: string;
 }
 
@@ -2250,31 +2262,126 @@ function applySelectedFuzzPreset(presetId?: string) {
   ElMessage.success(`已载入「${preset.name}」共 ${preset.payloads.length} 项载荷`);
 }
 
+// 让命中/探针结果“逐个”出现在界面上：即便后端最后一次性返回多条，
+// 也会以恒定节奏逐条刷出，而不是整批同时出现。
+function createScanRevealer() {
+  const queue: Array<{ kind: "hit" | "probe"; value: any }> = [];
+  let timer: ReturnType<typeof setInterval> | undefined;
+  function tick() {
+    const item = queue.shift();
+    if (!item) {
+      stop();
+      return;
+    }
+    const res = targetedScanResult.value;
+    if (!res) return;
+    if (item.kind === "hit") {
+      res.hits.push(item.value);
+      res.message =
+        res.probes.length
+          ? `探测进行中：已完成 ${res.probes.length} 项，命中 ${res.hits.length} 项`
+          : `探测进行中：已命中 ${res.hits.length} 项漏洞`;
+    } else {
+      res.probes.push(item.value);
+      res.message = `探测进行中：已完成 ${res.probes.length} 项，命中 ${res.hits.length} 项`;
+    }
+    if (!queue.length) stop();
+  }
+  function start() {
+    if (!timer) timer = window.setInterval(tick, 120);
+  }
+  function stop() {
+    if (timer) {
+      window.clearInterval(timer);
+      timer = undefined;
+    }
+  }
+  function enqueue(kind: "hit" | "probe", value: any) {
+    queue.push({ kind, value });
+    start();
+  }
+  function drain() {
+    stop();
+    const res = targetedScanResult.value;
+    while (queue.length && res) {
+      const item = queue.shift()!;
+      if (item.kind === "hit") res.hits.push(item.value);
+      else res.probes.push(item.value);
+    }
+    queue.length = 0;
+  }
+  // 让剩余结果继续以恒定节奏逐条显现，到达最长期限后再强制一次刷出。
+  function waitIdle(timeout: number) {
+    return new Promise<void>((resolve) => {
+      const startedAt = Date.now();
+      const poll = () => {
+        if (!queue.length) {
+          resolve();
+          return;
+        }
+        if (Date.now() - startedAt > timeout) {
+          drain();
+          resolve();
+          return;
+        }
+        window.setTimeout(poll, 60);
+      };
+      poll();
+    });
+  }
+  return { enqueue, drain, waitIdle, stop };
+}
+
 async function runZapScan(item?: TrafficSession | null) {
   const targetItem = item || selected.value;
   if (!targetItem?.id) return ElMessage.warning("请先选择一条流量记录");
   targetedScanEngine.value = "ZAP";
   targetedScanLoading.value = true;
-  targetedScanResult.value = null;
   targetedScanVisible.value = true;
+  targetedScanResult.value = {
+    packetId: Number(targetItem.id),
+    engine: "ZAP",
+    status: "RUNNING",
+    hits: [],
+    probes: [],
+    message: "正在初始化 ZAP 定向探测...",
+  };
+  const live = targetedScanResult.value;
+  const revealer = createScanRevealer();
   try {
-    const { data } = await api.post<TargetedScanResult>(
-      `/traffic/packets/${targetItem.id}/zap-scan`,
-      {
-        strength: "MEDIUM",
-        policy: "Default Policy",
+    const result = await streamZapScan(
+      targetItem.id,
+      { strength: "MEDIUM", policy: "Default Policy" },
+      (event) => {
+        if (event.type === "start") {
+          live.message = `正在对 ${event.targetUrl || targetItem.url || "目标"} 执行 ZAP 定向探测...`;
+        } else if (event.type === "status") {
+          live.message = event.message || live.message;
+        } else if (event.type === "probe") {
+          revealer.enqueue("probe", event.probe);
+        } else if (event.type === "hit") {
+          revealer.enqueue("hit", event.hit);
+        }
       },
-      { timeout: 180_000 },
     );
-    targetedScanResult.value = data;
-    if (data.hits && data.hits.length > 0) {
-      ElMessage.warning(`ZAP 扫描完成，发现 ${data.hits.length} 项风险`);
+    await revealer.waitIdle(6000);
+    live.status = result.status;
+    live.message =
+      result.hits && result.hits.length > 0
+        ? `ZAP 定向检测完成，发现 ${result.hits.length} 项潜在风险`
+        : "ZAP 定向检测完成，未发现高危注入漏洞";
+    if (result.hits && result.hits.length > 0) {
+      ElMessage.warning(`ZAP 扫描完成，发现 ${result.hits.length} 项风险`);
     } else {
       ElMessage.success("ZAP 定向检测完成，未发现高危注入漏洞");
     }
   } catch (err: any) {
-    ElMessage.error(toErrorMessage(err, "ZAP 定向扫描失败"));
+    revealer.drain();
+    const message = toErrorMessage(err, "ZAP 定向扫描失败");
+    ElMessage.error(message);
+    live.message = `探测失败：${message}`;
   } finally {
+    revealer.stop();
     targetedScanLoading.value = false;
   }
 }
@@ -2284,25 +2391,49 @@ async function runXrayScan(item?: TrafficSession | null) {
   if (!targetItem?.id) return ElMessage.warning("请先选择一条流量记录");
   targetedScanEngine.value = "XRAY";
   targetedScanLoading.value = true;
-  targetedScanResult.value = null;
   targetedScanVisible.value = true;
+  targetedScanResult.value = {
+    packetId: Number(targetItem.id),
+    engine: "XRAY",
+    status: "RUNNING",
+    hits: [],
+    probes: [],
+    message: "正在初始化 Xray 靶向 PoC 探测...",
+  };
+  const live = targetedScanResult.value;
+  const revealer = createScanRevealer();
   try {
-    const { data } = await api.post<TargetedScanResult>(
-      `/traffic/packets/${targetItem.id}/xray-scan`,
-      {
-        allPocs: true,
+    const result = await streamXrayScan(
+      targetItem.id,
+      { allPocs: true },
+      (event) => {
+        if (event.type === "start") {
+          live.message = `正在对 ${event.targetUrl || targetItem.url || "目标"} 执行 Xray 靶向 PoC 探测...`;
+        } else if (event.type === "status") {
+          live.message = event.message || live.message;
+        } else if (event.type === "hit") {
+          revealer.enqueue("hit", event.hit);
+        }
       },
-      { timeout: 180_000 },
     );
-    targetedScanResult.value = data;
-    if (data.hits && data.hits.length > 0) {
-      ElMessage.warning(`Xray 靶向探测完成，命中 ${data.hits.length} 项漏洞`);
+    await revealer.waitIdle(6000);
+    live.status = result.status;
+    live.message =
+      result.hits && result.hits.length > 0
+        ? `Xray 靶向探测完成，命中 ${result.hits.length} 项漏洞`
+        : "Xray 靶向探测完成，未命中已知组件漏洞";
+    if (result.hits && result.hits.length > 0) {
+      ElMessage.warning(`Xray 靶向探测完成，命中 ${result.hits.length} 项漏洞`);
     } else {
       ElMessage.success("Xray 靶向探测完成，未命中已知组件漏洞");
     }
   } catch (err: any) {
-    ElMessage.error(toErrorMessage(err, "Xray 靶向探测失败"));
+    revealer.drain();
+    const message = toErrorMessage(err, "Xray 靶向探测失败");
+    ElMessage.error(message);
+    live.message = `探测失败：${message}`;
   } finally {
+    revealer.stop();
     targetedScanLoading.value = false;
   }
 }
@@ -3385,25 +3516,24 @@ onUnmounted(() => {
     <el-dialog
       v-model="targetedScanVisible"
       :title="targetedScanEngine === 'ZAP' ? 'OWASP ZAP 定向主动探测' : 'Xray 靶向 PoC 探测'"
-      width="680px"
+      width="760px"
       append-to-body
-      class="app-dialog"
+      class="app-dialog app-dialog--lg"
       align-center
     >
-      <div
-        v-loading="targetedScanLoading"
-        :element-loading-text="targetedScanEngine === 'ZAP' ? '正在针对当前报文上下文运行 ZAP 深度注入与语法探针...' : '正在针对当前报文上下文运行 Xray 漏洞组件验证...'"
-        style="min-height: 160px"
-      >
-        <div v-if="targetedScanResult">
+      <div style="min-height: 160px">
+        <div v-if="targetedScanResult" class="targeted-scan-result">
           <el-alert
-            :type="targetedScanResult.hits && targetedScanResult.hits.length ? 'warning' : 'success'"
+            :type="targetedScanLoading ? 'info' : (targetedScanResult.hits && targetedScanResult.hits.length ? 'warning' : 'success')"
             :closable="false"
             show-icon
             style="margin-bottom: 14px"
           >
             <template #title>
-              <strong>{{ targetedScanResult.message }}</strong>
+              <span class="targeted-scan-status">
+                <el-icon v-if="targetedScanLoading" class="is-loading"><Refresh /></el-icon>
+                <strong>{{ targetedScanResult.message }}</strong>
+              </span>
             </template>
           </el-alert>
 
@@ -3423,7 +3553,7 @@ onUnmounted(() => {
                     <small v-if="hit.parameter" style="color: var(--app-muted); margin-left: auto; margin-right: 12px">参数: {{ hit.parameter }}</small>
                   </div>
                 </template>
-                <div style="font-size: 12px; line-height: 1.6; padding: 4px 8px">
+                <div class="targeted-hit-detail">
                   <p><strong>描述：</strong>{{ hit.description }}</p>
                   <p v-if="hit.evidence" style="margin-top: 4px"><strong>证据：</strong><code>{{ hit.evidence }}</code></p>
                   <p v-if="hit.solution" style="margin-top: 4px; color: var(--el-color-success-dark-2)"><strong>修复建议：</strong>{{ hit.solution }}</p>
@@ -3431,9 +3561,65 @@ onUnmounted(() => {
               </el-collapse-item>
             </el-collapse>
           </div>
-          <div v-else style="text-align: center; padding: 24px 0; color: var(--app-muted)">
-            未发现明确的注入点或匹配漏洞，建议结合业务逻辑继续使用 Fuzz 模块进行变异测试。
+          <div v-else class="targeted-empty">
+            <template v-if="targetedScanLoading">
+              正在逐项发送测试探针，命中结果会实时显示...
+            </template>
+            <template v-else>
+              未发现明确的注入点或匹配漏洞，建议结合业务逻辑继续使用 Fuzz 模块进行变异测试。
+            </template>
           </div>
+
+          <div
+            v-if="targetedScanResult.probes && targetedScanResult.probes.length"
+            class="targeted-probes"
+          >
+            <div class="targeted-probes__title">
+              <span>全部测试数据</span>
+              <span class="targeted-probes__count">{{ targetedScanResult.probes.length }} 项探针</span>
+              <el-icon v-if="targetedScanLoading" class="is-loading" style="color: var(--app-muted)"><Refresh /></el-icon>
+            </div>
+            <el-table :data="targetedScanResult.probes" size="small" border max-height="260">
+              <el-table-column label="结果" width="80" align="center">
+                <template #default="{ row }">
+                  <el-tag :type="row.triggered ? 'danger' : 'info'" size="small" effect="light">
+                    {{ row.triggered ? "命中" : "未命中" }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="name" label="探测项" width="150" show-overflow-tooltip />
+              <el-table-column label="方法" width="66" align="center">
+                <template #default="{ row }">{{ row.method || "GET" }}</template>
+              </el-table-column>
+              <el-table-column prop="target" label="请求 URL" min-width="220" show-overflow-tooltip />
+              <el-table-column label="Payload" width="150" show-overflow-tooltip>
+                <template #default="{ row }">
+                  <code v-if="row.payload">{{ row.payload }}</code>
+                  <span v-else style="color: var(--app-muted)">—</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="状态码" width="76" align="center">
+                <template #default="{ row }">{{ row.statusCode ?? "—" }}</template>
+              </el-table-column>
+              <el-table-column prop="note" label="说明" min-width="180" show-overflow-tooltip />
+              <el-table-column label="响应片段" min-width="220" show-overflow-tooltip>
+                <template #default="{ row }">
+                  <span v-if="row.responseSnippet">{{ row.responseSnippet }}</span>
+                  <span v-else style="color: var(--app-muted)">—</span>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+        </div>
+        <div v-else-if="targetedScanLoading" class="targeted-loading">
+          <el-icon class="is-loading" :size="24"><Refresh /></el-icon>
+          <span>
+            {{
+              targetedScanEngine === "ZAP"
+                ? "正在执行 ZAP 定向主动探测，命中结果会实时显示..."
+                : "正在执行 Xray 靶向 PoC 探测，请稍候..."
+            }}
+          </span>
         </div>
       </div>
       <template #footer>
@@ -5958,6 +6144,93 @@ onUnmounted(() => {
 }
 :global(.traffic-tooltip .el-popper__arrow) {
   display: none !important;
+}
+.targeted-scan-result {
+  padding: 2px 2px 4px;
+}
+.targeted-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 160px;
+  padding: 24px;
+  color: var(--app-muted);
+  font-size: 13px;
+  text-align: center;
+}
+.targeted-loading .el-icon {
+  color: var(--app-accent);
+}
+.targeted-scan-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.targeted-hits-list {
+  margin-bottom: 4px;
+}
+.targeted-hits-list :deep(.el-collapse) {
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.targeted-hits-list :deep(.el-collapse-item__header) {
+  padding: 0 14px;
+}
+.targeted-hits-list :deep(.el-collapse-item__content) {
+  padding: 0 14px 12px;
+}
+.targeted-hit-detail {
+  padding: 6px 14px 4px;
+  color: var(--app-text);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.targeted-hit-detail p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.targeted-hit-detail code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--app-surface-soft);
+  color: var(--app-text);
+  overflow-wrap: anywhere;
+}
+.targeted-empty {
+  padding: 24px 12px;
+  color: var(--app-muted);
+  font-size: 13px;
+  text-align: center;
+}
+.targeted-probes {
+  margin-top: 16px;
+}
+.targeted-probes__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--app-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.targeted-probes__count {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--app-surface-soft);
+  color: var(--app-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+.targeted-probes :deep(.el-table) {
+  border-radius: 6px;
+}
+.targeted-probes :deep(.el-table code) {
+  font-size: 11px;
+  overflow-wrap: anywhere;
 }
 @keyframes thinking {
   0%,

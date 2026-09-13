@@ -62,6 +62,7 @@ class MsfScanEngineTests {
                 "auxiliary/scanner/ssh/ssh_login",
                 "auxiliary/scanner/ssh/ssh_enumusers"),
             Map.of(),
+            Map.of(),
             ToolExecutionObserver.NOOP);
 
     assertThat(result.findings()).hasSize(1);
@@ -73,13 +74,13 @@ class MsfScanEngineTests {
 
   @Test
   void runManyRejectsBlankOrTooManyModules() {
-    assertThatThrownBy(() -> engine.runMany(target, List.of(), Map.of(), ToolExecutionObserver.NOOP))
+    assertThatThrownBy(() -> engine.runMany(target, List.of(), Map.of(), Map.of(), ToolExecutionObserver.NOOP))
         .isInstanceOf(ApiException.class)
         .hasMessageContaining("至少选择");
 
     java.util.List<String> tooMany = new java.util.ArrayList<>();
-    for (int i = 0; i < 30; i++) tooMany.add("auxiliary/scanner/ssh/ssh_login_" + i);
-    assertThatThrownBy(() -> engine.runMany(target, tooMany, Map.of(), ToolExecutionObserver.NOOP))
+    for (int i = 0; i < 5001; i++) tooMany.add("auxiliary/scanner/ssh/ssh_login_" + i);
+    assertThatThrownBy(() -> engine.runMany(target, tooMany, Map.of(), Map.of(), ToolExecutionObserver.NOOP))
         .isInstanceOf(ApiException.class)
         .hasMessageContaining("最多选择");
   }

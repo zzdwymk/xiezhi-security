@@ -522,6 +522,32 @@ export interface VulnerabilityCatalogSyncResult {
   warnings: string[];
 }
 
+export interface MsfModuleItem {
+  modulePath: string;
+  name: string;
+  rank: string;
+  description: string;
+}
+
+export interface MsfModuleCategory {
+  category: string;
+  label: string;
+  modules: MsfModuleItem[];
+}
+
+export interface MsfModuleCatalog {
+  available: boolean;
+  categories: MsfModuleCategory[];
+}
+
+export interface MsfModuleOption {
+  name: string;
+  type: string;
+  required: boolean;
+  defaultValue: string;
+  description: string;
+}
+
 export interface ScannerPocCatalogSyncResult {
   status: string;
   sourceType: "AFROG" | "XRAY" | "MSF";
@@ -1037,6 +1063,13 @@ export const endpoints = {
       undefined,
       { timeout: 10 * 60_000 },
     ),
+  getMsfModules: () =>
+    api.get<MsfModuleCatalog>("/msf/modules", { timeout: 120_000 }),
+  getMsfModuleOptions: (module: string) =>
+    api.get<{ options: MsfModuleOption[] }>("/msf/modules/options", {
+      params: { module },
+      timeout: 120_000,
+    }),
   createPostScanPath: (payload: {
     projectId: number;
     targetId: number;
@@ -2118,6 +2151,132 @@ export async function dispatchAiStreaming(
     taskbarProgress.stopIndeterminate("ai-agent-stream");
     if (idleTimer) clearTimeout(idleTimer);
   }
+}
+
+export interface TargetedScanProbe {
+  name: string;
+  method: string;
+  target: string;
+  payload?: string;
+  statusCode?: number | null;
+  responseSnippet?: string;
+  triggered: boolean;
+  note?: string;
+}
+
+export interface TargetedScanHit {
+  title: string;
+  severity: string;
+  description: string;
+  parameter?: string;
+  evidence?: string;
+  solution?: string;
+}
+
+export interface TargetedScanResult {
+  packetId: number;
+  engine: string;
+  status: string;
+  hits: TargetedScanHit[];
+  probes?: TargetedScanProbe[];
+  message: string;
+}
+
+export type ZapScanStreamEvent =
+  | { type: "start"; targetUrl?: string }
+  | { type: "status"; message?: string }
+  | { type: "probe"; probe: TargetedScanProbe }
+  | { type: "hit"; hit: TargetedScanHit }
+  | { type: "complete"; result: TargetedScanResult }
+  | { type: "error"; message?: string };
+
+/**
+ * 以 SSE 流式方式执行定向扫描：每产出一条结果立即回调，
+ * 便于前端实时展示测试数据，而不是等整轮结束才出结果。
+ */
+async function streamTargetedScan(
+  path: string,
+  payload: Record<string, unknown>,
+  onEvent: (event: ZapScanStreamEvent) => void,
+): Promise<TargetedScanResult> {
+  const token = readAuthToken();
+  const response = await fetch(apiUrl(path), {
+    method: "POST",
+    headers: {
+      Accept: "text/event-stream, application/json",
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok || !response.body) {
+    const text = await response.text().catch(() => "");
+    let message = text || `请求失败：HTTP ${response.status}`;
+    try {
+      message = JSON.parse(text)?.message || message;
+    } catch {
+      /* 纯文本错误 */
+    }
+    throw new Error(message);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: TargetedScanResult | undefined;
+
+  const handleLine = (line: string) => {
+    if (!line.startsWith("data:")) return;
+    const text = line.slice(5).trim();
+    if (!text) return;
+    let event: ZapScanStreamEvent;
+    try {
+      event = JSON.parse(text) as ZapScanStreamEvent;
+    } catch {
+      return;
+    }
+    onEvent(event);
+    if (event.type === "complete") result = event.result;
+    if (event.type === "error") throw new Error(event.message || "定向扫描失败");
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() || "";
+    for (const line of lines) handleLine(line);
+  }
+  buffer += decoder.decode();
+  if (buffer.trim()) handleLine(buffer);
+
+  if (!result) throw new Error("流式响应已结束，但没有返回扫描结果");
+  return result;
+}
+
+export function streamZapScan(
+  packetId: number | string,
+  payload: { strength?: string; policy?: string },
+  onEvent: (event: ZapScanStreamEvent) => void,
+): Promise<TargetedScanResult> {
+  return streamTargetedScan(
+    `/traffic/packets/${packetId}/zap-scan/stream`,
+    payload,
+    onEvent,
+  );
+}
+
+export function streamXrayScan(
+  packetId: number | string,
+  payload: { allPocs?: boolean; pocCodes?: string[] },
+  onEvent: (event: ZapScanStreamEvent) => void,
+): Promise<TargetedScanResult> {
+  return streamTargetedScan(
+    `/traffic/packets/${packetId}/xray-scan/stream`,
+    payload,
+    onEvent,
+  );
 }
 
 export async function safeGet<T>(

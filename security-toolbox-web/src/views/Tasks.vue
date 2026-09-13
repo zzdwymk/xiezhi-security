@@ -16,6 +16,8 @@ import {
   type VulnerabilityDefinition,
 } from "../api";
 import AppPagination from "../components/AppPagination.vue";
+import FluentCodeBlock from "../components/FluentCodeBlock.vue";
+import FluentJsonView from "../components/FluentJsonView.vue";
 import OfflineState from "../components/OfflineState.vue";
 import { useClientPagination } from "../composables/useClientPagination";
 import { formatDateTime, formatExecutionLog } from "../utils/dateTime";
@@ -68,6 +70,7 @@ interface TaskRow {
 }
 
 const rows = ref<TaskRow[]>([]);
+const notifiedTasks = new Set<number>();
 const {
   page,
   pageSize,
@@ -165,6 +168,29 @@ let scheduleTargetRequest = 0;
 let schedulePocLoadGeneration = 0;
 const logOutput = ref<HTMLElement>();
 
+function notifyTaskCompletion(row: TaskRow) {
+  if (!window.toolboxDesktop?.showTaskNotification) return;
+  if (notifiedTasks.has(row.id)) return;
+  const terminal = new Set([
+    "SUCCESS",
+    "FAILED",
+    "TIMEOUT",
+    "REJECTED",
+    "CANCELLED",
+  ]);
+  if (!terminal.has(row.status)) return;
+  notifiedTasks.add(row.id);
+  const success = row.status === "SUCCESS";
+  void window.toolboxDesktop.showTaskNotification({
+    type: success ? "info" : "error",
+    title: success ? `任务 #${row.id} 已完成` : `任务 #${row.id} ${statusLabel(row.status)}`,
+    body: success
+      ? "任务已完成，可在「任务控制中心」查看结果详情。"
+      : row.errorMessage ||
+        `任务状态为 ${statusLabel(row.status)}，可在「任务控制中心」查看原因。`,
+  });
+}
+
 function applyTaskEvent(event: TaskProgressEvent) {
   if (!Number(event.taskId)) return;
   const row = rows.value.find((item) => item.id === Number(event.taskId));
@@ -224,10 +250,20 @@ function applyTaskEvent(event: TaskProgressEvent) {
     }
   }
   taskbarProgress.syncTasks(rows.value);
+  notifyTaskCompletion(row);
 }
 
 async function load() {
   const result = await safeGet<ProjectTaskRecord[]>(endpoints.tasks, []);
+  const terminal = new Set([
+    "SUCCESS",
+    "FAILED",
+    "TIMEOUT",
+    "REJECTED",
+    "CANCELLED",
+  ]);
+  const previous = new Map<number, string>();
+  for (const row of rows.value) previous.set(row.id, row.status);
   rows.value = Array.isArray(result.data)
     ? result.data.map((task) => ({
         ...task,
@@ -235,6 +271,16 @@ async function load() {
       }))
     : [];
   taskbarProgress.syncTasks(rows.value);
+  const firstLoad = previous.size === 0;
+  for (const row of rows.value) {
+    if (terminal.has(row.status)) {
+      if (firstLoad) {
+        notifiedTasks.add(row.id);
+      } else if (!terminal.has(previous.get(row.id) || "")) {
+        notifyTaskCompletion(row);
+      }
+    }
+  }
   if (detail.value) {
     const refreshed = rows.value.find((row) => row.id === detail.value?.id);
     if (refreshed) {
@@ -662,8 +708,149 @@ async function openScheduleDialog() {
   }
 }
 
+const detailResultView = ref<"friendly" | "raw">("friendly");
+const detailRequestView = ref<"friendly" | "raw">("friendly");
+
+const parsedDetailResult = computed<Record<string, unknown> | undefined>(() => {
+  const raw = detail.value?.resultJson;
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+});
+
+const parsedDetailRequest = computed<unknown>(() => {
+  const raw = detail.value?.requestJson;
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+});
+
+const prettyDetailRequestJson = computed(() => {
+  const parsed = parsedDetailRequest.value;
+  if (parsed === undefined) return detail.value?.requestJson || "";
+  try {
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return detail.value?.requestJson || "";
+  }
+});
+
+const detailResultSummary = computed(() => {
+  const summary = parsedDetailResult.value?.summary;
+  return typeof summary === "string" ? summary : "";
+});
+
+interface TaskResultMatch {
+  severity?: string;
+  name: string;
+  cwe?: string;
+  url?: string;
+}
+
+const detailResultMatches = computed<TaskResultMatch[]>(() => {
+  const result = parsedDetailResult.value;
+  if (!result) return [];
+  const data = result.data as Record<string, unknown> | undefined;
+  const candidates = [
+    result.matches,
+    data?.matches,
+    result.findings,
+    data?.findings,
+    data?.items,
+    data?.results,
+  ];
+  const list = candidates.find((value) => Array.isArray(value)) as
+    | Array<Record<string, unknown>>
+    | undefined;
+  if (!list) return [];
+  return list.map((item) => {
+    const entry = item && typeof item === "object" ? item : {};
+    return {
+      severity:
+        typeof entry.severity === "string" ? entry.severity : undefined,
+      name:
+        (typeof entry.name === "string" && entry.name) ||
+        (typeof entry.title === "string" && entry.title) ||
+        "未命名条目",
+      cwe:
+        (typeof entry.cwe === "string" && entry.cwe) ||
+        (typeof entry.vulnerabilityCode === "string" &&
+          entry.vulnerabilityCode) ||
+        undefined,
+      url: typeof entry.url === "string" ? entry.url : undefined,
+    };
+  });
+});
+
+const RESULT_STAT_LABELS: Readonly<Record<string, string>> = {
+  matchCount: "命中总数",
+  inScopeAlertCount: "授权范围内",
+  passiveAlertCount: "被动发现",
+  activeAlertCount: "主动发现",
+  total: "总数",
+  count: "数量",
+  itemCount: "条目数量",
+  openPortCount: "开放端口",
+};
+
+function collectResultStats(source: unknown) {
+  if (!source || typeof source !== "object" || Array.isArray(source)) return [];
+  return Object.entries(source as Record<string, unknown>)
+    .filter(
+      ([key, value]) =>
+        key !== "summary" &&
+        typeof value === "number" &&
+        Number.isFinite(value),
+    )
+    .slice(0, 6)
+    .map(([key, value]) => ({
+      label: RESULT_STAT_LABELS[key] || key,
+      value: value as number,
+    }));
+}
+
+const detailResultStats = computed(() => {
+  const result = parsedDetailResult.value;
+  if (!result) return [];
+  const dataStats = collectResultStats(result.data);
+  return dataStats.length ? dataStats : collectResultStats(result);
+});
+
+const prettyDetailResultJson = computed(() => {
+  const parsed = parsedDetailResult.value;
+  if (!parsed) return detail.value?.resultJson || "尚无结果";
+  try {
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return detail.value?.resultJson || "";
+  }
+});
+
+function resultSeverityType(severity?: string) {
+  switch ((severity || "").toLowerCase()) {
+    case "critical":
+    case "high":
+      return "danger" as const;
+    case "medium":
+      return "warning" as const;
+    default:
+      return "info" as const;
+  }
+}
+
 function showDetail(row: TaskRow) {
   detail.value = row;
+  detailResultView.value = "friendly";
+  detailRequestView.value = "friendly";
   detailVisible.value = true;
   void nextTick(() => {
     if (logOutput.value)
@@ -1294,9 +1481,10 @@ onUnmounted(() => {
         detail.queueStartedAt ? formatDateTime(detail.queueStartedAt) : "未开始"
       }}</el-descriptions-item>
       <el-descriptions-item label="授权目标快照" :span="2">
-        <pre class="task-output">{{
-          detail.targetSnapshotJson || "未记录"
-        }}</pre>
+        <FluentCodeBlock
+          :content="detail.targetSnapshotJson"
+          empty-text="未记录"
+        />
       </el-descriptions-item>
       <el-descriptions-item label="允许端口快照">{{
         detail.allowedPortsSnapshot || "未记录"
@@ -1335,15 +1523,141 @@ onUnmounted(() => {
         }}</code></el-descriptions-item
       >
       <el-descriptions-item label="实时执行日志" :span="2">
-        <pre ref="logOutput" class="task-output task-live-log">{{
-          formatExecutionLog(detail.executionLog) || "等待任务开始执行…"
-        }}</pre>
+        <FluentCodeBlock
+          :content="formatExecutionLog(detail.executionLog)"
+          empty-text="等待任务开始执行…"
+          icon="clipboard-task"
+          :max-rows="18"
+        >
+          <pre ref="logOutput" class="task-output task-live-log">{{
+            formatExecutionLog(detail.executionLog) || "等待任务开始执行…"
+          }}</pre>
+        </FluentCodeBlock>
       </el-descriptions-item>
       <el-descriptions-item label="请求参数" :span="2">
-        <pre class="task-output">{{ detail.requestJson || "无" }}</pre>
+        <div class="task-result-panel">
+          <div class="task-result-toolbar">
+            <el-radio-group
+              v-model="detailRequestView"
+              size="small"
+              class="task-result-switch"
+            >
+              <el-radio-button value="friendly">直观视图</el-radio-button>
+              <el-radio-button value="raw">原始数据</el-radio-button>
+            </el-radio-group>
+          </div>
+
+          <p v-if="!detail.requestJson" class="task-result-empty">无</p>
+
+          <template
+            v-else-if="
+              detailRequestView === 'friendly' &&
+              parsedDetailRequest !== undefined
+            "
+          >
+            <div class="task-result-json-friendly">
+              <FluentJsonView :value="parsedDetailRequest" />
+            </div>
+          </template>
+
+          <template v-else>
+            <FluentCodeBlock
+              title="原始数据"
+              :content="prettyDetailRequestJson"
+              icon="settings"
+              :max-rows="16"
+            />
+          </template>
+        </div>
       </el-descriptions-item>
       <el-descriptions-item label="执行结果" :span="2">
-        <pre class="task-output">{{ detail.resultJson || "尚无结果" }}</pre>
+        <div class="task-result-panel">
+          <div class="task-result-toolbar">
+            <el-radio-group
+              v-model="detailResultView"
+              size="small"
+              class="task-result-switch"
+            >
+              <el-radio-button value="friendly">直观视图</el-radio-button>
+              <el-radio-button value="raw">原始数据</el-radio-button>
+            </el-radio-group>
+            <span v-if="detailResultMatches.length" class="task-result-count"
+              >共 {{ detailResultMatches.length }} 条</span
+            >
+          </div>
+
+          <p v-if="!detail.resultJson" class="task-result-empty">尚无结果</p>
+
+          <template v-else-if="detailResultView === 'friendly'">
+            <template v-if="parsedDetailResult">
+              <p v-if="detailResultSummary" class="task-result-summary">
+                {{ detailResultSummary }}
+              </p>
+              <div v-if="detailResultStats.length" class="task-result-stats">
+                <div
+                  v-for="stat in detailResultStats"
+                  :key="stat.label"
+                  class="task-result-stat"
+                >
+                  <strong>{{ stat.value }}</strong
+                  ><span>{{ stat.label }}</span>
+                </div>
+              </div>
+              <div
+                v-if="detailResultMatches.length"
+                class="task-result-matches"
+              >
+                <div
+                  v-for="(match, index) in detailResultMatches"
+                  :key="index"
+                  class="task-result-match"
+                >
+                  <el-tag
+                    size="small"
+                    effect="plain"
+                    class="task-result-match-sev"
+                    :type="resultSeverityType(match.severity)"
+                    >{{ severityLabel(match.severity) }}</el-tag
+                  >
+                  <div class="task-result-match-body">
+                    <strong>{{ match.name }}</strong>
+                    <span v-if="match.cwe" class="task-result-match-cwe">{{
+                      match.cwe
+                    }}</span>
+                    <a
+                      v-if="match.url"
+                      class="task-result-match-url"
+                      :href="match.url"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      >{{ match.url }}</a
+                    >
+                  </div>
+                </div>
+              </div>
+              <p v-else class="task-result-empty">未产生可展示的结构化条目。</p>
+            </template>
+            <template v-else>
+              <p class="task-result-empty">
+                结果不是结构化数据，已展示原始内容。
+              </p>
+              <FluentCodeBlock
+                title="原始数据"
+                :content="prettyDetailResultJson"
+                icon="document"
+                :max-rows="16"
+              />
+            </template>
+          </template>
+
+          <FluentCodeBlock
+            v-else
+            title="原始数据"
+            :content="prettyDetailResultJson"
+            icon="document"
+            :max-rows="16"
+          />
+        </div>
       </el-descriptions-item>
     </el-descriptions>
     <template #footer>
@@ -1638,6 +1952,133 @@ onUnmounted(() => {
   white-space: pre-wrap;
   word-break: break-all;
   font-size: 12px;
+}
+.task-result-panel {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 10px;
+}
+.task-result-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.task-result-switch :deep(.el-radio-button__inner) {
+  min-width: 78px;
+  color: var(--app-text);
+  border-color: var(--app-border);
+  background: var(--app-surface);
+}
+.task-result-switch
+  :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
+  color: var(--system-accent-foreground);
+  border-color: var(--app-accent);
+  background: var(--app-accent);
+  box-shadow: -1px 0 0 0 var(--app-accent);
+}
+.task-result-count {
+  color: var(--app-muted);
+  font-size: 12px;
+}
+.task-result-summary {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--app-border);
+  border-left: 3px solid var(--app-accent);
+  border-radius: var(--fluent-radius-control);
+  background: var(--app-surface-soft);
+  color: var(--app-text);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.task-result-json-friendly {
+  max-height: 320px;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--fluent-radius-card);
+  background: var(--app-surface-soft);
+}
+.task-result-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 8px;
+}
+.task-result-stat {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 6px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--fluent-radius-card);
+  background: var(--app-surface-soft);
+}
+.task-result-stat strong {
+  color: var(--app-accent);
+  font-size: 16px;
+  line-height: 1.2;
+}
+.task-result-stat span {
+  color: var(--app-muted);
+  font-size: 11px;
+}
+.task-result-matches {
+  display: flex;
+  max-height: 280px;
+  overflow: auto;
+  flex-direction: column;
+  border: 1px solid var(--app-border);
+  border-radius: var(--fluent-radius-card);
+}
+.task-result-match {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--app-border);
+}
+.task-result-match:last-child {
+  border-bottom: none;
+}
+.task-result-match-sev {
+  flex: none;
+}
+.task-result-match-body {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+}
+.task-result-match-body strong {
+  color: var(--app-text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.task-result-match-cwe {
+  color: var(--app-muted);
+  font-size: 11px;
+}
+.task-result-match-url {
+  overflow: hidden;
+  color: var(--app-accent);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-result-empty {
+  margin: 0;
+  padding: 12px;
+  border: 1px dashed var(--app-border-strong, var(--app-border));
+  border-radius: var(--fluent-radius-control);
+  color: var(--app-muted);
+  font-size: 12px;
+  text-align: center;
 }
 .task-live-log {
   min-height: 180px;

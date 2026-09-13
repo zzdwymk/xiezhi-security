@@ -4,7 +4,10 @@ import jakarta.validation.Valid;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -14,10 +17,19 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @RestController
 @RequestMapping("/api/traffic")
 public class TrafficProxyController {
+  private static final ExecutorService ZAP_STREAM_EXECUTOR =
+      Executors.newCachedThreadPool(
+          runnable -> {
+            Thread thread = new Thread(runnable, "zap-scan-stream");
+            thread.setDaemon(true);
+            return thread;
+          });
+
   private final TrafficProxyService proxy;
   private final TrafficAnalysisService analysis;
   private final TrafficReplayService replay;
@@ -107,10 +119,91 @@ public class TrafficProxyController {
     return scanService.zapScan(id, request);
   }
 
+  @PostMapping(value = "/packets/{id}/zap-scan/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+  public SseEmitter zapScanStream(
+      @PathVariable Long id, @RequestBody(required = false) TrafficScanService.ZapScanRequest request) {
+    SseEmitter emitter = new SseEmitter(240_000L);
+    ZAP_STREAM_EXECUTOR.execute(
+        () -> runStream(emitter, () -> scanService.zapScan(id, request, listenerFor(emitter))));
+    emitter.onTimeout(emitter::complete);
+    emitter.onError(error -> {});
+    return emitter;
+  }
+
+  private static void runStream(SseEmitter emitter, ScanAction action) {
+    try {
+      action.run();
+    } catch (Exception ex) {
+      try {
+        sendEvent(
+            emitter, Map.of("type", "error", "message", String.valueOf(ex.getMessage())));
+      } catch (Exception ignored) {
+        // 客户端已断开，忽略
+      }
+      emitter.complete();
+    }
+  }
+
+  @FunctionalInterface
+  private interface ScanAction {
+    void run() throws Exception;
+  }
+
+  private static TrafficScanService.ZapScanListener listenerFor(SseEmitter emitter) {
+    return new TrafficScanService.ZapScanListener() {
+      @Override
+      public void onStart(String targetUrl) {
+        sendEvent(emitter, Map.of("type", "start", "targetUrl", targetUrl == null ? "" : targetUrl));
+      }
+
+      @Override
+      public void onStatus(String message) {
+        sendEvent(emitter, Map.of("type", "status", "message", message == null ? "" : message));
+      }
+
+      @Override
+      public void onProbe(TrafficScanService.TargetedScanProbe probe) {
+        sendEvent(emitter, Map.of("type", "probe", "probe", probe));
+      }
+
+      @Override
+      public void onHit(TrafficScanService.TargetedScanHit hit) {
+        sendEvent(emitter, Map.of("type", "hit", "hit", hit));
+      }
+
+      @Override
+      public void onComplete(TrafficScanService.TargetedScanResult result) {
+        sendEvent(emitter, Map.of("type", "complete", "result", result));
+        emitter.complete();
+      }
+    };
+  }
+
+  private static void sendEvent(SseEmitter emitter, Map<String, Object> payload) {
+    try {
+      synchronized (emitter) {
+        emitter.send(SseEmitter.event().data(payload, MediaType.APPLICATION_JSON));
+      }
+    } catch (Exception ex) {
+      throw new java.io.UncheckedIOException(new java.io.IOException(ex));
+    }
+  }
+
   @PostMapping("/packets/{id}/xray-scan")
   public TrafficScanService.TargetedScanResult xrayScan(
       @PathVariable Long id, @RequestBody(required = false) TrafficScanService.XrayScanRequest request) {
     return scanService.xrayScan(id, request);
+  }
+
+  @PostMapping(value = "/packets/{id}/xray-scan/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+  public SseEmitter xrayScanStream(
+      @PathVariable Long id, @RequestBody(required = false) TrafficScanService.XrayScanRequest request) {
+    SseEmitter emitter = new SseEmitter(240_000L);
+    ZAP_STREAM_EXECUTOR.execute(
+        () -> runStream(emitter, () -> scanService.xrayScan(id, request, listenerFor(emitter))));
+    emitter.onTimeout(emitter::complete);
+    emitter.onError(error -> {});
+    return emitter;
   }
 
   @PostMapping("/packets/{id}/fuzz")
