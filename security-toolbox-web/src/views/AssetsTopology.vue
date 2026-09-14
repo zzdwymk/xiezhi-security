@@ -332,11 +332,22 @@ watch(projectId, () => {
 
 async function refreshTopology() {
   await loadProjects();
+  await syncCapturedAssets();
   await loadAssets();
+}
+
+// 把流量分析里抓到的、命中授权目标 host 的路径同步为项目资产，使拓扑无需手动“信息收集”即可看到抓包结果。
+async function syncCapturedAssets() {
+  try {
+    await endpoints.syncTrafficAssets();
+  } catch {
+    // 同步失败不阻塞拓扑加载；下次刷新会自动重试。
+  }
 }
 
 onMounted(async () => {
   await loadProjects();
+  await syncCapturedAssets();
   await loadAssets();
 });
 </script>
@@ -473,12 +484,16 @@ onMounted(async () => {
   width: 32px;
   height: 32px;
   padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border-radius: var(--fluent-radius-control, 4px);
   font-size: 16px;
 }
 
-.refresh-topology-btn :deep(.el-icon.is-loading) {
-  margin: 0;
+/* 加载态下 Element Plus 仍会渲染一个空的默认插槽 <span>，其 margin-left:6px 会把 loading 图标推离中心。 */
+.refresh-topology-btn :deep(.el-icon + span) {
+  margin-left: 0;
 }
 
 .topology-wrapper {

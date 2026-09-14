@@ -1340,6 +1340,8 @@ export const endpoints = {
     api.get<DiscoveredPath[]>(`/projects/${projectId}/recon/paths`, {
       params: targetId ? { targetId } : undefined,
     }),
+  syncTrafficAssets: () =>
+    api.post<{ synced: number }>("/traffic/assets/sync"),
   projectIcpBatch: (projectId: number, targetIds: number[]) =>
     api.post<IcpBatchResult[]>(
       `/projects/${projectId}/recon/icp/batch`,
