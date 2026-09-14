@@ -42,6 +42,9 @@ const emit = defineEmits<{
 const containerRef = ref<HTMLElement | null>(null);
 const canvasWrapRef = ref<HTMLElement | null>(null);
 const svgRef = ref<SVGSVGElement | null>(null);
+// 摄像机视口容器：平移/缩放时通过命令式写 transform，绕开 Vue 逐帧重渲染整个 scene
+const cameraGroupRef = ref<SVGGElement | null>(null);
+let cameraRaf = 0;
 const viewportWidth = ref(1100);
 const viewportHeight = ref(660);
 const isFullscreen = ref(false);
@@ -58,6 +61,42 @@ const customPositions = ref<Record<string | number, { x: number; y: number }>>({
 const draggingNodeId = ref<number | null>(null);
 const draggingHubId = ref<string | null>(null);
 const nodeDragStart = ref({ clientX: 0, clientY: 0, initX: 0, initY: 0 });
+
+// ---- 拖拽对齐吸附 (类似工作流拓扑) ----
+interface AlignGuideSegment {
+  axis: "x" | "y";
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+interface AlignRuler {
+  axis: "x" | "y";
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  x: number;
+  y: number;
+  label: string;
+}
+interface AlignRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+const dragGuides = ref<AlignGuideSegment[]>([]);
+const dragRulers = ref<AlignRuler[]>([]);
+const isAligning = ref(false);
+const ALIGN_SNAP_DISTANCE = 8;
+function alignKeyActive(e: MouseEvent) {
+  return Boolean(e.ctrlKey || e.metaKey);
+}
+// 中心坐标 (cx, cy) + 尺寸 -> 左上角对齐矩形
+function alignRectFromCenter(cx: number, cy: number, w: number, h: number): AlignRect {
+  return { x: cx - w / 2, y: cy - h / 2, w, h };
+}
 
 // “新增资产”蓝点：对比前后两批资产 id，把本次新出现的节点标记为新加入。
 const newAssetIds = ref<Set<number>>(new Set());
@@ -1417,6 +1456,20 @@ const minimapViewfinder = computed(() => {
   };
 });
 
+// 将当前 pan/zoom 直接写入相机容器的 transform 属性 (GPU 合成，逐帧不触发 Vue patch)
+function applyCamera() {
+  const g = cameraGroupRef.value;
+  if (!g) return;
+  if (cameraRaf != null) cancelAnimationFrame(cameraRaf);
+  const tx = pan.value.x;
+  const ty = pan.value.y;
+  const s = zoom.value;
+  cameraRaf = requestAnimationFrame(() => {
+    cameraRaf = 0;
+    g.setAttribute("transform", `translate(${tx} ${ty}) scale(${s})`);
+  });
+}
+
 function setZoom(value: number, anchor = { x: cx.value, y: cy.value }) {
   const nextZoom = Math.min(2.5, Math.max(0.1, value));
   pan.value = {
@@ -1424,6 +1477,7 @@ function setZoom(value: number, anchor = { x: cx.value, y: cy.value }) {
     y: anchor.y - (anchor.y - pan.value.y) / zoom.value * nextZoom,
   };
   zoom.value = nextZoom;
+  applyCamera();
 }
 
 function zoomIn() {
@@ -1446,6 +1500,7 @@ function fitView() {
     x: cx.value - (bounds.left + bounds.width / 2) * scale,
     y: cy.value - 12 - (bounds.top + bounds.height / 2) * scale,
   };
+  applyCamera();
 }
 
 async function resetView() {
@@ -1502,32 +1557,381 @@ function onNodeMouseDown(e: MouseEvent, node: LayoutNode) {
   };
 }
 
+interface AlignCandidate {
+  delta: number;
+  guide: number;
+  rect: AlignRect;
+}
+
+// 当前被拖拽元素之外，参与对齐的目标矩形 (场景坐标中心->左上角)
+function alignTargets(excludeKey: string | number): { rects: AlignRect[]; hubsById: Map<string, LayoutHub>; nodesById: Map<number, LayoutNode> } {
+  const rects: AlignRect[] = [];
+  const hubsById = new Map<string, LayoutHub>();
+  const nodesById = new Map<number, LayoutNode>();
+  for (const hub of layoutData.value.hubs) {
+    hubsById.set(hub.id, hub);
+    if (hub.id === excludeKey) continue;
+    const c = customPositions.value[hub.id] ?? { x: hub.x, y: hub.y };
+    rects.push(alignRectFromCenter(c.x, c.y, HUB_W, HUB_H));
+  }
+  for (const node of layoutData.value.nodes) {
+    nodesById.set(node.id, node);
+    if (node.id === excludeKey) continue;
+    const c = customPositions.value[node.id] ?? { x: node.x, y: node.y };
+    rects.push(alignRectFromCenter(c.x, c.y, CARD_W, CARD_H));
+  }
+  return { rects, hubsById, nodesById };
+}
+
+function resolveAlignCandidate(
+  dragged: AlignRect,
+  target: AlignRect,
+  axis: "x" | "y",
+): AlignCandidate | null {
+  const dEdges =
+    axis === "x"
+      ? [dragged.x, dragged.x + dragged.w / 2, dragged.x + dragged.w]
+      : [dragged.y, dragged.y + dragged.h / 2, dragged.y + dragged.h];
+  const tEdges =
+    axis === "x"
+      ? [target.x, target.x + target.w / 2, target.x + target.w]
+      : [target.y, target.y + target.h / 2, target.y + target.h];
+  let best: AlignCandidate | null = null;
+  for (let s = 0; s < 3; s++) {
+    for (let t = 0; t < 3; t++) {
+      const delta = tEdges[t] - dEdges[s];
+      if (Math.abs(delta) > ALIGN_SNAP_DISTANCE) continue;
+      if (!best || Math.abs(delta) < Math.abs(best.delta)) {
+        best = { delta, guide: tEdges[t], rect: target };
+      }
+    }
+  }
+  return best;
+}
+
+function buildAlignRuler(
+  rulers: AlignRuler[],
+  dragged: AlignRect,
+  target: AlignRect,
+  axis: "x" | "y",
+) {
+  const gap =
+    axis === "x"
+      ? target.x - (dragged.x + dragged.w)
+      : target.y - (dragged.y + dragged.h);
+  if (gap <= 0) return;
+  const label = `${Math.round(gap)}px`;
+  if (axis === "x") {
+    const top = Math.min(dragged.y, target.y) - 28;
+    rulers.push({
+      axis,
+      x1: dragged.x + dragged.w,
+      y1: top,
+      x2: dragged.x + dragged.w + gap,
+      y2: top,
+      x: dragged.x + dragged.w + gap / 2,
+      y: top - 6,
+      label,
+    });
+  } else {
+    const left = Math.min(dragged.x, target.x) - 28;
+    rulers.push({
+      axis,
+      x1: left,
+      y1: dragged.y + dragged.h,
+      x2: left,
+      y2: dragged.y + dragged.h + gap,
+      x: left - 6,
+      y: dragged.y + dragged.h + gap / 2,
+      label,
+    });
+  }
+}
+
+function buildDistanceRulers(rulers: AlignRuler[], dragged: AlignRect, targets: AlignRect[]) {
+  let leftRect: AlignRect | null = null;
+  let rightRect: AlignRect | null = null;
+  let topRect: AlignRect | null = null;
+  let bottomRect: AlignRect | null = null;
+  let leftDist = -1;
+  let rightDist = -1;
+  let topDist = -1;
+  let bottomDist = -1;
+  for (const r of targets) {
+    const yOverlap = dragged.y < r.y + r.h && dragged.y + dragged.h > r.y;
+    const xOverlap = dragged.x < r.x + r.w && dragged.x + dragged.w > r.x;
+    if (yOverlap) {
+      const gapL = dragged.x - (r.x + r.w);
+      if (gapL >= 0 && (leftDist < 0 || gapL < leftDist)) {
+        leftDist = gapL;
+        leftRect = r;
+      }
+      const gapR = r.x - (dragged.x + dragged.w);
+      if (gapR >= 0 && (rightDist < 0 || gapR < rightDist)) {
+        rightDist = gapR;
+        rightRect = r;
+      }
+    }
+    if (xOverlap) {
+      const gapT = dragged.y - (r.y + r.h);
+      if (gapT >= 0 && (topDist < 0 || gapT < topDist)) {
+        topDist = gapT;
+        topRect = r;
+      }
+      const gapB = r.y - (dragged.y + dragged.h);
+      if (gapB >= 0 && (bottomDist < 0 || gapB < bottomDist)) {
+        bottomDist = gapB;
+        bottomRect = r;
+      }
+    }
+  }
+  const midY = (dragged.y + dragged.h) / 2;
+  const midX = (dragged.x + dragged.w) / 2;
+  if (leftRect) pushGapRuler(rulers, "x", leftRect.x + leftRect.w, dragged.x, midY - 12);
+  if (rightRect) pushGapRuler(rulers, "x", dragged.x + dragged.w, rightRect.x, midY + 12);
+  if (topRect) pushGapRuler(rulers, "y", topRect.y + topRect.h, dragged.y, midX - 12);
+  if (bottomRect) pushGapRuler(rulers, "y", dragged.y + dragged.h, bottomRect.y, midX + 12);
+}
+
+function pushGapRuler(
+  rulers: AlignRuler[],
+  axis: "x" | "y",
+  a: number,
+  b: number,
+  cross: number,
+) {
+  const gap = Math.abs(b - a);
+  if (gap <= 0 || gap > 96) return;
+  const label = `${Math.round(gap)}px`;
+  if (axis === "x") {
+    rulers.push({
+      axis,
+      x1: Math.min(a, b),
+      y1: cross,
+      x2: Math.max(a, b),
+      y2: cross,
+      x: (a + b) / 2,
+      y: cross - 6,
+      label,
+    });
+  } else {
+    rulers.push({
+      axis,
+      x1: cross,
+      y1: Math.min(a, b),
+      x2: cross,
+      y2: Math.max(a, b),
+      x: cross - 6,
+      y: (a + b) / 2,
+      label,
+    });
+  }
+}
+
+interface SpacingCandidate {
+  delta: number;
+  axis: "x" | "y";
+  a: AlignRect;
+  b: AlignRect | null;
+  gap: number;
+  mode: "center" | "side";
+  reverse?: boolean;
+}
+
+function referenceGap(axis: "x" | "y", targets: AlignRect[]): number {
+  const overlap = (a: AlignRect, b: AlignRect) =>
+    axis === "x"
+      ? a.y < b.y + b.h && a.y + a.h > b.y
+      : a.x < b.x + b.w && a.x + a.w > b.x;
+  const led = (a: AlignRect) => (axis === "x" ? a.x + a.w : a.y + a.h);
+  const start = (a: AlignRect) => (axis === "x" ? a.x : a.y);
+  let min = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < targets.length; i++) {
+    for (let j = 0; j < targets.length; j++) {
+      if (i === j) continue;
+      if (!overlap(targets[i], targets[j])) continue;
+      const gap = start(targets[j]) - led(targets[i]);
+      if (gap >= 0 && gap < min) min = gap;
+    }
+  }
+  return Number.isFinite(min) ? min : 0;
+}
+
+function resolveSpacingCandidate(
+  dragged: AlignRect,
+  targets: AlignRect[],
+  axis: "x" | "y",
+): SpacingCandidate | null {
+  let near: AlignRect | null = null;
+  let far: AlignRect | null = null;
+  for (const r of targets) {
+    if (axis === "x") {
+      const overlap = dragged.y < r.y + r.h && dragged.y + dragged.h > r.y;
+      if (!overlap) continue;
+      if (r.x + r.w <= dragged.x) {
+        if (!near || dragged.x - (r.x + r.w) < dragged.x - (near.x + near.w)) near = r;
+      } else if (r.x >= dragged.x + dragged.w) {
+        if (!far || r.x - (dragged.x + dragged.w) < far.x - (dragged.x + dragged.w)) far = r;
+      }
+    } else {
+      const overlap = dragged.x < r.x + r.w && dragged.x + dragged.w > r.x;
+      if (!overlap) continue;
+      if (r.y + r.h <= dragged.y) {
+        if (!near || dragged.y - (r.y + r.h) < dragged.y - (near.y + near.h)) near = r;
+      } else if (r.y >= dragged.y + dragged.h) {
+        if (!far || r.y - (dragged.y + dragged.h) < far.y - (dragged.y + dragged.h)) far = r;
+      }
+    }
+  }
+  const refGap = referenceGap(axis, targets);
+  let best: SpacingCandidate | null = null;
+  const push = (cand: SpacingCandidate) => {
+    if (!best || Math.abs(cand.delta) < Math.abs(best.delta)) best = cand;
+  };
+  if (near && far) {
+    const slack = axis === "x"
+      ? far.x - (near.x + near.w) - dragged.w
+      : far.y - (near.y + near.h) - dragged.h;
+    const spanStart = axis === "x" ? near.x + near.w : near.y + near.h;
+    const spanEnd = axis === "x" ? far.x : far.y;
+    const wanted = axis === "x"
+      ? (spanStart + spanEnd - dragged.w) / 2
+      : (spanStart + spanEnd - dragged.h) / 2;
+    const delta = wanted - (axis === "x" ? dragged.x : dragged.y);
+    if (slack > 0 && Math.abs(delta) <= ALIGN_SNAP_DISTANCE) {
+      push({ delta, axis, a: near, b: far, gap: slack / 2, mode: "center" });
+    }
+  }
+  if (refGap > 0) {
+    if (near) {
+      const wanted = axis === "x"
+        ? near.x + near.w + refGap
+        : near.y + near.h + refGap;
+      const delta = wanted - (axis === "x" ? dragged.x : dragged.y);
+      if (Math.abs(delta) <= ALIGN_SNAP_DISTANCE) {
+        push({ delta, axis, a: near, b: null, gap: refGap, mode: "side" });
+      }
+    } else if (far) {
+      const wanted = axis === "x"
+        ? far.x - refGap - dragged.w
+        : far.y - refGap - dragged.h;
+      const delta = wanted - (axis === "x" ? dragged.x : dragged.y);
+      if (Math.abs(delta) <= ALIGN_SNAP_DISTANCE) {
+        push({ delta, axis, a: far, b: null, gap: refGap, mode: "side", reverse: true });
+      }
+    }
+  }
+  return best;
+}
+
+function computeAlign(
+  key: string | number,
+  cx: number,
+  cy: number,
+  w: number,
+  h: number,
+): { x: number; y: number; guides: AlignGuideSegment[]; rulers: AlignRuler[] } {
+  const { rects } = alignTargets(key);
+  const dragged = alignRectFromCenter(cx, cy, w, h);
+  let xBest: AlignCandidate | SpacingCandidate | null = null;
+  let yBest: AlignCandidate | SpacingCandidate | null = null;
+  for (const r of rects) {
+    const xCand = resolveAlignCandidate(dragged, r, "x");
+    if (xCand && (!xBest || Math.abs(xCand.delta) < Math.abs(xBest.delta))) xBest = xCand;
+    const yCand = resolveAlignCandidate(dragged, r, "y");
+    if (yCand && (!yBest || Math.abs(yCand.delta) < Math.abs(yBest.delta))) yBest = yCand;
+  }
+  const xSpace = resolveSpacingCandidate(dragged, rects, "x");
+  const ySpace = resolveSpacingCandidate(dragged, rects, "y");
+  let xUseSpace = false;
+  let yUseSpace = false;
+  if (xSpace && (!xBest || Math.abs(xSpace.delta) <= Math.abs(xBest.delta))) {
+    xBest = xSpace;
+    xUseSpace = true;
+  }
+  if (ySpace && (!yBest || Math.abs(ySpace.delta) <= Math.abs(yBest.delta))) {
+    yBest = ySpace;
+    yUseSpace = true;
+  }
+
+  const snapX = xBest ? dragged.x + xBest.delta : dragged.x;
+  const snapY = yBest ? dragged.y + yBest.delta : dragged.y;
+  const sn = alignRectFromCenter(snapX + w / 2, snapY + h / 2, w, h);
+  const guides: AlignGuideSegment[] = [];
+  const rulers: AlignRuler[] = [];
+  const EXT = 14;
+  buildDistanceRulers(rulers, sn, rects);
+
+  if (xBest) {
+    if (xUseSpace) {
+      const sp = xBest as SpacingCandidate;
+      const aLeading = sp.reverse ? sp.a.x : sp.a.x + sp.a.w;
+      const top = Math.min(sn.y, sp.a.y, sp.b ? sp.b.y : sn.y) - EXT;
+      const bottom = Math.max(sn.y + h, sp.a.y + sp.a.h, sp.b ? sp.b.y + sp.b.h : sn.y + h) + EXT;
+      guides.push({ axis: "x", x1: aLeading, y1: top, x2: aLeading, y2: bottom });
+      if (sp.mode === "center" && sp.b) guides.push({ axis: "x", x1: sp.b.x, y1: top, x2: sp.b.x, y2: bottom });
+      const midY = (Math.min(sn.y, sp.a.y, sp.b ? sp.b.y : sn.y) + Math.max(sn.y + h, sp.a.y + sp.a.h, sp.b ? sp.b.y + sp.b.h : sn.y + h)) / 2;
+      pushGapRuler(rulers, "x", aLeading, sp.reverse ? sn.x + w : sn.x, midY - 18);
+      if (sp.mode === "center" && sp.b) pushGapRuler(rulers, "x", sn.x + w, sp.b.x, midY - 18);
+    } else {
+      const tr = (xBest as AlignCandidate).rect;
+      const top = Math.min(sn.y, tr.y) - EXT;
+      const bottom = Math.max(sn.y + h, tr.y + tr.h) + EXT;
+      guides.push({ axis: "x", x1: (xBest as AlignCandidate).guide, y1: top, x2: (xBest as AlignCandidate).guide, y2: bottom });
+      buildAlignRuler(rulers, sn, tr, "x");
+    }
+  }
+  if (yBest) {
+    if (yUseSpace) {
+      const sp = yBest as SpacingCandidate;
+      const aLeading = sp.reverse ? sp.a.y : sp.a.y + sp.a.h;
+      const lx = Math.min(sn.x, sp.a.x, sp.b ? sp.b.x : sn.x) - EXT;
+      const rx = Math.max(sn.x + w, sp.a.x + sp.a.w, sp.b ? sp.b.x + sp.b.w : sn.x + w) + EXT;
+      guides.push({ axis: "y", x1: lx, y1: aLeading, x2: rx, y2: aLeading });
+      if (sp.mode === "center" && sp.b) guides.push({ axis: "y", x1: lx, y1: sp.b.y, x2: rx, y2: sp.b.y });
+      const midX = (Math.min(sn.x, sp.a.x, sp.b ? sp.b.x : sn.x) + Math.max(sn.x + w, sp.a.x + sp.a.w, sp.b ? sp.b.x + sp.b.w : sn.x + w)) / 2;
+      pushGapRuler(rulers, "y", aLeading, sp.reverse ? sn.y + h : sn.y, midX + 18);
+      if (sp.mode === "center" && sp.b) pushGapRuler(rulers, "y", sn.y + h, sp.b.y, midX + 18);
+    } else {
+      const tr = (yBest as AlignCandidate).rect;
+      const left = Math.min(sn.x, tr.x) - EXT;
+      const right = Math.max(sn.x + w, tr.x + tr.w) + EXT;
+      guides.push({ axis: "y", x1: left, y1: (yBest as AlignCandidate).guide, x2: right, y2: (yBest as AlignCandidate).guide });
+      buildAlignRuler(rulers, sn, tr, "y");
+    }
+  }
+  return { x: sn.x + w / 2, y: sn.y + h / 2, guides, rulers };
+}
+
 // 全局鼠标移动
 function onGlobalMouseMove(e: MouseEvent) {
-  if (draggingHubId.value != null) {
+  if (draggingHubId.value != null || draggingNodeId.value != null) {
     if (!hasDragged.value && Math.hypot(e.clientX - nodeDragStart.value.clientX, e.clientY - nodeDragStart.value.clientY) < 3) return;
     hasDragged.value = true;
     const dx = (e.clientX - nodeDragStart.value.clientX) / zoom.value;
     const dy = (e.clientY - nodeDragStart.value.clientY) / zoom.value;
-    customPositions.value = {
-      ...customPositions.value,
-      [draggingHubId.value]: {
-        x: nodeDragStart.value.initX + dx,
-        y: nodeDragStart.value.initY + dy,
-      },
-    };
-  } else if (draggingNodeId.value != null) {
-    if (!hasDragged.value && Math.hypot(e.clientX - nodeDragStart.value.clientX, e.clientY - nodeDragStart.value.clientY) < 3) return;
-    hasDragged.value = true;
-    const dx = (e.clientX - nodeDragStart.value.clientX) / zoom.value;
-    const dy = (e.clientY - nodeDragStart.value.clientY) / zoom.value;
-    customPositions.value = {
-      ...customPositions.value,
-      [draggingNodeId.value]: {
-        x: nodeDragStart.value.initX + dx,
-        y: nodeDragStart.value.initY + dy,
-      },
-    };
+    const rawX = nodeDragStart.value.initX + dx;
+    const rawY = nodeDragStart.value.initY + dy;
+
+    const key = draggingHubId.value != null ? draggingHubId.value : draggingNodeId.value!;
+    const size = draggingHubId.value != null
+      ? { w: HUB_W, h: HUB_H }
+      : { w: CARD_W, h: CARD_H };
+
+    const active = alignKeyActive(e);
+    isAligning.value = active;
+    if (!active) {
+      customPositions.value = { ...customPositions.value, [key]: { x: rawX, y: rawY } };
+      dragGuides.value = [];
+      dragRulers.value = [];
+    } else {
+      const result = computeAlign(key, rawX, rawY, size.w, size.h);
+      if (result) {
+        customPositions.value = { ...customPositions.value, [key]: { x: result.x, y: result.y } };
+        dragGuides.value = result.guides;
+        dragRulers.value = result.rulers;
+      }
+    }
   } else if (isDraggingMinimap.value && minimapSvgRef.value) {
     const rect = minimapSvgRef.value.getBoundingClientRect();
     const map = minimapTransform.value;
@@ -1541,6 +1945,7 @@ function onGlobalMouseMove(e: MouseEvent) {
         x: minimapDragStart.value.initPanX - dMinimapX * ratio,
         y: minimapDragStart.value.initPanY - dMinimapY * ratio,
       };
+      applyCamera();
     }
   } else if (isDraggingCanvas.value) {
     hasDragged.value = true;
@@ -1548,6 +1953,7 @@ function onGlobalMouseMove(e: MouseEvent) {
       x: e.clientX - canvasDragStart.value.x,
       y: e.clientY - canvasDragStart.value.y,
     };
+    applyCamera();
   }
 }
 
@@ -1557,6 +1963,9 @@ function onGlobalMouseUp() {
   isDraggingMinimap.value = false;
   draggingNodeId.value = null;
   draggingHubId.value = null;
+  dragGuides.value = [];
+  dragRulers.value = [];
+  isAligning.value = false;
 }
 
 // 小地图坐标换算到主画布平移
@@ -1571,6 +1980,7 @@ function panToMinimapPoint(minimapX: number, minimapY: number) {
     x: cx.value - sceneX * zoom.value,
     y: cy.value - sceneY * zoom.value,
   };
+  applyCamera();
 }
 
 // 小地图鼠标按下：支持点击跳转与拖拽取景框快速移动
@@ -1978,6 +2388,10 @@ onMounted(() => {
   document.addEventListener("fullscreenchange", onFullscreenChange);
   document.addEventListener("mousemove", onGlobalMouseMove);
   document.addEventListener("mouseup", onGlobalMouseUp);
+  void nextTick(() => {
+    fitView();
+    applyCamera();
+  });
 });
 
 onUnmounted(() => {
@@ -2262,10 +2676,10 @@ onUnmounted(() => {
         <rect width="100%" height="100%" fill="var(--app-surface-strong, #ffffff)" pointer-events="none" />
         <rect width="100%" height="100%" fill="url(#dotGrid)" pointer-events="none" />
 
-        <!-- 缩放与平移视口容器 -->
+        <!-- 缩放与平移视口容器 (transform 由 applyCamera 命令式写入，GPU 合成以提升平移缩放流畅度) -->
         <g
+          ref="cameraGroupRef"
           class="topology-scene"
-          :transform="`translate(${pan.x}, ${pan.y}) scale(${zoom})`"
         >
           <!-- 画布各中心节点柔和纵深微光 (紧密内聚在中心卡片周围，不向外漫散) -->
           <ellipse
@@ -2709,9 +3123,32 @@ onUnmounted(() => {
                   </g>
                 </g>
               </g>
-
             </g>
           </g>
+
+          <!-- ==================== 拖拽对齐吸附辅助线/间距标尺 (Ctrl/Meta 拖拽时显示) ==================== -->
+          <g v-if="isAligning && (dragGuides.length || dragRulers.length)" class="topology-align-overlay" pointer-events="none">
+            <line
+              v-for="(g, gi) in dragGuides"
+              :key="`guide-${gi}`"
+              :class="['align-guide', `align-guide--${g.axis}`]"
+              :x1="g.x1"
+              :y1="g.y1"
+              :x2="g.x2"
+              :y2="g.y2"
+            />
+            <g v-for="(r, ri) in dragRulers" :key="`ruler-${ri}`" class="align-ruler-group">
+              <line
+                :class="['align-ruler-line', `align-ruler-line--${r.axis}`]"
+                :x1="r.x1"
+                :y1="r.y1"
+                :x2="r.x2"
+                :y2="r.y2"
+              />
+              <text :x="r.x" :y="r.y" class="align-ruler-label" text-anchor="middle">{{ r.label }}</text>
+            </g>
+          </g>
+
         </g>
       </svg>
 
@@ -3596,6 +4033,43 @@ html.dark .zoom-controls .divider-v,
   fill: var(--app-accent, #0078d4);
   stroke: #ffffff;
   opacity: 1;
+}
+
+/* ==================== 拖拽对齐吸附辅助线与间距标尺 (Fluent 对齐感应) ==================== */
+.align-guide {
+  stroke: var(--app-accent, #0078d4);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+  pointer-events: none;
+}
+.align-guide--x {
+  stroke: #16c784;
+}
+.align-guide--y {
+  stroke: #0078d4;
+}
+.align-ruler-line {
+  stroke: var(--app-warning, #d98600);
+  stroke-width: 1;
+  pointer-events: none;
+}
+.align-ruler-line--x,
+.align-ruler-line--y {
+  stroke: var(--app-warning, #e77f0a);
+  stroke-dasharray: 3 3;
+}
+.align-ruler-label {
+  font-size: 10px;
+  font-weight: 600;
+  fill: var(--app-warning, #cf7c0a);
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: var(--app-surface-strong, #ffffff);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+.topology-align-overlay {
+  pointer-events: none;
 }
 
 /* ==================== 中心宿主 Fluent Command Core 卡片 ==================== */

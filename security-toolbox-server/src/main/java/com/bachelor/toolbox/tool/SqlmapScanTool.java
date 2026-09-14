@@ -47,6 +47,8 @@ public class SqlmapScanTool implements SecurityTool {
   private static final Pattern PARAMETER = Pattern.compile("(?m)^\\s*Parameter:\\s*(.+)$");
   private static final Pattern TYPE = Pattern.compile("(?m)^\\s*Type:\\s*(.+)$");
   private static final Pattern DBMS = Pattern.compile("(?im)back-end DBMS:\\s*(.+)");
+  private static final Pattern PARAMETER_WITH_METHOD =
+      Pattern.compile("^(.*?)\\s*\\(([^)]+)\\)\\s*$");
 
   private final TargetPolicyService policy;
   private final ExecutableLocator locator;
@@ -230,7 +232,7 @@ public class SqlmapScanTool implements SecurityTool {
               + "对输入做类型与白名单校验；最小化数据库账户权限；部署 WAF 作为纵深防御。";
       findings.add(
           new FindingDraft(
-              "SQL 注入漏洞（" + parameter + "）",
+              "SQL 注入漏洞 · " + parameterLabel(parameter),
               "HIGH",
               desc,
               abbreviate(injection, 4000),
@@ -245,6 +247,21 @@ public class SqlmapScanTool implements SecurityTool {
             ? "sqlmap 确认存在 SQL 注入（" + findings.size() + " 处注入点）"
             : "sqlmap 未在该 URL 参数上确认 SQL 注入";
     return new ToolExecutionResult(summary, data, findings);
+  }
+
+  private static String parameterLabel(String parameter) {
+    if (parameter == null || parameter.isBlank()) {
+      return "未知参数";
+    }
+    Matcher matcher = PARAMETER_WITH_METHOD.matcher(parameter.trim());
+    if (matcher.matches()) {
+      String name = matcher.group(1).trim();
+      String method = matcher.group(2).trim();
+      if (!name.isEmpty() && !method.isEmpty()) {
+        return method + " 参数 " + name;
+      }
+    }
+    return parameter.trim();
   }
 
   private Path requireExecutable() {
