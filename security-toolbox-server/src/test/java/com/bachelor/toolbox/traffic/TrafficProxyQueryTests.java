@@ -32,6 +32,7 @@ class TrafficProxyQueryTests {
   @Mock private TrafficCaptureFilterService filters;
   @Mock private AuditService audit;
   @Mock private MitmCertificateAuthority certificateAuthority;
+  @Mock private TrafficAssetSyncService assetSync;
   @Mock private PlatformTransactionManager transactionManager;
 
   @Test
@@ -85,6 +86,7 @@ class TrafficProxyQueryTests {
         filters,
         audit,
         certificateAuthority,
+        assetSync,
         transactionManager);
   }
 }
