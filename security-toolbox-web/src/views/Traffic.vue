@@ -2841,9 +2841,15 @@ onUnmounted(() => {
           <header class="traffic-detail-head">
             <div class="packet-title">
               <b>{{ selected.method || "GET" }}</b>
-              <strong :title="selected.url || `${selected.host || ''}${selected.path || ''}`">{{
-                selected.url || `${selected.host || ""}${selected.path || ""}`
-              }}</strong>
+              <el-tooltip
+                :content="selected.url || `${selected.host || ''}${selected.path || ''}`"
+                placement="top"
+                :show-after="250"
+              >
+                <strong>{{
+                  selected.url || `${selected.host || ""}${selected.path || ""}`
+                }}</strong>
+              </el-tooltip>
             </div>
             <div class="packet-head-actions">
               <div class="packet-meta">

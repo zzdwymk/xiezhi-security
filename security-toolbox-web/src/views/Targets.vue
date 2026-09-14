@@ -768,26 +768,29 @@ onMounted(load);
       />
       <el-table-column label="授权有效期" min-width="135">
         <template #default="scope">
-          <div
-            class="target-authorization-window"
-            :title="targetAuthorizationTitle(scope.row)"
+          <el-tooltip
+            :content="targetAuthorizationTitle(scope.row)"
+            placement="top"
+            :show-after="250"
           >
-            <span class="target-authorization-source">
-              {{ targetAuthorizationWindow(scope.row).sourceLabel }}
-            </span>
-            <span>
-              <small>起</small>
-              {{
-                compactDateTime(targetAuthorizationWindow(scope.row).validFrom)
-              }}
-            </span>
-            <span>
-              <small>止</small>
-              {{
-                compactDateTime(targetAuthorizationWindow(scope.row).expiresAt)
-              }}
-            </span>
-          </div>
+            <div class="target-authorization-window">
+              <span class="target-authorization-source">
+                {{ targetAuthorizationWindow(scope.row).sourceLabel }}
+              </span>
+              <span>
+                <small>起</small>
+                {{
+                  compactDateTime(targetAuthorizationWindow(scope.row).validFrom)
+                }}
+              </span>
+              <span>
+                <small>止</small>
+                {{
+                  compactDateTime(targetAuthorizationWindow(scope.row).expiresAt)
+                }}
+              </span>
+            </div>
+          </el-tooltip>
         </template>
       </el-table-column>
       <el-table-column label="状态" width="80"
@@ -1029,7 +1032,13 @@ onMounted(load);
           <el-table-column label="目标地址" min-width="130">
             <template #default="{ row }">
               <div class="preview-target-cell">
-                <span class="preview-target-val" :title="row.targetValue">{{ row.targetValue }}</span>
+                <el-tooltip
+                  :content="row.targetValue"
+                  placement="top"
+                  :show-after="250"
+                >
+                  <span class="preview-target-val">{{ row.targetValue }}</span>
+                </el-tooltip>
                 <el-tag size="small" :type="row.targetType === 'ip' ? 'info' : row.targetType === 'domain' ? 'primary' : 'success'" effect="plain">
                   {{ row.targetType === 'ip' ? 'IP' : row.targetType === 'domain' ? '域名' : 'URL' }}
                 </el-tag>

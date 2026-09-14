@@ -3562,7 +3562,13 @@ onUnmounted(() => {
                 <el-table-column label="目标地址" min-width="130">
                   <template #default="{ row }">
                     <div class="preview-target-cell">
-                      <span class="preview-target-val" :title="row.targetValue">{{ row.targetValue }}</span>
+                      <el-tooltip
+                        :content="row.targetValue"
+                        placement="top"
+                        :show-after="250"
+                      >
+                        <span class="preview-target-val">{{ row.targetValue }}</span>
+                      </el-tooltip>
                       <el-tag size="small" :type="row.targetType === 'ip' ? 'info' : row.targetType === 'domain' ? 'primary' : 'success'" effect="plain">
                         {{ row.targetType === 'ip' ? 'IP' : row.targetType === 'domain' ? '域名' : 'URL' }}
                       </el-tag>
@@ -3827,9 +3833,13 @@ onUnmounted(() => {
                 >
                   <div class="fingerprint-catalog-update-file">
                     <small>本地 JSON 文件</small>
-                    <strong :title="fingerprintCatalogUpdateFile.name">{{
-                      fingerprintCatalogUpdateFile.name
-                    }}</strong>
+                    <el-tooltip
+                      :content="fingerprintCatalogUpdateFile.name"
+                      placement="top"
+                      :show-after="250"
+                    >
+                      <strong>{{ fingerprintCatalogUpdateFile.name }}</strong>
+                    </el-tooltip>
                     <span>{{
                       fingerprintCatalogFileSize(
                         fingerprintCatalogUpdateFile.size,

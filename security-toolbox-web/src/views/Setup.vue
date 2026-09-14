@@ -757,7 +757,13 @@ onUnmounted(() => {
             <div class="setup-storage-title">
               <el-icon><FolderOpened /></el-icon><b>工具安装目录</b>
             </div>
-            <code :title="toolsDirectory">{{ toolsDirectory }}</code>
+            <el-tooltip
+              :content="toolsDirectory"
+              placement="top"
+              :show-after="250"
+            >
+              <code>{{ toolsDirectory }}</code>
+            </el-tooltip>
             <div
               v-if="desktopDirectorySelectionAvailable"
               class="setup-storage-actions"
