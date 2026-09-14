@@ -2279,6 +2279,18 @@ export function streamXrayScan(
   );
 }
 
+export function streamSqlmapScan(
+  packetId: number | string,
+  payload: { level?: number; risk?: number; technique?: string; data?: string },
+  onEvent: (event: ZapScanStreamEvent) => void,
+): Promise<TargetedScanResult> {
+  return streamTargetedScan(
+    `/traffic/packets/${packetId}/sqlmap-scan/stream`,
+    payload,
+    onEvent,
+  );
+}
+
 export async function safeGet<T>(
   request: () => Promise<{ data: T }>,
   fallback: T,

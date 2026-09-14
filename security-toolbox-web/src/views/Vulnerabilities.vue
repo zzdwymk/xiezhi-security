@@ -74,6 +74,10 @@ const pocSelectionModes = ref<Record<ActiveScannerSource, "ALL" | "MANUAL">>({
   AFROG: "ALL",
   XRAY: "ALL",
 });
+const POC_SELECTION_MODE_OPTIONS = [
+  { label: "全部已同步", value: "ALL" },
+  { label: "手动选择", value: "MANUAL" },
+];
 const pocOptions = ref<Record<ActiveScannerSource, VulnerabilityDefinition[]>>({
   NUCLEI: [],
   AFROG: [],
@@ -1724,10 +1728,7 @@ onUnmounted(() => {
           <el-segmented
             v-model="pocSelectionModes[source]"
             class="poc-selection-mode"
-            :options="[
-              { label: '全部已同步', value: 'ALL' },
-              { label: '手动选择', value: 'MANUAL' },
-            ]"
+            :options="POC_SELECTION_MODE_OPTIONS"
           />
           <p v-if="pocSelectionModes[source] === 'ALL'" class="poc-help">
             将使用当前已同步且可执行的全部
@@ -2759,6 +2760,8 @@ onUnmounted(() => {
   box-sizing: border-box;
   width: 50% !important;
   transform: translateX(0) translateZ(0) !important;
+  will-change: transform;
+  backface-visibility: hidden;
   transition: transform var(--fluent-duration-normal, 200ms)
     var(--fluent-curve-standard, ease);
 }

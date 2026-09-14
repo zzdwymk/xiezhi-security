@@ -92,6 +92,7 @@ public class TrafficScanService {
   private final XrayScanTool xrayTool;
   private final SqlmapScanTool sqlmapTool;
   private final AuditService audit;
+  private final TrafficScanLedgerService scanLedger;
   private final PortRangeParser portRangeParser;
   private final HttpClient httpClient;
 
@@ -106,6 +107,7 @@ public class TrafficScanService {
       XrayScanTool xrayTool,
       SqlmapScanTool sqlmapTool,
       AuditService audit,
+      TrafficScanLedgerService scanLedger,
       PortRangeParser portRangeParser) {
     this.packets = packets;
     this.targets = targets;
@@ -116,6 +118,7 @@ public class TrafficScanService {
     this.xrayTool = xrayTool;
     this.sqlmapTool = sqlmapTool;
     this.audit = audit;
+    this.scanLedger = scanLedger;
     this.portRangeParser = portRangeParser;
     this.httpClient =
         HttpClient.newBuilder()
@@ -202,6 +205,13 @@ public class TrafficScanService {
     }
 
     audit.record("TRAFFIC_ZAP_SCAN", "TRAFFIC_PACKET", packetId, "hits=" + hits.size(), "SUCCESS");
+    recordScan(
+        packet,
+        "ZAP",
+        targetUrl,
+        hits.size(),
+        "COMPLETED",
+        hits.isEmpty() ? "ZAP 定向检测完成，未发现高危注入漏洞" : "ZAP 定向检测完成，发现 " + hits.size() + " 项潜在风险");
     TargetedScanResult result =
         new TargetedScanResult(
             packetId,
@@ -266,6 +276,13 @@ public class TrafficScanService {
     }
 
     audit.record("TRAFFIC_XRAY_SCAN", "TRAFFIC_PACKET", packetId, "hits=" + hits.size(), "SUCCESS");
+    recordScan(
+        packet,
+        "XRAY",
+        buildUrl(packet),
+        hits.size(),
+        "COMPLETED",
+        hits.isEmpty() ? "Xray 靶向 PoC 探测完成，未命中已选组件漏洞" : "Xray 靶向探测完成，命中 " + hits.size() + " 项漏洞");
     TargetedScanResult result =
         new TargetedScanResult(
             packetId,
@@ -342,7 +359,14 @@ public class TrafficScanService {
       throw new ApiException("sqlmap 复核执行失败: " + ex.getMessage());
     }
 
-    audit.record("TRAFFIC_SQLMAP_SCAN", "TRAFFIC_PACKET", packetId, "url=" + url, "SUCCESS");
+    audit.record("TRAFFIC_SQLMAP_SCAN", "TRAFFIC_PACKET", packetId, "url=" + url + ",hits=" + hits.size(), "SUCCESS");
+    recordScan(
+        packet,
+        "SQLMAP",
+        url,
+        hits.size(),
+        "COMPLETED",
+        hits.isEmpty() ? "sqlmap 复核完成，未确认 SQL 注入" : "sqlmap 复核完成，确认 " + hits.size() + " 处 SQL 注入");
     TargetedScanResult result =
         new TargetedScanResult(
             packetId,
@@ -538,6 +562,26 @@ public class TrafficScanService {
       List<TargetedScanHit> hits, ZapScanListener listener, TargetedScanHit hit) {
     hits.add(hit);
     listener.onHit(hit);
+  }
+
+  /** 写入运行期扫描执行台账（与审计日志并列的另一类可审计记录）。 */
+  private void recordScan(
+      TrafficPacket packet, String engine, String url, int hits, String status, String message) {
+    try {
+      TrafficScanLedger entry = new TrafficScanLedger();
+      entry.setEngine(engine);
+      entry.setPacketId(packet.getId());
+      entry.setTargetId(packet.getTargetId() == null ? 0L : packet.getTargetId());
+      entry.setHost(packet.getHost());
+      entry.setPort(packet.getPort());
+      entry.setUrl(url);
+      entry.setHitCount(hits);
+      entry.setStatus(status);
+      entry.setMessage(message);
+      scanLedger.record(entry);
+    } catch (Exception ex) {
+      LOGGER.warn("写入流量扫描执行台账失败，流量 ID={}", packet.getId(), ex);
+    }
   }
 
   /** 把底层工具的可观察过程（命令/操作/心跳/进度）桥接为面向用户的实时状态推送，实现执行过程透明。 */

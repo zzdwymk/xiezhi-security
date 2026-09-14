@@ -255,6 +255,7 @@ export function formatAuditDetail(detail?: string): string {
   text = text.replace(/\bafrog_scan\b/g, "Afrog 漏洞扫描");
   text = text.replace(/\bxray_scan\b/g, "Xray 漏洞扫描");
   text = text.replace(/\bzap_scan\b/g, "OWASP ZAP 扫描");
+  text = text.replace(/\bsqlmap_scan\b/g, "sqlmap SQL 注入检测");
   text = text.replace(/\bfscan_scan\b/g, "fscan 主机扫描");
   text = text.replace(/\bmsf_scan\b/g, "Metasploit 模块扫描");
 

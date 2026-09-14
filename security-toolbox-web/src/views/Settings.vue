@@ -15,6 +15,7 @@ import {
   Setting,
   Tools,
   View,
+  Warning,
 } from "../components/fluentIcons";
 import { getThemeMode, setThemeMode } from "../system-theme";
 import { useCopilotStore } from "../stores/copilot";
@@ -108,6 +109,15 @@ const aiForm = reactive<AiSettingsInput>({
   apiKey: "",
   proxyMode: false,
 });
+
+const retrievalBackendOptions = [
+  { label: "BM25 关键词", value: "bm25" },
+  { label: "真实向量嵌入", value: "real_embedding" },
+];
+const embeddingConnectionModeOptions = [
+  { label: "复用对话连接", value: "shared" },
+  { label: "单独配置", value: "custom" },
+];
 
 const hasIndependentEmbedding = computed(
   () =>
@@ -655,7 +665,68 @@ onMounted(() => {
   void loadIcpSettings();
   void loadGithubTokenSettings();
   void loadMicaSetting();
+  void loadNotificationSettings();
 });
+
+const notificationSeverityOptions = [
+  { value: "CRITICAL", label: "严重（Critical）", tag: "danger" as const },
+  { value: "HIGH", label: "高危（High）", tag: "danger" as const },
+  { value: "MEDIUM", label: "中危（Medium）", tag: "warning" as const },
+  { value: "LOW", label: "低危（Low）", tag: "primary" as const },
+];
+const notifDialog = ref(false);
+const notifLoading = ref(false);
+const notifSaving = ref(false);
+const notifEnabled = ref(true);
+const notifSeverities = ref<string[]>(["CRITICAL", "HIGH", "MEDIUM"]);
+const notifSummary = computed(() => {
+  if (!isDesktop) return "网页模式不支持系统级任务提醒";
+  if (notifEnabled.value) {
+    const labels = notificationSeverityOptions
+      .filter((o) => notifSeverities.value.includes(o.value))
+      .map((o) => o.label)
+      .join(" / ");
+    return `任务完成并命中【${labels || "无"}】严重程度时提醒`;
+  }
+  return "任务完成时不进行系统提醒";
+});
+
+async function loadNotificationSettings(open = false) {
+  if (open) notifDialog.value = true;
+  if (!window.toolboxDesktop?.getNotificationSettings) return;
+  notifLoading.value = true;
+  try {
+    const settings = await window.toolboxDesktop.getNotificationSettings();
+    notifSeverities.value = settings.severities.slice();
+    notifEnabled.value = settings.taskCompleteNotifications;
+  } catch (error) {
+    ElMessage.error(errorText(error, "无法读取任务提醒设置"));
+  } finally {
+    notifLoading.value = false;
+  }
+}
+
+async function saveNotificationSettings() {
+  if (!window.toolboxDesktop?.saveNotificationSettings)
+    return ElMessage.warning("任务提醒仅支持桌面应用");
+  if (!notifSeverities.value.length)
+    return ElMessage.warning("请至少勾选一个需要提醒的严重程度");
+  notifSaving.value = true;
+  try {
+    const settings = await window.toolboxDesktop.saveNotificationSettings({
+      severities: notifSeverities.value,
+      taskCompleteNotifications: notifEnabled.value,
+    });
+    notifSeverities.value = settings.severities.slice();
+    notifEnabled.value = settings.taskCompleteNotifications;
+    notifDialog.value = false;
+    ElMessage.success("任务提醒设置已保存");
+  } catch (error) {
+    ElMessage.error(errorText(error, "任务提醒设置保存失败"));
+  } finally {
+    notifSaving.value = false;
+  }
+}
 
 watch(
   () => aiForm.proxyMode,
@@ -835,6 +906,73 @@ watch(
           </button>
         </div>
       </section>
+
+      <section class="settings-group">
+        <header class="settings-group-title">任务提醒</header>
+        <div class="settings-list">
+          <button
+            type="button"
+            class="settings-row"
+            @click="loadNotificationSettings(true)"
+            :disabled="!isDesktop"
+          >
+            <el-icon class="settings-row-icon"><Warning /></el-icon>
+            <span class="settings-row-copy">
+              <strong>漏洞等级提醒</strong>
+              <small>{{ notifSummary }}</small>
+            </span>
+            <el-icon class="settings-row-chevron"><ArrowRight /></el-icon>
+          </button>
+        </div>
+      </section>
+
+      <el-dialog
+        v-model="notifDialog"
+        title="漏洞等级提醒"
+        class="app-dialog app-dialog--md"
+        align-center
+      >
+        <div class="notif-setting-list" v-loading="notifLoading">
+          <div class="settings-row settings-row--control">
+            <el-icon class="settings-row-icon"><Warning /></el-icon>
+            <span class="settings-row-copy">
+              <strong>任务完成提醒</strong>
+              <small
+                >任务完成任务而想第一时间收到系统通知时开启（仅在桌面版生效）</small
+              >
+            </span>
+            <el-switch v-model="notifEnabled" />
+          </div>
+          <div class="notif-severity-block">
+            <strong>命中以下严重程度时提醒（可多选）</strong>
+            <small>任务完成并发现所选等级的漏洞时才弹出系统提醒</small>
+            <el-checkbox-group v-model="notifSeverities" class="notif-severity-checks">
+              <el-checkbox
+                v-for="option in notificationSeverityOptions"
+                :key="option.value"
+                :value="option.value"
+              >
+                <el-tag
+                  size="small"
+                  :type="option.tag"
+                  effect="plain"
+                  round
+                  >{{ option.label }}</el-tag
+                >
+              </el-checkbox>
+            </el-checkbox-group>
+          </div>
+        </div>
+        <template #footer>
+          <el-button @click="notifDialog = false">取消</el-button>
+          <el-button
+            type="primary"
+            :loading="notifSaving"
+            @click="saveNotificationSettings"
+            >保存</el-button
+          >
+        </template>
+      </el-dialog>
 
       <section class="settings-group">
         <header class="settings-group-title">系统与审计</header>
@@ -1278,10 +1416,7 @@ watch(
           <el-form-item label="知识检索方式">
             <el-segmented
               v-model="aiForm.retrievalBackend"
-              :options="[
-                { label: 'BM25 关键词', value: 'bm25' },
-                { label: '真实向量嵌入', value: 'real_embedding' },
-              ]"
+              :options="retrievalBackendOptions"
               :disabled="!isDesktop"
             />
             <p>
@@ -1294,10 +1429,7 @@ watch(
           >
             <el-segmented
               v-model="aiForm.embeddingConnectionMode"
-              :options="[
-                { label: '复用对话连接', value: 'shared' },
-                { label: '单独配置', value: 'custom' },
-              ]"
+              :options="embeddingConnectionModeOptions"
               :disabled="!isDesktop"
             />
           </el-form-item>
@@ -1682,5 +1814,41 @@ button.settings-row:active {
     margin: 2px 0 0;
   }
 
+}
+
+.notif-setting-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 120px;
+}
+
+.notif-severity-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px 14px;
+}
+
+.notif-severity-block > strong {
+  color: var(--app-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.notif-severity-block > small {
+  color: var(--app-muted);
+  font-size: 12px;
+}
+
+.notif-severity-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.notif-severity-checks :deep(.el-checkbox) {
+  margin-right: 0;
 }
 </style>

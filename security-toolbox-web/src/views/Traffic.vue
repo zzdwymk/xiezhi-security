@@ -23,7 +23,7 @@ import {
   VideoPlay,
   Warning,
 } from "../components/fluentIcons";
-import { api, streamXrayScan, streamZapScan, type Target } from "../api";
+import { api, streamSqlmapScan, streamXrayScan, streamZapScan, type Target } from "../api";
 import AppPagination from "../components/AppPagination.vue";
 import { useClientPagination } from "../composables/useClientPagination";
 import { useCopilotStore } from "../stores/copilot";
@@ -2159,7 +2159,38 @@ interface TargetedScanResult {
 const targetedScanVisible = ref(false);
 const targetedScanLoading = ref(false);
 const targetedScanResult = ref<TargetedScanResult | null>(null);
-const targetedScanEngine = ref<"ZAP" | "XRAY">("ZAP");
+const targetedScanEngine = ref<"ZAP" | "XRAY" | "SQLMAP">("ZAP");
+
+interface ScanLedgerEntry {
+  id: number;
+  engine: string;
+  packetId: number;
+  targetId: number;
+  host: string;
+  port?: number;
+  url?: string;
+  hitCount: number;
+  status: string;
+  message?: string;
+  createdAt?: string;
+}
+const scanLedgerVisible = ref(false);
+const scanLedgerLoading = ref(false);
+const scanLedgerEntries = ref<ScanLedgerEntry[]>([]);
+
+async function openScanLedger() {
+  scanLedgerVisible.value = true;
+  scanLedgerLoading.value = true;
+  try {
+    const { data } = await api.get<ScanLedgerEntry[]>("/traffic/scans/recent");
+    scanLedgerEntries.value = Array.isArray(data) ? data : [];
+  } catch (error) {
+    scanLedgerEntries.value = [];
+    ElMessage.warning(readableError(error));
+  } finally {
+    scanLedgerLoading.value = false;
+  }
+}
 
 const fuzzPresets = ref<
   Array<{ id: string; name: string; category: string; payloads: string[] }>
@@ -2443,6 +2474,75 @@ function handleSecurityProbeCommand(cmd: string | number | object) {
     runZapScan(selected.value);
   } else if (cmd === "xray") {
     runXrayScan(selected.value);
+  } else if (cmd === "sqlmap") {
+    runSqlmapScan(selected.value);
+  }
+}
+
+async function runSqlmapScan(item?: TrafficSession | null) {
+  const targetItem = item || selected.value;
+  if (!targetItem?.id) return ElMessage.warning("请先选择一条流量记录");
+  targetedScanEngine.value = "SQLMAP";
+  targetedScanLoading.value = true;
+  targetedScanVisible.value = true;
+  targetedScanResult.value = {
+    packetId: Number(targetItem.id),
+    engine: "SQLMAP",
+    status: "RUNNING",
+    hits: [],
+    probes: [],
+    message: "正在初始化 sqlmap SQL 注入复核...",
+  };
+  const live = targetedScanResult.value;
+  const revealer = createScanRevealer();
+  try {
+    const result = await streamSqlmapScan(
+      targetItem.id,
+      {
+        level: 1,
+        risk: 1,
+        ...(targetItem.requestBody
+          ? { data: editablePacketValue(targetItem.requestBody, "body") }
+          : {}),
+      },
+      (event) => {
+        if (event.type === "start") {
+          live.message = `正在对 ${event.targetUrl || targetItem.url || "目标"} 执行 sqlmap 复核...`;
+        } else if (event.type === "status") {
+          const message = event.message || "";
+          live.message = message || live.message;
+          if (message && message.startsWith("执行命令:")) {
+            live.probes.push({
+              name: "sqlmap 命令",
+              method: "查看",
+              target: message.replace(/^执行命令:\s*/, ""),
+              triggered: false,
+            } as any);
+          }
+        } else if (event.type === "hit") {
+          revealer.enqueue("hit", event.hit);
+        }
+      },
+    );
+    await revealer.waitIdle(6000);
+    live.status = result.status;
+    live.message =
+      result.hits && result.hits.length > 0
+        ? `sqlmap 复核完成，确认 ${result.hits.length} 处 SQL 注入`
+        : "sqlmap 复核完成，未在该目标确认 SQL 注入";
+    if (result.hits && result.hits.length > 0) {
+      ElMessage.warning(`sqlmap 复核完成，确认 ${result.hits.length} 处注入`);
+    } else {
+      ElMessage.success("sqlmap 复核完成，未确认 SQL 注入");
+    }
+  } catch (err: any) {
+    revealer.drain();
+    const message = toErrorMessage(err, "sqlmap 复核失败");
+    ElMessage.error(message);
+    live.message = `探测失败：${message}`;
+  } finally {
+    revealer.stop();
+    targetedScanLoading.value = false;
   }
 }
 
@@ -2579,6 +2679,13 @@ onUnmounted(() => {
               @click="clearSessions"
               >清空未标记</el-button
             >
+            <el-button
+              text
+              size="small"
+              :loading="scanLedgerLoading"
+              @click="openScanLedger"
+              >扫描台账</el-button
+            >
           </div>
           <el-input
             v-model="filter"
@@ -2611,9 +2718,11 @@ onUnmounted(() => {
                   : cmd === 'replay'
                     ? sendSelectedToReplay()
                     : cmd === 'zap'
-                      ? runZapScan(item)
-                      : cmd === 'xray'
-                        ? runXrayScan(item)
+                    ? runZapScan(item)
+                    : cmd === 'xray'
+                      ? runXrayScan(item)
+                      : cmd === 'sqlmap'
+                        ? runSqlmapScan(item)
                         : openFuzz()
           "
         >
@@ -2694,6 +2803,11 @@ onUnmounted(() => {
                 >Xray 靶向探测</el-dropdown-item
               >
               <el-dropdown-item
+                command="sqlmap"
+                :disabled="clearingSessions"
+                >sqlmap 复核</el-dropdown-item
+              >
+              <el-dropdown-item
                 divided
                 command="mark"
                 :disabled="markingId === item.id || clearingSessions"
@@ -2760,6 +2874,9 @@ onUnmounted(() => {
                     </el-dropdown-item>
                     <el-dropdown-item command="xray">
                       <span style="font-weight: 500">Xray 靶向 PoC 探测</span>
+                    </el-dropdown-item>
+                    <el-dropdown-item command="sqlmap">
+                      <span style="font-weight: 500">sqlmap 注入复核</span>
                     </el-dropdown-item>
                   </el-dropdown-menu>
                 </template>
@@ -3514,8 +3631,68 @@ onUnmounted(() => {
     </div>
 
     <el-dialog
+      v-model="scanLedgerVisible"
+      title="流量定向扫描台账"
+      width="820px"
+      append-to-body
+      class="app-dialog app-dialog--lg"
+      align-center
+    >
+      <div v-if="scanLedgerLoading" class="targeted-loading">
+        <el-icon class="is-loading" :size="24"><Refresh /></el-icon>
+        <span>正在加载扫描执行台账...</span>
+      </div>
+      <el-table
+        v-else
+        :data="scanLedgerEntries"
+        size="small"
+        border
+        max-height="420"
+      >
+        <el-table-column label="引擎" width="90">
+          <template #default="{ row }">
+            <el-tag
+              :type="row.engine === 'SQLMAP' ? 'danger' : row.engine === 'XRAY' ? 'warning' : 'primary'"
+              size="small"
+              >{{ row.engine }}</el-tag
+            >
+          </template>
+        </el-table-column>
+        <el-table-column prop="host" label="主机" min-width="120" show-overflow-tooltip />
+        <el-table-column prop="url" label="目标 URL" min-width="220" show-overflow-tooltip />
+        <el-table-column label="命中" width="70" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.hitCount > 0 ? 'danger' : 'info'" size="small" effect="light">
+              {{ row.hitCount }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="status" label="状态" width="100" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.status === 'COMPLETED' ? 'success' : 'danger'" size="small">{{
+              row.status
+            }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="message" label="说明" min-width="200" show-overflow-tooltip />
+        <el-table-column label="时间" width="160">
+          <template #default="{ row }">{{ row.createdAt ? new Date(row.createdAt).toLocaleString() : "—" }}</template>
+        </el-table-column>
+      </el-table>
+      <div v-if="!scanLedgerLoading && !scanLedgerEntries.length" class="targeted-empty">
+        暂无扫描执行记录。对流量执行 ZAP / Xray / sqlmap 定向扫描后会在此汇总。
+      </div>
+      <template #footer>
+        <el-button size="small" @click="scanLedgerVisible = false">关闭</el-button>
+        <el-button size="small" type="primary" @click="openScanLedger">
+          <el-icon class="el-icon--left"><Refresh /></el-icon>刷新
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
       v-model="targetedScanVisible"
-      :title="targetedScanEngine === 'ZAP' ? 'OWASP ZAP 定向主动探测' : 'Xray 靶向 PoC 探测'"
+      :title="targetedScanEngine === 'ZAP' ? 'OWASP ZAP 定向主动探测' : targetedScanEngine === 'XRAY' ? 'Xray 靶向 PoC 探测' : 'sqlmap SQL 注入复核'"
       width="760px"
       append-to-body
       class="app-dialog app-dialog--lg"
@@ -3555,8 +3732,17 @@ onUnmounted(() => {
                 </template>
                 <div class="targeted-hit-detail">
                   <p><strong>描述：</strong>{{ hit.description }}</p>
-                  <p v-if="hit.evidence" style="margin-top: 4px"><strong>证据：</strong><code>{{ hit.evidence }}</code></p>
-                  <p v-if="hit.solution" style="margin-top: 4px; color: var(--el-color-success-dark-2)"><strong>修复建议：</strong>{{ hit.solution }}</p>
+                  <p v-if="hit.evidence" class="targeted-evidence-label">证据</p>
+                  <el-input
+                    v-if="hit.evidence"
+                    :model-value="hit.evidence"
+                    type="textarea"
+                    :autosize="{ minRows: 1, maxRows: 12 }"
+                    resize="none"
+                    readonly
+                    class="targeted-evidence"
+                  />
+                  <p v-if="hit.solution" style="margin-top: 8px; color: var(--el-color-success-dark-2)"><strong>修复建议：</strong>{{ hit.solution }}</p>
                 </div>
               </el-collapse-item>
             </el-collapse>
@@ -3617,7 +3803,9 @@ onUnmounted(() => {
             {{
               targetedScanEngine === "ZAP"
                 ? "正在执行 ZAP 定向主动探测，命中结果会实时显示..."
-                : "正在执行 Xray 靶向 PoC 探测，请稍候..."
+                : targetedScanEngine === "XRAY"
+                  ? "正在执行 Xray 靶向 PoC 探测，请稍候..."
+                  : "正在执行 sqlmap SQL 注入复核，过程实时显示..."
             }}
           </span>
         </div>
@@ -3628,7 +3816,7 @@ onUnmounted(() => {
           size="small"
           type="primary"
           :disabled="targetedScanLoading"
-          @click="targetedScanEngine === 'ZAP' ? runZapScan() : runXrayScan()"
+          @click="targetedScanEngine === 'ZAP' ? runZapScan() : targetedScanEngine === 'XRAY' ? runXrayScan() : runSqlmapScan()"
         >
           重新测试
         </el-button>
@@ -6198,6 +6386,38 @@ onUnmounted(() => {
   background: var(--app-surface-soft);
   color: var(--app-text);
   overflow-wrap: anywhere;
+}
+.targeted-evidence-label {
+  margin-top: 6px !important;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-text);
+}
+/* Fluent 2 只读文本框：完整展示证据内容，长文本自动换行 */
+.targeted-evidence :deep(.el-textarea__inner) {
+  font-family: var(--font-mono, "Cascadia Code", "Consolas", monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--app-text, #1e293b);
+  background: light-dark(rgba(0, 0, 0, 0.03), rgba(255, 255, 255, 0.05)) !important;
+  border: 0 !important;
+  border-radius: var(--fluent-radius-control, 4px) !important;
+  box-shadow: 0 0 0 1px light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.1)) inset !important;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  resize: none;
+  transition: box-shadow var(--fluent-fast, 150ms ease);
+}
+.targeted-evidence :deep(.el-textarea__inner:hover) {
+  box-shadow: 0 0 0 1px light-dark(rgba(0, 0, 0, 0.16), rgba(255, 255, 255, 0.18)) inset !important;
+}
+.targeted-evidence :deep(.el-textarea__inner:focus) {
+  outline: none !important;
+  box-shadow:
+    inset 0 0 0 1px var(--app-border-strong, #cbd5e1),
+    inset 0 -2px 0 0 var(--app-accent, #0078d4) !important;
 }
 .targeted-empty {
   padding: 24px 12px;

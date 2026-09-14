@@ -119,6 +119,10 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.invoke("toolbox:set-progress-bar", progress, options),
     showTaskNotification: (payload) =>
       ipcRenderer.invoke("toolbox:show-task-notification", payload),
+    getNotificationSettings: () =>
+      ipcRenderer.invoke("toolbox:get-notification-settings"),
+    saveNotificationSettings: (payload) =>
+      ipcRenderer.invoke("toolbox:set-notification-settings", payload),
     onDependencyInstallProgress: (callback) => {
       const listener = (_event, progress) => callback(progress);
       ipcRenderer.on("toolbox:dependency-install-progress", listener);
