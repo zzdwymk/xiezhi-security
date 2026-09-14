@@ -39,6 +39,7 @@ public class TrafficProxyController {
   private final TrafficFuzzService fuzz;
   private final TrafficScanService scanService;
   private final TrafficScanLedgerService scanLedger;
+  private final TrafficAssetSyncService assetSync;
 
   public TrafficProxyController(
       TrafficProxyService proxy,
@@ -48,7 +49,8 @@ public class TrafficProxyController {
       TrafficAiChatService chat,
       TrafficFuzzService fuzz,
       TrafficScanService scanService,
-      TrafficScanLedgerService scanLedger) {
+      TrafficScanLedgerService scanLedger,
+      TrafficAssetSyncService assetSync) {
     this.proxy = proxy;
     this.analysis = analysis;
     this.replay = replay;
@@ -57,6 +59,7 @@ public class TrafficProxyController {
     this.fuzz = fuzz;
     this.scanService = scanService;
     this.scanLedger = scanLedger;
+    this.assetSync = assetSync;
   }
 
   @GetMapping("/scans")
@@ -90,6 +93,14 @@ public class TrafficProxyController {
   @PostMapping("/proxy/capture")
   public TrafficProxyService.Status capture(@RequestBody Map<String, Boolean> body) {
     return proxy.setCapturing(Boolean.TRUE.equals(body.get("enabled")));
+  }
+
+  /**
+   * 把已抓包且命中授权目标 host 的路径同步为项目资产（discovered_paths），供资产拓扑展示。 幂等，可反复调用。
+   */
+  @PostMapping("/assets/sync")
+  public Map<String, Object> syncAssets() {
+    return Map.of("synced", assetSync.syncAll());
   }
 
   @GetMapping("/sessions")

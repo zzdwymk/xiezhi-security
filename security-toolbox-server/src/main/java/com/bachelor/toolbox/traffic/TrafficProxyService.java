@@ -44,6 +44,7 @@ public class TrafficProxyService {
   private final TrafficCaptureFilterService filters;
   private final AuditService audit;
   private final MitmCertificateAuthority certificateAuthority;
+  private final TrafficAssetSyncService assetSync;
   private final Set<String> autoActions = ConcurrentHashMap.newKeySet();
   private final TransactionTemplate transactions;
   private LocalTrafficProxy proxy;
@@ -60,6 +61,7 @@ public class TrafficProxyService {
       TrafficCaptureFilterService filters,
       AuditService audit,
       MitmCertificateAuthority certificateAuthority,
+      TrafficAssetSyncService assetSync,
       PlatformTransactionManager transactionManager) {
     this.sessions = sessions;
     this.packets = packets;
@@ -70,6 +72,7 @@ public class TrafficProxyService {
     this.filters = filters;
     this.audit = audit;
     this.certificateAuthority = certificateAuthority;
+    this.assetSync = assetSync;
     this.transactions = new TransactionTemplate(transactionManager);
   }
 
@@ -313,6 +316,12 @@ public class TrafficProxyService {
     }
     session.setPacketCount(saved.packetCount());
     TrafficPacket packet = saved.packet();
+    // 抓包即资产：把命中的授权目标 host/路径沉淀进 discovered_paths，供资产拓扑展示。
+    try {
+      assetSync.ingest(packet);
+    } catch (RuntimeException ex) {
+      LOGGER.debug("抓包资产同步失败 packet={} : {}", packet.getId(), ex.getMessage());
+    }
     if (session.getTargetId() != null
         && session.getTargetId() > 0
         && "AUTO_SAFE".equals(session.getHandlingMode())) {
