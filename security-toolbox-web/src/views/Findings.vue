@@ -742,7 +742,14 @@ onBeforeUnmount(() => {
         detail.description || "未提供"
       }}</el-descriptions-item>
       <el-descriptions-item label="证据">
-        <pre class="finding-evidence">{{ detail.evidence || "未提供" }}</pre>
+        <el-input
+          :model-value="detail.evidence || '未提供'"
+          type="textarea"
+          :autosize="{ minRows: 1, maxRows: 12 }"
+          resize="none"
+          readonly
+          class="finding-evidence"
+        />
       </el-descriptions-item>
       <el-descriptions-item label="修复建议">{{
         detail.remediation || "未提供"
@@ -1094,13 +1101,31 @@ onBeforeUnmount(() => {
 .finding-row-actions :deep(.el-button .el-icon) {
   font-size: 12px;
 }
-.finding-evidence {
-  max-height: 300px;
-  margin: 0;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
+/* Fluent 2 只读文本框：完整展示证据内容，长文本自动换行 */
+.finding-evidence :deep(.el-textarea__inner) {
+  font-family: var(--font-mono, "Cascadia Code", "Consolas", monospace);
   font-size: 12px;
+  line-height: 1.6;
+  color: var(--app-text, #1e293b);
+  background: light-dark(rgba(0, 0, 0, 0.03), rgba(255, 255, 255, 0.05)) !important;
+  border: 0 !important;
+  border-radius: var(--fluent-radius-control, 4px) !important;
+  box-shadow: 0 0 0 1px light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.1)) inset !important;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  resize: none;
+  transition: box-shadow 150ms ease;
+}
+.finding-evidence :deep(.el-textarea__inner:hover) {
+  box-shadow: 0 0 0 1px light-dark(rgba(0, 0, 0, 0.16), rgba(255, 255, 255, 0.18)) inset !important;
+}
+.finding-evidence :deep(.el-textarea__inner:focus) {
+  outline: none !important;
+  box-shadow:
+    inset 0 0 0 1px var(--app-border-strong, #cbd5e1),
+    inset 0 -2px 0 0 var(--app-accent, #0078d4) !important;
 }
 .finding-head-actions {
   display: flex;

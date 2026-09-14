@@ -402,7 +402,7 @@ const workflowContextMenu = ref({
   y: 0,
   nodeId: "",
 });
-const clipboardNode = shallowRef<EditorNode | null>(null);
+const clipboardNodes = shallowRef<EditorNode[]>([]);
 const pasteOffset = ref(0);
 const lastPaneContextPoint = ref<{ x: number; y: number } | null>(null);
 const targetInput = ref({
@@ -1799,7 +1799,7 @@ function showWorkflowContextMenu(event: MouseEvent, nodeId = "") {
   if (!canvas) return;
   const bounds = canvas.getBoundingClientRect();
   const menuWidth = 208;
-  const hasClipboard = !!clipboardNode.value;
+  const hasClipboard = clipboardNodes.value.length > 0;
   // 节点菜单：复制 + 配置/详情/删除；空白菜单：粘贴 + 配置等
   const menuHeight = nodeId ? (hasClipboard ? 176 : 144) + (nodeRuns.value[nodeId] ? 36 : 0) : hasClipboard ? 232 : 196;
   workflowConfigVisible.value = false;
@@ -1926,12 +1926,13 @@ function canCopyNode(node?: EditorNode | null) {
 }
 
 // 仅把节点快照写入内部剪贴板，不创建节点；真正的“复制”由 Ctrl+V 完成。
-function snapshotToClipboard(source: EditorNode) {
-  clipboardNode.value = {
+function snapshotToClipboard(sources: EditorNode | EditorNode[]) {
+  const list = Array.isArray(sources) ? sources : [sources];
+  clipboardNodes.value = list.map((source) => ({
     ...source,
     data: JSON.parse(JSON.stringify(source.data)),
     position: { ...source.position },
-  } as EditorNode;
+  })) as EditorNode[];
 }
 
 function copyAndPasteNode(
@@ -1981,8 +1982,8 @@ function copyContextNode() {
 }
 
 function pasteNode(atFlowPosition?: { x: number; y: number }, inPlace = false) {
-  const source = clipboardNode.value;
-  if (!source) {
+  const sources = clipboardNodes.value;
+  if (!sources.length) {
     ElMessage.warning("剪贴板为空，请先复制节点");
     return null;
   }
@@ -1990,52 +1991,110 @@ function pasteNode(atFlowPosition?: { x: number; y: number }, inPlace = false) {
     ElMessage.warning("历史拓扑不可粘贴");
     return null;
   }
-  if (source.data.nodeKind === "phase") {
-    const phase = source.data.phase as PhaseCode;
-    if (hasCanonicalPhaseNode(phase)) {
-      ElMessage.warning(`${phaseOf(phase).shortLabel}阶段已在画布中，无法重复粘贴`);
-      return null;
-    }
+  // 原地克隆也给出逐步下移的小偏移，避免新节点与原节点完全重叠而看不清。
+  const nudge = (atFlowPosition || inPlace) && !atFlowPosition
+    ? 26 + (pasteOffset.value % 6) * 20
+    : 0;
+  const deltas = atFlowPosition || inPlace
+    ? {} as Record<string, { x: number; y: number }>
+    : (() => {
+        const map: Record<string, { x: number; y: number }> = {};
+        const minX = Math.min(...sources.map((s) => s.position.x));
+        const minY = Math.min(...sources.map((s) => s.position.y));
+        for (const s of sources) {
+          map[s.id] = { x: s.position.x - minX, y: s.position.y - minY };
+        }
+        return map;
+      })();
+  if (!atFlowPosition) {
+    // Ctrl+V 与画布内 Ctrl+C 克隆都顺次偏移，便于识别。
+    if (inPlace) pasteOffset.value = (pasteOffset.value + 1) % 6;
+    else pasteOffset.value = (pasteOffset.value + 1) % 8;
   }
-  let newId: string;
-  if (source.data.nodeKind === "tool" && source.data.tool) {
-    newId = uniqueId(`tool-${safeId(source.data.tool)}-${source.data.phase}`);
-  } else if (source.data.nodeKind === "phase") {
-    newId = phaseNodeId(source.data.phase as PhaseCode);
-  } else {
-    newId = uniqueId(`node-${safeId(source.data.label)}`);
-  }
-  const offset = atFlowPosition
-    ? 0
-    : inPlace
-      ? 0
-      : 36 + pasteOffset.value * 18;
-  const basePos =
-    atFlowPosition || inPlace
-      ? { x: source.position.x, y: source.position.y }
-      : { x: source.position.x + offset, y: source.position.y + offset };
-  if (!atFlowPosition && !inPlace) {
-    pasteOffset.value = (pasteOffset.value + 1) % 8;
-  }
-  const parameters = source.data.parameters ? JSON.parse(JSON.stringify(source.data.parameters)) : undefined;
-  const newNode = makeNode(
-    newId,
-    source.data.nodeKind,
-    source.data.phase,
-    basePos,
-    source.data.label,
-    source.data.tool,
-    parameters,
-  );
+  const anchorPos = atFlowPosition
+    ? atFlowPosition
+    : sources[0]
+      ? { x: sources[0].position.x, y: sources[0].position.y }
+      : undefined;
+
   pushHistory();
-  nodes.value = [...nodes.value, newNode];
-  selectedNodeId.value = newId;
-  selectedPhase.value = newNode.data.phase as PhaseCode;
-  setFlowSelection([newId]);
+  const newNodes: EditorNode[] = [];
+  const newIds: string[] = [];
+  const cloneIdMap = new Map<string, string>();
+
+  for (const source of sources) {
+    if (
+      source.data.nodeKind === "phase" &&
+      hasCanonicalPhaseNode(source.data.phase as PhaseCode)
+    ) {
+      continue;
+    }
+    const oldId = source.id;
+    let newId: string;
+    if (source.data.nodeKind === "tool" && source.data.tool) {
+      newId = uniqueId(`tool-${safeId(source.data.tool)}-${source.data.phase}`);
+    } else if (source.data.nodeKind === "phase") {
+      newId = phaseNodeId(source.data.phase as PhaseCode);
+    } else {
+      newId = uniqueId(`node-${safeId(source.data.label)}`);
+    }
+    cloneIdMap.set(oldId, newId);
+    const basePos =
+      atFlowPosition
+        ? { x: source.position.x, y: source.position.y }
+        : inPlace
+          ? {
+              x: source.position.x + nudge,
+              y: source.position.y + nudge,
+            }
+          : {
+              x: (anchorPos?.x ?? source.position.x) + (deltas[oldId]?.x ?? 0),
+              y: (anchorPos?.y ?? source.position.y) + (deltas[oldId]?.y ?? 0),
+            };
+    const parameters = source.data.parameters
+      ? JSON.parse(JSON.stringify(source.data.parameters))
+      : undefined;
+    const newNode = makeNode(
+      newId,
+      source.data.nodeKind,
+      source.data.phase,
+      basePos,
+      source.data.label,
+      source.data.tool,
+      parameters,
+    );
+    newNodes.push(newNode);
+    newIds.push(newId);
+  }
+
+  if (!newNodes.length) {
+    ElMessage.warning("所选内容已在画布中，无法重复创建");
+    return null;
+  }
+
+  nodes.value = [...nodes.value, ...newNodes];
+  selectedNodeId.value = newNodes[0].id;
+  selectedPhase.value = newNodes[0].data.phase as PhaseCode;
+  setFlowSelection(newNodes.map((n) => n.id));
   setSelectedEdge("");
+
+  // 保持剪贴板内部原有的连线关系（源和目标都在剪贴板内时，粘贴对应的边）
+  const newInternalEdges = edges.value
+    .filter(
+      (edge) =>
+        cloneIdMap.has(edge.source) && cloneIdMap.has(edge.target),
+    )
+    .map((edge) =>
+      makeEdge(cloneIdMap.get(edge.source)!, cloneIdMap.get(edge.target)!),
+    );
+  edges.value = dedupeEdges([...edges.value, ...newInternalEdges]);
+
   validateGraph();
-  graphNotice.value = `已复制并创建“${newNode.data.label}”`;
-  return newNode;
+  graphNotice.value =
+    newNodes.length === 1
+      ? `已创建“${newNodes[0].data.label}”`
+      : `已创建 ${newNodes.length} 个节点`;
+  return newNodes[0];
 }
 
 function pasteFromContextMenu() {
@@ -2528,18 +2587,22 @@ function copySelectedNodes(inPlace = false) {
     return;
   }
 
-  // 指针不在画布内按 Ctrl+C：只复制到内部剪贴板，不立即克隆；由 Ctrl+V 粘贴。
+  // Ctrl+C 只复制到内部剪贴板（放整批选中节点），绝不原地克隆；由 Ctrl+V 粘贴。
   if (!inPlace) {
-    const first = nodes.value.find(
+    const validNodes = nodes.value.filter(
       (n) =>
         unionIds.includes(n.id) && n.id !== "__start__" && n.id !== "__end__",
     );
-    if (!first) {
+    if (!validNodes.length) {
       ElMessage.info("所选节点不可复制");
       return;
     }
-    snapshotToClipboard(first);
-    ElMessage.success(`已复制“${first.data.label}”，按 Ctrl+V 粘贴`);
+    snapshotToClipboard(validNodes);
+    ElMessage.success(
+      validNodes.length === 1
+        ? `已复制“${validNodes[0].data.label}”，按 Ctrl+V 粘贴`
+        : `已复制 ${validNodes.length} 个节点，按 Ctrl+V 粘贴`,
+    );
     return;
   }
 
@@ -2561,7 +2624,7 @@ function copySelectedNodes(inPlace = false) {
     return;
   }
 
-  const offset = 0;
+  const offset = 22 + pasteOffset.value * 18;
   const newNodes: EditorNode[] = [];
   const newIds: string[] = [];
   const cloneIdMap = new Map<string, string>();
@@ -3977,6 +4040,17 @@ function isTypingTarget(target: EventTarget | null) {
 // 焦点仍停留在画布导致误判为“在画布内”。
 const pointerInCanvas = ref(false);
 
+// 当前是否有真实的 DOM 文本选中（非输入框内）：若有，Ctrl+C 应交给浏览器原生复制，
+// 不应被“节点复制”preventDefault 抢占，否则选中的文字无法粘贴到应用外。
+function hasDomTextSelection() {
+  const selection = window.getSelection?.();
+  return (
+    !!selection &&
+    !selection.isCollapsed &&
+    selection.toString().trim().length > 0
+  );
+}
+
 function onCanvasPointerEnter() {
   pointerInCanvas.value = true;
 }
@@ -4019,17 +4093,20 @@ function onWorkflowKeydown(event: KeyboardEvent) {
     }
     if (
       key === "c" &&
+      pointerInCanvas.value &&
+      !hasDomTextSelection() &&
       (selectedNodeId.value ||
         selectedNodeIds.value.length ||
         flowSelectedNodeIds().length)
     ) {
       if (canCopyNode()) {
         event.preventDefault();
-        copySelectedNodes(pointerInCanvas.value);
+        // 仅在画布内 Ctrl+C：复制到剪贴板并原地克隆；画布外不做任何操作。
+        copySelectedNodes(true);
       }
       return;
     }
-    if (key === "v" && clipboardNode.value) {
+    if (key === "v" && clipboardNodes.value.length) {
       if (!viewingRunSnapshot.value && !executing.value) {
         event.preventDefault();
         pasteNode(undefined, pointerInCanvas.value);
@@ -4690,7 +4767,7 @@ onBeforeUnmount(() => {
                 <button
                   type="button"
                   role="menuitem"
-                  :disabled="!clipboardNode || viewingRunSnapshot || executing"
+                  :disabled="!clipboardNodes.length || viewingRunSnapshot || executing"
                   @click="pasteFromContextMenu"
                 >
                   <FluentIcon name="clipboard-paste" /><span>粘贴节点</span>
