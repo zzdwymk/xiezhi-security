@@ -53,11 +53,30 @@ const isDraggingCanvas = ref(false);
 const canvasDragStart = ref({ x: 0, y: 0 });
 const hasDragged = ref(false);
 
-// 节点与中心卡片自定义拖拽位置记录: Map<id, { x, y }> (按项目持久化为本地)
+// 节点与中心卡片自定义拖拽位置记录: Map<id, { x, y }> (按项目持久化)
 const customPositions = ref<Record<string | number, { x: number; y: number }>>({});
 const draggingNodeId = ref<number | null>(null);
 const draggingHubId = ref<string | null>(null);
 const nodeDragStart = ref({ clientX: 0, clientY: 0, initX: 0, initY: 0 });
+
+// “新增资产”蓝点：对比前后两批资产 id，把本次新出现的节点标记为新加入。
+const newAssetIds = ref<Set<number>>(new Set());
+let lastSeenAssetIds: Set<number> | null = null;
+watch(
+  () => props.assets.map((asset) => asset.id),
+  (ids) => {
+    const current = new Set(ids.filter((id): id is number => id != null));
+    if (lastSeenAssetIds != null) {
+      const next = new Set<number>(newAssetIds.value);
+      current.forEach((id) => {
+        if (!lastSeenAssetIds!.has(id)) next.add(id);
+      });
+      newAssetIds.value = next;
+    }
+    lastSeenAssetIds = current;
+  },
+  { flush: "post" },
+);
 
 // 视图模式与动效 (全局偏好持久化为本地)
 type LayoutMode = "orbit" | "tree" | "mindmap";
@@ -241,15 +260,28 @@ const BASELINE_RISK_CODES = new Set([
   "STB-SMB-SMBV1",
 ]);
 
+// 缺失浏览器安全响应头属于“安全加固风险点”而非可利用漏洞。无论来源工具，
+// 凡标题/描述命中这些防护头缺失的特征，一律归为风险点。
+const MISSING_HEADER_RISK = /缺失安全响应头|missing\s+(anti[- ]?clickjacking|content[- ]?security[- ]?policy|content-security)|not\s+set|clickjacking|csp/i;
+
+function isMissingRiskFinding(finding: { title?: string; description?: string }) {
+  const title = String(finding.title || "");
+  const desc = String(finding.description || "");
+  return MISSING_HEADER_RISK.test(title) || MISSING_HEADER_RISK.test(desc);
+}
+
 function findingIsVulnerability(finding: {
   severity?: string;
   sourceTool?: string;
   vulnerabilityCode?: string | null;
+  title?: string;
+  description?: string;
 }) {
   const tool = String(finding.sourceTool || "").trim().toLowerCase();
   const code = String(finding.vulnerabilityCode || "").trim().toUpperCase();
   const sev = String(finding.severity || "").trim().toUpperCase();
 
+  if (isMissingRiskFinding(finding)) return false;
   if (BASELINE_RISK_TOOLS.has(tool)) return false;
   if (BASELINE_RISK_CODES.has(code)) return false;
   if (sev === "LOW" || sev === "INFO") return false;
@@ -278,11 +310,25 @@ function getAssetFindings(asset: DiscoveryResult) {
     return false;
   });
 
-  // 完全相同的发现项才去重：同一记录（按 id）只保留一次，保持原有顺序。
-  const seen = new Set<number>();
+  // 完全相同的发现项才去重：按内容复合键（target/标题/级别/证据等）归一，仅当各字段完全一致时才折叠。
+  // 区别于按 id 去重——报告 API 中同一逻辑风险可能以不同 id 的多条记录出现。
+  const seen = new Set<string>();
   return matched.filter((f) => {
-    if (seen.has(f.id)) return false;
-    seen.add(f.id);
+    const signature = [
+      f.targetId,
+      f.title,
+      f.severity,
+      f.sourceTool,
+      f.vulnerabilityCode,
+      f.ruleCode,
+      f.description,
+      f.evidence,
+      f.remediation,
+    ]
+      .map((v) => String(v ?? "").trim())
+      .join("\u0001");
+    if (seen.has(signature)) return false;
+    seen.add(signature);
     return true;
   });
 }
@@ -2563,15 +2609,15 @@ onUnmounted(() => {
                 <text x="23" y="12.5" text-anchor="start" class="node-badge-text">安全</text>
               </g>
 
-              <!-- 自定义位置图钉指示微点 -->
+              <!-- “新增资产”标识微点 (左上角) -->
               <circle
-                v-if="customPositions[node.id] != null"
-                :cx="CARD_W / 2 - 10"
-                :cy="-CARD_H / 2 + 10"
+                v-if="newAssetIds.has(node.id)"
+                :cx="-CARD_W / 2 + 12"
+                :cy="-CARD_H / 2 + 12"
                 r="3"
-                class="node-pinned-indicator"
+                class="node-new-indicator"
               >
-                <title>已自定义摆放位置</title>
+                <title>新增资产</title>
               </circle>
 
               <!-- 左侧协议微图标区 (官方 @fluentui/svg-icons 系统图标) -->
@@ -3888,9 +3934,11 @@ html.dark .zoom-controls .divider-v,
   opacity: 0.18;
 }
 
-.node-pinned-indicator {
+.node-new-indicator {
   fill: var(--app-accent, #0078d4);
-  opacity: 0.85;
+  stroke: #ffffff;
+  stroke-width: 1;
+  opacity: 0.95;
 }
 
 /* 图标容器小方块 (Fluent Subtle Tint 风格) */

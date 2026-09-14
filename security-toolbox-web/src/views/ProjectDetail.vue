@@ -839,15 +839,28 @@ const BASELINE_RISK_CODES = new Set([
 // 1. 安全响应头缺失 (http_headers, STB-WEB-001) / 技术栈版本泄露 (STB-WEB-005) / 端口暴露 / SMBv1 等
 //    属于安全配置缺陷与加固弱点（风险点 / 基线缺陷），不作为高危可利用漏洞处理。
 // 2. 只有 CRITICAL / HIGH，或具有明确非配置类漏洞编号的项，才归类为「漏洞发现」。
+// 缺失浏览器安全响应头属于“安全加固风险点”而非可利用漏洞。无论来源工具，
+// 凡标题/描述命中这些防护头缺失的特征，一律归为风险点。
+const MISSING_HEADER_RISK = /缺失安全响应头|missing\s+(anti[- ]?clickjacking|content[- ]?security[- ]?policy|content-security)|not\s+set|clickjacking|csp/i;
+
+function isMissingRiskFinding(finding: { title?: string; description?: string }) {
+  const title = String(finding.title || "");
+  const desc = String(finding.description || "");
+  return MISSING_HEADER_RISK.test(title) || MISSING_HEADER_RISK.test(desc);
+}
+
 function findingIsVulnerability(finding: {
   severity?: string;
   sourceTool?: string;
   vulnerabilityCode?: string | null;
+  title?: string;
+  description?: string;
 }) {
   const tool = String(finding.sourceTool || "").trim().toLowerCase();
   const code = String(finding.vulnerabilityCode || "").trim().toUpperCase();
   const sev = String(finding.severity || "").trim().toUpperCase();
 
+  if (isMissingRiskFinding(finding)) return false;
   if (BASELINE_RISK_TOOLS.has(tool)) return false;
   if (BASELINE_RISK_CODES.has(code)) return false;
   if (sev === "LOW" || sev === "INFO") return false;

@@ -10,7 +10,9 @@ import com.bachelor.toolbox.target.PortRangeParser;
 import com.bachelor.toolbox.target.TargetPolicyService;
 import com.bachelor.toolbox.target.TargetService;
 import com.bachelor.toolbox.target.WebTargetResolver;
+import com.bachelor.toolbox.tool.SqlmapScanTool;
 import com.bachelor.toolbox.tool.ToolExecutionObserver;
+import com.bachelor.toolbox.tool.ToolExecutionResult;
 import com.bachelor.toolbox.tool.XrayScanTool;
 import com.bachelor.toolbox.tool.zap.ZapDaemon;
 import com.bachelor.toolbox.tool.zap.ZapDaemonSupplier;
@@ -64,6 +66,8 @@ public class TrafficScanService {
   public record ZapScanRequest(String strength, String policy) {}
   public record XrayScanRequest(List<String> pocCodes, boolean allPocs) {}
 
+  public record SqlmapScanRequest(Integer level, Integer risk, String technique, String data) {}
+
   /** 实时回调：扫描过程中逐条推送探针与命中，便于前端流式展示测试数据。 */
   public interface ZapScanListener {
     default void onStart(String targetUrl) {}
@@ -86,6 +90,7 @@ public class TrafficScanService {
   private final ZapDaemonSupplier zapDaemonSupplier;
   private final DependencyDetectionService dependencies;
   private final XrayScanTool xrayTool;
+  private final SqlmapScanTool sqlmapTool;
   private final AuditService audit;
   private final PortRangeParser portRangeParser;
   private final HttpClient httpClient;
@@ -99,6 +104,7 @@ public class TrafficScanService {
       @Autowired(required = false) ZapDaemonSupplier zapDaemonSupplier,
       DependencyDetectionService dependencies,
       XrayScanTool xrayTool,
+      SqlmapScanTool sqlmapTool,
       AuditService audit,
       PortRangeParser portRangeParser) {
     this.packets = packets;
@@ -108,6 +114,7 @@ public class TrafficScanService {
     this.zapDaemonSupplier = zapDaemonSupplier;
     this.dependencies = dependencies;
     this.xrayTool = xrayTool;
+    this.sqlmapTool = sqlmapTool;
     this.audit = audit;
     this.portRangeParser = portRangeParser;
     this.httpClient =
@@ -240,7 +247,7 @@ public class TrafficScanService {
       xrayTool.execute(
           target,
           params,
-          ToolExecutionObserver.NOOP,
+          observerFor(listener),
           draft -> {
             TargetedScanHit hit =
                 new TargetedScanHit(
@@ -269,6 +276,83 @@ public class TrafficScanService {
             hits.isEmpty()
                 ? "Xray 靶向 PoC 探测完成，未命中已选组件漏洞"
                 : "Xray 靶向探测完成，命中 " + hits.size() + " 项漏洞");
+    listener.onComplete(result);
+    return result;
+  }
+
+  public TargetedScanResult sqlmapScan(Long packetId, SqlmapScanRequest request) {
+    return sqlmapScan(packetId, request, ZapScanListener.NOOP);
+  }
+
+  /**
+   * 使用 sqlmap 对一条流量记录做 SQL 注入复核。将流量里的完整 URL（含查询参数）与可选的
+   * 表单请求体（POST --data）交回受控的 sqlmap 子进程，并把 sqlmap 的逐行过程与注入命中通过
+   * {@code listener} 实时转发，实现执行过程透明。默认仅探测（--batch、不导出数据），
+   * 检测强度 level/risk/technique 由调用方在授权范围内显式指定。
+   */
+  public TargetedScanResult sqlmapScan(
+      Long packetId, SqlmapScanRequest request, ZapScanListener listener) {
+    TrafficPacket packet =
+        packets.findById(packetId).orElseThrow(() -> new ApiException("流量记录不存在"));
+    AuthorizedTarget target = resolveTarget(packet);
+    policy.validatedHttpUri(target);
+
+    String url = buildUrl(packet);
+    List<TargetedScanHit> hits = new ArrayList<>();
+    List<TargetedScanProbe> probes = new ArrayList<>();
+    listener.onStart(url);
+
+    Map<String, Object> params = new java.util.HashMap<>();
+    params.put(WebTargetResolver.PARAM_RESOLVED_BASES, List.of(url));
+    if (request != null) {
+      if (request.level() != null) params.put("level", request.level());
+      if (request.risk() != null) params.put("risk", request.risk());
+      if (request.technique() != null && !request.technique().isBlank()) {
+        params.put("technique", request.technique());
+      }
+      if (request.data() != null && !request.data().isBlank()) {
+        params.put("data", request.data());
+      }
+    }
+
+    ToolExecutionObserver observer = observerFor(listener);
+    try {
+      ToolExecutionResult toolResult =
+          sqlmapTool.execute(
+              target,
+              params,
+              observer,
+              line -> listener.onStatus(line));
+      for (com.bachelor.toolbox.tool.FindingDraft finding : toolResult.findings()) {
+        TargetedScanHit hit =
+            new TargetedScanHit(
+                finding.title(),
+                finding.severity(),
+                finding.description(),
+                finding.vulnerabilityCode(),
+                finding.evidence(),
+                finding.remediation());
+        hits.add(hit);
+        listener.onHit(hit);
+      }
+    } catch (ApiException ex) {
+      throw ex;
+    } catch (Exception ex) {
+      LOGGER.error("sqlmap 复核失败，流量 ID={}", packetId, ex);
+      throw new ApiException("sqlmap 复核执行失败: " + ex.getMessage());
+    }
+
+    audit.record("TRAFFIC_SQLMAP_SCAN", "TRAFFIC_PACKET", packetId, "url=" + url, "SUCCESS");
+    TargetedScanResult result =
+        new TargetedScanResult(
+            packetId,
+            "SQLMAP",
+            "COMPLETED",
+            hits,
+            probes,
+            hits.isEmpty()
+                ? "sqlmap 复核完成，未确认 SQL 注入 (url=" + url + ")"
+                : "sqlmap 复核完成，确认 " + hits.size() + " 处注入 (url=" + url + ")");
     listener.onComplete(result);
     return result;
   }
@@ -454,6 +538,37 @@ public class TrafficScanService {
       List<TargetedScanHit> hits, ZapScanListener listener, TargetedScanHit hit) {
     hits.add(hit);
     listener.onHit(hit);
+  }
+
+  /** 把底层工具的可观察过程（命令/操作/心跳/进度）桥接为面向用户的实时状态推送，实现执行过程透明。 */
+  private static ToolExecutionObserver observerFor(ZapScanListener listener) {
+    return new ToolExecutionObserver() {
+      @Override
+      public void command(List<String> command) {
+        listener.onStatus("执行命令: " + String.join(" ", command));
+      }
+
+      @Override
+      public void operation(String operation) {
+        if (operation != null && !operation.isBlank()) {
+          listener.onStatus(operation);
+        }
+      }
+
+      @Override
+      public void progress(long completed, long total, String operation) {
+        if (operation != null && !operation.isBlank()) {
+          listener.onStatus(operation);
+        }
+      }
+
+      @Override
+      public void heartbeat(String operation) {
+        if (operation != null && !operation.isBlank()) {
+          listener.onStatus(operation);
+        }
+      }
+    };
   }
 
   private static String snippet(String body) {

@@ -7,7 +7,9 @@ import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.TargetPolicyService;
 import com.bachelor.toolbox.target.WebTargetResolver;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.io.BufferedReader;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -21,6 +23,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Value;
@@ -86,12 +89,26 @@ public class SqlmapScanTool implements SecurityTool {
   public ToolExecutionResult execute(
       AuthorizedTarget target, Map<String, Object> parameters, ToolExecutionObserver observer)
       throws Exception {
+    return execute(target, parameters, observer, null);
+  }
+
+  /**
+   * 执行受控的 sqlmap 探测。若提供 {@code onLine}，则 sqlmap 的逐行终端输出会在进程运行时实时回调
+   * （便于上层做「过程透明」的流式展示）；否则收集为一次字符串在进程结束后整体解析，行为与旧版一致。
+   */
+  public ToolExecutionResult execute(
+      AuthorizedTarget target,
+      Map<String, Object> parameters,
+      ToolExecutionObserver observer,
+      Consumer<String> onLine)
+      throws Exception {
     String path = Objects.toString(parameters.getOrDefault("path", ""), "").trim();
     URI uri = resolveTarget(target, parameters, path);
     String url = uri.toString();
     int level = clampInt(parameters.get("level"), 1, 5, 1);
     int risk = clampInt(parameters.get("risk"), 1, 3, 1);
     String technique = sanitizeTechnique(parameters.get("technique"));
+    String data = Objects.toString(parameters.get("data"), "").trim();
 
     Path executable = requireExecutable();
     Path outputDir = Files.createTempDirectory("xiezhi-sqlmap-");
@@ -106,8 +123,11 @@ public class SqlmapScanTool implements SecurityTool {
       command.add("--flush-session");
       command.add("--level=" + level);
       command.add("--risk=" + risk);
-      if (technique != null) {
+      if (technique != null && !technique.isBlank()) {
         command.add("--technique=" + technique);
+      }
+      if (!data.isBlank()) {
+        command.add("--data=" + data);
       }
       command.add("--output-dir=" + outputDir);
       observer.command(command);
@@ -131,7 +151,7 @@ public class SqlmapScanTool implements SecurityTool {
         // ignore
       }
       try {
-        String stdout = waitForProcess(process, observer, timeoutSeconds);
+        String stdout = waitForProcess(process, observer, timeoutSeconds, onLine);
         observer.progressPercent(100d, "sqlmap 完成，正在解析注入结果");
         return parseOutput(url, stdout);
       } finally {
@@ -249,10 +269,11 @@ public class SqlmapScanTool implements SecurityTool {
     return List.copyOf(candidates);
   }
 
-  private String waitForProcess(Process process, ToolExecutionObserver observer, long timeout)
+  private String waitForProcess(
+      Process process, ToolExecutionObserver observer, long timeout, Consumer<String> onLine)
       throws Exception {
     ExecutorService reader = Executors.newSingleThreadExecutor();
-    Future<String> output = reader.submit(() -> readLimited(process.getInputStream()));
+    Future<String> output = reader.submit(() -> readLimited(process, process.getInputStream(), onLine));
     try {
       long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeout);
       while (!process.waitFor(250, TimeUnit.MILLISECONDS)) {
@@ -274,12 +295,30 @@ public class SqlmapScanTool implements SecurityTool {
     }
   }
 
-  private String readLimited(InputStream input) throws Exception {
-    byte[] data = input.readNBytes(MAX_READ_BYTES + 1);
-    if (data.length > MAX_READ_BYTES) {
-      return new String(data, 0, MAX_READ_BYTES, StandardCharsets.UTF_8);
+  private String readLimited(Process process, InputStream input, Consumer<String> onLine)
+      throws Exception {
+    StringBuilder output = new StringBuilder();
+    BufferedReader reader =
+        new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8));
+    try {
+      String line;
+      while ((line = reader.readLine()) != null) {
+        if (output.length() + line.length() + 1 > MAX_READ_BYTES) {
+          process.destroyForcibly();
+          throw new ApiException("sqlmap 输出超过安全大小限制");
+        }
+        output.append(line).append('\n');
+        if (onLine != null) {
+          String trimmed = line.trim();
+          if (!trimmed.isBlank()) {
+            onLine.accept(trimmed);
+          }
+        }
+      }
+    } finally {
+      reader.close();
     }
-    return new String(data, StandardCharsets.UTF_8);
+    return output.toString();
   }
 
   private int clampInt(Object value, int min, int max, int fallback) {

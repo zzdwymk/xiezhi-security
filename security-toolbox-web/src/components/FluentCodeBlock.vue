@@ -9,6 +9,7 @@ const props = withDefaults(
     emptyText?: string;
     icon?: string;
     monospace?: boolean;
+    wrap?: boolean;
     minRows?: number;
     maxRows?: number;
     copyable?: boolean;
@@ -19,6 +20,7 @@ const props = withDefaults(
     emptyText: "",
     icon: "document",
     monospace: true,
+    wrap: false,
     minRows: 6,
     maxRows: 12,
     copyable: true,
@@ -57,7 +59,7 @@ async function copy() {
     <slot>
       <el-input
         class="fluent-code-textarea"
-        :class="{ 'is-mono': monospace }"
+        :class="{ 'is-mono': monospace, 'is-wrap': wrap }"
         :model-value="content"
         type="textarea"
         :autosize="{ minRows, maxRows }"
@@ -123,6 +125,10 @@ async function copy() {
   font-family: var(--font-mono, "Cascadia Code", "Consolas", monospace);
   font-size: 11.5px;
   line-height: 1.55;
+}
+.fluent-code-textarea.is-wrap :deep(.el-textarea__inner) {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .fluent-code-textarea :deep(.el-textarea__inner:hover) {
   box-shadow: 0 0 0 1px var(--app-border-strong, #cbd5e1) inset !important;

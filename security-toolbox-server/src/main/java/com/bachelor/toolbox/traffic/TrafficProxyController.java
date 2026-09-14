@@ -206,6 +206,23 @@ public class TrafficProxyController {
     return emitter;
   }
 
+  @PostMapping("/packets/{id}/sqlmap-scan")
+  public TrafficScanService.TargetedScanResult sqlmapScan(
+      @PathVariable Long id, @RequestBody(required = false) TrafficScanService.SqlmapScanRequest request) {
+    return scanService.sqlmapScan(id, request);
+  }
+
+  @PostMapping(value = "/packets/{id}/sqlmap-scan/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+  public SseEmitter sqlmapScanStream(
+      @PathVariable Long id, @RequestBody(required = false) TrafficScanService.SqlmapScanRequest request) {
+    SseEmitter emitter = new SseEmitter(600_000L);
+    ZAP_STREAM_EXECUTOR.execute(
+        () -> runStream(emitter, () -> scanService.sqlmapScan(id, request, listenerFor(emitter))));
+    emitter.onTimeout(emitter::complete);
+    emitter.onError(error -> {});
+    return emitter;
+  }
+
   @PostMapping("/packets/{id}/fuzz")
   public TrafficFuzzService.FuzzResponse fuzz(
       @PathVariable Long id, @Valid @RequestBody TrafficFuzzService.FuzzRequest request) {

@@ -15,6 +15,7 @@ import {
   type TaskControlStatus,
   type VulnerabilityDefinition,
 } from "../api";
+import { InfoCircle } from "../components/fluentIcons";
 import AppPagination from "../components/AppPagination.vue";
 import FluentCodeBlock from "../components/FluentCodeBlock.vue";
 import FluentJsonView from "../components/FluentJsonView.vue";
@@ -772,23 +773,25 @@ const detailResultMatches = computed<TaskResultMatch[]>(() => {
     | Array<Record<string, unknown>>
     | undefined;
   if (!list) return [];
-  return list.map((item) => {
-    const entry = item && typeof item === "object" ? item : {};
-    return {
-      severity:
-        typeof entry.severity === "string" ? entry.severity : undefined,
-      name:
-        (typeof entry.name === "string" && entry.name) ||
-        (typeof entry.title === "string" && entry.title) ||
-        "未命名条目",
-      cwe:
-        (typeof entry.cwe === "string" && entry.cwe) ||
-        (typeof entry.vulnerabilityCode === "string" &&
-          entry.vulnerabilityCode) ||
-        undefined,
-      url: typeof entry.url === "string" ? entry.url : undefined,
-    };
-  });
+  return list
+    .map((item) => {
+      const entry = item && typeof item === "object" ? item : {};
+      return {
+        severity:
+          typeof entry.severity === "string" ? entry.severity : undefined,
+        name:
+          (typeof entry.name === "string" && entry.name) ||
+          (typeof entry.title === "string" && entry.title) ||
+          "未命名条目",
+        cwe:
+          (typeof entry.cwe === "string" && entry.cwe) ||
+          (typeof entry.vulnerabilityCode === "string" &&
+            entry.vulnerabilityCode) ||
+          undefined,
+        url: typeof entry.url === "string" ? entry.url : undefined,
+      };
+    })
+    .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
 });
 
 const RESULT_STAT_LABELS: Readonly<Record<string, string>> = {
@@ -834,6 +837,19 @@ const prettyDetailResultJson = computed(() => {
     return detail.value?.resultJson || "";
   }
 });
+
+const SEVERITY_RANK: Readonly<Record<string, number>> = {
+  CRITICAL: 0,
+  HIGH: 1,
+  MEDIUM: 2,
+  LOW: 3,
+  INFO: 4,
+};
+
+function severityRank(severity?: string): number {
+  const key = (severity || "").trim().toUpperCase();
+  return SEVERITY_RANK[key] ?? 99;
+}
 
 function resultSeverityType(severity?: string) {
   switch ((severity || "").toLowerCase()) {
@@ -1484,6 +1500,7 @@ onUnmounted(() => {
         <FluentCodeBlock
           :content="detail.targetSnapshotJson"
           empty-text="未记录"
+          wrap
         />
       </el-descriptions-item>
       <el-descriptions-item label="允许端口快照">{{
@@ -1591,7 +1608,10 @@ onUnmounted(() => {
           <template v-else-if="detailResultView === 'friendly'">
             <template v-if="parsedDetailResult">
               <p v-if="detailResultSummary" class="task-result-summary">
-                {{ detailResultSummary }}
+                <el-icon class="task-result-summary-icon"><InfoCircle /></el-icon>
+                <span class="task-result-summary-text">{{
+                  detailResultSummary
+                }}</span>
               </p>
               <div v-if="detailResultStats.length" class="task-result-stats">
                 <div
@@ -1984,15 +2004,26 @@ onUnmounted(() => {
   font-size: 12px;
 }
 .task-result-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   margin: 0;
   padding: 10px 12px;
-  border: 1px solid var(--app-border);
-  border-left: 3px solid var(--app-accent);
+  border: 1px solid color-mix(in srgb, var(--app-accent) 24%, var(--app-border));
   border-radius: var(--fluent-radius-control);
-  background: var(--app-surface-soft);
+  background: var(--app-accent-soft);
   color: var(--app-text);
   font-size: 13px;
   line-height: 1.6;
+}
+.task-result-summary-icon {
+  flex: none;
+  margin-top: 1px;
+  color: var(--app-accent);
+  font-size: 16px;
+}
+.task-result-summary-text {
+  min-width: 0;
 }
 .task-result-json-friendly {
   max-height: 320px;
