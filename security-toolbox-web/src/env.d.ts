@@ -140,7 +140,23 @@ interface ToolboxDesktopBridge {
     body?: string;
     type?: "info" | "error";
   }) => Promise<void>;
+  readonly getNotificationSettings?: () => Promise<NotificationSettings>;
+  readonly saveNotificationSettings?: (payload: {
+    severities?: string[];
+    taskCompleteNotifications?: boolean;
+  }) => Promise<NotificationSettings>;
 }
+
+interface NotificationSettings {
+  readonly severities: NotificationSeverity[];
+  readonly taskCompleteNotifications: boolean;
+}
+
+type NotificationSeverity =
+  | "CRITICAL"
+  | "HIGH"
+  | "MEDIUM"
+  | "LOW";
 
 interface SystemThemeState {
   readonly accentColor: string;

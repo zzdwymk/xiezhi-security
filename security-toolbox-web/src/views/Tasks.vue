@@ -72,6 +72,8 @@ interface TaskRow {
 
 const rows = ref<TaskRow[]>([]);
 const notifiedTasks = new Set<number>();
+let notifiedSeverities: Set<string> | null = null;
+let notifiedTaskCompleteEnabled = true;
 const {
   page,
   pageSize,
@@ -113,6 +115,7 @@ const SCHEDULE_TOOL_OPTIONS = [
   { value: "afrog_scan", label: "Afrog PoC 扫描" },
   { value: "xray_scan", label: "Xray PoC 扫描" },
   { value: "zap_scan", label: "OWASP ZAP 主动扫描" },
+  { value: "sqlmap_scan", label: "sqlmap SQL 注入检测" },
 ] as const;
 const HTTP_SECURITY_CHECK_OPTIONS = [
   { value: "cookies", label: "Cookie 安全属性" },
@@ -169,8 +172,69 @@ let scheduleTargetRequest = 0;
 let schedulePocLoadGeneration = 0;
 const logOutput = ref<HTMLElement>();
 
-function notifyTaskCompletion(row: TaskRow) {
-  if (!window.toolboxDesktop?.showTaskNotification) return;
+async function loadNotificationPreferences() {
+  const bridge = window.toolboxDesktop;
+  if (!bridge?.getNotificationSettings) {
+    notifiedSeverities = new Set(["CRITICAL", "HIGH", "MEDIUM"]);
+    notifiedTaskCompleteEnabled = true;
+    return;
+  }
+  try {
+    const settings = await bridge.getNotificationSettings();
+    notifiedSeverities = new Set(settings.severities);
+    notifiedTaskCompleteEnabled = settings.taskCompleteNotifications !== false;
+  } catch {
+    notifiedSeverities = new Set(["CRITICAL", "HIGH", "MEDIUM"]);
+    notifiedTaskCompleteEnabled = true;
+  }
+}
+
+function collectResultSeverities(resultJson?: string): string[] {
+  if (!resultJson) return [];
+  try {
+    const parsed: unknown = JSON.parse(resultJson);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return [];
+    const result = parsed as Record<string, unknown>;
+    const data =
+      result.data && typeof result.data === "object" && !Array.isArray(result.data)
+        ? (result.data as Record<string, unknown>)
+        : undefined;
+    const candidates = [
+      result.matches,
+      data?.matches,
+      result.findings,
+      data?.findings,
+      data?.items,
+      data?.results,
+    ];
+    const list = candidates.find((value) => Array.isArray(value)) as
+      | Array<Record<string, unknown>>
+      | undefined;
+    if (!list) return [];
+    return Array.from(
+      new Set(
+        list
+          .map((item) => item && typeof item === "object" ? item : {})
+          .map((entry) => {
+            const severity =
+              (entry as Record<string, unknown>).severity ??
+              (entry as Record<string, unknown>).level;
+            return typeof severity === "string"
+              ? severity.trim().toUpperCase()
+              : "";
+          })
+          .filter(Boolean),
+      ),
+    );
+  } catch {
+    return [];
+  }
+}
+
+async function notifyTaskCompletion(row: TaskRow) {
+  const bridge = window.toolboxDesktop;
+  if (!bridge?.showTaskNotification) return;
   if (notifiedTasks.has(row.id)) return;
   const terminal = new Set([
     "SUCCESS",
@@ -181,15 +245,44 @@ function notifyTaskCompletion(row: TaskRow) {
   ]);
   if (!terminal.has(row.status)) return;
   notifiedTasks.add(row.id);
+  if (!notifiedSeverities) await loadNotificationPreferences();
+
+  if (row.status === "SUCCESS") {
+    if (!notifiedTaskCompleteEnabled) return;
+    const found = new Set(collectResultSeverities(row.resultJson));
+    const selected = notifiedSeverities ?? new Set<string>();
+    if (!(selected.size > 0 && [...selected].some((s) => found.has(s)))) {
+      return;
+    }
+  }
+
   const success = row.status === "SUCCESS";
-  void window.toolboxDesktop.showTaskNotification({
+  const severityHint = success ? matchedSeverityHint(row) : "";
+  void bridge.showTaskNotification({
     type: success ? "info" : "error",
-    title: success ? `任务 #${row.id} 已完成` : `任务 #${row.id} ${statusLabel(row.status)}`,
+    title: success
+      ? severityHint
+        ? `发现${severityHint}漏洞 · #${row.id}`
+        : `任务 #${row.id} 已完成`
+      : `任务 #${row.id} ${statusLabel(row.status)}`,
     body: success
-      ? "任务已完成，可在「任务控制中心」查看结果详情。"
+      ? severityHint
+        ? `任务发现 ${severityHint} 严重程度漏洞，已生成结果，可在「任务控制中心」查看。`
+        : "任务已完成，可在「任务控制中心」查看结果详情。"
       : row.errorMessage ||
         `任务状态为 ${statusLabel(row.status)}，可在「任务控制中心」查看原因。`,
   });
+}
+
+function matchedSeverityHint(row: TaskRow): string {
+  const found = collectResultSeverities(row.resultJson);
+  const selected = notifiedSeverities ?? new Set<string>();
+  const matched = found
+    .filter((s) => selected.has(s))
+    .sort((a, b) => severityRank(a) - severityRank(b));
+  if (!matched.length) return "";
+  const labels = Array.from(new Set(matched)).map((s) => severityLabel(s));
+  return labels.join("/");
 }
 
 function applyTaskEvent(event: TaskProgressEvent) {
@@ -251,7 +344,7 @@ function applyTaskEvent(event: TaskProgressEvent) {
     }
   }
   taskbarProgress.syncTasks(rows.value);
-  notifyTaskCompletion(row);
+  void notifyTaskCompletion(row);
 }
 
 async function load() {
@@ -278,7 +371,7 @@ async function load() {
       if (firstLoad) {
         notifiedTasks.add(row.id);
       } else if (!terminal.has(previous.get(row.id) || "")) {
-        notifyTaskCompletion(row);
+        void notifyTaskCompletion(row);
       }
     }
   }
@@ -982,6 +1075,7 @@ function askCopilot(row: TaskRow) {
 
 onMounted(() => {
   load();
+  void loadNotificationPreferences();
   stopTaskFeed = connectTaskEventFeed(applyTaskEvent);
   timer = window.setInterval(load, 10_000);
 });
@@ -1484,6 +1578,98 @@ onUnmounted(() => {
       <el-descriptions-item label="失败原因" :span="2">{{
         displayTaskError(detail.errorMessage)
       }}</el-descriptions-item>
+      <el-descriptions-item label="执行结果" :span="2">
+        <div class="task-result-panel">
+          <div class="task-result-toolbar">
+            <el-radio-group
+              v-model="detailResultView"
+              size="small"
+              class="task-result-switch"
+            >
+              <el-radio-button value="friendly">直观视图</el-radio-button>
+              <el-radio-button value="raw">原始数据</el-radio-button>
+            </el-radio-group>
+            <span v-if="detailResultMatches.length" class="task-result-count"
+              >共 {{ detailResultMatches.length }} 条</span
+            >
+          </div>
+
+          <p v-if="!detail.resultJson" class="task-result-empty">尚无结果</p>
+
+          <template v-else-if="detailResultView === 'friendly'">
+            <template v-if="parsedDetailResult">
+              <p v-if="detailResultSummary" class="task-result-summary">
+                <el-icon class="task-result-summary-icon"><InfoCircle /></el-icon>
+                <span class="task-result-summary-text">{{
+                  detailResultSummary
+                }}</span>
+              </p>
+              <div v-if="detailResultStats.length" class="task-result-stats">
+                <div
+                  v-for="stat in detailResultStats"
+                  :key="stat.label"
+                  class="task-result-stat"
+                >
+                  <strong>{{ stat.value }}</strong
+                  ><span>{{ stat.label }}</span>
+                </div>
+              </div>
+              <div
+                v-if="detailResultMatches.length"
+                class="task-result-matches"
+              >
+                <div
+                  v-for="(match, index) in detailResultMatches"
+                  :key="index"
+                  class="task-result-match"
+                >
+                  <el-tag
+                    size="small"
+                    effect="plain"
+                    class="task-result-match-sev"
+                    :type="resultSeverityType(match.severity)"
+                    >{{ severityLabel(match.severity) }}</el-tag
+                  >
+                  <div class="task-result-match-body">
+                    <strong>{{ match.name }}</strong>
+                    <span v-if="match.cwe" class="task-result-match-cwe">{{
+                      match.cwe
+                    }}</span>
+                    <a
+                      v-if="match.url"
+                      class="task-result-match-url"
+                      :href="match.url"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      >{{ match.url }}</a
+                    >
+                  </div>
+                </div>
+              </div>
+              <p v-else class="task-result-empty">未产生可展示的结构化条目。</p>
+            </template>
+            <template v-else>
+              <p class="task-result-empty">
+                结果不是结构化数据，已展示原始内容。
+              </p>
+              <FluentCodeBlock
+                title="原始数据"
+                :content="prettyDetailResultJson"
+                icon="document"
+                :max-rows="16"
+              />
+            </template>
+          </template>
+
+          <FluentCodeBlock
+            v-else
+            title="原始数据"
+            :content="prettyDetailResultJson"
+            icon="document"
+            :max-rows="16"
+          />
+        </div>
+      </el-descriptions-item>
       <el-descriptions-item label="终止原因">{{
         detail.terminationReason || "未终止"
       }}</el-descriptions-item
@@ -1585,98 +1771,6 @@ onUnmounted(() => {
               :max-rows="16"
             />
           </template>
-        </div>
-      </el-descriptions-item>
-      <el-descriptions-item label="执行结果" :span="2">
-        <div class="task-result-panel">
-          <div class="task-result-toolbar">
-            <el-radio-group
-              v-model="detailResultView"
-              size="small"
-              class="task-result-switch"
-            >
-              <el-radio-button value="friendly">直观视图</el-radio-button>
-              <el-radio-button value="raw">原始数据</el-radio-button>
-            </el-radio-group>
-            <span v-if="detailResultMatches.length" class="task-result-count"
-              >共 {{ detailResultMatches.length }} 条</span
-            >
-          </div>
-
-          <p v-if="!detail.resultJson" class="task-result-empty">尚无结果</p>
-
-          <template v-else-if="detailResultView === 'friendly'">
-            <template v-if="parsedDetailResult">
-              <p v-if="detailResultSummary" class="task-result-summary">
-                <el-icon class="task-result-summary-icon"><InfoCircle /></el-icon>
-                <span class="task-result-summary-text">{{
-                  detailResultSummary
-                }}</span>
-              </p>
-              <div v-if="detailResultStats.length" class="task-result-stats">
-                <div
-                  v-for="stat in detailResultStats"
-                  :key="stat.label"
-                  class="task-result-stat"
-                >
-                  <strong>{{ stat.value }}</strong
-                  ><span>{{ stat.label }}</span>
-                </div>
-              </div>
-              <div
-                v-if="detailResultMatches.length"
-                class="task-result-matches"
-              >
-                <div
-                  v-for="(match, index) in detailResultMatches"
-                  :key="index"
-                  class="task-result-match"
-                >
-                  <el-tag
-                    size="small"
-                    effect="plain"
-                    class="task-result-match-sev"
-                    :type="resultSeverityType(match.severity)"
-                    >{{ severityLabel(match.severity) }}</el-tag
-                  >
-                  <div class="task-result-match-body">
-                    <strong>{{ match.name }}</strong>
-                    <span v-if="match.cwe" class="task-result-match-cwe">{{
-                      match.cwe
-                    }}</span>
-                    <a
-                      v-if="match.url"
-                      class="task-result-match-url"
-                      :href="match.url"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      >{{ match.url }}</a
-                    >
-                  </div>
-                </div>
-              </div>
-              <p v-else class="task-result-empty">未产生可展示的结构化条目。</p>
-            </template>
-            <template v-else>
-              <p class="task-result-empty">
-                结果不是结构化数据，已展示原始内容。
-              </p>
-              <FluentCodeBlock
-                title="原始数据"
-                :content="prettyDetailResultJson"
-                icon="document"
-                :max-rows="16"
-              />
-            </template>
-          </template>
-
-          <FluentCodeBlock
-            v-else
-            title="原始数据"
-            :content="prettyDetailResultJson"
-            icon="document"
-            :max-rows="16"
-          />
         </div>
       </el-descriptions-item>
     </el-descriptions>

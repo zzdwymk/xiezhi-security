@@ -44,6 +44,10 @@ const editingProjects = ref<AssessmentProject[]>([]);
 const offline = ref(false);
 const dialog = ref(false);
 const targetMode = ref<"single" | "batch">("single");
+const targetModeOptions = [
+  { label: "单目标录入", value: "single" },
+  { label: "批量导入 / 网段 (CIDR)", value: "batch" },
+];
 const saving = ref(false);
 const saveError = ref("");
 const reporting = ref<number>();
@@ -843,10 +847,7 @@ onMounted(load);
       <el-segmented
         v-model="targetMode"
         class="target-mode-segmented"
-        :options="[
-          { label: '单目标录入', value: 'single' },
-          { label: '批量导入 / 网段 (CIDR)', value: 'batch' },
-        ]"
+        :options="targetModeOptions"
       />
     </div>
 
@@ -1387,6 +1388,8 @@ onMounted(load);
   box-sizing: border-box;
   width: 50% !important;
   transform: translateX(0) translateZ(0) !important;
+  will-change: transform;
+  backface-visibility: hidden;
   transition: transform var(--fluent-duration-normal, 200ms)
     var(--fluent-curve-standard, ease);
 }

@@ -52,7 +52,8 @@ public class ScanScheduleService {
           "nuclei_scan",
           "afrog_scan",
           "xray_scan",
-          "zap_scan");
+          "zap_scan",
+          "sqlmap_scan");
   private static final Set<String> HTTP_SECURITY_CHECKS =
       Set.of("cookies", "cors", "methods", "disclosure");
   private static final TypeReference<Map<String, Object>> PARAMETERS_TYPE =

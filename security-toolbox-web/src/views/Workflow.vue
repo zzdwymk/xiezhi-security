@@ -450,6 +450,10 @@ const selectedPhase = ref<PhaseCode>("mapping");
 const phaseLibraryExpanded = ref(true);
 const capabilityLibraryExpanded = ref(true);
 const rightSidebarTab = ref<"library" | "node">("library");
+const rightSidebarTabs = [
+  { label: "阶段与能力库", value: "library" },
+  { label: "节点配置", value: "node" },
+];
 const graphValidation = ref<string[]>([]);
 const graphNotice = ref("");
 const suggestLoading = ref(false);
@@ -4881,10 +4885,7 @@ onBeforeUnmount(() => {
           <el-segmented
             v-model="rightSidebarTab"
             class="workflow-library-tabs"
-            :options="[
-              { label: '阶段与能力库', value: 'library' },
-              { label: '节点配置', value: 'node' },
-            ]"
+            :options="rightSidebarTabs"
           >
             <template #default="{ item }">
               <span class="workflow-tab-label">
@@ -6896,6 +6897,8 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
   width: 50% !important;
   transform: translateX(0) translateZ(0) !important;
+  will-change: transform;
+  backface-visibility: hidden;
   transition: transform var(--fluent-duration-normal, 200ms)
     var(--fluent-curve-standard, ease);
 }

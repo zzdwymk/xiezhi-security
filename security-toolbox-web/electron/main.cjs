@@ -4995,6 +4995,55 @@ handleRendererIpc("toolbox:show-task-notification", (event, payload) => {
   });
 });
 
+const SUPPORTED_NOTIFICATION_SEVERITIES = new Set([
+  "CRITICAL",
+  "HIGH",
+  "MEDIUM",
+  "LOW",
+]);
+const DEFAULT_NOTIFICATION_SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM"];
+function publicNotificationSettings(settings = readDesktopSettings()) {
+  const stored = Array.isArray(settings.notificationSeverities)
+    ? settings.notificationSeverities.filter((value) =>
+        SUPPORTED_NOTIFICATION_SEVERITIES.has(value),
+      )
+    : [];
+  return {
+    severities:
+      stored.length > 0 ? stored : DEFAULT_NOTIFICATION_SEVERITIES,
+    taskCompleteNotifications:
+      settings.taskCompleteNotifications !== false,
+  };
+}
+handleRendererIpc("toolbox:get-notification-settings", (event) => {
+  assertMainRenderer(event);
+  return publicNotificationSettings();
+});
+handleRendererIpc("toolbox:set-notification-settings", (event, payload) => {
+  assertMainRenderer(event);
+  const next = payload || {};
+  let severities = Array.isArray(next.severities)
+    ? Array.from(
+        new Set(
+          next.severities.filter((value) =>
+            SUPPORTED_NOTIFICATION_SEVERITIES.has(value),
+          ),
+        ),
+      )
+    : [];
+  const all = [...SUPPORTED_NOTIFICATION_SEVERITIES];
+  if (severities.length === 0) severities = all;
+  writeDesktopSettings({
+    ...readDesktopSettings(),
+    notificationSeverities: severities,
+    taskCompleteNotifications:
+      next.taskCompleteNotifications === undefined
+        ? true
+        : Boolean(next.taskCompleteNotifications),
+  });
+  return publicNotificationSettings();
+});
+
 handleRendererIpc("toolbox:choose-tools-directory", async (event) => {
   assertMainRenderer(event);
   if (hasRunningInstalls())
@@ -6471,13 +6520,15 @@ async function boot() {
   }
 }
 
-if (hasSingleInstanceLock)
+if (hasSingleInstanceLock) {
+  app.setAppUserModelId("com.bachelor.securitytoolbox");
   app.whenReady().then(() => {
     systemPreferences.on("accent-color-changed", handleSystemThemeChanged);
     systemPreferences.on("color-changed", handleSystemThemeChanged);
     nativeTheme.on("updated", handleSystemThemeChanged);
     return boot();
   });
+}
 app.on("second-instance", () => {
   const window = mainWindow || startupWindow;
   if (!window || window.isDestroyed()) return;

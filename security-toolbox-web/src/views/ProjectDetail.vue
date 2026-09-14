@@ -1657,6 +1657,10 @@ interface EditableBatchTargetItem {
 const targetDialog = ref(false);
 const targetSaving = ref(false);
 const targetMode = ref<"single" | "batch">("single");
+const targetModeOptions = [
+  { label: "单目标录入", value: "single" },
+  { label: "批量导入 / 网段 (CIDR)", value: "batch" },
+];
 const targetForm = ref({
   name: "",
   targetValue: "",
@@ -3448,10 +3452,7 @@ onUnmounted(() => {
             <el-segmented
               v-model="targetMode"
               class="target-mode-segmented"
-              :options="[
-                { label: '单目标录入', value: 'single' },
-                { label: '批量导入 / 网段 (CIDR)', value: 'batch' },
-              ]"
+              :options="targetModeOptions"
             />
           </div>
 
@@ -7131,6 +7132,8 @@ onUnmounted(() => {
   box-sizing: border-box;
   width: 50% !important;
   transform: translateX(0) translateZ(0) !important;
+  will-change: transform;
+  backface-visibility: hidden;
   transition: transform var(--fluent-duration-normal, 200ms)
     var(--fluent-curve-standard, ease);
 }

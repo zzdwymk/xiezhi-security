@@ -322,6 +322,25 @@ class ScanScheduleServiceTests {
   }
 
   @Test
+  void acceptsSqlmapWithinScheduledExecutionAllowlist() {
+    CreateScheduleRequest request =
+        new CreateScheduleRequest(
+            5L,
+            7L,
+            "sqlmap_scan",
+            Map.of("path", "/app?id=1", "level", 2, "risk", 1),
+            null,
+            3600L,
+            true);
+
+    ScanSchedule created = service.create(request);
+
+    assertEquals("sqlmap_scan", created.getToolCode());
+    assertNotNull(created.getNextRunAt());
+    verify(toolRegistry).require("sqlmap_scan");
+  }
+
+  @Test
   void enablingScannerScheduleRevalidatesPersistedPocSelection() {
     ScanSchedule schedule = intervalSchedule(11L);
     schedule.setEnabled(false);

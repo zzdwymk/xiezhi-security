@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -37,6 +38,7 @@ public class TrafficProxyController {
   private final TrafficAiChatService chat;
   private final TrafficFuzzService fuzz;
   private final TrafficScanService scanService;
+  private final TrafficScanLedgerService scanLedger;
 
   public TrafficProxyController(
       TrafficProxyService proxy,
@@ -45,7 +47,8 @@ public class TrafficProxyController {
       TrafficCaptureFilterService filters,
       TrafficAiChatService chat,
       TrafficFuzzService fuzz,
-      TrafficScanService scanService) {
+      TrafficScanService scanService,
+      TrafficScanLedgerService scanLedger) {
     this.proxy = proxy;
     this.analysis = analysis;
     this.replay = replay;
@@ -53,6 +56,20 @@ public class TrafficProxyController {
     this.chat = chat;
     this.fuzz = fuzz;
     this.scanService = scanService;
+    this.scanLedger = scanLedger;
+  }
+
+  @GetMapping("/scans")
+  public org.springframework.data.domain.Page<TrafficScanLedger> scans(
+      @RequestParam(defaultValue = "0") int page,
+      @RequestParam(defaultValue = "20") int size,
+      @RequestParam(required = false) String engine) {
+    return scanLedger.list(page, size, engine);
+  }
+
+  @GetMapping("/scans/recent")
+  public java.util.List<TrafficScanLedger> recentScans() {
+    return scanLedger.recent();
   }
 
   @GetMapping("/status")
