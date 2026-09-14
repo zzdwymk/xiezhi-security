@@ -37,6 +37,7 @@ class SqlmapScanToolTests {
     assertThat(result.data()).containsEntry("vulnerable", true);
     assertThat(result.data()).containsEntry("parameter", "id (GET)");
     assertThat(result.findings()).hasSize(1);
+    assertThat(result.findings().get(0).title()).isEqualTo("SQL 注入漏洞 · GET 参数 id");
     assertThat(result.findings().get(0).vulnerabilityCode()).isEqualTo("STB-SQLMAP-001");
     assertThat(result.findings().get(0).severity()).isEqualTo("HIGH");
   }
