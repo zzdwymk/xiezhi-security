@@ -1450,18 +1450,26 @@ onUnmounted(() => {
         <el-table-column label="项目 / 授权目标" min-width="130">
           <template #default="scope"
             ><div class="schedule-context">
-              <strong>{{ scheduleProjectName(scope.row.projectId) }}</strong
-              ><small>{{ scheduleTargetName(scope.row.targetId) }}</small>
+              <strong :title="scheduleProjectName(scope.row.projectId)">{{
+                scheduleProjectName(scope.row.projectId)
+              }}</strong
+              ><small :title="scheduleTargetName(scope.row.targetId)">{{
+                scheduleTargetName(scope.row.targetId)
+              }}</small>
             </div></template
           >
         </el-table-column>
         <el-table-column label="工具 / 参数" min-width="110">
           <template #default="scope"
             ><div class="schedule-tool-context">
-              <strong>{{ scheduleToolLabel(scope.row.toolCode) }}</strong>
-              <small v-if="scheduleParameterSummary(scope.row)">{{
-                scheduleParameterSummary(scope.row)
-              }}</small>
+              <strong :title="scheduleToolLabel(scope.row.toolCode)">{{
+                scheduleToolLabel(scope.row.toolCode)
+              }}</strong>
+              <small
+                v-if="scheduleParameterSummary(scope.row)"
+                :title="scheduleParameterSummary(scope.row)"
+                >{{ scheduleParameterSummary(scope.row) }}</small
+              >
             </div></template></el-table-column
         >
         <el-table-column label="规则" min-width="90">
