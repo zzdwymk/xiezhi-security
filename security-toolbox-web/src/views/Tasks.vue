@@ -1450,26 +1450,41 @@ onUnmounted(() => {
         <el-table-column label="项目 / 授权目标" min-width="130">
           <template #default="scope"
             ><div class="schedule-context">
-              <strong :title="scheduleProjectName(scope.row.projectId)">{{
-                scheduleProjectName(scope.row.projectId)
-              }}</strong
-              ><small :title="scheduleTargetName(scope.row.targetId)">{{
-                scheduleTargetName(scope.row.targetId)
-              }}</small>
+              <el-tooltip
+                :content="scheduleProjectName(scope.row.projectId)"
+                placement="top"
+                :show-after="250"
+              >
+                <strong>{{ scheduleProjectName(scope.row.projectId) }}</strong>
+              </el-tooltip>
+              <el-tooltip
+                :content="scheduleTargetName(scope.row.targetId)"
+                placement="top"
+                :show-after="250"
+              >
+                <small>{{ scheduleTargetName(scope.row.targetId) }}</small>
+              </el-tooltip>
             </div></template
           >
         </el-table-column>
         <el-table-column label="工具 / 参数" min-width="110">
           <template #default="scope"
             ><div class="schedule-tool-context">
-              <strong :title="scheduleToolLabel(scope.row.toolCode)">{{
-                scheduleToolLabel(scope.row.toolCode)
-              }}</strong>
-              <small
-                v-if="scheduleParameterSummary(scope.row)"
-                :title="scheduleParameterSummary(scope.row)"
-                >{{ scheduleParameterSummary(scope.row) }}</small
+              <el-tooltip
+                :content="scheduleToolLabel(scope.row.toolCode)"
+                placement="top"
+                :show-after="250"
               >
+                <strong>{{ scheduleToolLabel(scope.row.toolCode) }}</strong>
+              </el-tooltip>
+              <el-tooltip
+                v-if="scheduleParameterSummary(scope.row)"
+                :content="scheduleParameterSummary(scope.row)"
+                placement="top"
+                :show-after="250"
+              >
+                <small>{{ scheduleParameterSummary(scope.row) }}</small>
+              </el-tooltip>
             </div></template></el-table-column
         >
         <el-table-column label="规则" min-width="90">
@@ -1490,9 +1505,14 @@ onUnmounted(() => {
                 :type="scope.row.enabled ? 'success' : 'info'"
                 >{{ scope.row.enabled ? "已启用" : "已停用" }}</el-tag
               >
-              <small v-if="scope.row.lastError" :title="scope.row.lastError">{{
-                scope.row.lastError
-              }}</small>
+              <el-tooltip
+                v-if="scope.row.lastError"
+                :content="scope.row.lastError"
+                placement="top"
+                :show-after="250"
+              >
+                <small>{{ scope.row.lastError }}</small>
+              </el-tooltip>
             </div></template
           ></el-table-column
         >

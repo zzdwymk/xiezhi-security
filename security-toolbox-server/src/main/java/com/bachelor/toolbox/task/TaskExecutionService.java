@@ -13,6 +13,10 @@ import com.bachelor.toolbox.tool.*;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -352,10 +356,12 @@ public class TaskExecutionService {
 
   private void saveFindings(
       SecurityTask task, AuthorizedTarget target, SecurityTool tool, ToolExecutionResult result) {
+    // 同一逻辑漏洞常因多个 payload / 探测命中产生多条相似记录，先按稳定键合并再落库。
+    List<FindingDraft> drafts = deduplicateDrafts(task, tool, result.findings());
     int findingIndex = 0;
-    int findingTotal = result.findings().size();
+    int findingTotal = drafts.size();
     int lastFindingProgress = -1;
-    for (FindingDraft draft : result.findings()) {
+    for (FindingDraft draft : drafts) {
       Finding finding = new Finding();
       finding.setTaskId(task.getId());
       finding.setTargetId(target.getId());
@@ -390,6 +396,75 @@ public class TaskExecutionService {
       return task.getVulnerabilityCode();
     }
     return draft.vulnerabilityCode();
+  }
+
+  /**
+   * 工具对同一漏洞的不同 payload 常各出一条 FindingDraft，导致结果与复测把同一漏洞反复上报。
+   * 先在落库前按稳定键（工具 + 检测规则 + 漏洞码）合并：保留更高等级、合并各命中证据。
+   * 无稳定漏洞码的信息项不可合并，逐条独立保留，避免误折叠（如多个开放端口）。
+   */
+  private List<FindingDraft> deduplicateDrafts(
+      SecurityTask task, SecurityTool tool, List<FindingDraft> findings) {
+    if (findings == null || findings.size() < 2) {
+      return findings == null ? List.of() : findings;
+    }
+    Map<String, FindingDraft> byKey = new LinkedHashMap<>();
+    int index = 0;
+    for (FindingDraft draft : findings) {
+      String canonical = normalizeKey(resolveVulnerabilityCode(task, draft));
+      String key =
+          tool.code()
+              + "|"
+              + normalizeKey(task.getRuleCode())
+              + "|"
+              + canonical
+              + (canonical.isBlank() ? "#" + index : "");
+      index++;
+      FindingDraft existing = byKey.get(key);
+      byKey.put(key, existing == null ? draft : mergeDrafts(existing, draft));
+    }
+    return new ArrayList<>(byKey.values());
+  }
+
+  private String normalizeKey(String value) {
+    return value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+  }
+
+  private FindingDraft mergeDrafts(FindingDraft left, FindingDraft right) {
+    boolean rightWins = severityRank(right.severity()) > severityRank(left.severity());
+    FindingDraft primary = rightWins ? right : left;
+    FindingDraft other = rightWins ? left : right;
+    return new FindingDraft(
+        chooseBetter(primary.title(), other.title()),
+        primary.severity(),
+        chooseBetter(primary.description(), other.description()),
+        mergeEvidence(left.evidence(), right.evidence()),
+        chooseBetter(primary.remediation(), other.remediation()),
+        chooseBetter(primary.vulnerabilityCode(), other.vulnerabilityCode()));
+  }
+
+  private int severityRank(String severity) {
+    return switch (String.valueOf(severity).toUpperCase(Locale.ROOT)) {
+      case "CRITICAL" -> 5;
+      case "HIGH" -> 4;
+      case "MEDIUM" -> 3;
+      case "LOW" -> 2;
+      case "INFO" -> 1;
+      default -> 0;
+    };
+  }
+
+  private static String chooseBetter(String primary, String other) {
+    if (primary == null || primary.isBlank()) return other;
+    return primary;
+  }
+
+  private static String mergeEvidence(String left, String right) {
+    String a = left == null ? "" : left.trim();
+    String b = right == null ? "" : right.trim();
+    if (a.isEmpty()) return b;
+    if (b.isEmpty() || a.equals(b)) return a;
+    return a + "\n\n" + b;
   }
 
   private void markCancelled(Long taskId, SecurityTask task) {

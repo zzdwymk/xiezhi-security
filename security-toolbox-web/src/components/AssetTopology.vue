@@ -3374,7 +3374,13 @@ onUnmounted(() => {
                 >
                   {{ findingIsVulnerability(f) ? "漏洞" : "风险点" }}
                 </el-tag>
-                <span class="finding-card-title" :title="f.title">{{ f.title }}</span>
+                <el-tooltip
+                  :content="f.title"
+                  placement="top"
+                  :show-after="250"
+                >
+                  <span class="finding-card-title">{{ f.title }}</span>
+                </el-tooltip>
               </div>
               <p class="finding-card-desc">{{ f.description }}</p>
               <div v-if="f.evidence" class="finding-card-evidence">
@@ -3397,7 +3403,13 @@ onUnmounted(() => {
           <div class="detail-prop-row">
             <span class="prop-key">完整 URL:</span>
             <div class="prop-val url-val">
-              <span class="url-text" :title="selectedAsset.url">{{ selectedAsset.url || '-' }}</span>
+              <el-tooltip
+                :content="selectedAsset.url || '-'"
+                placement="top"
+                :show-after="250"
+              >
+                <span class="url-text">{{ selectedAsset.url || '-' }}</span>
+              </el-tooltip>
               <button
                 type="button"
                 class="url-copy-btn"

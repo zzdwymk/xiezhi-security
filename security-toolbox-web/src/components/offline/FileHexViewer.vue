@@ -127,7 +127,9 @@ function jumpToOffset() {
       <div class="hex-viewer-filebar">
         <span class="hex-viewer-file-icon"><el-icon><Files /></el-icon></span>
         <span class="hex-viewer-file-copy">
-          <strong :title="file.name">{{ file.name }}</strong>
+          <el-tooltip :content="file.name" placement="top" :show-after="250">
+            <strong>{{ file.name }}</strong>
+          </el-tooltip>
           <small>{{ formatSize(file.size) }} · {{ file.type || "未提供 MIME" }}</small>
         </span>
         <label class="hex-viewer-replace">
