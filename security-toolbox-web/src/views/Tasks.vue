@@ -1220,7 +1220,7 @@ onUnmounted(() => {
     <div class="task-filter-bar" aria-label="任务筛选">
       <el-select
         v-model="statusFilter"
-        class="task-filter-control"
+        class="task-filter-cell"
         clearable
         placeholder="全部状态"
         aria-label="按任务状态筛选"
@@ -1234,7 +1234,7 @@ onUnmounted(() => {
       </el-select>
       <el-select
         v-model="toolFilter"
-        class="task-filter"
+        class="task-filter-cell"
         clearable
         placeholder="全部工具"
         aria-label="按工具筛选"
@@ -1248,8 +1248,9 @@ onUnmounted(() => {
       </el-select>
       <el-select
         v-model="projectFilter"
-        class="task-filter task-filter--wide"
+        class="task-filter-cell"
         clearable
+        filterable
         placeholder="全部项目"
         aria-label="按项目筛选"
       >
@@ -1262,7 +1263,7 @@ onUnmounted(() => {
       </el-select>
       <el-select
         v-model="targetFilter"
-        class="task-filter task-filter--wide"
+        class="task-filter-cell"
         clearable
         filterable
         placeholder="全部目标"
@@ -1275,29 +1276,32 @@ onUnmounted(() => {
           :label="targetDisplayName(target)"
         />
       </el-select>
-      <el-date-picker
-        v-model="dateRange"
-        class="task-filter"
-        type="daterange"
-        range-separator="至"
-        start-placeholder="开始日期"
-        end-placeholder="结束日期"
-        aria-label="按创建时间筛选"
-      />
-      <el-input
-        v-model="idKeyword"
-        class="task-filter task-filter--input"
-        placeholder="搜任务 ID / 工具"
-        clearable
-        aria-label="按任务ID或工具搜索"
-      />
-      <el-button
-        v-if="hasActiveFilter"
-        link
-        type="primary"
-        @click="clearAllFilters"
-        >清除筛选</el-button
-      >
+      <div class="task-filter-row">
+        <el-date-picker
+          v-model="dateRange"
+          class="task-filter-cell task-filter-cell--date"
+          type="daterange"
+          range-separator="至"
+          start-placeholder="开始日期"
+          end-placeholder="结束日期"
+          aria-label="按创建时间筛选"
+        />
+        <el-input
+          v-model="idKeyword"
+          class="task-filter-cell task-filter-cell--search"
+          placeholder="搜任务 ID / 工具"
+          clearable
+          aria-label="按任务ID或工具搜索"
+        />
+        <el-button
+          v-if="hasActiveFilter"
+          class="task-filter-clear"
+          link
+          type="primary"
+          @click="clearAllFilters"
+          >清除筛选</el-button
+        >
+      </div>
     </div>
     <div
       v-if="controlStatus"
@@ -2059,25 +2063,45 @@ onUnmounted(() => {
   line-height: 1.25;
 }
 .task-filter-bar {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--fluent-radius-card, 8px);
+  background: var(--app-surface-soft);
+}
+.task-filter-bar .task-filter-cell {
+  width: 100%;
+  min-width: 0;
+}
+.task-filter-row {
   display: flex;
-  flex-wrap: wrap;
+  grid-column: 1 / -1;
   align-items: center;
   gap: 10px;
-  margin: 14px 0 4px;
 }
-.task-filter-bar .task-filter-control,
-.task-filter-bar .task-filter {
-  flex: 0 0 auto;
-  width: 150px;
+.task-filter-row .task-filter-cell--date {
+  flex: 0 0 300px;
 }
-.task-filter-bar .task-filter--wide {
-  width: 200px;
+.task-filter-row .task-filter-cell--search {
+  flex: 1 1 220px;
 }
-.task-filter-bar .task-filter--input {
-  width: 190px;
+.task-filter-clear {
+  flex: none;
 }
-.task-filter-bar :deep(.el-date-editor) {
-  width: 260px;
+@media (max-width: 900px) {
+  .task-filter-bar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .task-filter-row {
+    flex-wrap: wrap;
+  }
+  .task-filter-row .task-filter-cell--date,
+  .task-filter-row .task-filter-cell--search {
+    flex: 1 1 100%;
+  }
 }
 .schedule-trigger {
   color: var(--app-text) !important;
