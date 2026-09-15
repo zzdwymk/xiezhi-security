@@ -18,11 +18,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -33,6 +36,18 @@ public class TaskExecutionService {
   private static final String EXECUTION_FAILED_MESSAGE = "任务执行失败，请稍后重试";
   private static final String EXECUTION_TIMEOUT_MESSAGE = "任务执行超时，请稍后重试";
   private static final String AUTHORIZATION_CHANGED_MESSAGE = "任务授权状态已变更，请重新确认授权后再试";
+  private static final String ZOMBIE_REAPED_MESSAGE = "任务进程已退出，检测到长时间无进度，已自动终止";
+
+  /** How often the zombie-reaper sweep runs. */
+  private final long zombieReapIntervalMs;
+
+  /**
+   * A RUNNING task whose progress hasn't been refreshed for at least this long and whose worker
+   * thread is no longer alive is considered a zombie (the executor process likely died before
+   * writing a terminal state) and is force-terminated so its progress animation does not run
+   * forever.
+   */
+  private final long zombieStaleMs;
 
   private final SecurityTaskRepository taskRepository;
   private final FindingRepository findingRepository;
@@ -69,7 +84,9 @@ public class TaskExecutionService {
       TaskProgressEventService progressEvents,
       ProjectAuthorizationService authorization,
       BusinessDataOperationGate operationGate,
-      ApplicationEventPublisher eventPublisher) {
+      ApplicationEventPublisher eventPublisher,
+      @Value("${toolbox.task.zombie-reap-interval-ms:60000}") long zombieReapIntervalMs,
+      @Value("${toolbox.task.zombie-stale-ms:300000}") long zombieStaleMs) {
     this.taskRepository = taskRepository;
     this.findingRepository = findingRepository;
     this.targetService = targetService;
@@ -83,6 +100,8 @@ public class TaskExecutionService {
     this.authorization = authorization;
     this.operationGate = operationGate;
     this.eventPublisher = eventPublisher;
+    this.zombieReapIntervalMs = Math.max(5_000, zombieReapIntervalMs);
+    this.zombieStaleMs = Math.max(15_000, zombieStaleMs);
   }
 
   TaskExecutionService(
@@ -107,7 +126,11 @@ public class TaskExecutionService {
         snapshotService,
         executionControl,
         progressEvents,
-        null);
+        null,
+        new BusinessDataOperationGate(),
+        event -> {},
+        60_000,
+        300_000);
   }
 
   TaskExecutionService(
@@ -135,7 +158,74 @@ public class TaskExecutionService {
         progressEvents,
         authorization,
         new BusinessDataOperationGate(),
-        event -> {});
+        event -> {},
+        60_000,
+        300_000);
+  }
+
+  /**
+   * Reaps task rows stuck in RUNNING whose executor is gone and that have stopped producing any
+   * progress for a long time. Without this, a task whose process died mid-run (before its
+   * {@code finally} could write a terminal state) stays RUNNING forever, which keeps the taskbar in
+   * an endless marquee/animation even though nothing is actually executing.
+   */
+  @Scheduled(fixedDelayString = "${toolbox.task.zombie-reap-interval-ms:60000}")
+  public void reapStaleRunningTasks() {
+    Instant now = Instant.now();
+    List<SecurityTask> running = taskRepository.findAllByStatusOrderByCreatedAtAsc("RUNNING");
+    int reaped = 0;
+    for (SecurityTask task : running) {
+      if (executionControl.hasActiveWorker(task.getId())) {
+        // A live worker is still executing this task; not a zombie.
+        continue;
+      }
+      Instant lastUpdate = task.getProgressUpdatedAt();
+      if (lastUpdate == null) {
+        lastUpdate = task.getStartedAt() == null ? task.getCreatedAt() : task.getStartedAt();
+      }
+      if (lastUpdate == null
+          || lastUpdate.isAfter(now.minusMillis(zombieStaleMs))) {
+        // Still within the reasonable heartbeat window — give it time.
+        continue;
+      }
+      try {
+        reapZombie(task, now);
+        reaped++;
+      } catch (Exception exception) {
+        log.warn(
+            "回收僵尸任务失败，taskId={}，toolCode={}",
+            task.getId(),
+            task.getToolCode(),
+            exception);
+      }
+    }
+    if (reaped > 0) {
+      log.warn("已回收 {} 个僵尸运行任务（进程退出但未写终态）", reaped);
+    }
+  }
+
+  private void reapZombie(SecurityTask task, Instant now) {
+    task.setStatus("TIMEOUT");
+    task.setTerminationReason("ZOMBIE_REAPED");
+    task.setTimeoutAt(now);
+    task.setErrorMessage(ZOMBIE_REAPED_MESSAGE);
+    task.setProgressMessage(ZOMBIE_REAPED_MESSAGE);
+    task.setProgressUpdatedAt(now);
+    task.setFinishedAt(now);
+    appendLog(task, "任务进程已退出，长时间无进度，系统已自动终止（僵尸任务回收）");
+
+    SecurityTask saved = taskRepository.save(task);
+    executionControl.clear(task.getId());
+    progressEvents.publish(saved, null);
+    eventPublisher.publishEvent(new TaskTerminalEvent(saved.getId()));
+    auditService.record(
+        "EXECUTE_TOOL",
+        "TASK",
+        saved.getId(),
+        ZOMBIE_REAPED_MESSAGE,
+        "TIMEOUT",
+        saved.getId(),
+        saved.getAuthorizationSnapshotHash());
   }
 
   @Async
@@ -256,6 +346,7 @@ public class TaskExecutionService {
     task.setProgressMessage("任务执行完成");
     task.setProgressUpdatedAt(Instant.now());
     appendLog(task, "执行成功：" + result.summary());
+    applyRetestVerdict(task);
     auditService.record(
         "EXECUTE_TOOL",
         "TASK",
@@ -370,6 +461,7 @@ public class TaskExecutionService {
       finding.setSourceTool(tool.code());
       finding.setRuleCode(task.getRuleCode());
       finding.setVulnerabilityCode(resolveVulnerabilityCode(task, draft));
+      finding.setSecurityKey(draft.securityKey() == null ? null : draft.securityKey().trim());
       finding.setDescription(draft.description());
       finding.setEvidence(draft.evidence());
       finding.setRemediation(draft.remediation());
@@ -412,13 +504,16 @@ public class TaskExecutionService {
     int index = 0;
     for (FindingDraft draft : findings) {
       String canonical = normalizeKey(resolveVulnerabilityCode(task, draft));
+      String location = normalizeKey(draft.securityKey());
       String key =
           tool.code()
               + "|"
               + normalizeKey(task.getRuleCode())
               + "|"
               + canonical
-              + (canonical.isBlank() ? "#" + index : "");
+              + "|"
+              + location
+              + (canonical.isBlank() && location.isBlank() ? "#" + index : "");
       index++;
       FindingDraft existing = byKey.get(key);
       byKey.put(key, existing == null ? draft : mergeDrafts(existing, draft));
@@ -440,7 +535,8 @@ public class TaskExecutionService {
         chooseBetter(primary.description(), other.description()),
         mergeEvidence(left.evidence(), right.evidence()),
         chooseBetter(primary.remediation(), other.remediation()),
-        chooseBetter(primary.vulnerabilityCode(), other.vulnerabilityCode()));
+        chooseBetter(primary.vulnerabilityCode(), other.vulnerabilityCode()),
+        chooseBetter(primary.securityKey(), other.securityKey()));
   }
 
   private int severityRank(String severity) {
@@ -465,6 +561,66 @@ public class TaskExecutionService {
     if (a.isEmpty()) return b;
     if (b.isEmpty() || a.equals(b)) return a;
     return a + "\n\n" + b;
+  }
+
+  // 连续 N 次同入口复测均未复现，才判定为“复测确认已修复”。
+  private static final int RETEST_FIX_REQUIRED_PASSES = 2;
+
+  /**
+   * 漏洞复测任务成功结束后，据此更新基线漏洞记录：命中 → 重置计数并置 REOPENED；未命中 →
+   * 计数 +1，连续 {@link #RETEST_FIX_REQUIRED_PASSES} 次未复现才置 FIXED（verified=true）。
+   * 单次未命中不足以判定已修复（sqlmap/Xray 等存在随机性）。
+   */
+  private void applyRetestVerdict(SecurityTask task) {
+    if (task.getSourceFindingId() == null) return;
+    Finding baseline = findingRepository.findById(task.getSourceFindingId()).orElse(null);
+    if (baseline == null) return;
+    if ("FALSE_POSITIVE".equals(baseline.getStatus())) return;
+
+    boolean reoccurred = findingRepository
+        .findAllByTaskIdOrderByCreatedAtAsc(task.getId())
+        .stream()
+        .anyMatch(found -> sameVulnerability(baseline, found));
+
+    if (reoccurred) {
+      baseline.setRetestCount(0);
+      // 已修复过的漏洞又复现 → 明确标为 REOPENED。
+      baseline.setStatus("FIXED".equals(baseline.getStatus()) ? "REOPENED" : baseline.getStatus());
+      baseline.setVerified(false);
+      baseline.setVerifiedAt(null);
+    } else {
+      int passes = baseline.getRetestCount() + 1;
+      baseline.setRetestCount(passes);
+      if (passes >= RETEST_FIX_REQUIRED_PASSES) {
+        baseline.setStatus("FIXED");
+        baseline.setVerified(true);
+        baseline.setVerifiedAt(Instant.now());
+        baseline.setVerifiedTaskId(task.getId());
+      } else if ("FIXED".equals(baseline.getStatus())) {
+        // 已修复的漏洞在复测中被确认仍不再复现，保持 FIXED。
+      } else {
+        baseline.setStatus("OPEN");
+      }
+    }
+    findingRepository.save(baseline);
+    auditService.record(
+        "RETEST_VERDICT",
+        "FINDING",
+        baseline.getId(),
+        "retestTaskId=" + task.getId() + "; reoccurred=" + reoccurred + "; passes=" + baseline.getRetestCount(),
+        reoccurred ? "REOPENED" : "PENDING");
+  }
+
+  private boolean sameVulnerability(Finding baseline, Finding found) {
+    if (found == null) return false;
+    boolean sameToolRule =
+        Objects.equals(baseline.getSourceTool(), found.getSourceTool())
+            && Objects.equals(baseline.getRuleCode(), found.getRuleCode());
+    if (!sameToolRule) return false;
+    if (baseline.getSecurityKey() != null && !baseline.getSecurityKey().isBlank()) {
+      return Objects.equals(baseline.getSecurityKey(), found.getSecurityKey());
+    }
+    return Objects.equals(baseline.getVulnerabilityCode(), found.getVulnerabilityCode());
   }
 
   private void markCancelled(Long taskId, SecurityTask task) {

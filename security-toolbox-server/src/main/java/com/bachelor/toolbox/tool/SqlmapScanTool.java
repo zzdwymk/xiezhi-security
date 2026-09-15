@@ -17,6 +17,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
@@ -237,7 +238,8 @@ public class SqlmapScanTool implements SecurityTool {
               desc,
               abbreviate(injection, 4000),
               remediation,
-              "STB-SQLMAP-001"));
+              "STB-SQLMAP-001",
+              sqlmapSecurityKey(parameter)));
     } else {
       data.put("vulnerable", false);
     }
@@ -262,6 +264,23 @@ public class SqlmapScanTool implements SecurityTool {
       }
     }
     return parameter.trim();
+  }
+
+  /**
+   * sqlmap 对同一参数会按多种 payload / 注入类型各命中一次。用「参数名 : 方法」作为稳定入口键，
+   * 使同一入口的多种注入合并为一条漏洞；不同参数各自独立，保证跨 payload 的去重判定可靠。
+   */
+  private static String sqlmapSecurityKey(String parameter) {
+    if (parameter == null || parameter.isBlank()) {
+      return "param:";
+    }
+    Matcher matcher = PARAMETER_WITH_METHOD.matcher(parameter.trim());
+    if (matcher.matches()) {
+      String name = matcher.group(1).trim().toLowerCase(Locale.ROOT);
+      String method = matcher.group(2).trim().toLowerCase(Locale.ROOT);
+      return "param:" + (name.isEmpty() ? "?" : name) + ":" + (method.isEmpty() ? "?" : method);
+    }
+    return "param:" + parameter.trim().toLowerCase(Locale.ROOT);
   }
 
   private Path requireExecutable() {

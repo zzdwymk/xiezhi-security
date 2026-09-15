@@ -13,14 +13,17 @@ public class TaskController {
   private final TaskService service;
   private final TaskProgressEventService progressEvents;
   private final TaskControlStatusService controlStatus;
+  private final TaskExecutionLimitService limitService;
 
   public TaskController(
       TaskService service,
       TaskProgressEventService progressEvents,
-      TaskControlStatusService controlStatus) {
+      TaskControlStatusService controlStatus,
+      TaskExecutionLimitService limitService) {
     this.service = service;
     this.progressEvents = progressEvents;
     this.controlStatus = controlStatus;
+    this.limitService = limitService;
   }
 
   @GetMapping
@@ -33,6 +36,24 @@ public class TaskController {
   public TaskControlStatus controlStatus() {
     return controlStatus.snapshot();
   }
+
+  /** The currently configured, user-editable global concurrency cap. */
+  @GetMapping("/control/limits")
+  public TaskExecutionLimitView getLimits() {
+    return new TaskExecutionLimitView(limitService.currentMaxConcurrentTasks());
+  }
+
+  /** Update the user-editable global concurrency cap and apply it immediately. */
+  @PutMapping("/control/limits")
+  public TaskExecutionLimitView updateLimits(
+      @Valid @RequestBody UpdateTaskLimitRequest request) {
+    return new TaskExecutionLimitView(
+        limitService.updateMaxConcurrentTasks(request.maxConcurrentTasks()));
+  }
+
+  public record TaskExecutionLimitView(int maxConcurrentTasks) {}
+
+  public record UpdateTaskLimitRequest(int maxConcurrentTasks) {}
 
   @GetMapping("/{id}")
   public SecurityTask get(@PathVariable Long id) {

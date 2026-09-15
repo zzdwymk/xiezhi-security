@@ -1,0 +1,14 @@
+# 本仓库只交付指纹库产物与脚本，不随仓库携带上游指纹源仓库。
+#
+# 用法：需要更新指纹时临时执行 scripts/fetch_sources.py 克隆上游源，
+#       再执行 build_fingerprints.py / export_toolbox.py 重建 dist/ 与内置规则，
+#       结束后可再次删除 sources/（下一次更新时重新拉取）。
+sources/
+
+# Python 产物缓存
+__pycache__/
+*.pyc
+
+# 生成产物：统一指纹库 dist/ 随仓库交付（覆盖根 .gitignore 的 `**/dist/`）
+!dist/
+!dist/*.json

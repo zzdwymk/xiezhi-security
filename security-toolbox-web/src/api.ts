@@ -258,6 +258,9 @@ export interface TaskControlStatus {
   pendingTasks: number;
   runningTasks: number;
 }
+export interface TaskExecutionLimitView {
+  maxConcurrentTasks: number;
+}
 export interface AssessmentProject {
   id: number;
   name: string;
@@ -1100,6 +1103,9 @@ export const endpoints = {
         }),
   tasks: () => api.get<ProjectTaskRecord[]>("/tasks"),
   taskControlStatus: () => api.get<TaskControlStatus>("/tasks/control/status"),
+  taskControlLimits: () => api.get<TaskExecutionLimitView>("/tasks/control/limits"),
+  updateTaskControlLimits: (maxConcurrentTasks: number) =>
+    api.put<TaskExecutionLimitView>("/tasks/control/limits", { maxConcurrentTasks }),
   task: (id: number) => api.get<ProjectTaskRecord>(`/tasks/${id}`),
   findings: (
     page = 0,

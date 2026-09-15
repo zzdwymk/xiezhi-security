@@ -713,6 +713,7 @@ function findingStatusLabel(status?: string) {
     CONFIRMED: "已确认",
     FALSE_POSITIVE: "误报",
     FIXED: "已修复",
+    REOPENED: "已复现",
   };
   return (status && labels[status]) || status || "未知";
 }

@@ -39,6 +39,24 @@ public class Finding {
   @Column(length = 64)
   private String vulnerabilityCode;
 
+  /**
+   * 稳定逻辑身份：用于跨 payload / 跨任务凝聚“同一个漏洞”。由漏洞码 + 检测规则 + 来源工具 +
+   * 规范化入口（host:port:path:param:method etc.）合成；payload 差异不进入该键。
+   */
+  @Column(length = 300)
+  private String securityKey;
+
+  @Column(nullable = false)
+  private int retestCount = 0;
+
+  /** 是否为“复测自动确认已修复”（区别于人工打勾 FIXED）。 */
+  @Column(nullable = false)
+  private boolean verified = false;
+
+  @Column private Instant verifiedAt;
+
+  @Column private Long verifiedTaskId;
+
   @Column(nullable = false, length = 30)
   private String status = "OPEN";
 
