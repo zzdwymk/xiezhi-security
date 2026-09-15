@@ -10,6 +10,7 @@ import {
   type DiscoveryResult,
   type DiscoveredPath,
   type FingerprintCatalogInfo,
+  type FingerprintRule,
   type IcpBatchResult,
   type MemoryDoc,
   type ProjectApproval,
@@ -53,11 +54,21 @@ import AppPagination from "../components/AppPagination.vue";
 import AssetTopology from "../components/AssetTopology.vue";
 import {
   ArrowDown,
+  CircleCheck,
+  Delete,
+  EditPen,
   MagicStick,
+  Plus,
   Refresh,
   Search,
   UploadFilled,
 } from "../components/fluentIcons";
+import {
+  validateFingerprintRuleSyntax,
+  parseFingerprintRuleJson,
+  normalizeFingerprintRuleForEditor,
+  type RuleProblem,
+} from "../utils/fingerprintRule";
 import { useClientPagination } from "../composables/useClientPagination";
 import { toErrorMessage } from "../utils/errorMessage";
 import {
@@ -121,6 +132,18 @@ const fingerprintCatalogUpdateState = ref<
 >("idle");
 const fingerprintCatalogUpdateError = ref("");
 const fingerprintCatalogUpdateResult = ref<FingerprintCatalogInfo>();
+const fingerprintRules = ref<FingerprintRule[]>([]);
+const fingerprintRulesLoading = ref(false);
+const fingerprintRulesLoadedOnce = ref(false);
+const fingerprintRuleSearch = ref("");
+const fingerprintRuleEditorVisible = ref(false);
+const fingerprintRuleEditorMode = ref<"add" | "edit">("add");
+const fingerprintRuleEditingId = ref("");
+const fingerprintRuleEditorText = ref("");
+const fingerprintRuleEditorProblems = ref<RuleProblem[]>([]);
+const fingerprintRuleSaving = ref(false);
+const fingerprintRuleDeleting = ref("");
+const fingerprintRuleEditorConfirmText = ref("");
 const pocRecommendationVisible = ref(false);
 const pocRecommendationLoading = ref(false);
 const pocRecommendationTarget = ref<DiscoveryResult>();
@@ -137,9 +160,7 @@ const includeSameSubnet = ref(false);
 const includeHttp = ref(true);
 const includeTls = ref(true);
 const enumerateSubdomains = ref(true);
-const subdomainDictionary = ref(
-  "www,api,admin,dev,test,staging,mail,vpn,portal,cdn",
-);
+const subdomainDictionary = ref("");
 const enumeratePaths = ref(true);
 const crawlSite = ref(true);
 const aggregateProxyPaths = ref(true);
@@ -2212,6 +2233,7 @@ async function loadFingerprintCatalog() {
   } finally {
     fingerprintCatalogLoading.value = false;
   }
+  void loadFingerprintRules();
 }
 
 async function reloadFingerprintCatalog() {
@@ -2223,6 +2245,7 @@ async function reloadFingerprintCatalog() {
     ElMessage.success(
       `指纹规则已重载：${fingerprintCatalog.value.ruleCount} 条`,
     );
+    void loadFingerprintRules(true);
   } catch (error: any) {
     ElMessage.error(errorMessage(error, "指纹规则重载失败"));
   } finally {
@@ -2343,6 +2366,215 @@ async function updateFingerprintCatalogFromFile(event: Event) {
     );
   } finally {
     fingerprintCatalogUpdating.value = false;
+  }
+}
+
+const filteredFingerprintRules = computed(() => {
+  const keyword = fingerprintRuleSearch.value.trim().toLowerCase();
+  if (!keyword) return fingerprintRules.value;
+  return fingerprintRules.value.filter(
+    (rule) =>
+      rule.id.toLowerCase().includes(keyword) ||
+      (rule.name || "").toLowerCase().includes(keyword) ||
+      (rule.category || "").toLowerCase().includes(keyword),
+  );
+});
+
+async function loadFingerprintRules(force = false) {
+  if (fingerprintRulesLoading.value) return;
+  if (!force && fingerprintRulesLoadedOnce.value) return;
+  fingerprintRulesLoading.value = true;
+  try {
+    const { data } = await endpoints.fingerprintRules();
+    fingerprintRules.value = data || [];
+    fingerprintRulesLoadedOnce.value = true;
+  } catch (error: any) {
+    ElMessage.error(errorMessage(error, "指纹规则列表加载失败"));
+  } finally {
+    fingerprintRulesLoading.value = false;
+  }
+}
+
+function fingerprintRuleHeaderCount(rule: FingerprintRule) {
+  return Object.values(rule.headers || {}).reduce(
+    (sum, tokens) => sum + tokens.length,
+    0,
+  );
+}
+
+function fingerprintRuleTokenCount(rule: FingerprintRule) {
+  return fingerprintRuleHeaderCount(rule) + [
+    ...(rule.body || []),
+    ...(rule.cookies || []),
+    ...(rule.title || []),
+    ...(rule.header || []),
+    ...(rule.faviconHash || []),
+    ...(rule.faviconMd5 || []),
+  ].length;
+}
+
+function openAddFingerprintRule() {
+  if (!canUpdateFingerprintCatalog.value) {
+    ElMessage.warning("仅管理员可以编辑指纹规则");
+    return;
+  }
+  fingerprintRuleEditorMode.value = "add";
+  fingerprintRuleEditingId.value = "";
+  fingerprintRuleEditorText.value = JSON.stringify(
+    {
+      id: "",
+      name: "",
+      category: "",
+      confidence: 80,
+      body: [""],
+    },
+    null,
+    2,
+  );
+  fingerprintRuleEditorConfirmText.value = "";
+  fingerprintRuleEditorProblems.value = [];
+  fingerprintRuleEditorVisible.value = true;
+}
+
+function openEditFingerprintRule(rule: FingerprintRule) {
+  if (!canUpdateFingerprintCatalog.value) {
+    ElMessage.warning("只有管理员可以编辑指纹规则");
+    return;
+  }
+  fingerprintRuleEditorMode.value = "edit";
+  fingerprintRuleEditingId.value = rule.id;
+  fingerprintRuleEditorText.value = JSON.stringify(
+    normalizeFingerprintRuleForEditor(rule),
+    null,
+    2,
+  );
+  fingerprintRuleEditorConfirmText.value = "";
+  fingerprintRuleEditorProblems.value = [];
+  fingerprintRuleEditorVisible.value = true;
+}
+
+function validateFingerprintRuleEditor() {
+  fingerprintRuleEditorProblems.value = [];
+  let rule: FingerprintRule;
+  try {
+    rule = parseFingerprintRuleJson(fingerprintRuleEditorText.value);
+  } catch (error: any) {
+    fingerprintRuleEditorProblems.value = [
+      {
+        field: "json",
+        message: error instanceof Error ? error.message : "JSON 语法错误",
+      },
+    ];
+    return false;
+  }
+  const problems = validateFingerprintRuleSyntax(rule);
+  if (fingerprintRuleEditorMode.value === "edit") {
+    const existing = fingerprintRules.value.some(
+      (item) => item.id === rule.id && item.id !== fingerprintRuleEditingId.value,
+    );
+    if (existing) {
+      problems.push({
+        field: "id",
+        message: "规则标识已存在，不能重复",
+      });
+    }
+  }
+  fingerprintRuleEditorProblems.value = problems;
+  return problems.length === 0;
+}
+
+function fingerprintRuleProblemsForField(field: string) {
+  return fingerprintRuleEditorProblems.value.filter(
+    (problem) => problem.field === field,
+  );
+}
+
+function hasFingerprintRuleProblem(field: string) {
+  return (
+    fingerprintRuleEditorProblems.value.findIndex(
+      (problem) => problem.field === field,
+    ) !== -1
+  );
+}
+
+async function saveFingerprintRuleFromEditor() {
+  if (fingerprintRuleSaving.value) return;
+  if (!validateFingerprintRuleEditor()) {
+    ElMessage.error("规则校验未通过，请修正后重试");
+    return;
+  }
+  if (fingerprintRuleEditorMode.value === "edit") {
+    const confirmed = await ElMessageBox.confirm(
+      "确认保存对这条规则的修改？服务端会再次完整校验，校验失败时保留当前版本。",
+      "保存指纹规则",
+      { type: "warning", confirmButtonText: "保存", cancelButtonText: "取消" },
+    ).catch(() => false);
+    if (confirmed !== "confirm") return;
+  }
+  let rule: FingerprintRule;
+  try {
+    rule = parseFingerprintRuleJson(fingerprintRuleEditorText.value);
+  } catch (error: any) {
+    fingerprintRuleEditorProblems.value = [
+      { field: "json", message: error instanceof Error ? error.message : "JSON 语法错误" },
+    ];
+    return;
+  }
+  fingerprintRuleSaving.value = true;
+  try {
+    if (fingerprintRuleEditorMode.value === "add") {
+      const updated = (await endpoints.addFingerprintRule(rule)).data;
+      fingerprintCatalog.value = updated;
+      await forceRefreshFingerprintRules();
+      ElMessage.success(`已新增指纹规则「${rule.id}」`);
+    } else {
+      const result = (await endpoints.updateFingerprintRule(
+        fingerprintRuleEditingId.value,
+        rule,
+      )).data;
+      fingerprintCatalog.value = result.catalog;
+      fingerprintRules.value = fingerprintRules.value.map((item) =>
+        item.id === result.rule.id ? result.rule : item,
+      );
+      ElMessage.success(`已保存指纹规则「${rule.id}」`);
+    }
+    fingerprintRuleEditorVisible.value = false;
+  } catch (error: any) {
+    ElMessage.error(errorMessage(error, "指纹规则保存失败，当前版本未更改"));
+  } finally {
+    fingerprintRuleSaving.value = false;
+  }
+}
+
+async function forceRefreshFingerprintRules() {
+  try {
+    const { data } = await endpoints.fingerprintRules();
+    fingerprintRules.value = data || [];
+  } catch {
+    // rule list refresh is best-effort; catalog metadata is already refreshed
+  }
+}
+
+async function deleteFingerprintRule(rule: FingerprintRule) {
+  if (fingerprintRuleDeleting.value) return;
+  const confirmed = await ElMessageBox.confirm(
+    `确认删除指纹规则「${rule.id}」？此操作无法撤销。`,
+    "删除指纹规则",
+    { type: "warning", confirmButtonText: "删除", cancelButtonText: "取消" },
+  ).catch(() => false);
+  if (confirmed !== "confirm") return;
+  fingerprintRuleDeleting.value = rule.id;
+  try {
+    const updated = (await endpoints.deleteFingerprintRule(rule.id)).data;
+    fingerprintCatalog.value = updated;
+    fingerprintRules.value = fingerprintRules.value.filter(
+      (item) => item.id !== rule.id,
+    );
+    ElMessage.success(`已删除指纹规则「${rule.id}」`);
+  } catch (error: any) {
+    ElMessage.error(errorMessage(error, "指纹规则删除失败，当前版本未更改"));
+  } finally {
+    fingerprintRuleDeleting.value = "";
   }
 }
 
@@ -2482,7 +2714,7 @@ async function collectRecon(options: LinkedStepOptions = {}): Promise<boolean> {
             .split(/[，,;；\s]+/)
             .map((item) => item.trim())
             .filter(Boolean)
-            .slice(0, 50)
+            .slice(0, 2000)
         : [],
       enumeratePaths: reconMode.value === "ACTIVE" && enumeratePaths.value,
       crawlSite: reconMode.value === "ACTIVE" && crawlSite.value,
@@ -3893,10 +4125,205 @@ onUnmounted(() => {
                     </template>
                   </div>
                 </div>
+                <div class="fingerprint-rule-manager">
+                  <div class="fingerprint-rule-manager-head">
+                    <span class="fingerprint-rule-manager-title">规则明细</span>
+                    <div class="fingerprint-rule-manager-tools">
+                      <el-input
+                        v-model="fingerprintRuleSearch"
+                        size="small"
+                        placeholder="搜索 id / 名称 / 分类"
+                        clearable
+                        class="fingerprint-rule-search"
+                      >
+                        <template #prefix>
+                          <el-icon><Search /></el-icon>
+                        </template>
+                      </el-input>
+                      <el-button
+                        v-if="canUpdateFingerprintCatalog"
+                        size="small"
+                        type="primary"
+                        plain
+                        :disabled="fingerprintRulesLoading || fingerprintRuleSaving"
+                        @click="openAddFingerprintRule"
+                      >
+                        <el-icon><Plus /></el-icon>
+                        新增规则
+                      </el-button>
+                      <el-button
+                        size="small"
+                        :loading="fingerprintRulesLoading"
+                        @click="loadFingerprintRules(true)"
+                      >
+                        <el-icon><Refresh /></el-icon>
+                      </el-button>
+                    </div>
+                  </div>
+                  <div
+                    v-if="fingerprintRulesLoading && !fingerprintRules.length"
+                    class="fingerprint-rule-empty"
+                  >
+                    <el-skeleton :rows="3" animated />
+                  </div>
+                  <div
+                    v-else-if="!filteredFingerprintRules.length"
+                    class="fingerprint-rule-empty muted-text"
+                  >
+                    {{
+                      fingerprintRuleSearch
+                        ? "没有匹配的指纹规则"
+                        : "暂无指纹规则"
+                    }}
+                  </div>
+                  <ul
+                    v-else
+                    class="fingerprint-rule-list"
+                    role="list"
+                    :aria-busy="fingerprintRulesLoading"
+                  >
+                    <li
+                      v-for="rule in filteredFingerprintRules"
+                      :key="rule.id"
+                      class="fingerprint-rule-item"
+                    >
+                      <div class="fingerprint-rule-item-main">
+                        <div class="fingerprint-rule-item-title">
+                          <code class="fingerprint-rule-id">{{ rule.id }}</code>
+                          <el-tag
+                            v-if="rule.category"
+                            size="small"
+                            effect="plain"
+                            class="fingerprint-rule-category"
+                            >{{ rule.category }}</el-tag
+                          >
+                        </div>
+                        <div class="fingerprint-rule-item-sub">
+                          <span class="fingerprint-rule-name">{{
+                            rule.name
+                          }}</span>
+                          <span class="fingerprint-rule-meta"
+                            >置信度 {{ rule.confidence }} · {{
+                              fingerprintRuleTokenCount(rule)
+                            }}
+                            token</span
+                          >
+                        </div>
+                      </div>
+                      <div
+                        v-if="canUpdateFingerprintCatalog"
+                        class="fingerprint-rule-item-actions"
+                      >
+                        <el-button
+                          size="small"
+                          text
+                          :loading="
+                            fingerprintRuleDeleting === rule.id
+                              ? false
+                              : undefined
+                          "
+                          @click="openEditFingerprintRule(rule)"
+                        >
+                          <el-icon><EditPen /></el-icon>
+                          编辑
+                        </el-button>
+                        <el-button
+                          size="small"
+                          text
+                          type="danger"
+                          :loading="fingerprintRuleDeleting === rule.id"
+                          :disabled="
+                            fingerprintRuleSaving ||
+                            (fingerprintRuleDeleting &&
+                              fingerprintRuleDeleting !== rule.id)
+                          "
+                          @click="deleteFingerprintRule(rule)"
+                        >
+                          <el-icon><Delete /></el-icon>
+                        </el-button>
+                      </div>
+                    </li>
+                  </ul>
+                </div>
               </div>
             </div>
           </div>
         </section>
+        <el-dialog
+          v-model="fingerprintRuleEditorVisible"
+          :title="
+            fingerprintRuleEditorMode === 'add'
+              ? '新增指纹规则'
+              : `编辑指纹规则 · ${fingerprintRuleEditingId}`
+          "
+          width="760px"
+          top="6vh"
+          class="fingerprint-rule-editor-dialog"
+          :close-on-click-modal="false"
+          :close-on-press-escape="!fingerprintRuleSaving"
+          @closed="fingerprintRuleEditorProblems = []"
+        >
+          <div class="fingerprint-rule-editor">
+            <div class="fingerprint-rule-editor-tip">
+              <el-icon><CircleCheck /></el-icon>
+              <span
+                >编写校验后的 JSON。必填：<code>id</code>（小写字母/数字开头，最长
+                80）、<code>name</code>、<code>confidence</code>（1-100）。可选：
+                headers / body / cookies / title / header / faviconHash /
+                faviconMd5。</span
+              >
+            </div>
+            <el-input
+              v-model="fingerprintRuleEditorText"
+              class="fingerprint-rule-editor-input"
+              type="textarea"
+              :rows="14"
+              spellcheck="false"
+              placeholder="在此粘贴或编写 JSON 指纹规则…"
+            />
+            <div
+              v-if="fingerprintRuleEditorProblems.length"
+              class="fingerprint-rule-editor-issues"
+              role="alert"
+            >
+              <div
+                v-for="(problem, index) in fingerprintRuleEditorProblems"
+                :key="`${problem.field}-${index}`"
+                class="fingerprint-rule-editor-issue"
+              >
+                <el-tag size="small" type="danger">语法错误</el-tag>
+                <span
+                  >{{ problem.field }}：{{ problem.message }}</span
+                >
+              </div>
+            </div>
+            <div
+              v-else-if="
+                fingerprintRuleEditorText &&
+                !hasFingerprintRuleProblem('json')
+              "
+              class="fingerprint-rule-editor-ok"
+            >
+              <el-icon><CircleCheck /></el-icon>
+              <span>JSON 结构完整，字段校验通过。</span>
+            </div>
+          </div>
+          <template #footer>
+            <el-button
+              :disabled="fingerprintRuleSaving"
+              @click="fingerprintRuleEditorVisible = false"
+            >
+              取消
+            </el-button>
+            <el-button
+              type="primary"
+              :loading="fingerprintRuleSaving"
+              @click="saveFingerprintRuleFromEditor"
+            >
+              保存规则
+            </el-button>
+          </template>
+        </el-dialog>
         <div class="discovery-toolbar">
           <el-radio-group v-model="showDiscoveryTopology" size="small">
             <el-radio-button :value="false">列表</el-radio-button>
@@ -4157,7 +4584,7 @@ onUnmounted(() => {
               v-if="enumerateSubdomains"
               v-model="subdomainDictionary"
               class="subdomain-dictionary"
-              placeholder="子域名字典：www,api,dev"
+              placeholder="子域名字典：留空使用内置上万词库，或用逗号自定义"
             />
             <el-input
               v-if="reconMode === 'ACTIVE' && enumeratePaths"
@@ -6877,6 +7304,179 @@ onUnmounted(() => {
     flex: 1 1 150px;
   }
 }
+.fingerprint-rule-manager {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--app-border, #e2e8f0);
+}
+.fingerprint-rule-manager-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.fingerprint-rule-manager-title {
+  font-size: 12px;
+  font-weight: var(--fluent-weight-medium, 600);
+  color: var(--app-text, #1e293b);
+}
+.fingerprint-rule-manager-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.fingerprint-rule-search {
+  width: 210px;
+}
+.fingerprint-rule-search :deep(.el-input__wrapper) {
+  border-radius: var(--fluent-radius-control, 4px);
+}
+.fingerprint-rule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.fingerprint-rule-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: var(--fluent-radius-control, 4px);
+  background: var(--app-surface, #ffffff);
+  transition: box-shadow 120ms ease, border-color 120ms ease;
+}
+.fingerprint-rule-item:hover {
+  border-color: var(--app-border-strong, #cbd5e1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+.fingerprint-rule-item-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.fingerprint-rule-item-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.fingerprint-rule-id {
+  font-family: var(--font-mono, "Cascadia Code", "Consolas", monospace);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-accent, #0078d4);
+}
+.fingerprint-rule-category {
+  font-size: 11px;
+}
+.fingerprint-rule-item-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 11.5px;
+}
+.fingerprint-rule-name {
+  color: var(--app-text, #1e293b);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fingerprint-rule-meta {
+  flex: none;
+  color: var(--app-muted, #64748b);
+}
+.fingerprint-rule-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+.fingerprint-rule-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60px;
+  font-size: 12px;
+  color: var(--app-muted, #64748b);
+}
+.fingerprint-rule-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.fingerprint-rule-editor-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 8px 10px;
+  border-radius: var(--fluent-radius-control, 4px);
+  background: var(--app-surface-soft, #f1f5f9);
+  color: var(--app-muted, #64748b);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.fingerprint-rule-editor-tip .el-icon {
+  margin-top: 2px;
+  flex: none;
+  color: var(--app-accent, #0078d4);
+}
+.fingerprint-rule-editor-tip code {
+  font-family: var(--font-mono, "Cascadia Code", "Consolas", monospace);
+  color: var(--app-text, #1e293b);
+}
+.fingerprint-rule-editor-input :deep(.el-textarea__inner) {
+  font-family: var(--font-mono, "Cascadia Code", "Consolas", monospace) !important;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.fingerprint-rule-editor-issues {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.fingerprint-rule-editor-issue {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--el-color-danger-light-7, #fde2e2);
+  border-radius: var(--fluent-radius-control, 4px);
+  background: var(--el-color-danger-light-9, #fef0f0);
+  color: var(--el-color-danger, #f56c6c);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.fingerprint-rule-editor-ok {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--el-color-success, #67c23a);
+  font-size: 12px;
+}
+.fingerprint-rule-editor-ok .el-icon {
+  flex: none;
+}
+@media (max-width: 680px) {
+  .fingerprint-rule-manager-tools {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .fingerprint-rule-search {
+    flex: 1;
+  }
+}
 .fingerprint-cell {
   min-width: 0;
   line-height: 1.5;
@@ -7419,8 +8019,9 @@ onUnmounted(() => {
   box-shadow: 0 0 12px color-mix(in srgb, var(--app-accent) 26%, transparent);
   outline: none;
 }
-.report-severity--link:hover b {
-  color: #ffffff;
+.report-severity--link:hover b,
+.report-severity--link:focus-visible b {
+  color: var(--app-accent-dark);
 }
 @media (max-width: 1100px) {
   .report-cards {

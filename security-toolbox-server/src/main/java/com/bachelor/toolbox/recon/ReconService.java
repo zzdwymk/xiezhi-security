@@ -59,8 +59,8 @@ import org.springframework.stereotype.Service;
 @Service
 public class ReconService {
   private static final Logger log = LoggerFactory.getLogger(ReconService.class);
-  private static final List<String> DEFAULT_SUBDOMAIN_WORDS =
-      List.of("www", "api", "admin", "dev", "test", "staging", "mail", "vpn", "portal", "cdn");
+  private static final String SUBDOMAIN_WORDLIST = "wordlists/subdomains.txt";
+  private static final int SUBDOMAIN_ENUM_LIMIT = 2_000;
   private static final Pattern TITLE_PATTERN = Pattern.compile("(?is)<title[^>]*>(.*?)</title>");
   private static final Duration PASSIVE_CONNECT_TIMEOUT = Duration.ofSeconds(4);
   private static final Duration PASSIVE_REQUEST_TIMEOUT = Duration.ofSeconds(8);
@@ -972,14 +972,14 @@ public class ReconService {
 
   private void enumerate(String rootDomain, List<String> requested, Set<String> output) {
     List<String> words =
-        requested == null || requested.isEmpty()
-            ? DEFAULT_SUBDOMAIN_WORDS
+        (requested == null || requested.isEmpty())
+            ? loadSubdomainWords().stream().limit(SUBDOMAIN_ENUM_LIMIT).toList()
             : requested.stream()
                 .filter(Objects::nonNull)
                 .map(String::trim)
                 .filter(word -> word.matches("[A-Za-z0-9-]{1,63}"))
                 .distinct()
-                .limit(50)
+                .limit(SUBDOMAIN_ENUM_LIMIT)
                 .toList();
 
     for (String word : words) {
@@ -994,6 +994,25 @@ public class ReconService {
       } catch (Exception ignored) {
         // 无法解析的候选子域不计入结果。
       }
+    }
+  }
+
+  private List<String> loadSubdomainWords() {
+    try {
+      ClassPathResource resource = new ClassPathResource(SUBDOMAIN_WORDLIST);
+      if (!resource.exists()) return List.of();
+      try (var in = resource.getInputStream()) {
+        String text = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        return Arrays.stream(text.split("\\R"))
+            .map(String::trim)
+            .filter(s -> !s.isEmpty() && !s.startsWith("#"))
+            .filter(word -> word.matches("[A-Za-z0-9-]{1,63}"))
+            .distinct()
+            .toList();
+      }
+    } catch (Exception ex) {
+      log.debug("加载子域名默认字典失败: {}", ex.getMessage());
+      return List.of();
     }
   }
 
