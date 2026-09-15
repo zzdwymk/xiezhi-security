@@ -1,6 +1,7 @@
 package com.bachelor.toolbox.fingerprint;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -17,6 +18,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
@@ -165,6 +167,113 @@ class FingerprintCatalogUpdateSecurityTests {
   private MockHttpServletRequestBuilder reloadRequest(String token) {
     MockHttpServletRequestBuilder request = post("/api/fingerprints/catalog/reload");
     return token == null ? request : request.header("Authorization", "Bearer " + token);
+  }
+
+  @Test
+  void ruleManagementRequiresAdminAndPersistsAddEditDelete() throws Exception {
+    User admin = users.findByUsername("admin").orElseThrow();
+    String adminToken = jwt.createToken(admin);
+    String suffix = UUID.randomUUID().toString().substring(0, 8).replaceAll("[^a-z0-9]", "");
+    String ruleId = "manager-rule-" + suffix;
+    String newId = "manager-rule-" + suffix + "-edited";
+
+    String addBody = ruleBody(ruleId, "Managed Rule", 80, List.of("managed-marker"));
+    String editBody = ruleBody(newId, "Edited Rule", 90, null);
+
+    // anonymous add denied
+    mockMvc
+        .perform(
+            post("/api/fingerprints/rules")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(addBody))
+        .andExpect(status().isUnauthorized());
+
+    // admin adds
+    mockMvc
+        .perform(
+            post("/api/fingerprints/rules")
+                .header("Authorization", "Bearer " + adminToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(addBody))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.version").isString());
+
+    // rule now visible in list
+    mockMvc
+        .perform(
+            get("/api/fingerprints/rules")
+                .header("Authorization", "Bearer " + adminToken))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$[?(@.id=='%s')]".formatted(ruleId)).exists());
+
+    // edit to a new id
+    mockMvc
+        .perform(
+            put("/api/fingerprints/rules/" + ruleId)
+                .header("Authorization", "Bearer " + adminToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(editBody))
+        .andExpect(status().isOk());
+
+    // delete the edited rule by its new id
+    mockMvc
+        .perform(
+            delete("/api/fingerprints/rules/" + newId)
+                .header("Authorization", "Bearer " + adminToken))
+        .andExpect(status().isOk());
+  }
+
+  private String ruleBody(String id, String name, int confidence, List<String> body)
+      throws Exception {
+    java.util.Map<String, Object> rule = new java.util.LinkedHashMap<>();
+    rule.put("id", id);
+    rule.put("name", name);
+    rule.put("category", "TEST");
+    rule.put("confidence", confidence);
+    if (body != null) {
+      rule.put("body", body);
+    }
+    return objectMapper.writeValueAsString(rule);
+  }
+
+  @Test
+  void ruleManagementIsDeniedForRegularUsers() throws Exception {
+    User regular = new User();
+    regular.setUsername("fingerprint-rule-user");
+    regular.setPasswordHash("unused-test-hash");
+    regular.setRole("USER");
+    regular = users.save(regular);
+    String regularToken = jwt.createToken(regular);
+
+    String payload =
+        """
+        {
+          "id": "denied-rule",
+          "name": "Denied Rule",
+          "category": "TEST",
+          "confidence": 80,
+          "body": ["denied-marker"]
+        }
+        """;
+    mockMvc
+        .perform(
+            post("/api/fingerprints/rules")
+                .header("Authorization", "Bearer " + regularToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(payload))
+        .andExpect(status().isForbidden());
+    mockMvc
+        .perform(
+            put("/api/fingerprints/rules/denied-rule")
+                .header("Authorization", "Bearer " + regularToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(payload))
+        .andExpect(status().isForbidden());
+    mockMvc
+        .perform(
+            delete("/api/fingerprints/rules/denied-rule")
+                .header("Authorization", "Bearer " + regularToken))
+        .andExpect(status().isForbidden());
   }
 
   private static Path createInitialRulesFile() {

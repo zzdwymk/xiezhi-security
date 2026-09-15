@@ -12,8 +12,10 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -98,6 +100,230 @@ public class FingerprintRuleCatalog {
           ex.getClass().getSimpleName());
       throw new ApiException("指纹规则更新失败，原有规则已保留");
     }
+  }
+
+  /**
+   * Validates a single rule in isolation (used by add/update + the validate endpoint). Returns a
+   * map of field -> human-readable problem. An empty map means the rule itself is valid.
+   */
+  public Map<String, String> validateRule(Rule rule) {
+    Map<String, String> issues = new LinkedHashMap<>();
+    if (rule == null) {
+      issues.put("rule", "规则不能为空");
+      return issues;
+    }
+    if (rule.id() == null || rule.id().isBlank()) {
+      issues.put("id", "规则标识（id）不能为空");
+    } else if (!RULE_ID.matcher(rule.id()).matches()) {
+      issues.put("id", "规则标识仅允许字母数字和 . _ -，且以小写字母或数字开头（最长 80）");
+    }
+    if (rule.name() == null || rule.name().isBlank()) {
+      issues.put("name", "规则名称（name）不能为空");
+    }
+    if (rule.confidence() < 1 || rule.confidence() > 100) {
+      issues.put("confidence", "置信度（confidence）必须在 1-100 之间");
+    }
+    validateRuleTokens(issues, "headers", rule.headers());
+    validateRuleTokens(issues, "body", rule.body());
+    validateRuleTokens(issues, "cookies", rule.cookies());
+    validateRuleTokens(issues, "title", rule.title());
+    validateRuleTokens(issues, "header", rule.header());
+    validateRuleTokens(issues, "faviconHash", rule.faviconHash());
+    validateRuleTokens(issues, "faviconMd5", rule.faviconMd5());
+    return issues;
+  }
+
+  private void validateRuleTokens(Map<String, String> issues, String field, Object value) {
+    if (value == null) return;
+    if (value instanceof Map<?, ?>) {
+      for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
+        Object headerValue = entry.getValue();
+        List<?> values = headerValue instanceof List<?> ? (List<?>) headerValue : List.of(headerValue);
+        for (Object v : values) {
+          if (v != null && !String.valueOf(v).isBlank()) {
+            String token = String.valueOf(v).split("\\n", 2)[0];
+            if (token.chars().filter(Character::isISOControl).count() > 0) {
+              issues.put(field, field + " 中包含不可见控制字符");
+              return;
+            }
+          }
+        }
+        if (String.valueOf(entry.getKey()).isBlank()) {
+          issues.put(field, field + " 的键名不能为空");
+          return;
+        }
+      }
+      return;
+    }
+    if (value instanceof List<?>) {
+      for (Object v : (List<?>) value) {
+        if (v == null || String.valueOf(v).isBlank()) continue;
+        if (String.valueOf(v).chars().anyMatch(c -> Character.isISOControl(c) && c != '\t')) {
+          issues.put(field, field + " 包含控制字符");
+          return;
+        }
+      }
+    }
+  }
+
+  /**
+   * Validates a candidate full catalog (version-level) against the same rules as {@link
+   * #update(byte[])} without persisting anything, returning a structured problem list keyed by
+   * field/rule id where possible. An empty map means the catalog is valid.
+   */
+  public Map<String, String> validateFullCatalog(byte[] bytes) {
+    requireLoaded();
+    Map<String, String> issues = new LinkedHashMap<>();
+    try {
+      requireSupportedSize(bytes);
+      Catalog parsed = mapper.readValue(bytes, Catalog.class);
+      if (parsed == null
+          || parsed.version() == null
+          || parsed.version().isBlank()
+          || parsed.rules() == null) {
+        issues.put("catalog", "规则库缺少版本号或规则列表");
+        return issues;
+      }
+      if (parsed.rules().size() > MAX_RULES) {
+        issues.put("catalog", "规则数量超过 10000 条限制");
+        return issues;
+      }
+      Set<String> ids = new HashSet<>();
+      for (Rule rule : parsed.rules()) {
+        if (rule == null) {
+          issues.putIfAbsent("rules", "规则列表包含空条目");
+          continue;
+        }
+        if (!ids.add(rule.id())) {
+          issues.putIfAbsent("id", "规则标识重复：" + rule.id());
+        }
+        validateRule(rule).forEach((field, message) -> {
+          String key = "rule[" + rule.id() + "]." + field;
+          issues.putIfAbsent(key, message);
+        });
+      }
+    } catch (ApiException ex) {
+      issues.putIfAbsent("catalog", ex.getMessage());
+    } catch (Exception ex) {
+      issues.putIfAbsent("catalog", "JSON 解析失败：" + ex.getMessage());
+    }
+    return issues;
+  }
+
+  /** Adds an individual rule to the managed catalog. The rule is validated before persisting. */
+  public synchronized CatalogInfo addRule(Rule rule) {
+    if (rule == null) {
+      throw new ApiException("规则不能为空");
+    }
+    requireRuleValid(rule);
+    LoadedCatalog current = requireLoaded();
+    if (current.catalog().rules().stream().anyMatch(r -> r.id().equals(rule.id()))) {
+      throw new ApiException("规则标识已存在：" + rule.id());
+    }
+    try {
+      List<Rule> rules = new ArrayList<>(current.catalog().rules());
+      rules.add(rule);
+      Catalog updated = newCatalog(current.catalog().version(), rules);
+      byte[] bytes = serializeCatalog(updated);
+      LoadedCatalog candidate = parseCatalog(bytes, current.source());
+      persistValidatedCatalog(updateTarget(), bytes, candidate);
+      loadedCatalog = candidate;
+      return info(candidate);
+    } catch (ApiException ex) {
+      log.warn("新增指纹规则失败，source={}", updateSourceDescription());
+      throw ex;
+    } catch (Exception ex) {
+      log.error("新增指纹规则失败，source={}，errorType={}", updateSourceDescription(), ex.getClass().getSimpleName());
+      throw new ApiException("新增指纹规则失败，原有规则已保留");
+    }
+  }
+
+  /** Updates an existing rule by id in the managed catalog. */
+  public synchronized RuleEditResult updateRule(String id, Rule rule) {
+    if (rule == null) {
+      throw new ApiException("规则不能为空");
+    }
+    if (id == null || id.isBlank()) {
+      throw new ApiException("规则标识不能为空");
+    }
+    requireRuleValid(rule);
+    LoadedCatalog loaded = requireCurrent();
+    List<Rule> rules = new ArrayList<>(loaded.catalog().rules());
+    int index = -1;
+    for (int i = 0; i < rules.size(); i++) {
+      if (rules.get(i).id().equals(id)) {
+        index = i;
+        break;
+      }
+    }
+    if (index < 0) {
+      throw new ApiException("未找到规则：" + id);
+    }
+    if (rule.id() != null && !rule.id().equals(id)
+        && rules.stream().anyMatch(r -> !r.id().equals(id) && r.id().equals(rule.id()))) {
+      throw new ApiException("目标规则标识已被占用：" + rule.id());
+    }
+    try {
+      rules.set(index, rule);
+      Catalog updated = newCatalog(loaded.catalog().version(), rules);
+      byte[] bytes = serializeCatalog(updated);
+      LoadedCatalog candidate = parseCatalog(bytes, loaded.source());
+      persistValidatedCatalog(updateTarget(), bytes, candidate);
+      loadedCatalog = candidate;
+      return new RuleEditResult(info(candidate), rule);
+    } catch (ApiException ex) {
+      log.warn("更新指纹规则失败，source={}", updateSourceDescription());
+      throw ex;
+    } catch (Exception ex) {
+      log.error("更新指纹规则失败，source={}，errorType={}", updateSourceDescription(), ex.getClass().getSimpleName());
+      throw new ApiException("更新指纹规则失败，原有规则已保留");
+    }
+  }
+
+  /** Deletes an existing rule by id from the managed catalog. */
+  public synchronized CatalogInfo deleteRule(String id) {
+    if (id == null || id.isBlank()) {
+      throw new ApiException("规则标识不能为空");
+    }
+    LoadedCatalog loaded = requireCurrent();
+    List<Rule> rules = new ArrayList<>(loaded.catalog().rules());
+    boolean removed = rules.removeIf(r -> r.id().equals(id));
+    if (!removed) {
+      throw new ApiException("未找到规则：" + id);
+    }
+    try {
+      Catalog updated = newCatalog(loaded.catalog().version(), rules);
+      byte[] bytes = serializeCatalog(updated);
+      LoadedCatalog candidate = parseCatalog(bytes, loaded.source());
+      persistValidatedCatalog(updateTarget(), bytes, candidate);
+      loadedCatalog = candidate;
+      return info(candidate);
+    } catch (ApiException ex) {
+      log.warn("删除指纹规则失败，source={}", updateSourceDescription());
+      throw ex;
+    } catch (Exception ex) {
+      log.error("删除指纹规则失败，source={}，errorType={}", updateSourceDescription(), ex.getClass().getSimpleName());
+      throw new ApiException("删除指纹规则失败，原有规则已保留");
+    }
+  }
+
+  private void requireRuleValid(Rule rule) {
+    Map<String, String> issues = validateRule(rule);
+    if (!issues.isEmpty()) {
+      throw new ApiException("规则不合法：" + String.join("；", issues.values()));
+    }
+  }
+
+  private Catalog newCatalog(String version, List<Rule> rules) {
+    return new Catalog(version, rules);
+  }
+
+  private byte[] serializeCatalog(Catalog catalog) throws Exception {
+    return mapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(catalog);
+  }
+
+  private LoadedCatalog requireCurrent() {
+    return requireLoaded();
   }
 
   public CatalogInfo info() {
@@ -374,4 +600,6 @@ public class FingerprintRuleCatalog {
       this(version, sha256, ruleCount, CatalogSource.BUILTIN);
     }
   }
+
+  public record RuleEditResult(CatalogInfo catalog, Rule rule) {}
 }

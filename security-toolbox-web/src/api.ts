@@ -440,6 +440,23 @@ export interface FingerprintCatalogInfo {
   ruleCount: number;
   source?: "BUILTIN" | "MANAGED" | "EXTERNAL";
 }
+export interface FingerprintRule {
+  id: string;
+  name: string;
+  category?: string;
+  confidence: number;
+  headers?: Record<string, string[]>;
+  body?: string[];
+  cookies?: string[];
+  title?: string[];
+  header?: string[];
+  faviconHash?: string[];
+  faviconMd5?: string[];
+}
+export interface FingerprintRuleEditResult {
+  catalog: FingerprintCatalogInfo;
+  rule: FingerprintRule;
+}
 export interface SafePocRecommendation {
   vulnerabilityCode: string;
   templateId?: string;
@@ -1299,6 +1316,21 @@ export const endpoints = {
       headers: { "Content-Type": "application/json" },
       timeout: 30_000,
       transformRequest: [(data) => data],
+    }),
+  fingerprintRules: () => api.get<FingerprintRule[]>("/fingerprints/rules"),
+  validateFingerprintRule: (rule: FingerprintRule) =>
+    api.post<Record<string, string>>("/fingerprints/rules/validate", rule),
+  addFingerprintRule: (rule: FingerprintRule) =>
+    api.post<FingerprintCatalogInfo>("/fingerprints/rules", rule, {
+      timeout: 30_000,
+    }),
+  updateFingerprintRule: (ruleId: string, rule: FingerprintRule) =>
+    api.put<FingerprintRuleEditResult>(`/fingerprints/rules/${ruleId}`, rule, {
+      timeout: 30_000,
+    }),
+  deleteFingerprintRule: (ruleId: string) =>
+    api.delete<FingerprintCatalogInfo>(`/fingerprints/rules/${ruleId}`, {
+      timeout: 30_000,
     }),
   pocRecommendations: (fingerprintIds: string[]) =>
     api.post<SafePocRecommendation[]>("/fingerprints/poc-recommendations", {
