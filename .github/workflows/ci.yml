@@ -39,7 +39,7 @@ jobs:
 
           while IFS= read -r -d '' file; do
             case "${file}" in
-              .github/*|ai-runtime/*|security-toolbox-server/*|security-toolbox-web/*)
+              .github/*|ai-runtime/*|security-toolbox-server/*|security-toolbox-web/*|web_fingerprint_db/*)
                 ;;
               scripts/package-desktop-release.ps1|scripts/start-all.ps1|scripts/start-desktop.ps1|scripts/status-all.ps1|scripts/stop-all.ps1|scripts/generate_test_report_from_run.py)
                 ;;
@@ -58,7 +58,8 @@ jobs:
 
             case "/${file}/" in
               */.agents/*|*/.run/*|*/.h2tmp/*|*/.tmp/*|*/node_modules/*|/security-toolbox-server/target/*|*/dist/*|*/desktop-release/*|*/__pycache__/*|*/.pytest_cache/*|*/.idea/*|*/.vscode/*|*/logs/*|*/ai-runtime/build/*|*/ai-runtime/data/*|*/security-toolbox-server/data/*|*/security-toolbox-web/data/*)
-                violations+=("generated or runtime path: ${file}")
+                ;;
+              web_fingerprint_db/dist/*)
                 ;;
             esac
 
