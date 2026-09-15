@@ -1,0 +1,18 @@
+{
+  "total_unique_technologies": 11419,
+  "matched_by_more_than_one_source": 2389,
+  "usable_by_server_substring_engine": 1695,
+  "not_usable_by_server_substring_engine": 9724,
+  "per_source_counts": {
+    "webappanalyzer": 7605,
+    "fingerprinthub_v4": 3201,
+    "fingerprinthub_v3": 2224,
+    "whatweb": 1340
+  },
+  "sources": [
+    "fingerprinthub_v3",
+    "fingerprinthub_v4",
+    "webappanalyzer",
+    "whatweb"
+  ]
+}

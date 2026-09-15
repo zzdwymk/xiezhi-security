@@ -4,23 +4,25 @@ import com.bachelor.toolbox.common.ApiException;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 @Service
 public class TaskExecutionControlService {
   private final Semaphore global;
-  private final int globalLimit;
   private final int perTargetLimit;
   private final ConcurrentHashMap<Long, Semaphore> targets = new ConcurrentHashMap<>();
   private final Set<Long> cancellations = ConcurrentHashMap.newKeySet();
   private final ConcurrentHashMap<Long, Thread> workers = new ConcurrentHashMap<>();
+  private final AtomicInteger maxConcurrentTasks;
 
   public TaskExecutionControlService(
       @Value("${toolbox.execution.max-concurrent-tasks:3}") int globalLimit,
       @Value("${toolbox.execution.max-concurrent-tasks-per-target:1}") int perTargetLimit) {
-    this.globalLimit = Math.max(1, globalLimit);
-    global = new Semaphore(this.globalLimit, true);
+    int initial = Math.max(TaskExecutionSetting.MAX_CONCURRENT_LOWER_BOUND, globalLimit);
+    this.maxConcurrentTasks = new AtomicInteger(initial);
+    this.global = new Semaphore(initial, true);
     this.perTargetLimit = Math.max(1, perTargetLimit);
   }
 
@@ -71,13 +73,44 @@ public class TaskExecutionControlService {
     workers.remove(taskId);
   }
 
+  /**
+   * True only when a live worker thread is still registered for the task. A RUNNING task whose
+   * worker is gone (e.g. the executor process was killed before it could write a terminal state) is
+   * a zombie and can be safely reaped.
+   */
+  public boolean hasActiveWorker(Long taskId) {
+    Thread worker = workers.get(taskId);
+    return worker != null && worker.isAlive();
+  }
+
   public void clear(Long taskId) {
     cancellations.remove(taskId);
     workers.remove(taskId);
   }
 
+  /**
+   * Dynamically changes the global concurrency cap. Increasing adds permits immediately; decreasing
+   * drains only the currently free permits so in-flight tasks are never interrupted. Because of
+   * that, after a shrink the effective cap may settle to the new value as busy tasks finish.
+   */
+  public synchronized void resizeMaxConcurrentTasks(int newLimit) {
+    int bounded = Math.max(
+        TaskExecutionSetting.MAX_CONCURRENT_LOWER_BOUND,
+        Math.min(TaskExecutionSetting.MAX_CONCURRENT_UPPER_BOUND, newLimit));
+    int previous = maxConcurrentTasks.getAndSet(bounded);
+    int delta = bounded - previous;
+    if (delta > 0) {
+      global.release(delta);
+    } else if (delta < 0) {
+      int toRemove = -delta;
+      for (int i = 0; i < toRemove; i++) {
+        if (!global.tryAcquire()) break;
+      }
+    }
+  }
+
   public int maxConcurrentTasks() {
-    return globalLimit;
+    return maxConcurrentTasks.get();
   }
 
   public int availableConcurrentSlots() {

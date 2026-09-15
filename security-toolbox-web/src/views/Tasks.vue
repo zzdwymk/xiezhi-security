@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
@@ -39,6 +39,7 @@ const router = useRouter();
 
 interface TaskRow {
   id: number;
+  projectId: number;
   targetId: number;
   toolCode: string;
   status: string;
@@ -74,12 +75,112 @@ const rows = ref<TaskRow[]>([]);
 const notifiedTasks = new Set<number>();
 let notifiedSeverities: Set<string> | null = null;
 let notifiedTaskCompleteEnabled = true;
+const statusFilter = ref<string>("");
+const statusOptions = [
+  { value: "PENDING", label: "待执行" },
+  { value: "QUEUED", label: "排队中" },
+  { value: "BLOCKED", label: "等待前置" },
+  { value: "RUNNING", label: "执行中" },
+  { value: "SUCCESS", label: "成功" },
+  { value: "FAILED", label: "失败" },
+  { value: "TIMEOUT", label: "超时" },
+  { value: "CANCELLED", label: "已取消" },
+  { value: "REJECTED", label: "已拒绝" },
+  { value: "SKIPPED", label: "已跳过" },
+  { value: "PREPARING", label: "准备中" },
+  { value: "STOPPING", label: "停止中" },
+  { value: "STOPPED", label: "已停止" },
+  { value: "PARTIAL_FAILED", label: "部分失败" },
+];
+const toolFilter = ref<string>("");
+const projectFilter = ref<number | "">("");
+const targetFilter = ref<number | "">("");
+const dateRange = ref<[Date, Date] | null>(null);
+const idKeyword = ref<string>("");
+const filterProjects = ref<AssessmentProject[]>([]);
+const filterTargets = ref<Target[]>([]);
+const filterTools = computed(() => {
+  const set = new Set<string>();
+  for (const tool of SCHEDULE_TOOL_OPTIONS) {
+    set.add(tool.value);
+  }
+  rows.value.forEach((task) => {
+    if (task.toolCode) set.add(task.toolCode);
+  });
+  return Array.from(set)
+    .sort()
+    .map((code) => ({
+      value: code,
+      label: scheduleToolLabel(code),
+    }));
+});
+const filteredTasks = computed(() => {
+  if (!statusFilter.value
+      && !toolFilter.value
+      && !projectFilter.value
+      && !targetFilter.value
+      && !dateRange.value
+      && !idKeyword.value.trim()) {
+    return rows.value;
+  }
+  return rows.value.filter((task) => {
+    if (statusFilter.value && task.status !== statusFilter.value) return false;
+    if (toolFilter.value && task.toolCode !== toolFilter.value) return false;
+    if (
+      projectFilter.value &&
+      task.projectId !== Number(projectFilter.value)
+    )
+      return false;
+    if (targetFilter.value && task.targetId !== Number(targetFilter.value))
+      return false;
+    if (idKeyword.value.trim()) {
+      const keyword = idKeyword.value.trim().toLowerCase();
+      if (
+        !String(task.id).toLowerCase().includes(keyword) &&
+        !String(task.toolCode).toLowerCase().includes(keyword)
+      )
+        return false;
+    }
+    if (dateRange.value) {
+      const createdAt = new Date(task.createdAt);
+      const start = dateRange.value[0].getTime();
+      const end = dateRange.value[1].getTime() + 86_399_000;
+      const created = createdAt.getTime();
+      if (Number.isFinite(created) && (created < start || created > end))
+        return false;
+    }
+    return true;
+  });
+});
 const {
   page,
   pageSize,
   total,
   pagedItems: pagedRows,
-} = useClientPagination(rows);
+} = useClientPagination(filteredTasks);
+watch(
+  [statusFilter, toolFilter, projectFilter, targetFilter, dateRange, idKeyword],
+  () => {
+    page.value = 1;
+  },
+);
+const hasActiveFilter = computed(
+  () =>
+    Boolean(statusFilter.value) ||
+    Boolean(toolFilter.value) ||
+    Boolean(projectFilter.value) ||
+    Boolean(targetFilter.value) ||
+    Boolean(dateRange.value) ||
+    Boolean(idKeyword.value.trim()),
+);
+function clearAllFilters() {
+  statusFilter.value = "";
+  toolFilter.value = "";
+  projectFilter.value = "";
+  targetFilter.value = "";
+  dateRange.value = null;
+  idKeyword.value = "";
+}
 const controlStatus = ref<TaskControlStatus>();
 const offline = ref(false);
 const detail = ref<TaskRow>();
@@ -397,6 +498,20 @@ async function load() {
     schedules.value = (await endpoints.scanSchedules()).data;
   } catch {
     schedules.value = [];
+  }
+}
+
+async function loadFilterContext() {
+  try {
+    const [projectResponse, targetResponse] = await Promise.all([
+      endpoints.projects(),
+      endpoints.targets(),
+    ]);
+    filterProjects.value = (projectResponse.data || []) as AssessmentProject[];
+    filterTargets.value = (targetResponse.data || []) as Target[];
+  } catch {
+    filterProjects.value = [];
+    filterTargets.value = [];
   }
 }
 
@@ -1075,6 +1190,7 @@ function askCopilot(row: TaskRow) {
 
 onMounted(() => {
   load();
+  void loadFilterContext();
   void loadNotificationPreferences();
   stopTaskFeed = connectTaskEventFeed(applyTaskEvent);
   timer = window.setInterval(load, 10_000);
@@ -1100,6 +1216,88 @@ onUnmounted(() => {
           }}</span></el-button
         >
       </div>
+    </div>
+    <div class="task-filter-bar" aria-label="任务筛选">
+      <el-select
+        v-model="statusFilter"
+        class="task-filter-control"
+        clearable
+        placeholder="全部状态"
+        aria-label="按任务状态筛选"
+      >
+        <el-option
+          v-for="option in statusOptions"
+          :key="option.value"
+          :value="option.value"
+          :label="option.label"
+        />
+      </el-select>
+      <el-select
+        v-model="toolFilter"
+        class="task-filter"
+        clearable
+        placeholder="全部工具"
+        aria-label="按工具筛选"
+      >
+        <el-option
+          v-for="option in filterTools"
+          :key="option.value"
+          :value="option.value"
+          :label="option.label"
+        />
+      </el-select>
+      <el-select
+        v-model="projectFilter"
+        class="task-filter task-filter--wide"
+        clearable
+        placeholder="全部项目"
+        aria-label="按项目筛选"
+      >
+        <el-option
+          v-for="project in filterProjects"
+          :key="project.id"
+          :value="project.id"
+          :label="project.name"
+        />
+      </el-select>
+      <el-select
+        v-model="targetFilter"
+        class="task-filter task-filter--wide"
+        clearable
+        filterable
+        placeholder="全部目标"
+        aria-label="按目标筛选"
+      >
+        <el-option
+          v-for="target in filterTargets"
+          :key="target.id"
+          :value="target.id"
+          :label="targetDisplayName(target)"
+        />
+      </el-select>
+      <el-date-picker
+        v-model="dateRange"
+        class="task-filter"
+        type="daterange"
+        range-separator="至"
+        start-placeholder="开始日期"
+        end-placeholder="结束日期"
+        aria-label="按创建时间筛选"
+      />
+      <el-input
+        v-model="idKeyword"
+        class="task-filter task-filter--input"
+        placeholder="搜任务 ID / 工具"
+        clearable
+        aria-label="按任务ID或工具搜索"
+      />
+      <el-button
+        v-if="hasActiveFilter"
+        link
+        type="primary"
+        @click="clearAllFilters"
+        >清除筛选</el-button
+      >
     </div>
     <div
       v-if="controlStatus"
@@ -1859,6 +2057,27 @@ onUnmounted(() => {
   color: var(--app-text);
   font-size: 15px;
   line-height: 1.25;
+}
+.task-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0 4px;
+}
+.task-filter-bar .task-filter-control,
+.task-filter-bar .task-filter {
+  flex: 0 0 auto;
+  width: 150px;
+}
+.task-filter-bar .task-filter--wide {
+  width: 200px;
+}
+.task-filter-bar .task-filter--input {
+  width: 190px;
+}
+.task-filter-bar :deep(.el-date-editor) {
+  width: 260px;
 }
 .schedule-trigger {
   color: var(--app-text) !important;

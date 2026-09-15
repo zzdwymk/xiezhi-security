@@ -21,7 +21,7 @@ import { getThemeMode, setThemeMode } from "../system-theme";
 import { useCopilotStore } from "../stores/copilot";
 import { useAuthStore } from "../stores/auth";
 import { useConversationStore } from "../stores/conversations";
-import { endpoints } from "../api";
+import { endpoints, type TaskControlStatus } from "../api";
 import { toErrorMessage } from "../utils/errorMessage";
 
 const router = useRouter();
@@ -666,6 +666,7 @@ onMounted(() => {
   void loadGithubTokenSettings();
   void loadMicaSetting();
   void loadNotificationSettings();
+  void loadConcurrencyLimit();
 });
 
 const notificationSeverityOptions = [
@@ -725,6 +726,42 @@ async function saveNotificationSettings() {
     ElMessage.error(errorText(error, "任务提醒设置保存失败"));
   } finally {
     notifSaving.value = false;
+  }
+}
+
+const concurrencyLimit = ref(3);
+const concurrencySaving = ref(false);
+const concurrencyStatus = ref<TaskControlStatus>();
+async function loadConcurrencyLimit() {
+  try {
+    const [status, limits] = await Promise.all([
+      endpoints.taskControlStatus(),
+      endpoints.taskControlLimits(),
+    ]);
+    concurrencyStatus.value = status.data;
+    concurrencyLimit.value = limits.data.maxConcurrentTasks;
+  } catch (error) {
+    ElMessage.error(errorText(error, "无法读取任务并发设置"));
+  }
+}
+async function saveConcurrencyLimit(value: number | undefined) {
+  if (concurrencySaving.value) return;
+  if (!value || value < 1 || value > 32) {
+    await loadConcurrencyLimit();
+    return;
+  }
+  concurrencySaving.value = true;
+  try {
+    const result = await endpoints.updateTaskControlLimits(value);
+    concurrencyLimit.value = result.data.maxConcurrentTasks;
+    concurrencyStatus.value =
+      (await endpoints.taskControlStatus()).data;
+    ElMessage.success(`任务并发上限已更新为 ${result.data.maxConcurrentTasks} 个`);
+  } catch (error) {
+    await loadConcurrencyLimit();
+    ElMessage.error(errorText(error, "更新任务并发上限失败"));
+  } finally {
+    concurrencySaving.value = false;
   }
 }
 
@@ -973,6 +1010,37 @@ watch(
           >
         </template>
       </el-dialog>
+
+      <section class="settings-group">
+        <header class="settings-group-title">任务执行</header>
+        <div class="settings-list">
+          <div class="settings-row settings-row--control">
+            <el-icon class="settings-row-icon"><Setting /></el-icon>
+            <span class="settings-row-copy">
+              <strong>最大并发任务数</strong>
+              <small
+                >同一时间最多并行执行的任务数，调大会提高吞吐但更吃 CPU/内存；调小可降低抢资源。修改立即生效并持久化。</small
+              >
+              <small
+                v-if="concurrencyStatus"
+                class="concurrency-status"
+                role="status"
+                aria-live="polite"
+                >当前 {{ concurrencyStatus.runningTasks }} 个运行中 / 上限
+                {{ concurrencyStatus.maxConcurrentTasks }}</small
+              >
+            </span>
+            <el-input-number
+              v-model="concurrencyLimit"
+              :min="1"
+              :max="32"
+              :disabled="concurrencySaving"
+              @change="saveConcurrencyLimit"
+              style="width: 120px"
+            />
+          </div>
+        </div>
+      </section>
 
       <section class="settings-group">
         <header class="settings-group-title">系统与审计</header>

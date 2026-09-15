@@ -158,6 +158,7 @@ export const FINDING_STATUS_LABELS: Record<string, string> = {
   CONFIRMED: "已确认",
   FALSE_POSITIVE: "误报",
   FIXED: "已修复",
+  REOPENED: "已复现",
 };
 
 export const TASK_STATUS_LABELS: Record<string, string> = {

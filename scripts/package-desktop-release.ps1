@@ -83,6 +83,141 @@ function Remove-ItemRetryable([string]$Path, [int]$Max = 8, [int]$DelayMs = 500)
     }
 }
 
+# ---------------------------------------------------------------------------
+# 进程清理工具：在 mvn clean 前停掉一切占用本项目后端 jar 的进程。
+# 这些函数定义在模块顶层，确保“后端构建阶段”之前即可调用（原先它们只在内层
+# Electron 打包阶段才定义，导致 mvn clean 删除被占用 jar 时来不及先停进程）。
+# ---------------------------------------------------------------------------
+
+function ConvertTo-NormalizedPath([string]$value) {
+    if ([string]::IsNullOrWhiteSpace($value)) { return $null }
+    try {
+        return [IO.Path]::GetFullPath($value.Trim().Trim('"')).TrimEnd('\')
+    } catch {
+        return $null
+    }
+}
+
+function Test-WindowsProcessAlive([int]$processId) {
+    return $null -ne (Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue)
+}
+
+function Test-ToolboxServerJarProcess($process, [string]$projectRoot, [string]$releaseDirectory, [string[]]$knownJarPaths) {
+    $executableName = [IO.Path]::GetFileName([string]$process.ExecutablePath)
+    if ($executableName -notin @('java.exe', 'javaw.exe')) { return $false }
+    $commandLine = [string]$process.CommandLine
+    if ([string]::IsNullOrWhiteSpace($commandLine)) { return $false }
+    $normalizedCommandLine = $commandLine.Replace('/', '\')
+    $serverProjectRoot = (ConvertTo-NormalizedPath (Join-Path $projectRoot 'security-toolbox-server')).TrimEnd('\')
+    foreach ($knownJarPath in $knownJarPaths) {
+        if ($knownJarPath -and $normalizedCommandLine.IndexOf($knownJarPath.Replace('/', '\'), [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            return $true
+        }
+    }
+
+    $jarMatches = [regex]::Matches(
+        $normalizedCommandLine,
+        '(?i)"([^"\r\n]*security-toolbox-server[^"\r\n]*\.jar)"|(?<!\S)([^\s"\r\n]*security-toolbox-server[^\s"\r\n]*\.jar)(?!\S)'
+    )
+    foreach ($jarMatch in $jarMatches) {
+        $jarPath = if ($jarMatch.Groups[1].Success) { $jarMatch.Groups[1].Value } else { $jarMatch.Groups[2].Value }
+        if (-not [IO.Path]::IsPathRooted($jarPath)) {
+            $workingDirectory = ConvertTo-NormalizedPath ([string]$process.WorkingDirectory)
+            if (-not $workingDirectory) { continue }
+            $jarPath = Join-Path $workingDirectory $jarPath
+        }
+        $normalizedJarPath = ConvertTo-NormalizedPath $jarPath
+        if (-not $normalizedJarPath) { continue }
+        $jarName = [IO.Path]::GetFileName($normalizedJarPath)
+        $underProject = $normalizedJarPath.StartsWith($serverProjectRoot + '\', [StringComparison]::OrdinalIgnoreCase)
+        $underRelease = $normalizedJarPath.StartsWith($releaseDirectory + '\', [StringComparison]::OrdinalIgnoreCase)
+        if ($jarName -like 'security-toolbox-server*.jar' -and ($underProject -or $underRelease)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Stop-ProcessTreeAndVerify([int]$processId, [string]$description) {
+    $attempts = 0
+    $taskkillOutput = @()
+    do {
+        $attempts++
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            # A matching process can exit between CIM discovery and taskkill.
+            # Capture that diagnostic and decide from the follow-up liveness check.
+            $ErrorActionPreference = 'Continue'
+            $taskkillOutput = @(& taskkill.exe /PID $processId /T /F 2>&1 | ForEach-Object { [string]$_ })
+        } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+        $deadline = [DateTime]::UtcNow.AddSeconds(3)
+        do {
+            if (-not (Test-WindowsProcessAlive $processId)) { break }
+            Start-Sleep -Milliseconds 100
+        } while ([DateTime]::UtcNow -lt $deadline)
+    } while ((Test-WindowsProcessAlive $processId) -and $attempts -lt 2)
+
+    $stillAlive = Test-WindowsProcessAlive $processId
+    $output = ($taskkillOutput -join ' ').Trim()
+    $context = "description=$description; pid=$processId; attempts=$attempts; alive=$stillAlive"
+    if ($output) { $context += "; taskkill=$output" }
+    if ($stillAlive) {
+        throw "Unable to stop $description (PID $processId). $context"
+    }
+    Write-Host "Stopped $description (PID $processId); taskkill attempts: $attempts" -ForegroundColor DarkGray
+}
+
+# 结束所有仍占用本项目后端 jar 的 Java 进程，以及仍在运行的前一版桌面应用
+# （桌面应用若存活，会把后端从 project target jar 重新拉起来，导致 mvn clean 时 jar 又被锁）。
+function Stop-ServerJarAndReleaseProcesses {
+    if (-not (Get-Command Get-CimInstance -ErrorAction SilentlyContinue)) { return }
+
+    $projectRoot = (ConvertTo-NormalizedPath $workspace).TrimEnd('\')
+    if (-not $projectRoot) { return }
+    $releaseDirectoryRoot = ConvertTo-NormalizedPath $releaseRoot
+    # 当前会话尚未生成新 staging 时，release 目录就是既有输出根。
+    $releaseDirectory = if ($resolvedReleaseRoot) {
+        (ConvertTo-NormalizedPath $resolvedReleaseRoot).TrimEnd('\')
+    } elseif ($releaseDirectoryRoot) {
+        $releaseDirectoryRoot
+    } else {
+        ''
+    }
+    $serverProjectRoot = Join-Path $projectRoot 'security-toolbox-server'
+    $knownServerJarPaths = @(
+        Get-ChildItem -LiteralPath (Join-Path $serverProjectRoot 'target') -Filter 'security-toolbox-server*.jar' -File -ErrorAction SilentlyContinue
+        if ($releaseDirectory) {
+            Get-ChildItem -LiteralPath (Join-Path $releaseDirectory 'win-unpacked\resources\server') -Filter 'security-toolbox-server*.jar' -File -ErrorAction SilentlyContinue
+        }
+    ) | ForEach-Object { ConvertTo-NormalizedPath $_.FullName }
+
+    Write-Host 'Stopping running backend / desktop processes that could lock the server jar...' -ForegroundColor Cyan
+    $runningProcesses = @(Get-CimInstance Win32_Process -Property ProcessId, ExecutablePath, CommandLine)
+
+    # 1) 结束占用本项目 server jar 的 Java 进程（含 desktop 从 project 源码 jar 拉起的后端）。
+    $runningProcesses | Where-Object {
+        Test-ToolboxServerJarProcess $_ $projectRoot $releaseDirectory $knownServerJarPaths
+    } | Sort-Object ProcessId -Unique | ForEach-Object {
+        Stop-ProcessTreeAndVerify ([int]$_.ProcessId) 'security-toolbox-server Java process'
+    }
+
+    # 2) 结束仍在运行的桌面封装进程（Electron 外壳/AI runtime），避免它把后端再拉起来。
+    #    重新读取进程表，因为上一趟可能只杀掉了其子 java。
+    $remainingRelease = @(Get-CimInstance Win32_Process -Property ProcessId, ExecutablePath, CommandLine)
+    $remainingRelease | Where-Object {
+        $exePath = ConvertTo-NormalizedPath ([string]$_.ExecutablePath)
+        $exePath -and $exePath.StartsWith($releaseDirectoryRoot + '\', [StringComparison]::OrdinalIgnoreCase)
+    } | Sort-Object ProcessId -Unique | ForEach-Object {
+        if (Test-WindowsProcessAlive ([int]$_.ProcessId)) {
+            Stop-ProcessTreeAndVerify ([int]$_.ProcessId) 'desktop release process'
+        }
+    }
+
+    Start-Sleep -Milliseconds 500
+}
+
 # Helper to find the newest LastWriteTimeUtc among files/directories
 function Get-NewestFileTimeUtc([string[]]$Paths, [string[]]$ExcludePatterns = @()) {
     $newest = [DateTime]::MinValue
@@ -280,6 +415,9 @@ if (-not $SkipComponentBuild) {
 
     $stageWatch = Start-Stage
     if ($needBackendBuild) {
+        # mvn clean 需要删除/重写 target 下的 jar。若运行中的后端或桌面应用占用了该文件，
+        # clean 会直接失败（Windows 无法删除被占用文件）。这里在构建前先停掉相关进程。
+        Stop-ServerJarAndReleaseProcesses
         Write-Host 'Building Spring Boot engine...' -ForegroundColor Cyan
         # Always use clean for correctness; -DskipTests keeps it fast (~8-12s vs 20s+ with tests)
         & $maven -B -ntp clean package -DskipTests -f (Join-Path $backend 'pom.xml')
@@ -366,116 +504,12 @@ try {
     }
     Stop-Stage 'Electron packaging' $stageWatch
 
-    function ConvertTo-NormalizedPath([string]$value) {
-        if ([string]::IsNullOrWhiteSpace($value)) { return $null }
-        try {
-            return [IO.Path]::GetFullPath($value.Trim().Trim('"')).TrimEnd('\')
-        } catch {
-            return $null
-        }
-    }
-
-    function Test-ToolboxServerJarProcess($process, [string]$projectRoot, [string]$releaseDirectory, [string[]]$knownJarPaths) {
-        $executableName = [IO.Path]::GetFileName([string]$process.ExecutablePath)
-        if ($executableName -notin @('java.exe', 'javaw.exe')) { return $false }
-        $commandLine = [string]$process.CommandLine
-        if ([string]::IsNullOrWhiteSpace($commandLine)) { return $false }
-        $normalizedCommandLine = $commandLine.Replace('/', '\')
-        $serverProjectRoot = (ConvertTo-NormalizedPath (Join-Path $projectRoot 'security-toolbox-server')).TrimEnd('\')
-        foreach ($knownJarPath in $knownJarPaths) {
-            if ($knownJarPath -and $normalizedCommandLine.IndexOf($knownJarPath.Replace('/', '\'), [StringComparison]::OrdinalIgnoreCase) -ge 0) {
-                return $true
-            }
-        }
-
-        $jarMatches = [regex]::Matches(
-            $normalizedCommandLine,
-            '(?i)"([^"\r\n]*security-toolbox-server[^"\r\n]*\.jar)"|(?<!\S)([^\s"\r\n]*security-toolbox-server[^\s"\r\n]*\.jar)(?!\S)'
-        )
-        foreach ($jarMatch in $jarMatches) {
-            $jarPath = if ($jarMatch.Groups[1].Success) { $jarMatch.Groups[1].Value } else { $jarMatch.Groups[2].Value }
-            if (-not [IO.Path]::IsPathRooted($jarPath)) {
-                $workingDirectory = ConvertTo-NormalizedPath ([string]$process.WorkingDirectory)
-                if (-not $workingDirectory) { continue }
-                $jarPath = Join-Path $workingDirectory $jarPath
-            }
-            $normalizedJarPath = ConvertTo-NormalizedPath $jarPath
-            if (-not $normalizedJarPath) { continue }
-            $jarName = [IO.Path]::GetFileName($normalizedJarPath)
-            $underProject = $normalizedJarPath.StartsWith($serverProjectRoot + '\', [StringComparison]::OrdinalIgnoreCase)
-            $underRelease = $normalizedJarPath.StartsWith($releaseDirectory + '\', [StringComparison]::OrdinalIgnoreCase)
-            if ($jarName -like 'security-toolbox-server*.jar' -and ($underProject -or $underRelease)) {
-                return $true
-            }
-        }
-        return $false
-    }
-
-    function Test-WindowsProcessAlive([int]$processId) {
-        return $null -ne (Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue)
-    }
-
-    function Stop-ProcessTreeAndVerify([int]$processId, [string]$description) {
-        $attempts = 0
-        $taskkillOutput = @()
-        do {
-            $attempts++
-            $previousErrorActionPreference = $ErrorActionPreference
-            try {
-                # A matching process can exit between CIM discovery and taskkill.
-                # Capture that diagnostic and decide from the follow-up liveness check.
-                $ErrorActionPreference = 'Continue'
-                $taskkillOutput = @(& taskkill.exe /PID $processId /T /F 2>&1 | ForEach-Object { [string]$_ })
-            } finally {
-                $ErrorActionPreference = $previousErrorActionPreference
-            }
-            $deadline = [DateTime]::UtcNow.AddSeconds(3)
-            do {
-                if (-not (Test-WindowsProcessAlive $processId)) { break }
-                Start-Sleep -Milliseconds 100
-            } while ([DateTime]::UtcNow -lt $deadline)
-        } while ((Test-WindowsProcessAlive $processId) -and $attempts -lt 2)
-
-        $stillAlive = Test-WindowsProcessAlive $processId
-        $output = ($taskkillOutput -join ' ').Trim()
-        $context = "description=$description; pid=$processId; attempts=$attempts; alive=$stillAlive"
-        if ($output) { $context += "; taskkill=$output" }
-        if ($stillAlive) {
-            throw "Unable to stop $description (PID $processId). $context"
-        }
-        Write-Host "Stopped $description (PID $processId); taskkill attempts: $attempts" -ForegroundColor DarkGray
-    }
-
-    # Match only Java processes whose command line references this project's server JAR.
+    # Stop any process still running from the previous release directory so its
+    # files can be replaced before the swap. (Helper functions are defined at module
+    # scope and were already invoked before the backend build; this pass also ensures
+    # a process that started during packaging is stopped.)
     $stageWatch = Start-Stage
-    $projectRoot = (ConvertTo-NormalizedPath $workspace).TrimEnd('\')
-    $releaseDirectory = (ConvertTo-NormalizedPath $resolvedReleaseRoot).TrimEnd('\')
-    $serverProjectRoot = Join-Path $projectRoot 'security-toolbox-server'
-    # Only the build output and the packaged resources can hold the JAR; the
-    # regex fallback in Test-ToolboxServerJarProcess still covers other paths.
-    $knownServerJarPaths = @(
-        Get-ChildItem -LiteralPath (Join-Path $serverProjectRoot 'target') -Filter 'security-toolbox-server*.jar' -File -ErrorAction SilentlyContinue
-        Get-ChildItem -LiteralPath (Join-Path $releaseDirectory 'win-unpacked\resources\server') -Filter 'security-toolbox-server*.jar' -File -ErrorAction SilentlyContinue
-    ) | ForEach-Object { ConvertTo-NormalizedPath $_.FullName }
-
-    # Snapshot the process table once and reuse it for both sweeps.
-    $runningProcesses = @(Get-CimInstance Win32_Process -Property ProcessId, ExecutablePath, CommandLine)
-    $runningProcesses | Where-Object {
-        Test-ToolboxServerJarProcess $_ $projectRoot $releaseDirectory $knownServerJarPaths
-    } | Sort-Object ProcessId -Unique | ForEach-Object {
-        Stop-ProcessTreeAndVerify ([int]$_.ProcessId) "security-toolbox-server Java process"
-    }
-
-    # Stop any process still running from the previous release directory so its files can be replaced.
-    $runningProcesses | Where-Object {
-        $exePath = ConvertTo-NormalizedPath ([string]$_.ExecutablePath)
-        $exePath -and $exePath.StartsWith($releaseDirectory + '\', [StringComparison]::OrdinalIgnoreCase)
-    } | Sort-Object ProcessId -Unique | ForEach-Object {
-        # The Java sweep above may have already killed some of these.
-        if (Test-WindowsProcessAlive ([int]$_.ProcessId)) {
-            Stop-ProcessTreeAndVerify ([int]$_.ProcessId) 'desktop release process'
-        }
-    }
+    Stop-ServerJarAndReleaseProcesses
     Stop-Stage 'Stop running release processes' $stageWatch
 
     $unpackedStaging = Join-Path $staging 'win-unpacked'
