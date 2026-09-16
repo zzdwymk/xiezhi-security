@@ -7333,6 +7333,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  grid-column: 1 / -1;
   margin-top: 14px;
   padding-top: 12px;
   border-top: 1px solid var(--app-border, #e2e8f0);
@@ -7361,8 +7362,8 @@ onUnmounted(() => {
   border-radius: var(--fluent-radius-control, 4px);
 }
 .fingerprint-rule-list {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
   gap: 6px;
   margin: 0;
   padding: 0;
