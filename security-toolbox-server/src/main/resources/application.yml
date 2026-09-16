@@ -38,6 +38,10 @@ spring:
 toolbox:
   recon:
     passive-sources-enabled: ${RECON_PASSIVE_SOURCES_ENABLED:true}
+    # Managed (admin-editable) subdomain enumeration dictionary. Once this file
+    # exists it becomes authoritative for enumeration; otherwise the built-in
+    # classpath wordlist is used.
+    subdomain-dictionary-file: ${SUBDOMAIN_DICTIONARY_FILE:./data/recon/subdomains.txt}
     # Optional trusted ICP provider. Use {domain} in the URL, or the server
     # appends a domain query parameter. HTTPS is required.
     icp-api-url: ${ICP_API_URL:}

@@ -25,6 +25,8 @@ import {
   type ScanDiff,
   type SecurityAction,
   type SecurityActionCategory,
+  type SubdomainDictionaryView,
+  type SubdomainDictionaryWordPage,
   type Target,
   type TaskProgressEvent,
   type WorkflowRunDetail,
@@ -175,6 +177,26 @@ const {
   pageSize: icpPageSize,
   pagedItems: pagedIcpRows,
 } = useClientPagination(icpRows);
+
+const dictManagerOpen = ref(false);
+const dictLoading = ref(false);
+const dictSaving = ref(false);
+const dictImporting = ref(false);
+const dictDeleting = ref(false);
+const dictView = ref<SubdomainDictionaryView>({ source: "", wordCount: 0 });
+const dictWords = ref<Array<{ word: string }>>([]);
+const dictWordPage = ref(1);
+const dictWordPageSize = ref(30);
+const dictWordTotal = ref(0);
+const dictWordLoading = ref(false);
+const dictWordQuery = ref("");
+const dictSelected = ref<string[]>([]);
+// 便携编辑器：追加新增
+const dictAddText = ref("");
+const dictAddProblems = ref<string[]>([]);
+const dictImportText = ref("");
+const dictImportSummary = ref("");
+const dictRemoveText = ref("");
 
 watch(
   () => route.query.tab,
@@ -570,6 +592,7 @@ const securityActionFindings = computed(() =>
 );
 const canManageSecurityActions = computed(() => auth.user?.role === "ADMIN");
 const canUpdateFingerprintCatalog = computed(() => auth.user?.role === "ADMIN");
+const canManageSubdomainDictionary = computed(() => auth.user?.role === "ADMIN");
 const pendingSecurityActionCount = computed(
   () =>
     securityActions.value.filter((item) => item.status === "PENDING_APPROVAL")
@@ -2431,6 +2454,12 @@ function fingerprintRuleTokenCount(rule: FingerprintRule) {
   ].length;
 }
 
+function fingerprintConfidenceLevel(confidence: number) {
+  if (confidence >= 85) return "high";
+  if (confidence >= 60) return "medium";
+  return "low";
+}
+
 function openAddFingerprintRule() {
   if (!canUpdateFingerprintCatalog.value) {
     ElMessage.warning("仅管理员可以编辑指纹规则");
@@ -2767,6 +2796,206 @@ async function collectRecon(options: LinkedStepOptions = {}): Promise<boolean> {
     return false;
   } finally {
     collectingRecon.value = false;
+  }
+}
+
+function parseDictionaryText(text: string): string[] {
+  return String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+}
+
+function validateDictionaryWord(word: string): string {
+  if (!word) return "词条不能为空";
+  if (word.includes(" ") || word.includes(".")) return "词条应为单个子域标签（不含 . 或空格）";
+  if (!/^[A-Za-z0-9-]{1,63}$/.test(word)) return "仅允许字母、数字和 -（1-63 位）";
+  return "";
+}
+
+function validateDictionaryAdditions(): string[] {
+  const lines = parseDictionaryText(dictAddText.value);
+  if (!lines.length) return [];
+  const seen = new Set<string>();
+  const problems: string[] = [];
+  for (const line of lines) {
+    const issue = validateDictionaryWord(line);
+    if (issue) {
+      problems.push(`${line || "<空行>"}：${issue}`);
+      continue;
+    }
+    const word = line.toLowerCase();
+    if (seen.has(word)) {
+      problems.push(`${line}：重复词条`);
+      continue;
+    }
+    seen.add(word);
+  }
+  return problems.slice(0, 200);
+}
+
+const dictAddProblemList = computed(() => validateDictionaryAdditions());
+
+async function loadDictionaryWords() {
+  dictWordLoading.value = true;
+  try {
+    const pageData = (
+      await endpoints.subdomainDictionaryWords(
+        dictWordQuery.value,
+        dictWordPage.value,
+        dictWordPageSize.value,
+      )
+    ).data;
+    dictWords.value = pageData.words.map((word) => ({ word }));
+    dictWordTotal.value = pageData.total;
+    if (dictWordPage.value > 1 && !pageData.words.length) {
+      dictWordPage.value = 1;
+      await loadDictionaryWords();
+      return;
+    }
+  } catch (error) {
+    ElMessage.error(errorMessage(error, "词条列表加载失败"));
+  } finally {
+    dictWordLoading.value = false;
+  }
+}
+
+watch(dictWordQuery, () => {
+  dictWordPage.value = 1;
+  void loadDictionaryWords();
+});
+watch([dictWordPage, dictWordPageSize], () => void loadDictionaryWords());
+
+function onDictSelectionChange(rows: Array<{ word: string }>) {
+  dictSelected.value = rows.map((row) => row.word);
+}
+
+function clearDictionarySelection() {
+  dictSelected.value = [];
+}
+
+async function openSubdomainDictionary() {
+  dictManagerOpen.value = true;
+  await loadSubdomainDictionary();
+  await loadDictionaryWords();
+}
+
+async function loadSubdomainDictionary() {
+  dictLoading.value = true;
+  try {
+    const view = (await endpoints.subdomainDictionary()).data;
+    dictView.value = view;
+    dictAddText.value = "";
+    dictAddProblems.value = [];
+    dictImportText.value = "";
+    dictImportSummary.value = "";
+    dictRemoveText.value = "";
+    dictSelected.value = [];
+  } catch (error) {
+    ElMessage.error(errorMessage(error, "子域名字典加载失败"));
+  } finally {
+    dictLoading.value = false;
+  }
+}
+
+async function saveDictionaryAdditions() {
+  if (dictSaving.value) return;
+  const problems = validateDictionaryAdditions();
+  if (problems.length) {
+    ElMessage.error("新增词条校验未通过，请修正后重试");
+    return;
+  }
+  const additions = parseDictionaryText(dictAddText.value);
+  if (!additions.length) {
+    ElMessage.warning("请先输入要新增的词条（每行一个）");
+    return;
+  }
+  try {
+    dictSaving.value = true;
+    const result = (await endpoints.updateSubdomainDictionary(additions, [])).data;
+    dictView.value = result.view;
+    dictAddText.value = "";
+    dictAddProblems.value = [];
+    dictSelected.value = [];
+    ElMessage.success(`已新增 ${result.added} 条，当前共 ${result.view.wordCount} 条`);
+    await loadDictionaryWords();
+  } catch (error) {
+    ElMessage.error(errorMessage(error, "新增词条保存失败"));
+  } finally {
+    dictSaving.value = false;
+  }
+}
+
+async function importSubdomainDictionary() {
+  if (dictImporting.value) return;
+  if (!dictImportText.value.trim()) {
+    ElMessage.warning("请先粘贴要批量导入的词条（每行一个）");
+    return;
+  }
+  dictImporting.value = true;
+  try {
+    const result = (await endpoints.importSubdomainWords(dictImportText.value)).data;
+    if (result.imported) {
+      await loadSubdomainDictionary();
+      await loadDictionaryWords();
+    }
+    dictImportSummary.value =
+      `导入 ${result.imported}，跳过 ${result.invalid}，已存在 ${result.duplicates}`;
+    if (result.issues.length) {
+      ElMessageBox.alert(
+        result.issues.slice(0, 20).join("\n"),
+        "无效词条被跳过",
+        { type: "warning", customClass: "dict-import-issues" },
+      );
+    } else {
+      ElMessage.success(`导入完成：新增 ${result.imported} 条`);
+    }
+  } catch (error) {
+    ElMessage.error(errorMessage(error, "批量导入失败"));
+  } finally {
+    dictImporting.value = false;
+  }
+}
+
+async function removeSelectedSubdomainWords() {
+  if (dictDeleting.value) return;
+  const words = dictSelected.value.slice();
+  if (!words.length) {
+    ElMessage.warning("请先勾选要删除的词条");
+    return;
+  }
+  const confirmed = await ElMessageBox.confirm(
+    `确认删除选中的 ${words.length} 个词条？`,
+    "删除子域名字条",
+    { type: "warning", confirmButtonText: "删除", cancelButtonText: "取消" },
+  ).catch(() => null);
+  if (!confirmed) return;
+  await removeSubdomainWords(words);
+}
+
+async function removeInputSubdomainWords() {
+  if (dictDeleting.value) return;
+  const words = parseDictionaryText(dictRemoveText.value);
+  if (!words.length) {
+    ElMessage.warning("请粘贴要删除的词条（每行一个）");
+    return;
+  }
+  await removeSubdomainWords(words);
+  dictRemoveText.value = "";
+}
+
+async function removeSubdomainWords(words: string[]) {
+  dictDeleting.value = true;
+  try {
+    const result = (await endpoints.updateSubdomainDictionary([], words)).data;
+    dictView.value = result.view;
+    dictSelected.value = [];
+    ElMessage.success(`已删除 ${result.removed} 条，剩余 ${result.view.wordCount} 条`);
+    await loadDictionaryWords();
+  } catch (error) {
+    ElMessage.error(errorMessage(error, "删除失败"));
+  } finally {
+    dictDeleting.value = false;
   }
 }
 
@@ -4216,16 +4445,22 @@ onUnmounted(() => {
                             >{{ rule.category }}</el-tag
                           >
                         </div>
-                        <div class="fingerprint-rule-item-sub">
-                          <span class="fingerprint-rule-name">{{
-                            rule.name
-                          }}</span>
-                          <span class="fingerprint-rule-meta"
-                            >置信度 {{ rule.confidence }} · {{
-                              fingerprintRuleTokenCount(rule)
-                            }}
-                            token</span
+                        <div class="fingerprint-rule-name">{{ rule.name }}</div>
+                        <div class="fingerprint-rule-metrics">
+                          <span
+                            class="fingerprint-rule-metric fingerprint-rule-confidence"
+                            :data-level="
+                              fingerprintConfidenceLevel(rule.confidence)
+                            "
                           >
+                            <span class="fingerprint-rule-confidence-dot" />
+                            置信度 {{ rule.confidence }}
+                          </span>
+                          <span
+                            class="fingerprint-rule-metric fingerprint-rule-token"
+                          >
+                            {{ fingerprintRuleTokenCount(rule) }} 项特征
+                          </span>
                         </div>
                       </div>
                       <div
@@ -4626,6 +4861,12 @@ onUnmounted(() => {
               >开始收集</el-button
             >
             <el-button @click="loadRecon">刷新</el-button>
+            <el-button
+              :disabled="!canManageSubdomainDictionary"
+              title="管理子域名（字典）枚举的词库"
+              @click="openSubdomainDictionary"
+              >管理子域名字典</el-button
+            >
             <el-button :loading="icpLoading" @click="queryIcpBatch"
               >ICP备案批量查询</el-button
             >
@@ -4994,6 +5235,172 @@ onUnmounted(() => {
           :total="filteredReconRows.length"
         />
       </el-tab-pane>
+      <el-dialog
+        v-model="dictManagerOpen"
+        title="子域名枚举词典管理"
+        width="820px"
+        top="4vh"
+        class="subdomain-dict-dialog"
+        :close-on-click-modal="false"
+        @closed="clearDictionarySelection"
+      >
+        <div v-loading="dictLoading" class="subdomain-dict">
+          <div
+            v-if="dictView.source"
+            class="subdomain-dict-meta"
+          >
+            <el-tag size="small" :type="dictView.source === 'MANAGED' ? 'success' : 'info'">
+              {{ dictView.source === "MANAGED" ? "可托管词典" : "内置默认词典" }}
+            </el-tag>
+            <span>共 {{ dictView.wordCount }} 条。内置词典只读；保存或导入后会自动生成托管词典并被枚举使用。</span>
+          </div>
+
+          <div class="subdomain-dict-section">
+            <div class="subdomain-dict-section-head">
+              <span>当前词条（共 {{ dictWordTotal }} 条）</span>
+              <div class="subdomain-dict-tools">
+                <el-input
+                  v-model="dictWordQuery"
+                  clearable
+                  size="small"
+                  placeholder="搜索词条"
+                  class="subdomain-dict-search"
+                />
+                <el-button
+                  size="small"
+                  type="danger"
+                  plain
+                  :disabled="!dictSelected.length"
+                  :loading="dictDeleting"
+                  @click="removeSelectedSubdomainWords"
+                  >删除勾选 ({{ dictSelected.length }})</el-button
+                >
+              </div>
+            </div>
+            <div v-loading="dictWordLoading" class="subdomain-dict-table">
+              <el-table
+                :data="dictWords"
+                size="small"
+                :show-header="false"
+                max-height="240"
+                @selection-change="onDictSelectionChange"
+                @select-all="clearDictionarySelection"
+                @select="clearDictionarySelection"
+              >
+                <el-table-column type="selection" width="36" />
+                <el-table-column prop="word" min-width="0" show-overflow-tooltip />
+              </el-table>
+              <div
+                v-if="!dictWordLoading && !dictWords.length"
+                class="subdomain-dict-empty"
+              >
+                暂无匹配词条
+              </div>
+            </div>
+            <div class="subdomain-dict-pager">
+              <span>共 {{ dictWordTotal }} 条</span>
+              <AppPagination
+                v-if="dictWordTotal > dictWordPageSize"
+                v-model:page="dictWordPage"
+                v-model:page-size="dictWordPageSize"
+                :total="dictWordTotal"
+              />
+            </div>
+          </div>
+
+          <div class="subdomain-dict-section">
+            <div class="subdomain-dict-section-head">
+              <span>便携编辑：新增词条（每行一个，保存追加到词典）</span>
+            </div>
+            <el-input
+              v-model="dictAddText"
+              class="subdomain-dict-editor"
+              type="textarea"
+              :rows="6"
+              spellcheck="false"
+              placeholder="每行一个子域标签，例如：www&#10;api&#10;mail"
+            />
+            <div
+              v-if="dictAddProblemList.length"
+              class="fingerprint-rule-editor-issues"
+              role="alert"
+            >
+              <div
+                v-for="(problem, index) in dictAddProblemList.slice(0, 30)"
+                :key="`${problem}-${index}`"
+                class="fingerprint-rule-editor-issue"
+              >
+                <el-tag size="small" type="danger">校验错误</el-tag>
+                <span>{{ problem }}</span>
+              </div>
+              <div v-if="dictAddProblemList.length > 30" class="subdomain-dict-more-issues">
+                还有 {{ dictAddProblemList.length - 30 }} 处错误…
+              </div>
+            </div>
+            <div
+              v-else-if="dictAddText.trim()"
+              class="fingerprint-rule-editor-ok"
+            >
+              <el-icon><CircleCheck /></el-icon>
+              <span>校验通过，保存后追加到词典。</span>
+            </div>
+          </div>
+
+          <div class="subdomain-dict-section">
+            <div class="subdomain-dict-section-head">
+              <span>批量操作</span>
+            </div>
+            <div class="subdomain-dict-batch-row">
+              <el-input
+                v-model="dictImportText"
+                type="textarea"
+                :rows="4"
+                spellcheck="false"
+                placeholder="批量导入：每行一个词条（空行、# 注释自动忽略）"
+              />
+              <el-button
+                type="primary"
+                plain
+                :loading="dictImporting"
+                @click="importSubdomainDictionary"
+                >批量导入</el-button
+              >
+            </div>
+            <div v-if="dictImportSummary" class="subdomain-dict-hint">
+              {{ dictImportSummary }}
+            </div>
+            <div class="subdomain-dict-batch-row">
+              <el-input
+                v-model="dictRemoveText"
+                type="textarea"
+                :rows="3"
+                spellcheck="false"
+                placeholder="批量删除：粘贴每行一个要删除的词条"
+              />
+              <el-button
+                type="danger"
+                plain
+                :disabled="!dictRemoveText.trim()"
+                :loading="dictDeleting"
+                @click="removeInputSubdomainWords"
+                >批量删除</el-button
+              >
+            </div>
+          </div>
+        </div>
+        <template #footer>
+          <el-button :disabled="dictSaving" @click="dictManagerOpen = false"
+            >关闭</el-button
+          >
+          <el-button
+            type="primary"
+            :loading="dictSaving"
+            :disabled="!dictAddText.trim()"
+            @click="saveDictionaryAdditions"
+            >新增词条</el-button
+          >
+        </template>
+      </el-dialog>
       <el-tab-pane label="检测任务" name="tasks">
         <div class="project-tab-toolbar">
           <span
@@ -7381,61 +7788,101 @@ onUnmounted(() => {
 }
 .fingerprint-rule-item {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 10px;
-  padding: 8px 10px;
+  gap: 12px;
+  padding: 10px 12px;
   border: 1px solid var(--app-border, #e2e8f0);
-  border-radius: var(--fluent-radius-control, 4px);
+  border-radius: 8px;
   background: var(--app-surface, #ffffff);
-  transition: box-shadow 120ms ease, border-color 120ms ease;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 .fingerprint-rule-item:hover {
   border-color: var(--app-border-strong, #cbd5e1);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
 }
 .fingerprint-rule-item-main {
   min-width: 0;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
 }
 .fingerprint-rule-item-title {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
 }
 .fingerprint-rule-id {
+  min-width: 0;
+  overflow: hidden;
   font-family: var(--font-mono, "Cascadia Code", "Consolas", monospace);
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--app-accent, #0078d4);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .fingerprint-rule-category {
-  font-size: 11px;
-}
-.fingerprint-rule-item-sub {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  font-size: 11.5px;
+  flex: none;
+  font-size: 10.5px;
 }
 .fingerprint-rule-name {
-  color: var(--app-text, #1e293b);
-  white-space: nowrap;
+  min-width: 0;
   overflow: hidden;
+  font-size: 12px;
+  color: var(--app-text, #1e293b);
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.fingerprint-rule-meta {
-  flex: none;
+.fingerprint-rule-metrics {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+.fingerprint-rule-metric {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 18px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--app-muted, #64748b) 10%, transparent);
   color: var(--app-muted, #64748b);
+  font-size: 10.5px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.fingerprint-rule-confidence-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.fingerprint-rule-confidence[data-level="high"] {
+  background: color-mix(in srgb, #16a34a 14%, transparent);
+  color: #0f7b3f;
+}
+.fingerprint-rule-confidence[data-level="medium"] {
+  background: color-mix(in srgb, #f59e0b 16%, transparent);
+  color: #b45309;
+}
+.fingerprint-rule-confidence[data-level="low"] {
+  background: color-mix(in srgb, #ef4444 14%, transparent);
+  color: #b91c1c;
 }
 .fingerprint-rule-item-actions {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   flex: none;
+  margin-top: -2px;
+}
+.fingerprint-rule-item-actions :deep(.el-button) {
+  margin: 0 !important;
 }
 .fingerprint-rule-empty {
   display: flex;
@@ -8056,6 +8503,91 @@ onUnmounted(() => {
 .report-severity--link:hover b,
 .report-severity--link:focus-visible b {
   color: var(--app-accent-dark);
+}
+.subdomain-dict {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.subdomain-dict-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--app-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.subdomain-dict-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.subdomain-dict-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--app-text-strong);
+}
+.subdomain-dict-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.subdomain-dict-search {
+  width: 180px;
+}
+.subdomain-dict-table {
+  border: 1px solid var(--app-border-strong);
+  border-radius: var(--fluent-radius-control, 6px);
+  overflow: hidden;
+}
+.subdomain-dict-empty {
+  padding: 18px;
+  text-align: center;
+  color: var(--app-text-muted);
+  font-size: 13px;
+}
+.subdomain-dict-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  color: var(--app-text-muted);
+  font-size: 12px;
+}
+.subdomain-dict-editor {
+  font-family: var(--app-mono-font, ui-monospace, monospace);
+}
+.subdomain-dict-batch-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: stretch;
+}
+.subdomain-dict-batch-row .el-button {
+  white-space: nowrap;
+}
+.subdomain-dict-hint {
+  color: var(--el-color-success, #67c23a);
+  font-size: 12px;
+}
+.subdomain-dict-more-issues {
+  color: var(--app-text-muted);
+  font-size: 12px;
+}
+@media (max-width: 640px) {
+  .subdomain-dict-batch-row {
+    grid-template-columns: 1fr;
+  }
+  .subdomain-dict-tools {
+    flex-wrap: wrap;
+  }
+  .subdomain-dict-search {
+    width: 100%;
+  }
 }
 @media (max-width: 1100px) {
   .report-cards {

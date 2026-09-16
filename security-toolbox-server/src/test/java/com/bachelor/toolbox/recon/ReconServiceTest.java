@@ -47,6 +47,7 @@ class ReconServiceTest {
   @Mock private AuthorizedTargetRepository targets;
   @Mock private TargetService targetService;
   @Mock private IcpBrowserCaptureStore icpBrowserCaptures;
+  @Mock private SubdomainDictionaryService subdomainDictionary;
 
   @Test
   void reportsMissingTargetIdentifierInChinese() {
@@ -461,7 +462,7 @@ class ReconServiceTest {
     ReconService service =
         new ReconService(
             results, projects, targets, targetService, new ObjectMapper(), icpBrowserCaptures,
-            discoveredPaths, mock(TrafficPacketRepository.class));
+            discoveredPaths, mock(TrafficPacketRepository.class), subdomainDictionary);
     ReflectionTestUtils.setField(service, "passiveSourcesEnabled", false);
     ReflectionTestUtils.setField(service, "paramProbeEnabled", true);
     ReflectionTestUtils.setField(service, "paramProbeMaxEndpoints", maxEndpoints);
@@ -508,7 +509,8 @@ class ReconServiceTest {
     ReconService service =
         new ReconService(
             results, projects, targets, targetService, new ObjectMapper(), icpBrowserCaptures,
-            mock(DiscoveredPathService.class), mock(TrafficPacketRepository.class));
+            mock(DiscoveredPathService.class), mock(TrafficPacketRepository.class),
+            subdomainDictionary);
     ReflectionTestUtils.setField(service, "passiveSourcesEnabled", passiveSourcesEnabled);
     return service;
   }
