@@ -527,6 +527,31 @@ export interface IcpBatchResult {
   data: Record<string, unknown>;
 }
 
+export interface SubdomainDictionaryView {
+  source: string;
+  wordCount: number;
+}
+
+export interface SubdomainDictionaryWordPage {
+  words: string[];
+  page: number;
+  size: number;
+  total: number;
+}
+
+export interface SubdomainDictionaryImportResult {
+  imported: number;
+  invalid: number;
+  duplicates: number;
+  issues: string[];
+}
+
+export interface SubdomainDictionaryUpdateResult {
+  view: SubdomainDictionaryView;
+  added: number;
+  removed: number;
+}
+
 export interface VulnerabilityCatalogSyncResult {
   status: string;
   templatesPath: string;
@@ -1378,6 +1403,33 @@ export const endpoints = {
     api.get<DiscoveredPath[]>(`/projects/${projectId}/recon/paths`, {
       params: targetId ? { targetId } : undefined,
     }),
+  subdomainDictionary: () =>
+    api.get<SubdomainDictionaryView>("/recon/subdomain-dictionary"),
+  subdomainDictionaryWords: (
+    query = "",
+    page = 1,
+    size = 30,
+  ) =>
+    api.get<SubdomainDictionaryWordPage>("/recon/subdomain-dictionary/words", {
+      params: { query: query || undefined, page, size },
+    }),
+  validateSubdomainWords: (words: string[]) =>
+    api.post<string[]>("/recon/subdomain-dictionary/validate", { words }),
+  importSubdomainWords: (text: string) =>
+    api.post<SubdomainDictionaryImportResult>(
+      "/recon/subdomain-dictionary/import",
+      { text },
+      { timeout: 60_000 },
+    ),
+  updateSubdomainDictionary: (
+    additions: string[],
+    removals: string[],
+  ) =>
+    api.post<SubdomainDictionaryUpdateResult>(
+      "/recon/subdomain-dictionary/update",
+      { additions, removals },
+      { timeout: 60_000 },
+    ),
   syncTrafficAssets: () =>
     api.post<{ synced: number }>("/traffic/assets/sync"),
   projectIcpBatch: (projectId: number, targetIds: number[]) =>

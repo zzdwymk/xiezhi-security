@@ -59,7 +59,6 @@ import org.springframework.stereotype.Service;
 @Service
 public class ReconService {
   private static final Logger log = LoggerFactory.getLogger(ReconService.class);
-  private static final String SUBDOMAIN_WORDLIST = "wordlists/subdomains.txt";
   private static final int SUBDOMAIN_ENUM_LIMIT = 2_000;
   private static final Pattern TITLE_PATTERN = Pattern.compile("(?is)<title[^>]*>(.*?)</title>");
   private static final Duration PASSIVE_CONNECT_TIMEOUT = Duration.ofSeconds(4);
@@ -107,6 +106,7 @@ public class ReconService {
   private final IcpBrowserCaptureStore icpBrowserCaptures;
   private final DiscoveredPathService discoveredPaths;
   private final TrafficPacketRepository trafficPackets;
+  private final SubdomainDictionaryService subdomainDictionary;
   private final HttpClient passiveClient =
       HttpClient.newBuilder()
           .connectTimeout(PASSIVE_CONNECT_TIMEOUT)
@@ -147,7 +147,8 @@ public class ReconService {
       ObjectMapper json,
       IcpBrowserCaptureStore icpBrowserCaptures,
       DiscoveredPathService discoveredPaths,
-      TrafficPacketRepository trafficPackets) {
+      TrafficPacketRepository trafficPackets,
+      SubdomainDictionaryService subdomainDictionary) {
     this.results = results;
     this.projects = projects;
     this.targets = targets;
@@ -156,6 +157,7 @@ public class ReconService {
     this.icpBrowserCaptures = icpBrowserCaptures;
     this.discoveredPaths = discoveredPaths;
     this.trafficPackets = trafficPackets;
+    this.subdomainDictionary = subdomainDictionary;
   }
 
   public ReconResult collect(Long projectId, ReconRequest request) {
@@ -998,22 +1000,7 @@ public class ReconService {
   }
 
   private List<String> loadSubdomainWords() {
-    try {
-      ClassPathResource resource = new ClassPathResource(SUBDOMAIN_WORDLIST);
-      if (!resource.exists()) return List.of();
-      try (var in = resource.getInputStream()) {
-        String text = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-        return Arrays.stream(text.split("\\R"))
-            .map(String::trim)
-            .filter(s -> !s.isEmpty() && !s.startsWith("#"))
-            .filter(word -> word.matches("[A-Za-z0-9-]{1,63}"))
-            .distinct()
-            .toList();
-      }
-    } catch (Exception ex) {
-      log.debug("加载子域名默认字典失败: {}", ex.getMessage());
-      return List.of();
-    }
+    return subdomainDictionary.currentWords();
   }
 
   private Set<String> certSans(Map<String, Object> tlsInformation, String rootDomain) {
