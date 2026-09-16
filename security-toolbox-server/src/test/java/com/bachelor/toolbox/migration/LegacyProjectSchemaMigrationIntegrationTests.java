@@ -61,6 +61,16 @@ class LegacyProjectSchemaMigrationIntegrationTests {
     assertFalse(isNullable(dataSource, "SECURITY_TASKS", "PROJECT_ID"));
     assertFalse(isNullable(dataSource, "SCAN_SCHEDULES", "PROJECT_ID"));
 
+    // The migration introduces the NOT NULL retest/verified columns before Hibernate's
+    // ddl-auto:update, so existing findings rows can satisfy the constraints.
+    assertEquals(
+        0, jdbc.queryForObject("SELECT retest_count FROM findings WHERE id=1000", Integer.class));
+    assertEquals(
+        Boolean.FALSE,
+        jdbc.queryForObject("SELECT verified FROM findings WHERE id=1000", Boolean.class));
+    assertFalse(isNullable(dataSource, "FINDINGS", "RETEST_COUNT"));
+    assertFalse(isNullable(dataSource, "FINDINGS", "VERIFIED"));
+
     // The migration must remain safe after a partially migrated or already current startup.
     migration.migrate();
     assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM security_tasks", Integer.class));

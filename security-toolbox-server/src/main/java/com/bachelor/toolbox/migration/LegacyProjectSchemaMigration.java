@@ -85,22 +85,111 @@ public final class LegacyProjectSchemaMigration {
       MigrationResult tasks = migrateTable(connection, TASKS, projectsByTarget, true);
       MigrationResult schedules = migrateTable(connection, SCHEDULES, projectsByTarget, false);
       int repairedGeneratedIds = repairGeneratedIdColumns(connection);
+      int repairedFindingColumns = repairFindingVerificationColumns(connection);
       connection.commit();
-      if (tasks.changed() || schedules.changed() || repairedGeneratedIds > 0) {
+      if (tasks.changed() || schedules.changed() || repairedGeneratedIds > 0 || repairedFindingColumns > 0) {
         log.info(
             "Legacy project schema migrated: tasks backfilled={}, tasks removed={}, "
-                + "schedules backfilled={}, schedules removed={}, generated ids repaired={}",
+                + "schedules backfilled={}, schedules removed={}, generated ids repaired={}, "
+                + "finding verification columns repaired={}",
             tasks.backfilled(),
             tasks.removed(),
             schedules.backfilled(),
             schedules.removed(),
-            repairedGeneratedIds);
+            repairedGeneratedIds,
+            repairedFindingColumns);
       }
     } catch (SQLException | RuntimeException ex) {
       connection.rollback();
       throw ex;
     } finally {
       connection.setAutoCommit(previousAutoCommit);
+    }
+  }
+
+  /**
+   * Safely introduces the finding retest/verification columns before Hibernate runs {@code
+   * ddl-auto: update}. Hibernate emits {@code ADD COLUMN ... NOT NULL} with no default, which
+   * fails whenever the {@code findings} table already contains rows. Adding the column with a
+   * default, backfilling existing rows and only then enforcing NOT NULL keeps the constraint while
+   * allowing Hibernate to find a compatible existing column on both H2 and PostgreSQL.
+   *
+   * @return number of columns repaired, or 0 when none were missing / no repair was required
+   */
+  private int repairFindingVerificationColumns(Connection connection) throws SQLException {
+    if (!tableExists(connection, "findings")) {
+      return 0;
+    }
+    int repaired = 0;
+    if (ensureIntegerColumnWithDefault(connection, "findings", "retest_count", "0")) {
+      repaired++;
+    }
+    if (ensureBooleanColumnWithDefault(connection, "findings", "verified", "false")) {
+      repaired++;
+    }
+    if (ensureNullableColumn(connection, "findings", "verified_at", "TIMESTAMP")) {
+      repaired++;
+    }
+    if (ensureNullableColumn(connection, "findings", "verified_task_id", "BIGINT")) {
+      repaired++;
+    }
+    return repaired;
+  }
+
+  private boolean ensureIntegerColumnWithDefault(
+      Connection connection, String table, String column, String defaultValue)
+      throws SQLException {
+    if (columnExists(connection, table, column)) {
+      enforceDefaultIfNullable(connection, table, column, defaultValue);
+      return false;
+    }
+    execute(connection, "ALTER TABLE " + table + " ADD COLUMN " + column + " INTEGER");
+    execute(
+        connection,
+        "UPDATE " + table + " SET " + column + " = " + defaultValue + " WHERE " + column + " IS NULL");
+    enforceColumnNotNull(connection, table, column);
+    return true;
+  }
+
+  private boolean ensureBooleanColumnWithDefault(
+      Connection connection, String table, String column, String defaultValue)
+      throws SQLException {
+    if (columnExists(connection, table, column)) {
+      enforceDefaultIfNullable(connection, table, column, defaultValue);
+      return false;
+    }
+    execute(connection, "ALTER TABLE " + table + " ADD COLUMN " + column + " BOOLEAN");
+    execute(
+        connection,
+        "UPDATE " + table + " SET " + column + " = " + defaultValue + " WHERE " + column + " IS NULL");
+    enforceColumnNotNull(connection, table, column);
+    return true;
+  }
+
+  private boolean ensureNullableColumn(
+      Connection connection, String table, String column, String type) throws SQLException {
+    if (columnExists(connection, table, column)) {
+      return false;
+    }
+    execute(connection, "ALTER TABLE " + table + " ADD COLUMN " + column + " " + type);
+    return true;
+  }
+
+private void enforceColumnNotNull(Connection connection, String table, String column)
+      throws SQLException {
+    if (columnNullable(connection, table, column)) {
+      execute(connection, "ALTER TABLE " + table + " ALTER COLUMN " + column + " SET NOT NULL");
+    }
+  }
+
+  /** Backfills an existing nullable column then enforces NOT NULL (Hibernate expects it). */
+  private void enforceDefaultIfNullable(Connection connection, String table, String column, String defaultValue)
+      throws SQLException {
+    if (columnNullable(connection, table, column)) {
+      execute(
+          connection,
+          "UPDATE " + table + " SET " + column + " = " + defaultValue + " WHERE " + column + " IS NULL");
+      enforceColumnNotNull(connection, table, column);
     }
   }
 
