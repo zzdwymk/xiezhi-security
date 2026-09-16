@@ -2233,7 +2233,6 @@ async function loadFingerprintCatalog() {
   } finally {
     fingerprintCatalogLoading.value = false;
   }
-  void loadFingerprintRules();
 }
 
 async function reloadFingerprintCatalog() {
@@ -2380,6 +2379,17 @@ const filteredFingerprintRules = computed(() => {
   );
 });
 
+const {
+  page: fingerprintRulePage,
+  pageSize: fingerprintRulePageSize,
+  pagedItems: pagedFingerprintRules,
+  resetPage: resetFingerprintRulePage,
+} = useClientPagination(filteredFingerprintRules, 20);
+
+watch(fingerprintRuleSearch, () => {
+  resetFingerprintRulePage();
+});
+
 async function loadFingerprintRules(force = false) {
   if (fingerprintRulesLoading.value) return;
   if (!force && fingerprintRulesLoadedOnce.value) return;
@@ -2394,6 +2404,14 @@ async function loadFingerprintRules(force = false) {
     fingerprintRulesLoading.value = false;
   }
 }
+
+// Lazy-load the full rule list only when the fingerprint catalog panel is
+// expanded, so entering the project page does not fetch/render ~1800 rules.
+watch(fingerprintCatalogExpanded, (expanded) => {
+  if (expanded) {
+    void loadFingerprintRules();
+  }
+});
 
 function fingerprintRuleHeaderCount(rule: FingerprintRule) {
   return Object.values(rule.headers || {}).reduce(
@@ -4183,7 +4201,7 @@ onUnmounted(() => {
                     :aria-busy="fingerprintRulesLoading"
                   >
                     <li
-                      v-for="rule in filteredFingerprintRules"
+                      v-for="rule in pagedFingerprintRules"
                       :key="rule.id"
                       class="fingerprint-rule-item"
                     >
@@ -4244,6 +4262,13 @@ onUnmounted(() => {
                       </div>
                     </li>
                   </ul>
+                  <AppPagination
+                    v-if="filteredFingerprintRules.length > fingerprintRulePageSize"
+                    v-model:page="fingerprintRulePage"
+                    v-model:page-size="fingerprintRulePageSize"
+                    class="fingerprint-rule-pagination"
+                    :total="filteredFingerprintRules.length"
+                  />
                 </div>
               </div>
             </div>
@@ -7342,8 +7367,16 @@ onUnmounted(() => {
   margin: 0;
   padding: 0;
   list-style: none;
-  max-height: 280px;
+  max-height: 420px;
   overflow-y: auto;
+}
+.fingerprint-rule-pagination {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+.fingerprint-rule-pagination :deep(.el-pagination) {
+  --el-pagination-font-size: 12px;
 }
 .fingerprint-rule-item {
   display: flex;
