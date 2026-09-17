@@ -33,6 +33,7 @@ public class SubdomainDictionaryService {
   private static final String BUILTIN_WORDLIST = "wordlists/subdomains.txt";
   private static final int MAX_WORDS = 100_000;
   private static final Pattern WORD = Pattern.compile("[A-Za-z0-9-]{1,63}");
+  private static final Pattern NUMERIC_ONLY = Pattern.compile("\\d+");
 
   private final Path managedFile;
   private volatile List<String> words = List.of();
@@ -88,6 +89,9 @@ public class SubdomainDictionaryService {
     }
     if (!WORD.matcher(trimmed).matches()) {
       return "仅允许字母、数字和 -（1-63 位）";
+    }
+    if (NUMERIC_ONLY.matcher(trimmed).matches()) {
+      return "纯数字词条没有枚举价值，请填写常见子域名字段";
     }
     return null;
   }
@@ -151,6 +155,7 @@ public class SubdomainDictionaryService {
     Set<String> current = new LinkedHashSet<>(words);
     int added = 0;
     int removed = 0;
+    Set<String> missing = new LinkedHashSet<>();
     if (additions != null) {
       for (String raw : additions) {
         String problem = validateWord(raw);
@@ -164,8 +169,11 @@ public class SubdomainDictionaryService {
     }
     if (removals != null) {
       for (String raw : removals) {
-        if (current.remove(raw.trim().toLowerCase(java.util.Locale.ROOT))) {
+        String word = raw.trim().toLowerCase(java.util.Locale.ROOT);
+        if (current.remove(word)) {
           removed++;
+        } else {
+          missing.add(word);
         }
       }
     }
@@ -174,7 +182,7 @@ public class SubdomainDictionaryService {
       persist(merged);
       words = List.copyOf(merged);
     }
-    return new UpdateResult(view(), added, removed);
+    return new UpdateResult(view(), added, removed, List.copyOf(missing));
   }
 
   /** Replaces the entire dictionary with the given words (used by the portable editor). */
@@ -196,7 +204,7 @@ public class SubdomainDictionaryService {
     List<String> merged = new ArrayList<>(cleaned);
     persist(merged);
     words = List.copyOf(merged);
-    return new UpdateResult(view(), merged.size(), 0);
+    return new UpdateResult(view(), merged.size(), 0, List.of());
   }
 
   public List<String> parseLines(String text) {
@@ -237,7 +245,10 @@ public class SubdomainDictionaryService {
     Set<String> set = new LinkedHashSet<>();
     for (String line : text.split("\\R")) {
       String word = line.trim().toLowerCase(java.util.Locale.ROOT);
-      if (!word.isEmpty() && !word.startsWith("#") && WORD.matcher(word).matches()) {
+      if (!word.isEmpty()
+          && !word.startsWith("#")
+          && WORD.matcher(word).matches()
+          && !NUMERIC_ONLY.matcher(word).matches()) {
         set.add(word);
       }
     }
@@ -292,5 +303,5 @@ public class SubdomainDictionaryService {
 
   public record ImportResult(int imported, int invalid, int duplicates, List<String> issues) {}
 
-  public record UpdateResult(DictionaryView view, int added, int removed) {}
+  public record UpdateResult(DictionaryView view, int added, int removed, List<String> missing) {}
 }

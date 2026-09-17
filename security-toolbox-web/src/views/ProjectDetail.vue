@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
@@ -162,7 +162,6 @@ const includeSameSubnet = ref(false);
 const includeHttp = ref(true);
 const includeTls = ref(true);
 const enumerateSubdomains = ref(true);
-const subdomainDictionary = ref("");
 const enumeratePaths = ref(true);
 const crawlSite = ref(true);
 const aggregateProxyPaths = ref(true);
@@ -178,7 +177,9 @@ const {
   pagedItems: pagedIcpRows,
 } = useClientPagination(icpRows);
 
-const dictManagerOpen = ref(false);
+const dictPanelExpanded = ref(false);
+const dictPanelRef = ref<HTMLElement | null>(null);
+const dictLoaded = ref(false);
 const dictLoading = ref(false);
 const dictSaving = ref(false);
 const dictImporting = ref(false);
@@ -197,6 +198,8 @@ const dictAddProblems = ref<string[]>([]);
 const dictImportText = ref("");
 const dictImportSummary = ref("");
 const dictRemoveText = ref("");
+const dictFileInput = ref<HTMLInputElement | null>(null);
+const dictFileDragActive = ref(false);
 
 watch(
   () => route.query.tab,
@@ -2756,13 +2759,7 @@ async function collectRecon(options: LinkedStepOptions = {}): Promise<boolean> {
       includeHttp: includeHttp.value,
       includeTls: includeTls.value,
       enumerateSubdomains: enumerateSubdomains.value,
-      subdomainWords: enumerateSubdomains.value
-        ? subdomainDictionary.value
-            .split(/[，,;；\s]+/)
-            .map((item) => item.trim())
-            .filter(Boolean)
-            .slice(0, 2000)
-        : [],
+      subdomainWords: [],
       enumeratePaths: reconMode.value === "ACTIVE" && enumeratePaths.value,
       crawlSite: reconMode.value === "ACTIVE" && crawlSite.value,
       aggregateProxyPaths: aggregateProxyPaths.value,
@@ -2810,6 +2807,7 @@ function validateDictionaryWord(word: string): string {
   if (!word) return "词条不能为空";
   if (word.includes(" ") || word.includes(".")) return "词条应为单个子域标签（不含 . 或空格）";
   if (!/^[A-Za-z0-9-]{1,63}$/.test(word)) return "仅允许字母、数字和 -（1-63 位）";
+  if (/^\d+$/.test(word)) return "纯数字词条没有枚举价值";
   return "";
 }
 
@@ -2874,11 +2872,21 @@ function clearDictionarySelection() {
   dictSelected.value = [];
 }
 
-async function openSubdomainDictionary() {
-  dictManagerOpen.value = true;
-  await loadSubdomainDictionary();
-  await loadDictionaryWords();
-}
+watch(dictPanelExpanded, (expanded) => {
+  if (expanded && !dictLoaded.value) {
+    dictLoaded.value = true;
+    void loadSubdomainDictionary();
+    void loadDictionaryWords();
+  }
+  if (expanded) {
+    void nextTick(() => {
+      dictPanelRef.value?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
+  }
+});
 
 async function loadSubdomainDictionary() {
   dictLoading.value = true;
@@ -2973,6 +2981,46 @@ async function removeSelectedSubdomainWords() {
   await removeSubdomainWords(words);
 }
 
+function pickDictFile() {
+  dictFileInput.value?.click();
+}
+
+async function onDictFileSelected(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (file) await loadDictFile(file);
+}
+
+async function onDictFileDrop(event: DragEvent) {
+  dictFileDragActive.value = false;
+  const file = event.dataTransfer?.files?.[0];
+  if (file) await loadDictFile(file);
+}
+
+function onDictDragLeave(event: DragEvent) {
+  const card = event.currentTarget as HTMLElement | null;
+  const related = event.relatedTarget as Node | null;
+  if (!card || !related || !card.contains(related)) {
+    dictFileDragActive.value = false;
+  }
+}
+
+async function loadDictFile(file: File) {
+  if (file.size > 5 * 1024 * 1024) {
+    ElMessage.warning("文件过大（超过 5MB），请拆分后再导入");
+    return;
+  }
+  try {
+    const text = await file.text();
+    dictImportText.value = text;
+    ElMessage.success(`已读取 ${file.name}，正在导入…`);
+    await importSubdomainDictionary();
+  } catch (error) {
+    ElMessage.error(errorMessage(error, "读取文件失败"));
+  }
+}
+
 async function removeInputSubdomainWords() {
   if (dictDeleting.value) return;
   const words = parseDictionaryText(dictRemoveText.value);
@@ -2990,7 +3038,19 @@ async function removeSubdomainWords(words: string[]) {
     const result = (await endpoints.updateSubdomainDictionary([], words)).data;
     dictView.value = result.view;
     dictSelected.value = [];
-    ElMessage.success(`已删除 ${result.removed} 条，剩余 ${result.view.wordCount} 条`);
+    const missing = result.missing ?? [];
+    if (result.removed > 0) {
+      ElMessage.success(`已删除 ${result.removed} 条，剩余 ${result.view.wordCount} 条`);
+    }
+    if (missing.length) {
+      const preview = missing.slice(0, 20).join("、");
+      const suffix = missing.length > 20 ? ` 等 ${missing.length} 条` : "";
+      ElMessage.warning(
+        `${missing.length} 条词条不存在，未删除：${preview}${suffix}`,
+      );
+    } else if (result.removed === 0) {
+      ElMessage.info("没有可删除的词条");
+    }
     await loadDictionaryWords();
   } catch (error) {
     ElMessage.error(errorMessage(error, "删除失败"));
@@ -4841,12 +4901,6 @@ onUnmounted(() => {
             >
             <el-checkbox v-model="aggregateProxyPaths">代理会话路径聚合</el-checkbox>
             <el-input
-              v-if="enumerateSubdomains"
-              v-model="subdomainDictionary"
-              class="subdomain-dictionary"
-              placeholder="子域名字典：留空使用内置上万词库，或用逗号自定义"
-            />
-            <el-input
               v-if="reconMode === 'ACTIVE' && enumeratePaths"
               v-model="pathDictionary"
               class="subdomain-dictionary"
@@ -4861,12 +4915,6 @@ onUnmounted(() => {
               >开始收集</el-button
             >
             <el-button @click="loadRecon">刷新</el-button>
-            <el-button
-              :disabled="!canManageSubdomainDictionary"
-              title="管理子域名（字典）枚举的词库"
-              @click="openSubdomainDictionary"
-              >管理子域名字典</el-button
-            >
             <el-button :loading="icpLoading" @click="queryIcpBatch"
               >ICP备案批量查询</el-button
             >
@@ -4908,6 +4956,236 @@ onUnmounted(() => {
             >
           </div>
         </div>
+
+        <section
+          v-if="canManageSubdomainDictionary"
+          ref="dictPanelRef"
+          class="subdomain-dict-panel"
+          :class="{ collapsed: !dictPanelExpanded }"
+        >
+          <header class="subdomain-dict-panel-heading">
+            <button
+              type="button"
+              class="subdomain-dict-panel-toggle"
+              :aria-expanded="dictPanelExpanded"
+              :aria-label="dictPanelExpanded ? '收起子域名字典' : '展开子域名字典'"
+              @click="dictPanelExpanded = !dictPanelExpanded"
+            >
+              <el-icon class="subdomain-dict-panel-chevron">
+                <ArrowDown />
+              </el-icon>
+              <span class="subdomain-dict-panel-copy">
+                <strong>子域名字典</strong>
+                <span v-if="dictView.wordCount"
+                  >{{ dictView.source === "MANAGED" ? "已托管" : "内置默认" }} ·
+                  {{ dictView.wordCount }} 条词条</span
+                >
+                <span v-else>用于子域名枚举的词库</span>
+              </span>
+            </button>
+          </header>
+          <div
+            id="project-subdomain-dict-body"
+            class="fluent-collapsible subdomain-dict-collapse"
+            :class="{ 'is-collapsed': !dictPanelExpanded }"
+            :aria-hidden="!dictPanelExpanded"
+            :inert="!dictPanelExpanded"
+          >
+            <div class="fluent-collapsible-inner">
+              <div v-loading="dictLoading" class="subdomain-dict">
+                <div v-if="dictView.source" class="subdomain-dict-meta">
+                  <div class="subdomain-dict-meta-info">
+                    <el-tag
+                      size="small"
+                      :type="dictView.source === 'MANAGED' ? 'success' : 'info'"
+                    >
+                      {{ dictView.source === "MANAGED" ? "可托管词典" : "内置默认词典" }}
+                    </el-tag>
+                    <span
+                      >共 {{ dictView.wordCount }} 条。内置词典只读；新增或导入后会自动生成托管词典并被枚举立即使用。</span
+                    >
+                  </div>
+                  <el-button
+                    size="small"
+                    :loading="dictSaving"
+                    @click="void loadSubdomainDictionary()"
+                    >刷新信息</el-button
+                  >
+                </div>
+
+                <div class="subdomain-dict-section">
+                  <div class="subdomain-dict-section-head">
+                    <span>当前词条（共 {{ dictWordTotal }} 条）</span>
+                    <div class="subdomain-dict-tools">
+                      <el-input
+                        v-model="dictWordQuery"
+                        clearable
+                        size="small"
+                        placeholder="搜索词条"
+                        class="subdomain-dict-search"
+                      />
+                      <el-button
+                        size="small"
+                        type="danger"
+                        plain
+                        :disabled="!dictSelected.length"
+                        :loading="dictDeleting"
+                        @click="removeSelectedSubdomainWords"
+                        >删除勾选 ({{ dictSelected.length }})</el-button
+                      >
+                    </div>
+                  </div>
+                  <div v-loading="dictWordLoading" class="subdomain-dict-table">
+                    <el-table
+                      :data="dictWords"
+                      size="small"
+                      :show-header="false"
+                      max-height="240"
+                      @selection-change="onDictSelectionChange"
+                      @select-all="clearDictionarySelection"
+                      @select="clearDictionarySelection"
+                    >
+                      <el-table-column type="selection" width="36" />
+                      <el-table-column prop="word" min-width="0" show-overflow-tooltip />
+                    </el-table>
+                    <div
+                      v-if="!dictWordLoading && !dictWords.length"
+                      class="subdomain-dict-empty"
+                    >
+                      暂无匹配词条
+                    </div>
+                  </div>
+                  <div class="subdomain-dict-pager">
+                    <span>共 {{ dictWordTotal }} 条</span>
+                    <AppPagination
+                      v-if="dictWordTotal > dictWordPageSize"
+                      v-model:page="dictWordPage"
+                      v-model:page-size="dictWordPageSize"
+                      :total="dictWordTotal"
+                    />
+                  </div>
+                </div>
+
+                <div class="subdomain-dict-grid">
+                  <div class="subdomain-dict-card">
+                    <div class="subdomain-dict-card-head">
+                      <span class="subdomain-dict-card-title">新增词条</span>
+                      <span class="subdomain-dict-card-hint">每行一个子域标签</span>
+                    </div>
+                    <el-input
+                      v-model="dictAddText"
+                      class="subdomain-dict-editor"
+                      type="textarea"
+                      resize="none"
+                      spellcheck="false"
+                      placeholder="例如：www&#10;api&#10;mail"
+                    />
+                    <div
+                      v-if="dictAddProblemList.length"
+                      class="fingerprint-rule-editor-issues"
+                      role="alert"
+                    >
+                      <div
+                        v-for="(problem, index) in dictAddProblemList.slice(0, 30)"
+                        :key="`${problem}-${index}`"
+                        class="fingerprint-rule-editor-issue"
+                      >
+                        <el-tag size="small" type="danger">校验错误</el-tag>
+                        <span>{{ problem }}</span>
+                      </div>
+                      <div v-if="dictAddProblemList.length > 30" class="subdomain-dict-more-issues">
+                        还有 {{ dictAddProblemList.length - 30 }} 处错误…
+                      </div>
+                    </div>
+                    <div v-else-if="dictAddText.trim()" class="fingerprint-rule-editor-ok">
+                      <el-icon><CircleCheck /></el-icon>
+                      <span>校验通过，保存后追加到词典。</span>
+                    </div>
+                    <div class="subdomain-dict-card-actions">
+                      <el-button
+                        type="primary"
+                        size="small"
+                        :loading="dictSaving"
+                        :disabled="!dictAddText.trim()"
+                        @click="saveDictionaryAdditions"
+                        >新增词条</el-button
+                      >
+                    </div>
+                  </div>
+
+                  <div
+                    class="subdomain-dict-card"
+                    :class="{ 'is-dragover': dictFileDragActive }"
+                    @dragover.prevent="dictFileDragActive = true"
+                    @dragleave="onDictDragLeave"
+                    @drop.prevent="onDictFileDrop"
+                  >
+                    <div class="subdomain-dict-card-head">
+                      <span class="subdomain-dict-card-title">批量导入</span>
+                      <span class="subdomain-dict-card-hint">空行、# 注释自动忽略</span>
+                    </div>
+                    <el-input
+                      v-model="dictImportText"
+                      class="subdomain-dict-editor"
+                      type="textarea"
+                      resize="none"
+                      spellcheck="false"
+                      placeholder="每行一个词条，也可从文件导入或直接拖拽 .txt 文件到此处"
+                    />
+                    <div v-if="dictImportSummary" class="subdomain-dict-hint">
+                      {{ dictImportSummary }}
+                    </div>
+                    <div class="subdomain-dict-card-actions">
+                      <el-button size="small" @click="pickDictFile">从文件导入</el-button>
+                      <el-button
+                        type="primary"
+                        size="small"
+                        :loading="dictImporting"
+                        :disabled="!dictImportText.trim()"
+                        @click="importSubdomainDictionary"
+                        >批量导入</el-button
+                      >
+                    </div>
+                    <input
+                      ref="dictFileInput"
+                      type="file"
+                      accept=".txt,text/plain"
+                      class="subdomain-dict-file-input"
+                      @change="onDictFileSelected"
+                    />
+                  </div>
+
+                  <div class="subdomain-dict-card">
+                    <div class="subdomain-dict-card-head">
+                      <span class="subdomain-dict-card-title">批量删除</span>
+                      <span class="subdomain-dict-card-hint">仅删除词典中已存在的词条</span>
+                    </div>
+                    <el-input
+                      v-model="dictRemoveText"
+                      class="subdomain-dict-editor"
+                      type="textarea"
+                      resize="none"
+                      spellcheck="false"
+                      placeholder="粘贴每行一个要删除的词条"
+                    />
+                    <div class="subdomain-dict-card-actions">
+                      <el-button
+                        type="danger"
+                        plain
+                        size="small"
+                        :disabled="!dictRemoveText.trim()"
+                        :loading="dictDeleting"
+                        @click="removeInputSubdomainWords"
+                        >批量删除</el-button
+                      >
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <el-table
           v-if="icpRows.length"
           :data="pagedIcpRows"
@@ -5235,172 +5513,6 @@ onUnmounted(() => {
           :total="filteredReconRows.length"
         />
       </el-tab-pane>
-      <el-dialog
-        v-model="dictManagerOpen"
-        title="子域名枚举词典管理"
-        width="820px"
-        top="4vh"
-        class="subdomain-dict-dialog"
-        :close-on-click-modal="false"
-        @closed="clearDictionarySelection"
-      >
-        <div v-loading="dictLoading" class="subdomain-dict">
-          <div
-            v-if="dictView.source"
-            class="subdomain-dict-meta"
-          >
-            <el-tag size="small" :type="dictView.source === 'MANAGED' ? 'success' : 'info'">
-              {{ dictView.source === "MANAGED" ? "可托管词典" : "内置默认词典" }}
-            </el-tag>
-            <span>共 {{ dictView.wordCount }} 条。内置词典只读；保存或导入后会自动生成托管词典并被枚举使用。</span>
-          </div>
-
-          <div class="subdomain-dict-section">
-            <div class="subdomain-dict-section-head">
-              <span>当前词条（共 {{ dictWordTotal }} 条）</span>
-              <div class="subdomain-dict-tools">
-                <el-input
-                  v-model="dictWordQuery"
-                  clearable
-                  size="small"
-                  placeholder="搜索词条"
-                  class="subdomain-dict-search"
-                />
-                <el-button
-                  size="small"
-                  type="danger"
-                  plain
-                  :disabled="!dictSelected.length"
-                  :loading="dictDeleting"
-                  @click="removeSelectedSubdomainWords"
-                  >删除勾选 ({{ dictSelected.length }})</el-button
-                >
-              </div>
-            </div>
-            <div v-loading="dictWordLoading" class="subdomain-dict-table">
-              <el-table
-                :data="dictWords"
-                size="small"
-                :show-header="false"
-                max-height="240"
-                @selection-change="onDictSelectionChange"
-                @select-all="clearDictionarySelection"
-                @select="clearDictionarySelection"
-              >
-                <el-table-column type="selection" width="36" />
-                <el-table-column prop="word" min-width="0" show-overflow-tooltip />
-              </el-table>
-              <div
-                v-if="!dictWordLoading && !dictWords.length"
-                class="subdomain-dict-empty"
-              >
-                暂无匹配词条
-              </div>
-            </div>
-            <div class="subdomain-dict-pager">
-              <span>共 {{ dictWordTotal }} 条</span>
-              <AppPagination
-                v-if="dictWordTotal > dictWordPageSize"
-                v-model:page="dictWordPage"
-                v-model:page-size="dictWordPageSize"
-                :total="dictWordTotal"
-              />
-            </div>
-          </div>
-
-          <div class="subdomain-dict-section">
-            <div class="subdomain-dict-section-head">
-              <span>便携编辑：新增词条（每行一个，保存追加到词典）</span>
-            </div>
-            <el-input
-              v-model="dictAddText"
-              class="subdomain-dict-editor"
-              type="textarea"
-              :rows="6"
-              spellcheck="false"
-              placeholder="每行一个子域标签，例如：www&#10;api&#10;mail"
-            />
-            <div
-              v-if="dictAddProblemList.length"
-              class="fingerprint-rule-editor-issues"
-              role="alert"
-            >
-              <div
-                v-for="(problem, index) in dictAddProblemList.slice(0, 30)"
-                :key="`${problem}-${index}`"
-                class="fingerprint-rule-editor-issue"
-              >
-                <el-tag size="small" type="danger">校验错误</el-tag>
-                <span>{{ problem }}</span>
-              </div>
-              <div v-if="dictAddProblemList.length > 30" class="subdomain-dict-more-issues">
-                还有 {{ dictAddProblemList.length - 30 }} 处错误…
-              </div>
-            </div>
-            <div
-              v-else-if="dictAddText.trim()"
-              class="fingerprint-rule-editor-ok"
-            >
-              <el-icon><CircleCheck /></el-icon>
-              <span>校验通过，保存后追加到词典。</span>
-            </div>
-          </div>
-
-          <div class="subdomain-dict-section">
-            <div class="subdomain-dict-section-head">
-              <span>批量操作</span>
-            </div>
-            <div class="subdomain-dict-batch-row">
-              <el-input
-                v-model="dictImportText"
-                type="textarea"
-                :rows="4"
-                spellcheck="false"
-                placeholder="批量导入：每行一个词条（空行、# 注释自动忽略）"
-              />
-              <el-button
-                type="primary"
-                plain
-                :loading="dictImporting"
-                @click="importSubdomainDictionary"
-                >批量导入</el-button
-              >
-            </div>
-            <div v-if="dictImportSummary" class="subdomain-dict-hint">
-              {{ dictImportSummary }}
-            </div>
-            <div class="subdomain-dict-batch-row">
-              <el-input
-                v-model="dictRemoveText"
-                type="textarea"
-                :rows="3"
-                spellcheck="false"
-                placeholder="批量删除：粘贴每行一个要删除的词条"
-              />
-              <el-button
-                type="danger"
-                plain
-                :disabled="!dictRemoveText.trim()"
-                :loading="dictDeleting"
-                @click="removeInputSubdomainWords"
-                >批量删除</el-button
-              >
-            </div>
-          </div>
-        </div>
-        <template #footer>
-          <el-button :disabled="dictSaving" @click="dictManagerOpen = false"
-            >关闭</el-button
-          >
-          <el-button
-            type="primary"
-            :loading="dictSaving"
-            :disabled="!dictAddText.trim()"
-            @click="saveDictionaryAdditions"
-            >新增词条</el-button
-          >
-        </template>
-      </el-dialog>
       <el-tab-pane label="检测任务" name="tasks">
         <div class="project-tab-toolbar">
           <span
@@ -8504,18 +8616,147 @@ onUnmounted(() => {
 .report-severity--link:focus-visible b {
   color: var(--app-accent-dark);
 }
+.subdomain-dict-panel {
+  display: block;
+  margin: 0 0 14px;
+  overflow: hidden;
+  border: 1px solid var(--app-border, var(--el-border-color));
+  border-radius: 10px;
+  background: var(--app-surface-soft, var(--el-fill-color-light));
+}
+.subdomain-dict-panel-heading {
+  display: flex;
+  min-height: 52px;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 14px;
+}
+.subdomain-dict-panel-toggle {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 9px;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.subdomain-dict-panel-toggle:focus-visible {
+  border-radius: var(--fluent-radius-control, 4px);
+  box-shadow: 0 0 0 2px var(--app-accent-soft);
+}
+.subdomain-dict-panel-chevron {
+  flex: 0 0 auto;
+  color: var(--app-muted, var(--el-text-color-secondary));
+  transition: transform var(--fluent-collapse-motion);
+}
+.subdomain-dict-panel.collapsed .subdomain-dict-panel-chevron {
+  transform: rotate(-90deg);
+}
+.subdomain-dict-panel-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+.subdomain-dict-panel-copy strong {
+  overflow: hidden;
+  color: var(--app-text, var(--el-text-color-primary));
+  font-size: 13px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subdomain-dict-panel-copy > span {
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--app-text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .subdomain-dict {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  padding: 14px;
+}
+.subdomain-dict-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  align-items: stretch;
+}
+.subdomain-dict-card {
+  display: flex;
+  min-height: 248px;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--app-border, var(--el-border-color-lighter));
+  border-radius: 10px;
+  background: var(--app-surface, var(--el-bg-color));
+  transition:
+    border-color var(--fluent-fast, 0.15s),
+    box-shadow var(--fluent-fast, 0.15s);
+}
+.subdomain-dict-card.is-dragover {
+  border-color: var(--app-accent, var(--el-color-primary));
+  box-shadow: 0 0 0 2px var(--app-accent-soft, var(--el-color-primary-light-8));
+}
+.subdomain-dict-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.subdomain-dict-card-title {
+  color: var(--app-text-strong);
+  font-size: 13px;
+  font-weight: 600;
+}
+.subdomain-dict-card-hint {
+  overflow: hidden;
+  color: var(--app-text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subdomain-dict-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.subdomain-dict-card .fingerprint-rule-editor-issues {
+  max-height: 120px;
+  overflow-y: auto;
+}
+.subdomain-dict-file-input {
+  display: none;
 }
 .subdomain-dict-meta {
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--app-border, var(--el-border-color-lighter));
   color: var(--app-text-muted);
   font-size: 12px;
   line-height: 1.5;
+}
+.subdomain-dict-meta-info {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
 }
 .subdomain-dict-section {
   display: flex;
@@ -8540,8 +8781,6 @@ onUnmounted(() => {
   width: 180px;
 }
 .subdomain-dict-table {
-  border: 1px solid var(--app-border-strong);
-  border-radius: var(--fluent-radius-control, 6px);
   overflow: hidden;
 }
 .subdomain-dict-empty {
@@ -8559,16 +8798,13 @@ onUnmounted(() => {
   font-size: 12px;
 }
 .subdomain-dict-editor {
+  display: flex;
+  flex: 1 1 auto;
+}
+.subdomain-dict-editor :deep(.el-textarea__inner) {
+  height: 100%;
+  min-height: 132px;
   font-family: var(--app-mono-font, ui-monospace, monospace);
-}
-.subdomain-dict-batch-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 10px;
-  align-items: stretch;
-}
-.subdomain-dict-batch-row .el-button {
-  white-space: nowrap;
 }
 .subdomain-dict-hint {
   color: var(--el-color-success, #67c23a);
@@ -8578,15 +8814,20 @@ onUnmounted(() => {
   color: var(--app-text-muted);
   font-size: 12px;
 }
-@media (max-width: 640px) {
-  .subdomain-dict-batch-row {
-    grid-template-columns: 1fr;
+@media (max-width: 1024px) {
+  .subdomain-dict-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+@media (max-width: 640px) {
   .subdomain-dict-tools {
     flex-wrap: wrap;
   }
   .subdomain-dict-search {
     width: 100%;
+  }
+  .subdomain-dict-grid {
+    grid-template-columns: 1fr;
   }
 }
 @media (max-width: 1100px) {

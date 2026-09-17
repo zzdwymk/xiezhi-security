@@ -77,4 +77,34 @@ class SubdomainDictionaryServiceTest {
     assertThat(service.validateWord("")).isNotNull();
     assertThat(service.validateWord("valid-123")).isNull();
   }
+
+  @Test
+  void validateWordRejectsPureNumericButKeepsMixedLabels() {
+    SubdomainDictionaryService service = newService(tempDir);
+    assertThat(service.validateWord("123")).isNotNull();
+    assertThat(service.validateWord("000123")).isNotNull();
+    assertThat(service.validateWord("1st")).isNull();
+    assertThat(service.validateWord("b2b")).isNull();
+    assertThat(service.validateWord("3g")).isNull();
+  }
+
+  @Test
+  void updateReportsMissingRemovals() {
+    SubdomainDictionaryService service = newService(tempDir);
+    service.importText("alpha\nbeta\n");
+    SubdomainDictionaryService.UpdateResult result =
+        service.update(java.util.List.of(), java.util.Set.of("beta", "ghost"));
+    assertThat(result.removed()).isEqualTo(1);
+    assertThat(result.missing()).containsExactly("ghost");
+  }
+
+  @Test
+  void importAndLoadIgnorePureNumericWords() {
+    SubdomainDictionaryService service = newService(tempDir);
+    SubdomainDictionaryService.ImportResult result =
+        service.importText("www\n123\n000123\napi\n");
+    assertThat(result.imported()).isEqualTo(2);
+    assertThat(result.invalid()).isEqualTo(2);
+    assertThat(service.currentWords()).containsExactly("www", "api");
+  }
 }
