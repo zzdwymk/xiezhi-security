@@ -550,6 +550,7 @@ export interface SubdomainDictionaryUpdateResult {
   view: SubdomainDictionaryView;
   added: number;
   removed: number;
+  missing: string[];
 }
 
 export interface VulnerabilityCatalogSyncResult {
