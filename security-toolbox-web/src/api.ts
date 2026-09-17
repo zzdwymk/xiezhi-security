@@ -1431,6 +1431,33 @@ export const endpoints = {
       { additions, removals },
       { timeout: 60_000 },
     ),
+  pathDictionary: () =>
+    api.get<SubdomainDictionaryView>("/recon/path-dictionary"),
+  pathDictionaryWords: (
+    query = "",
+    page = 1,
+    size = 30,
+  ) =>
+    api.get<SubdomainDictionaryWordPage>("/recon/path-dictionary/words", {
+      params: { query: query || undefined, page, size },
+    }),
+  validatePathWords: (words: string[]) =>
+    api.post<string[]>("/recon/path-dictionary/validate", { words }),
+  importPathWords: (text: string) =>
+    api.post<SubdomainDictionaryImportResult>(
+      "/recon/path-dictionary/import",
+      { text },
+      { timeout: 60_000 },
+    ),
+  updatePathDictionary: (
+    additions: string[],
+    removals: string[],
+  ) =>
+    api.post<SubdomainDictionaryUpdateResult>(
+      "/recon/path-dictionary/update",
+      { additions, removals },
+      { timeout: 60_000 },
+    ),
   syncTrafficAssets: () =>
     api.post<{ synced: number }>("/traffic/assets/sync"),
   projectIcpBatch: (projectId: number, targetIds: number[]) =>
