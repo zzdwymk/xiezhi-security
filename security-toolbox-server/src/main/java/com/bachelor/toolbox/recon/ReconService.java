@@ -51,7 +51,6 @@ import javax.net.ssl.SSLSocketFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -107,6 +106,7 @@ public class ReconService {
   private final DiscoveredPathService discoveredPaths;
   private final TrafficPacketRepository trafficPackets;
   private final SubdomainDictionaryService subdomainDictionary;
+  private final PathDictionaryService pathDictionary;
   private final HttpClient passiveClient =
       HttpClient.newBuilder()
           .connectTimeout(PASSIVE_CONNECT_TIMEOUT)
@@ -148,7 +148,8 @@ public class ReconService {
       IcpBrowserCaptureStore icpBrowserCaptures,
       DiscoveredPathService discoveredPaths,
       TrafficPacketRepository trafficPackets,
-      SubdomainDictionaryService subdomainDictionary) {
+      SubdomainDictionaryService subdomainDictionary,
+      PathDictionaryService pathDictionary) {
     this.results = results;
     this.projects = projects;
     this.targets = targets;
@@ -158,6 +159,7 @@ public class ReconService {
     this.discoveredPaths = discoveredPaths;
     this.trafficPackets = trafficPackets;
     this.subdomainDictionary = subdomainDictionary;
+    this.pathDictionary = pathDictionary;
   }
 
   public ReconResult collect(Long projectId, ReconRequest request) {
@@ -645,7 +647,9 @@ public class ReconService {
 
   private List<String> expandPathWords(List<String> requested) {
     List<String> raw =
-        (requested == null || requested.isEmpty()) ? loadDefaultPathWords() : requested;
+        (requested == null || requested.isEmpty())
+            ? pathDictionary.currentWords()
+            : requested;
     java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<>();
     Pattern range = Pattern.compile("(.*?)\\[(\\d+)-(\\d+)\\](.*)");
     for (String w : raw) {
@@ -666,23 +670,6 @@ public class ReconService {
       if (out.size() >= 600) break;
     }
     return List.copyOf(out);
-  }
-
-  private List<String> loadDefaultPathWords() {
-    try {
-      ClassPathResource resource = new ClassPathResource("wordlists/web-paths.txt");
-      if (!resource.exists()) return List.of();
-      try (var in = resource.getInputStream()) {
-        String text = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-        return Arrays.stream(text.split("\\R"))
-            .map(String::trim)
-            .filter(s -> !s.isEmpty() && !s.startsWith("#"))
-            .toList();
-      }
-    } catch (Exception ex) {
-      log.debug("加载默认路径字典失败: {}", ex.getMessage());
-      return List.of();
-    }
   }
 
   private void validateIcpBatchRequest(IcpBatchRequest request) {
