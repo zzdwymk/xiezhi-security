@@ -1,7 +1,14 @@
+// Electron 会在打包运行时把 Node fs 挂钩到 .asar 归档：当解压产物里出现含 `.asar`
+// 名字的条目（例如 PostgreSQL 官方 binaries 自带的 pgAdmin 4 的 default_app.asar）时，
+// 经挂钩的 fs 写入会被误判为“写入 asar 内部”而以“无效包”为由拒绝。本 worker 只读写
+// tools 目录里的真实文件（不涉及任何 asar 归档），因此直接用 Electron 的
+// `original-fs`（未挂钩的 fs）执行所有磁盘操作，彻底绕开 asar 拦截；同时保持
+// require("adm-zip") 能经 app.asar 解析成功（不能开 process.noAsar，否则连 app.asar
+// 里的 node_modules 都无法读取）。
+const fs = require("original-fs");
 const { parentPort, workerData } = require("worker_threads");
 const AdmZip = require("adm-zip");
 const crypto = require("crypto");
-const fs = require("fs");
 const path = require("path");
 const {
   UserFacingError,

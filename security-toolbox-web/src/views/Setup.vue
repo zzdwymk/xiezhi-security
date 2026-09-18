@@ -55,6 +55,11 @@ const items = ref<Dependency[]>([]);
 const streaming = ref(false);
 const activeDatabase = ref("");
 const developmentMode = ref(import.meta.env.DEV);
+const postgresMigration = ref<{ configured: boolean; enabled: boolean; available: boolean; port: number | null; database: string | null } | null>(null);
+const migratingPostgres = ref(false);
+const pgMigrationProgress = ref("");
+const pgMigrationLog = ref<string[]>([]);
+const pgMigrationError = ref("");
 const toolsDirectory = ref("程序目录 / tools");
 const toolsDirectoryChanging = ref(false);
 const downloadSourceStatus = ref<{ configuredMirror: string }>({
@@ -74,6 +79,7 @@ const desktopDirectorySelectionAvailable = Boolean(
 );
 const desktopMode = Boolean(window.toolboxDesktop);
 let removeInstallProgressListener: (() => void) | undefined;
+let removePgMigrationListener: (() => void) | undefined;
 const manualUrls: Record<string, string> = {
   Java: "https://adoptium.net/temurin/releases/?version=17",
   Nmap: "https://nmap.org/download.html#windows",
@@ -198,6 +204,10 @@ async function decorateItems() {
     const packages = new Map(
       installable.map((item) => [item.packageId, item]),
     );
+    if (window.toolboxDesktop?.getPostgresMigrationState) {
+      postgresMigration.value =
+        await window.toolboxDesktop.getPostgresMigrationState();
+    }
     items.value = items.value.map((item) => {
 const packageId =
         item.name === "Nuclei"
@@ -470,6 +480,93 @@ async function requestUninstall(item: Dependency) {
   }
 }
 
+async function refreshPostgresMigrationState() {
+  if (!window.toolboxDesktop?.getPostgresMigrationState) return;
+  postgresMigration.value =
+    await window.toolboxDesktop.getPostgresMigrationState();
+}
+
+async function requestPostgresMigration() {
+  if (
+    !window.toolboxDesktop?.migrateToPostgres ||
+    migratingPostgres.value
+  )
+    return;
+  let copyH2 = false;
+  try {
+    await ElMessageBox.confirm(
+      "将使用随包安装的 PostgreSQL 初始化一个本地私有数据库，并把应用数据源切换过去。\n\n" +
+        "旧数据会保留在 H2 文件中，之后可随时回退。切换需要重启后端服务。",
+      "迁移到 PostgreSQL",
+      {
+        confirmButtonText: "开始迁移",
+        cancelButtonText: "取消",
+        type: "warning",
+      },
+    );
+  } catch {
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      "是否同时把现有 H2 数据迁移到 PostgreSQL？\n（选择“否”则新建空库，旧数据仍保留在 H2）",
+      "是否迁移历史数据",
+      {
+        confirmButtonText: "迁移数据",
+        cancelButtonText: "只建空库",
+        distinguishCancelAndClose: true,
+        type: "info",
+      },
+    );
+    copyH2 = true;
+  } catch {
+    copyH2 = false;
+  }
+  try {
+    migratingPostgres.value = true;
+    pgMigrationError.value = "";
+    pgMigrationLog.value = [];
+    pgMigrationProgress.value = "正在准备…";
+    const result = await window.toolboxDesktop.migrateToPostgres({ copyH2 });
+    pgMigrationProgress.value = "迁移完成";
+    await check(true);
+    ElMessage.success(
+      copyH2
+        ? "已迁移到 PostgreSQL，历史数据已迁入"
+        : "已切换到 PostgreSQL（空库）",
+    );
+  } catch (migrateError: any) {
+    const message = toErrorMessage(migrateError, "迁移到 PostgreSQL 失败");
+    pgMigrationError.value = message;
+    pgMigrationProgress.value = "迁移失败";
+    ElMessage.error(message);
+  } finally {
+    migratingPostgres.value = false;
+    await refreshPostgresMigrationState();
+  }
+}
+
+async function requestPostgresRollback() {
+  if (!window.toolboxDesktop?.rollbackFromPostgres) return;
+  try {
+    await ElMessageBox.confirm(
+      "将停止本地 PostgreSQL 服务，并把应用数据源切回 H2。PostgreSQL 数据簇会被保留。",
+      "回退到 H2",
+      { confirmButtonText: "回退", cancelButtonText: "取消", type: "warning" },
+    );
+    await window.toolboxDesktop.rollbackFromPostgres();
+    await check(true);
+    ElMessage.success("已切回 H2");
+  } catch (rollbackError: any) {
+    if (rollbackError === "cancel" || rollbackError === "close") return;
+    ElMessage.error(
+      toErrorMessage(rollbackError, "回退到 H2 失败"),
+    );
+  } finally {
+    await refreshPostgresMigrationState();
+  }
+}
+
 function installProgress(item: Dependency) {
   if (item.totalFiles && typeof item.processedFiles === "number") {
     return Math.max(
@@ -588,8 +685,26 @@ function subscribeInstallProgress() {
         taskbarProgress.startIndeterminate(`dep-${item.packageId}`);
       }
     } else {
-      taskbarProgress.clearProgress(`dep-${item.packageId}`);
+taskbarProgress.clearProgress(`dep-${item.packageId}`);
       taskbarProgress.stopIndeterminate(`dep-${item.packageId}`);
+    }
+  });
+}
+
+function subscribePostgresProgress() {
+  const subscribe = window.toolboxDesktop?.onPostgresMigrationProgress;
+  if (!subscribe) return;
+  removePgMigrationListener = subscribe((progress) => {
+    if (progress && progress.message) {
+      pgMigrationProgress.value = progress.message;
+      pgMigrationLog.value = [
+        ...pgMigrationLog.value.slice(-19),
+        `${new Date(progress.ts).toLocaleTimeString()}　${progress.message}`,
+      ];
+    }
+    if (progress.step === "error") {
+      pgMigrationError.value = progress.message;
+      pgMigrationProgress.value = "迁移失败";
     }
   });
 }
@@ -673,6 +788,7 @@ function updateAutoContinue(value: string | number | boolean) {
 
 onMounted(() => {
   subscribeInstallProgress();
+  subscribePostgresProgress();
   void check();
   void loadDownloadSource();
 });
@@ -680,6 +796,8 @@ onMounted(() => {
 onUnmounted(() => {
   removeInstallProgressListener?.();
   removeInstallProgressListener = undefined;
+  removePgMigrationListener?.();
+  removePgMigrationListener = undefined;
   items.value.forEach((item) => {
     if (item.packageId) {
       taskbarProgress.clearProgress(`dep-${item.packageId}`);
@@ -1064,7 +1182,10 @@ onUnmounted(() => {
                 <span
                   v-if="item.name === 'PostgreSQL' && activeDatabase"
                   class="dep-note"
-                  >当前数据库：{{ activeDatabase }}</span
+                  >当前数据库：{{ activeDatabase }}<template
+                    v-if="postgresMigration?.port"
+                    >｜端口 {{ postgresMigration.port }}</template
+                  ></span
                 >
                 <div
                   v-if="item.installing || item.paused"
@@ -1205,6 +1326,46 @@ onUnmounted(() => {
                   >官方安装</a
                 >
                 <span v-else class="dep-action">暂不支持</span>
+                <div
+                  v-if="item.name === 'PostgreSQL' && desktopMode"
+                  class="dep-postgres-actions"
+                >
+                  <div class="dep-postgres-buttons">
+                    <el-button
+                      v-if="!postgresMigration?.enabled && postgresMigration?.available"
+                      size="small"
+                      type="primary"
+                      :loading="migratingPostgres"
+                      @click="requestPostgresMigration"
+                      >迁移到 PostgreSQL</el-button
+                    >
+                    <el-button
+                      v-if="postgresMigration?.enabled"
+                      size="small"
+                      plain
+                      @click="requestPostgresRollback"
+                      >回退到 H2</el-button
+                    >
+                  </div>
+                  <div
+                    v-if="migratingPostgres || pgMigrationProgress || pgMigrationError"
+                    class="dep-postgres-progress"
+                  >
+                    <span class="dep-postgres-progress-text">{{
+                      pgMigrationError || pgMigrationProgress
+                    }}</span>
+                    <code
+                      v-if="pgMigrationLog.length"
+                      class="dep-postgres-log"
+                      ><template v-for="(line, idx) in pgMigrationLog" :key="idx"
+                        ><span>{{ line }}</span></template
+                      ></code
+                    >
+                  </div>
+                  <span v-if="pgMigrationError" class="dep-postgres-error"
+                    >迁移失败，请查看上方日志或 desktop-startup.log</span
+                  >
+                </div>
               </div>
             </div>
             <div

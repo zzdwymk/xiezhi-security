@@ -61,6 +61,15 @@ const customPositions = ref<Record<string | number, { x: number; y: number }>>({
 const draggingNodeId = ref<number | null>(null);
 const draggingHubId = ref<string | null>(null);
 const nodeDragStart = ref({ clientX: 0, clientY: 0, initX: 0, initY: 0 });
+// 多节点框选状态 (Shift 拖拽空画布 / Ctrl 点选)
+const selectingRect = ref(false);
+const selectionRect = ref<{ x: number; y: number; w: number; h: number } | null>(null);
+const selectionStartScene = ref({ x: 0, y: 0 });
+const selectionStartClient = ref({ x: 0, y: 0 });
+// 是否刚完成一次框选（用于压制松开瞬间落在节点上的 click，避免塌缩成单选）
+let suppressNextClick = false;
+// 多选集体拖拽：记录当前选中集合各元素的起点坐标快照 <id, {x,y}>
+const groupDragOrigins = ref<Record<string | number, { x: number; y: number }>>({});
 
 // ---- 拖拽对齐吸附 (类似工作流拓扑) ----
 interface AlignGuideSegment {
@@ -140,6 +149,7 @@ const minimapDragStart = ref({ clientX: 0, clientY: 0, initPanX: 0, initPanY: 0 
 
 // 选中与悬停
 const selectedNodeId = ref<number | null>(null);
+const selectedNodeIds = ref<number[]>([]);
 const hoveredNodeId = ref<number | null>(null);
 const drawerVisible = ref(false);
 
@@ -483,13 +493,78 @@ function assetUrlPathOf(asset: DiscoveryResult | null | undefined): string {
   }
 }
 
-// 依据项目 + 授权目标 (targetId) 建立主机与子资产的父子关系：
-// 授权目标或根 URL 资产作为父节点，其余路径/探测结果挂在它之下。
+// 取资产 URL 的主机名（忽略协议与端口），用于把同一主机上的全部资产聚到同一
+// 父节点下。例如 http://host/Less-1 与 https://host 属于同一台主机。
+function assetHostKey(asset: DiscoveryResult | null | undefined): string {
+  if (!asset?.url) return "";
+  try {
+    return new URL(normalizeAssetUrl(asset.url)).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+// 取资产 URL 的 origin（协议 + 主机 + 端口），用于为主机合成占位节点。
+function assetOriginOf(raw: string | undefined): string {
+  const value = normalizeAssetUrl(raw);
+  if (!value) return "";
+  try {
+    const parsed = new URL(value);
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return "";
+  }
+}
+
+// 合成主机节点的 id 基数，避免与探测记录/路径/授权目标的真实 id 冲突。
+const SYNTHETIC_HOST_ID_BASE = 9_000_000_000_000;
+
+// 若某主机下只有带路径的 URL（例如项目仅登记了一个 URL 授权目标
+// http://host/Less-1），而没有 https://host 这类根资产，就为主机补一个合成
+// 节点，让 URL 始终挂在主机之下，而不是直接连到项目中心。
+function withSyntheticHosts(assets: DiscoveryResult[]): DiscoveryResult[] {
+  const rooted = new Set<string>();
+  for (const asset of assets) {
+    if (asset.id == null || assetUrlPathOf(asset) !== "") continue;
+    const hostKey = assetHostKey(asset);
+    if (hostKey) rooted.add(`${asset.projectId}:${hostKey}`);
+  }
+
+  const result = [...assets];
+  const synthesized = new Set<string>();
+  let counter = 0;
+  for (const asset of assets) {
+    if (asset.id == null || assetUrlPathOf(asset) === "") continue;
+    const hostKey = assetHostKey(asset);
+    if (!hostKey) continue;
+    const groupKey = `${asset.projectId}:${hostKey}`;
+    if (rooted.has(groupKey) || synthesized.has(groupKey)) continue;
+    synthesized.add(groupKey);
+    result.push({
+      id: SYNTHETIC_HOST_ID_BASE + counter++,
+      projectId: asset.projectId,
+      targetId: asset.targetId,
+      url: assetOriginOf(asset.url),
+      server: "主机",
+      framework: "主机",
+      _assetKind: "host",
+      _syntheticHost: true,
+    });
+  }
+  return result;
+}
+
+// 依据项目 + 主机名建立主机与子资产的父子关系：同一主机上无路径的根资产
+// (如 https://host) 作为父节点，其余路径/探测结果挂在它之下。按主机名而非
+// 授权目标 (targetId) 分组，避免同一台主机因登记了多个授权目标（IP 与 URL）
+// 而被拆成多组、部分 URL 直接挂到项目中心。
 function resolveAssetParents(assets: DiscoveryResult[]): Map<number, number> {
   const groups = new Map<string, DiscoveryResult[]>();
   for (const asset of assets) {
     if (asset.id == null) continue;
-    const key = `${asset.projectId}:${asset.targetId}`;
+    const hostKey = assetHostKey(asset);
+    if (!hostKey) continue;
+    const key = `${asset.projectId}:${hostKey}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(asset);
   }
@@ -519,6 +594,8 @@ function resolveAssetParents(assets: DiscoveryResult[]): Map<number, number> {
 
 function getAssetRemovalAction(asset: DiscoveryResult | null | undefined): "probe" | "target" | "none" {
   if (!asset || props.projectId === "all") return "none";
+  // 合成主机节点由前端推导，不对应任何后端记录，不能走删除接口。
+  if (asset._syntheticHost === true) return "none";
   const kind = getAssetKind(asset);
   // Discovered paths are maintained by recon collectors and have no single
   // delete endpoint. Ignore stale IDs from merged records instead of
@@ -787,7 +864,9 @@ const layoutData = computed<{
   domainNodes: MindmapDomainNode[];
 }>(() => {
   const q = searchQuery.value.trim().toLowerCase();
-  const allAssets = props.assets.filter((a) => a.id != null).sort((a, b) =>
+  const allAssets = withSyntheticHosts(
+    props.assets.filter((a) => a.id != null),
+  ).sort((a, b) =>
     parseHost(a.url).host.localeCompare(parseHost(b.url).host) || a.id! - b.id!,
   );
   const nodes: LayoutNode[] = [];
@@ -813,7 +892,7 @@ const layoutData = computed<{
       theme: FLUENT_HUB_THEMES[0],
       x: custom ? custom.x : hubPosition.value.x,
       y: custom ? custom.y : hubPosition.value.y,
-      assetCount: allAssets.length,
+      assetCount: allAssets.filter((a) => a._syntheticHost !== true).length,
       hostCount: hostSet.size,
     });
   } else {
@@ -865,7 +944,7 @@ const layoutData = computed<{
           theme: FLUENT_HUB_THEMES[0],
           x: custom ? custom.x : cx.value,
           y: custom ? custom.y : cy.value,
-          assetCount: pAssets.length,
+          assetCount: pAssets.filter((a) => a._syntheticHost !== true).length,
           hostCount: hostSet.size,
         });
       });
@@ -1525,10 +1604,58 @@ function onWheel(e: WheelEvent) {
   setZoom(zoom.value + delta, { x: e.clientX - rect.left, y: e.clientY - rect.top });
 }
 
-// 画布背景拖拽平移
+// 屏幕坐标 -> 场景坐标 (考虑 pan 与 zoom)
+function screenToScene(clientX: number, clientY: number) {
+  const rect = canvasWrapRef.value?.getBoundingClientRect();
+  const left = rect ? rect.left : 0;
+  const top = rect ? rect.top : 0;
+  return {
+    x: (clientX - left - pan.value.x) / zoom.value,
+    y: (clientY - top - pan.value.y) / zoom.value,
+  };
+}
+
+// 捕获当前多选集合各节点的起点坐标，供集体拖拽统一平移
+function buildGroupDragOrigins(dragKey: number, dragX: number, dragY: number) {
+  const origins: Record<string | number, { x: number; y: number }> = {};
+  const nodes = layoutData.value.nodes;
+  for (const id of selectedNodeIds.value) {
+    const n = nodes.find((item) => item.id === id);
+    const pos = n ? { x: n.x, y: n.y } : null;
+    if (pos) origins[id] = pos;
+  }
+  if (!origins[dragKey]) origins[dragKey] = { x: dragX, y: dragY };
+  groupDragOrigins.value = origins;
+}
+
+// 框选结束：命中矩形内的节点设为多选集合
+function applyRectSelection(rect: { x: number; y: number; w: number; h: number }) {
+  const hits: number[] = [];
+  for (const node of layoutData.value.nodes) {
+    if (!node.isMatch) continue;
+    if (node.x >= rect.x && node.x <= rect.x + rect.w && node.y >= rect.y && node.y <= rect.y + rect.h) {
+      hits.push(node.id);
+    }
+  }
+  selectedNodeIds.value = hits;
+  selectedNodeId.value = hits.length === 1 ? hits[0] : hits.length > 1 ? hits[0] : null;
+  if (hits.length === 1) drawerVisible.value = true;
+  else drawerVisible.value = false;
+}
+
+// 画布背景拖拽平移 (Shift/Ctrl 拖拽为多选框选)
 function onCanvasMouseDown(e: MouseEvent) {
   if (e.button !== 0) return;
   closeContextMenu();
+  const wantBox = Boolean(e.shiftKey || e.ctrlKey || e.metaKey);
+  if (wantBox) {
+    const scene = screenToScene(e.clientX, e.clientY);
+    selectingRect.value = true;
+    selectionStartScene.value = { x: scene.x, y: scene.y };
+    selectionStartClient.value = { x: e.clientX, y: e.clientY };
+    selectionRect.value = { x: scene.x, y: scene.y, w: 0, h: 0 };
+    return;
+  }
   isDraggingCanvas.value = true;
   hasDragged.value = false;
   canvasDragStart.value = { x: e.clientX - pan.value.x, y: e.clientY - pan.value.y };
@@ -1541,6 +1668,7 @@ function onHubMouseDown(e: MouseEvent, hub: LayoutHub) {
   closeContextMenu();
   draggingHubId.value = hub.id;
   hasDragged.value = false;
+  groupDragOrigins.value = {};
   nodeDragStart.value = {
     clientX: e.clientX,
     clientY: e.clientY,
@@ -1556,6 +1684,12 @@ function onNodeMouseDown(e: MouseEvent, node: LayoutNode) {
   closeContextMenu();
   draggingNodeId.value = node.id;
   hasDragged.value = false;
+  // 若该节点属于当前多选集合，则整组一起移动
+  if (!alignKeyActive(e) && selectedNodeIds.value.length > 1 && selectedNodeIds.value.includes(node.id)) {
+    buildGroupDragOrigins(node.id, node.x, node.y);
+  } else {
+    groupDragOrigins.value = {};
+  }
   nodeDragStart.value = {
     clientX: e.clientX,
     clientY: e.clientY,
@@ -1912,6 +2046,18 @@ function computeAlign(
 
 // 全局鼠标移动
 function onGlobalMouseMove(e: MouseEvent) {
+  if (selectingRect.value) {
+    const scene = screenToScene(e.clientX, e.clientY);
+    const sx = selectionStartScene.value.x;
+    const sy = selectionStartScene.value.y;
+    selectionRect.value = {
+      x: Math.min(sx, scene.x),
+      y: Math.min(sy, scene.y),
+      w: Math.abs(scene.x - sx),
+      h: Math.abs(scene.y - sy),
+    };
+    return;
+  }
   if (draggingHubId.value != null || draggingNodeId.value != null) {
     if (!hasDragged.value && Math.hypot(e.clientX - nodeDragStart.value.clientX, e.clientY - nodeDragStart.value.clientY) < 3) return;
     hasDragged.value = true;
@@ -1927,7 +2073,18 @@ function onGlobalMouseMove(e: MouseEvent) {
 
     const active = alignKeyActive(e);
     isAligning.value = active;
-    if (!active) {
+    // 多选集体拖拽：拖动的元素属于选中集合时，整组按同一增量平移 (组内不做单点对齐)
+    const isGroupDrag = key in groupDragOrigins.value;
+    if (isGroupDrag) {
+      const next = { ...customPositions.value };
+      for (const [k, origin] of Object.entries(groupDragOrigins.value)) {
+        next[k] = { x: origin.x + dx, y: origin.y + dy };
+      }
+      customPositions.value = next;
+      dragGuides.value = [];
+      dragRulers.value = [];
+      isAligning.value = false;
+    } else if (!active) {
       customPositions.value = { ...customPositions.value, [key]: { x: rawX, y: rawY } };
       dragGuides.value = [];
       dragRulers.value = [];
@@ -1966,12 +2123,23 @@ function onGlobalMouseMove(e: MouseEvent) {
 
 // 全局鼠标松开
 function onGlobalMouseUp() {
+  if (selectingRect.value) {
+    const rect = selectionRect.value;
+    selectingRect.value = false;
+    selectionRect.value = null;
+    if (rect && (rect.w > 2 || rect.h > 2)) {
+      applyRectSelection(rect);
+      suppressNextClick = true;
+      window.setTimeout(() => { suppressNextClick = false; }, 0);
+    }
+  }
   isDraggingCanvas.value = false;
   isDraggingMinimap.value = false;
   draggingNodeId.value = null;
   draggingHubId.value = null;
   dragGuides.value = [];
   dragRulers.value = [];
+  groupDragOrigins.value = {};
   isAligning.value = false;
 }
 
@@ -2024,10 +2192,24 @@ function onMinimapMouseDown(e: MouseEvent) {
 }
 
 // 节点点击交互
-function handleNodeClick(node: LayoutNode, fromKeyboard = false) {
+function handleNodeClick(node: LayoutNode, fromKeyboard = false, ev?: MouseEvent) {
   if (hasDragged.value && !fromKeyboard) return;
-  selectedNodeId.value = node.id;
-  drawerVisible.value = true;
+  if (suppressNextClick && !fromKeyboard) return;
+  const additive = !fromKeyboard && Boolean(ev && (ev.ctrlKey || ev.metaKey)) && selectedNodeIds.value.length > 0;
+  if (additive) {
+    if (selectedNodeIds.value.includes(node.id)) {
+      selectedNodeIds.value = selectedNodeIds.value.filter((i) => i !== node.id);
+      selectedNodeId.value = selectedNodeIds.value[selectedNodeIds.value.length - 1] ?? null;
+    } else {
+      selectedNodeIds.value = [...selectedNodeIds.value, node.id];
+      selectedNodeId.value = node.id;
+    }
+  } else {
+    selectedNodeIds.value = node.id ? [node.id] : [];
+    selectedNodeId.value = node.id;
+  }
+  if (selectedNodeId.value == null) drawerVisible.value = false;
+  else drawerVisible.value = true;
 }
 
 // 右键上下文菜单交互
@@ -2933,7 +3115,7 @@ onUnmounted(() => {
               :class="{
                 'is-dimmed': !node.isMatch,
                 'is-hovered': hoveredNodeId === node.id,
-                'is-selected': selectedNodeId === node.id,
+                'is-selected': selectedNodeIds.includes(node.id),
                 'is-custom-dragged': customPositions[node.id] != null,
               }"
               role="button"
@@ -2943,7 +3125,7 @@ onUnmounted(() => {
               @mouseenter="hoveredNodeId = node.id"
               @mouseleave="hoveredNodeId = null"
               @mousedown="onNodeMouseDown($event, node)"
-              @click.stop="handleNodeClick(node)"
+              @click.stop="handleNodeClick(node, false, $event)"
               @keydown.enter.prevent="handleNodeClick(node, true)"
               @keydown.space.prevent="handleNodeClick(node, true)"
               @contextmenu="onNodeContextMenu($event, node)"
@@ -2961,7 +3143,7 @@ onUnmounted(() => {
                   'card--has-vuln': node.vulnCount > 0,
                   'card--has-risk': node.riskCount > 0 && node.vulnCount === 0,
                 }"
-                :filter="selectedNodeId === node.id ? 'url(#nodeCardSelectedShadow)' : hoveredNodeId === node.id ? 'url(#nodeCardHoverShadow)' : 'url(#nodeCardShadow)'"
+                :filter="selectedNodeIds.includes(node.id) ? 'url(#nodeCardSelectedShadow)' : hoveredNodeId === node.id ? 'url(#nodeCardHoverShadow)' : 'url(#nodeCardShadow)'"
               />
 
               <!-- 右上角态势徽标 (宽度随计数增长，使用 Fluent 图形而非 emoji) -->
@@ -3156,6 +3338,17 @@ onUnmounted(() => {
             </g>
           </g>
 
+          <!-- ==================== 多选框选区域 (Shift/Ctrl 拖拽空画布时显示) ==================== -->
+          <rect
+            v-if="selectingRect && selectionRect"
+            class="topology-selection-rect"
+            :x="selectionRect.x"
+            :y="selectionRect.y"
+            :width="selectionRect.w"
+            :height="selectionRect.h"
+            pointer-events="none"
+          />
+
         </g>
       </svg>
 
@@ -3173,6 +3366,10 @@ onUnmounted(() => {
             <FluentIcon name="fit" />
           </button>
         </div>
+      </div>
+
+      <div v-if="assets.length" class="topology-canvas-help" @mousedown.stop @dblclick.stop @wheel.stop>
+        <span>按住 Shift 拖拽可框选，Ctrl 点击可多选，拖拽选中节点可整组移动</span>
       </div>
 
       <!-- 鹰眼雷达微型小地图 (Fluent Overlay) -->
@@ -3795,6 +3992,26 @@ html.dark .zoom-controls,
   z-index: 12;
 }
 
+.topology-canvas-help {
+  position: absolute;
+  bottom: 18px;
+  right: 16px;
+  z-index: 12;
+  max-width: 78%;
+  padding: 5px 12px;
+  border-radius: 20px;
+  font-size: var(--fluent-caption2-size, 11px);
+  color: var(--app-text-secondary, #5a6472);
+  background: color-mix(in srgb, var(--app-surface-strong, #fff) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--app-border, #d8dadd) 60%, transparent);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.06);
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .zoom-level {
   font-size: var(--fluent-caption2-size, 11px);
   font-weight: 700;
@@ -4088,6 +4305,15 @@ html.dark .zoom-controls .divider-v,
   stroke-linejoin: round;
 }
 .topology-align-overlay {
+  pointer-events: none;
+}
+
+/* 多选框选区域 (Fluent 风格半透明选区) */
+.topology-selection-rect {
+  fill: color-mix(in srgb, var(--app-accent, #0078d4) 14%, transparent);
+  stroke: var(--app-accent, #0078d4);
+  stroke-width: 1.2;
+  stroke-dasharray: 4 3;
   pointer-events: none;
 }
 

@@ -138,9 +138,24 @@ async function loadProjectAssets(pid: number, targetsById: Map<number, Target>) 
     _probeResultId: asset.id,
   }));
 
+  const pathAssets = asPathAssets(webPaths.data || []);
+
+  // 授权目标是“已登记但未必已发现”的占位节点：当同一主机已经存在真实探测
+  // 结果或测绘路径时，占位节点会与真实节点重复（例如 192.168.136.132 同时
+  // 以 http 占位和 https 探测出现，导致同一主机被画两次）。这里按主机名去重，
+  // 只保留尚无真实资产的授权目标，使资产拓扑与“项目探测服务”的拓扑保持一致。
+  const discoveredHosts = new Set(
+    [...pathAssets, ...probeAssets]
+      .map((asset) => assetHostName(asset.url))
+      .filter((host) => host.length > 0),
+  );
+  const visibleTargetAssets = targetAssets.filter(
+    (asset) => !discoveredHosts.has(assetHostName(asset.url)),
+  );
+
   const merged = mergeProjectAssets(pid, [
-    ...asPathAssets(webPaths.data || []),
-    ...targetAssets,
+    ...pathAssets,
+    ...visibleTargetAssets,
     ...probeAssets,
   ]);
 
@@ -192,6 +207,18 @@ function canonicalAssetUrl(raw: unknown): string {
     return `${protocol}//${host}${port}${pathname}${parsed.search}${parsed.hash}`;
   } catch {
     return value.replace(/\/+$/, "");
+  }
+}
+
+// 提取资产 URL 的主机名（忽略协议与端口），用于判断授权占位节点是否已被
+// 真实资产覆盖。例如 http://192.168.136.132 与 https://192.168.136.132 视为同一主机。
+function assetHostName(raw: unknown): string {
+  const value = normalizeAssetUrl(raw);
+  if (!value) return "";
+  try {
+    return new URL(value).hostname.toLowerCase();
+  } catch {
+    return "";
   }
 }
 

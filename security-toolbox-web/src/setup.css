@@ -755,7 +755,7 @@
 
 /* Dependency actions — Fluent 2 control sizing and readable contrast. */
 .dependency-row {
-  grid-template-columns: 30px minmax(220px, 1fr) minmax(100px, 160px) 64px 190px;
+  grid-template-columns: 30px minmax(220px, 1fr) minmax(100px, 160px) 64px 400px;
 }
 .dep-main b {
   color: var(--setup-text);
@@ -769,7 +769,8 @@
 }
 .dep-actions {
   display: flex;
-  width: 190px;
+  flex-wrap: wrap;
+  align-content: center;
   align-items: center;
   justify-content: flex-end;
 }
@@ -789,7 +790,6 @@
 }
 .dep-ready-controls {
   display: flex;
-  width: 190px;
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
@@ -823,6 +823,60 @@
   min-width: 0;
   margin: 0 !important;
   padding: 0 7px;
+}
+.dep-postgres-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  width: 100%;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--app-border, rgba(0, 0, 0, 0.14));
+}
+.dep-postgres-buttons {
+  display: flex;
+  gap: 6px;
+}
+.dep-postgres-buttons .el-button {
+  min-height: 28px;
+  margin: 0 !important;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.dep-postgres-progress {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  width: 100%;
+}
+.dep-postgres-progress-text {
+  color: var(--app-muted, #8f908a);
+  font-size: 11px;
+  text-align: right;
+}
+.dep-postgres-log {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  max-height: 120px;
+  overflow: auto;
+  width: 100%;
+  color: var(--app-muted, #85817a);
+  font: 11px/1.5 Consolas, monospace;
+  text-align: right;
+  background: var(--setup-panel-strong, rgba(0, 0, 0, 0.04));
+  border-radius: 4px;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+}
+.dep-postgres-error {
+  color: var(--fluent-danger-bg, #d13438);
+  font-size: 11px;
+  text-align: right;
 }
 .dep-action {
   color: var(--setup-text);
@@ -876,7 +930,7 @@
 }
 @media (max-width: 900px) {
   .dependency-row {
-    grid-template-columns: 30px minmax(150px, 1fr) 64px 190px;
+    grid-template-columns: 30px minmax(150px, 1fr) 64px 320px;
   }
 }
 

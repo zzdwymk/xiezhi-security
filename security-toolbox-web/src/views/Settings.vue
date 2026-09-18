@@ -18,6 +18,11 @@ import {
   Warning,
 } from "../components/fluentIcons";
 import { getThemeMode, setThemeMode } from "../system-theme";
+import {
+  getMotionSettings,
+  setMotionSettings as persistMotion,
+  type MutableMotionAreaFlags,
+} from "../motion";
 import { useCopilotStore } from "../stores/copilot";
 import { useAuthStore } from "../stores/auth";
 import { useConversationStore } from "../stores/conversations";
@@ -82,6 +87,13 @@ const themeMode = ref<ThemeMode>("system");
 const themeSaving = ref(false);
 const windowMaterial = ref<WindowMaterial>("mica");
 const materialSaving = ref(false);
+const motionFlags = reactive<MutableMotionAreaFlags>({
+  startProgress: true,
+  startPulse: true,
+  loader: true,
+  decorative: true,
+});
+const motionSaving = ref(false);
 const aiStatus = ref<AiSettingsStatus>();
 const icpDialog = ref(false);
 const icpLoading = ref(false);
@@ -320,6 +332,45 @@ async function changeThemeMode(mode: ThemeMode) {
 async function loadMicaSetting() {
   if (!window.toolboxDesktop?.getWindowMaterial) return;
   windowMaterial.value = await window.toolboxDesktop.getWindowMaterial();
+}
+
+async function loadMotionSettings() {
+  try {
+    const flags = await getMotionSettings();
+    motionFlags.startProgress = flags.startProgress;
+    motionFlags.startPulse = flags.startPulse;
+    motionFlags.loader = flags.loader;
+    motionFlags.decorative = flags.decorative;
+  } catch {
+    // 保持默认值
+  }
+}
+
+async function changeMotionFlag(
+  flag: keyof MotionAreaFlags,
+  enabled: boolean | string | number,
+) {
+  const previous = { ...motionFlags };
+  const next = Boolean(enabled);
+  motionSaving.value = true;
+  try {
+    const saved = await persistMotion({ [flag]: next });
+    motionFlags.startProgress = saved.startProgress;
+    motionFlags.startPulse = saved.startPulse;
+    motionFlags.loader = saved.loader;
+    motionFlags.decorative = saved.decorative;
+    ElMessage.success(
+      next ? "已开启该区域动画，即时生效" : "已关闭该区域动画，即时生效",
+    );
+  } catch (error) {
+    motionFlags.startProgress = previous.startProgress;
+    motionFlags.startPulse = previous.startPulse;
+    motionFlags.loader = previous.loader;
+    motionFlags.decorative = previous.decorative;
+    ElMessage.error(errorText(error, "无法修改动画设置"));
+  } finally {
+    motionSaving.value = false;
+  }
 }
 
 async function changeWindowMaterial(material: WindowMaterial) {
@@ -665,6 +716,7 @@ onMounted(() => {
   void loadIcpSettings();
   void loadGithubTokenSettings();
   void loadMicaSetting();
+  void loadMotionSettings();
   void loadNotificationSettings();
   void loadConcurrencyLimit();
 });
@@ -826,6 +878,71 @@ watch(
           </div>
         </div>
       </section>
+
+      <section class="settings-group">
+<header class="settings-group-title">界面动画</header>
+        <p class="settings-group-note">
+          按区域独立控制动画。关闭的动画会立即在下次展示时停用；每一项都列出其具体影响范围。
+        </p>
+        <div class="settings-list">
+              <div class="settings-row settings-row--control">
+                <el-icon class="settings-row-icon"><View /></el-icon>
+                <span class="settings-row-copy">
+                  <strong>启动进度跑马灯</strong>
+                  <small
+                    >启动窗口里“检查并启动运行环境”卡片下方的进度条滑动动画。关闭后进度条停为一段静态填充。</small
+                  >
+                </span>
+                <el-switch
+                  v-model="motionFlags.startProgress"
+                  :disabled="motionSaving"
+                  @change="changeMotionFlag('startProgress', $event)"
+                />
+              </div>
+              <div class="settings-row settings-row--control">
+                <el-icon class="settings-row-icon"><View /></el-icon>
+                <span class="settings-row-copy">
+                  <strong>启动状态脉冲点</strong>
+                  <small
+                    >启动窗口侧栏“正在准备本地引擎”左边的呼吸圆点淡入淡出。关闭后圆点固定点亮。</small
+                  >
+                </span>
+                <el-switch
+                  v-model="motionFlags.startPulse"
+                  :disabled="motionSaving"
+                  @change="changeMotionFlag('startPulse', $event)"
+                />
+              </div>
+              <div class="settings-row settings-row--control">
+                <el-icon class="settings-row-icon"><Setting /></el-icon>
+                <span class="settings-row-copy">
+                  <strong>加载图标旋转</strong>
+                  <small
+                    >按钮上的加载环、数据加载遮罩图标、拓扑刷新与各页面的旋转加载图标（is-loading / rotating）。关闭后加载态以静态图标呈现。</small
+                  >
+                </span>
+                <el-switch
+                  v-model="motionFlags.loader"
+                  :disabled="motionSaving"
+                  @change="changeMotionFlag('loader', $event)"
+                />
+              </div>
+              <div class="settings-row settings-row--control">
+                <el-icon class="settings-row-icon"><MagicStick /></el-icon>
+                <span class="settings-row-copy">
+                  <strong>装饰动效与过渡</strong>
+                  <small
+                    >资产拓扑流光与节点呼吸、仪表盘计划呼吸、路由淡入、卡片漂浮与弹窗过渡等纯装饰动画。关闭后这些装饰动效全部停用。</small
+                  >
+                </span>
+                <el-switch
+                  v-model="motionFlags.decorative"
+                  :disabled="motionSaving"
+                  @change="changeMotionFlag('decorative', $event)"
+                />
+              </div>
+            </div>
+          </section>
 
       <section class="settings-group">
         <header class="settings-group-title">AI 与外部服务</header>
@@ -1682,6 +1799,14 @@ watch(
   font-size: 12px;
   font-weight: 650;
   letter-spacing: 0;
+}
+
+.settings-group-note {
+  margin: 0;
+  padding: 0 4px 2px;
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .settings-list {
