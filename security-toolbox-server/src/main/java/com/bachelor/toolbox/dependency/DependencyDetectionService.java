@@ -581,8 +581,13 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
   private List<String> postgresqlCandidates(boolean windows) {
     LinkedHashSet<String> candidates = new LinkedHashSet<>();
     String explicit = System.getenv("POSTGRES_PATH");
+    // POSTGRES_PATH 应指向 psql 可执行文件；仅当其是一存在的普通文件时才采用，
+    // 避免（例如旧版本把它配成 bin 目录）把目录当作程序去执行而报“拒绝访问”。
     if (explicit != null && !explicit.isBlank() && !"psql".equalsIgnoreCase(explicit.trim())) {
-      candidates.add(explicit.trim());
+      Path explicitPath = Path.of(explicit.trim());
+      if (Files.isRegularFile(explicitPath)) {
+        candidates.add(explicitPath.toAbsolutePath().normalize().toString());
+      }
     }
     findPsqlInTools(candidates, windows);
     candidates.add(windows ? "psql.exe" : "psql");

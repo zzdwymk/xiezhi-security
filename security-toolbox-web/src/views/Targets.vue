@@ -735,7 +735,7 @@ onMounted(load);
           placeholder="搜索名称 / 地址 / 类型 / 授权记录"
           clearable
           :prefix-icon="Search"
-          style="width: 240px"
+          style="width: 300px"
         />
         <el-button
           v-if="selectedTargets.length"

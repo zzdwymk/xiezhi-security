@@ -249,14 +249,17 @@
         color: #555650;
       }
 
-      .state-dot {
-        width: 7px;
-        height: 7px;
-        border-radius: 50%;
-        background: var(--accent);
-        box-shadow: 0 0 0 3px var(--accent-soft);
-        animation: pulse 1.6s ease-in-out infinite;
-      }
+.state-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+:root[data-anim-start-pulse="off"] .state-dot {
+  animation: none;
+}
 
       .engine-state span:last-child {
         display: flex;
@@ -392,6 +395,11 @@
         transform-origin: left;
       }
 
+      :root[data-anim-start-progress="off"] .progress-bar {
+        animation: none;
+        width: 68%;
+      }
+
       .progress-meta {
         display: flex;
         justify-content: space-between;
@@ -463,11 +471,11 @@
       }
 
       @media (prefers-reduced-motion: reduce) {
-        .progress-bar,
-        .state-dot {
+        :root:not([data-anim-start-progress="on"]) .progress-bar,
+        :root:not([data-anim-start-pulse="on"]) .state-dot {
           animation: none;
         }
-        .progress-bar {
+        :root:not([data-anim-start-progress="on"]) .progress-bar {
           width: 68%;
         }
       }

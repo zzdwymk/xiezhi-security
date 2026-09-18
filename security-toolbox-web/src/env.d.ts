@@ -3,6 +3,13 @@
 type WindowMaterial = "none" | "mica" | "acrylic";
 type ThemeMode = "system" | "light" | "dark";
 
+interface MotionAreaFlags {
+  readonly startProgress: boolean;
+  readonly startPulse: boolean;
+  readonly loader: boolean;
+  readonly decorative: boolean;
+}
+
 interface ToolboxDesktopBridge {
   readonly isDesktop: true;
   readonly platform: string;
@@ -16,6 +23,10 @@ interface ToolboxDesktopBridge {
   ) => Promise<WindowMaterial>;
   readonly getThemeMode?: () => Promise<ThemeMode>;
   readonly setThemeMode?: (mode: ThemeMode) => Promise<ThemeMode>;
+  readonly getMotionSettings?: () => Promise<MotionAreaFlags>;
+  readonly setMotionSettings?: (
+    flags: Partial<MotionAreaFlags>,
+  ) => Promise<MotionAreaFlags>;
   readonly minimizeWindow?: () => Promise<void>;
   readonly toggleMaximizeWindow?: () => Promise<boolean>;
   readonly isWindowMaximized?: () => Promise<boolean>;
@@ -74,6 +85,37 @@ interface ToolboxDesktopBridge {
     version?: string;
     status: "uninstalled";
   }>;
+  readonly getPostgresMigrationState?: () => Promise<{
+    available: boolean;
+    configured: boolean;
+    enabled: boolean;
+    running: boolean;
+    port: number | null;
+    database: string | null;
+  }>;
+  readonly migrateToPostgres?: (
+    options: { copyH2: boolean },
+  ) => Promise<{
+    host: string;
+    port: number;
+    database: string;
+    status: string;
+  }>;
+  readonly rollbackFromPostgres?: () => Promise<{
+    available: boolean;
+    configured: boolean;
+    enabled: boolean;
+    running: boolean;
+    port: number | null;
+    database: string | null;
+  }>;
+  readonly onPostgresMigrationProgress?: (
+    callback: (progress: {
+      ts: number;
+      step: string;
+      message: string;
+    }) => void,
+  ) => () => void;
   readonly getAiSettings?: () => Promise<AiSettingsStatus>;
   readonly getIcpSettings?: () => Promise<IcpSettingsStatus>;
   readonly getGithubTokenSettings?: () => Promise<GithubTokenSettingsStatus>;

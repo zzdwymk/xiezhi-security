@@ -22,6 +22,9 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.invoke("toolbox:set-window-material", material),
     getThemeMode: () => ipcRenderer.invoke("toolbox:get-theme-mode"),
     setThemeMode: (mode) => ipcRenderer.invoke("toolbox:set-theme-mode", mode),
+    getMotionSettings: () => ipcRenderer.invoke("toolbox:get-motion-settings"),
+    setMotionSettings: (flags) =>
+      ipcRenderer.invoke("toolbox:set-motion-settings", flags),
     minimizeWindow: () => ipcRenderer.invoke("toolbox:window-minimize"),
     toggleMaximizeWindow: () =>
       ipcRenderer.invoke("toolbox:window-toggle-maximize"),
@@ -61,6 +64,23 @@ contextBridge.exposeInMainWorld(
       }),
     uninstallDependency: (packageId) =>
       ipcRenderer.invoke("toolbox:uninstall-dependency", packageId),
+    getPostgresMigrationState: () =>
+      ipcRenderer.invoke("toolbox:get-postgres-migration-state"),
+    migrateToPostgres: (options) =>
+      ipcRenderer.invoke("toolbox:migrate-to-postgres", {
+        copyH2: options?.copyH2 === true,
+      }),
+    rollbackFromPostgres: () =>
+      ipcRenderer.invoke("toolbox:rollback-from-postgres"),
+    onPostgresMigrationProgress: (callback) => {
+      const listener = (_event, progress) => callback(progress);
+      ipcRenderer.on("toolbox:postgres-migration-progress", listener);
+      return () =>
+        ipcRenderer.removeListener(
+          "toolbox:postgres-migration-progress",
+          listener,
+        );
+    },
     getAiSettings: () => ipcRenderer.invoke("toolbox:get-ai-settings"),
     getIcpSettings: () => ipcRenderer.invoke("toolbox:get-icp-settings"),
     getToolDownloadSettings: () =>

@@ -2,10 +2,14 @@ function parseStableVersion(value) {
   const normalized = String(value || "")
     .trim()
     .replace(/^v/i, "");
-  if (!/^\d+\.\d+\.\d+$/.test(normalized)) return undefined;
-  const parts = normalized.split(".").map(Number);
-  if (parts.some((part) => !Number.isSafeInteger(part))) return undefined;
-  return { normalized, parts };
+  // 兼容两段主.小版本（如 PostgreSQL 的 18.6，没有补丁号），视为 X.Y.0；
+  // 三段 X.Y.Z 也正常解析。
+  if (!/^\d+\.\d+(?:\.\d+)?$/.test(normalized)) return undefined;
+  const rawParts = normalized.split(".").map(Number);
+  if (rawParts.some((part) => !Number.isSafeInteger(part))) return undefined;
+  const parts = [rawParts[0], rawParts[1], rawParts[2] || 0];
+  const canonical = parts.join(".");
+  return { normalized: canonical, parts };
 }
 
 function compareStableVersions(left, right) {

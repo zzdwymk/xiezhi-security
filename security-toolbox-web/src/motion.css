@@ -1,0 +1,69 @@
+/* 界面动画偏好——按区域关闭对应的动画。
+   src/motion.ts 依据「设置 → 界面动画」把开关写入 <html> 上的
+   data-anim-* 属性，本文件据此把相应区域的动画置为停用。
+   组件内多为 scoped 样式，故统一用 !important 提升优先级覆盖。 */
+
+/* ===== 加载图标 / 旋转 ===== */
+html[data-anim-loader="off"] .el-loading-spinner,
+html[data-anim-loader="off"] .el-loading-mask .el-loading-spinner .circular,
+html[data-anim-loader="off"] .el-icon.is-loading,
+html[data-anim-loader="off"] .el-icon.is-loading::before,
+html[data-anim-loader="off"] .rotating,
+html[data-anim-loader="off"] .is-rotating,
+html[data-anim-loader="off"] .rule-detecting-tag svg,
+html[data-anim-loader="off"] .rule-hint-spinner,
+html[data-anim-loader="off"] .node-run-status.is-running,
+html[data-anim-loader="off"] .replay-tab-status.sending,
+html[data-anim-loader="off"] [class*="-spin"],
+html[data-anim-loader="off"] [class*="spinner"] {
+  animation: none !important;
+  transition: none !important;
+}
+
+/* ---- 装饰动效与过渡 ---- */
+/* 资产拓扑：连边流光、节点呼吸 */
+html[data-anim-decorative="off"] .edge-flow-line,
+html[data-anim-decorative="off"] .hub-status-dot {
+  animation: none !important;
+}
+
+/* 仪表盘：执行计划呼吸 */
+html[data-anim-decorative="off"] .execution-plan-list li.running > i {
+  animation: none !important;
+}
+
+/* 工作流：卡片浮现 / 全屏进入 */
+html[data-anim-decorative="off"] [class*="fluent-card"],
+html[data-anim-decorative="off"] [class*="fluent-fullscreen"] {
+  animation: none !important;
+  transition: none !important;
+}
+
+/* 路由内容淡入入场 */
+html[data-anim-decorative="off"] .desktop-v2-content.is-route-entering > * {
+  animation: none !important;
+}
+
+/* Element Plus 弹窗 / 消息 / 抽屉过渡：保留即时反馈，只在需要时关掉动画 */
+html[data-anim-decorative="off"] .el-dialog,
+html[data-anim-decorative="off"] .el-drawer,
+html[data-anim-decorative="off"] .el-message,
+html[data-anim-decorative="off"] .el-message-box,
+html[data-anim-decorative="off"] .el-popper,
+html[data-anim-decorative="off"] .el-fade-in-enter-active,
+html[data-anim-decorative="off"] .el-fade-in-leave-active,
+html[data-anim-decorative="off"] .el-zoom-in-center-enter-active,
+html[data-anim-decorative="off"] .el-zoom-in-center-leave-active,
+html[data-anim-decorative="off"] .el-zoom-in-top-enter-active,
+html[data-anim-decorative="off"] .el-zoom-in-top-leave-active {
+  transition: none !important;
+}
+html[data-anim-decorative="off"] .el-dialog,
+html[data-anim-decorative="off"] .el-drawer,
+html[data-anim-decorative="off"] .el-message,
+html[data-anim-decorative="off"] .el-message-box,
+html[data-anim-decorative="off"] .el-popper,
+html[data-anim-decorative="off"] .el-overlay,
+html[data-anim-decorative="off"] .el-overlay-dialog {
+  animation: none !important;
+}

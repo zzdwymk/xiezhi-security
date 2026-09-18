@@ -109,6 +109,17 @@
                 <artifactId>maven-compiler-plugin</artifactId>
                 <configuration>
                     <encoding>${project.build.sourceEncoding}</encoding>
+                    <!-- Lombok must run as an annotation processor, otherwise the generated
+                         getters/setters used across the codebase are missing at compile time.
+                         The explicit annotationProcessorPaths makes Lombok drive a real
+                         annotation-processing pass regardless of classpath/scope quirks. -->
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>1.18.46</version>
+                        </path>
+                    </annotationProcessorPaths>
                 </configuration>
             </plugin>
             <plugin>

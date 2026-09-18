@@ -154,6 +154,28 @@ function configuredThemeMode(settings = readDesktopSettings()) {
     : "system";
 }
 
+const DEFAULT_MOTION_FLAGS = {
+  startProgress: true,
+  startPulse: true,
+  loader: true,
+  decorative: true,
+};
+
+const MOTION_FLAG_KEYS = Object.keys(DEFAULT_MOTION_FLAGS);
+
+/** 读取持久化的动画偏好；未配置时返回 null（由渲染进程按系统补一个基线）。 */
+function configuredMotionFlags(settings = readDesktopSettings()) {
+  const stored = settings.motion;
+  if (
+    stored &&
+    typeof stored === "object" &&
+    MOTION_FLAG_KEYS.every((key) => typeof stored[key] === "boolean")
+  ) {
+    return { ...DEFAULT_MOTION_FLAGS, ...stored };
+  }
+  return null;
+}
+
 function applyThemeMode(mode) {
   const resolved = ["light", "dark"].includes(mode) ? mode : "system";
   nativeTheme.themeSource = resolved;
@@ -258,6 +280,22 @@ function applySystemThemeToStaticWindow(window, theme = currentSystemTheme()) {
     root.dataset.systemTheme = theme.dark ? 'dark' : 'light';
     root.dataset.captionMode = theme.captionMode;
     root.dataset.windowMaterial = theme.windowMaterial || 'none';
+  })()`;
+  void window.webContents.executeJavaScript(script).catch(() => {});
+}
+
+/** 把启动页动画偏好（跑马灯、脉冲点）写入 startup.html 根节点。 */
+function applyMotionToStartupWindow(window = startupWindow) {
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed())
+    return;
+  const flags = configuredMotionFlags();
+  // 未配置过动画偏好时，不写属性，交由 CSS 的 prefers-reduced-motion 媒体查询
+  // 决定是否开启动画（尊重系统无障碍设置）。
+  if (!flags) return;
+  const script = `(() => {
+    const root = document.documentElement;
+    root.dataset.animStartProgress = ${flags.startProgress ? "'on'" : "'off'"};
+    root.dataset.animStartPulse = ${flags.startPulse ? "'on'" : "'off'"};
   })()`;
   void window.webContents.executeJavaScript(script).catch(() => {});
 }
@@ -4031,10 +4069,423 @@ function postgresExecutablePath(targetDir) {
   return null;
 }
 
-// 返回 <tools>/postgresql 下已安装的 psql 所在 bin 目录，供后端访问；未安装返回 null。
+// 返回 <tools>/postgres 下已安装的 psql.exe 完整路径；未安装返回 null。
+function postgresExecutable(toolsDir) {
+  return postgresExecutablePath(path.join(toolsDir, "postgres"));
+}
+
+// 返回 <tools>/postgres 下已安装的 psql 所在 bin 目录（用于追加到后端 PATH）；未安装返回 null。
 function postgresBinDir(toolsDir) {
-  const executable = postgresExecutablePath(path.join(toolsDir, "postgres"));
+  const executable = postgresExecutable(toolsDir);
   return executable ? path.dirname(executable) : null;
+}
+
+// ---------------------------------------------------------------------------
+// 桌面内置 PostgreSQL 实例管理（一键迁移到 PostgreSQL）
+// ---------------------------------------------------------------------------
+// 用户选择“迁移到 PostgreSQL”后：
+//  1) 用 tools/postgres 内随附的 PostgreSQL 二进制 initdb 初始化私有数据簇；
+//  2) 在私有端口启动本地 postgres 服务（随机密码，凭据经系统安全存储加密保存）；
+//  3) 创建业务库；
+//  4) 重启后端，以 postgres profile 启动（首启附带旧 H2 文件，让其迁移数据）。
+// 数据簇位于用户数据目录下（不在 tools 目录），换目录/卸载工具不影响已有数据。
+const DESKTOP_PG_DATABASE = "security_toolbox";
+const DESKTOP_PG_USERNAME = "security_toolbox";
+const DESKTOP_PG_HOST = "127.0.0.1";
+// 内存标志：本次重启后端时是否携带旧 H2 文件让其迁移数据（一次性）。
+let desktopPgMigrateH2Url = null;
+
+// 把迁移过程推送给前端（订阅方通过 onPostgresMigrationProgress 接收）。
+function reportPgMigrationProgress(step, message) {
+  const target = mainWindow;
+  if (!target || target.isDestroyed()) return;
+  target.webContents.send("toolbox:postgres-migration-progress", {
+    ts: Date.now(),
+    step,
+    message: String(message || ""),
+  });
+}
+
+function desktopPostgresBinDir() {
+  const toolsDir = resolveToolsDirectory();
+  const executable = postgresExecutable(toolsDir);
+  return executable ? path.dirname(executable) : null;
+}
+
+function desktopPostgresDataDir() {
+  return path.join(app.getPath("userData"), "postgresql-cluster");
+}
+
+// 读取加密持久化的私有实例配置；未配置/未启用/无法解密时返回 undefined。
+function desktopPostgresConfig(settings = readDesktopSettings()) {
+  const stored =
+    settings.postgres && typeof settings.postgres === "object" ? settings.postgres : undefined;
+  if (!stored) return undefined;
+  const port = Number(stored.port);
+  let password = "";
+  if (stored.encryptedPassword && safeStorage.isEncryptionAvailable()) {
+    try {
+      password = safeStorage.decryptString(Buffer.from(String(stored.encryptedPassword), "base64"));
+    } catch {
+      password = "";
+    }
+  }
+  if (stored.enabled !== true || !Number.isSafeInteger(port) || !password) {
+    return undefined;
+  }
+  return {
+    enabled: true,
+    host: stored.host || DESKTOP_PG_HOST,
+    port,
+    database: stored.database || DESKTOP_PG_DATABASE,
+    username: stored.username || DESKTOP_PG_USERNAME,
+    password,
+  };
+}
+
+function saveDesktopPostgresConfig({ enabled, host, port, database, username, password }) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new UserFacingError("系统安全存储不可用，无法安全保存 PostgreSQL 凭据");
+  }
+  const settings = readDesktopSettings();
+  const existing =
+    settings.postgres && typeof settings.postgres === "object" ? settings.postgres : {};
+  const next = {
+    ...settings,
+    postgres: {
+      ...existing,
+      schemaVersion: 1,
+      enabled: Boolean(enabled),
+      host: String(host || DESKTOP_PG_HOST),
+      port: Number(port),
+      database: String(database || DESKTOP_PG_DATABASE),
+      username: String(username || DESKTOP_PG_USERNAME),
+      ...(password
+        ? { encryptedPassword: safeStorage.encryptString(String(password)).toString("base64") }
+        : {}),
+    },
+  };
+  writeDesktopSettings(next);
+  return desktopPostgresConfig(next);
+}
+
+function pgSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// 通用执行 PG 命令行工具，返回 stderr（成功时通常为空）。
+function pgRun(binary, args, options = {}) {
+  const { env = {}, timeoutMs = 180000 } = options;
+  return new Promise((resolve, reject) => {
+    let stderrBuf = "";
+    const child = spawn(binary, args, {
+      windowsHide: true,
+      env: { ...process.env, ...env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stderr.on("data", (c) => (stderrBuf += String(c)));
+    child.stdout.resume();
+    const timer = setTimeout(() => {
+      try {
+        killProcessTree(child.pid);
+      } catch {}
+      reject(new UserFacingError(`${path.basename(binary)} 执行超时`));
+    }, timeoutMs);
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(new UserFacingError(`无法启动 ${path.basename(binary)}：${error.message}`));
+    });
+child.once("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(String(stderrBuf));
+      else
+        reject(
+          new UserFacingError(
+            `${path.basename(binary)} 退出码 ${code}：${String(stderrBuf).slice(0, 600)}`,
+          ),
+        );
+    });
+  });
+}
+
+// 选择本地空闲端口（避开系统的 5432）。
+async function pickDesktopPostgresPort(start = 15432, end = 15499) {
+  async function isFree(port) {
+    return new Promise((resolve) => {
+      const server = net.createServer();
+      let settled = false;
+      const done = (free) => {
+        if (!settled) {
+          settled = true;
+          try {
+            server.close();
+          } catch {}
+          resolve(free);
+        }
+      };
+      server.once("error", () => done(false));
+      server.once("listening", () => done(true));
+      server.listen(port, "127.0.0.1");
+    });
+  }
+  for (let port = start; port <= end; port++) {
+    if (await isFree(port)) return port;
+  }
+  throw new UserFacingError("没有可用端口启动本地 PostgreSQL");
+}
+
+// 端口上是否有进程在监听（粗略判定：服务可用）。
+async function pgReachable(config) {
+  if (!config) return false;
+  const socket = net.connect({ host: config.host, port: config.port });
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      socket.destroy();
+      resolve(false);
+    }, 900);
+    socket.once("connect", () => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("error", () => {
+      clearTimeout(timer);
+      resolve(false);
+    });
+  });
+}
+
+function requirePostgresBinaries() {
+  const binDir = desktopPostgresBinDir();
+  if (!binDir) {
+    throw new UserFacingError("未检测到本地 PostgreSQL，请先在依赖页安装 PostgreSQL");
+  }
+  for (const name of ["initdb.exe", "pg_ctl.exe", "psql.exe"]) {
+    if (!fs.existsSync(path.join(binDir, name))) {
+      throw new UserFacingError("PostgreSQL 安装不完整，缺少 " + name);
+    }
+  }
+  return binDir;
+}
+
+// 用随机密码初始化私有数据簇（超级用户账号 = 应用账号，自带 LOGIN/CREATEDB）。
+async function initializeDesktopPostgresCluster(binDir, dataDir, username, password) {
+  // 先确保没有任何残留的 postgres 进程再清理目录，否则 rmSync 因句柄占用只删一部分，
+  // 留给 initdb 一个“存在但非空”的目录而失败。
+  try {
+    await pgRun(
+      path.join(binDir, "pg_ctl.exe"),
+      ["-D", dataDir, "stop", "-m", "fast"],
+      { timeoutMs: 15000 },
+    );
+  } catch {
+    // 没有正在运行的实例（或已停止），忽略。
+  }
+  await removeDesktopPostgresDir(dataDir);
+  fs.mkdirSync(dataDir, { recursive: true });
+  const pwFile = path.join(dataDir, ".pgpw.tmp");
+  fs.writeFileSync(pwFile, `${password}\n`, { encoding: "utf8", mode: 0o600 });
+  try {
+await pgRun(
+      path.join(binDir, "initdb.exe"),
+      [
+        "-D",
+        dataDir,
+        "--encoding=UTF8",
+        "--locale=C",
+        `--username=${username}`,
+        "--auth-host=scram-sha-256",
+        "--auth-local=scram-sha-256",
+        `--pwfile=${pwFile}`,
+      ],
+      { env: { LANG: "C", LC_ALL: "C", LC_CTYPE: "C" }, timeoutMs: 120000 },
+    );
+} finally {
+    try {
+      fs.rmSync(pwFile, { force: true });
+    } catch {}
+  }
+}
+
+// 反复删除数据目录，容忍“句柄暂未释放”导致的非空目录，最多重试数秒。
+async function removeDesktopPostgresDir(dataDir) {
+  const remove = () => fs.rmSync(dataDir, { recursive: true, force: true });
+  let attempt = 0;
+  for (;;) {
+    try {
+      remove();
+      if (!fs.existsSync(dataDir)) return;
+      if (attempt >= 20) break;
+    } catch {
+      if (attempt >= 20) throw new UserFacingError(`无法清理旧 PostgreSQL 数据目录：${dataDir}`);
+    }
+    await pgSleep(250);
+    attempt++;
+  }
+  // 目录在反复删除后仍存在：可能是进程句柄未释放，明确提示。
+  if (fs.existsSync(dataDir)) {
+    throw new UserFacingError(
+      `旧 PostgreSQL 数据目录仍被占用，无法迁移。请关闭安全工具箱后删除该目录再试：${dataDir}`,
+    );
+  }
+}
+
+async function startDesktopPostgres(binDir, dataDir, config) {
+  const logFile = path.join(app.getPath("userData"), "logs", "postgres.log");
+  fs.mkdirSync(path.dirname(logFile), { recursive: true });
+  const options = `-p ${config.port} -h ${config.host} -k "${dataDir}"`;
+  await pgRun(
+    path.join(binDir, "pg_ctl.exe"),
+    ["-D", dataDir, "-l", logFile, "-o", options, "start"],
+    { timeoutMs: 60000 },
+  );
+  for (let i = 0; i < 40; i++) {
+    if (await pgReachable(config)) return;
+    await pgSleep(300);
+  }
+  throw new UserFacingError("本地 PostgreSQL 启动后未在预期时间内就绪");
+}
+
+function pgEnv(config) {
+  return { PGPASSWORD: config.password };
+}
+
+// psql 工具全参数。
+function psqlBaseArgs(config, db, extra) {
+  return [
+    "-h", config.host, "-p", String(config.port), "-U", config.username, "-d", db,
+    ...(extra || []),
+  ];
+}
+
+// 以应用身份执行一条 SQL；用于建库等 DDL。
+async function pgExec(config, sql, db = config.database) {
+  await pgRun(
+    path.join(desktopPostgresBinDir(), "psql.exe"),
+    [...psqlBaseArgs(config, db), "-v", "ON_ERROR_STOP=1", "-c", sql],
+    { env: pgEnv(config) },
+  );
+}
+
+// 以应用身份查询，返回去掉两侧空白的输出。
+function pgQuery(config, sql, db = config.database) {
+  return new Promise((resolve, reject) => {
+    const psql = spawn(
+      path.join(desktopPostgresBinDir(), "psql.exe"),
+      [...psqlBaseArgs(config, db, ["-A", "-t"]), "-c", sql],
+      { env: { ...process.env, ...pgEnv(config) }, windowsHide: true },
+    );
+    let out = "";
+    let err = "";
+    psql.stdout.on("data", (c) => (out += String(c)));
+    psql.stderr.on("data", (c) => (err += String(c)));
+    psql.on("close", (code) => {
+      if (code === 0) resolve(out.trim());
+      else reject(new Error("psql 查询失败: " + String(err).slice(0, 400)));
+    });
+    psql.on("error", (e) => reject(new Error("无法启动 psql: " + e.message)));
+  });
+}
+
+// 幂等建库（库所有者 = 应用账号）。
+async function ensureDesktopPostgresDatabase(config) {
+  const { username, database } = config;
+  const exists = (await pgQuery(config, `SELECT 1 FROM pg_database WHERE datname = '${database}'`, "postgres")) === "1";
+  if (!exists) {
+    await pgExec(config, `CREATE DATABASE ${database} OWNER ${username}`, "postgres");
+  }
+}
+
+async function stopDesktopPostgres() {
+  const binDir = desktopPostgresBinDir();
+  const dataDir = desktopPostgresDataDir();
+  if (!binDir || !fs.existsSync(path.join(dataDir, "PG_VERSION"))) return;
+  try {
+    await pgRun(path.join(binDir, "pg_ctl.exe"), ["-D", dataDir, "stop", "-m", "fast"], {});
+  } catch {
+    // 尽力而为
+  }
+}
+
+// 旧 H2 文件库 URL（供后端在 postgres 首启时迁移数据）。
+function desktopH2MigrateUrl() {
+  const dataDir = path.join(app.getPath("userData"), "data");
+  return `jdbc:h2:file:${path.join(dataDir, "security-toolbox").replace(/\\/g, "/")};MODE=PostgreSQL;AUTO_SERVER=TRUE`;
+}
+
+// 一键迁移编排：初始化/启动/建库并持久化配置；copyH2 为真时让后端迁移旧数据。
+async function migrateDesktopToPostgres({ copyH2 } = {}) {
+  const existing = desktopPostgresConfig();
+  const binDir = requirePostgresBinaries();
+  const dataDir = desktopPostgresDataDir();
+
+let config = existing;
+  if (config && (await pgReachable(config))) {
+    reportPgMigrationProgress("reuse", "检测到本地 PostgreSQL 已在运行，直接复用");
+  } else {
+    const password = existing?.password || generatedDesktopSecret(24);
+    const username = existing?.username || DESKTOP_PG_USERNAME;
+    const port = existing?.port || (await pickDesktopPostgresPort());
+    if (!fs.existsSync(path.join(dataDir, "PG_VERSION"))) {
+      reportPgMigrationProgress("cleaning", "清理旧数据目录并初始化新数据簇");
+      await initializeDesktopPostgresCluster(binDir, dataDir, username, password);
+      reportPgMigrationProgress("official-initdb", "initdb 完成，数据簇已初始化");
+    } else {
+      reportPgMigrationProgress("reuse-cluster", "检测到已有数据簇，直接复用");
+    }
+    config = saveDesktopPostgresConfig({
+      enabled: true,
+      host: DESKTOP_PG_HOST,
+      port,
+      database: DESKTOP_PG_DATABASE,
+      username,
+      password,
+    });
+    reportPgMigrationProgress("starting", `启动本地 PostgreSQL（端口 ${port}）`);
+    await startDesktopPostgres(binDir, dataDir, config);
+    reportPgMigrationProgress("started", "PostgreSQL 已就绪");
+  }
+  reportPgMigrationProgress("ensure-db", `创建业务库 ${config.database}`);
+  await ensureDesktopPostgresDatabase(config);
+  desktopPgMigrateH2Url = copyH2 ? desktopH2MigrateUrl() : null;
+  reportPgMigrationProgress(
+    copyH2 ? "migrating" : "ready",
+    copyH2 ? "后端将把 H2 历史数据迁入 PostgreSQL" : "后端将切换到 PostgreSQL",
+  );
+  return config;
+}
+
+// 前端可见状态（不含凭据）。
+function publicPostgresMigrationState(settings = readDesktopSettings()) {
+  const config = desktopPostgresConfig(settings);
+  return {
+    available: Boolean(desktopPostgresBinDir()),
+    configured: Boolean(config),
+    enabled: config?.enabled === true,
+    running: Boolean(config) && Boolean(config?.port),
+    port: config?.port || null,
+    database: config?.database || DESKTOP_PG_DATABASE,
+  };
+}
+
+// 供 startBackend 判断数据源：返回启用状态的配置（含凭据，仅供主进程内部使用）。
+function activeDesktopPostgresConfig() {
+  return desktopPostgresConfig() || null;
+}
+
+function takeDesktopPgMigrateH2Url() {
+  const url = desktopPgMigrateH2Url;
+  desktopPgMigrateH2Url = null;
+  return url;
+}
+
+// 计算后端启动时的数据源 JVM 参数：启用 PostgreSQL 时激活 postgres profile（连接信息
+// 由环境变量 SPRING_PROFILES_ACTIVE/DB_URL/DB_USERNAME/DB_PASSWORD 提供），否则用 H2。
+function desktopBackendDatasourceArgs({ databasePath }) {
+  if (activeDesktopPostgresConfig()) {
+    return ["--spring.profiles.active=postgres"];
+  }
+  return [`--spring.datasource.url=jdbc:h2:file:${databasePath};MODE=PostgreSQL;AUTO_SERVER=TRUE`];
 }
 
 // 源码树便携包（sqlmap）：解压出的是一棵含顶层目录的源码树，且原生入口是 python
@@ -5029,6 +5480,22 @@ handleRendererIpc("toolbox:set-theme-mode", (event, mode) => {
   broadcastSystemTheme();
   return configuredThemeMode();
 });
+handleRendererIpc("toolbox:get-motion-settings", (event) => {
+  assertMainRenderer(event);
+  return configuredMotionFlags();
+});
+handleRendererIpc("toolbox:set-motion-settings", (event, flags) => {
+  assertMainRenderer(event);
+  const next = { ...DEFAULT_MOTION_FLAGS };
+  if (flags && typeof flags === "object") {
+    for (const key of MOTION_FLAG_KEYS) {
+      if (typeof flags[key] === "boolean") next[key] = flags[key];
+    }
+  }
+  writeDesktopSettings({ ...readDesktopSettings(), motion: next });
+  applyMotionToStartupWindow();
+  return next;
+});
 function updateTaskbarProgress(progress, options) {
   const win = mainWindow || startupWindow;
   if (!win || win.isDestroyed()) return;
@@ -5211,6 +5678,46 @@ handleRendererIpc("toolbox:control-dependency-install", (event, payload) => {
 handleRendererIpc("toolbox:uninstall-dependency", (event, packageId) => {
   assertMainRenderer(event);
   return uninstallPortableDependency(String(packageId));
+});
+handleRendererIpc("toolbox:get-postgres-migration-state", (event) => {
+  assertMainRenderer(event);
+  return publicPostgresMigrationState();
+});
+handleRendererIpc("toolbox:migrate-to-postgres", async (event, payload = {}) => {
+  assertMainRenderer(event);
+  const options = typeof payload === "object" && payload ? payload : {};
+  try {
+    const config = await migrateDesktopToPostgres({ copyH2: options.copyH2 === true });
+    reportPgMigrationProgress("restarting", "正在重启后端以切换数据源");
+    await restartBackend();
+    reportPgMigrationProgress("done", "迁移完成，后端已切换");
+    return {
+      host: config.host,
+      port: config.port,
+      database: config.database,
+      status: "migrated",
+    };
+  } catch (error) {
+    reportPgMigrationProgress(
+      "error",
+      error instanceof Error ? error.message : String(error),
+    );
+    throw error;
+  }
+});
+handleRendererIpc("toolbox:rollback-from-postgres", async (event) => {
+  assertMainRenderer(event);
+  const settings = readDesktopSettings();
+  writeDesktopSettings({
+    ...settings,
+    postgres: {
+      ...(settings.postgres && typeof settings.postgres === "object" ? settings.postgres : {}),
+      enabled: false,
+    },
+  });
+  await stopDesktopPostgres();
+  await restartBackend();
+  return publicPostgresMigrationState();
 });
 handleRendererIpc("toolbox:get-ai-settings", (event) => {
   assertMainRenderer(event);
@@ -6149,7 +6656,7 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
     SQLMAP_PATH: sqlmapBackendPath(toolsDir),
     MSF_PATH: msfBackendPath(toolsDir),
     ZAP_PATH: zapBackendPath(toolsDir),
-    POSTGRES_PATH: postgresBinDir(toolsDir) || "psql",
+    POSTGRES_PATH: postgresExecutable(toolsDir) || "psql",
     ZAP_HOST: "127.0.0.1",
     ZAP_PORT: "8090",
     PATH: [
@@ -6180,6 +6687,19 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
     if (portableNmapPath) backendEnv.NMAP_PATH = portableNmapPath;
     else delete backendEnv.NMAP_PATH;
   }
+  // 迁移到 PostgreSQL 后，以后端 postgres profile 启动：注入连接信息；若本次内存标志
+  // 置有旧 H2 迁移 URL，则一并注入让后端把历史数据拷贝进 PostgreSQL。
+  const desktopPostgres = activeDesktopPostgresConfig();
+  if (desktopPostgres) {
+    backendEnv.SPRING_PROFILES_ACTIVE = "postgres";
+    backendEnv.DB_URL = `jdbc:postgresql://${desktopPostgres.host}:${desktopPostgres.port}/${desktopPostgres.database}`;
+    backendEnv.DB_USERNAME = desktopPostgres.username;
+    backendEnv.DB_PASSWORD = desktopPostgres.password;
+    const migrateUrl = takeDesktopPgMigrateH2Url();
+    if (migrateUrl) {
+      backendEnv.LEGACY_H2_MIGRATE_URL = migrateUrl;
+    }
+  }
   const child = spawn(
     java,
     [
@@ -6197,7 +6717,7 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
       "--spring.main.lazy-initialization=true",
       "--server.address=127.0.0.1",
       `--server.port=${port}`,
-      `--spring.datasource.url=jdbc:h2:file:${databasePath};MODE=PostgreSQL;AUTO_SERVER=TRUE`,
+      ...desktopBackendDatasourceArgs({ databasePath }),
     ],
     {
       cwd: userDataDir,
@@ -6437,9 +6957,11 @@ function createStartupWindow() {
   startupWindow.loadFile(startupEntry);
   startupWindow.webContents.on("did-finish-load", () => {
     applySystemThemeToStaticWindow(startupWindow);
+    applyMotionToStartupWindow(startupWindow);
   });
   startupWindow.once("ready-to-show", () => {
     applySystemThemeToStaticWindow(startupWindow);
+    applyMotionToStartupWindow(startupWindow);
     startupWindow.show();
   });
 }
