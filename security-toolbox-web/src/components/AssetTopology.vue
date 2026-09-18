@@ -497,7 +497,14 @@ function resolveAssetParents(assets: DiscoveryResult[]): Map<number, number> {
   const parentOf = new Map<number, number>();
   groups.forEach((group) => {
     if (group.length < 2) return;
+    // 优先以真实的根 URL 资产（probe/path 且无路径）作为父主机，而不是授权
+    // 目标占位节点：授权占位只代表“项目登记的靶点”，并非实际探测到的主机，
+    // 若以它当父节点会让连线多出一层（target → 真正根主机 → 子路径）。
+    // 仅当组内没有可当主机的真实根 URL 时，才回退把授权占位当作父节点汇聚。
     const host =
+      group.find(
+        (asset) => getAssetKind(asset) !== "target" && assetUrlPathOf(asset) === "",
+      ) ||
       group.find((asset) => getAssetKind(asset) === "target") ||
       group.find((asset) => assetUrlPathOf(asset) === "") ||
       null;
