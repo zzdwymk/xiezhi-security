@@ -215,8 +215,10 @@ const packageId =
                       : item.name === "Metasploit"
                         ? "msf"
                         : item.name === "OWASP ZAP"
-                          ? "zap"
-                          : undefined;
+                      ? "zap"
+                      : item.name === "PostgreSQL"
+                        ? "postgres"
+                        : undefined;
       return {
         ...item,
         packageId,

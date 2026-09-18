@@ -1252,7 +1252,7 @@ const INSTALLABLE_PACKAGES = Object.freeze({
     portableTree: true,
     repository: "zaproxy/zaproxy",
     executable: "zap.bat",
-    // 相对解压后根目录的启动脚本路径（解压出的 zap 顶层目录名可变，运行时探测）。
+    // 相对解压后根目录的启动脚本路径（解压出的顶层目录名可变，运行时探测）。
     executableSearchNames: ["zap.bat", "zap.sh"],
     // GitHub release 里的跨平台 zip（含 Windows 启动脚本 zap.bat / Linux zap.sh）。
     // ZAP 2.x 的 Windows 资产是 .exe 安装器（无 zip），且较新版本不再发布独立 windows.zip，
@@ -1265,6 +1265,28 @@ const INSTALLABLE_PACKAGES = Object.freeze({
     releaseMode: "latest-semver-match",
     maxArchiveBytes: 900 * 1024 * 1024,
     maxExtractedBytes: 3 * 1024 * 1024 * 1024,
+  }),
+  postgres: Object.freeze({
+    id: "postgres",
+    optional: true,
+    // 便携安装：PostgreSQL 官方 Windows 压缩包（EDB binaries zip）解压即可用，
+    // 无需管理员权限与系统服务注册。压缩包根部是 <pgsql> 目录（含 bin/lib/share 等），
+    // psql 位于 <target>/<pgsql>/bin/psql.exe，解压后放在 <tools>/postgresql 下。
+    portableTree: true,
+    repository: "postgresql-windows-binaries",
+    executable: "psql.exe",
+    // 固定主版本（“主最新稳定版”）。EDB 的 binaries 下载地址没有可靠的“最新”REST API，
+    // 因此这里固化主版本号，改版时人工升级。压缩包 URL 遵循官方 pattern：
+    //   https://get.enterprisedb.com/postgresql/postgresql-<X.Y.Z>-1-windows-x64-binaries.zip
+    version: "18.6",
+    pinnedUrl:
+      "https://get.enterprisedb.com/postgresql/postgresql-18.6-1-windows-x64-binaries.zip",
+    allowedHosts: ["get.enterprisedb.com"],
+    // 固定版本源的“最新版本”与已装版本一致；若两者相等即视为最新，简单可靠。
+    releaseMode: "pinned",
+    maxArchiveBytes: 900 * 1024 * 1024,
+    maxExtractedBytes: 3 * 1024 * 1024 * 1024,
+    maxFiles: 40000,
   }),
 });
 
@@ -2831,6 +2853,45 @@ async function resolveGithubSourceArchive(definition) {
   return value;
 }
 
+// 固定地址的便携源（如 PostgreSQL 官方 EDB binaries zip）：没有可靠的“最新版”REST API，
+// 版本号与下载地址均由定义固化。返回与其它 release 同构的对象，供统一的下载/解压流程使用。
+async function resolvePinnedPortablePackage(definition) {
+  const cached = latestPackageCache.get(definition.id);
+  if (cached && Date.now() - cached.cachedAt < 30 * 60 * 1000)
+    return cached.value;
+
+  const version = String(definition.version || "").trim();
+  const pinnedUrl = String(definition.pinnedUrl || "").trim();
+  if (!/^\d+\.\d+(?:\.\d+)?$/.test(version) || !/^https:\/\//.test(pinnedUrl)) {
+    throw new UserFacingError("固定版本的下载地址配置无效");
+  }
+  const parsed = new URL(pinnedUrl);
+  if (
+    parsed.protocol !== "https:" ||
+    !definition.allowedHosts.includes(parsed.hostname.toLowerCase())
+  ) {
+    throw new UserFacingError("固定版本的下载地址未在允许清单中");
+  }
+  const archiveName = parsed.pathname.split("/").pop();
+  if (!/\.zip$/i.test(archiveName)) {
+    throw new UserFacingError("固定版本的下载地址必须是 zip 压缩包");
+  }
+  const value = {
+    version,
+    tag: version,
+    repository: definition.repository,
+    url: pinnedUrl,
+    mirrorHost: parsed.hostname.toLowerCase(),
+    // 校验方式：安装时计算并写入包 SHA-256 存底（EDB 未提供独立校验文件）。
+    sha256: "",
+    integritySource: "official-binaries-archive",
+    archiveName,
+    size: 0,
+  };
+  latestPackageCache.set(definition.id, { cachedAt: Date.now(), value });
+  return value;
+}
+
 async function refreshPortableDependencyCatalog({
   packageId,
   release,
@@ -3444,10 +3505,13 @@ async function installPortableDependency(
       session.lastProgress = progress;
       reportProgress(progress);
     };
-    report("正在查询官方最新版本", 1, 0, 0, { progressDeterminate: false });
-    const release = definition.githubSourceArchive === true
-      ? await resolveGithubSourceArchive(definition)
-      : await resolveLatestPackage(definition);
+    report("正在准备官方下载地址", 1, 0, 0, { progressDeterminate: false });
+    const release =
+      definition.pinnedUrl != null
+        ? await resolvePinnedPortablePackage(definition)
+        : definition.githubSourceArchive === true
+          ? await resolveGithubSourceArchive(definition)
+          : await resolveLatestPackage(definition);
     const toolsDir = resolveToolsDirectory();
     const downloadsDir = path.join(toolsDir, ".downloads");
     const stagingRoot = path.join(toolsDir, ".staging");
@@ -3497,10 +3561,12 @@ async function installPortableDependency(
       );
       const payloadExists = isRegularFile(
         definition.portableTree === true
-          ? findExecutableInTree(
-              targetDir,
-              definition.executableSearchNames || [definition.executable],
-            ) || targetExecutable
+          ? (definition.id === "postgres"
+              ? postgresExecutablePath(targetDir)
+              : findExecutableInTree(
+                  targetDir,
+                  definition.executableSearchNames || [definition.executable],
+                )) || targetExecutable
           : targetExecutable,
       );
       const installedState = evaluateInstalledRelease({
@@ -3552,16 +3618,18 @@ async function installPortableDependency(
         expectedSha256: release.sha256,
         expectedSize: release.size,
         maxBytes: definition.maxArchiveBytes || 150 * 1024 * 1024,
-        allowedHosts: [
-          "github.com",
-          "release-assets.githubusercontent.com",
-          "objects.githubusercontent.com",
-          // 源码树便携包从 codeload / objects CDN 拉取官方 zip。
-          ...(definition.githubSourceArchive === true
-            ? ["codeload.github.com", "objects.githubusercontent.com"]
-            : []),
-          release.mirrorHost,
-        ].filter(Boolean),
+        allowedHosts: definition.pinnedUrl
+          ? definition.allowedHosts
+          : [
+              "github.com",
+              "release-assets.githubusercontent.com",
+              "objects.githubusercontent.com",
+              // 源码树便携包从 codeload / objects CDN 拉取官方 zip。
+              ...(definition.githubSourceArchive === true
+                ? ["codeload.github.com", "objects.githubusercontent.com"]
+                : []),
+              release.mirrorHost,
+            ].filter(Boolean),
         signal: session.controller.signal,
         onProgress: (progress) => {
           const receivedBytes = Number(progress.receivedBytes || 0);
@@ -3613,7 +3681,12 @@ async function installPortableDependency(
                 maxExtractedBytes:
                   definition.maxExtractedBytes || 3 * 1024 * 1024 * 1024,
                 stagingDir,
-                label: packageId === "zap" ? "ZAP" : "sqlmap",
+                label:
+                  packageId === "zap"
+                    ? "ZAP"
+                    : packageId === "postgres"
+                      ? "PostgreSQL"
+                      : "sqlmap",
               }
             : {
                 archivePath,
@@ -3886,13 +3959,15 @@ function portableDependencyInstallState(definition, toolsDir) {
   const metadata = readJsonFile(
     path.join(targetDir, ".toolbox-source.json"),
   );
-  // 便携树包（如 ZAP）把整个目录解压进 targetDir，启动脚本可能在顶层或内层子目录。
+  // 便携树包（如 ZAP、PostgreSQL）把整个目录解压进 targetDir，启动脚本可能在顶层或内层子目录。
   const resolvedExecutable =
     definition.portableTree === true
-      ? findExecutableInTree(
-          targetDir,
-          definition.executableSearchNames || [definition.executable],
-        ) || targetExecutable
+      ? (definition.id === "postgres"
+          ? postgresExecutablePath(targetDir)
+          : findExecutableInTree(
+              targetDir,
+              definition.executableSearchNames || [definition.executable],
+            )) || targetExecutable
       : targetExecutable;
   const state = evaluateInstalledRelease({
     metadata,
@@ -3929,6 +4004,37 @@ function findExecutableInTree(root, names) {
     /* ignore unreadable trees */
   }
   return null;
+}
+
+// EDB 官方 PostgreSQL windows binaries 压缩包根部是一个 <pgsql> 目录（含 bin/lib/share），
+// psql 位于 <root>/<pgsql>/bin/psql.exe。这里在 targetDir 下兜底定位 psql.exe，
+// 容忍顶层目录名变化（兼容 <pgsql>\bin、<bin> 等布局）。
+function postgresExecutablePath(targetDir) {
+  const executableName = process.platform === "win32" ? "psql.exe" : "psql";
+  const candidates = [
+    path.join(targetDir, "bin", executableName),
+    path.join(targetDir, "pgsql", "bin", executableName),
+    path.join(targetDir, "pgsql", executableName),
+  ];
+  for (const candidate of candidates) {
+    if (isRegularFile(candidate)) return candidate;
+  }
+  try {
+    for (const child of fs.readdirSync(targetDir)) {
+      if (child.startsWith(".")) continue;
+      const nested = path.join(targetDir, child, "bin", executableName);
+      if (isRegularFile(nested)) return nested;
+    }
+  } catch {
+    /* ignore unreadable trees */
+  }
+  return null;
+}
+
+// 返回 <tools>/postgresql 下已安装的 psql 所在 bin 目录，供后端访问；未安装返回 null。
+function postgresBinDir(toolsDir) {
+  const executable = postgresExecutablePath(path.join(toolsDir, "postgres"));
+  return executable ? path.dirname(executable) : null;
 }
 
 // 源码树便携包（sqlmap）：解压出的是一棵含顶层目录的源码树，且原生入口是 python
@@ -6043,6 +6149,7 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
     SQLMAP_PATH: sqlmapBackendPath(toolsDir),
     MSF_PATH: msfBackendPath(toolsDir),
     ZAP_PATH: zapBackendPath(toolsDir),
+    POSTGRES_PATH: postgresBinDir(toolsDir) || "psql",
     ZAP_HOST: "127.0.0.1",
     ZAP_PORT: "8090",
     PATH: [
@@ -6057,6 +6164,7 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
         ? path.dirname(zapBackendPath(toolsDir))
         : path.join(toolsDir, "zap"),
       path.join(toolsDir, "sqlmap"),
+      postgresBinDir(toolsDir) || path.join(toolsDir, "postgres", "bin"),
       // Metasploit 经 junction 暴露于 tools\metasploit-framework，其后端
       // PATH 探测也能命中 msfconsole（位于其 bin 目录）。
       path.join(toolsDir, "metasploit-framework", "metasploit-framework", "bin"),

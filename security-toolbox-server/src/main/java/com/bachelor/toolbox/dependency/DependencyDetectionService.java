@@ -579,10 +579,81 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
   }
 
   private List<String> postgresqlCandidates(boolean windows) {
-    List<String> candidates = new ArrayList<>();
+    LinkedHashSet<String> candidates = new LinkedHashSet<>();
+    String explicit = System.getenv("POSTGRES_PATH");
+    if (explicit != null && !explicit.isBlank() && !"psql".equalsIgnoreCase(explicit.trim())) {
+      candidates.add(explicit.trim());
+    }
+    findPsqlInTools(candidates, windows);
     candidates.add(windows ? "psql.exe" : "psql");
     candidates.add("psql");
-    return candidates;
+    return new ArrayList<>(candidates);
+  }
+
+  // 在 tools 目录下定位 PostgreSQL psql.exe（EDB 官方 binaries 压缩包解压为
+  // <tools>/postgresql/<pgsql>/bin/psql.exe，顶层目录名可变）。
+  private void findPsqlInTools(LinkedHashSet<String> candidates, boolean windows) {
+    String targetName = windows ? "psql.exe" : "psql";
+    List<Path> searchRoots = new ArrayList<>();
+    Path toolsDir = toolsRoot();
+    if (toolsDir != null) {
+      searchRoots.add(toolsDir);
+    }
+    searchRoots.add(Path.of("tools"));
+    for (Path root : searchRoots) {
+      try {
+        if (!Files.isDirectory(root)) {
+          continue;
+        }
+        Path postgresRoot = root.resolve("postgresql");
+        if (!Files.isDirectory(postgresRoot)) {
+          postgresRoot = root.resolve("postgres");
+        }
+        if (Files.isDirectory(postgresRoot)) {
+          addPsqlCandidates(candidates, postgresRoot, targetName);
+        }
+        try (var stream = Files.list(root)) {
+          stream
+              .filter(
+                  p ->
+                      Files.isDirectory(p)
+                          && p.getFileName()
+                              .toString()
+                              .toLowerCase(Locale.ROOT)
+                              .contains("postgres"))
+              .forEach(dir -> addPsqlCandidates(candidates, dir, targetName));
+        } catch (Exception ignored) {
+        }
+      } catch (Exception ignored) {
+      }
+    }
+  }
+
+  private void addPsqlCandidates(
+      LinkedHashSet<String> candidates, Path dir, String targetName) {
+    List<Path> probes = new ArrayList<>();
+    probes.add(dir.resolve("bin").resolve(targetName));
+    probes.add(dir.resolve("pgsql").resolve("bin").resolve(targetName));
+    probes.add(dir.resolve(targetName));
+    probes.add(dir.resolve("pgsql").resolve(targetName));
+    for (Path probe : probes) {
+      if (Files.isRegularFile(probe)) {
+        candidates.add(probe.toAbsolutePath().normalize().toString());
+      }
+    }
+    // 容忍任意顶层子目录名（<pgsql>/bin 等）。
+    try (var stream = Files.list(dir)) {
+      stream
+          .filter(Files::isDirectory)
+          .forEach(
+              sub -> {
+                Path nested = sub.resolve("bin").resolve(targetName);
+                if (Files.isRegularFile(nested)) {
+                  candidates.add(nested.toAbsolutePath().normalize().toString());
+                }
+              });
+    } catch (Exception ignored) {
+    }
   }
 
   private List<String> scannerCandidates(String envName, String... fallback) {
