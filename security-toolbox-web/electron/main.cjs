@@ -4173,6 +4173,22 @@ function pgSleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// 清除已启用的 PostgreSQL 标记（用于启动期探测不可达时回退 H2，避免反复失败）。
+function disableDesktopPostgres() {
+  const settings = readDesktopSettings();
+  const postgres =
+    settings.postgres && typeof settings.postgres === "object"
+      ? settings.postgres
+      : {};
+  // 仅当开启了才写，减少无谓的磁盘写入。
+  if (postgres.enabled === true) {
+    writeDesktopSettings({
+      ...settings,
+      postgres: { ...postgres, enabled: false },
+    });
+  }
+}
+
 // 通用执行 PG 命令行工具，返回 stderr（成功时通常为空）。
 function pgRun(binary, args, options = {}) {
   const { env = {}, timeoutMs = 180000 } = options;
@@ -4283,7 +4299,7 @@ async function initializeDesktopPostgresCluster(binDir, dataDir, username, passw
   }
   await removeDesktopPostgresDir(dataDir);
   fs.mkdirSync(dataDir, { recursive: true });
-  const pwFile = path.join(dataDir, ".pgpw.tmp");
+  const pwFile = path.join(path.dirname(dataDir), ".pgpw.tmp");
   fs.writeFileSync(pwFile, `${password}\n`, { encoding: "utf8", mode: 0o600 });
   try {
 await pgRun(
@@ -4334,16 +4350,62 @@ async function startDesktopPostgres(binDir, dataDir, config) {
   const logFile = path.join(app.getPath("userData"), "logs", "postgres.log");
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
   const options = `-p ${config.port} -h ${config.host} -k "${dataDir}"`;
-  await pgRun(
+  // 用 stdio:"ignore" 启动 pg_ctl，避免 postgres 服务进程继承其管道句柄：
+  // 即便 pg_ctl 已退出，postgres 仍可能占着管道导致 Electron 收不到 close 而误报超时。
+  const ctl = spawn(
     path.join(binDir, "pg_ctl.exe"),
-    ["-D", dataDir, "-l", logFile, "-o", options, "start"],
-    { timeoutMs: 60000 },
+    ["-D", dataDir, "-l", logFile, "-o", options, "-w", "start"],
+    { windowsHide: true, stdio: "ignore" },
   );
-  for (let i = 0; i < 40; i++) {
-    if (await pgReachable(config)) return;
-    await pgSleep(300);
+  let ctlError = "";
+  ctl.on("error", (err) => {
+    ctlError = err.message;
+  });
+  ctl.unref?.();
+
+  for (let i = 0; i < 80; i++) {
+    // 仅 TCP 可连不代表 PG 已完成崩溃恢复；必须能真正执行 SQL 才视为就绪，
+    // 否则 psql 会报 “FATAL: the database system is starting up”。
+    if (await pgSqlReady(config)) return;
+    await pgSleep(400);
   }
-  throw new UserFacingError("本地 PostgreSQL 启动后未在预期时间内就绪");
+  let tail = "";
+  try {
+    if (fs.existsSync(logFile)) {
+      tail = fs
+        .readFileSync(logFile, "utf8")
+        .split(/\r?\n/)
+        .slice(-12)
+        .join("\n");
+    }
+  } catch {}
+  throw new UserFacingError(
+    ctlError
+      ? `无法启动本地 PostgreSQL：${ctlError}`
+      : `本地 PostgreSQL 启动后未在预期时间内就绪。日志：\n${tail}`,
+  );
+}
+
+// 应用启动 / 后端重启时，确保已启用但尚未运行的本地 PostgreSQL 先起来，
+// 否则后台以 postgres 数据源启动会因连接被拒而失败。
+async function ensureDesktopPostgresRunning() {
+  const config = activeDesktopPostgresConfig();
+  if (!config || config.enabled !== true) return;
+  if (!(await pgReachable(config))) {
+    const binDir = requirePostgresBinaries();
+    const dataDir = desktopPostgresDataDir();
+    if (!fs.existsSync(path.join(dataDir, "PG_VERSION"))) {
+      throw new UserFacingError("未初始化 PostgreSQL 数据簇，请先在依赖页重新迁移");
+    }
+    await startDesktopPostgres(binDir, dataDir, config);
+  }
+  // 等待真正能执行 SQL（PG 崩溃恢复期只接受 TCP，但会拒绝查询）。
+  for (let i = 0; i < 80; i++) {
+    if (await pgSqlReady(config)) break;
+    await pgSleep(400);
+  }
+  // 服务就绪后幂等地确保业务库存在（迁移中途失败时数据库可能尚未创建）。
+  await ensureDesktopPostgresDatabase(config);
 }
 
 function pgEnv(config) {
@@ -4383,7 +4445,36 @@ function pgQuery(config, sql, db = config.database) {
       if (code === 0) resolve(out.trim());
       else reject(new Error("psql 查询失败: " + String(err).slice(0, 400)));
     });
-    psql.on("error", (e) => reject(new Error("无法启动 psql: " + e.message)));
+psql.on("error", (e) => reject(new Error("无法启动 psql: " + e.message)));
+  });
+}
+
+// 真正能执行 SQL 才算就绪（PG 崩溃恢复期只接受 TCP，但会拒绝查询）。
+function pgSqlReady(config) {
+  return new Promise((resolve) => {
+    try {
+      const psql = spawn(
+        path.join(desktopPostgresBinDir(), "psql.exe"),
+        [...psqlBaseArgs(config, "postgres", ["-A", "-t", "-q"]), "-c", "SELECT 1"],
+        { env: { ...process.env, ...pgEnv(config) }, windowsHide: true },
+      );
+      let timer = setTimeout(() => {
+        try {
+          psql.kill();
+        } catch {}
+        resolve(false);
+      }, 4000);
+      psql.once("error", () => {
+        clearTimeout(timer);
+        resolve(false);
+      });
+      psql.once("close", (code) => {
+        clearTimeout(timer);
+        resolve(code === 0);
+      });
+    } catch {
+      resolve(false);
+    }
   });
 }
 
@@ -4482,10 +4573,47 @@ function takeDesktopPgMigrateH2Url() {
 // 计算后端启动时的数据源 JVM 参数：启用 PostgreSQL 时激活 postgres profile（连接信息
 // 由环境变量 SPRING_PROFILES_ACTIVE/DB_URL/DB_USERNAME/DB_PASSWORD 提供），否则用 H2。
 function desktopBackendDatasourceArgs({ databasePath }) {
-  if (activeDesktopPostgresConfig()) {
+  // 只有 PostgreSQL 确实可连接时才用 postgres 数据源；否则回退 H2，避免因本地 PG
+  // 未就绪/已崩溃导致后端无法启动（冷启动阶段此时必须同步判断）。
+  const config = activeDesktopPostgresConfig();
+  if (config && pgPortOpenSync(config)) {
     return ["--spring.profiles.active=postgres"];
   }
-  return [`--spring.datasource.url=jdbc:h2:file:${databasePath};MODE=PostgreSQL;AUTO_SERVER=TRUE`];
+  if (config) {
+    writeDesktopStartupDiagnostic(
+      "postgres-datasource-fallback",
+      new Error(
+        `已启用 MySQL/PostgreSQL 但本地服务不可达（${config.host}:${config.port}），本次回退 H2 启动`,
+      ),
+      { host: config.host, port: config.port },
+    );
+  }
+  return [
+    `--spring.datasource.url=jdbc:h2:file:${databasePath};MODE=PostgreSQL;AUTO_SERVER=TRUE`,
+  ];
+}
+
+// 同步探测端口是否有进程监听（用于启动期数据源选择；确认可连接即视为就绪）。
+function pgPortOpenSync(host, port) {
+  try {
+    const script =
+      "const n=require('net');const s=n.connect(" +
+      port +
+      ",'" +
+      String(host).replace(/'/g, "\\'") +
+      "');" +
+      "const t=setTimeout(()=>{process.exit(1)},1200);" +
+      "s.once('connect',()=>{clearTimeout(t);process.exit(0)});" +
+      "s.once('error',()=>{clearTimeout(t);process.exit(1)})";
+    const result = spawnSync(process.execPath, ["-e", script], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 2000,
+    });
+    return result.status === 0;
+  } catch {
+    return false;
+  }
 }
 
 // 源码树便携包（sqlmap）：解压出的是一棵含顶层目录的源码树，且原生入口是 python
@@ -6691,13 +6819,25 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
   // 置有旧 H2 迁移 URL，则一并注入让后端把历史数据拷贝进 PostgreSQL。
   const desktopPostgres = activeDesktopPostgresConfig();
   if (desktopPostgres) {
-    backendEnv.SPRING_PROFILES_ACTIVE = "postgres";
-    backendEnv.DB_URL = `jdbc:postgresql://${desktopPostgres.host}:${desktopPostgres.port}/${desktopPostgres.database}`;
-    backendEnv.DB_USERNAME = desktopPostgres.username;
-    backendEnv.DB_PASSWORD = desktopPostgres.password;
-    const migrateUrl = takeDesktopPgMigrateH2Url();
-    if (migrateUrl) {
-      backendEnv.LEGACY_H2_MIGRATE_URL = migrateUrl;
+    if (pgPortOpenSync(desktopPostgres)) {
+      backendEnv.SPRING_PROFILES_ACTIVE = "postgres";
+      backendEnv.DB_URL = `jdbc:postgresql://${desktopPostgres.host}:${desktopPostgres.port}/${desktopPostgres.database}`;
+      backendEnv.DB_USERNAME = desktopPostgres.username;
+      backendEnv.DB_PASSWORD = desktopPostgres.password;
+      const migrateUrl = takeDesktopPgMigrateH2Url();
+      if (migrateUrl) {
+        backendEnv.LEGACY_H2_MIGRATE_URL = migrateUrl;
+      }
+    } else {
+      // 本地 PG 不可达：回退 H2 并清除启用标记，避免下次启动再次尝试失败。
+      disableDesktopPostgres();
+      writeDesktopStartupDiagnostic(
+        "postgres-unreachable-disable",
+        new Error(
+          `本地 PostgreSQL（${desktopPostgres.host}:${desktopPostgres.port}）不可达，已自动回退 H2`,
+        ),
+        { host: desktopPostgres.host, port: desktopPostgres.port },
+      );
     }
   }
   const child = spawn(
@@ -6881,6 +7021,7 @@ async function restartBackend() {
   if (!backendPort) return;
   restartingBackend = true;
   try {
+    await ensureDesktopPostgresRunning();
     await stopBackend();
     startBackend(resolveJava(), resolveServerJar(), backendPort);
     await waitForBackend(backendPort);
@@ -7108,6 +7249,7 @@ async function boot() {
     backendPort = await findFreePort();
     mitmCaMigration = prepareDesktopMitmCaMigration();
     const aiSlot = await allocateAiRuntimeSlot();
+    await ensureDesktopPostgresRunning();
     startBackend(java, jar, backendPort, {
       url: `http://127.0.0.1:${aiSlot.port}`,
       port: aiSlot.port,

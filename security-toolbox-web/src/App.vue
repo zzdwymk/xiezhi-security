@@ -598,7 +598,7 @@ function onGlobalCursorMove(e: PointerEvent) {
 
     // Track relative coordinates on interactive target for Fluent Reveal Light Field
     const target = (document.elementFromPoint(x, y) as HTMLElement | null)?.closest?.(
-      ".desktop-v2-nav-item, .desktop-v2-nav button, .desktop-v2-recent-item, .settings-row, .settings-list > button, .el-button, .report-card, .report-severity-chip, .start-action, .catalog-list button, .traffic-row, .quiet-icon-button, .workflow-node, .stat-pill, .el-segmented__item"
+      ".desktop-v2-nav-item, .desktop-v2-nav button, .desktop-v2-recent-item, .settings-row, .settings-list > button, .el-button, .report-card, .severity-legend__item, .severity-bar__seg, .start-action, .catalog-list button, .traffic-row, .quiet-icon-button, .workflow-node, .stat-pill, .el-segmented__item"
     ) as HTMLElement | null;
 
     if (target) {

@@ -90,11 +90,11 @@ const EXE_PATH = path.join(
     console.log(toolbarText.replace(/\s+/g, " ").trim());
 
     // 读取“全部目标”时的卡片指标
-    const cardsAll = await page.locator(".report-cards .report-card").allTextContents();
+    const cardsAll = await page.locator(".report-overview__metrics .report-card").allTextContents();
     console.log("=== 全部目标 卡片指标 ===");
     console.log(cardsAll.map((s) => s.replace(/\s+/g, " ").trim()).join(" | "));
 
-    const sevAll = await page.locator(".report-severity").textContent();
+    const sevAll = await page.locator(".severity-legend").textContent();
     console.log("=== 全部目标 等级分布 ===", sevAll.replace(/\s+/g, " ").trim());
 
     // 选择第一个单目标
@@ -111,11 +111,11 @@ const EXE_PATH = path.join(
       await dropdown.locator("li.el-select-dropdown__item").nth(1).click();
       await new Promise((r) => setTimeout(r, 1000));
 
-      const cardsSingle1 = await page.locator(".report-cards .report-card").allTextContents();
+      const cardsSingle1 = await page.locator(".report-overview__metrics .report-card").allTextContents();
       console.log(`=== 目标 1 [${options[1].trim()}] 卡片指标 ===`);
       console.log(cardsSingle1.map((s) => s.replace(/\s+/g, " ").trim()).join(" | "));
 
-      const sevSingle1 = await page.locator(".report-severity").textContent();
+      const sevSingle1 = await page.locator(".severity-legend").textContent();
       console.log("=== 目标 1 等级分布 ===", sevSingle1.replace(/\s+/g, " ").trim());
     }
 
@@ -126,11 +126,11 @@ const EXE_PATH = path.join(
       await dropdown.locator("li.el-select-dropdown__item").nth(2).click();
       await new Promise((r) => setTimeout(r, 1000));
 
-      const cardsSingle2 = await page.locator(".report-cards .report-card").allTextContents();
+      const cardsSingle2 = await page.locator(".report-overview__metrics .report-card").allTextContents();
       console.log(`=== 目标 2 [${options[2].trim()}] 卡片指标 ===`);
       console.log(cardsSingle2.map((s) => s.replace(/\s+/g, " ").trim()).join(" | "));
 
-      const sevSingle2 = await page.locator(".report-severity").textContent();
+      const sevSingle2 = await page.locator(".severity-legend").textContent();
       console.log("=== 目标 2 等级分布 ===", sevSingle2.replace(/\s+/g, " ").trim());
     }
 

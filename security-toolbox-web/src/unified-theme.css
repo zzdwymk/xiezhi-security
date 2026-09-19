@@ -740,17 +740,17 @@ body,
   color: #e2e8f0 !important;
 }
 
-/* Project report severity chips in dark mode */
-:root[data-system-theme="dark"] .report-severity-chip {
+/* Project report severity legend in dark mode */
+:root[data-system-theme="dark"] .severity-legend__item {
   background: rgba(255, 255, 255, 0.05) !important;
   border: 1px solid rgba(255, 255, 255, 0.14) !important;
 }
 
-:root[data-system-theme="dark"] .report-severity-chip b {
+:root[data-system-theme="dark"] .severity-legend__item b {
   color: #f8fafc !important;
 }
 
-:root[data-system-theme="dark"] .report-severity-chip:hover {
+:root[data-system-theme="dark"] .severity-legend__item:hover {
   background: rgba(255, 255, 255, 0.12) !important;
   border-color: var(--app-accent) !important;
   box-shadow: 0 0 12px color-mix(in srgb, var(--app-accent) 26%, transparent) !important;

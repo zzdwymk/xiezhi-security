@@ -4,6 +4,7 @@ import add from "@fluentui/svg-icons/icons/add_24_regular.svg?url";
 import arrowBidirectional from "@fluentui/svg-icons/icons/arrow_bidirectional_up_down_24_regular.svg?url";
 import arrowClockwise from "@fluentui/svg-icons/icons/arrow_clockwise_24_regular.svg?url";
 import arrowDownload from "@fluentui/svg-icons/icons/arrow_download_24_regular.svg?url";
+import arrowMove from "@fluentui/svg-icons/icons/arrow_move_24_regular.svg?url";
 import arrowReset from "@fluentui/svg-icons/icons/arrow_reset_24_regular.svg?url";
 import arrowSwap from "@fluentui/svg-icons/icons/arrow_swap_24_regular.svg?url";
 import arrowUpload from "@fluentui/svg-icons/icons/arrow_upload_24_regular.svg?url";
@@ -40,6 +41,7 @@ import folder from "@fluentui/svg-icons/icons/folder_24_regular.svg?url";
 import folderOpen from "@fluentui/svg-icons/icons/folder_open_24_regular.svg?url";
 import globe from "@fluentui/svg-icons/icons/globe_24_regular.svg?url";
 import globeSearch from "@fluentui/svg-icons/icons/globe_search_24_regular.svg?url";
+import handDraw from "@fluentui/svg-icons/icons/hand_draw_24_regular.svg?url";
 import homeFilled from "@fluentui/svg-icons/icons/home_24_filled.svg?url";
 import info from "@fluentui/svg-icons/icons/info_24_regular.svg?url";
 import key from "@fluentui/svg-icons/icons/key_24_regular.svg?url";
@@ -53,6 +55,7 @@ import plug from "@fluentui/svg-icons/icons/plug_connected_24_regular.svg?url";
 import questionCircle from "@fluentui/svg-icons/icons/question_circle_24_regular.svg?url";
 import rocket from "@fluentui/svg-icons/icons/rocket_24_regular.svg?url";
 import search from "@fluentui/svg-icons/icons/search_24_regular.svg?url";
+import selectObject from "@fluentui/svg-icons/icons/select_object_24_regular.svg?url";
 import send from "@fluentui/svg-icons/icons/send_24_regular.svg?url";
 import server from "@fluentui/svg-icons/icons/server_24_regular.svg?url";
 import settings from "@fluentui/svg-icons/icons/settings_24_regular.svg?url";
@@ -74,6 +77,7 @@ const iconUrls: Record<string, string> = {
   "arrow-bidirectional": arrowBidirectional,
   "arrow-clockwise": arrowClockwise,
   "arrow-download": arrowDownload,
+  "arrow-move": arrowMove,
   "arrow-reset": arrowReset,
   "arrow-right": chevronRight,
   "arrow-swap": arrowSwap,
@@ -112,6 +116,7 @@ const iconUrls: Record<string, string> = {
   "folder-open": folderOpen,
   globe,
   "globe-search": globeSearch,
+  "hand-draw": handDraw,
   home: homeFilled,
   info,
   key,
@@ -125,6 +130,7 @@ const iconUrls: Record<string, string> = {
   question: questionCircle,
   rocket,
   search,
+  "select-object": selectObject,
   send,
   server,
   settings,

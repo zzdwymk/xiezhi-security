@@ -3,6 +3,7 @@
 // 使用 localStorage 保证刷新与关闭浏览器后依然生效。
 
 type LayoutMode = "orbit" | "tree" | "mindmap";
+type PointerMode = "move" | "grab" | "box";
 
 const PREFS_KEY = "topology.globalPrefs.v1";
 const POSITIONS_PREFIX = "topology.nodePositions.v1.project.";
@@ -11,6 +12,7 @@ interface TopologyGlobalPrefs {
   layoutMode?: LayoutMode;
   enableFlowAnim: boolean;
   showMinimap: boolean;
+  pointerMode?: PointerMode;
 }
 
 function safeRead<T>(key: string, fallback: T): T {
