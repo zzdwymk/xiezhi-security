@@ -93,11 +93,11 @@ const EXE_PATH = path.join(
     await reportTab.click();
     await new Promise((r) => setTimeout(r, 2000));
 
-    const cardsAll = await page.locator(".report-cards .report-card").allTextContents();
+    const cardsAll = await page.locator(".report-overview__metrics .report-card").allTextContents();
     console.log("=== 全部目标 卡片指标 ===");
     console.log(cardsAll.map((s) => s.replace(/\s+/g, " ").trim()).join(" | "));
 
-    const sevAll = await page.locator(".report-severity").textContent();
+    const sevAll = await page.locator(".severity-legend").textContent();
     console.log("=== 等级分布 ===", sevAll.replace(/\s+/g, " ").trim());
 
     // 切换目标到 Less-1
@@ -109,7 +109,7 @@ const EXE_PATH = path.join(
     if (await less1Opt.count()) {
       await less1Opt.click();
       await new Promise((r) => setTimeout(r, 1000));
-      const cardsLess1 = await page.locator(".report-cards .report-card").allTextContents();
+      const cardsLess1 = await page.locator(".report-overview__metrics .report-card").allTextContents();
       console.log("=== Less-1 目标专属卡片指标 ===");
       console.log(cardsLess1.map((s) => s.replace(/\s+/g, " ").trim()).join(" | "));
     }

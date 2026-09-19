@@ -9,6 +9,15 @@
   --setup-muted: var(--app-muted);
   --setup-accent: var(--app-accent);
   --setup-accent-dark: var(--app-accent-dark);
+  --setup-sidebar-width: 260px;
+}
+
+/* The setup wizard owns its own fixed navigation rail. Dialog / message-box
+   masks are offset with --desktop-sidebar-width (the resizable main-app sidebar
+   width), so pin that offset to the setup rail here; otherwise the mask cuts
+   into the rail — or leaves a bright gap — whenever the two widths differ. */
+body:has(.setup-page) {
+  --desktop-sidebar-width: var(--setup-sidebar-width);
 }
 .setup-page {
   width: 100vw;
@@ -19,7 +28,7 @@
 }
 .setup-shell {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-columns: var(--setup-sidebar-width) minmax(0, 1fr);
   width: 100%;
   height: 100%;
 }
@@ -572,8 +581,8 @@
   font-size: 11px;
 }
 @media (min-width: 1800px) {
-  .setup-shell {
-    grid-template-columns: 268px minmax(0, 1fr);
+  :root {
+    --setup-sidebar-width: 268px;
   }
   .setup-content {
     padding: 42px 54px 30px;
@@ -830,20 +839,9 @@
   align-items: flex-end;
   gap: 6px;
   width: 100%;
+  min-width: 0;
   margin-top: 6px;
   padding-top: 6px;
-  border-top: 1px dashed var(--app-border, rgba(0, 0, 0, 0.14));
-}
-.dep-postgres-buttons {
-  display: flex;
-  gap: 6px;
-}
-.dep-postgres-buttons .el-button {
-  min-height: 28px;
-  margin: 0 !important;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 600;
 }
 .dep-postgres-progress {
   display: flex;

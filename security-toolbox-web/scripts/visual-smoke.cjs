@@ -2406,33 +2406,33 @@ async function verifyProjectReportLayout(browser) {
   await page.getByText("进入项目", { exact: true }).first().click();
   await page.locator(".project-detail-page").waitFor();
   await page.getByRole("tab", { name: "项目报告", exact: true }).click();
-  await page.locator(".report-severity-chip").first().waitFor();
+  await page.locator(".severity-legend__item").first().waitFor();
 
   const severityInsets = await page
-    .locator(".report-severity-chip")
+    .locator(".severity-legend__item")
     .evaluateAll((chips) =>
       chips.map((chip) => {
-        const tag = chip.querySelector(".el-tag");
-        if (!tag) return null;
+        const dot = chip.querySelector("i");
+        if (!dot) return null;
         const chipBox = chip.getBoundingClientRect();
-        const tagBox = tag.getBoundingClientRect();
+        const dotBox = dot.getBoundingClientRect();
         return {
-          top: tagBox.top - chipBox.top,
-          bottom: chipBox.bottom - tagBox.bottom,
-          left: tagBox.left - chipBox.left,
+          top: dotBox.top - chipBox.top,
+          bottom: chipBox.bottom - dotBox.bottom,
+          left: dotBox.left - chipBox.left,
         };
       }),
     );
   assert.ok(
     severityInsets.every((insets) => {
       if (!insets) return false;
-      const values = Object.values(insets);
       return (
-        Math.max(...values) - Math.min(...values) <= 1 &&
-        values.every((value) => value >= 4.5 && value <= 5.5)
+        Math.abs(insets.top - insets.bottom) <= 1 &&
+        insets.left >= 8 &&
+        insets.left <= 12
       );
     }),
-    `风险等级胶囊的上、下、左内距应等距：${JSON.stringify(severityInsets)}`,
+    `风险等级图例色块应垂直居中：${JSON.stringify(severityInsets)}`,
   );
 
   const reportSpacing = await page.evaluate(() => {

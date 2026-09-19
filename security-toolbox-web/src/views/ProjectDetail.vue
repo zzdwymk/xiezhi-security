@@ -545,6 +545,56 @@ const reportSeverityRows = computed(() => {
   }
   return Object.entries(counts).map(([severity, count]) => ({ severity, count }));
 });
+const reportSeverityTotal = computed(() =>
+  reportSeverityRows.value.reduce((sum, item) => sum + item.count, 0),
+);
+const SEVERITY_COLORS: Record<string, string> = {
+  CRITICAL: "#d03050",
+  HIGH: "#f56c6c",
+  MEDIUM: "#e6a23c",
+  LOW: "#409eff",
+  INFO: "#909399",
+};
+function severityColor(severity: string) {
+  return SEVERITY_COLORS[severity] || SEVERITY_COLORS.INFO;
+}
+function reportSeverityPercent(count: number) {
+  if (!reportSeverityTotal.value) return 0;
+  return Math.round((count / reportSeverityTotal.value) * 1000) / 10;
+}
+const reportSeverityArcs = computed(() => {
+  const total = reportSeverityTotal.value;
+  let start = 0;
+  return reportSeverityRows.value
+    .filter((item) => item.count > 0)
+    .map((item) => {
+      const pct = total ? (item.count / total) * 100 : 0;
+      const arc = {
+        severity: item.severity,
+        color: severityColor(item.severity),
+        dash: `${pct} ${100 - pct}`,
+        offset: 25 - start,
+      };
+      start += pct;
+      return arc;
+    });
+});
+const reportChartType = ref<"bar" | "donut">(
+  (() => {
+    try {
+      return localStorage.getItem("xiezhi.report.chartType") === "donut"
+        ? "donut"
+        : "bar";
+    } catch {
+      return "bar";
+    }
+  })(),
+);
+watch(reportChartType, (value) => {
+  try {
+    localStorage.setItem("xiezhi.report.chartType", value);
+  } catch {}
+});
 const reportVulnerabilityCount = computed(
   () => currentReportFindings.value.filter(findingIsVulnerability).length,
 );
@@ -589,6 +639,9 @@ const reportTarget = computed(() =>
   reportTargetId.value === "ALL"
     ? undefined
     : linkedTargets.value.find((target) => target.id === reportTargetId.value),
+);
+const reportMetricTargetId = computed(() =>
+  reportTargetId.value !== "ALL" ? String(reportTargetId.value) : undefined,
 );
 const selectedSecurityActionPreset = computed(
   () =>
@@ -5182,7 +5235,7 @@ onUnmounted(() => {
             placeholder="搜索漏洞标题 / 来源 / 规则"
             clearable
             :prefix-icon="Search"
-            style="width: 200px"
+            style="width: 260px"
           />
           <el-select
             v-model="findingCategoryFilter"
@@ -5856,96 +5909,163 @@ onUnmounted(() => {
           animated
         />
         <template v-else-if="reportSummary">
-          <div class="report-cards" aria-label="项目报告指标">
-            <button
-              type="button"
-              class="report-card report-card--link"
-              @click="openReportMetric('tasks')"
-            >
-              <strong>{{ currentReportTasks.length }}</strong>
-              <span>任务总数</span>
-            </button>
-            <button
-              type="button"
-              class="report-card report-card--link"
-              @click="
-                openReportMetric('findings', {
-                  category: 'vulnerability',
-                  targetId:
-                    reportTargetId !== 'ALL'
-                      ? String(reportTargetId)
-                      : undefined,
-                })
-              "
-            >
-              <strong>{{ reportVulnerabilityCount }}</strong>
-              <span>漏洞发现</span>
-            </button>
-            <button
-              type="button"
-              class="report-card report-card--link"
-              @click="
-                openReportMetric('findings', {
-                  category: 'risk',
-                  targetId:
-                    reportTargetId !== 'ALL'
-                      ? String(reportTargetId)
-                      : undefined,
-                })
-              "
-            >
-              <strong>{{ reportInformationalCount }}</strong>
-              <span>风险点</span>
-            </button>
-            <button
-              type="button"
-              class="report-card report-card--link"
-              @click="
-                openReportMetric('findings', {
-                  status: 'FIXED',
-                  targetId:
-                    reportTargetId !== 'ALL'
-                      ? String(reportTargetId)
-                      : undefined,
-                })
-              "
-            >
-              <strong>{{ reportRetestedCount }}</strong>
-              <span>已复测</span>
-            </button>
-            <button
-              type="button"
-              class="report-card report-card--link"
-              @click="openReportMetric('audits')"
-            >
-              <strong>{{
-                reportSummary.approvalAndAudit?.totalApprovals ||
-                reportSummary.approvals.length
-              }}</strong>
-              <span>审批/审计</span>
-            </button>
-          </div>
-          <div class="report-severity" aria-label="漏洞等级分布">
-            <button
-              v-for="item in reportSeverityRows"
-              :key="item.severity"
-              type="button"
-              class="report-severity-chip report-severity--link"
-              @click="
-                openReportMetric('findings', {
-                  severity: item.severity,
-                  targetId:
-                    reportTargetId !== 'ALL'
-                      ? String(reportTargetId)
-                      : undefined,
-                })
-              "
-            >
-              <el-tag size="small" :type="findingSeverityType(item.severity)">{{
-                severityLabel(item.severity)
-              }}</el-tag>
-              <b>{{ item.count }}</b>
-            </button>
+          <div class="report-overview">
+            <section class="report-overview__chart" aria-label="漏洞等级分布">
+              <header class="report-overview__head">
+                <div class="report-overview__title">
+                  <h4>风险等级构成</h4>
+                  <p>
+                    共 {{ reportSeverityTotal }} 项发现{{
+                      reportSeverityTotal ? " · 点击图例可下钻筛选" : ""
+                    }}
+                  </p>
+                </div>
+                <el-radio-group v-model="reportChartType" size="small">
+                  <el-radio-button value="bar">堆叠条</el-radio-button>
+                  <el-radio-button value="donut">环形图</el-radio-button>
+                </el-radio-group>
+              </header>
+              <div class="report-overview__figure">
+                <template v-if="reportSeverityTotal">
+                  <div v-if="reportChartType === 'bar'" class="severity-bar">
+                    <button
+                      v-for="item in reportSeverityRows.filter(
+                        (row) => row.count > 0,
+                      )"
+                      :key="item.severity"
+                      type="button"
+                      class="severity-bar__seg"
+                      :style="{
+                        flexGrow: item.count,
+                        background: severityColor(item.severity),
+                      }"
+                      :title="`${severityLabel(item.severity)} ${item.count}`"
+                      @click="
+                        openReportMetric('findings', {
+                          severity: item.severity,
+                          targetId: reportMetricTargetId,
+                        })
+                      "
+                    />
+                  </div>
+                  <div v-else class="severity-donut">
+                    <svg
+                      viewBox="0 0 42 42"
+                      role="img"
+                      aria-label="漏洞等级环形图"
+                    >
+                      <circle
+                        class="severity-donut__track"
+                        cx="21"
+                        cy="21"
+                        r="15.9155"
+                      />
+                      <circle
+                        v-for="arc in reportSeverityArcs"
+                        :key="arc.severity"
+                        class="severity-donut__arc"
+                        cx="21"
+                        cy="21"
+                        r="15.9155"
+                        :stroke="arc.color"
+                        :stroke-dasharray="arc.dash"
+                        :stroke-dashoffset="arc.offset"
+                        @click="
+                          openReportMetric('findings', {
+                            severity: arc.severity,
+                            targetId: reportMetricTargetId,
+                          })
+                        "
+                      />
+                    </svg>
+                    <div class="severity-donut__center">
+                      <strong>{{ reportSeverityTotal }}</strong>
+                      <span>发现总数</span>
+                    </div>
+                  </div>
+                </template>
+                <div v-else class="report-overview__empty">暂无发现数据</div>
+              </div>
+              <div class="severity-legend">
+                <button
+                  v-for="item in reportSeverityRows"
+                  :key="item.severity"
+                  type="button"
+                  class="severity-legend__item"
+                  @click="
+                    openReportMetric('findings', {
+                      severity: item.severity,
+                      targetId: reportMetricTargetId,
+                    })
+                  "
+                >
+                  <i :style="{ background: severityColor(item.severity) }" />
+                  <span>{{ severityLabel(item.severity) }}</span>
+                  <b>{{ item.count }}</b>
+                  <em>{{ reportSeverityPercent(item.count) }}%</em>
+                </button>
+              </div>
+            </section>
+            <section class="report-overview__metrics" aria-label="项目报告指标">
+              <button
+                type="button"
+                class="report-card report-card--link"
+                @click="openReportMetric('tasks')"
+              >
+                <strong>{{ currentReportTasks.length }}</strong>
+                <span>任务总数</span>
+              </button>
+              <button
+                type="button"
+                class="report-card report-card--link"
+                @click="
+                  openReportMetric('findings', {
+                    category: 'vulnerability',
+                    targetId: reportMetricTargetId,
+                  })
+                "
+              >
+                <strong>{{ reportVulnerabilityCount }}</strong>
+                <span>漏洞发现</span>
+              </button>
+              <button
+                type="button"
+                class="report-card report-card--link"
+                @click="
+                  openReportMetric('findings', {
+                    category: 'risk',
+                    targetId: reportMetricTargetId,
+                  })
+                "
+              >
+                <strong>{{ reportInformationalCount }}</strong>
+                <span>风险点</span>
+              </button>
+              <button
+                type="button"
+                class="report-card report-card--link"
+                @click="
+                  openReportMetric('findings', {
+                    status: 'FIXED',
+                    targetId: reportMetricTargetId,
+                  })
+                "
+              >
+                <strong>{{ reportRetestedCount }}</strong>
+                <span>已复测</span>
+              </button>
+              <button
+                type="button"
+                class="report-card report-card--link"
+                @click="openReportMetric('audits')"
+              >
+                <strong>{{
+                  reportSummary.approvalAndAudit?.totalApprovals ||
+                  reportSummary.approvals.length
+                }}</strong>
+                <span>审批/审计</span>
+              </button>
+            </section>
           </div>
           <el-alert
             v-if="reportSummary.controlledPostExploitation"
@@ -6941,49 +7061,6 @@ onUnmounted(() => {
   font-size: 11px;
   line-height: 1.5;
 }
-.report-cards {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-  margin: 14px 0;
-}
-.report-cards > div {
-  display: flex;
-  min-height: 84px;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--app-border, var(--el-border-color));
-  border-radius: 8px;
-  background: var(--app-surface-soft, var(--el-fill-color-light));
-}
-.report-cards strong {
-  color: var(--app-text, var(--el-text-color-primary));
-  font-size: 26px;
-}
-.report-cards span {
-  margin-top: 4px;
-  color: var(--app-muted, var(--el-text-color-secondary));
-  font-size: 11px;
-}
-.report-severity {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 14px;
-}
-.report-severity > span {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
-  border: 1px solid var(--app-border, var(--el-border-color));
-  border-radius: 6px;
-  background: var(--app-surface, var(--el-bg-color));
-}
-.report-severity b {
-  font-size: 12px;
-}
 .report-safety-alert {
   margin: 12px 0 18px;
 }
@@ -7046,9 +7123,6 @@ onUnmounted(() => {
   }
   .target-report-toolbar .toolbar-inline :deep(.el-select) {
     width: 100% !important;
-  }
-  .report-cards {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .diff-form {
     align-items: stretch;
@@ -8040,20 +8114,193 @@ onUnmounted(() => {
   }
 }
 
-.report-cards {
+.report-overview {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: minmax(0, 1.35fr) minmax(240px, 1fr);
+  gap: 20px;
   margin: 4px 0 14px;
+  padding: 16px;
+  border: 1px solid var(--app-border, var(--el-border-color));
+  border-radius: 14px;
+  background: var(--app-surface, #fff);
+}
+.report-overview__chart {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+.report-overview__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.report-overview__title h4 {
+  margin: 0;
+  color: var(--app-text, #1f2937);
+  font-size: 14px;
+  font-weight: 650;
+}
+.report-overview__title p {
+  margin: 2px 0 0;
+  color: var(--app-muted, #6b7280);
+  font-size: 12px;
+}
+.report-overview__figure {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  min-height: 188px;
+  padding: 8px 4px;
+}
+.report-overview__empty {
+  color: var(--app-muted, #6b7280);
+  font-size: 13px;
+}
+.severity-bar {
+  display: flex;
+  width: 100%;
+  height: 40px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--app-surface-soft, rgba(0, 0, 0, 0.04));
+}
+.severity-bar__seg {
+  min-width: 3px;
+  padding: 0;
+  border: 0;
+  cursor: pointer;
+  transition:
+    filter 0.15s ease,
+    transform 0.15s ease;
+}
+.severity-bar__seg:first-child {
+  border-radius: 10px 0 0 10px;
+}
+.severity-bar__seg:last-child {
+  border-radius: 0 10px 10px 0;
+}
+.severity-bar__seg:only-child {
+  border-radius: 10px;
+}
+.severity-bar__seg:hover,
+.severity-bar__seg:focus-visible {
+  filter: brightness(1.08);
+  outline: none;
+  transform: scaleY(1.05);
+}
+.severity-donut {
+  position: relative;
+  width: 172px;
+  height: 172px;
+}
+.severity-donut svg {
+  width: 100%;
+  height: 100%;
+}
+.severity-donut__track {
+  fill: none;
+  stroke: var(--app-surface-soft, rgba(0, 0, 0, 0.06));
+  stroke-width: 5;
+}
+.severity-donut__arc {
+  fill: none;
+  stroke-width: 5;
+  cursor: pointer;
+  transition:
+    stroke-width 0.15s ease,
+    opacity 0.15s ease;
+}
+.severity-donut__arc:hover {
+  stroke-width: 6.5;
+}
+.severity-donut__center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  pointer-events: none;
+}
+.severity-donut__center strong {
+  color: var(--app-text, #1f2937);
+  font-size: 30px;
+  font-weight: 650;
+  line-height: 1;
+}
+.severity-donut__center span {
+  color: var(--app-muted, #6b7280);
+  font-size: 12px;
+}
+.severity-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.severity-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 6px 10px;
+  border: 1px solid var(--app-border, var(--el-border-color));
+  border-radius: 999px;
+  background: var(--app-surface-soft, rgba(255, 255, 255, 0.06));
+  color: var(--app-text);
+  font: inherit;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.severity-legend__item i {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 3px;
+}
+.severity-legend__item span {
+  color: var(--app-muted, #6b7280);
+  font-size: 12px;
+}
+.severity-legend__item b {
+  color: var(--app-text);
+  font-size: 13px;
+  font-weight: 650;
+}
+.severity-legend__item em {
+  color: var(--app-muted, #9ca3af);
+  font-size: 11px;
+  font-style: normal;
+}
+.severity-legend__item:hover,
+.severity-legend__item:focus-visible {
+  border-color: var(--app-accent);
+  background: var(--app-accent-soft);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--app-accent) 25%, transparent);
+  outline: none;
+}
+.report-overview__metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  align-content: start;
+}
+.report-overview__metrics .report-card:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
 }
 .report-card {
   display: flex;
-  min-height: 92px;
+  min-height: 84px;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 16px 12px;
+  padding: 14px 12px;
   border: 1px solid var(--app-border, var(--el-border-color));
   border-radius: 12px;
   background: var(--app-surface, #fff);
@@ -8070,7 +8317,7 @@ onUnmounted(() => {
 }
 .report-card strong {
   color: var(--app-text, #1f2937);
-  font-size: 28px;
+  font-size: 26px;
   font-weight: 650;
   line-height: 1.1;
 }
@@ -8093,59 +8340,17 @@ onUnmounted(() => {
 .report-card--link:active {
   transform: translateY(0);
 }
-.report-severity {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin: 0 0 16px;
-}
-.report-severity-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 34px;
-  padding: 4px 10px 4px 4px;
-  border: 1px solid var(--app-border, var(--el-border-color));
-  border-radius: 999px;
-  background: var(--app-surface-soft, rgba(255, 255, 255, 0.06));
-  color: var(--app-text);
-  font: inherit;
-  cursor: pointer;
-  transition:
-    border-color 0.15s ease,
-    background-color 0.15s ease,
-    box-shadow 0.15s ease;
-}
-.report-severity-chip :deep(.el-tag) {
-  height: 24px;
-  padding: 0 10px;
-  border-radius: 999px;
-  line-height: 22px;
-}
-.report-severity-chip b {
-  color: var(--app-text);
-  font-size: 13px;
-  font-weight: 650;
-}
-.report-severity--link:hover,
-.report-severity--link:focus-visible {
-  border-color: var(--app-accent);
-  background: var(--app-accent-soft);
-  box-shadow: 0 0 12px color-mix(in srgb, var(--app-accent) 26%, transparent);
-  outline: none;
-}
-.report-severity--link:hover b,
-.report-severity--link:focus-visible b {
-  color: var(--app-accent-dark);
-}
 @media (max-width: 1100px) {
-  .report-cards {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .report-overview {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 @media (max-width: 640px) {
-  .report-cards {
+  .report-overview__metrics {
     grid-template-columns: 1fr;
+  }
+  .report-overview__metrics .report-card:last-child:nth-child(odd) {
+    grid-column: auto;
   }
 }
 </style>

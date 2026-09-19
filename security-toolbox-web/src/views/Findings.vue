@@ -555,7 +555,7 @@ onBeforeUnmount(() => {
         :prefix-icon="Search"
         clearable
         placeholder="搜索名称、等级、工具、规则..."
-        style="width: 220px"
+        style="width: 290px"
       />
       <el-select
         v-model="categoryFilter"

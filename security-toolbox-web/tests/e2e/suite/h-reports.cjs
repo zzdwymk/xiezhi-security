@@ -94,7 +94,7 @@ async function run(page, H, ctx) {
   }, { page });
 
   await H.run("H-05", "报告展示风险等级分布标签", async () => {
-    const chips = pane.locator("button.report-severity-chip");
+    const chips = pane.locator("button.severity-legend__item");
     const n = await chips.count();
     if (n === 0) return "本项目暂无风险等级分布（可能全部为信息级）";
     const texts = [];

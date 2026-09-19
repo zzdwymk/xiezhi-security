@@ -95,7 +95,7 @@ const EXE_PATH = path.join(
 
     // 3. 点击“漏洞发现”卡片
     console.log("点击项目报告中的「漏洞发现」指标卡片...");
-    const vulnCardBtn = page.locator(".report-cards button", { hasText: "漏洞发现" }).first();
+    const vulnCardBtn = page.locator(".report-overview__metrics button", { hasText: "漏洞发现" }).first();
     await vulnCardBtn.click();
     await new Promise((r) => setTimeout(r, 2000));
 
@@ -114,7 +114,7 @@ const EXE_PATH = path.join(
     await reportTab.click();
     await new Promise((r) => setTimeout(r, 1500));
     console.log("点击项目报告中的「风险点」指标卡片...");
-    const riskCardBtn = page.locator(".report-cards button", { hasText: "风险点" }).first();
+    const riskCardBtn = page.locator(".report-overview__metrics button", { hasText: "风险点" }).first();
     await riskCardBtn.click();
     await new Promise((r) => setTimeout(r, 2000));
 

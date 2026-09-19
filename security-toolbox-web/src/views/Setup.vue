@@ -1286,6 +1286,29 @@ onUnmounted(() => {
                   class="dep-ready-controls"
                 >
                   <el-button
+                    v-if="
+                      item.name === 'PostgreSQL' &&
+                      desktopMode &&
+                      !postgresMigration?.enabled &&
+                      postgresMigration?.available
+                    "
+                    type="primary"
+                    plain
+                    :loading="migratingPostgres"
+                    @click="requestPostgresMigration"
+                    >迁移到 PostgreSQL</el-button
+                  >
+                  <el-button
+                    v-if="
+                      item.name === 'PostgreSQL' &&
+                      desktopMode &&
+                      postgresMigration?.enabled
+                    "
+                    plain
+                    @click="requestPostgresRollback"
+                    >回退到 H2</el-button
+                  >
+                  <el-button
                     plain
                     :loading="item.installing"
                     :disabled="item.uninstalling"
@@ -1330,23 +1353,6 @@ onUnmounted(() => {
                   v-if="item.name === 'PostgreSQL' && desktopMode"
                   class="dep-postgres-actions"
                 >
-                  <div class="dep-postgres-buttons">
-                    <el-button
-                      v-if="!postgresMigration?.enabled && postgresMigration?.available"
-                      size="small"
-                      type="primary"
-                      :loading="migratingPostgres"
-                      @click="requestPostgresMigration"
-                      >迁移到 PostgreSQL</el-button
-                    >
-                    <el-button
-                      v-if="postgresMigration?.enabled"
-                      size="small"
-                      plain
-                      @click="requestPostgresRollback"
-                      >回退到 H2</el-button
-                    >
-                  </div>
                   <div
                     v-if="migratingPostgres || pgMigrationProgress || pgMigrationError"
                     class="dep-postgres-progress"

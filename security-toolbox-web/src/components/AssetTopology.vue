@@ -133,6 +133,20 @@ const layoutMode = ref<LayoutMode>(persistedPrefs.layoutMode ?? "tree");
 const enableFlowAnim = ref(persistedPrefs.enableFlowAnim);
 const showMinimap = ref(persistedPrefs.showMinimap);
 
+// 鼠标左键指针模式: move=移动(节点可拖) / grab=抓手(整体平移) / box=框选
+type PointerMode = "move" | "grab" | "box";
+const pointerMode = ref<PointerMode>(persistedPrefs.pointerMode ?? "move");
+const pointerModeHint = computed(() => {
+  switch (pointerMode.value) {
+    case "grab":
+      return "抓手模式：按住左键拖动即可整体平移画布";
+    case "box":
+      return "框选模式：按住左键拖出矩形可多选节点，拖拽选中节点可整组移动，Ctrl 点击可多选";
+    default:
+      return "移动模式：拖动空白平移，拖动节点移动；Shift 拖拽可框选，Ctrl 点击可多选";
+  }
+});
+
 // 聚光灯过滤维度 (null 为无，'waf', 'https', 'http')
 const spotlightFilter = ref<string | null>(null);
 const focusedDomain = ref<string | null>(null);
@@ -1647,8 +1661,11 @@ function applyRectSelection(rect: { x: number; y: number; w: number; h: number }
 function onCanvasMouseDown(e: MouseEvent) {
   if (e.button !== 0) return;
   closeContextMenu();
-  const wantBox = Boolean(e.shiftKey || e.ctrlKey || e.metaKey);
-  if (wantBox) {
+  // 抓手模式: 左键一律平移画布
+  const grabbing = pointerMode.value === "grab";
+  // 框选判定: 框选模式默认框选; 移动模式需按住 Shift/Ctrl
+  const wantBox = pointerMode.value === "box" || (pointerMode.value === "move" && Boolean(e.shiftKey || e.ctrlKey || e.metaKey));
+  if (wantBox && !grabbing) {
     const scene = screenToScene(e.clientX, e.clientY);
     selectingRect.value = true;
     selectionStartScene.value = { x: scene.x, y: scene.y };
@@ -1664,6 +1681,8 @@ function onCanvasMouseDown(e: MouseEvent) {
 // 中心节点拖拽定位
 function onHubMouseDown(e: MouseEvent, hub: LayoutHub) {
   if (e.button !== 0) return;
+  // 抓手模式: 抓住中心卡片同样用于平移画布
+  if (pointerMode.value === "grab") return;
   e.stopPropagation();
   closeContextMenu();
   draggingHubId.value = hub.id;
@@ -1680,6 +1699,8 @@ function onHubMouseDown(e: MouseEvent, hub: LayoutHub) {
 // 节点拖拽定位
 function onNodeMouseDown(e: MouseEvent, node: LayoutNode) {
   if (e.button !== 0) return;
+  // 抓手模式: 抓住节点也用于平移画布，交由画布处理拖拽
+  if (pointerMode.value === "grab") return;
   e.stopPropagation();
   closeContextMenu();
   draggingNodeId.value = node.id;
@@ -2195,6 +2216,8 @@ function onMinimapMouseDown(e: MouseEvent) {
 function handleNodeClick(node: LayoutNode, fromKeyboard = false, ev?: MouseEvent) {
   if (hasDragged.value && !fromKeyboard) return;
   if (suppressNextClick && !fromKeyboard) return;
+  // 抓手模式下点击节点仅用于平移，不做选中/弹出详情
+  if (pointerMode.value === "grab" && !fromKeyboard) return;
   const additive = !fromKeyboard && Boolean(ev && (ev.ctrlKey || ev.metaKey)) && selectedNodeIds.value.length > 0;
   if (additive) {
     if (selectedNodeIds.value.includes(node.id)) {
@@ -2555,11 +2578,12 @@ watch(customPositions, () => {
 }, { deep: true });
 
 // 全局偏好持久化
-watch([layoutMode, enableFlowAnim, showMinimap], () => {
+watch([layoutMode, enableFlowAnim, showMinimap, pointerMode], () => {
   saveGlobalPrefs({
     layoutMode: layoutMode.value,
     enableFlowAnim: enableFlowAnim.value,
     showMinimap: showMinimap.value,
+    pointerMode: pointerMode.value,
   });
 });
 
@@ -2733,6 +2757,45 @@ onUnmounted(() => {
           </button>
         </div>
 
+        <div class="fluent-segmented-control pointer-mode-control" role="tablist" aria-label="鼠标模式">
+          <button
+            type="button"
+            role="tab"
+            class="segmented-item"
+            :class="{ 'is-active': pointerMode === 'move' }"
+            :aria-selected="pointerMode === 'move'"
+            title="移动模式：拖动空白平移，拖动节点可移动"
+            @click="pointerMode = 'move'"
+          >
+            <FluentIcon name="arrow-move" :size="13" />
+            <span>移动</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            class="segmented-item"
+            :class="{ 'is-active': pointerMode === 'grab' }"
+            :aria-selected="pointerMode === 'grab'"
+            title="抓手模式：左键拖动整体平移画布"
+            @click="pointerMode = 'grab'"
+          >
+            <FluentIcon name="hand-draw" :size="13" />
+            <span>抓手</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            class="segmented-item"
+            :class="{ 'is-active': pointerMode === 'box' }"
+            :aria-selected="pointerMode === 'box'"
+            title="框选模式：左键拖出矩形多选节点"
+            @click="pointerMode = 'box'"
+          >
+            <FluentIcon name="select-object" :size="13" />
+            <span>框选</span>
+          </button>
+        </div>
+
         <el-popover placement="bottom-end" :width="208" trigger="click" :teleported="!isFullscreen">
           <template #reference>
             <button class="fluent-command-btn" title="视图选项" aria-label="视图选项">
@@ -2769,8 +2832,9 @@ onUnmounted(() => {
       ref="canvasWrapRef"
       class="topology-canvas-wrap"
       :class="{
-        'cursor-grab': !isDraggingCanvas && draggingNodeId == null,
-        'cursor-grabbing': isDraggingCanvas || draggingNodeId != null,
+        'cursor-grab': pointerMode === 'grab' && !isDraggingCanvas,
+        'cursor-grabbing': isDraggingCanvas || (pointerMode === 'move' && draggingNodeId != null),
+        'cursor-crosshair': pointerMode === 'box',
       }"
       @wheel="onWheel"
       @mousedown="onCanvasMouseDown"
@@ -3369,7 +3433,7 @@ onUnmounted(() => {
       </div>
 
       <div v-if="assets.length" class="topology-canvas-help" @mousedown.stop @dblclick.stop @wheel.stop>
-        <span>按住 Shift 拖拽可框选，Ctrl 点击可多选，拖拽选中节点可整组移动</span>
+        <span>{{ pointerModeHint }}</span>
       </div>
 
       <!-- 鹰眼雷达微型小地图 (Fluent Overlay) -->
@@ -3925,6 +3989,10 @@ onUnmounted(() => {
   user-select: none;
 }
 
+.fluent-segmented-control.pointer-mode-control {
+  margin-left: 8px;
+}
+
 .segmented-item {
   display: inline-flex;
   align-items: center;
@@ -4138,6 +4206,10 @@ html.dark .zoom-controls .divider-v,
 
 .cursor-grabbing {
   cursor: grabbing;
+}
+
+.cursor-crosshair {
+  cursor: crosshair;
 }
 
 .topology-svg {
