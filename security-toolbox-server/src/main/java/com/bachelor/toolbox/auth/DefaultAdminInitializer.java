@@ -27,6 +27,11 @@ public class DefaultAdminInitializer implements ApplicationRunner {
   private final boolean migrateLegacyDevelopmentCredentials;
   private final Supplier<MitmCertificateAuthority> certificateAuthority;
 
+  // 桌面端一次性种子密码：仅由 Spring 注入（测试手动构造时为 null），
+  // 用于在“生成初始密码”时无论 admin 是否已存在都把其密码更新为新明文。
+  @Value("${toolbox.auth.desktop-seed-admin-password:}")
+  private String desktopSeedAdminPassword;
+
   @Autowired
   public DefaultAdminInitializer(
       UserRepository users,
@@ -117,6 +122,19 @@ public class DefaultAdminInitializer implements ApplicationRunner {
     boolean desktopManaged = desktopMode && synchronizeDesktopPassword;
     if (desktopManaged) {
       log.info("桌面端管理员凭据由用户管理，已跳过本次启动时的密码同步");
+    }
+
+    // 桌面端“生成初始密码”时传入的一次性种子：无论 admin 是否已存在都更新其密码，
+    // 使刚生成的新密码能立即用于账号密码登录。其它启动不传该环境变量，不会覆盖用户改过的密码。
+    if (desktopSeedAdminPassword != null && !desktopSeedAdminPassword.isBlank()) {
+      if (admin == null) {
+        admin = new User();
+        admin.setUsername("admin");
+        admin.setRole("ADMIN");
+      }
+      admin.setPasswordHash(encoder.encode(desktopSeedAdminPassword));
+      users.saveAndFlush(admin);
+      log.info("已按桌面端一次性种子更新管理员账号密码");
     }
 
     if (LEGACY_DEVELOPMENT_PASSWORD.equals(password)) {

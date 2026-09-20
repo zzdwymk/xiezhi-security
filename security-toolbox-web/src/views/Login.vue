@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { useAuthStore } from "../stores/auth";
 
 const auth = useAuthStore();
@@ -12,9 +12,35 @@ const form = reactive({ username: auth.rememberedUsername, password: "" });
 const rememberMe = ref(auth.rememberMe);
 const loading = ref(false);
 const desktopLoginError = ref("");
+const loginBound = ref(false);
+const bindingLoaded = ref(false);
 
 async function enterWorkspace() {
   await router.replace(String(route.query.redirect || "/"));
+}
+
+async function generateInitialPassword() {
+  const generate = window.toolboxDesktop?.generateDesktopLogin;
+  if (!desktopMode || !generate || loading.value) return;
+  loading.value = true;
+  desktopLoginError.value = "";
+  try {
+    const result = await generate();
+    await ElMessageBox.alert(
+      `这是你的初始登录账号密码（仅本次显示，请立即保存）：\n\n用户名：${result.username}\n密码：${result.password}\n\n之后可在 设置 → 修改登录密码 中自行更改并绑定。`,
+      "初始账号密码",
+      {
+        confirmButtonText: "我已保存",
+        type: "success",
+        customClass: "app-message-box--preline",
+      },
+    );
+  } catch (error) {
+    desktopLoginError.value =
+      error instanceof Error ? error.message : "生成初始密码失败，请重试";
+  } finally {
+    loading.value = false;
+  }
 }
 
 async function submit() {
@@ -93,25 +119,18 @@ async function loginWithWindowsHello() {
 
 onMounted(async () => {
   if (!desktopMode) return;
-  // Auto-login only on the first login screen per launch, so after logging out the user can
-  // freely choose 本机安全凭据 / Windows Hello / 账号密码 instead of being signed straight back in.
-  if (sessionStorage.getItem("secbox_autologin_done")) return;
-  sessionStorage.setItem("secbox_autologin_done", "1");
-  const getCredentials = window.toolboxDesktop?.getDesktopLoginCredentials;
-  if (!getCredentials || loading.value) return;
-  loading.value = true;
-  try {
-    const credentials = await getCredentials();
-    if (credentials) {
-      await auth.login(credentials.username, credentials.password, false);
-      await enterWorkspace();
-      return;
+  // 从不静默自动登录（C2）：无论是否绑定，开场都停在登录页，必须由用户主动
+  // 点「本机安全凭据 / Windows Hello」或输入账号密码才能进入工作区。
+  const getBinding = window.toolboxDesktop?.getDesktopLoginBinding;
+  if (getBinding) {
+    try {
+      const binding = await getBinding();
+      loginBound.value = binding?.bound === true;
+    } catch {
+      loginBound.value = false;
     }
-  } catch {
-    /* fall back to the manual login form */
-  } finally {
-    loading.value = false;
   }
+  bindingLoaded.value = true;
 });
 </script>
 <template>
@@ -185,6 +204,22 @@ onMounted(async () => {
             @click="loginWithWindowsHello"
             >使用 Windows Hello（PIN）登录</el-button
           >
+          <p
+            v-if="bindingLoaded && !loginBound"
+            class="desktop-login-bind-hint"
+          >
+            首次无需输入密码：点上面「本机安全凭据」或「Windows Hello」即可进入；之后在「设置 →
+            修改登录密码」绑定账号密码后，才能用账号密码登录。
+          </p>
+          <div v-if="bindingLoaded" class="desktop-login-firstrun">
+            <el-button
+              link
+              type="primary"
+              :disabled="loading"
+              @click="generateInitialPassword"
+              >首次使用？生成一个账号密码（仅显示一次）</el-button
+            >
+          </div>
         </template>
       </el-form>
       <footer class="login-footer">
@@ -225,6 +260,17 @@ onMounted(async () => {
   color: var(--app-accent-strong);
   border-color: var(--app-accent);
   background: var(--app-accent-soft);
+}
+.desktop-login-bind-hint {
+  margin: 10px 0 0;
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.desktop-login-firstrun {
+  display: flex;
+  justify-content: center;
+  margin-top: 6px;
 }
 /* Input edges/focus come from the shared Fluent control layer so login
    matches the main workspace 1:1 — no page-local box-shadow overrides. */

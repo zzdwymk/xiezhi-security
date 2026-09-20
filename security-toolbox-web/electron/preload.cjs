@@ -72,6 +72,8 @@ contextBridge.exposeInMainWorld(
       }),
     rollbackFromPostgres: () =>
       ipcRenderer.invoke("toolbox:rollback-from-postgres"),
+    setPostgresPassword: (password) =>
+      ipcRenderer.invoke("toolbox:set-postgres-password", { password }),
     onPostgresMigrationProgress: (callback) => {
       const listener = (_event, progress) => callback(progress);
       ipcRenderer.on("toolbox:postgres-migration-progress", listener);
@@ -93,10 +95,18 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.invoke("toolbox:save-github-token-settings", payload),
     getDesktopLoginCredentials: () =>
       ipcRenderer.invoke("toolbox:get-desktop-login-credentials"),
+    getDesktopLoginBinding: () =>
+      ipcRenderer.invoke("toolbox:get-desktop-login-binding"),
+    bindDesktopLogin: () =>
+      ipcRenderer.invoke("toolbox:bind-desktop-login"),
+    unbindDesktopLogin: () =>
+      ipcRenderer.invoke("toolbox:unbind-desktop-login"),
     loginWithWindowsHello: () =>
       ipcRenderer.invoke("toolbox:desktop-login-with-hello"),
     setDesktopAdminPassword: (password) =>
       ipcRenderer.invoke("toolbox:set-desktop-admin-password", password),
+    generateDesktopLogin: () =>
+      ipcRenderer.invoke("toolbox:generate-desktop-login"),
     testAiSettings: (settings) =>
       ipcRenderer.invoke("toolbox:test-ai-settings", settings),
     testEmbeddingSettings: (settings) =>

@@ -1192,6 +1192,14 @@ body:not(:has(.desktop-v2-native-frame))
   max-height: calc(100% - 32px);
 }
 
+/* Login (and other full-bleed public pages) have no sidebar, so the dialog
+   mask must cover the whole window instead of leaving a strip on the left. */
+body:has(.login-page) .el-overlay.is-message-box,
+body:has(.login-page) .el-overlay:has(> .el-overlay-dialog) {
+  left: 0;
+  border-top-left-radius: 0;
+}
+
 .desktop-v2-content,
 .content-area {
   background: var(--app-bg);
@@ -1870,6 +1878,11 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
 
 .el-message-box.el-message-box .el-message-box__message p {
   margin: 0;
+}
+
+.el-message-box.app-message-box--preline .el-message-box__message p {
+  white-space: pre-line;
+  word-break: break-all;
 }
 
 .el-message-box.el-message-box .el-message-box__input {
