@@ -4,6 +4,7 @@ import add from "@fluentui/svg-icons/icons/add_24_regular.svg?url";
 import arrowBidirectional from "@fluentui/svg-icons/icons/arrow_bidirectional_up_down_24_regular.svg?url";
 import arrowClockwise from "@fluentui/svg-icons/icons/arrow_clockwise_24_regular.svg?url";
 import arrowDownload from "@fluentui/svg-icons/icons/arrow_download_24_regular.svg?url";
+import arrowLeft from "@fluentui/svg-icons/icons/arrow_left_24_regular.svg?url";
 import arrowMove from "@fluentui/svg-icons/icons/arrow_move_24_regular.svg?url";
 import arrowReset from "@fluentui/svg-icons/icons/arrow_reset_24_regular.svg?url";
 import arrowSwap from "@fluentui/svg-icons/icons/arrow_swap_24_regular.svg?url";
@@ -77,6 +78,7 @@ const iconUrls: Record<string, string> = {
   "arrow-bidirectional": arrowBidirectional,
   "arrow-clockwise": arrowClockwise,
   "arrow-download": arrowDownload,
+  "arrow-left": arrowLeft,
   "arrow-move": arrowMove,
   "arrow-reset": arrowReset,
   "arrow-right": chevronRight,

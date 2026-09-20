@@ -148,6 +148,12 @@ interface ToolboxDesktopBridge {
     password: string;
     note: string;
   }>;
+  readonly initDesktopLogin?: (password: string) => Promise<{
+    username: string;
+    password: string;
+    note: string;
+  }>;
+  readonly reimportH2ToPostgres?: () => Promise<{ status: string }>;
   readonly testAiSettings?: (
     settings: AiSettingsInput,
   ) => Promise<{ ok: boolean; model: string; message: string }>;

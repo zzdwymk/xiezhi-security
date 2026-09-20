@@ -107,6 +107,10 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.invoke("toolbox:set-desktop-admin-password", password),
     generateDesktopLogin: () =>
       ipcRenderer.invoke("toolbox:generate-desktop-login"),
+    initDesktopLogin: (password) =>
+      ipcRenderer.invoke("toolbox:init-desktop-login", { password }),
+    reimportH2ToPostgres: () =>
+      ipcRenderer.invoke("toolbox:reimport-h2-to-postgres"),
     testAiSettings: (settings) =>
       ipcRenderer.invoke("toolbox:test-ai-settings", settings),
     testEmbeddingSettings: (settings) =>
