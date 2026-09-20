@@ -42,9 +42,19 @@ const clearDataResult = ref<{
 }>();
 const pwdVisible = ref(false);
 const pwdSaving = ref(false);
+const pwdIdentified = ref(false);
+const pwdIdentifying = ref(false);
+const desktopLoginVerifyError = ref("");
+const loginBinding = ref(false);
+const loginBindingLoading = ref(false);
 const pwdForm = reactive({ current: "", next: "", confirm: "" });
 async function changeLoginPassword() {
   if (pwdSaving.value) return;
+  if (!isDesktop || pwdIdentified.value) {
+    // 桌面版：已通过本机身份验证；网页版：直接走当前密码校验。
+  } else {
+    return ElMessage.warning("请先验证本机身份（Windows Hello / PIN）后再修改密码");
+  }
   if (!pwdForm.current.trim()) return ElMessage.warning("请输入当前密码");
   if (pwdForm.next.length < 8) return ElMessage.warning("新密码至少 8 位");
   if (pwdForm.next !== pwdForm.confirm)
@@ -110,6 +120,22 @@ const toolDownloadLoading = ref(false);
 const toolDownloadSaving = ref(false);
 const toolDownloadStatus = ref<ToolDownloadSettingsStatus>();
 const toolDownloadForm = reactive({ mode: "github" as "github" | "custom", mirror: "" });
+const postgresDialog = ref(false);
+const postgresLoading = ref(false);
+const postgresSaving = ref(false);
+const postgresState = ref<{
+  available: boolean;
+  configured: boolean;
+  enabled: boolean;
+  port: number | null;
+  database: string | null;
+}>();
+const postgresPasswordInput = ref("");
+const postgresSummary = computed(() => {
+  if (!isDesktop) return "网页模式请通过后端环境变量配置";
+  if (!postgresState.value?.enabled) return "当前未启用 PostgreSQL，正在使用 H2";
+  return `已启用 · 127.0.0.1:${postgresState.value.port} · ${postgresState.value.database}`;
+});
 const aiForm = reactive<AiSettingsInput>({
   baseUrl: "https://api.openai.com",
   model: "gpt-4.1-mini",
@@ -232,6 +258,111 @@ function troubleshootWithCopilot() {
     },
   });
   void router.push("/");
+}
+
+async function loadDesktopLoginBinding() {
+  if (!window.toolboxDesktop?.getDesktopLoginBinding) return;
+  loginBindingLoading.value = true;
+  try {
+    const binding = await window.toolboxDesktop.getDesktopLoginBinding();
+    loginBinding.value = binding?.bound === true;
+  } catch {
+    loginBinding.value = false;
+  } finally {
+    loginBindingLoading.value = false;
+  }
+}
+
+async function bindDesktopLoginShortcuts() {
+  const bind = window.toolboxDesktop?.bindDesktopLogin;
+  if (!bind) return;
+  if (isDesktop && !pwdIdentified.value)
+    return ElMessage.warning("请先验证本机身份（Windows Hello / PIN）后可绑定");
+  if (!pwdForm.next.trim() || pwdForm.next.length < 8)
+    return ElMessage.warning("请先在上方设置一个至少 8 位的新密码再绑定");
+  if (pwdForm.next !== pwdForm.confirm)
+    return ElMessage.warning("两次输入的新密码不一致");
+  if (window.toolboxDesktop?.setDesktopAdminPassword) {
+    try {
+      await window.toolboxDesktop.setDesktopAdminPassword(pwdForm.next);
+    } catch (error) {
+      return ElMessage.error(errorText(error, "同步登录密码失败"));
+    }
+  }
+  try {
+    const binding = await bind();
+    loginBinding.value = binding?.bound === true;
+    if (loginBinding.value) {
+      ElMessage.success(
+        "账号密码已与本机安全凭据、Windows Hello 绑定；登录页将显示这两种快捷登录",
+      );
+      pwdVisible.value = false;
+    } else {
+      ElMessage.error("绑定失败，请先设置并确认登录密码");
+    }
+  } catch (error) {
+    ElMessage.error(errorText(error, "绑定本机登录失败"));
+  }
+}
+
+async function unbindDesktopLoginShortcuts() {
+  const unbind = window.toolboxDesktop?.unbindDesktopLogin;
+  if (!unbind) return;
+  try {
+    await ElMessageBox.confirm(
+      "解除绑定后，本机安全凭据 / Windows Hello 快捷登录将暂时关闭，需再次绑定才能使用。",
+      "解除本机登录绑定",
+      { confirmButtonText: "解除", cancelButtonText: "取消", type: "warning" },
+    );
+    const binding = await unbind();
+    loginBinding.value = binding?.bound === true;
+    ElMessage.success("已解除绑定，后续仅可用账号密码登录");
+  } catch (error) {
+    if (error !== "cancel" && error !== "close")
+      ElMessage.error(errorText(error, "解除绑定失败"));
+  }
+}
+
+async function verifyIdentityBeforePasswordChange() {
+  if (!isDesktop) {
+    pwdIdentified.value = true;
+    return ElMessage.success("网页模式无需额外验证");
+  }
+  const verify = window.toolboxDesktop?.loginWithWindowsHello;
+  if (!verify) {
+    return ElMessage.error("当前运行时不可用，无法验证本机身份");
+  }
+  if (pwdIdentifying.value) return;
+  pwdIdentifying.value = true;
+  desktopLoginVerifyError.value = "";
+  try {
+    const result = await verify();
+    if (result?.verified) {
+      pwdIdentified.value = true;
+      ElMessage.success("本机身份验证通过，可修改密码");
+    } else {
+      desktopLoginVerifyError.value =
+        result?.reason ||
+        (result?.available === false
+          ? "本机未启用 Windows Hello（PIN／指纹／面部）"
+          : "身份验证未通过或已取消");
+      pwdIdentified.value = false;
+    }
+  } catch {
+    desktopLoginVerifyError.value = "本机身份验证失败，请重试";
+    pwdIdentified.value = false;
+  } finally {
+    pwdIdentifying.value = false;
+  }
+}
+
+async function openPasswordDialog() {
+  pwdIdentified.value = false;
+  desktopLoginVerifyError.value = "";
+  pwdForm.current = "";
+  pwdForm.next = "";
+  pwdForm.confirm = "";
+  pwdVisible.value = true;
 }
 
 function errorText(error: unknown, fallback: string) {
@@ -710,6 +841,51 @@ async function clearGithubToken() {
   }
 }
 
+async function loadPostgresSettings(open = false) {
+  if (open) postgresDialog.value = true;
+  if (!window.toolboxDesktop?.getPostgresMigrationState) return;
+  postgresLoading.value = true;
+  try {
+    postgresState.value =
+      await window.toolboxDesktop.getPostgresMigrationState();
+    postgresPasswordInput.value = "";
+  } catch (error) {
+    ElMessage.error(errorText(error, "无法读取数据库连接设置"));
+  } finally {
+    postgresLoading.value = false;
+  }
+}
+
+async function savePostgresPassword() {
+  if (!window.toolboxDesktop?.setPostgresPassword)
+    return ElMessage.warning("数据库密码仅支持桌面应用且需已启用 PostgreSQL");
+  if (postgresPasswordInput.value && postgresPasswordInput.value.length < 8)
+    return ElMessage.warning("密码至少 8 位");
+  postgresSaving.value = true;
+  try {
+    const result = await window.toolboxDesktop.setPostgresPassword(
+      postgresPasswordInput.value || "",
+    );
+    await ElMessageBox.alert(
+      `新密码已生效。\n\n主机：${result.host}\n端口：${result.port}\n数据库：${result.database}\n用户名：${result.username}\n密码：${result.password}\n\n请妥善保存此密码（下次不再显示）。`,
+      "重设数据库密码成功",
+      {
+        confirmButtonText: "我已保存",
+        type: "success",
+        customClass: "app-message-box--preline",
+      },
+    );
+    postgresPasswordInput.value = "";
+    postgresDialog.value = false;
+    ElMessage.success("数据库密码已重设");
+  } catch (error) {
+    if (error !== "cancel" && error !== "close")
+      ElMessage.error(errorText(error, "重设数据库密码失败"));
+  } finally {
+    postgresSaving.value = false;
+  }
+}
+
 onMounted(() => {
   void loadThemeModeSetting();
   void loadAiSettings();
@@ -719,6 +895,7 @@ onMounted(() => {
   void loadMotionSettings();
   void loadNotificationSettings();
   void loadConcurrencyLimit();
+  void loadDesktopLoginBinding();
 });
 
 const notificationSeverityOptions = [
@@ -1006,12 +1183,24 @@ watch(
             @click="loadToolDownloadSettings(true)"
           >
             <el-icon class="settings-row-icon"><Download /></el-icon>
+<span class="settings-row-copy">
+                <strong>工具下载源</strong>
+                <small v-if="!isDesktop"
+                  >网页模式请通过 TOOL_DOWNLOAD_MIRROR 环境变量配置</small
+                >
+                <small v-else>{{ toolDownloadSummary }}</small>
+              </span>
+              <el-icon class="settings-row-chevron"><ArrowRight /></el-icon>
+            </button>
+          <button
+            type="button"
+            class="settings-row"
+            @click="loadPostgresSettings(true)"
+          >
+            <el-icon class="settings-row-icon"><Key /></el-icon>
             <span class="settings-row-copy">
-              <strong>工具下载源</strong>
-              <small v-if="!isDesktop"
-                >网页模式请通过 TOOL_DOWNLOAD_MIRROR 环境变量配置</small
-              >
-              <small v-else>{{ toolDownloadSummary }}</small>
+              <strong>数据库连接</strong>
+              <small>{{ postgresSummary }}</small>
             </span>
             <el-icon class="settings-row-chevron"><ArrowRight /></el-icon>
           </button>
@@ -1047,7 +1236,7 @@ watch(
             </span>
             <el-icon class="settings-row-chevron"><ArrowRight /></el-icon>
           </button>
-          <button type="button" class="settings-row" @click="pwdVisible = true">
+          <button type="button" class="settings-row" @click="openPasswordDialog">
             <el-icon class="settings-row-icon"><Key /></el-icon>
             <span class="settings-row-copy">
               <strong>修改登录密码</strong>
@@ -1243,6 +1432,32 @@ watch(
       destroy-on-close
     >
       <el-form label-position="top" @keyup.enter="changeLoginPassword">
+        <div v-if="isDesktop" class="pwd-identify-block">
+          <div class="pwd-identify-text">
+            <span
+              class="pwd-identify-badge"
+              :class="{
+                'pwd-identify-badge--ok': pwdIdentified,
+                'pwd-identify-badge--pending': !pwdIdentified,
+              }"
+              >{{ pwdIdentified ? "已验证" : "待验证" }}</span
+            >
+            <span v-if="desktopLoginVerifyError" class="pwd-identify-error">{{
+              desktopLoginVerifyError
+            }}</span>
+            <span v-else class="pwd-identify-note"
+              >修改登录密码前需先验证本机身份（Windows Hello / PIN）</span
+            >
+          </div>
+          <el-button
+            type="primary"
+            plain
+            :loading="pwdIdentifying"
+            :disabled="pwdSaving || pwdIdentified"
+            @click="verifyIdentityBeforePasswordChange"
+            >{{ pwdIdentified ? "本机身份已验证" : "验证本机身份" }}</el-button
+          >
+        </div>
         <el-form-item label="当前密码"
           ><el-input
             v-model="pwdForm.current"
@@ -1270,6 +1485,42 @@ watch(
             placeholder="请再次输入新密码"
             :disabled="pwdSaving"
         /></el-form-item>
+        <div
+          v-if="isDesktop"
+          class="pwd-bind-block"
+          :class="{ 'pwd-bind-block--locked': !loginBinding }"
+        >
+          <div class="pwd-bind-text">
+            <strong>快捷登录</strong>
+            <small v-if="loginBindingLoading">正在读取绑定状态…</small>
+            <small v-else-if="loginBinding"
+              >已绑定：登录页可用「本机安全凭据」「Windows Hello」快捷登录联动同一个账号密码。</small
+            >
+            <small v-else
+              >未绑定：保存密码后，点击「绑定」即可把账号密码与本机凭据、Windows
+              Hello 关联，登录页将出现这两种快捷登录。</small
+            >
+          </div>
+          <el-button
+            v-if="loginBinding"
+            type="warning"
+            plain
+            :disabled="pwdSaving || loginBindingLoading"
+            @click="unbindDesktopLoginShortcuts"
+            >解除绑定</el-button
+          >
+          <el-button
+            v-else
+            :disabled="
+              (isDesktop ? !pwdIdentified : false) ||
+              !pwdForm.next.trim() ||
+              pwdSaving ||
+              loginBindingLoading
+            "
+            @click="bindDesktopLoginShortcuts"
+            >绑定本机与 Windows Hello</el-button
+          >
+        </div>
       </el-form>
       <template #footer>
         <el-button :disabled="pwdSaving" @click="pwdVisible = false"
@@ -1278,6 +1529,7 @@ watch(
         <el-button
           type="primary"
           :loading="pwdSaving"
+          :disabled="isDesktop && !pwdIdentified"
           @click="changeLoginPassword"
           >保存</el-button
         >
@@ -1441,6 +1693,87 @@ watch(
             >保存</el-button
           >
         </div>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="postgresDialog"
+      title="数据库连接"
+      class="app-dialog app-dialog--md"
+      align-center
+      append-to-body
+      destroy-on-close
+    >
+      <div v-loading="postgresLoading">
+        <el-alert
+          v-if="!isDesktop"
+          title="当前是网页模式，请通过后端 SPRING_DATASOURCE_URL / DB_URL 等环境变量配置数据库连接。"
+          type="info"
+          :closable="false"
+          show-icon
+        />
+        <el-alert
+          v-else-if="!postgresState?.enabled"
+          title="当前使用 H2 内嵌数据库，未启用 PostgreSQL。请先在依赖页完成「迁移到 PostgreSQL」后再来设置外部连接密码。"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+        <template v-else>
+          <el-alert
+            title="PostgreSQL 已启用。以下信息可用于 DBeaver / Navicat / pgAdmin 等外部软件连接；密码经 Windows 安全存储加密保管。"
+            type="success"
+            :closable="false"
+            show-icon
+          />
+          <div class="settings-row settings-row--static settings-row--grid">
+            <span class="settings-row-copy">
+              <strong>主机</strong>
+              <code class="settings-pg-value">127.0.0.1</code>
+            </span>
+            <span class="settings-row-copy">
+              <strong>端口</strong>
+              <code class="settings-pg-value">{{ postgresState.port }}</code>
+            </span>
+          </div>
+          <div class="settings-row settings-row--static settings-row--grid">
+            <span class="settings-row-copy">
+              <strong>数据库</strong>
+              <code class="settings-pg-value">{{ postgresState.database }}</code>
+            </span>
+            <span class="settings-row-copy">
+              <strong>用户名</strong>
+              <code class="settings-pg-value">security_toolbox</code>
+            </span>
+          </div>
+          <el-form label-position="top" class="icp-settings-form">
+            <el-form-item label="重设密码（留空则随机生成）">
+              <el-input
+                v-model="postgresPasswordInput"
+                type="password"
+                show-password
+                autocomplete="new-password"
+                placeholder="留空将随机生成一个新密码"
+                :disabled="postgresSaving"
+              />
+              <p>
+                填写的密码将作为外部软件连接密码。设为你的密码前会先通过
+                <code>ALTER USER</code> 真正生效，成功后才会持久化；留空则自动生成随机强密码。
+              </p>
+            </el-form-item>
+          </el-form>
+        </template>
+      </div>
+      <template #footer>
+        <el-button @click="postgresDialog = false">关闭</el-button>
+        <el-button
+          v-if="postgresState?.enabled"
+          type="primary"
+          :loading="postgresSaving"
+          :disabled="!isDesktop"
+          @click="savePostgresPassword"
+          >重设密码</el-button
+        >
       </template>
     </el-dialog>
 
@@ -1964,9 +2297,115 @@ button.settings-row:active {
   border-radius: 10px;
 }
 
+.settings-row--grid {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+  gap: 14px 18px !important;
+  align-items: center !important;
+  min-height: 0 !important;
+}
+.settings-row--grid .settings-row-copy {
+  min-width: 0;
+}
+.settings-pg-value {
+  margin-top: 4px;
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--app-surface-soft, #f4f7f8);
+  color: var(--app-text);
+  font-family: Consolas, "Segoe UI Mono", monospace;
+  font-size: 12px;
+}
+
+.pwd-bind-block {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--app-surface-soft, #f4f7f8);
+  border: 1px solid var(--app-border);
+}
+.pwd-bind-block--locked {
+  border-color: color-mix(in srgb, var(--el-color-warning) 45%, var(--app-border));
+}
+.pwd-bind-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.pwd-bind-text strong {
+  color: var(--app-text);
+  font-size: 13px;
+}
+.pwd-bind-text small {
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.pwd-bind-block > .el-button {
+  flex-shrink: 0;
+}
+
+.pwd-identify-block {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--app-surface-soft, #f4f7f8);
+  border: 1px solid var(--app-border);
+}
+.pwd-identify-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.pwd-identify-badge {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.pwd-identify-badge--ok {
+  color: var(--el-color-success, #67c23a);
+  background: color-mix(in srgb, var(--el-color-success) 14%, transparent);
+}
+.pwd-identify-badge--pending {
+  color: var(--el-color-warning, #e6a23c);
+  background: color-mix(in srgb, var(--el-color-warning) 14%, transparent);
+}
+.pwd-identify-note {
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.pwd-identify-error {
+  color: var(--el-color-danger, #d13438);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.pwd-identify-block > .el-button {
+  flex-shrink: 0;
+}
+
 @media (max-width: 720px) {
   .settings-page {
     width: 100%;
+  }
+
+  .settings-row--grid {
+    grid-template-columns: minmax(0, 1fr) !important;
   }
 
   .settings-row,

@@ -74,6 +74,7 @@ toolbox:
     jwt-expiration-minutes: ${JWT_EXPIRATION_MINUTES:120}
     desktop-mode: ${TOOLBOX_DESKTOP:false}
     synchronize-desktop-admin-password: ${TOOLBOX_DESKTOP_SYNC_ADMIN_PASSWORD:false}
+    desktop-seed-admin-password: ${TOOLBOX_DESKTOP_SEED_ADMIN_PASSWORD:}
     allow-insecure-development-credentials: ${ALLOW_INSECURE_DEVELOPMENT_CREDENTIALS:false}
     migrate-legacy-development-credentials: ${MIGRATE_LEGACY_DEVELOPMENT_CREDENTIALS:false}
   ai:

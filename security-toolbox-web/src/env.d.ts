@@ -109,6 +109,14 @@ interface ToolboxDesktopBridge {
     port: number | null;
     database: string | null;
   }>;
+  readonly setPostgresPassword?: (password: string) => Promise<{
+    host: string;
+    port: number;
+    database: string;
+    username: string;
+    password: string;
+    status: string;
+  }>;
   readonly onPostgresMigrationProgress?: (
     callback: (progress: {
       ts: number;
@@ -123,6 +131,9 @@ interface ToolboxDesktopBridge {
     payload: GithubTokenSettingsInput,
   ) => Promise<GithubTokenSettingsStatus>;
   readonly getDesktopLoginCredentials?: () => Promise<DesktopLoginCredentials | null>;
+  readonly getDesktopLoginBinding?: () => Promise<{ bound: boolean }>;
+  readonly bindDesktopLogin?: () => Promise<{ bound: boolean }>;
+  readonly unbindDesktopLogin?: () => Promise<{ bound: boolean }>;
   readonly loginWithWindowsHello?: () => Promise<{
     verified: boolean;
     available?: boolean;
@@ -132,6 +143,11 @@ interface ToolboxDesktopBridge {
   readonly setDesktopAdminPassword?: (
     password: string,
   ) => Promise<{ updated: boolean }>;
+  readonly generateDesktopLogin?: () => Promise<{
+    username: string;
+    password: string;
+    note: string;
+  }>;
   readonly testAiSettings?: (
     settings: AiSettingsInput,
   ) => Promise<{ ok: boolean; model: string; message: string }>;

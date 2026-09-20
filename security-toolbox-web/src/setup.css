@@ -835,6 +835,7 @@ body:has(.setup-page) {
 }
 .dep-postgres-actions {
   display: flex;
+  grid-column: 1 / -1;
   flex-direction: column;
   align-items: flex-end;
   gap: 6px;
@@ -842,6 +843,21 @@ body:has(.setup-page) {
   min-width: 0;
   margin-top: 6px;
   padding-top: 6px;
+}
+.dep-postgres-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  width: 100%;
+}
+.dep-postgres-controls .el-button {
+  min-height: 32px;
+  margin: 0 !important;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 600;
 }
 .dep-postgres-progress {
   display: flex;
@@ -875,6 +891,63 @@ body:has(.setup-page) {
   color: var(--fluent-danger-bg, #d13438);
   font-size: 11px;
   text-align: right;
+}
+.dep-postgres-connection {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  width: 100%;
+  background: var(--setup-panel-strong, rgba(0, 0, 0, 0.04));
+  border: 1px solid var(--setup-border, rgba(0, 0, 0, 0.08));
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.dep-postgres-connection-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.dep-postgres-connection-head .dep-postgres-controls {
+  width: auto;
+}
+.dep-postgres-connection-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--setup-text, inherit);
+  letter-spacing: 0.2px;
+}
+.dep-postgres-connection-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px 24px;
+}
+.dep-postgres-connection-field {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
+}
+.dep-postgres-connection-key {
+  flex: none;
+  font-size: 12px;
+  color: var(--app-muted, #85817a);
+}
+.dep-postgres-connection-val {
+  overflow: hidden;
+  color: var(--setup-text);
+  font: 12px/1.4 Consolas, "Microsoft YaHei", monospace;
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 4px;
+  padding: 2px 6px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dep-postgres-connection-hint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--app-muted, #85817a);
 }
 .dep-action {
   color: var(--setup-text);

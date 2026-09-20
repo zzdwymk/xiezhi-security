@@ -57,6 +57,7 @@ const activeDatabase = ref("");
 const developmentMode = ref(import.meta.env.DEV);
 const postgresMigration = ref<{ configured: boolean; enabled: boolean; available: boolean; port: number | null; database: string | null } | null>(null);
 const migratingPostgres = ref(false);
+const settingPostgresPassword = ref(false);
 const pgMigrationProgress = ref("");
 const pgMigrationLog = ref<string[]>([]);
 const pgMigrationError = ref("");
@@ -564,6 +565,47 @@ async function requestPostgresRollback() {
     );
   } finally {
     await refreshPostgresMigrationState();
+  }
+}
+
+async function requestSetPostgresPassword() {
+  if (!window.toolboxDesktop?.setPostgresPassword) {
+    ElMessage.error("当前运行时未提供重设数据库密码能力");
+    return;
+  }
+  try {
+    const { value } = await ElMessageBox.prompt(
+      "输入新的数据库密码，留空则随机生成。此密码将用于外部数据库软件（如 DBeaver / Navicat / pgAdmin）连接。",
+      "重设数据库密码",
+      {
+        confirmButtonText: "确定",
+        cancelButtonText: "取消",
+        inputType: "password",
+        inputPlaceholder: "留空将随机生成一个新密码",
+        inputValidator: (v: string) => {
+          if (!v) return true;
+          if (v.length < 8) return "密码至少 8 位";
+          return true;
+        },
+      },
+    );
+    settingPostgresPassword.value = true;
+    const result = await window.toolboxDesktop.setPostgresPassword(value || "");
+    await ElMessageBox.alert(
+      `新密码已生效。\n\n主机：${result.host}\n端口：${result.port}\n数据库：${result.database}\n用户名：${result.username}\n密码：${result.password}\n\n请妥善保存此密码（下次不再显示）。`,
+      "重设数据库密码成功",
+      {
+        confirmButtonText: "我已保存",
+        type: "success",
+        customClass: "app-message-box--preline",
+      },
+    );
+    await refreshPostgresMigrationState();
+  } catch (setError: any) {
+    if (setError === "cancel" || setError === "close") return;
+    ElMessage.error(toErrorMessage(setError, "重设数据库密码失败"));
+  } finally {
+    settingPostgresPassword.value = false;
   }
 }
 
@@ -1286,29 +1328,6 @@ onUnmounted(() => {
                   class="dep-ready-controls"
                 >
                   <el-button
-                    v-if="
-                      item.name === 'PostgreSQL' &&
-                      desktopMode &&
-                      !postgresMigration?.enabled &&
-                      postgresMigration?.available
-                    "
-                    type="primary"
-                    plain
-                    :loading="migratingPostgres"
-                    @click="requestPostgresMigration"
-                    >迁移到 PostgreSQL</el-button
-                  >
-                  <el-button
-                    v-if="
-                      item.name === 'PostgreSQL' &&
-                      desktopMode &&
-                      postgresMigration?.enabled
-                    "
-                    plain
-                    @click="requestPostgresRollback"
-                    >回退到 H2</el-button
-                  >
-                  <el-button
                     plain
                     :loading="item.installing"
                     :disabled="item.uninstalling"
@@ -1349,28 +1368,95 @@ onUnmounted(() => {
                   >官方安装</a
                 >
                 <span v-else class="dep-action">暂不支持</span>
+              </div>
+              <div
+                v-if="item.name === 'PostgreSQL' && desktopMode"
+                class="dep-postgres-actions"
+              >
                 <div
-                  v-if="item.name === 'PostgreSQL' && desktopMode"
-                  class="dep-postgres-actions"
+                  v-if="
+                    isReady(item) &&
+                    !postgresMigration?.enabled &&
+                    postgresMigration?.available
+                  "
+                  class="dep-postgres-controls"
                 >
-                  <div
-                    v-if="migratingPostgres || pgMigrationProgress || pgMigrationError"
-                    class="dep-postgres-progress"
+                  <el-button
+                    type="primary"
+                    plain
+                    :loading="migratingPostgres"
+                    @click="requestPostgresMigration"
+                    >迁移到 PostgreSQL</el-button
                   >
-                    <span class="dep-postgres-progress-text">{{
-                      pgMigrationError || pgMigrationProgress
-                    }}</span>
-                    <code
-                      v-if="pgMigrationLog.length"
-                      class="dep-postgres-log"
-                      ><template v-for="(line, idx) in pgMigrationLog" :key="idx"
-                        ><span>{{ line }}</span></template
-                      ></code
-                    >
+                </div>
+                <div
+                  v-if="migratingPostgres || pgMigrationProgress || pgMigrationError"
+                  class="dep-postgres-progress"
+                >
+                  <span class="dep-postgres-progress-text">{{
+                    pgMigrationError || pgMigrationProgress
+                  }}</span>
+                  <code
+                    v-if="pgMigrationLog.length"
+                    class="dep-postgres-log"
+                    ><template v-for="(line, idx) in pgMigrationLog" :key="idx"
+                      ><span>{{ line }}</span></template
+                    ></code
+                  >
+                </div>
+                <span v-if="pgMigrationError" class="dep-postgres-error"
+                  >迁移失败，请查看上方日志或 desktop-startup.log</span
+                >
+                <div
+                  v-if="postgresMigration?.enabled"
+                  class="dep-postgres-connection"
+                >
+                  <div class="dep-postgres-connection-head">
+                    <div class="dep-postgres-connection-title">外部连接信息</div>
+                    <div class="dep-postgres-controls">
+                      <el-button
+                        v-if="isReady(item)"
+                        plain
+                        @click="requestPostgresRollback"
+                        >回退到 H2</el-button
+                      >
+                      <el-button
+                        v-if="isReady(item)"
+                        plain
+                        :loading="settingPostgresPassword"
+                        @click="requestSetPostgresPassword"
+                        >重设数据库密码</el-button
+                      >
+                    </div>
                   </div>
-                  <span v-if="pgMigrationError" class="dep-postgres-error"
-                    >迁移失败，请查看上方日志或 desktop-startup.log</span
-                  >
+                  <div class="dep-postgres-connection-fields">
+                    <span class="dep-postgres-connection-field">
+                      <span class="dep-postgres-connection-key">主机</span>
+                      <code class="dep-postgres-connection-val">127.0.0.1</code>
+                    </span>
+                    <span class="dep-postgres-connection-field">
+                      <span class="dep-postgres-connection-key">端口</span>
+                      <code class="dep-postgres-connection-val">{{
+                        postgresMigration.port
+                      }}</code>
+                    </span>
+                    <span class="dep-postgres-connection-field">
+                      <span class="dep-postgres-connection-key">数据库</span>
+                      <code class="dep-postgres-connection-val">{{
+                        postgresMigration.database
+                      }}</code>
+                    </span>
+                    <span class="dep-postgres-connection-field">
+                      <span class="dep-postgres-connection-key">用户名</span>
+                      <code class="dep-postgres-connection-val"
+                        >security_toolbox</code
+                      >
+                    </span>
+                  </div>
+                  <div class="dep-postgres-connection-hint">
+                    密码经安全存储加密，可点击「重设数据库密码」查看/设置后再用于外部软件（如
+                    DBeaver / Navicat / pgAdmin）。
+                  </div>
                 </div>
               </div>
             </div>

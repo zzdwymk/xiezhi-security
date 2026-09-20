@@ -43,6 +43,7 @@ let shutdownToken;
 let quitting = false;
 let backendStartError;
 let restartingBackend = false;
+let pendingDesktopSeedPassword;
 let aiSettingsOperation = Promise.resolve();
 let captureBrowserWindow;
 let captureBrowserSession;
@@ -512,6 +513,31 @@ function ensureDesktopCredentials() {
   writeDesktopSettings({ ...settings, desktopSecurity: nextSecurity });
   desktopCredentials = credentials;
   return desktopCredentials;
+}
+
+// 是否已完成“账号密码 ↔ 本机凭据/Windows Hello 绑定”。未绑定时，登录页只允许账号密码，
+// 本机凭据 / Windows Hello 不提供，避免无密码下被任意本机明文绕过。
+function desktopCredentialBinding() {
+  const settings = readDesktopSettings();
+  const security =
+    settings.desktopSecurity && typeof settings.desktopSecurity === "object"
+      ? settings.desktopSecurity
+      : {};
+  return { bound: security.desktopLoginBinding === true };
+}
+
+function markDesktopCredentialBinding() {
+  const settings = readDesktopSettings();
+  const security =
+    settings.desktopSecurity && typeof settings.desktopSecurity === "object"
+      ? settings.desktopSecurity
+      : {};
+  if (security.desktopLoginBinding !== true) {
+    writeDesktopSettings({
+      ...settings,
+      desktopSecurity: { ...security, desktopLoginBinding: true },
+    });
+  }
 }
 
 function prepareDesktopMitmCaMigration() {
@@ -4408,11 +4434,125 @@ async function ensureDesktopPostgresRunning() {
   await ensureDesktopPostgresDatabase(config);
 }
 
+// 设置/重设 PostgreSQL 应用账号密码。password 传空则随机生成。
+// 若已存配置的密码与集群不符（迁移/历史残留导致认证失败），通过 trust 引导重置
+// 数据库超级用户密码，再持久化凭据，从而绕开“必须先用旧密码才能改密码”的死锁。
+async function setDesktopPostgresPassword(password = "") {
+  const config = activeDesktopPostgresConfig();
+  if (!config || config.enabled !== true) {
+    throw new UserFacingError("当前未启用 PostgreSQL，请在依赖页先完成迁移");
+  }
+  const nextPassword =
+    typeof password === "string" && password.trim()
+      ? password.trim()
+      : generatedDesktopSecret(24);
+  const binDir = requirePostgresBinaries();
+  const dataDir = desktopPostgresDataDir();
+  if (!fs.existsSync(path.join(dataDir, "PG_VERSION"))) {
+    throw new UserFacingError("未初始化 PostgreSQL 数据簇，请先在依赖页重新迁移");
+  }
+  await bootstrapResetDesktopPostgresPassword({
+    binDir,
+    dataDir,
+    host: config.host,
+    port: config.port,
+    username: config.username,
+    database: config.database,
+    password: nextPassword,
+  });
+  const saved = saveDesktopPostgresConfig({
+    enabled: true,
+    host: config.host,
+    port: config.port,
+    database: config.database,
+    username: config.username,
+    password: nextPassword,
+  });
+  return {
+    host: saved.host,
+    port: saved.port,
+    database: saved.database,
+    username: saved.username,
+    password: nextPassword,
+  };
+}
+
+// 通过临时把 pg_hba.conf 改为 trust 来重设超级用户密码：
+// 1) 停止旧实例；2) 备份并改写 pg_hba 为 trust；3) 启动并 ALTER USER 设新密码；
+// 4) 恢复 pg_hba；5) 用新密码重新启动并返回。
+// 不依赖当前密码是否正确，适合迁移/历史凭据错乱后的自愈。
+async function bootstrapResetDesktopPostgresPassword({
+  binDir,
+  dataDir,
+  host,
+  port,
+  username,
+  database,
+  password,
+}) {
+  const pgHba = path.join(dataDir, "pg_hba.conf");
+  if (!fs.existsSync(pgHba)) {
+    throw new UserFacingError(`找不到 PostgreSQL 认证配置：${pgHba}`);
+  }
+  const original = fs.readFileSync(pgHba, "utf8");
+  const trustLines =
+    "host    all    all    127.0.0.1/32    trust\n" +
+    "host    all    all    ::1/128         trust\n" +
+    "local   all    all                   trust\n";
+
+  const bootstrapConfig = { host, port, username, database, password };
+
+  // 1) 停止（无论是否在运行）。
+  await stopDesktopPostgres();
+
+  // 2) 用 trust 覆盖 pg_hba（trust 行放在最前，优先于后面的 scram）。
+  fs.writeFileSync(pgHba, trustLines + original, "utf8");
+
+  let started = false;
+  try {
+    // 3) 以 trust 启动并设置新密码（trust 下任意密码都能连上）。
+    await startDesktopPostgres(binDir, dataDir, bootstrapConfig);
+    started = true;
+    const escaped = String(password).replace(/'/g, "''");
+    await pgExec(
+      { host, port, username, database: "postgres", password: "trust-bootstrap" },
+      `ALTER USER ${username} PASSWORD '${escaped}'`,
+      "postgres",
+    );
+  } finally {
+    if (started) {
+      try {
+        await pgRun(
+          path.join(binDir, "pg_ctl.exe"),
+          ["-D", dataDir, "stop", "-m", "fast"],
+          { timeoutMs: 20000 },
+        );
+      } catch {}
+    }
+    // 4) 恢复原认证配置。
+    try {
+      fs.writeFileSync(pgHba, original, "utf8");
+    } catch {}
+  }
+
+  // 5) 用新密码重新启动并等待真正就绪。
+  await startDesktopPostgres(binDir, dataDir, bootstrapConfig);
+  // 验证新密码确实可用。
+  const probe = await pgQuery(
+    { host, port, username, database, password },
+    "SELECT 1",
+    "postgres",
+  );
+  if (probe !== "1") {
+    throw new UserFacingError(
+      `重设密码后到 PostgreSQL 认证校验失败（端口 ${port}），请重试。`,
+    );
+  }
+}
+
 function pgEnv(config) {
   return { PGPASSWORD: config.password };
 }
-
-// psql 工具全参数。
 function psqlBaseArgs(config, db, extra) {
   return [
     "-h", config.host, "-p", String(config.port), "-U", config.username, "-d", db,
@@ -4487,6 +4627,35 @@ async function ensureDesktopPostgresDatabase(config) {
   }
 }
 
+// 收紧 app 账号的全局权限：仍保留它自己业务库的所有权与读写，但去掉全局
+// SUPERUSER / CREATEROLE，使其无法改动其它数据库/账号。必须幂等：
+// 只有该角色仍是超级用户时才执行降权——一旦降过，就直接跳过，
+// 否则非超级用户再去 ALTER ROLE 会报 “bootstrap superuser must have SUPERUSER”。
+async function downgradeDesktopPostgresRole(config) {
+  const username = config.username;
+  const escaped = String(username).replace(/"/g, '""');
+  const roleRow = await pgQuery(
+    config,
+    `SELECT rolsuper::text || '|' || rolcreaterole::text FROM pg_roles WHERE rolname = '${escaped}'`,
+    "postgres",
+  );
+  const [superUser, createRole] = (roleRow || "").split("|");
+  if (superUser !== "true") {
+    // 已经不是超级用户：无需也无法再降级，直接返回。
+    reportPgMigrationProgress(
+      "harden-skip",
+      "app 账号已是非超级用户，跳过降级",
+    );
+    return;
+  }
+  await pgExec(
+    config,
+    `ALTER ROLE "${escaped}" NOSUPERUSER NOCREATEROLE NOBYPASSRLS`,
+    "postgres",
+  );
+  reportPgMigrationProgress("harden-done", "app 账号权限已收紧（非超级用户）");
+}
+
 async function stopDesktopPostgres() {
   const binDir = desktopPostgresBinDir();
   const dataDir = desktopPostgresDataDir();
@@ -4506,38 +4675,84 @@ function desktopH2MigrateUrl() {
 
 // 一键迁移编排：初始化/启动/建库并持久化配置；copyH2 为真时让后端迁移旧数据。
 async function migrateDesktopToPostgres({ copyH2 } = {}) {
-  const existing = desktopPostgresConfig();
   const binDir = requirePostgresBinaries();
   const dataDir = desktopPostgresDataDir();
 
-let config = existing;
-  if (config && (await pgReachable(config))) {
-    reportPgMigrationProgress("reuse", "检测到本地 PostgreSQL 已在运行，直接复用");
-  } else {
-    const password = existing?.password || generatedDesktopSecret(24);
-    const username = existing?.username || DESKTOP_PG_USERNAME;
-    const port = existing?.port || (await pickDesktopPostgresPort());
-    if (!fs.existsSync(path.join(dataDir, "PG_VERSION"))) {
-      reportPgMigrationProgress("cleaning", "清理旧数据目录并初始化新数据簇");
-      await initializeDesktopPostgresCluster(binDir, dataDir, username, password);
-      reportPgMigrationProgress("official-initdb", "initdb 完成，数据簇已初始化");
-    } else {
-      reportPgMigrationProgress("reuse-cluster", "检测到已有数据簇，直接复用");
+let config = undefined;
+  // 迁移是“一次性建立本地可用的 PostgreSQL”操作：为避免之前留下的集群密码与
+  // 配置不一致导致认证失败，这里总是以全新随机密码重建数据簇（数据从 H2 导入），
+  // 并在启动+认证成功之后才持久化凭据。
+  // 先停掉任何仍按旧配置运行的本地实例，确保端口与数据目录都不被旧进程占用，
+  // 否则 initdb 会因目录被旧实例锁定而“重建了个还在跑旧密码的实例”。
+  await stopDesktopPostgres();
+  writeDesktopStartupLog("postgres-migrate-stopped-old", { dataDir });
+  const password = generatedDesktopSecret(24);
+  const username = DESKTOP_PG_USERNAME;
+  const port = await pickDesktopPostgresPort();
+  reportPgMigrationProgress("cleaning", "清理旧数据目录并初始化新数据簇");
+  writeDesktopStartupDiagnostic(
+    "postgres-migrate-init",
+    null,
+    { step: "rebuild", port, dataDir },
+  );
+  await initializeDesktopPostgresCluster(binDir, dataDir, username, password);
+  reportPgMigrationProgress("initdb", "initdb 完成，数据簇已初始化");
+  writeDesktopStartupLog("postgres-migrate-initdb-done", {
+    port,
+    clusterDir: dataDir,
+  });
+
+  reportPgMigrationProgress("starting", `启动本地 PostgreSQL（端口 ${port}）`);
+  await startDesktopPostgres(binDir, dataDir, { host: DESKTOP_PG_HOST, port, username, password, database: DESKTOP_PG_DATABASE });
+  reportPgMigrationProgress("started", "PostgreSQL 已就绪");
+
+  // 用本次新密码做一次真实查询，验证认证确实通过；失败则说明 initdb 初始化的
+  // 超级用户密码与应用端不符（例如旧实例未真正停止、initdb 未生效），需显式报错。
+  writeDesktopStartupLog("postgres-migrate-auth-check", {
+    port,
+    username,
+    hasPassword: Boolean(password),
+  });
+  try {
+    const probe = await pgQuery(
+      { host: DESKTOP_PG_HOST, port, username, database: "postgres", password },
+      "SELECT 1",
+      "postgres",
+    );
+    writeDesktopStartupLog("postgres-migrate-auth-ok", { port, probe });
+    if (probe !== "1") {
+      throw new Error("认证成功但 SELECT 1 返回异常：" + String(probe));
     }
-    config = saveDesktopPostgresConfig({
-      enabled: true,
-      host: DESKTOP_PG_HOST,
-      port,
-      database: DESKTOP_PG_DATABASE,
-      username,
-      password,
-    });
-    reportPgMigrationProgress("starting", `启动本地 PostgreSQL（端口 ${port}）`);
-    await startDesktopPostgres(binDir, dataDir, config);
-    reportPgMigrationProgress("started", "PostgreSQL 已就绪");
+  } catch (authError) {
+    writeDesktopStartupLog(
+      "postgres-migrate-auth-failed",
+      `step=ready-check port=${port} user=${username} msg=${String(
+        authError instanceof Error ? authError.message : authError,
+      ).replace(/[\r\n]+/g, " ")}`,
+    );
+    throw new UserFacingError(
+      `迁移过程中认证失败（端口 ${port}）：` +
+        (authError instanceof Error ? authError.message : String(authError)) +
+        "。请关闭安全工具箱后，确认没有其他程序占用本地 15432-15499 端口，再重新迁移。",
+    );
   }
+
+  // 认证通过后才保存凭据，避免存一个连不上的密码。
+  config = saveDesktopPostgresConfig({
+    enabled: true,
+    host: DESKTOP_PG_HOST,
+    port,
+    database: DESKTOP_PG_DATABASE,
+    username,
+    password,
+  });
+
   reportPgMigrationProgress("ensure-db", `创建业务库 ${config.database}`);
   await ensureDesktopPostgresDatabase(config);
+  // 加固：去掉 app 账号的全局超级用户/建角色/绕过 RLS 等权限，仅保留它对自己业务库的
+  // 所有权与读写，避免它能改动其它数据库/账号（多数据库或多账号场景更安全）。
+  reportPgMigrationProgress("harden", "收紧 app 账号的数据库权限");
+  await downgradeDesktopPostgresRole(config);
   desktopPgMigrateH2Url = copyH2 ? desktopH2MigrateUrl() : null;
   reportPgMigrationProgress(
     copyH2 ? "migrating" : "ready",
@@ -4594,7 +4809,9 @@ function desktopBackendDatasourceArgs({ databasePath }) {
 }
 
 // 同步探测端口是否有进程监听（用于启动期数据源选择；确认可连接即视为就绪）。
-function pgPortOpenSync(host, port) {
+function pgPortOpenSync(config) {
+  if (!config) return false;
+  const { host, port } = config;
   try {
     const script =
       "const n=require('net');const s=n.connect(" +
@@ -4609,6 +4826,10 @@ function pgPortOpenSync(host, port) {
       encoding: "utf8",
       windowsHide: true,
       timeout: 2000,
+      // Electron's process.execPath is the Electron binary, not plain Node.
+      // ELECTRON_RUN_AS_NODE makes it evaluate `-e` as a Node script instead of
+      // booting the app (which would never run the probe and always time out).
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
     });
     return result.status === 0;
   } catch {
@@ -5847,6 +6068,29 @@ handleRendererIpc("toolbox:rollback-from-postgres", async (event) => {
   await restartBackend();
   return publicPostgresMigrationState();
 });
+handleRendererIpc("toolbox:set-postgres-password", async (event, payload = {}) => {
+  assertMainRenderer(event);
+  const options = typeof payload === "object" && payload ? payload : {};
+  try {
+    const result = await setDesktopPostgresPassword(
+      typeof options.password === "string" ? options.password : "",
+    );
+    return {
+      host: result.host,
+      port: result.port,
+      database: result.database,
+      username: result.username,
+      password: result.password,
+      status: "ok",
+    };
+  } catch (error) {
+    reportPgMigrationProgress(
+      "error",
+      error instanceof Error ? error.message : String(error),
+    );
+    throw error;
+  }
+});
 handleRendererIpc("toolbox:get-ai-settings", (event) => {
   assertMainRenderer(event);
   return publicAiSettings();
@@ -5881,13 +6125,39 @@ handleRendererIpc("toolbox:save-github-token-settings", (event, payload) => {
 });
 handleRendererIpc("toolbox:get-desktop-login-credentials", (event) => {
   assertDesktopLoginRenderer(event);
-  // Issuable more than once per launch so 本机安全凭据 and Windows Hello can both be used and
-  // login can be retried; the request is already restricted to the trusted #/login renderer.
+  // 本机安全凭据 = 这台设备自己的首登材料；首次没有任何密码时也允许用它进入，
+  // 避免“首次没密码进不去”的死结。绑定只是把账号密码与本机/PIN 关联的选项。
   const credentials = ensureDesktopCredentials();
   return {
     username: credentials.username,
     password: credentials.adminPassword,
   };
+});
+handleRendererIpc("toolbox:get-desktop-login-binding", (event) => {
+  assertMainRenderer(event);
+  return desktopCredentialBinding();
+});
+handleRendererIpc("toolbox:bind-desktop-login", (event) => {
+  assertMainRenderer(event);
+  // Ensure a credential bundle exists, then mark it bound.
+  ensureDesktopCredentials();
+  markDesktopCredentialBinding();
+  return desktopCredentialBinding();
+});
+handleRendererIpc("toolbox:unbind-desktop-login", (event) => {
+  assertMainRenderer(event);
+  const settings = readDesktopSettings();
+  const security =
+    settings.desktopSecurity && typeof settings.desktopSecurity === "object"
+      ? settings.desktopSecurity
+      : {};
+  if (security.desktopLoginBinding === true) {
+    writeDesktopSettings({
+      ...settings,
+      desktopSecurity: { ...security, desktopLoginBinding: false },
+    });
+  }
+  return desktopCredentialBinding();
 });
 // Gate the local credential behind the operating system's Windows Hello (PIN / fingerprint /
 // face). Electron has no built-in Hello API, so we drive WinRT UserConsentVerifier through
@@ -6041,6 +6311,26 @@ handleRendererIpc(
     return { updated: true };
   },
 );
+// 首次使用：生成一个账号密码，写回桌面凭据并重启后端（后端 admin 用新密码），
+// 仅在返回时向当前登录页显示一次明文；后续不再显示，等同 API key 语义。
+handleRendererIpc("toolbox:generate-desktop-login", async (event) => {
+  assertMainRenderer(event);
+  const password = generatedDesktopSecret(24);
+  updateDesktopAdminPassword(password);
+  // 一次性把新密码交给后端，让其更新数据库里的 admin 密码（即便 admin 已存在）。
+  pendingDesktopSeedPassword = password;
+  writeDesktopStartupDiagnostic(
+    "desktop-login-generate",
+    null,
+    { action: "generate-and-restart" },
+  );
+  await restartBackend();
+  return {
+    username: "admin",
+    password,
+    note: "密码仅本次显示，请立即保存或更改",
+  };
+});
 handleRendererIpc("toolbox:test-ai-settings", (event, payload) => {
   assertMainRenderer(event);
   return testAiConnection(payload);
@@ -6453,6 +6743,29 @@ function writeAiRuntimeDiagnostic(error) {
   }
 }
 
+// 轻量诊断日志：stage + message 追加写入 desktop-startup.log，供迁移排错。
+function writeDesktopStartupLog(stage, message) {
+  try {
+    const logDir = path.join(app.getPath("userData"), "logs");
+    fs.mkdirSync(logDir, { recursive: true });
+    const record = {
+      timestamp: new Date().toISOString(),
+      stage,
+      message:
+        typeof message === "string"
+          ? message
+          : JSON.stringify(message || "").slice(0, 2000),
+    };
+    fs.appendFileSync(
+      path.join(logDir, "desktop-startup.log"),
+      `${JSON.stringify(record)}\n`,
+      "utf8",
+    );
+  } catch {
+    // 诊断日志写入失败不能阻断迁移。
+  }
+}
+
 function writeDesktopStartupDiagnostic(stage, error, context = {}) {
   try {
     const logDir = path.join(app.getPath("userData"), "logs");
@@ -6738,10 +7051,13 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
     .join(dataDir, "security-toolbox")
     .replace(/\\/g, "/");
   cleanupStaleH2Lock(dataDir);
+  const seedAdminPassword = pendingDesktopSeedPassword || "";
+  pendingDesktopSeedPassword = undefined;
   const backendEnv = {
     ...process.env,
     TOOLBOX_DESKTOP: "true",
     TOOLBOX_DESKTOP_SYNC_ADMIN_PASSWORD: "true",
+    TOOLBOX_DESKTOP_SEED_ADMIN_PASSWORD: seedAdminPassword,
     ALLOW_INSECURE_DEVELOPMENT_CREDENTIALS: "false",
     TOOLBOX_SHUTDOWN_TOKEN: shutdownToken,
     TOOLBOX_TOOLS_DIR: toolsDir,

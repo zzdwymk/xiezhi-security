@@ -7825,7 +7825,10 @@ onUnmounted(() => {
 }
 .project-tabs :deep(.el-tab-pane) {
   min-height: 100%;
-  padding: 8px 0 28px;
+  /* Keep a 2px inset so control frames drawn with `outline` (e.g. the
+     列表/拓扑 radio group) are not clipped by the scroll container's
+     right edge, which would otherwise hide the trailing frame. */
+  padding: 8px 2px 28px;
 }
 .project-tabs .toolbar {
   display: flex;
