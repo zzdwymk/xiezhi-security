@@ -13,6 +13,7 @@ function fluentIcon(name: string): Component {
 
 export const Aim = fluentIcon("target");
 export const ArrowDown = fluentIcon("chevron-down");
+export const ArrowLeft = fluentIcon("arrow-left");
 export const ArrowRight = fluentIcon("chevron-right");
 export const ArrowUp = fluentIcon("chevron-up");
 export const ChatDotRound = fluentIcon("chat");

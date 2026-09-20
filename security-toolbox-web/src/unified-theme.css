@@ -2171,10 +2171,13 @@ html .desktop-v2-native-frame .vuln-workbench {
 }
 
 .login-page {
-  display: grid;
+  display: flex;
   min-height: 100%;
-  place-items: center;
+  align-items: center;
+  align-items: safe center;
+  justify-content: center;
   padding: 24px;
+  overflow-y: auto;
   background: var(--app-bg);
 }
 

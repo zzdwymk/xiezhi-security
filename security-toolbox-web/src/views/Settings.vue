@@ -890,6 +890,7 @@ onMounted(() => {
   void loadThemeModeSetting();
   void loadAiSettings();
   void loadIcpSettings();
+  void loadPostgresSettings();
   void loadGithubTokenSettings();
   void loadMicaSetting();
   void loadMotionSettings();

@@ -568,6 +568,25 @@ async function requestPostgresRollback() {
   }
 }
 
+async function reimportPostgresData() {
+  if (!window.toolboxDesktop?.reimportH2ToPostgres) {
+    ElMessage.error("当前运行时未提供重新导入能力");
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      "将从本地 H2 库把历史数据重新导入当前 PostgreSQL（需重启后端）。H2 与 PG 原有数据均不会被删除。",
+      "重新导入 H2 数据到 PostgreSQL",
+      { confirmButtonText: "导入", cancelButtonText: "取消", type: "warning" },
+    );
+    await window.toolboxDesktop.reimportH2ToPostgres();
+    ElMessage.success("已触发导入，后端将迁移 H2 历史数据到 PostgreSQL");
+  } catch (reimportError: any) {
+    if (reimportError === "cancel" || reimportError === "close") return;
+    ElMessage.error(toErrorMessage(reimportError, "重新导入 H2 数据失败"));
+  }
+}
+
 async function requestSetPostgresPassword() {
   if (!window.toolboxDesktop?.setPostgresPassword) {
     ElMessage.error("当前运行时未提供重设数据库密码能力");
@@ -1426,6 +1445,12 @@ onUnmounted(() => {
                         :loading="settingPostgresPassword"
                         @click="requestSetPostgresPassword"
                         >重设数据库密码</el-button
+                      >
+                      <el-button
+                        v-if="isReady(item)"
+                        plain
+                        @click="reimportPostgresData"
+                        >重新导入 H2 数据</el-button
                       >
                     </div>
                   </div>

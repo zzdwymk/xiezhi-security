@@ -6331,6 +6331,43 @@ handleRendererIpc("toolbox:generate-desktop-login", async (event) => {
     note: "密码仅本次显示，请立即保存或更改",
   };
 });
+// 用户自定义初始登录密码：设为用户输入的明文，写回桌面凭据、绑定本机/PIN，
+// 重启后端让 admin 用新密码，前端随后用 admin + 该密码登录。
+handleRendererIpc("toolbox:init-desktop-login", async (event, payload = {}) => {
+  assertMainRenderer(event);
+  const options = payload && typeof payload === "object" ? payload : {};
+  const password = String(options.password || "").trim();
+  if (password.length < 8 || password.length > 128)
+    throw new UserFacingError("自定义密码长度需为 8-128 位");
+  updateDesktopAdminPassword(password);
+  markDesktopCredentialBinding();
+  pendingDesktopSeedPassword = password;
+  writeDesktopStartupDiagnostic("desktop-login-init", null, {
+    action: "custom-and-restart",
+  });
+  await restartBackend();
+  return {
+    username: "admin",
+    password,
+    note: "密码已绑定本机与 Windows Hello",
+  };
+});
+// 手动把 H2 历史数据重新导入当前 PostgreSQL。设置一次性迁移 URL 后重启后端，
+// postgres profile 下的 LegacyPostgresMigrationRunner 会把 H2 白名单核心表拷进 PG。
+handleRendererIpc("toolbox:reimport-h2-to-postgres", async (event) => {
+  assertMainRenderer(event);
+  const config = activeDesktopPostgresConfig();
+  if (!config || config.enabled !== true) {
+    throw new UserFacingError("当前未启用 PostgreSQL，请先完成迁移");
+  }
+  desktopPgMigrateH2Url = desktopH2MigrateUrl();
+  writeDesktopStartupDiagnostic("postgres-reimport", null, {
+    action: "restart-and-copy",
+    h2Url: desktopH2MigrateUrl(),
+  });
+await restartBackend();
+  return { status: "restarted" };
+});
 handleRendererIpc("toolbox:test-ai-settings", (event, payload) => {
   assertMainRenderer(event);
   return testAiConnection(payload);

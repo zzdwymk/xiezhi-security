@@ -2,6 +2,7 @@
 import { onMounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
+import { ArrowLeft } from "../components/fluentIcons";
 import { useAuthStore } from "../stores/auth";
 
 const auth = useAuthStore();
@@ -19,9 +20,13 @@ async function enterWorkspace() {
   await router.replace(String(route.query.redirect || "/"));
 }
 
+const initialCreds = ref<{ username: string; password: string } | null>(null);
+
 async function generateInitialPassword() {
   const generate = window.toolboxDesktop?.generateDesktopLogin;
   if (!desktopMode || !generate || loading.value) return;
+  initMode.value = "generate";
+  initialCreds.value = null;
   loading.value = true;
   desktopLoginError.value = "";
   try {
@@ -30,17 +35,28 @@ async function generateInitialPassword() {
       username: result.username,
       password: result.password,
     };
-    initialCredsVisible.value = true;
   } catch (error) {
     desktopLoginError.value =
       error instanceof Error ? error.message : "生成初始密码失败，请重试";
+    initMode.value = "none";
   } finally {
     loading.value = false;
   }
 }
 
-const initialCreds = ref<{ username: string; password: string } | null>(null);
-const initialCredsVisible = ref(false);
+function backToLogin() {
+  initMode.value = "none";
+  initialCreds.value = null;
+  desktopLoginError.value = "";
+}
+
+function acceptInitialCreds() {
+  if (initialCreds.value) {
+    form.username = initialCreds.value.username;
+    form.password = initialCreds.value.password;
+  }
+  backToLogin();
+}
 const copiedField = ref<"" | "username" | "password">("");
 async function copyInitialField(field: "username" | "password") {
   const value = initialCreds.value?.[field];
@@ -59,6 +75,30 @@ async function copyInitialField(field: "username" | "password") {
   setTimeout(() => {
     if (copiedField.value === field) copiedField.value = "";
   }, 1500);
+}
+
+const initMode = ref<"none" | "generate" | "custom">("none");
+const customForm = reactive({ password: "", confirm: "" });
+async function initCustomPassword() {
+  const init = window.toolboxDesktop?.initDesktopLogin;
+  if (!desktopMode || !init || loading.value) return;
+  if (customForm.password.length < 8)
+    return ElMessage.warning("自定义密码至少 8 位");
+  if (customForm.password !== customForm.confirm)
+    return ElMessage.warning("两次输入的密码不一致");
+  loading.value = true;
+  desktopLoginError.value = "";
+  try {
+    const result = await init(customForm.password);
+    // 后端已用该密码重启，直接用 账号密码 登录。
+    await auth.login(result.username, result.password, false);
+    await enterWorkspace();
+  } catch (error) {
+    desktopLoginError.value =
+      error instanceof Error ? error.message : "自定义密码设置失败，请重试";
+  } finally {
+    loading.value = false;
+  }
 }
 
 async function submit() {
@@ -154,6 +194,7 @@ onMounted(async () => {
 <template>
   <main class="login-page">
     <section class="login-card">
+      <template v-if="initMode === 'none'">
       <header class="login-header">
         <div class="login-logo">
           <img src="../assets/xiezhi-mark.png" alt="" aria-hidden="true" />
@@ -229,14 +270,24 @@ onMounted(async () => {
             首次无需输入密码：点上面「本机安全凭据」或「Windows Hello」即可进入；之后在「设置 →
             修改登录密码」绑定账号密码后，才能用账号密码登录。
           </p>
-          <div v-if="bindingLoaded" class="desktop-login-firstrun">
-            <el-button
-              link
-              type="primary"
-              :disabled="loading"
-              @click="generateInitialPassword"
-              >首次使用？生成一个账号密码（仅显示一次）</el-button
-            >
+          <div v-if="bindingLoaded && !loginBound" class="desktop-login-firstrun">
+            <div class="desktop-login-firstrun-opts">
+              <el-button
+                link
+                type="primary"
+                :disabled="loading"
+                @click="generateInitialPassword"
+                >使用随机生成密码</el-button
+              >
+              <span class="desktop-login-firstrun-sep">或</span>
+              <el-button
+                link
+                type="primary"
+                :disabled="loading"
+                @click="initMode = 'custom'"
+                >自定义我自己的密码</el-button
+              >
+            </div>
           </div>
         </template>
       </el-form>
@@ -248,48 +299,115 @@ onMounted(async () => {
           >重新检测</el-button
         >
       </footer>
-    </section>
+      </template>
 
-    <el-dialog
-      v-model="initialCredsVisible"
-      title="初始账号密码"
-      class="app-dialog app-dialog--sm"
-      align-center
-      append-to-body
-      @close="initialCreds = null"
-    >
-      <template v-if="initialCreds">
-        <p class="initial-creds-note">
-          这是你的初始登录账号密码（仅本次显示，请立即保存到安全位置；之后可在 设置 →
-          修改登录密码 中更改并绑定）。
-        </p>
-        <div class="initial-creds-row">
-          <label class="initial-creds-label">用户名</label>
-          <el-input :model-value="initialCreds.username" readonly>
-            <template #append>
-              <el-button @click="copyInitialField('username')">
-                {{ copiedField === "username" ? "已复制" : "复制" }}
-              </el-button>
-            </template>
-          </el-input>
-        </div>
-        <div class="initial-creds-row">
-          <label class="initial-creds-label">密码</label>
-          <el-input :model-value="initialCreds.password" readonly>
-            <template #append>
-              <el-button @click="copyInitialField('password')">
-                {{ copiedField === "password" ? "已复制" : "复制" }}
-              </el-button>
-            </template>
-          </el-input>
-        </div>
+      <template v-else>
+        <button type="button" class="login-back" @click="backToLogin">
+          <el-icon><ArrowLeft /></el-icon><span>返回登录</span>
+        </button>
+
+        <template v-if="initMode === 'generate'">
+          <h2 class="login-subtitle">初始账号密码</h2>
+          <p class="initial-creds-note">
+            这是你的初始登录账号密码（仅本次显示，请立即保存到安全位置；之后可在 设置 →
+            修改登录密码 中更改并绑定）。
+          </p>
+          <div v-if="initialCreds" class="initial-creds">
+            <div
+              class="initial-creds-field"
+              role="button"
+              tabindex="0"
+              @click="copyInitialField('username')"
+              @keyup.enter="copyInitialField('username')"
+            >
+              <span class="initial-creds-label">用户名</span>
+              <code class="initial-creds-value">{{ initialCreds.username }}</code>
+              <span
+                v-if="copiedField === 'username'"
+                class="initial-creds-ok"
+                >已复制</span
+              >
+              <span v-else class="initial-creds-copy-hint">点击复制</span>
+            </div>
+            <div
+              class="initial-creds-field"
+              role="button"
+              tabindex="0"
+              @click="copyInitialField('password')"
+              @keyup.enter="copyInitialField('password')"
+            >
+              <span class="initial-creds-label">密码</span>
+              <code class="initial-creds-value">{{ initialCreds.password }}</code>
+              <span
+                v-if="copiedField === 'password'"
+                class="initial-creds-ok"
+                >已复制</span
+              >
+              <span v-else class="initial-creds-copy-hint">点击复制</span>
+            </div>
+          </div>
+          <p v-else class="login-sub-empty">正在生成初始账号密码…</p>
+          <el-button
+            type="primary"
+            size="large"
+            class="login-button initial-creds-submit"
+            :disabled="!initialCreds"
+            @click="acceptInitialCreds"
+            >我已保存，返回登录</el-button
+          >
+        </template>
+
+        <template v-else>
+          <h2 class="login-subtitle">自定义登录密码</h2>
+          <el-alert
+            v-if="desktopLoginError"
+            :title="desktopLoginError"
+            type="warning"
+            :closable="false"
+            show-icon
+            style="margin-bottom: 14px"
+          />
+          <el-form label-position="top" @keyup.enter="initCustomPassword">
+            <el-form-item label="新密码（至少 8 位）">
+              <el-input
+                v-model="customForm.password"
+                type="password"
+                show-password
+                autocomplete="new-password"
+                placeholder="设置你要的登录密码"
+                :disabled="loading"
+              />
+            </el-form-item>
+            <el-form-item label="确认新密码">
+              <el-input
+                v-model="customForm.confirm"
+                type="password"
+                show-password
+                autocomplete="new-password"
+                placeholder="再次输入新密码"
+                :disabled="loading"
+              />
+            </el-form-item>
+            <p class="desktop-login-custom-note">
+              保存后即绑定到本机凭据与 Windows Hello，此后可用本机/Hello 快捷登录。
+            </p>
+            <el-button
+              type="primary"
+              size="large"
+              class="login-button"
+              :loading="loading"
+              :disabled="
+                loading ||
+                customForm.password.length < 8 ||
+                customForm.password !== customForm.confirm
+              "
+              @click="initCustomPassword"
+              >使用该密码并进入</el-button
+            >
+          </el-form>
+        </template>
       </template>
-      <template #footer>
-        <el-button type="primary" @click="initialCredsVisible = false"
-          >我已保存</el-button
-        >
-      </template>
-    </el-dialog>
+    </section>
   </main>
 </template>
 
@@ -328,8 +446,61 @@ onMounted(async () => {
 }
 .desktop-login-firstrun {
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  margin-top: 10px;
+  text-align: center;
+}
+.desktop-login-firstrun-opts {
+  display: flex;
+  align-items: center;
   justify-content: center;
-  margin-top: 6px;
+  gap: 8px;
+}
+.desktop-login-firstrun-sep {
+  color: var(--app-muted);
+  font-size: 12px;
+}
+.desktop-login-custom-note {
+  margin: 4px 0 14px;
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.login-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 14px;
+  padding: 4px 8px 4px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-accent);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.login-back:hover {
+  color: var(--app-accent-strong);
+}
+.login-subtitle {
+  margin: 0 0 12px;
+  color: var(--app-text);
+  font-size: 17px;
+  font-weight: 650;
+}
+.login-sub-empty {
+  margin: 0 0 16px;
+  padding: 18px 0;
+  color: var(--app-muted);
+  font-size: 13px;
+  text-align: center;
+}
+.initial-creds-submit {
+  margin-top: 16px !important;
 }
 .initial-creds-note {
   margin: 0 0 14px;
@@ -337,24 +508,52 @@ onMounted(async () => {
   font-size: 12px;
   line-height: 1.6;
 }
-.initial-creds-row {
+.initial-creds {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface-soft);
+}
+.initial-creds-field {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 12px;
+  gap: 12px;
+  padding: 6px 8px 6px 14px;
+  cursor: pointer;
 }
-.initial-creds-row .initial-creds-label {
-  flex-shrink: 0;
-  width: 48px;
-  color: var(--app-text);
-  font-size: 13px;
-  font-weight: 600;
+.initial-creds-field + .initial-creds-field {
+  border-top: 1px solid var(--app-border);
 }
-.initial-creds-row :deep(.el-input) {
+.initial-creds-field:hover {
+  background: var(--app-accent-soft);
+}
+.initial-creds-label {
+  flex: none;
+  width: 42px;
+  color: var(--app-muted);
+  font-size: 12px;
+}
+.initial-creds-value {
+  min-width: 0;
   flex: 1;
+  color: var(--app-text);
+  font: 13px/1.6 Consolas, "Microsoft YaHei", monospace;
+  overflow-wrap: anywhere;
+  user-select: all;
 }
-.initial-creds-row :deep(.el-input__wrapper) {
-  font-family: Consolas, "Segoe UI Mono", monospace;
+.initial-creds-copy-hint,
+.initial-creds-ok {
+  flex: none;
+  font-size: 12px;
+}
+.initial-creds-copy-hint {
+  color: var(--app-muted);
+}
+.initial-creds-ok {
+  color: var(--app-accent);
+  font-weight: 600;
 }
 /* Input edges/focus come from the shared Fluent control layer so login
    matches the main workspace 1:1 — no page-local box-shadow overrides. */
