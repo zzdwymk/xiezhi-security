@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { ElMessage, ElMessageBox } from "element-plus";
+import { ElMessage } from "element-plus";
 import { useAuthStore } from "../stores/auth";
 
 const auth = useAuthStore();
@@ -26,21 +26,39 @@ async function generateInitialPassword() {
   desktopLoginError.value = "";
   try {
     const result = await generate();
-    await ElMessageBox.alert(
-      `这是你的初始登录账号密码（仅本次显示，请立即保存）：\n\n用户名：${result.username}\n密码：${result.password}\n\n之后可在 设置 → 修改登录密码 中自行更改并绑定。`,
-      "初始账号密码",
-      {
-        confirmButtonText: "我已保存",
-        type: "success",
-        customClass: "app-message-box--preline",
-      },
-    );
+    initialCreds.value = {
+      username: result.username,
+      password: result.password,
+    };
+    initialCredsVisible.value = true;
   } catch (error) {
     desktopLoginError.value =
       error instanceof Error ? error.message : "生成初始密码失败，请重试";
   } finally {
     loading.value = false;
   }
+}
+
+const initialCreds = ref<{ username: string; password: string } | null>(null);
+const initialCredsVisible = ref(false);
+const copiedField = ref<"" | "username" | "password">("");
+async function copyInitialField(field: "username" | "password") {
+  const value = initialCreds.value?.[field];
+  if (!value) return;
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = value;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+  }
+  copiedField.value = field;
+  setTimeout(() => {
+    if (copiedField.value === field) copiedField.value = "";
+  }, 1500);
 }
 
 async function submit() {
@@ -231,6 +249,47 @@ onMounted(async () => {
         >
       </footer>
     </section>
+
+    <el-dialog
+      v-model="initialCredsVisible"
+      title="初始账号密码"
+      class="app-dialog app-dialog--sm"
+      align-center
+      append-to-body
+      @close="initialCreds = null"
+    >
+      <template v-if="initialCreds">
+        <p class="initial-creds-note">
+          这是你的初始登录账号密码（仅本次显示，请立即保存到安全位置；之后可在 设置 →
+          修改登录密码 中更改并绑定）。
+        </p>
+        <div class="initial-creds-row">
+          <label class="initial-creds-label">用户名</label>
+          <el-input :model-value="initialCreds.username" readonly>
+            <template #append>
+              <el-button @click="copyInitialField('username')">
+                {{ copiedField === "username" ? "已复制" : "复制" }}
+              </el-button>
+            </template>
+          </el-input>
+        </div>
+        <div class="initial-creds-row">
+          <label class="initial-creds-label">密码</label>
+          <el-input :model-value="initialCreds.password" readonly>
+            <template #append>
+              <el-button @click="copyInitialField('password')">
+                {{ copiedField === "password" ? "已复制" : "复制" }}
+              </el-button>
+            </template>
+          </el-input>
+        </div>
+      </template>
+      <template #footer>
+        <el-button type="primary" @click="initialCredsVisible = false"
+          >我已保存</el-button
+        >
+      </template>
+    </el-dialog>
   </main>
 </template>
 
@@ -271,6 +330,31 @@ onMounted(async () => {
   display: flex;
   justify-content: center;
   margin-top: 6px;
+}
+.initial-creds-note {
+  margin: 0 0 14px;
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.initial-creds-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.initial-creds-row .initial-creds-label {
+  flex-shrink: 0;
+  width: 48px;
+  color: var(--app-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.initial-creds-row :deep(.el-input) {
+  flex: 1;
+}
+.initial-creds-row :deep(.el-input__wrapper) {
+  font-family: Consolas, "Segoe UI Mono", monospace;
 }
 /* Input edges/focus come from the shared Fluent control layer so login
    matches the main workspace 1:1 — no page-local box-shadow overrides. */
