@@ -562,6 +562,71 @@ function reportSeverityPercent(count: number) {
   if (!reportSeverityTotal.value) return 0;
   return Math.round((count / reportSeverityTotal.value) * 1000) / 10;
 }
+function severityTip(item: { severity: string; count: number }) {
+  return `${severityLabel(item.severity)}：${item.count} 项（${reportSeverityPercent(
+    item.count,
+  )}%）`;
+}
+const hoveredSeverity = ref<string | null>(null);
+const donutTipPos = reactive({ x: 0, y: 0 });
+const hoveredArcInfo = computed(() => {
+  if (!hoveredSeverity.value) return null;
+  const row = reportSeverityRows.value.find(
+    (item) => item.severity === hoveredSeverity.value,
+  );
+  if (!row) return null;
+  return {
+    severity: row.severity,
+    count: row.count,
+    color: severityColor(row.severity),
+  };
+});
+function severityAtDonut(px: number, py: number, unit: number) {
+  const cx = px / unit;
+  const cy = py / unit;
+  const dist = Math.hypot(cx - 21, cy - 21);
+  if (Math.abs(dist - 15.9155) > 9) return null;
+  let angle = (Math.atan2(cx - 21, 21 - cy) * 180) / Math.PI;
+  if (angle < 0) angle += 360;
+  const pct = angle / 3.6;
+  const total = reportSeverityTotal.value || 1;
+  let acc = 0;
+  for (const row of reportSeverityRows.value) {
+    if (pct >= acc && pct < acc + (row.count / total) * 100) {
+      return row.severity;
+    }
+    acc += (row.count / total) * 100;
+  }
+  return null;
+}
+function onDonutHover(e: MouseEvent) {
+  const elt = e.currentTarget as HTMLElement;
+  const rect = elt.getBoundingClientRect();
+  const px = e.clientX - rect.left;
+  const py = e.clientY - rect.top;
+  const unit = rect.width / 42;
+  hoveredSeverity.value = severityAtDonut(px, py, unit);
+  donutTipPos.x = px;
+  donutTipPos.y = py;
+}
+function onDonutLeave() {
+  hoveredSeverity.value = null;
+}
+function onDonutClick(e: MouseEvent) {
+  const elt = e.currentTarget as HTMLElement;
+  const rect = elt.getBoundingClientRect();
+  const severity = severityAtDonut(
+    e.clientX - rect.left,
+    e.clientY - rect.top,
+    rect.width / 42,
+  );
+  if (severity) {
+    openReportMetric("findings", {
+      severity,
+      targetId: reportMetricTargetId.value,
+    });
+  }
+}
 const reportSeverityArcs = computed(() => {
   const total = reportSeverityTotal.value;
   let start = 0;
@@ -571,6 +636,7 @@ const reportSeverityArcs = computed(() => {
       const pct = total ? (item.count / total) * 100 : 0;
       const arc = {
         severity: item.severity,
+        count: item.count,
         color: severityColor(item.severity),
         dash: `${pct} ${100 - pct}`,
         offset: 25 - start,
@@ -5928,27 +5994,38 @@ onUnmounted(() => {
               <div class="report-overview__figure">
                 <template v-if="reportSeverityTotal">
                   <div v-if="reportChartType === 'bar'" class="severity-bar">
-                    <button
+                    <el-tooltip
                       v-for="item in reportSeverityRows.filter(
                         (row) => row.count > 0,
                       )"
                       :key="item.severity"
-                      type="button"
-                      class="severity-bar__seg"
-                      :style="{
-                        flexGrow: item.count,
-                        background: severityColor(item.severity),
-                      }"
-                      :title="`${severityLabel(item.severity)} ${item.count}`"
-                      @click="
-                        openReportMetric('findings', {
-                          severity: item.severity,
-                          targetId: reportMetricTargetId,
-                        })
-                      "
-                    />
+                      :content="severityTip(item)"
+                      placement="top"
+                      :show-after="200"
+                    >
+                      <button
+                        type="button"
+                        class="severity-bar__seg"
+                        :style="{
+                          flexGrow: item.count,
+                          background: severityColor(item.severity),
+                        }"
+                        @click="
+                          openReportMetric('findings', {
+                            severity: item.severity,
+                            targetId: reportMetricTargetId,
+                          })
+                        "
+                      />
+                    </el-tooltip>
                   </div>
-                  <div v-else class="severity-donut">
+                  <div
+                    v-else
+                    class="severity-donut"
+                    @mousemove="onDonutHover"
+                    @mouseleave="onDonutLeave"
+                    @click="onDonutClick"
+                  >
                     <svg
                       viewBox="0 0 42 42"
                       role="img"
@@ -5960,50 +6037,76 @@ onUnmounted(() => {
                         cy="21"
                         r="15.9155"
                       />
-                      <circle
+                      <g
                         v-for="arc in reportSeverityArcs"
                         :key="arc.severity"
-                        class="severity-donut__arc"
-                        cx="21"
-                        cy="21"
-                        r="15.9155"
-                        :stroke="arc.color"
-                        :stroke-dasharray="arc.dash"
-                        :stroke-dashoffset="arc.offset"
-                        @click="
-                          openReportMetric('findings', {
-                            severity: arc.severity,
-                            targetId: reportMetricTargetId,
-                          })
-                        "
-                      />
+                      >
+                        <circle
+                          class="severity-donut__arc"
+                          cx="21"
+                          cy="21"
+                          r="15.9155"
+                          :stroke="arc.color"
+                          :stroke-dasharray="arc.dash"
+                          :stroke-dashoffset="arc.offset"
+                        />
+                        <circle
+                          class="severity-donut__arc-hit"
+                          cx="21"
+                          cy="21"
+                          r="15.9155"
+                          fill="none"
+                          stroke="transparent"
+                          :stroke-dasharray="arc.dash"
+                          :stroke-dashoffset="arc.offset"
+                        />
+                      </g>
                     </svg>
                     <div class="severity-donut__center">
                       <strong>{{ reportSeverityTotal }}</strong>
                       <span>发现总数</span>
+                    </div>
+                    <div
+                      v-if="hoveredArcInfo"
+                      class="severity-donut__tip"
+                      :style="{
+                        left: donutTipPos.x + 'px',
+                        top: donutTipPos.y + 'px',
+                      }"
+                    >
+                      <i :style="{ background: hoveredArcInfo.color }" />
+                      <span>{{ severityLabel(hoveredArcInfo.severity) }}</span>
+                      <b>{{ hoveredArcInfo.count }}</b>
+                      <em>{{ reportSeverityPercent(hoveredArcInfo.count) }}%</em>
                     </div>
                   </div>
                 </template>
                 <div v-else class="report-overview__empty">暂无发现数据</div>
               </div>
               <div class="severity-legend">
-                <button
+                <el-tooltip
                   v-for="item in reportSeverityRows"
                   :key="item.severity"
-                  type="button"
-                  class="severity-legend__item"
-                  @click="
-                    openReportMetric('findings', {
-                      severity: item.severity,
-                      targetId: reportMetricTargetId,
-                    })
-                  "
+                  :content="severityTip(item)"
+                  placement="top"
+                  :show-after="200"
                 >
-                  <i :style="{ background: severityColor(item.severity) }" />
-                  <span>{{ severityLabel(item.severity) }}</span>
-                  <b>{{ item.count }}</b>
-                  <em>{{ reportSeverityPercent(item.count) }}%</em>
-                </button>
+                  <button
+                    type="button"
+                    class="severity-legend__item"
+                    @click="
+                      openReportMetric('findings', {
+                        severity: item.severity,
+                        targetId: reportMetricTargetId,
+                      })
+                    "
+                  >
+                    <i :style="{ background: severityColor(item.severity) }" />
+                    <span>{{ severityLabel(item.severity) }}</span>
+                    <b>{{ item.count }}</b>
+                    <em>{{ reportSeverityPercent(item.count) }}%</em>
+                  </button>
+                </el-tooltip>
               </div>
             </section>
             <section class="report-overview__metrics" aria-label="项目报告指标">
@@ -8211,12 +8314,17 @@ onUnmounted(() => {
 .severity-donut__arc {
   fill: none;
   stroke-width: 5;
-  cursor: pointer;
+  pointer-events: none;
   transition:
     stroke-width 0.15s ease,
     opacity 0.15s ease;
 }
-.severity-donut__arc:hover {
+.severity-donut__arc-hit {
+  stroke-width: 16;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+.severity-donut__arc:has(+ .severity-donut__arc-hit:hover) {
   stroke-width: 6.5;
 }
 .severity-donut__center {
@@ -8238,6 +8346,42 @@ onUnmounted(() => {
 .severity-donut__center span {
   color: var(--app-muted, #6b7280);
   font-size: 12px;
+}
+.severity-donut__tip {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 11px;
+  border: 1px solid var(--app-border, var(--el-border-color));
+  border-radius: 9px;
+  background: var(--app-surface-strong, #fff);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--app-text) 18%, transparent);
+  color: var(--app-text);
+  font: inherit;
+  white-space: nowrap;
+  transform: translate(12px, 12px);
+  pointer-events: none;
+  z-index: 20;
+}
+.severity-donut__tip i {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+.severity-donut__tip span {
+  color: var(--app-muted, #6b7280);
+  font-size: 12px;
+}
+.severity-donut__tip b {
+  color: var(--app-text, #1f2937);
+  font-size: 13px;
+  font-weight: 650;
+}
+.severity-donut__tip em {
+  color: var(--app-muted, #9ca3af);
+  font-size: 11px;
+  font-style: normal;
 }
 .severity-legend {
   display: flex;

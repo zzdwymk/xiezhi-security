@@ -26,8 +26,7 @@ public class AiConversationSessionRecord {
   @Column(nullable = false)
   private Long targetId;
 
-  @Lob
-  @Column(nullable = false)
+  @Column(nullable = false, columnDefinition = "TEXT")
   private String turnsJson;
 
   @Column(nullable = false)

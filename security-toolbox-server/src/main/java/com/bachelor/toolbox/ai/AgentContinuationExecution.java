@@ -59,7 +59,8 @@ public class AgentContinuationExecution {
   @Column(nullable = false, length = 20)
   private String status;
 
-  @Lob private String responseJson;
+  @Column(columnDefinition = "TEXT")
+  private String responseJson;
 
   @Column(length = 71)
   private String responseDigest;

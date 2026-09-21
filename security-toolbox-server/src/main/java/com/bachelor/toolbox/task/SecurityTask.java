@@ -44,7 +44,8 @@ public class SecurityTask {
 
   private Integer workflowGroup;
 
-  @Lob private String dependencyTaskIds;
+  @Column(columnDefinition = "TEXT")
+  private String dependencyTaskIds;
 
   @Column(length = 16)
   private String effectiveRisk;
@@ -71,18 +72,23 @@ public class SecurityTask {
 
   private Instant progressUpdatedAt;
 
-  @Lob private String requestJson;
+  @Column(columnDefinition = "TEXT")
+  private String requestJson;
 
-  @Lob private String resultJson;
+  @Column(columnDefinition = "TEXT")
+  private String resultJson;
 
-  @Lob private String executionLog;
+  @Column(columnDefinition = "TEXT")
+  private String executionLog;
 
-  @Lob private String targetSnapshotJson;
+  @Column(columnDefinition = "TEXT")
+  private String targetSnapshotJson;
 
   @Column(length = 200)
   private String allowedPortsSnapshot;
 
-  @Lob private String authorizationStatementSnapshot;
+  @Column(columnDefinition = "TEXT")
+  private String authorizationStatementSnapshot;
   private Instant authorizationValidFromSnapshot;
   private Instant authorizationExpiresAtSnapshot;
 

@@ -22,6 +22,7 @@ public class GlobalExceptionHandler {
 
   @ExceptionHandler(ApiException.class)
   public ResponseEntity<ApiErrorResponse> handleApi(ApiException ex) {
+    log.warn("API 请求处理异常: {}", localizedMessage(ex.getMessage(), ""), ex);
     return error(HttpStatus.BAD_REQUEST, localizedMessage(ex.getMessage(), "请求处理失败"));
   }
 

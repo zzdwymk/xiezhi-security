@@ -41,7 +41,8 @@ public class AuditLog {
   @Column(length = 64)
   private String authorizationSnapshotHash;
 
-  @Lob private String detail;
+  @Column(columnDefinition = "text")
+  private String detail;
 
   @Column(nullable = false, length = 30)
   private String result;

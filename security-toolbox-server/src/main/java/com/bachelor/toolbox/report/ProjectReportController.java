@@ -1,6 +1,8 @@
 package com.bachelor.toolbox.report;
 
 import java.nio.charset.StandardCharsets;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -13,6 +15,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api/reports/projects")
 public class ProjectReportController {
+  private static final Logger log = LoggerFactory.getLogger(ProjectReportController.class);
   private static final MediaType HTML_UTF8 = new MediaType("text", "html", StandardCharsets.UTF_8);
   private final ProjectReportService reportService;
   private final ProjectReportSummaryService summaryService;
@@ -29,7 +32,12 @@ public class ProjectReportController {
 
   @GetMapping("/{projectId}/summary")
   public ProjectReportSummaryService.Summary summary(@PathVariable Long projectId) {
-    return summaryService.load(projectId);
+    try {
+      return summaryService.load(projectId);
+    } catch (RuntimeException ex) {
+      log.error("加载项目 {} 的报告摘要失败", projectId, ex);
+      throw ex;
+    }
   }
 
   /** Project-level report: aggregates every target belonging to the project. */

@@ -35,7 +35,8 @@ public class ScanSchedule {
   @Column(nullable = false, length = 50)
   private String toolCode;
 
-  @Lob private String parametersJson;
+  @Column(columnDefinition = "TEXT")
+  private String parametersJson;
 
   @Column(length = 120)
   private String cronExpression;

@@ -1601,7 +1601,7 @@ async function openDependencyResource(
 }
 
 // 不稳定的网络 / 被墙的边缘节点上，TLS 握手经常会在“连接超时”边界附近偶发失败。
-// 这类连接级错误（网络 IO / 连接被重置 / DNS / 握手）重试一次往往就能连上（换一条链路或 CDN 节点），
+// 这类连接级错误（网络 IO / 连接重置 / DNS / 握手）重试一次往往就能连上（换一条链路或 CDN 节点），
 // 所以对“建立连接”这一个动作做有限次重试，避免 30→60 秒的连接超时被一次抖动浪费。
 function isConnectionLevelError(error) {
   if (error instanceof UserFacingError) return false;
@@ -1618,10 +1618,18 @@ function isConnectionLevelError(error) {
   );
 }
 
+// 上游网关/代理/CND 节点偶发返回的“临时性” HTTP 状态码。
+// 这类 502/503/504 往往是某个边缘节点瞬时过载或抖动，换一条链路重试通常即可成功，
+// 因此把它也纳入有限次自动重试，避免一场偶发的网关错误直接中断整个依赖下载流程。
+function isTransientHttpStatus(response) {
+  const status = response?.status;
+  return status === 502 || status === 503 || status === 504;
+}
+
 async function openDependencyResourceRetry(url, options = {}) {
   const attempts = Number(options.connectAttempts || 3);
   for (let attempt = 1; attempt <= attempts; attempt++) {
-    // 用户取消/暂停时，外部的 signal 已 abort，继续重试没有意义。
+    // 用户取消/暂停时，外部的 signal 已中止，继续重试没有意义。
     if (options.signal?.aborted) {
       throw new UserFacingError(
         options.signal?.reason?.message ||
@@ -1635,6 +1643,18 @@ async function openDependencyResourceRetry(url, options = {}) {
           ? 2 * DEPENDENCY_CONNECT_TIMEOUT_MS
           : DEPENDENCY_CONNECT_TIMEOUT_MS;
       const request = await openDependencyResource(url, options, timeoutMs);
+      // 上游网关瞬时错误（502/503/504）算作一次可重试的失败：
+      // 丢弃本次响应（避免泄漏连接/内存）后重试，而不是直接交给调用方当作最终失败。
+      if (isTransientHttpStatus(request?.response)) {
+        discardResponse(request.response).catch(() => {});
+        request.dispose?.();
+        if (attempt === attempts) {
+          throw new UserFacingError(`下载资源失败：HTTP ${request.response.status}`);
+        }
+        const delay = Math.min(600 * attempt, 2000);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
       return request;
     } catch (error) {
       if (attempt === attempts || !isConnectionLevelError(error)) {
@@ -1645,6 +1665,24 @@ async function openDependencyResourceRetry(url, options = {}) {
     }
   }
   throw new UserFacingError(`连接下载源超时（${DEPENDENCY_CONNECT_TIMEOUT_MS / 1000} 秒）`);
+}
+
+// 丢弃一个尚未消费的响应体，避免重试后残留的连接/内存句柄。
+async function discardResponse(response) {
+  try {
+    if (response?.body?.cancel) await response.body.cancel();
+    else if (response?.body?.getReader) {
+      const reader = response.body.getReader();
+      try {
+        // 读取到 EOF 以真正释放连接（某些平台 cancel 可能不立即断流）。
+        while (!(await reader.read()).done) {}
+      } finally {
+        reader.releaseLock?.();
+      }
+    }
+  } catch {
+    // 忽略丢弃过程中出现的错误，重试动作本身不受影响。
+  }
 }
 
 async function fetchDependencyResource(
@@ -4132,6 +4170,50 @@ function reportPgMigrationProgress(step, message) {
   });
 }
 
+// 实时 tail 后端写出的迁移进度文件，把每一行转发给前端“迁移进度”面板。
+// 这样数据导入（跑在 jar 进程里）的过程对用户完全可见。
+let migrateTailFile = null;
+let migrateTailPos = 0;
+let migrateTailTimer = null;
+
+function startMigrateProgressTail(file) {
+  stopMigrateProgressTail();
+  migrateTailFile = file;
+  migrateTailPos = 0;
+  migrateTailTimer = setInterval(() => {
+    if (!migrateTailFile) return;
+    try {
+      const size = fs.statSync(migrateTailFile).size;
+      if (size < migrateTailPos) migrateTailPos = 0; // 文件被截断/轮转
+      if (size > migrateTailPos) {
+        const fd = fs.openSync(migrateTailFile, "r");
+        const buf = Buffer.alloc(size - migrateTailPos);
+        try {
+          fs.readSync(fd, buf, 0, buf.length, migrateTailPos);
+        } finally {
+          fs.closeSync(fd);
+        }
+        migrateTailPos = size;
+        for (const line of buf.toString("utf8").split("\n")) {
+          const cleaned = String(line).trim();
+          if (!cleaned) continue;
+          // 进度文件每行形如 “HH:mm:ss | 描述”，去掉时间前缀后展示给用户。
+          reportPgMigrationProgress("copy", cleaned.replace(/^\s*\d{2}:\d{2}:\d{2}\s*\|\s*/, ""));
+        }
+      }
+    } catch {}
+  }, 300);
+}
+
+function stopMigrateProgressTail() {
+  if (migrateTailTimer) {
+    clearInterval(migrateTailTimer);
+    migrateTailTimer = null;
+  }
+  migrateTailFile = null;
+  migrateTailPos = 0;
+}
+
 function desktopPostgresBinDir() {
   const toolsDir = resolveToolsDirectory();
   const executable = postgresExecutable(toolsDir);
@@ -4636,15 +4718,28 @@ async function downgradeDesktopPostgresRole(config) {
   const escaped = String(username).replace(/"/g, '""');
   const roleRow = await pgQuery(
     config,
-    `SELECT rolsuper::text || '|' || rolcreaterole::text FROM pg_roles WHERE rolname = '${escaped}'`,
+    `SELECT rolsuper::text || '|' ||
+              (SELECT count(*) FROM pg_roles WHERE rolsuper)::text
+       FROM pg_roles WHERE rolname = '${escaped}'`,
     "postgres",
   );
-  const [superUser, createRole] = (roleRow || "").split("|");
+  const [superUser, totalSupers] = (roleRow || "").split("|");
   if (superUser !== "true") {
     // 已经不是超级用户：无需也无法再降级，直接返回。
     reportPgMigrationProgress(
       "harden-skip",
       "app 账号已是非超级用户，跳过降级",
+    );
+    return;
+  }
+  // 本机随包 PostgreSQL 由 initdb 初始化，应用账号就是唯一的 bootstrap 超级用户。
+  // PostgreSQL 不允许剥夺最后一个超级用户的 SUPERUSER（否则会报
+  // “The bootstrap superuser must have the SUPERUSER attribute”）。因此当它确定
+  // 暂不能降级时直接跳过，避免迁移因此失败。
+  if (Number(totalSupers) <= 1) {
+    reportPgMigrationProgress(
+      "harden-skip",
+      "app 账号是唯一的 bootstrap 超级用户，跳过降级（无法剥夺最后一个 SUPERUSER）",
     );
     return;
   }
@@ -6245,7 +6340,9 @@ function verifyWindowsHello() {
   });
 }
 handleRendererIpc("toolbox:desktop-login-with-hello", async (event) => {
-  assertDesktopLoginRenderer(event);
+  // 该通道既被登录页用于“免密快捷登录”，也被系统设置页用于“修改登录密码前的本机身份验证”。
+  // Windows Hello 提示框本身就是强身份验证关，因此只需可信主窗口调用即可，不限制到登录页。
+  assertMainRenderer(event);
   if (process.platform !== "win32") {
     return {
       verified: false,
@@ -6313,10 +6410,12 @@ handleRendererIpc(
 );
 // 首次使用：生成一个账号密码，写回桌面凭据并重启后端（后端 admin 用新密码），
 // 仅在返回时向当前登录页显示一次明文；后续不再显示，等同 API key 语义。
+// 与“自定义密码”一致：生成后即视为完成首次设置，登录页不再显示首次选项。
 handleRendererIpc("toolbox:generate-desktop-login", async (event) => {
   assertMainRenderer(event);
   const password = generatedDesktopSecret(24);
   updateDesktopAdminPassword(password);
+  markDesktopCredentialBinding();
   // 一次性把新密码交给后端，让其更新数据库里的 admin 密码（即便 admin 已存在）。
   pendingDesktopSeedPassword = password;
   writeDesktopStartupDiagnostic(
@@ -7180,6 +7279,18 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
       const migrateUrl = takeDesktopPgMigrateH2Url();
       if (migrateUrl) {
         backendEnv.LEGACY_H2_MIGRATE_URL = migrateUrl;
+        // 让后端把导入进度写入独立文件，主进程 live-tail 后转发给前端迁移进度面板。
+        const progressFile = path.join(
+          app.getPath("userData"),
+          "logs",
+          "migration-progress.log",
+        );
+        try {
+          fs.mkdirSync(path.dirname(progressFile), { recursive: true });
+          fs.writeFileSync(progressFile, "", { encoding: "utf8" });
+        } catch {}
+        backendEnv.LEGACY_H2_MIGRATE_PROGRESS_FILE = progressFile;
+        startMigrateProgressTail(progressFile);
       }
     } else {
       // 本地 PG 不可达：回退 H2 并清除启用标记，避免下次启动再次尝试失败。
@@ -7602,7 +7713,25 @@ async function boot() {
     backendPort = await findFreePort();
     mitmCaMigration = prepareDesktopMitmCaMigration();
     const aiSlot = await allocateAiRuntimeSlot();
-    await ensureDesktopPostgresRunning();
+    // 本地 PostgreSQL 可执行文件若缺失/启动失败，不应阻塞整体启动：
+    // 自动回退 H2 并清除启用标记，让用户能进入工作区，再到依赖页重新安装/迁移。
+    try {
+      await ensureDesktopPostgresRunning();
+    } catch (error) {
+      const pgMissing = /未检测到本地 PostgreSQL|安装不完整|未初始化 PostgreSQL/i.test(
+        String(error?.message || error),
+      );
+      if (pgMissing) {
+        disableDesktopPostgres();
+        writeDesktopStartupDiagnostic(
+          "postgres-unavailable-fallback",
+          error,
+          { hint: "PostgreSQL 不可用，已回退 H2；可在依赖页重新安装后再迁移" },
+        );
+      } else {
+        throw error;
+      }
+    }
     startBackend(java, jar, backendPort, {
       url: `http://127.0.0.1:${aiSlot.port}`,
       port: aiSlot.port,

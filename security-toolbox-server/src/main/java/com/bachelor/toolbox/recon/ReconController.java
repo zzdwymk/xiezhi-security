@@ -4,6 +4,8 @@ import com.bachelor.toolbox.asset.DiscoveredPath;
 import com.bachelor.toolbox.asset.DiscoveredPathService;
 import jakarta.validation.Valid;
 import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -15,6 +17,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api/projects/{projectId}/recon")
 public class ReconController {
+  private static final Logger log = LoggerFactory.getLogger(ReconController.class);
   private final ReconService service;
   private final DiscoveredPathService discoveredPaths;
 
@@ -38,9 +41,14 @@ public class ReconController {
   @GetMapping("/paths")
   public List<DiscoveredPath> paths(
       @PathVariable Long projectId, @RequestParam(required = false) Long targetId) {
-    return targetId == null
-        ? discoveredPaths.listByProject(projectId)
-        : discoveredPaths.list(projectId, targetId);
+    try {
+      return targetId == null
+          ? discoveredPaths.listByProject(projectId)
+          : discoveredPaths.list(projectId, targetId);
+    } catch (RuntimeException ex) {
+      log.error("加载项目 {} 的已发现路径失败(targetId={})", projectId, targetId, ex);
+      throw ex;
+    }
   }
 
   @PostMapping("/icp/batch")

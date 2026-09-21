@@ -2399,6 +2399,20 @@ button.settings-row:active {
 .pwd-identify-block > .el-button {
   flex-shrink: 0;
 }
+.pwd-identify-block > .el-button:hover,
+.pwd-identify-block > .el-button:focus,
+.pwd-identify-block > .el-button:active,
+.pwd-identify-block > .el-button:focus-visible {
+  color: var(--el-color-primary, #1677ff);
+  border-color: var(--el-color-primary, #1677ff);
+  background: var(--el-color-primary-light-9, #f0f7ff);
+}
+.pwd-identify-block > .el-button:not(.is-disabled):hover,
+.pwd-identify-block > .el-button:not(.is-disabled):focus {
+  color: var(--el-color-primary, #1677ff);
+  border-color: var(--el-color-primary, #1677ff);
+  background: var(--el-color-primary-light-9, #f0f7ff);
+}
 
 @media (max-width: 720px) {
   .settings-page {

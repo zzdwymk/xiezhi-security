@@ -79,7 +79,10 @@ public class ProjectReportSummaryService {
     projectFindings.forEach(
         f ->
             severities.compute(
-                f.getSeverity().toUpperCase(Locale.ROOT), (k, v) -> v == null ? 1 : v + 1));
+                f.getSeverity() == null
+                    ? "UNKNOWN"
+                    : f.getSeverity().toUpperCase(Locale.ROOT),
+                (k, v) -> v == null ? 1 : v + 1));
     Set<Long> explicitlyRetestedFindingIds =
         projectTasks.stream()
             .map(SecurityTask::getSourceFindingId)
