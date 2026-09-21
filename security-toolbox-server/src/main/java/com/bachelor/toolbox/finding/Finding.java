@@ -60,11 +60,14 @@ public class Finding {
   @Column(nullable = false, length = 30)
   private String status = "OPEN";
 
-  @Lob private String description;
+  @Column(columnDefinition = "TEXT")
+  private String description;
 
-  @Lob private String evidence;
+  @Column(columnDefinition = "TEXT")
+  private String evidence;
 
-  @Lob private String remediation;
+  @Column(columnDefinition = "TEXT")
+  private String remediation;
 
   @Column(nullable = false, updatable = false)
   private Instant createdAt;

@@ -44,8 +44,7 @@ public class WorkflowRun {
   @Column(nullable = false, length = 71)
   private String workflowDigest;
 
-  @Lob
-  @Column(nullable = false)
+  @Column(nullable = false, columnDefinition = "TEXT")
   private String specJson;
 
   @Column(nullable = false, length = 24)

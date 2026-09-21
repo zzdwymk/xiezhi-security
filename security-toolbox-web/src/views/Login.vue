@@ -293,7 +293,7 @@ onMounted(async () => {
       </el-form>
       <footer class="login-footer">
         <span>{{
-          desktopMode ? "每次启动均需显式登录" : "环境检查已完成"
+          desktopMode ? "" : "环境检查已完成"
         }}</span
         ><el-button link type="primary" @click="$router.push('/setup')"
           >重新检测</el-button

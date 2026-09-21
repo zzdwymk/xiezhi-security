@@ -5,6 +5,8 @@ import com.bachelor.toolbox.finding.Finding;
 import com.bachelor.toolbox.task.SecurityTask;
 import jakarta.validation.Valid;
 import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -19,6 +21,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api/projects")
 public class AssessmentProjectController {
+  private static final Logger log = LoggerFactory.getLogger(AssessmentProjectController.class);
   private final AssessmentProjectService service;
 
   public AssessmentProjectController(AssessmentProjectService service) {
@@ -75,7 +78,12 @@ public class AssessmentProjectController {
 
   @GetMapping("/{id}/targets")
   public List<ProjectTarget> targets(@PathVariable Long id) {
-    return service.targets(id);
+    try {
+      return service.targets(id);
+    } catch (RuntimeException ex) {
+      log.error("加载项目 {} 的目标关联失败", id, ex);
+      throw ex;
+    }
   }
 
   @PostMapping("/{id}/targets/{targetId}")

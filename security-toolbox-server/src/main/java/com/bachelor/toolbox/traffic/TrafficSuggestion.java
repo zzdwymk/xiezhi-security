@@ -31,8 +31,8 @@ public class TrafficSuggestion {
   @Column(nullable = false, length = 300)
   private String title;
 
-  @Lob private String summary;
-  @Lob private String reason;
+  @Column(columnDefinition = "TEXT") private String summary;
+  @Column(columnDefinition = "TEXT") private String reason;
 
   @Column(nullable = false)
   private double confidence;

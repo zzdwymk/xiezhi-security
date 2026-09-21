@@ -276,7 +276,7 @@ onMounted(load);
           placeholder="搜索项目名称 / 负责人 / 说明"
           clearable
           :prefix-icon="Search"
-          style="width: 240px"
+          style="width: 280px"
         />
         <el-button type="primary" @click="visible = true"
           >新建评估项目</el-button

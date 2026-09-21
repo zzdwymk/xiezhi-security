@@ -29,11 +29,10 @@ public class PostScanPath {
   @Column(name = "project_id")
   private Long projectId;
 
-  @Lob
-  @Column(nullable = false)
+  @Column(nullable = false, columnDefinition = "TEXT")
   private String sourceFindingIdsJson;
-  @Lob
-  @Column(nullable = false)
+
+  @Column(nullable = false, columnDefinition = "TEXT")
   private String documentJson;
 
   @Column(nullable = false, length = 64)
@@ -54,7 +53,7 @@ public class PostScanPath {
   @Column(nullable = false)
   private Instant expiresAt;
 
-  @Lob private String taskIdsJson;
+  @Column(columnDefinition = "TEXT") private String taskIdsJson;
 
   @Column(nullable = false, updatable = false)
   private Instant createdAt;

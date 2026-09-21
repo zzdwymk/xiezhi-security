@@ -1241,7 +1241,7 @@ onUnmounted(() => {
                   >装在工具目录内；路径含空格/中文时自动兜底到盘符根目录</span
                 >
                 <span
-                  v-if="item.name === 'PostgreSQL' && activeDatabase"
+                  v-if="item.name === 'PostgreSQL' && activeDatabase === 'PostgreSQL'"
                   class="dep-note"
                   >当前数据库：{{ activeDatabase }}<template
                     v-if="postgresMigration?.port"
@@ -1347,6 +1347,19 @@ onUnmounted(() => {
                   class="dep-ready-controls"
                 >
                   <el-button
+                    v-if="
+                      item.name === 'PostgreSQL' &&
+                      desktopMode &&
+                      !postgresMigration?.enabled &&
+                      postgresMigration?.available
+                    "
+                    type="primary"
+                    plain
+                    :loading="migratingPostgres"
+                    @click="requestPostgresMigration"
+                    >迁移到 PostgreSQL</el-button
+                  >
+                  <el-button
                     plain
                     :loading="item.installing"
                     :disabled="item.uninstalling"
@@ -1389,25 +1402,16 @@ onUnmounted(() => {
                 <span v-else class="dep-action">暂不支持</span>
               </div>
               <div
-                v-if="item.name === 'PostgreSQL' && desktopMode"
+                v-if="
+                  item.name === 'PostgreSQL' &&
+                  desktopMode &&
+                  (postgresMigration?.enabled ||
+                    migratingPostgres ||
+                    pgMigrationProgress ||
+                    pgMigrationError)
+                "
                 class="dep-postgres-actions"
               >
-                <div
-                  v-if="
-                    isReady(item) &&
-                    !postgresMigration?.enabled &&
-                    postgresMigration?.available
-                  "
-                  class="dep-postgres-controls"
-                >
-                  <el-button
-                    type="primary"
-                    plain
-                    :loading="migratingPostgres"
-                    @click="requestPostgresMigration"
-                    >迁移到 PostgreSQL</el-button
-                  >
-                </div>
                 <div
                   v-if="migratingPostgres || pgMigrationProgress || pgMigrationError"
                   class="dep-postgres-progress"

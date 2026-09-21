@@ -66,10 +66,10 @@ public class TrafficPacket {
   @Column(nullable = false, columnDefinition = "boolean default false")
   private boolean marked = false;
 
-  @JsonIgnore @Lob private String requestHeaders;
-  @JsonIgnore @Lob private String requestBody;
-  @JsonIgnore @Lob private String responseHeaders;
-  @JsonIgnore @Lob private String responseBody;
+  @JsonIgnore @Column(columnDefinition = "TEXT") private String requestHeaders;
+  @JsonIgnore @Column(columnDefinition = "TEXT") private String requestBody;
+  @JsonIgnore @Column(columnDefinition = "TEXT") private String responseHeaders;
+  @JsonIgnore @Column(columnDefinition = "TEXT") private String responseBody;
 
   @Column(length = 2000)
   private String errorMessage;
