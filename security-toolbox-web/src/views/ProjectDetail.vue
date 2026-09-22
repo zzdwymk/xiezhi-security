@@ -6019,67 +6019,67 @@ onUnmounted(() => {
                       />
                     </el-tooltip>
                   </div>
-                  <div
-                    v-else
-                    class="severity-donut"
-                    @mousemove="onDonutHover"
-                    @mouseleave="onDonutLeave"
-                    @click="onDonutClick"
-                  >
-                    <svg
-                      viewBox="0 0 42 42"
-                      role="img"
-                      aria-label="漏洞等级环形图"
+<div
+                      v-else
+                      class="severity-donut"
+                      @mousemove="onDonutHover"
+                      @mouseleave="onDonutLeave"
+                      @click="onDonutClick"
                     >
-                      <circle
-                        class="severity-donut__track"
-                        cx="21"
-                        cy="21"
-                        r="15.9155"
-                      />
-                      <g
-                        v-for="arc in reportSeverityArcs"
-                        :key="arc.severity"
+                      <svg
+                        viewBox="0 0 42 42"
+                        role="img"
+                        aria-label="漏洞等级环形图"
                       >
                         <circle
-                          class="severity-donut__arc"
+                          class="severity-donut__track"
                           cx="21"
                           cy="21"
                           r="15.9155"
-                          :stroke="arc.color"
-                          :stroke-dasharray="arc.dash"
-                          :stroke-dashoffset="arc.offset"
                         />
-                        <circle
-                          class="severity-donut__arc-hit"
-                          cx="21"
-                          cy="21"
-                          r="15.9155"
-                          fill="none"
-                          stroke="transparent"
-                          :stroke-dasharray="arc.dash"
-                          :stroke-dashoffset="arc.offset"
-                        />
-                      </g>
-                    </svg>
-                    <div class="severity-donut__center">
-                      <strong>{{ reportSeverityTotal }}</strong>
-                      <span>发现总数</span>
+                        <g
+                          v-for="arc in reportSeverityArcs"
+                          :key="arc.severity"
+                        >
+                          <circle
+                            class="severity-donut__arc"
+                            cx="21"
+                            cy="21"
+                            r="15.9155"
+                            :stroke="arc.color"
+                            :stroke-dasharray="arc.dash"
+                            :stroke-dashoffset="arc.offset"
+                          />
+                          <circle
+                            class="severity-donut__arc-hit"
+                            cx="21"
+                            cy="21"
+                            r="15.9155"
+                            fill="none"
+                            stroke="transparent"
+                            :stroke-dasharray="arc.dash"
+                            :stroke-dashoffset="arc.offset"
+                          />
+                        </g>
+                      </svg>
+                      <div class="severity-donut__center">
+                        <strong>{{ reportSeverityTotal }}</strong>
+                        <span>发现总数</span>
+                      </div>
+                      <div
+                        v-if="hoveredArcInfo"
+                        class="severity-tip severity-tip--dark"
+                        :style="{
+                          left: donutTipPos.x + 'px',
+                          top: donutTipPos.y + 'px',
+                        }"
+                      >
+                        <i :style="{ background: hoveredArcInfo.color }" />
+                        <span>{{ severityLabel(hoveredArcInfo.severity) }}</span>
+                        <b>{{ hoveredArcInfo.count }}</b>
+                        <em>{{ reportSeverityPercent(hoveredArcInfo.count) }}%</em>
+                      </div>
                     </div>
-                    <div
-                      v-if="hoveredArcInfo"
-                      class="severity-donut__tip"
-                      :style="{
-                        left: donutTipPos.x + 'px',
-                        top: donutTipPos.y + 'px',
-                      }"
-                    >
-                      <i :style="{ background: hoveredArcInfo.color }" />
-                      <span>{{ severityLabel(hoveredArcInfo.severity) }}</span>
-                      <b>{{ hoveredArcInfo.count }}</b>
-                      <em>{{ reportSeverityPercent(hoveredArcInfo.count) }}%</em>
-                    </div>
-                  </div>
                 </template>
                 <div v-else class="report-overview__empty">暂无发现数据</div>
               </div>
@@ -8347,39 +8347,40 @@ onUnmounted(() => {
   color: var(--app-muted, #6b7280);
   font-size: 12px;
 }
-.severity-donut__tip {
+.severity-tip {
   position: absolute;
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 6px 11px;
-  border: 1px solid var(--app-border, var(--el-border-color));
-  border-radius: 9px;
-  background: var(--app-surface-strong, #fff);
-  box-shadow: 0 6px 18px color-mix(in srgb, var(--app-text) 18%, transparent);
-  color: var(--app-text);
+  padding: 7px 11px;
+  border-radius: 4px;
   font: inherit;
   white-space: nowrap;
-  transform: translate(12px, 12px);
+  transform: translate(10px, 12px);
   pointer-events: none;
   z-index: 20;
 }
-.severity-donut__tip i {
+.severity-tip--dark {
+  background: var(--el-bg-color-overlay-dark, #303133);
+  color: #fff;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28);
+}
+.severity-tip i {
   width: 9px;
   height: 9px;
   border-radius: 2px;
 }
-.severity-donut__tip span {
-  color: var(--app-muted, #6b7280);
+.severity-tip span {
+  color: rgba(255, 255, 255, 0.82);
   font-size: 12px;
 }
-.severity-donut__tip b {
-  color: var(--app-text, #1f2937);
+.severity-tip b {
+  color: #fff;
   font-size: 13px;
   font-weight: 650;
 }
-.severity-donut__tip em {
-  color: var(--app-muted, #9ca3af);
+.severity-tip em {
+  color: rgba(255, 255, 255, 0.72);
   font-size: 11px;
   font-style: normal;
 }

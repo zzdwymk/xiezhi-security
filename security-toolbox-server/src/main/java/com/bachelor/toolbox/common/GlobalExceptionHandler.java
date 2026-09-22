@@ -1,7 +1,13 @@
 package com.bachelor.toolbox.common;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.net.ConnectException;
+import java.net.SocketTimeoutException;
+import java.net.http.HttpTimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
@@ -70,6 +76,44 @@ public class GlobalExceptionHandler {
   @ExceptionHandler(NoResourceFoundException.class)
   public ResponseEntity<ApiErrorResponse> handleNoResource(NoResourceFoundException ex) {
     return error(HttpStatus.NOT_FOUND, "请求资源不存在");
+  }
+
+  @ExceptionHandler(DataAccessException.class)
+  public ResponseEntity<ApiErrorResponse> handleDataAccess(DataAccessException ex) {
+    log.error("数据库或本地存储访问异常", ex);
+    return error(
+        HttpStatus.INTERNAL_SERVER_ERROR, "数据库或本地存储访问失败，请检查服务状态后重试");
+  }
+
+  @ExceptionHandler(value = {HttpTimeoutException.class, SocketTimeoutException.class})
+  public ResponseEntity<ApiErrorResponse> handleHttpTimeout(Exception ex) {
+    log.warn("外部请求连接超时: {}", ex.getMessage());
+    return error(HttpStatus.INTERNAL_SERVER_ERROR, "外部连接超时，请稍后重试或检查网络");
+  }
+
+  @ExceptionHandler(ConnectException.class)
+  public ResponseEntity<ApiErrorResponse> handleConnect(ConnectException ex) {
+    log.warn("外部连接失败: {}", ex.getMessage());
+    return error(HttpStatus.INTERNAL_SERVER_ERROR, "无法连接外部服务，请检查服务状态后重试");
+  }
+
+  @ExceptionHandler(UncheckedIOException.class)
+  public ResponseEntity<ApiErrorResponse> handleUncheckedIo(UncheckedIOException ex) {
+    log.error("本地文件读写失败", ex);
+    return error(HttpStatus.INTERNAL_SERVER_ERROR, "本地文件读写失败，请检查磁盘空间和访问权限后重试");
+  }
+
+  @ExceptionHandler(IOException.class)
+  public ResponseEntity<ApiErrorResponse> handleIo(IOException ex) {
+    log.error("本地文件或流处理失败", ex);
+    return error(HttpStatus.INTERNAL_SERVER_ERROR, "本地文件或流处理失败，请检查磁盘空间和访问权限后重试");
+  }
+
+  @ExceptionHandler(InterruptedException.class)
+  public ResponseEntity<ApiErrorResponse> handleInterrupted(InterruptedException ex) {
+    Thread.currentThread().interrupt();
+    log.warn("操作被中断: {}", ex.getMessage());
+    return error(HttpStatus.INTERNAL_SERVER_ERROR, "操作被中断，请稍后重试");
   }
 
   @ExceptionHandler(Exception.class)
