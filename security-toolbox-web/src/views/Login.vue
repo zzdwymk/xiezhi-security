@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { ArrowLeft } from "../components/fluentIcons";
@@ -14,7 +14,15 @@ const rememberMe = ref(auth.rememberMe);
 const loading = ref(false);
 const desktopLoginError = ref("");
 const loginBound = ref(false);
+const loginConfigured = ref(false);
 const bindingLoaded = ref(false);
+
+const quickLoginAllowed = computed(
+  () =>
+    !bindingLoaded.value ||
+    loginBound.value ||
+    !loginConfigured.value,
+);
 
 async function enterWorkspace() {
   await router.replace(String(route.query.redirect || "/"));
@@ -184,6 +192,7 @@ onMounted(async () => {
     try {
       const binding = await getBinding();
       loginBound.value = binding?.bound === true;
+      loginConfigured.value = binding?.configured === true;
     } catch {
       loginBound.value = false;
     }
@@ -246,31 +255,42 @@ onMounted(async () => {
           >账号密码登录</el-button
         >
         <template v-if="desktopMode">
-          <div class="desktop-login-divider"><span>或</span></div>
-          <el-button
-            size="large"
-            class="login-button desktop-secure-login"
-            :loading="loading"
-            :disabled="loading"
-            @click="loginWithDesktopCredentials"
-            >使用本机安全凭据登录</el-button
-          >
-          <el-button
-            size="large"
-            class="login-button desktop-secure-login"
-            :loading="loading"
-            :disabled="loading"
-            @click="loginWithWindowsHello"
-            >使用 Windows Hello（PIN）登录</el-button
-          >
+          <template v-if="quickLoginAllowed">
+            <div class="desktop-login-divider"><span>或</span></div>
+            <el-button
+              size="large"
+              class="login-button desktop-secure-login"
+              :loading="loading"
+              :disabled="loading"
+              @click="loginWithDesktopCredentials"
+              >使用本机安全凭据登录</el-button
+            >
+            <el-button
+              size="large"
+              class="login-button desktop-secure-login"
+              :loading="loading"
+              :disabled="loading"
+              @click="loginWithWindowsHello"
+              >使用 Windows Hello（PIN）登录</el-button
+            >
+          </template>
           <p
-            v-if="bindingLoaded && !loginBound"
+            v-else-if="bindingLoaded"
+            class="desktop-login-bind-hint"
+          >
+            已解除本机登录绑定，快捷登录已关闭，请使用账号密码登录。
+          </p>
+          <p
+            v-if="bindingLoaded && !loginConfigured"
             class="desktop-login-bind-hint"
           >
             首次无需输入密码：点上面「本机安全凭据」或「Windows Hello」即可进入；之后在「设置 →
-            修改登录密码」绑定账号密码后，才能用账号密码登录。
+            修改登录密码」设置并绑定账号密码后，才能用账号密码登录。
           </p>
-          <div v-if="bindingLoaded && !loginBound" class="desktop-login-firstrun">
+          <div
+            v-if="bindingLoaded && !loginConfigured"
+            class="desktop-login-firstrun"
+          >
             <div class="desktop-login-firstrun-opts">
               <el-button
                 link

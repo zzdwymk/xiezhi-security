@@ -515,27 +515,49 @@ function ensureDesktopCredentials() {
   return desktopCredentials;
 }
 
-// 是否已完成“账号密码 ↔ 本机凭据/Windows Hello 绑定”。未绑定时，登录页只允许账号密码，
-// 本机凭据 / Windows Hello 不提供，避免无密码下被任意本机明文绕过。
-function desktopCredentialBinding() {
+// 本机登录状态。quickLogin = 账号密码 ↔ 本机凭据/Windows Hello 绑定：绑定后登录页才提供
+// 本机凭据 / Windows Hello 快捷登录；未绑定（含解除绑定后）这两种快捷登录一律不提供，避免
+// 无密码情况下被任意本机明文绕过。configured 表示账号是否已完成首次设置；它与绑定相互独立，
+// 用户解除绑定后 configured 保持为 true，从而能区分“全新未设置”与“显式解除绑定”。
+function desktopCredentialState() {
   const settings = readDesktopSettings();
   const security =
     settings.desktopSecurity && typeof settings.desktopSecurity === "object"
       ? settings.desktopSecurity
       : {};
-  return { bound: security.desktopLoginBinding === true };
+  const bound = security.desktopLoginBinding === true;
+  // 兼容旧版本：旧数据只有 desktopLoginBinding，其搭配 true 即视为已配置。
+  const configured = security.desktopLoginConfigured === true || bound;
+  return { bound, configured };
+}
+
+function desktopCredentialBinding() {
+  const { bound, configured } = desktopCredentialState();
+  return { bound, configured };
+}
+
+// 是否允许发起本机安全凭据 / Windows Hello 快捷登录：全新未配置（首次进入）允许，绑定后允许，
+// 仅当“已配置却未绑定”（用户显式解除绑定）时阻止。
+function desktopQuickLoginAllowed() {
+  const { bound, configured } = desktopCredentialState();
+  return !configured || bound;
 }
 
 function markDesktopCredentialBinding() {
-  const settings = readDesktopSettings();
-  const security =
-    settings.desktopSecurity && typeof settings.desktopSecurity === "object"
-      ? settings.desktopSecurity
-      : {};
-  if (security.desktopLoginBinding !== true) {
+  const { configured } = desktopCredentialState();
+  if (!configured) {
+    const settings = readDesktopSettings();
+    const security =
+      settings.desktopSecurity && typeof settings.desktopSecurity === "object"
+        ? settings.desktopSecurity
+        : {};
     writeDesktopSettings({
       ...settings,
-      desktopSecurity: { ...security, desktopLoginBinding: true },
+      desktopSecurity: {
+        ...security,
+        desktopLoginConfigured: true,
+        desktopLoginBinding: true,
+      },
     });
   }
 }
@@ -6220,8 +6242,11 @@ handleRendererIpc("toolbox:save-github-token-settings", (event, payload) => {
 });
 handleRendererIpc("toolbox:get-desktop-login-credentials", (event) => {
   assertDesktopLoginRenderer(event);
-  // 本机安全凭据 = 这台设备自己的首登材料；首次没有任何密码时也允许用它进入，
-  // 避免“首次没密码进不去”的死结。绑定只是把账号密码与本机/PIN 关联的选项。
+  // 本机安全凭据 = 这台设备自己的首登材料；首次没有任何密码时也允许用它进入，避免首登死结。
+  // 绑定只是把账号密码与本机/PIN 关联的选项。解除绑定后不再提供本机凭据，仅保留账号密码。
+  if (!desktopQuickLoginAllowed()) {
+    return null;
+  }
   const credentials = ensureDesktopCredentials();
   return {
     username: credentials.username,
@@ -6340,14 +6365,22 @@ function verifyWindowsHello() {
   });
 }
 handleRendererIpc("toolbox:desktop-login-with-hello", async (event) => {
-  // 该通道既被登录页用于“免密快捷登录”，也被系统设置页用于“修改登录密码前的本机身份验证”。
-  // Windows Hello 提示框本身就是强身份验证关，因此只需可信主窗口调用即可，不限制到登录页。
+  // 该通道仅供登录页“免密快捷登录”使用。Windows Hello 提示框是强身份验证关，因此只需可信
+  // 主窗口调用即可；但解除绑定的用户不得再用 Hello 快捷登录（系统设置里的改密走独立的
+  // change-desktop-admin-password 通道，不受此处门禁影响）。
   assertMainRenderer(event);
   if (process.platform !== "win32") {
     return {
       verified: false,
       available: false,
       reason: "当前系统不支持 Windows Hello",
+    };
+  }
+  if (!desktopQuickLoginAllowed()) {
+    return {
+      verified: false,
+      available: true,
+      reason: "已解除本机登录绑定，请改用账号密码登录",
     };
   }
   const result = await verifyWindowsHello();
@@ -6450,6 +6483,118 @@ handleRendererIpc("toolbox:init-desktop-login", async (event, payload = {}) => {
     password,
     note: "密码已绑定本机与 Windows Hello",
   };
+});
+// 桌面版“本机身份验证后免输入原始密码”的改密入口：Windows Hello 本身就是身份强校验，
+// 且当前 admin 密码一直由桌面凭据保管、绝不出现在渲染进程。经 Hello 验证后，主进程用
+// 已知的当前 admin 密码调用后端 change-password（原密码校验照常生效），再用新密码同步
+// 本地桌面凭据。这样首次用「本机安全凭据 / Windows Hello」登录、不知道原始 admin 密码
+// 的用户也能在设置中安全地修改登录密码，而无需新增后端免密改密接口。
+function desktopChangeAdminPasswordThroughHello(newPassword) {
+  return new Promise((resolve) => {
+    const pw = String(newPassword || "").trim();
+    if (pw.length < 8 || pw.length > 128) {
+      resolve({ changed: false, reason: "密码长度需为 8-128 位" });
+      return;
+    }
+    verifyWindowsHello()
+      .then(async (verifiedResult) => {
+        if (!verifiedResult.verified) {
+          resolve({
+            changed: false,
+            available: verifiedResult.available,
+            reason:
+              verifiedResult.reason ||
+              "身份验证未通过或被取消，请重试",
+          });
+          return;
+        }
+        if (!backendPort) {
+          resolve({ changed: false, reason: "后端服务尚未就绪，请稍后重试" });
+          return;
+        }
+        const base = `http://127.0.0.1:${backendPort}`;
+        const credentials = ensureDesktopCredentials();
+        let token;
+        try {
+          const loginResponse = await electronNet.fetch(`${base}/api/auth/login`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              username: credentials.username,
+              password: credentials.adminPassword,
+            }),
+          });
+          if (!loginResponse.ok) {
+            writeDesktopStartupDiagnostic(
+              "desktop-login-change",
+              new Error(`登录失败 HTTP ${loginResponse.status}`),
+              { action: "verify-token" },
+            );
+            resolve({ changed: false, reason: "本机密码校验失败，请重试" });
+            return;
+          }
+          const loginJson = await loginResponse.json();
+          token = String(loginJson?.token || loginJson?.accessToken || "");
+          if (!token) {
+            resolve({ changed: false, reason: "无法获取本机登录令牌，请重试" });
+            return;
+          }
+        } catch (error) {
+          writeDesktopStartupDiagnostic("desktop-login-change", error, {
+            action: "verify-token",
+          });
+          resolve({ changed: false, reason: "无法连接后端服务，请重试" });
+          return;
+        }
+        try {
+          // 用已知的当前 admin 密码发起改密，后端仍校验 currentPassword。
+          const changeResponse = await electronNet.fetch(
+            `${base}/api/auth/change-password`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify({
+                currentPassword: credentials.adminPassword,
+                newPassword: pw,
+              }),
+            },
+          );
+          if (!changeResponse.ok) {
+            writeDesktopStartupDiagnostic(
+              "desktop-login-change",
+              new Error(`改密失败 HTTP ${changeResponse.status}`),
+              { action: "change" },
+            );
+            resolve({ changed: false, reason: "后端拒绝修改密码，请重试" });
+            return;
+          }
+          updateDesktopAdminPassword(pw);
+          writeDesktopStartupDiagnostic("desktop-login-change", null, {
+            action: "changed-via-hello",
+          });
+          resolve({ changed: true });
+        } catch (error) {
+          writeDesktopStartupDiagnostic("desktop-login-change", error, {
+            action: "change",
+          });
+          resolve({ changed: false, reason: "无法连接后端服务，请重试" });
+        }
+      })
+      .catch((error) => {
+        writeDesktopStartupDiagnostic("desktop-login-change", error, {
+          action: "hello",
+        });
+        resolve({ changed: false, reason: "本机身份验证失败，请重试" });
+      });
+  });
+}
+handleRendererIpc("toolbox:change-desktop-admin-password", async (event, payload = {}) => {
+  assertMainRenderer(event);
+  const options = payload && typeof payload === "object" ? payload : {};
+  return desktopChangeAdminPasswordThroughHello(options.password);
 });
 // 手动把 H2 历史数据重新导入当前 PostgreSQL。设置一次性迁移 URL 后重启后端，
 // postgres profile 下的 LegacyPostgresMigrationRunner 会把 H2 白名单核心表拷进 PG。

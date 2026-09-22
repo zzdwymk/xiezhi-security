@@ -131,7 +131,10 @@ interface ToolboxDesktopBridge {
     payload: GithubTokenSettingsInput,
   ) => Promise<GithubTokenSettingsStatus>;
   readonly getDesktopLoginCredentials?: () => Promise<DesktopLoginCredentials | null>;
-  readonly getDesktopLoginBinding?: () => Promise<{ bound: boolean }>;
+  readonly getDesktopLoginBinding?: () => Promise<{
+    bound: boolean;
+    configured: boolean;
+  }>;
   readonly bindDesktopLogin?: () => Promise<{ bound: boolean }>;
   readonly unbindDesktopLogin?: () => Promise<{ bound: boolean }>;
   readonly loginWithWindowsHello?: () => Promise<{
@@ -143,6 +146,11 @@ interface ToolboxDesktopBridge {
   readonly setDesktopAdminPassword?: (
     password: string,
   ) => Promise<{ updated: boolean }>;
+  readonly changeDesktopAdminPassword?: (password: string) => Promise<{
+    changed: boolean;
+    available?: boolean;
+    reason?: string;
+  }>;
   readonly generateDesktopLogin?: () => Promise<{
     username: string;
     password: string;
