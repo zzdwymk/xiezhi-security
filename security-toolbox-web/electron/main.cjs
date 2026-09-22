@@ -1685,6 +1685,14 @@ async function openDependencyResourceRetry(url, options = {}) {
       return request;
     } catch (error) {
       if (attempt === attempts || !isConnectionLevelError(error)) {
+        const raw =
+          `${error?.code || ""} ${error?.message || ""} ${error?.cause?.code || ""} ${error?.cause?.message || ""}`;
+        if (/ERR_NETWORK_CHANGED|ENETUNREACH|EHOSTUNREACH|ERR_SOCKET|ERR_ABORTED/i.test(raw))
+          throw new UserFacingError("下载期间网络发生变化或连接被中断，请检查网络后重试");
+        if (/ECONNREFUSED|ERR_CONNECTION_REFUSED/i.test(raw))
+          throw new UserFacingError("无法连接下载源（连接被拒绝），请检查网络或稍后重试");
+        if (/ENOTFOUND|ERR_NAME_NOT_RESOLVED|ERR_NAME_NOT_RESOLVED/i.test(raw))
+          throw new UserFacingError("无法解析下载源地址（DNS 失败），请检查网络后重试");
         throw error;
       }
       const delay = Math.min(600 * attempt, 2000);
@@ -1797,7 +1805,13 @@ function runDependencyWorker(task, payload, onProgress = () => {}) {
     });
     worker.on("error", (error) => {
       writeDesktopStartupDiagnostic("dependency-worker", error, { task });
-      finish(reject, new UserFacingError("后台安装任务失败，请稍后重试"));
+      const detail = error?.message?.trim()
+        ? `：${String(error.message).trim()}`
+        : (error?.code ? `（${error.code}）` : "");
+      finish(
+        reject,
+        new UserFacingError(`后台安装任务失败，请稍后重试${detail}`),
+      );
     });
     worker.on("exit", (code) => {
       if (settled) return;
@@ -1806,7 +1820,14 @@ function runDependencyWorker(task, payload, onProgress = () => {}) {
         `后台任务退出代码：${code}`,
         { task },
       );
-      finish(reject, new UserFacingError("后台安装任务未正常完成，请稍后重试"));
+      finish(
+        reject,
+        new UserFacingError(
+          code === 0
+            ? "后台安装任务未正常完成，请稍后重试"
+            : `后台安装任务异常退出（代码 ${code}），请稍后重试`,
+        ),
+      );
     });
   });
 }
@@ -2284,6 +2305,12 @@ async function downloadResumableFile({
   } catch (error) {
     if (request.timeoutError())
       throw new UserFacingError(request.timeoutError());
+    const raw =
+      `${error?.code || ""} ${error?.message || ""} ${error?.cause?.code || ""} ${error?.cause?.message || ""}`;
+    if (/ERR_NETWORK_CHANGED|ECONNRESET|ENETUNREACH|EHOSTUNREACH|ERR_SOCKET/i.test(raw))
+      throw new UserFacingError("下载期间网络发生变化或连接被中断，请检查网络后重试");
+    if (/ERR_CONTENT_LENGTH_MISMATCH|ERR_INCOMPLETE_CHUNKED_ENCODING/i.test(raw))
+      throw new UserFacingError("下载文件不完整（可能被网络或代理截断），已保留进度，请点击重试续传");
     throw error;
   } finally {
     request.dispose();
@@ -3992,10 +4019,26 @@ async function installPortableDependency(
         };
       }
       session.state = "failed";
-      const message = publicErrorMessage(
-        error,
-        "依赖安装失败，请检查网络和磁盘空间后重试",
-      );
+      let message;
+      if (error instanceof UserFacingError && error.message.trim()) {
+        message = error.message.trim();
+      } else {
+        const raw =
+          `${error?.code || ""} ${error?.message || ""} ${error?.cause?.code || ""} ${error?.cause?.message || ""}`;
+        if (/ERR_NETWORK_CHANGED|ENETUNREACH|EHOSTUNREACH|ECONNRESET/i.test(raw))
+          message = "依赖安装失败：网络发生变化或连接被中断，请检查网络后重试";
+        else if (/ERR_CONTENT_LENGTH_MISMATCH|ERR_INCOMPLETE_CHUNKED_ENCODING/i.test(raw))
+          message = "依赖安装失败：下载的安装包不完整，请点击重试续传";
+        else if (/ECONNREFUSED|ERR_CONNECTION_REFUSED/i.test(raw))
+          message = "依赖安装失败：无法连接下载源（连接被拒绝），请检查网络后重试";
+        else if (/ENOTFOUND|ERR_NAME_NOT_RESOLVED/i.test(raw))
+          message = "依赖安装失败：无法解析下载源地址（DNS 失败），请检查网络后重试";
+        else if (/ENOSPC/i.test(raw))
+          message = "依赖安装失败：磁盘空间不足，请清理磁盘后重试";
+        else if (/EBUSY|EPERM|EACCES/i.test(raw))
+          message = "依赖安装失败：文件被占用或没有写入权限，请关闭正在使用的程序后重试";
+        else message = "依赖安装失败，请检查网络和磁盘空间后重试";
+      }
       if (!(error instanceof UserFacingError)) {
         writeDesktopStartupDiagnostic("dependency-install", error, {
           packageId,
@@ -5864,11 +5907,28 @@ function handleRendererIpc(channel, handler) {
     try {
       return await handler(event, ...args);
     } catch (error) {
-      const message = publicErrorMessage(error, "桌面操作失败，请稍后重试");
+      if (error instanceof UserFacingError && error.message.trim()) {
+        throw error;
+      }
       if (!(error instanceof UserFacingError)) {
         writeDesktopStartupDiagnostic(`ipc:${channel}`, error);
       }
-      throw new Error(message);
+      const raw =
+        `${error?.code || ""} ${error?.message || ""} ${error?.cause?.code || ""} ${error?.cause?.message || ""}`;
+      let readable = "桌面操作失败，请稍后重试";
+      if (/ERR_NETWORK_CHANGED|ENETUNREACH|EHOSTUNREACH|ERR_ABORTED/i.test(raw))
+        readable = "网络发生变化或连接被中断，请检查网络后重试";
+      else if (/ERR_CONTENT_LENGTH_MISMATCH|ERR_INCOMPLETE_CHUNKED_ENCODING/i.test(raw))
+        readable = "下载文件不完整（可能被网络或代理截断），请点击重试续传";
+      else if (/ECONNRESET|ERR_SOCKET/i.test(raw))
+        readable = "连接被重置，请检查网络后重试";
+      else if (/ECONNREFUSED|ERR_CONNECTION_REFUSED/i.test(raw))
+        readable = "无法连接下载源（连接被拒绝），请检查网络或稍后重试";
+      else if (/ENOTFOUND|ERR_NAME_NOT_RESOLVED/i.test(raw))
+        readable = "无法解析下载源地址（DNS 失败），请检查网络后重试";
+      else if (/EBUSY|EPERM|EACCES/i.test(raw))
+        readable = "文件被占用或没有写入权限，请关闭正在使用的程序后重试";
+      throw new Error(readable);
     }
   });
 }
