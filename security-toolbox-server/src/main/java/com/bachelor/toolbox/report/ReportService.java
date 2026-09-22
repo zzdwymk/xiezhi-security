@@ -24,6 +24,8 @@ public class ReportService {
   private static final ZoneId REPORT_ZONE = ZoneId.of("Asia/Shanghai");
   private static final DateTimeFormatter TIME_FORMATTER =
       DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z").withZone(REPORT_ZONE);
+  private static final String FLUENT_INFO_ICON =
+      "<svg class=\"notice-icon\" viewBox=\"0 0 20 20\" fill=\"currentColor\" aria-hidden=\"true\"><path fill-rule=\"evenodd\" d=\"M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.247.25v3.5a.75.75 0 001.5 0v-3.5A1.75 1.75 0 009.253 9H9z\" clip-rule=\"evenodd\"/></svg>";
 
   private final TaskService taskService;
   private final AuthorizedTargetRepository targetRepository;
@@ -64,7 +66,10 @@ public class ReportService {
     h2 { margin-top: 32px; padding-bottom: 8px; border-bottom: 2px solid #dce6f3; font-size: 21px; }
     h3 { margin-bottom: 8px; font-size: 17px; }
     .muted { color: #65738a; }
-    .notice { padding: 16px 18px; border-left: 5px solid #2563eb; background: #eff6ff; }
+    .notice { display: flex; gap: 12px; align-items: flex-start; padding: 12px 16px; border: 1px solid #c7dcff; border-radius: 6px; background: #f0f6ff; color: #242424; margin: 12px 0; line-height: 1.6; }
+    .notice-icon { flex-shrink: 0; width: 18px; height: 18px; margin-top: 2px; color: #0f6cbd; }
+    .notice-body { flex: 1; min-width: 0; }
+    .notice-title { font-weight: 600; color: #1a1a1a; margin-bottom: 3px; }
     .grid { display: grid; grid-template-columns: 180px 1fr; border: 1px solid #dce3ed; border-bottom: 0; }
     .grid > div { padding: 9px 12px; border-bottom: 1px solid #dce3ed; overflow-wrap: anywhere; }
     .label { background: #f7f9fc; font-weight: 700; }
@@ -84,13 +89,15 @@ public class ReportService {
         .append(task.getId())
         .append("</div>")
         .append("<h2>授权声明</h2>")
-        .append("<div class=\"notice\"><strong>本报告仅适用于已获得明确授权的安全测试范围。</strong><br>")
+        .append("<div class=\"notice\">")
+        .append(FLUENT_INFO_ICON)
+        .append("<div class=\"notice-body\"><div class=\"notice-title\">本报告仅适用于已获得明确授权的安全测试范围。</div><div>")
         .append(
             text(
                 task.getAuthorizationStatementSnapshot() != null
                     ? task.getAuthorizationStatementSnapshot()
                     : target == null ? null : target.getAuthorizationNote()))
-        .append("</div>")
+        .append("</div></div></div>")
         .append("<h2>测试范围</h2><div class=\"grid\">")
         .append(row("授权目标快照", task.getTargetSnapshotJson()))
         .append(row("允许端口快照", task.getAllowedPortsSnapshot()))
@@ -116,8 +123,10 @@ public class ReportService {
     String aiSummary = generateAiSummary(task);
     html.append("<h2>AI 综合研判</h2>")
         .append("<div class=\"notice\">")
+        .append(FLUENT_INFO_ICON)
+        .append("<div class=\"notice-body\">")
         .append(multiline(aiSummary))
-        .append("</div>")
+        .append("</div></div>")
         .append("<h2>漏洞与风险发现</h2>");
 
     if (findings.isEmpty()) {

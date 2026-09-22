@@ -1133,12 +1133,17 @@ body,
    its leading corner to match the rounded workspace. The overlay is nested
    inside the app tree (dialog overlays are position:fixed), so scope to any
    el-overlay that wraps a dialog, wherever it mounts. */
-body:has(.desktop-v2-native-frame) .el-overlay.is-message-box {
+body:has(.desktop-v2-native-frame) :is(.el-overlay.is-message-box, .el-overlay.is-drawer, .el-overlay:has(> .el-drawer)) {
   right: 0;
   left: var(--desktop-sidebar-width, 260px);
   width: auto;
   border-top-left-radius: var(--fluent-workspace-radius);
   overflow: hidden;
+}
+body:has(.desktop-v2-native-frame)
+  .el-overlay.is-message-box
+  > .el-overlay-message-box {
+  position: absolute;
 }
 body:has(.desktop-v2-native-frame) .el-overlay:has(> .el-overlay-dialog) {
   right: 0;
@@ -1165,12 +1170,17 @@ body:has(.desktop-v2-native-frame)
    square top-left would poke past the rounded corner. The overlay is positioned
    inside the app tree (dialog overlays are position:fixed, so still clickable),
    so this scopes to any el-overlay that wraps a dialog, wherever it mounts. */
-body:not(:has(.desktop-v2-native-frame)) .el-overlay.is-message-box {
+body:not(:has(.desktop-v2-native-frame)) :is(.el-overlay.is-message-box, .el-overlay.is-drawer, .el-overlay:has(> .el-drawer)) {
   right: 0;
   left: var(--desktop-sidebar-width, 260px);
   width: auto;
   border-top-left-radius: var(--fluent-workspace-radius);
   overflow: hidden;
+}
+body:not(:has(.desktop-v2-native-frame))
+  .el-overlay.is-message-box
+  > .el-overlay-message-box {
+  position: absolute;
 }
 body:not(:has(.desktop-v2-native-frame))
   .el-overlay:has(> .el-overlay-dialog) {
@@ -1192,12 +1202,23 @@ body:not(:has(.desktop-v2-native-frame))
   max-height: calc(100% - 32px);
 }
 
+/* ElMessage: center horizontally relative to the workspace rather than the full viewport */
+body:has(.desktop-v2-native-frame) .el-message,
+body:not(:has(.desktop-v2-native-frame)) .el-message {
+  left: calc(50% + var(--desktop-sidebar-width, 260px) / 2);
+}
+
 /* Login (and other full-bleed public pages) have no sidebar, so the dialog
    mask must cover the whole window instead of leaving a strip on the left. */
 body:has(.login-page) .el-overlay.is-message-box,
+body:has(.login-page) .el-overlay.is-drawer,
+body:has(.login-page) .el-overlay:has(> .el-drawer),
 body:has(.login-page) .el-overlay:has(> .el-overlay-dialog) {
   left: 0;
   border-top-left-radius: 0;
+}
+body:has(.login-page) .el-message {
+  left: 50%;
 }
 
 .desktop-v2-content,
