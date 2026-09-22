@@ -540,26 +540,31 @@ function desktopCredentialBinding() {
 // 仅当“已配置却未绑定”（用户显式解除绑定）时阻止。
 function desktopQuickLoginAllowed() {
   const { bound, configured } = desktopCredentialState();
-  return !configured || bound;
+  const allowed = !configured || bound;
+  writeDesktopStartupDiagnostic("desktop-quick-login-gate", null, {
+    bound,
+    configured,
+    allowed,
+  });
+  return allowed;
 }
 
 function markDesktopCredentialBinding() {
-  const { configured } = desktopCredentialState();
-  if (!configured) {
-    const settings = readDesktopSettings();
-    const security =
-      settings.desktopSecurity && typeof settings.desktopSecurity === "object"
-        ? settings.desktopSecurity
-        : {};
-    writeDesktopSettings({
-      ...settings,
-      desktopSecurity: {
-        ...security,
-        desktopLoginConfigured: true,
-        desktopLoginBinding: true,
-      },
-    });
-  }
+  const settings = readDesktopSettings();
+  const security =
+    settings.desktopSecurity && typeof settings.desktopSecurity === "object"
+      ? settings.desktopSecurity
+      : {};
+  // 无论是否已配置都要置 bound=true，否则解除绑定后再想绑定会被上面的 configured
+  // 判断误跳过，导致“绑定失败”。写一次即可，无需判重。
+  writeDesktopSettings({
+    ...settings,
+    desktopSecurity: {
+      ...security,
+      desktopLoginConfigured: true,
+      desktopLoginBinding: true,
+    },
+  });
 }
 
 function prepareDesktopMitmCaMigration() {
@@ -6482,6 +6487,40 @@ handleRendererIpc("toolbox:init-desktop-login", async (event, payload = {}) => {
     username: "admin",
     password,
     note: "密码已绑定本机与 Windows Hello",
+  };
+});
+// 重置登录密码（忘记密码 / 需要随机强密码时）：Windows Hello 验证通过后，
+// 生成新的随机强密码，写回桌面凭据、绑定本机/PIN、重启后端让 admin 用新密码，
+// 仅在本次向前端显示一次明文。这样即便忘了原密码，也能可靠地靠自己这台设备取回。
+handleRendererIpc("toolbox:reset-random-desktop-login", async (event) => {
+  assertMainRenderer(event);
+  const hello = await verifyWindowsHello();
+  if (!hello.verified) {
+    // 用户的常见操作（取消/未通过）不作为“后端异常”抛给渲染层，避免出现
+    // “Error invoking remote method ...”这类杂讯；用结构化结果返回清晰提示。
+    return {
+      resettled: false,
+      available: hello.available === true,
+      reason:
+        hello.reason ||
+        (hello.available === false
+          ? "本机未启用 Windows Hello（PIN／指纹／面部）"
+          : "Windows Hello 验证未通过或被取消"),
+    };
+  }
+  const password = generatedDesktopSecret(24);
+  updateDesktopAdminPassword(password);
+  markDesktopCredentialBinding();
+  pendingDesktopSeedPassword = password;
+  writeDesktopStartupDiagnostic("desktop-login-reset-random", null, {
+    action: "reset-random-and-restart",
+  });
+  await restartBackend();
+  return {
+    resettled: true,
+    username: "admin",
+    password,
+    note: "密码仅本次显示，请立即保存或尽快在设置中改成自己记得的自定义密码",
   };
 });
 // 桌面版“本机身份验证后免输入原始密码”的改密入口：Windows Hello 本身就是身份强校验，

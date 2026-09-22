@@ -44,6 +44,9 @@ const pwdVisible = ref(false);
 const pwdSaving = ref(false);
 const loginBinding = ref(false);
 const loginBindingLoading = ref(false);
+const bindDesktopBusy = ref(false);
+const resetResetting = ref(false);
+const pwdResetCreds = ref<{ username: string; password: string; note: string } | null>(null);
 const pwdForm = reactive({ current: "", next: "", confirm: "" });
 async function changeLoginPassword() {
   if (pwdSaving.value) return;
@@ -290,17 +293,8 @@ async function loadDesktopLoginBinding() {
 async function bindDesktopLoginShortcuts() {
   const bind = window.toolboxDesktop?.bindDesktopLogin;
   if (!bind) return;
-  if (!pwdForm.next.trim() || pwdForm.next.length < 8)
-    return ElMessage.warning("请先在上方设置一个至少 8 位的新密码再绑定");
-  if (pwdForm.next !== pwdForm.confirm)
-    return ElMessage.warning("两次输入的新密码不一致");
-  if (window.toolboxDesktop?.setDesktopAdminPassword) {
-    try {
-      await window.toolboxDesktop.setDesktopAdminPassword(pwdForm.next);
-    } catch (error) {
-      return ElMessage.error(errorText(error, "同步登录密码失败"));
-    }
-  }
+  if (bindDesktopBusy.value) return;
+  bindDesktopBusy.value = true;
   try {
     const binding = await bind();
     loginBinding.value = binding?.bound === true;
@@ -308,12 +302,13 @@ async function bindDesktopLoginShortcuts() {
       ElMessage.success(
         "账号密码已与本机安全凭据、Windows Hello 绑定；登录页将显示这两种快捷登录",
       );
-      pwdVisible.value = false;
     } else {
-      ElMessage.error("绑定失败，请先设置并确认登录密码");
+      ElMessage.error("绑定失败，请稍后重试");
     }
   } catch (error) {
     ElMessage.error(errorText(error, "绑定本机登录失败"));
+  } finally {
+    bindDesktopBusy.value = false;
   }
 }
 
@@ -340,6 +335,45 @@ async function openPasswordDialog() {
   pwdForm.next = "";
   pwdForm.confirm = "";
   pwdVisible.value = true;
+}
+
+async function resetDesktopLoginRandom() {
+  const reset = window.toolboxDesktop?.resetRandomDesktopLogin;
+  if (!isDesktop || !reset || resetResetting.value) return;
+  resetResetting.value = true;
+  pwdResetCreds.value = null;
+  try {
+    const result = await reset();
+    if (!result?.resettled) {
+      ElMessage.warning(result?.reason || "重置未完成，请重试");
+      return;
+    }
+    pwdResetCreds.value = {
+      username: result.username || "admin",
+      password: result.password || "",
+      note: result.note || "密码仅本次显示，请立即保存",
+    };
+    // 结果直接显示在“修改登录密码”对话框内，不额外弹出新窗口。
+    pwdVisible.value = true;
+  } catch (error) {
+    ElMessage.error(errorText(error, "重置登录密码失败"));
+  } finally {
+    resetResetting.value = false;
+  }
+}
+
+function closePwdReset() {
+  pwdResetCreds.value = null;
+  pwdVisible.value = false;
+}
+
+function copyPwdResetField(field: "username" | "password") {
+  const value = pwdResetCreds.value?.[field];
+  if (!value) return;
+  navigator.clipboard
+    ?.writeText(value)
+    .catch(() => undefined);
+  ElMessage.success("已复制");
 }
 
 function errorText(error: unknown, fallback: string) {
@@ -1217,10 +1251,9 @@ watch(
           <button type="button" class="settings-row" @click="openPasswordDialog">
             <el-icon class="settings-row-icon"><Key /></el-icon>
             <span class="settings-row-copy">
-              <strong>修改登录密码</strong>
+<strong>修改登录密码</strong>
               <small
-                >设置后可用账号密码登录；桌面版首次请先用本机凭据 / Windows
-                Hello 进入</small
+                >修改、绑定或重置登录密码（忘记密码可经 Windows Hello 验证后重置）</small
               >
             </span>
             <el-icon class="settings-row-chevron"><ArrowRight /></el-icon>
@@ -1409,7 +1442,11 @@ watch(
       append-to-body
       destroy-on-close
     >
-      <el-form label-position="top" @keyup.enter="changeLoginPassword">
+      <el-form
+        v-if="!pwdResetCreds"
+        label-position="top"
+        @keyup.enter="changeLoginPassword"
+      >
         <p v-if="isDesktop" class="pwd-identify-note">
           桌面上点「保存」后会先进行 Windows Hello（PIN）验证，验证通过即可修改密码，无需输入原密码。
         </p>
@@ -1452,8 +1489,8 @@ watch(
               >已绑定：登录页可用「本机安全凭据」「Windows Hello」快捷登录联动同一个账号密码。</small
             >
             <small v-else
-              >未绑定：保存密码后，点击「绑定」即可把账号密码与本机凭据、Windows
-              Hello 关联，登录页将出现这两种快捷登录。</small
+              >未绑定：点击「绑定」，即可把本机安全凭据、Windows Hello
+              与本机登录关联，无需改密码；登录页将出现这两种快捷登录。</small
             >
           </div>
           <el-button
@@ -1466,17 +1503,54 @@ watch(
           >
           <el-button
             v-else
-            :disabled="
-              !pwdForm.next.trim() ||
-              pwdSaving ||
-              loginBindingLoading
-            "
+            :loading="bindDesktopBusy"
+            :disabled="pwdSaving || loginBindingLoading"
             @click="bindDesktopLoginShortcuts"
             >绑定本机与 Windows Hello</el-button
           >
         </div>
+        <div
+          v-if="isDesktop && !pwdResetCreds"
+          class="pwd-forgot-row"
+        >
+          <el-button link type="primary" :loading="resetResetting" @click="resetDesktopLoginRandom"
+            >生成一个随机强密码（经 Windows Hello 验证）</el-button
+          >
+        </div>
       </el-form>
+
+      <div v-else-if="pwdResetCreds" class="reset-creds-block">
+        <el-alert
+          type="warning"
+          :closable="false"
+          show-icon
+          style="margin-bottom: 14px"
+          :title="pwdResetCreds.note || '密码仅本次显示，请立即保存'"
+        />
+        <div class="reset-creds-field">
+          <span class="reset-creds-label">用户名</span>
+          <code class="reset-creds-value">{{ pwdResetCreds.username }}</code>
+          <el-button link type="primary" @click="copyPwdResetField('username')"
+            >复制</el-button
+          >
+        </div>
+        <div class="reset-creds-field">
+          <span class="reset-creds-label">密码</span>
+          <code class="reset-creds-value">{{ pwdResetCreds.password }}</code>
+          <el-button link type="primary" @click="copyPwdResetField('password')"
+            >复制</el-button
+          >
+        </div>
+        <p class="reset-creds-hint">
+          登录密码已更换为新的随机强密码，仅本次显示。请立即复制保存，或在进入后到「修改登录密码」改成自己记得的密码。
+        </p>
+      </div>
+
       <template #footer>
+        <template v-if="pwdResetCreds">
+          <el-button type="primary" @click="closePwdReset">我已保存</el-button>
+        </template>
+        <template v-else>
         <el-button :disabled="pwdSaving" @click="pwdVisible = false"
           >取消</el-button
         >
@@ -1486,6 +1560,7 @@ watch(
           @click="changeLoginPassword"
           >保存</el-button
         >
+        </template>
       </template>
     </el-dialog>
 
@@ -2302,6 +2377,47 @@ button.settings-row:active {
 }
 .pwd-bind-block > .el-button {
   flex-shrink: 0;
+}
+.reset-creds-field {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface-soft, #f4f7f8);
+}
+.reset-creds-field + .reset-creds-field {
+  margin-top: 8px;
+}
+.reset-creds-label {
+  flex: none;
+  width: 48px;
+  color: var(--app-muted);
+  font-size: 12px;
+}
+.reset-creds-value {
+  min-width: 0;
+  flex: 1;
+  color: var(--app-text);
+  font: 13px/1.6 Consolas, "Microsoft YaHei", monospace;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.reset-creds-block {
+  display: flex;
+  flex-direction: column;
+}
+.reset-creds-hint {
+  margin: 12px 0 0;
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.pwd-forgot-row {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
 }
 
 .pwd-identify-note {

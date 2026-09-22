@@ -161,6 +161,14 @@ interface ToolboxDesktopBridge {
     password: string;
     note: string;
   }>;
+  readonly resetRandomDesktopLogin?: () => Promise<{
+    resettled: boolean;
+    username?: string;
+    password?: string;
+    note?: string;
+    available?: boolean;
+    reason?: string;
+  }>;
   readonly reimportH2ToPostgres?: () => Promise<{ status: string }>;
   readonly testAiSettings?: (
     settings: AiSettingsInput,

@@ -1940,7 +1940,7 @@ async function createTargetInProject() {
       targetFullPortAccess.value,
     );
   } catch (error: any) {
-    ElMessage.warning(error?.message || "端口格式不正确");
+    ElMessage.warning(errorMessage(error, "端口格式不正确"));
     return;
   }
   targetSaving.value = true;
@@ -1983,7 +1983,7 @@ async function batchCreateTargetsInProject() {
       targetBatchForm.fullPortAccess,
     );
   } catch (error: any) {
-    ElMessage.warning(error?.message || "端口格式不正确");
+    ElMessage.warning(errorMessage(error, "端口格式不正确"));
     return;
   }
 

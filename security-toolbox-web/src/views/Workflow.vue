@@ -2951,11 +2951,7 @@ async function save(): Promise<WorkflowSpecV2 | undefined> {
     graphNotice.value = "已保存。之后 AI 会按图中的依赖顺序组织受控任务。";
     return data;
   } catch (err: any) {
-    const msg =
-      err?.response?.data?.message ||
-      err?.message ||
-      "保存失败，请检查后端工作流服务";
-    ElMessage.error(msg);
+    ElMessage.error(toErrorMessage(err, "保存失败，请检查后端工作流服务"));
     return undefined;
   } finally {
     saving.value = false;
@@ -3841,7 +3837,7 @@ async function createTargetInput() {
       targetInputFullPortAccess.value,
     );
   } catch (error: any) {
-    return ElMessage.warning(error?.message || "端口格式不正确");
+    return ElMessage.warning(toErrorMessage(error, "端口格式不正确"));
   }
   targetInputSaving.value = true;
   try {
@@ -3859,7 +3855,7 @@ async function createTargetInput() {
     targetInputVisible.value = false;
     ElMessage.success("自定义输入已登记为项目授权目标");
   } catch (error: any) {
-    ElMessage.error(error?.response?.data?.message || "自定义输入保存失败");
+    ElMessage.error(toErrorMessage(error, "自定义输入保存失败"));
   } finally {
     targetInputSaving.value = false;
   }
