@@ -4,6 +4,7 @@ import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { ArrowLeft } from "../components/fluentIcons";
 import { useAuthStore } from "../stores/auth";
+import { toErrorMessage } from "../utils/errorMessage";
 
 const auth = useAuthStore();
 const router = useRouter();
@@ -29,13 +30,14 @@ async function enterWorkspace() {
 }
 
 const initialCreds = ref<{ username: string; password: string } | null>(null);
+const resetTitle = ref("初始账号密码");
 
 async function generateInitialPassword() {
   const generate = window.toolboxDesktop?.generateDesktopLogin;
   if (!desktopMode || !generate || loading.value) return;
   initMode.value = "generate";
   initialCreds.value = null;
-  loading.value = true;
+  resetTitle.value = "初始账号密码";
   desktopLoginError.value = "";
   try {
     const result = await generate();
@@ -44,8 +46,40 @@ async function generateInitialPassword() {
       password: result.password,
     };
   } catch (error) {
-    desktopLoginError.value =
-      error instanceof Error ? error.message : "生成初始密码失败，请重试";
+    desktopLoginError.value = toErrorMessage(
+      error,
+      "生成初始密码失败，请重试",
+    );
+    initMode.value = "none";
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function resetForgottenPassword() {
+  const reset = window.toolboxDesktop?.resetRandomDesktopLogin;
+  if (!desktopMode || !reset || loading.value) return;
+  initMode.value = "generate";
+  initialCreds.value = null;
+  resetTitle.value = "已重置的新密码";
+  desktopLoginError.value = "";
+  loading.value = true;
+  try {
+    const result = await reset();
+    if (!result?.resettled) {
+      desktopLoginError.value = result?.reason || "Windows Hello 验证未通过或被取消";
+      initMode.value = "none";
+      return;
+    }
+    initialCreds.value = {
+      username: result.username || "admin",
+      password: result.password || "",
+    };
+  } catch (error) {
+    desktopLoginError.value = toErrorMessage(
+      error,
+      "重置登录密码失败，请重试",
+    );
     initMode.value = "none";
   } finally {
     loading.value = false;
@@ -55,6 +89,7 @@ async function generateInitialPassword() {
 function backToLogin() {
   initMode.value = "none";
   initialCreds.value = null;
+  resetTitle.value = "初始账号密码";
   desktopLoginError.value = "";
 }
 
@@ -102,8 +137,10 @@ async function initCustomPassword() {
     await auth.login(result.username, result.password, false);
     await enterWorkspace();
   } catch (error) {
-    desktopLoginError.value =
-      error instanceof Error ? error.message : "自定义密码设置失败，请重试";
+    desktopLoginError.value = toErrorMessage(
+      error,
+      "自定义密码设置失败，请重试",
+    );
   } finally {
     loading.value = false;
   }
@@ -309,6 +346,14 @@ onMounted(async () => {
               >
             </div>
           </div>
+          <div
+            v-if="bindingLoaded && loginConfigured"
+            class="desktop-login-forgot"
+          >
+            <el-button link type="primary" :disabled="loading" @click="resetForgottenPassword"
+              >忘记了密码？本机验证后重置</el-button
+            >
+          </div>
         </template>
       </el-form>
       <footer class="login-footer">
@@ -327,8 +372,11 @@ onMounted(async () => {
         </button>
 
         <template v-if="initMode === 'generate'">
-          <h2 class="login-subtitle">初始账号密码</h2>
-          <p class="initial-creds-note">
+          <h2 class="login-subtitle">{{ resetTitle }}</h2>
+          <p class="initial-creds-note" v-if="resetTitle === '已重置的新密码'">
+            你的登录密码已被重置为下方的新随机强密码（仅本次显示，请立即保存；也可在进入后到 设置把密码改成自己记得的）。
+          </p>
+          <p class="initial-creds-note" v-else>
             这是你的初始登录账号密码（仅本次显示，请立即保存到安全位置；之后可在 设置 →
             修改登录密码 中更改并绑定）。
           </p>
@@ -463,6 +511,11 @@ onMounted(async () => {
   color: var(--app-muted);
   font-size: 12px;
   line-height: 1.6;
+}
+.desktop-login-forgot {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
 }
 .desktop-login-firstrun {
   display: flex;

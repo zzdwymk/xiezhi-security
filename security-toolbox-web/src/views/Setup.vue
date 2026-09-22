@@ -293,7 +293,7 @@ async function saveDownloadSource(mode: "github" | "custom", mirror = "") {
       ? "custom"
       : "github";
   } catch (error: any) {
-    ElMessage.error(error?.message || "下载源切换失败");
+    ElMessage.error(toErrorMessage(error, "下载源切换失败"));
   } finally {
     downloadSourceSaving.value = false;
   }

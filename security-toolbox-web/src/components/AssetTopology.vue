@@ -8,6 +8,7 @@ import {
   type ProjectFindingRecord,
 } from "../api";
 import { formatDateTime } from "../utils/dateTime";
+import { toErrorMessage } from "../utils/errorMessage";
 import {
   clearNodePositions,
   loadGlobalPrefs,
@@ -2376,7 +2377,7 @@ async function confirmRemoveNode(id: number, hostName?: string) {
       emit("change");
     } catch (err: any) {
       if (err !== "cancel" && err !== "close") {
-        ElMessage.error(err?.response?.data?.message || err?.message || "解除绑定失败");
+        ElMessage.error(toErrorMessage(err, "解除绑定失败"));
       }
     }
     return;
@@ -2409,7 +2410,7 @@ async function confirmRemoveNode(id: number, hostName?: string) {
     emit("change");
   } catch (err: any) {
     if (err !== "cancel" && err !== "close") {
-      ElMessage.error(err?.response?.data?.message || err?.message || "删除失败");
+      ElMessage.error(toErrorMessage(err, "删除失败"));
     }
   }
 }
