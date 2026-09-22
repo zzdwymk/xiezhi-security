@@ -1852,7 +1852,7 @@ onBeforeUnmount(() => {
           class="welcome-stat welcome-stat--link"
           :class="{ warn: dashboardStats.critical > 0 }"
           title="点击查看高危漏洞发现项"
-          @click="router.push({ path: '/findings', query: { q: 'HIGH' } })"
+          @click="router.push({ path: '/findings', query: { severity: 'HIGH' } })"
         >
           <strong>{{ dashboardStats.critical }}</strong
           ><small>高危发现</small>

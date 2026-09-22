@@ -42,41 +42,55 @@ const clearDataResult = ref<{
 }>();
 const pwdVisible = ref(false);
 const pwdSaving = ref(false);
-const pwdIdentified = ref(false);
-const pwdIdentifying = ref(false);
-const desktopLoginVerifyError = ref("");
 const loginBinding = ref(false);
 const loginBindingLoading = ref(false);
 const pwdForm = reactive({ current: "", next: "", confirm: "" });
 async function changeLoginPassword() {
   if (pwdSaving.value) return;
-  if (!isDesktop || pwdIdentified.value) {
-    // 桌面版：已通过本机身份验证；网页版：直接走当前密码校验。
-  } else {
-    return ElMessage.warning("请先验证本机身份（Windows Hello / PIN）后再修改密码");
+  if (!isDesktop && !pwdForm.current.trim()) {
+    return ElMessage.warning("请输入当前密码");
   }
-  if (!pwdForm.current.trim()) return ElMessage.warning("请输入当前密码");
   if (pwdForm.next.length < 8) return ElMessage.warning("新密码至少 8 位");
   if (pwdForm.next !== pwdForm.confirm)
     return ElMessage.warning("两次输入的新密码不一致");
   pwdSaving.value = true;
   try {
-    await endpoints.changePassword({
-      currentPassword: pwdForm.current,
-      newPassword: pwdForm.next,
-    });
-    let desktopSyncFailed = false;
-    if (isDesktop && window.toolboxDesktop?.setDesktopAdminPassword) {
-      try {
-        await window.toolboxDesktop.setDesktopAdminPassword(pwdForm.next);
-      } catch {
-        desktopSyncFailed = true;
+    // 桌面版：Windows Hello 验证即身份凭据，且当前 admin 密码由桌面凭据保管，
+    // 无需（也不应）让用户输入原密码。主进程会用已知的当前密码去后端完成改密。
+    if (isDesktop && window.toolboxDesktop?.changeDesktopAdminPassword) {
+      const result = await window.toolboxDesktop.changeDesktopAdminPassword(
+        pwdForm.next,
+      );
+      if (!result?.changed) {
+        ElMessage.error(result?.reason || "修改登录密码失败，请重试");
+        return;
+      }
+    } else {
+      await endpoints.changePassword({
+        currentPassword: pwdForm.current,
+        newPassword: pwdForm.next,
+      });
+      let desktopSyncFailed = false;
+      if (isDesktop && window.toolboxDesktop?.setDesktopAdminPassword) {
+        try {
+          await window.toolboxDesktop.setDesktopAdminPassword(pwdForm.next);
+        } catch {
+          desktopSyncFailed = true;
+        }
+      }
+      if (desktopSyncFailed) {
+        ElMessage.success(
+          "登录密码已修改，但本机凭据同步失败；请重新登录或重试同步",
+        );
+        pwdVisible.value = false;
+        pwdForm.current = "";
+        pwdForm.next = "";
+        pwdForm.confirm = "";
+        return;
       }
     }
     ElMessage.success(
-      desktopSyncFailed
-        ? "登录密码已修改，但本机凭据同步失败；请重新登录或重试同步"
-        : "登录密码已修改；账号密码 / 本机凭据 / Windows Hello 均已同步为新密码",
+      "登录密码已修改；账号密码 / 本机凭据 / Windows Hello 均已同步为新密码",
     );
     pwdVisible.value = false;
     pwdForm.current = "";
@@ -276,8 +290,6 @@ async function loadDesktopLoginBinding() {
 async function bindDesktopLoginShortcuts() {
   const bind = window.toolboxDesktop?.bindDesktopLogin;
   if (!bind) return;
-  if (isDesktop && !pwdIdentified.value)
-    return ElMessage.warning("请先验证本机身份（Windows Hello / PIN）后可绑定");
   if (!pwdForm.next.trim() || pwdForm.next.length < 8)
     return ElMessage.warning("请先在上方设置一个至少 8 位的新密码再绑定");
   if (pwdForm.next !== pwdForm.confirm)
@@ -323,42 +335,7 @@ async function unbindDesktopLoginShortcuts() {
   }
 }
 
-async function verifyIdentityBeforePasswordChange() {
-  if (!isDesktop) {
-    pwdIdentified.value = true;
-    return ElMessage.success("网页模式无需额外验证");
-  }
-  const verify = window.toolboxDesktop?.loginWithWindowsHello;
-  if (!verify) {
-    return ElMessage.error("当前运行时不可用，无法验证本机身份");
-  }
-  if (pwdIdentifying.value) return;
-  pwdIdentifying.value = true;
-  desktopLoginVerifyError.value = "";
-  try {
-    const result = await verify();
-    if (result?.verified) {
-      pwdIdentified.value = true;
-      ElMessage.success("本机身份验证通过，可修改密码");
-    } else {
-      desktopLoginVerifyError.value =
-        result?.reason ||
-        (result?.available === false
-          ? "本机未启用 Windows Hello（PIN／指纹／面部）"
-          : "身份验证未通过或已取消");
-      pwdIdentified.value = false;
-    }
-  } catch {
-    desktopLoginVerifyError.value = "本机身份验证失败，请重试";
-    pwdIdentified.value = false;
-  } finally {
-    pwdIdentifying.value = false;
-  }
-}
-
 async function openPasswordDialog() {
-  pwdIdentified.value = false;
-  desktopLoginVerifyError.value = "";
   pwdForm.current = "";
   pwdForm.next = "";
   pwdForm.confirm = "";
@@ -1433,33 +1410,10 @@ watch(
       destroy-on-close
     >
       <el-form label-position="top" @keyup.enter="changeLoginPassword">
-        <div v-if="isDesktop" class="pwd-identify-block">
-          <div class="pwd-identify-text">
-            <span
-              class="pwd-identify-badge"
-              :class="{
-                'pwd-identify-badge--ok': pwdIdentified,
-                'pwd-identify-badge--pending': !pwdIdentified,
-              }"
-              >{{ pwdIdentified ? "已验证" : "待验证" }}</span
-            >
-            <span v-if="desktopLoginVerifyError" class="pwd-identify-error">{{
-              desktopLoginVerifyError
-            }}</span>
-            <span v-else class="pwd-identify-note"
-              >修改登录密码前需先验证本机身份（Windows Hello / PIN）</span
-            >
-          </div>
-          <el-button
-            type="primary"
-            plain
-            :loading="pwdIdentifying"
-            :disabled="pwdSaving || pwdIdentified"
-            @click="verifyIdentityBeforePasswordChange"
-            >{{ pwdIdentified ? "本机身份已验证" : "验证本机身份" }}</el-button
-          >
-        </div>
-        <el-form-item label="当前密码"
+        <p v-if="isDesktop" class="pwd-identify-note">
+          桌面上点「保存」后会先进行 Windows Hello（PIN）验证，验证通过即可修改密码，无需输入原密码。
+        </p>
+        <el-form-item v-if="!isDesktop" label="当前密码"
           ><el-input
             v-model="pwdForm.current"
             type="password"
@@ -1513,7 +1467,6 @@ watch(
           <el-button
             v-else
             :disabled="
-              (isDesktop ? !pwdIdentified : false) ||
               !pwdForm.next.trim() ||
               pwdSaving ||
               loginBindingLoading
@@ -1530,7 +1483,6 @@ watch(
         <el-button
           type="primary"
           :loading="pwdSaving"
-          :disabled="isDesktop && !pwdIdentified"
           @click="changeLoginPassword"
           >保存</el-button
         >
@@ -2352,66 +2304,11 @@ button.settings-row:active {
   flex-shrink: 0;
 }
 
-.pwd-identify-block {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 16px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: var(--app-surface-soft, #f4f7f8);
-  border: 1px solid var(--app-border);
-}
-.pwd-identify-text {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-.pwd-identify-badge {
-  align-self: flex-start;
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-}
-.pwd-identify-badge--ok {
-  color: var(--el-color-success, #67c23a);
-  background: color-mix(in srgb, var(--el-color-success) 14%, transparent);
-}
-.pwd-identify-badge--pending {
-  color: var(--el-color-warning, #e6a23c);
-  background: color-mix(in srgb, var(--el-color-warning) 14%, transparent);
-}
 .pwd-identify-note {
+  margin: 0 0 6px;
   color: var(--app-muted);
   font-size: 12px;
   line-height: 1.5;
-}
-.pwd-identify-error {
-  color: var(--el-color-danger, #d13438);
-  font-size: 12px;
-  line-height: 1.5;
-}
-.pwd-identify-block > .el-button {
-  flex-shrink: 0;
-}
-.pwd-identify-block > .el-button:hover,
-.pwd-identify-block > .el-button:focus,
-.pwd-identify-block > .el-button:active,
-.pwd-identify-block > .el-button:focus-visible {
-  color: var(--el-color-primary, #1677ff);
-  border-color: var(--el-color-primary, #1677ff);
-  background: var(--el-color-primary-light-9, #f0f7ff);
-}
-.pwd-identify-block > .el-button:not(.is-disabled):hover,
-.pwd-identify-block > .el-button:not(.is-disabled):focus {
-  color: var(--el-color-primary, #1677ff);
-  border-color: var(--el-color-primary, #1677ff);
-  background: var(--el-color-primary-light-9, #f0f7ff);
 }
 
 @media (max-width: 720px) {
