@@ -58,6 +58,7 @@ import {
   ArrowDown,
   CircleCheck,
   Delete,
+  Download,
   EditPen,
   MagicStick,
   Plus,
@@ -1761,6 +1762,36 @@ async function openProjectSummaryHtml() {
   }
 }
 
+function downloadCurrentReportHtml() {
+  if (!reportPreviewHtml.value) return;
+  const safeTitle = (reportPreviewTitle.value || `project-${id}-report`)
+    .replace(/[\\/:*?"<>|]+/g, "_")
+    .replace(/\s+/g, " ")
+    .trim();
+  const filename = `${safeTitle}.html`;
+  try {
+    downloadText(reportPreviewHtml.value, filename, "text/html;charset=utf-8");
+    ElMessage.success("HTML 报告已导出");
+  } catch (error: any) {
+    ElMessage.error(errorMessage(error, "导出 HTML 报告失败"));
+  }
+}
+
+async function downloadProjectSummaryHtml() {
+  projectReportHtmlLoading.value = true;
+  try {
+    const html = (await endpoints.downloadProjectReportHtml(id)).data;
+    const baseName = project.value?.name || `项目 #${id}`;
+    const filename = `${baseName.replace(/[\\/:*?"<>|]+/g, "_")}-安全评估报告.html`;
+    downloadText(html, filename, "text/html;charset=utf-8");
+    ElMessage.success("项目 HTML 报告已导出");
+  } catch (error: any) {
+    ElMessage.error(errorMessage(error, "项目 HTML 报告导出失败"));
+  } finally {
+    projectReportHtmlLoading.value = false;
+  }
+}
+
 async function downloadTargetPdfReport() {
   const target = reportTarget.value;
   if (!target)
@@ -1790,6 +1821,24 @@ async function openTargetHtmlReport() {
     showReportPreview(html, `${target.name} · 单目标 HTML 报告`);
   } catch (error: any) {
     ElMessage.error(errorMessage(error, "目标 HTML 打开失败"));
+  } finally {
+    targetReportHtmlLoading.value = false;
+  }
+}
+
+async function downloadTargetHtmlReport() {
+  const target = reportTarget.value;
+  if (!target)
+    return ElMessage.warning("项目尚未添加授权目标，无法生成单目标报告");
+  targetReportHtmlLoading.value = true;
+  try {
+    const html = (await endpoints.downloadTargetReportHtml(target.id)).data;
+    const baseName = target.name || `target-${target.id}`;
+    const filename = `${baseName.replace(/[\\/:*?"<>|]+/g, "_")}-专项评估报告.html`;
+    downloadText(html, filename, "text/html;charset=utf-8");
+    ElMessage.success("目标 HTML 报告已导出");
+  } catch (error: any) {
+    ElMessage.error(errorMessage(error, "目标 HTML 报告导出失败"));
   } finally {
     targetReportHtmlLoading.value = false;
   }
@@ -3732,6 +3781,11 @@ onUnmounted(() => {
         </el-select>
         <el-button type="primary" plain @click="openProjectCopilot()"
           ><el-icon><MagicStick /></el-icon>AI 项目分析</el-button
+        >
+        <el-button
+          :loading="projectReportHtmlLoading"
+          @click="downloadProjectSummaryHtml"
+          >项目总结 HTML</el-button
         >
         <el-button :loading="projectReportPdfLoading" @click="report"
           >项目总结 PDF</el-button
@@ -5921,6 +5975,12 @@ onUnmounted(() => {
             >
             <el-button
               size="small"
+              :loading="projectReportHtmlLoading"
+              @click="downloadProjectSummaryHtml"
+              >导出 HTML</el-button
+            >
+            <el-button
+              size="small"
               type="primary"
               :loading="projectReportPdfLoading"
               @click="downloadProjectSummaryPdf"
@@ -5959,6 +6019,13 @@ onUnmounted(() => {
               :loading="targetReportHtmlLoading"
               @click="openTargetHtmlReport"
               >目标 HTML</el-button
+            >
+            <el-button
+              size="small"
+              :disabled="!reportTarget"
+              :loading="targetReportHtmlLoading"
+              @click="downloadTargetHtmlReport"
+              >导出 HTML</el-button
             >
             <el-button
               size="small"
@@ -6278,11 +6345,18 @@ onUnmounted(() => {
           referrerpolicy="no-referrer"
         />
       </div>
-      <template #footer
-        ><el-button @click="reportPreviewVisible = false"
-          >关闭预览</el-button
-        ></template
-      >
+      <template #footer>
+        <div class="report-preview-footer">
+          <el-button @click="reportPreviewVisible = false">关闭预览</el-button>
+          <el-button
+            type="primary"
+            @click="downloadCurrentReportHtml"
+          >
+            <el-icon><Download /></el-icon>
+            导出 HTML
+          </el-button>
+        </div>
+      </template>
     </el-dialog>
 
     <el-dialog
@@ -7249,6 +7323,13 @@ onUnmounted(() => {
   border: 1px solid var(--app-border, var(--el-border-color));
   border-radius: 10px;
   background: #fff;
+}
+.report-preview-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
 }
 @media (max-width: 760px) {
   .report-preview-shell {

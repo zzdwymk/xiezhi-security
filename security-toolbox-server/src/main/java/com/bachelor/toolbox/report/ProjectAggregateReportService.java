@@ -43,6 +43,8 @@ public class ProjectAggregateReportService {
   private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
   private static final DateTimeFormatter TIME =
       DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z").withZone(ZONE);
+  private static final String FLUENT_INFO_ICON =
+      "<svg class=\"notice-icon\" viewBox=\"0 0 20 20\" fill=\"currentColor\" aria-hidden=\"true\"><path fill-rule=\"evenodd\" d=\"M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.247.25v3.5a.75.75 0 001.5 0v-3.5A1.75 1.75 0 009.253 9H9z\" clip-rule=\"evenodd\"/></svg>";
 
   private final ProjectReportSummaryService summaries;
   private final AuthorizedTargetRepository targets;
@@ -66,9 +68,7 @@ public class ProjectAggregateReportService {
                 + " YaHei,sans-serif}main{max-width:1120px;margin:24px auto;padding:34px"
                 + " 42px;background:#fff;box-shadow:0 8px 28px #14274618}h1{margin:0 0"
                 + " 4px}h2{margin:28px 0 8px;border-bottom:2px solid"
-                + " #dce6f3;padding-bottom:6px}.muted{color:#65738a}.notice{padding:12px"
-                + " 15px;background:#eff6ff;border-left:4px solid"
-                + " #2563eb}.cards{display:grid;grid-template-columns:repeat(6,1fr);gap:9px}.card{padding:11px;border:1px"
+                + " #dce6f3;padding-bottom:6px}.muted{color:#65738a}.notice{display:flex;gap:12px;align-items:flex-start;padding:12px 16px;background:#f0f6ff;border:1px solid #c7dcff;border-radius:6px;color:#242424;margin:12px 0;line-height:1.6}.notice-icon{flex-shrink:0;width:18px;height:18px;margin-top:2px;color:#0f6cbd}.notice-body{flex:1;min-width:0}.notice-title{font-weight:600;color:#1a1a1a;margin-bottom:3px}.cards{display:grid;grid-template-columns:repeat(6,1fr);gap:9px}.card{padding:11px;border:1px"
                 + " solid"
                 + " #dce3ed;border-radius:7px}.num{font-size:23px;font-weight:700}table{width:100%;border-collapse:collapse;margin:10px"
                 + " 0}th,td{border:1px solid"
@@ -83,9 +83,11 @@ public class ProjectAggregateReportService {
         .append(" · 生成时间：")
         .append(esc(format(summary.generatedAt())))
         .append("</div>")
-        .append("<h2>项目授权范围</h2><div class=\"notice\"><strong>授权声明</strong><br>")
+        .append("<h2>项目授权范围</h2><div class=\"notice\">")
+        .append(FLUENT_INFO_ICON)
+        .append("<div class=\"notice-body\"><div class=\"notice-title\">授权声明</div><div>")
         .append(multiline(project.getAuthorizationStatement()))
-        .append("</div><table>")
+        .append("</div></div></div><table>")
         .append(row("负责人", project.getOwner()))
         .append(row("项目状态", project.getStatus()))
         .append(row("授权生效", format(project.getAuthorizationValidFrom())))
@@ -138,14 +140,18 @@ public class ProjectAggregateReportService {
         summary.findings().stream().filter(f -> !FindingClassification.isVulnerability(f)).toList();
     html.append("</tbody></table><h2>漏洞发现</h2>");
     if (vulnFindings.isEmpty()) {
-      html.append("<div class=\"notice\">当前项目没有已记录的漏洞发现；这不等于目标不存在其他风险。</div>");
+      html.append("<div class=\"notice\">")
+          .append(FLUENT_INFO_ICON)
+          .append("<div class=\"notice-body\">当前项目没有已记录的漏洞发现；这不等于目标不存在其他风险。</div></div>");
     }
     for (Finding finding : vulnFindings) {
       appendFinding(html, finding);
     }
     html.append("<h2>风险点 / 信息项（开放端口等资产暴露面，不计入漏洞）</h2>");
     if (infoFindings.isEmpty()) {
-      html.append("<div class=\"notice\">暂无信息级发现。</div>");
+      html.append("<div class=\"notice\">")
+          .append(FLUENT_INFO_ICON)
+          .append("<div class=\"notice-body\">暂无信息级发现。</div></div>");
     }
     for (Finding finding : infoFindings) {
       appendFinding(html, finding);

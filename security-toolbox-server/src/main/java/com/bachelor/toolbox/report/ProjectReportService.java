@@ -39,6 +39,8 @@ public class ProjectReportService {
   private static final ZoneId REPORT_ZONE = ZoneId.of("Asia/Shanghai");
   private static final DateTimeFormatter TIME_FORMATTER =
       DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z").withZone(REPORT_ZONE);
+  private static final String FLUENT_INFO_ICON =
+      "<svg class=\"notice-icon\" viewBox=\"0 0 20 20\" fill=\"currentColor\" aria-hidden=\"true\"><path fill-rule=\"evenodd\" d=\"M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.247.25v3.5a.75.75 0 001.5 0v-3.5A1.75 1.75 0 009.253 9H9z\" clip-rule=\"evenodd\"/></svg>";
   private static final List<String> SEVERITY_ORDER =
       List.of("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO");
 
@@ -67,7 +69,7 @@ body{margin:0;background:#f4f7fb;color:#172033;font:14px/1.65 "Microsoft YaHei",
 main{max-width:1050px;margin:28px auto;padding:38px 44px;background:#fff;box-shadow:0 8px 30px #14274618}
 h1{margin:0}h2{margin-top:30px;border-bottom:2px solid #dce6f3;padding-bottom:7px}
 table{width:100%;border-collapse:collapse;margin:12px 0}th,td{border:1px solid #dce3ed;padding:8px;text-align:left;vertical-align:top;overflow-wrap:anywhere}
-th{background:#f5f8fc}.notice{padding:14px 17px;background:#eff6ff;border-left:5px solid #2563eb}
+th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;padding:12px 16px;background:#f0f6ff;border:1px solid #c7dcff;border-radius:6px;color:#242424;margin:12px 0;line-height:1.6}.notice-icon{flex-shrink:0;width:18px;height:18px;margin-top:2px;color:#0f6cbd}.notice-body{flex:1;min-width:0}.notice-title{font-weight:600;color:#1a1a1a;margin-bottom:3px}
 .cards{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}.card{padding:13px;border:1px solid #dce3ed;border-radius:7px}.num{font-size:24px;font-weight:700}
 .finding{page-break-inside:avoid;margin:15px 0;padding:15px;border:1px solid #dce3ed;border-radius:7px}.muted{color:#65738a}
 @media print{body{background:#fff}main{margin:0;box-shadow:none}.cards{grid-template-columns:repeat(5,1fr)}}
@@ -76,11 +78,13 @@ th{background:#f5f8fc}.notice{padding:14px 17px;background:#eff6ff;border-left:5
     html.append("<h1>项目级授权安全测试报告</h1><div class=\"muted\">项目以授权目标为边界 · 生成时间：")
         .append(text(format(data.generatedAt)))
         .append("</div>")
-        .append("<h2>项目与授权范围</h2><div class=\"notice\"><strong>")
+        .append("<h2>项目与授权范围</h2><div class=\"notice\">")
+        .append(FLUENT_INFO_ICON)
+        .append("<div class=\"notice-body\"><div class=\"notice-title\">")
         .append(text(data.target.getName()))
-        .append("</strong><br>")
+        .append("</div><div>")
         .append(multiline(data.target.getAuthorizationNote()))
-        .append("</div><table>")
+        .append("</div></div></div><table>")
         .append(row("目标", data.target.getTargetValue()))
         .append(row("目标类型", data.target.getTargetType()))
         .append(row("允许端口", data.target.getAllowedPorts()))
@@ -126,19 +130,24 @@ th{background:#f5f8fc}.notice{padding:14px 17px;background:#eff6ff;border-left:5
         data.findings.stream().filter(f -> !FindingClassification.isVulnerability(f)).toList();
     html.append("</tbody></table><h2>漏洞发现</h2>");
     if (vulnFindings.isEmpty()) {
-      html.append("<div class=\"notice\">当前项目没有漏洞记录；这不等于目标不存在其他安全风险。</div>");
+      html.append("<div class=\"notice\">")
+          .append(FLUENT_INFO_ICON)
+          .append("<div class=\"notice-body\">当前项目没有漏洞记录；这不等于目标不存在其他安全风险。</div></div>");
     } else {
       for (Finding finding : vulnFindings) appendFinding(html, finding);
     }
     html.append("<h2>风险点 / 信息项（开放端口等资产暴露面，不计入漏洞）</h2>");
     if (infoFindings.isEmpty()) {
-      html.append("<div class=\"notice\">暂无信息级发现。</div>");
+      html.append("<div class=\"notice\">")
+          .append(FLUENT_INFO_ICON)
+          .append("<div class=\"notice-body\">暂无信息级发现。</div></div>");
     } else {
       for (Finding finding : infoFindings) appendFinding(html, finding);
     }
     return html.append(
-            "<h2>报告说明</h2><div"
-                + " class=\"notice\">报告聚合该授权目标下的历史任务与发现，并保留各任务创建时的工具、规则和模板快照。结果应结合授权有效期与人工复核使用。</div></main></body></html>")
+            "<h2>报告说明</h2><div class=\"notice\">")
+        .append(FLUENT_INFO_ICON)
+        .append("<div class=\"notice-body\">报告聚合该授权目标下的历史任务与发现，并保留各任务创建时的工具、规则和模板快照。结果应结合授权有效期与人工复核使用。</div></div></main></body></html>")
         .toString();
   }
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
-import { ElMessage, ElMessageBox } from "element-plus";
+import { ElMessage, ElMessageBox, type TableInstance } from "element-plus";
 import { MagicStick, Search } from "../components/fluentIcons";
 import {
   endpoints,
@@ -13,6 +13,7 @@ import {
 import AppPagination from "../components/AppPagination.vue";
 import OfflineState from "../components/OfflineState.vue";
 import { useClientPagination } from "../composables/useClientPagination";
+import { useDragSelect } from "../composables/useDragSelect";
 import { useCopilotStore } from "../stores/copilot";
 import { formatDateTime } from "../utils/dateTime";
 import { toErrorMessage } from "../utils/errorMessage";
@@ -523,6 +524,26 @@ async function batchCreate() {
 }
 
 const selectedTargets = ref<Target[]>([]);
+const targetsPageRef = ref<HTMLElement>();
+const tableRef = ref<TableInstance>();
+
+const {
+  isDragging,
+  marqueeStyle,
+  onContainerPointerDown,
+  clearSelection,
+} = useDragSelect({
+  containerRef: targetsPageRef,
+  tableRef,
+  items: pagedRows,
+  getItemId: (t) => t.id,
+  selectedItems: selectedTargets,
+});
+
+function getTableRowClassName({ row }: { row: Target }) {
+  const isSelected = selectedTargets.value.some((t) => t.id === row.id);
+  return isSelected ? "is-selected" : "";
+}
 
 function onSelectionChange(selection: Target[]) {
   selectedTargets.value = selection;
@@ -719,7 +740,11 @@ onMounted(load);
 </script>
 
 <template>
-  <section class="panel targets-page workspace-list-page">
+  <section
+    ref="targetsPageRef"
+    class="panel targets-page workspace-list-page"
+    @pointerdown="onContainerPointerDown"
+  >
     <div class="section-head">
       <div>
         <h3>目标</h3>
@@ -729,6 +754,14 @@ onMounted(load);
         <span v-if="selectedTargets.length" class="target-batch-hint">
           已选 {{ selectedTargets.length }} 个
         </span>
+        <el-button
+          v-if="selectedTargets.length"
+          class="target-clear-btn"
+          link
+          type="primary"
+          @click="clearSelection"
+          >取消选择</el-button
+        >
         <el-input
           v-model="searchQuery"
           class="list-search-input"
@@ -754,7 +787,14 @@ onMounted(load);
         offline ? '无法连接后端服务。' : '新增目标后才能创建检测任务。'
       "
     />
-    <el-table v-else :data="pagedRows" @selection-change="onSelectionChange">
+    <el-table
+      v-else
+      ref="tableRef"
+      :data="pagedRows"
+      row-key="id"
+      :row-class-name="getTableRowClassName"
+      @selection-change="onSelectionChange"
+    >
       <el-table-column type="selection" width="40" />
       <el-table-column prop="name" label="名称" min-width="110" show-overflow-tooltip />
       <el-table-column prop="targetValue" label="地址" min-width="130" show-overflow-tooltip />
@@ -837,6 +877,15 @@ onMounted(load);
       class="targets-pagination"
       :total="total"
     />
+
+    <!-- Windows-style marquee box -->
+    <Teleport to="body">
+      <div
+        v-if="isDragging"
+        class="marquee-selection-box"
+        :style="marqueeStyle"
+      />
+    </Teleport>
   </section>
 
   <el-dialog
@@ -1798,6 +1847,48 @@ onMounted(load);
   border-radius: 0;
   background: transparent;
 }
+
+/* Windows-style marquee selection box */
+:global(.marquee-selection-box) {
+  position: fixed;
+  box-sizing: border-box;
+  pointer-events: none;
+  z-index: 99999;
+  border: 1px solid var(--app-accent, #0078d4);
+  background: rgba(0, 120, 212, 0.16);
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25) inset;
+  transition: none;
+}
+
+:root[data-system-theme="dark"] :global(.marquee-selection-box) {
+  border-color: rgba(96, 205, 255, 0.85);
+  background: rgba(0, 120, 212, 0.28);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35) inset;
+}
+
+.targets-page :deep(.el-table__body tr.is-selected > td.el-table__cell),
+.targets-page :deep(.el-table__body tr:has(.el-checkbox.is-checked) > td.el-table__cell) {
+  background: var(--fluent3-select-bg, var(--app-accent-soft, #e8f2fe)) !important;
+}
+
+.targets-page :deep(.el-table__body tr.is-selected > td.el-table__cell:first-child::before),
+.targets-page :deep(.el-table__body tr:has(.el-checkbox.is-checked) > td.el-table__cell:first-child::before) {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: var(--fluent3-slider-width, 3px);
+  height: 60%;
+  border-radius: var(--fluent3-slider-width, 3px);
+  background: var(--fluent3-slider-accent, var(--app-accent, #0078d4));
+  pointer-events: none;
+  z-index: 1;
+}
+
+.target-clear-btn {
+  font-size: 13px;
+  margin-right: 2px;
+}
 </style>
-v-for="port in COMMON_PORT_OPTIONS" v-for="opt in COMMON_PORT_OPTIONS"
-v-for="port in COMMON_PORT_OPTIONS" v-for="opt in COMMON_PORT_OPTIONS"
