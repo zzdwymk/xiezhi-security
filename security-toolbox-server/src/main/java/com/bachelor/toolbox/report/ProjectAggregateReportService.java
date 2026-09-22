@@ -8,6 +8,7 @@ import com.bachelor.toolbox.project.ProjectTarget;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.AuthorizedTargetRepository;
 import com.bachelor.toolbox.task.SecurityTask;
+import com.lowagie.text.Chunk;
 import com.lowagie.text.Document;
 import com.lowagie.text.DocumentException;
 import com.lowagie.text.Element;
@@ -27,6 +28,7 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -173,11 +175,14 @@ public class ProjectAggregateReportService {
       document.open();
       Fonts fonts = fonts();
       title(document, safe(summary.project().getName()) + " · 安全评估项目报告", fonts);
-      document.add(
+      Paragraph subHeader =
           new Paragraph(
               "项目 #" + summary.project().getId() + "    生成时间：" + format(summary.generatedAt()),
-              fonts.normal));
+              fonts.small);
+      subHeader.setSpacingAfter(10);
+      document.add(subHeader);
       heading(document, "1. 项目授权范围", fonts);
+      messageBar(document, fonts, "授权声明", summary.project().getAuthorizationStatement());
       keyValues(
           document,
           fonts,
@@ -189,9 +194,7 @@ public class ProjectAggregateReportService {
               "授权生效",
               format(summary.project().getAuthorizationValidFrom()),
               "授权到期",
-              format(summary.project().getAuthorizationExpiresAt()),
-              "授权声明",
-              safe(summary.project().getAuthorizationStatement())));
+              format(summary.project().getAuthorizationExpiresAt())));
       heading(document, "2. 执行概览", fonts);
       keyValues(
           document,
@@ -249,7 +252,7 @@ public class ProjectAggregateReportService {
               .toList();
       heading(document, "5. 漏洞发现", fonts);
       if (vulnFindings.isEmpty()) {
-        document.add(new Paragraph("当前项目没有已记录的漏洞发现。", fonts.normal));
+        messageBar(document, fonts, "提示", "当前项目没有已记录的漏洞发现；这不等于目标不存在其他风险。");
       }
       int index = 1;
       for (Finding finding : vulnFindings) {
@@ -257,16 +260,21 @@ public class ProjectAggregateReportService {
       }
       heading(document, "6. 风险点 / 信息项（开放端口等资产暴露面，不计入漏洞）", fonts);
       if (infoFindings.isEmpty()) {
-        document.add(new Paragraph("暂无信息级发现。", fonts.normal));
+        messageBar(document, fonts, "提示", "暂无信息级发现。");
       }
       int infoIndex = 1;
       for (Finding finding : infoFindings) {
         infoIndex = findingParagraphs(document, fonts, infoIndex, finding);
       }
       heading(document, "7. 审批与安全边界", fonts);
-      document.add(new Paragraph("审批记录：" + summary.approvals().size(), fonts.normal));
-      document.add(
-          new Paragraph(safe(summary.controlledPostExploitation().safetyBoundary()), fonts.normal));
+      keyValues(
+          document,
+          fonts,
+          Map.of(
+              "审批记录",
+              String.valueOf(summary.approvals().size()),
+              "安全边界",
+              safe(summary.controlledPostExploitation().safetyBoundary())));
       document.close();
       return output.toByteArray();
     } catch (DocumentException | IOException ex) {
@@ -296,23 +304,58 @@ public class ProjectAggregateReportService {
         .append("</p></section>");
   }
 
+  private static Color severityColor(String severity) {
+    if (severity == null) return new Color(97, 97, 97);
+    return switch (severity.toUpperCase(Locale.ROOT)) {
+      case "CRITICAL" -> new Color(196, 43, 28);
+      case "HIGH" -> new Color(188, 75, 0);
+      case "MEDIUM" -> new Color(157, 93, 0);
+      case "LOW" -> new Color(15, 108, 189);
+      default -> new Color(97, 97, 97);
+    };
+  }
+
   private int findingParagraphs(Document document, Fonts fonts, int index, Finding finding)
       throws DocumentException {
-    document.add(
+    PdfPTable card = new PdfPTable(1);
+    card.setWidthPercentage(100);
+    card.setSpacingBefore(4);
+    card.setSpacingAfter(7);
+    PdfPCell cell = new PdfPCell();
+    cell.setPadding(8);
+    cell.setBorderColor(new Color(220, 227, 237));
+    cell.setBorderWidth(0.5f);
+    cell.setBackgroundColor(new Color(254, 254, 255));
+
+    Font titleFont = new Font(fonts.base, 10.5f, Font.BOLD, severityColor(finding.getSeverity()));
+    Paragraph title =
         new Paragraph(
-            index + ". " + safe(finding.getTitle()) + " [" + safe(finding.getSeverity()) + "]",
-            fonts.heading));
-    document.add(
+            index + ". " + safe(finding.getTitle()) + "  [" + safe(finding.getSeverity()) + "]",
+            titleFont);
+    title.setSpacingAfter(3);
+    cell.addElement(title);
+
+    Paragraph meta =
         new Paragraph(
             "状态："
                 + safe(finding.getStatus())
-                + "  来源："
+                + "  ·  来源："
                 + safe(finding.getSourceTool())
-                + "  目标："
+                + "  ·  目标 ID："
                 + finding.getTargetId(),
-            fonts.small));
-    document.add(new Paragraph("风险说明：" + safe(finding.getDescription()), fonts.normal));
-    document.add(new Paragraph("修复建议：" + safe(finding.getRemediation()), fonts.normal));
+            fonts.small);
+    meta.setSpacingAfter(4);
+    cell.addElement(meta);
+
+    Paragraph desc = new Paragraph("风险说明：" + safe(finding.getDescription()), fonts.normal);
+    desc.setSpacingAfter(3);
+    cell.addElement(desc);
+
+    Paragraph rem = new Paragraph("修复建议：" + safe(finding.getRemediation()), fonts.normal);
+    cell.addElement(rem);
+
+    card.addCell(cell);
+    document.add(card);
     return index + 1;
   }
 
@@ -327,16 +370,18 @@ public class ProjectAggregateReportService {
   private Fonts fonts() throws DocumentException, IOException {
     BaseFont base = BaseFont.createFont("STSong-Light", "UniGB-UCS2-H", BaseFont.NOT_EMBEDDED);
     return new Fonts(
-        new Font(base, 19, Font.BOLD),
-        new Font(base, 13, Font.BOLD),
-        new Font(base, 10.5f),
-        new Font(base, 9));
+        base,
+        new Font(base, 18, Font.BOLD, new Color(17, 94, 163)),
+        new Font(base, 12.5f, Font.BOLD, new Color(15, 84, 140)),
+        new Font(base, 9.5f, Font.NORMAL, new Color(36, 36, 36)),
+        new Font(base, 8.5f, Font.NORMAL, new Color(97, 97, 97)),
+        new Font(base, 9, Font.BOLD, new Color(36, 36, 36)));
   }
 
   private void title(Document document, String value, Fonts fonts) throws DocumentException {
     Paragraph paragraph = new Paragraph(value, fonts.title);
     paragraph.setAlignment(Element.ALIGN_CENTER);
-    paragraph.setSpacingAfter(12);
+    paragraph.setSpacingAfter(10);
     document.add(paragraph);
   }
 
@@ -345,6 +390,26 @@ public class ProjectAggregateReportService {
     paragraph.setSpacingBefore(12);
     paragraph.setSpacingAfter(6);
     document.add(paragraph);
+  }
+
+  private void messageBar(Document document, Fonts fonts, String title, String content)
+      throws DocumentException {
+    PdfPTable table = new PdfPTable(1);
+    table.setWidthPercentage(100);
+    table.setSpacingBefore(3);
+    table.setSpacingAfter(8);
+    PdfPCell cell = new PdfPCell();
+    cell.setBackgroundColor(new Color(240, 246, 255));
+    cell.setBorderColor(new Color(199, 220, 255));
+    cell.setBorderWidth(0.75f);
+    cell.setPadding(8);
+    Paragraph p = new Paragraph();
+    p.setLeading(14);
+    p.add(new Chunk("【" + title + "】\n", fonts.tableHeader));
+    p.add(new Chunk(safe(content), fonts.normal));
+    cell.addElement(p);
+    table.addCell(cell);
+    document.add(table);
   }
 
   private void keyValues(Document document, Fonts fonts, Map<String, String> values)
@@ -378,10 +443,12 @@ public class ProjectAggregateReportService {
   }
 
   private void cell(PdfPTable table, Fonts fonts, String value, boolean header) {
-    PdfPCell cell = new PdfPCell(new Phrase(safe(value), fonts.small));
-    cell.setPadding(5);
+    PdfPCell cell = new PdfPCell(new Phrase(safe(value), header ? fonts.tableHeader : fonts.normal));
+    cell.setPadding(6);
+    cell.setBorderColor(new Color(220, 227, 237));
+    cell.setBorderWidth(0.5f);
     if (header) {
-      cell.setBackgroundColor(new Color(232, 239, 248));
+      cell.setBackgroundColor(new Color(245, 248, 252));
       cell.setHorizontalAlignment(Element.ALIGN_CENTER);
     }
     table.addCell(cell);
@@ -420,5 +487,11 @@ public class ProjectAggregateReportService {
         .replace("'", "&#39;");
   }
 
-  private record Fonts(Font title, Font heading, Font normal, Font small) {}
+  private record Fonts(
+      BaseFont base,
+      Font title,
+      Font heading,
+      Font normal,
+      Font small,
+      Font tableHeader) {}
 }

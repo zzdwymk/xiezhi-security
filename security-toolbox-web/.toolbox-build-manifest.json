@@ -44,6 +44,7 @@ src\components\offline\IocExtractor.vue|3377|639248805694267537
 src\components\offline\NetworkCalculator.vue|2063|639248805694267537
 src\components\OfflineState.vue|264|639248805694213500
 src\composables\useClientPagination.ts|819|639248805694278790
+src\composables\useDragSelect.ts|12597|639256762717586888
 src\composables\useSelectionIndicator.ts|6162|639248805694278790
 src\desktop-v2.css|31767|639248842399372689
 src\env.d.ts|11833|639256595036224576
@@ -67,7 +68,7 @@ src\stores\engine.ts|1232|639248805694426656
 src\styles.css|8781|639255012724242715
 src\system-theme.ts|6541|639248842399395776
 src\types\copilot.ts|549|639248805694442545
-src\unified-theme.css|92797|639255012668545627
+src\unified-theme.css|93587|639256760671646155
 src\utils\aiPresentation.ts|4521|639249616588931982
 src\utils\auditFormat.ts|12441|639249862149054211
 src\utils\dateTime.ts|1263|639248805694491594
@@ -89,7 +90,7 @@ src\views\DataPage.vue|7973|639248805694602824
 src\views\Findings.vue|38800|639253977714987700
 src\views\Login.vue|21284|639256598812858050
 src\views\OfflineTools.vue|54334|639248805694634897
-src\views\ProjectDetail.vue|288190|639256659821829165
+src\views\ProjectDetail.vue|291096|639256763937798958
 src\views\Projects.vue|18130|639255612027415850
 src\views\Recon.vue|5729|639248805694679176
 src\views\Settings.vue|86087|639256616858007969
@@ -287,7 +288,7 @@ tools\zap\ZAP_2.17.0\zap.sh|5259|639248805713408763
 tools\zap\ZAP_2.17.0\zap-2.17.0.jar|5542639|639248805713364906
 topology-current.png|53252|639248842399712799
 tsconfig.app.json|349|639248805713431654
-tsconfig.app.tsbuildinfo|2012|639256669050066824
+tsconfig.app.tsbuildinfo|2049|639256767666419479
 tsconfig.json|92|639248805713431654
 tsconfig.node.json|184|639248805713446679
 tsconfig.node.tsbuildinfo|90926|639255612944176136

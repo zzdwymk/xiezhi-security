@@ -8,6 +8,7 @@ import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.TargetService;
 import com.bachelor.toolbox.task.SecurityTask;
 import com.bachelor.toolbox.task.SecurityTaskRepository;
+import com.lowagie.text.Chunk;
 import com.lowagie.text.Document;
 import com.lowagie.text.DocumentException;
 import com.lowagie.text.Element;
@@ -162,11 +163,14 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
       document.open();
       PdfFonts fonts = fonts();
       addTitle(document, "项目级授权安全测试报告", fonts);
-      document.add(
+      Paragraph subHeader =
           new Paragraph(
               "项目：" + safe(data.target.getName()) + "    生成时间：" + format(data.generatedAt),
-              fonts.normal));
+              fonts.small);
+      subHeader.setSpacingAfter(10);
+      document.add(subHeader);
       addHeading(document, "1. 项目与授权范围", fonts);
+      addMessageBar(document, fonts, "授权声明", data.target.getAuthorizationNote());
       addKeyValues(
           document,
           fonts,
@@ -176,7 +180,7 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
               "允许端口", safe(data.target.getAllowedPorts()),
               "授权生效", format(data.target.getAuthorizationValidFrom()),
               "授权到期", format(data.target.getAuthorizationExpiresAt()),
-              "授权声明", safe(data.target.getAuthorizationNote())));
+              "当前启用", data.target.isEnabled() ? "是" : "否"));
       addHeading(document, "2. 执行与风险概览", fonts);
       LinkedHashMap<String, String> overview = new LinkedHashMap<>();
       overview.put("任务总数", String.valueOf(data.tasks.size()));
@@ -211,7 +215,7 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
           data.findings.stream().filter(f -> !FindingClassification.isVulnerability(f)).toList();
       addHeading(document, "4. 漏洞发现", fonts);
       if (vulnFindings.isEmpty()) {
-        document.add(new Paragraph("当前项目没有漏洞记录；这不等于目标不存在其他安全风险。", fonts.normal));
+        addMessageBar(document, fonts, "提示", "当前项目没有漏洞记录；这不等于目标不存在其他安全风险。");
       } else {
         int index = 1;
         for (Finding finding : vulnFindings)
@@ -219,15 +223,18 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
       }
       addHeading(document, "5. 风险点 / 信息项（开放端口等资产暴露面，不计入漏洞）", fonts);
       if (infoFindings.isEmpty()) {
-        document.add(new Paragraph("暂无信息级发现。", fonts.normal));
+        addMessageBar(document, fonts, "提示", "暂无信息级发现。");
       } else {
         int infoIndex = 1;
         for (Finding finding : infoFindings)
           infoIndex = findingParagraphs(document, fonts, infoIndex, finding);
       }
       addHeading(document, "6. 报告说明", fonts);
-      document.add(
-          new Paragraph("本报告仅适用于已获得明确授权的测试范围。报告聚合项目历史数据并保留任务级执行快照，结论仍需人工复核。", fonts.normal));
+      addMessageBar(
+          document,
+          fonts,
+          "说明",
+          "本报告仅适用于已获得明确授权的测试范围。报告聚合项目历史数据并保留任务级执行快照，结论仍需人工复核。");
       document.close();
       return output.toByteArray();
     } catch (DocumentException | IOException exception) {
@@ -257,23 +264,58 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
         .append("</p></section>");
   }
 
+  private static Color severityColor(String severity) {
+    if (severity == null) return new Color(97, 97, 97);
+    return switch (severity.toUpperCase(Locale.ROOT)) {
+      case "CRITICAL" -> new Color(196, 43, 28);
+      case "HIGH" -> new Color(188, 75, 0);
+      case "MEDIUM" -> new Color(157, 93, 0);
+      case "LOW" -> new Color(15, 108, 189);
+      default -> new Color(97, 97, 97);
+    };
+  }
+
   private int findingParagraphs(Document document, PdfFonts fonts, int index, Finding finding)
       throws DocumentException {
-    document.add(
+    PdfPTable card = new PdfPTable(1);
+    card.setWidthPercentage(100);
+    card.setSpacingBefore(4);
+    card.setSpacingAfter(7);
+    PdfPCell cell = new PdfPCell();
+    cell.setPadding(8);
+    cell.setBorderColor(new Color(220, 227, 237));
+    cell.setBorderWidth(0.5f);
+    cell.setBackgroundColor(new Color(254, 254, 255));
+
+    Font titleFont = new Font(fonts.base, 10.5f, Font.BOLD, severityColor(finding.getSeverity()));
+    Paragraph title =
         new Paragraph(
-            index + ". " + safe(finding.getTitle()) + " [" + safe(finding.getSeverity()) + "]",
-            fonts.heading));
-    document.add(
+            index + ". " + safe(finding.getTitle()) + "  [" + safe(finding.getSeverity()) + "]",
+            titleFont);
+    title.setSpacingAfter(3);
+    cell.addElement(title);
+
+    Paragraph meta =
         new Paragraph(
             "状态："
                 + safe(finding.getStatus())
-                + "  来源："
+                + "  ·  来源："
                 + safe(finding.getSourceTool())
-                + "  任务："
+                + "  ·  任务 ID："
                 + finding.getTaskId(),
-            fonts.small));
-    document.add(new Paragraph("风险说明：" + safe(finding.getDescription()), fonts.normal));
-    document.add(new Paragraph("修复建议：" + safe(finding.getRemediation()), fonts.normal));
+            fonts.small);
+    meta.setSpacingAfter(4);
+    cell.addElement(meta);
+
+    Paragraph desc = new Paragraph("风险说明：" + safe(finding.getDescription()), fonts.normal);
+    desc.setSpacingAfter(3);
+    cell.addElement(desc);
+
+    Paragraph rem = new Paragraph("修复建议：" + safe(finding.getRemediation()), fonts.normal);
+    cell.addElement(rem);
+
+    card.addCell(cell);
+    document.add(card);
     return index + 1;
   }
 
@@ -294,25 +336,47 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
   private PdfFonts fonts() throws DocumentException, IOException {
     BaseFont base = BaseFont.createFont("STSong-Light", "UniGB-UCS2-H", BaseFont.NOT_EMBEDDED);
     return new PdfFonts(
-        new Font(base, 20, Font.BOLD),
-        new Font(base, 14, Font.BOLD),
-        new Font(base, 10.5f),
-        new Font(base, 9));
+        base,
+        new Font(base, 18, Font.BOLD, new Color(17, 94, 163)),
+        new Font(base, 12.5f, Font.BOLD, new Color(15, 84, 140)),
+        new Font(base, 9.5f, Font.NORMAL, new Color(36, 36, 36)),
+        new Font(base, 8.5f, Font.NORMAL, new Color(97, 97, 97)),
+        new Font(base, 9, Font.BOLD, new Color(36, 36, 36)));
   }
 
   private void addTitle(Document document, String value, PdfFonts fonts) throws DocumentException {
     Paragraph paragraph = new Paragraph(value, fonts.title);
     paragraph.setAlignment(Element.ALIGN_CENTER);
-    paragraph.setSpacingAfter(14);
+    paragraph.setSpacingAfter(10);
     document.add(paragraph);
   }
 
   private void addHeading(Document document, String value, PdfFonts fonts)
       throws DocumentException {
     Paragraph paragraph = new Paragraph(value, fonts.heading);
-    paragraph.setSpacingBefore(14);
-    paragraph.setSpacingAfter(7);
+    paragraph.setSpacingBefore(12);
+    paragraph.setSpacingAfter(6);
     document.add(paragraph);
+  }
+
+  private void addMessageBar(Document document, PdfFonts fonts, String title, String content)
+      throws DocumentException {
+    PdfPTable table = new PdfPTable(1);
+    table.setWidthPercentage(100);
+    table.setSpacingBefore(3);
+    table.setSpacingAfter(8);
+    PdfPCell cell = new PdfPCell();
+    cell.setBackgroundColor(new Color(240, 246, 255));
+    cell.setBorderColor(new Color(199, 220, 255));
+    cell.setBorderWidth(0.75f);
+    cell.setPadding(8);
+    Paragraph p = new Paragraph();
+    p.setLeading(14);
+    p.add(new Chunk("【" + title + "】\n", fonts.tableHeader));
+    p.add(new Chunk(safe(content), fonts.normal));
+    cell.addElement(p);
+    table.addCell(cell);
+    document.add(table);
   }
 
   private void addKeyValues(Document document, PdfFonts fonts, Map<String, String> values)
@@ -329,7 +393,7 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
   private PdfPTable table(float[] widths) {
     PdfPTable table = new PdfPTable(widths);
     table.setWidthPercentage(100);
-    table.setSpacingAfter(8);
+    table.setSpacingAfter(7);
     return table;
   }
 
@@ -346,10 +410,12 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
   }
 
   private void addCell(PdfPTable table, PdfFonts fonts, String value, boolean header) {
-    PdfPCell cell = new PdfPCell(new Phrase(safe(value), fonts.small));
+    PdfPCell cell = new PdfPCell(new Phrase(safe(value), header ? fonts.tableHeader : fonts.normal));
     cell.setPadding(6);
+    cell.setBorderColor(new Color(220, 227, 237));
+    cell.setBorderWidth(0.5f);
     if (header) {
-      cell.setBackgroundColor(new Color(232, 239, 248));
+      cell.setBackgroundColor(new Color(245, 248, 252));
       cell.setHorizontalAlignment(Element.ALIGN_CENTER);
     }
     table.addCell(cell);
@@ -398,5 +464,11 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
       LinkedHashMap<String, Long> severityCounts,
       Instant generatedAt) {}
 
-  private record PdfFonts(Font title, Font heading, Font normal, Font small) {}
+  private record PdfFonts(
+      BaseFont base,
+      Font title,
+      Font heading,
+      Font normal,
+      Font small,
+      Font tableHeader) {}
 }
