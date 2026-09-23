@@ -918,6 +918,7 @@ onMounted(load);
         <el-select
           v-model="form.projectId"
           placeholder="选择该目标归属的评估项目"
+          filterable
           style="width: 100%"
           @change="applyProjectAuthorizationDefaults"
         >
@@ -1032,6 +1033,7 @@ onMounted(load);
         <el-select
           v-model="batchForm.projectId"
           placeholder="选择批量目标归属的评估项目"
+          filterable
           style="width: 100%"
           @change="applyProjectAuthorizationDefaults"
         >

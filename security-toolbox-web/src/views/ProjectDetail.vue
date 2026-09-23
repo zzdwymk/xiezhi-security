@@ -4289,6 +4289,7 @@ onUnmounted(() => {
           <el-select
             v-model="discoveryTarget"
             placeholder="选择授权目标"
+            filterable
             clearable
             @change="loadDiscovery"
           >
@@ -4917,6 +4918,7 @@ onUnmounted(() => {
             <el-select
               v-model="reconTarget"
               placeholder="选择项目内授权目标"
+              filterable
               clearable
               @change="loadRecon"
             >
@@ -5506,6 +5508,7 @@ onUnmounted(() => {
           <el-select
             v-model="findingTargetFilter"
             placeholder="全部目标"
+            filterable
             clearable
             style="width: 150px"
           >
