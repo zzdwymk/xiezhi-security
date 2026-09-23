@@ -382,6 +382,8 @@ body,
   --el-border-color: rgba(255, 255, 255, 0.14);
   --el-border-color-light: rgba(255, 255, 255, 0.10);
   --el-border-color-lighter: rgba(255, 255, 255, 0.07);
+  --el-mask-color: rgba(14, 17, 24, 0.72);
+  --el-mask-color-extra: rgba(255, 255, 255, 0.04);
 
   /* Near-opaque surfaces with crisp contrast over Mica/Acrylic */
   --app-bg: color-mix(in srgb, #121216 94%, transparent);

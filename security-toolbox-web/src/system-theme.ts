@@ -139,6 +139,7 @@ function applySystemTheme(theme: SystemThemeState) {
   root.style.setProperty("--shared-chrome-surface", chromeSurface);
   root.style.colorScheme = effectiveTheme.dark ? "dark" : "light";
   root.dataset.systemTheme = effectiveTheme.dark ? "dark" : "light";
+  root.classList.toggle("dark", effectiveDark);
   root.dataset.captionMode = effectiveTheme.captionMode;
   root.dataset.windowMaterial =
     effectiveTheme.windowMaterial ||

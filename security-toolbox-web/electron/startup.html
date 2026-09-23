@@ -86,6 +86,28 @@
       :root[data-system-theme="dark"] .progress-track {
         background: rgba(255, 255, 255, 0.14);
       }
+      :root[data-system-theme="dark"] .engine-state {
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.06);
+      }
+      :root[data-system-theme="dark"] .engine-state strong {
+        color: #ffffff;
+      }
+      :root[data-system-theme="dark"] .engine-state small {
+        color: #cbd5e1;
+      }
+      :root[data-system-theme="dark"] .error {
+        border-color: rgba(248, 113, 113, 0.3);
+        background: rgba(239, 68, 68, 0.12);
+        color: #fca5a5;
+      }
+      :root[data-system-theme="dark"] .startup-card.failed .status-icon {
+        background: rgba(239, 68, 68, 0.16);
+        color: #f87171;
+      }
+      :root[data-system-theme="dark"] .startup-card.failed .eyebrow {
+        color: #f87171;
+      }
 
       :root[data-window-material="none"] {
         --bg: Canvas;
@@ -246,7 +268,7 @@
         margin: auto 4px 0;
         padding: 10px 8px;
         border-radius: 8px;
-        color: #555650;
+        color: var(--muted);
       }
 
 .state-dot {
@@ -269,10 +291,11 @@
       .engine-state strong {
         font-size: 11px;
         font-weight: 550;
+        color: var(--text);
       }
       .engine-state small {
         margin-top: 2px;
-        color: #94958f;
+        color: var(--muted);
         font-size: 10px;
       }
 
@@ -470,6 +493,27 @@
         }
       }
 
+      /* Fluent 2 内聚精微光场：鼠标跟随光晕，与主应用 unified-theme.css 保持一致 */
+      :root[data-system-theme="dark"] body::after {
+        content: "";
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
+        pointer-events: none;
+        z-index: 999999;
+        background: radial-gradient(
+          220px
+            circle
+            at var(--fluent-cursor-x, -999px)
+            var(--fluent-cursor-y, -999px),
+          color-mix(in srgb, var(--accent) 14%, transparent) 0%,
+          color-mix(in srgb, var(--accent) 5%, transparent) 45%,
+          transparent 75%
+        );
+        mix-blend-mode: screen;
+      }
+
       @media (prefers-reduced-motion: reduce) {
         :root:not([data-anim-start-progress="on"]) .progress-bar,
         :root:not([data-anim-start-pulse="on"]) .state-dot {
@@ -557,6 +601,32 @@
     </main>
 
     <script>
+      // 鼠标光场：写入 --fluent-cursor-x/y，驱动 body::after 的径向渐变光晕。
+      (() => {
+        if (window.matchMedia("(prefers-reduced-motion: reduce)").matches)
+          return;
+        let cursorRaf = 0;
+        window.addEventListener(
+          "pointermove",
+          (event) => {
+            if (cursorRaf) return;
+            cursorRaf = window.requestAnimationFrame(() => {
+              cursorRaf = 0;
+              const rootStyle = document.documentElement.style;
+              rootStyle.setProperty(
+                "--fluent-cursor-x",
+                `${Math.round(event.clientX)}px`,
+              );
+              rootStyle.setProperty(
+                "--fluent-cursor-y",
+                `${Math.round(event.clientY)}px`,
+              );
+            });
+          },
+          { passive: true },
+        );
+      })();
+
       const stepTitles = [
         "检查并启动运行环境",
         "检测工具依赖",

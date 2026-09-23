@@ -3403,3 +3403,69 @@ body,
   margin-right: auto !important;
   margin-left: auto !important;
 }
+
+/* =================================================================
+   Dark Mode Acrylic Loading (Fluent UI Spinner Specification)
+   Only active in dark mode; light mode remains completely unaffected.
+   ================================================================= */
+:root[data-system-theme="dark"] .el-loading-mask,
+html[data-system-theme="dark"] .el-loading-mask,
+:root:not([data-system-theme="light"]).dark .el-loading-mask {
+  background-color: rgba(14, 17, 24, 0.72) !important;
+  backdrop-filter: blur(16px) saturate(180%) brightness(0.92) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(180%) brightness(0.92) !important;
+  transition: opacity var(--el-transition-duration, 0.3s) cubic-bezier(0.2, 0.8, 0.2, 1) !important;
+}
+
+/* Fluent UI standard ProgressRing / Spinner */
+:root[data-system-theme="dark"] .el-loading-spinner .circular,
+html[data-system-theme="dark"] .el-loading-spinner .circular,
+:root:not([data-system-theme="light"]).dark .el-loading-spinner .circular {
+  width: var(--el-loading-spinner-size, 42px) !important;
+  height: var(--el-loading-spinner-size, 42px) !important;
+  display: inline-block !important;
+  animation: fluent-spinner-rotate 1.4s cubic-bezier(0.53, 0.21, 0.29, 0.67) infinite !important;
+}
+
+:root[data-system-theme="dark"] .el-loading-spinner .path,
+html[data-system-theme="dark"] .el-loading-spinner .path,
+:root:not([data-system-theme="light"]).dark .el-loading-spinner .path {
+  stroke: var(--app-accent, #60a5fa) !important;
+  stroke-width: 3px !important;
+  stroke-linecap: round !important;
+  animation: fluent-spinner-dash 1.4s ease-in-out infinite !important;
+}
+
+:root[data-system-theme="dark"] .el-loading-spinner .el-loading-text,
+html[data-system-theme="dark"] .el-loading-spinner .el-loading-text,
+:root:not([data-system-theme="light"]).dark .el-loading-spinner .el-loading-text {
+  color: var(--fluent-control-fg, #f8fafc) !important;
+  font-size: 13px !important;
+  font-weight: 400 !important;
+  margin-top: 10px !important;
+  letter-spacing: 0.3px !important;
+}
+
+@keyframes fluent-spinner-rotate {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes fluent-spinner-dash {
+  0% {
+    stroke-dasharray: 1, 150;
+    stroke-dashoffset: 0;
+  }
+  50% {
+    stroke-dasharray: 90, 150;
+    stroke-dashoffset: -35px;
+  }
+  100% {
+    stroke-dasharray: 90, 150;
+    stroke-dashoffset: -124px;
+  }
+}
