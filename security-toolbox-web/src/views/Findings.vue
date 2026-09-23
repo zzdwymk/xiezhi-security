@@ -184,6 +184,16 @@ const severityFilter = ref<string>(
 const statusFilter = ref<string>(
   typeof route.query.status === "string" ? route.query.status : "",
 );
+const findingSort = ref("time-desc");
+const FINDING_SORT_OPTIONS = [
+  { label: "时间从新到旧", value: "time-desc" },
+  { label: "时间从旧到新", value: "time-asc" },
+  { label: "严重度从高到低", value: "sev-desc" },
+  { label: "严重度从低到高", value: "sev-asc" },
+  { label: "ID 从大到小", value: "id-desc" },
+  { label: "ID 从小到大", value: "id-asc" },
+  { label: "标题 A-Z", value: "title-asc" },
+];
 
 const hasActiveFilters = computed(() =>
   Boolean(
@@ -232,6 +242,7 @@ async function load() {
           severityFilter.value || undefined,
           statusFilter.value || undefined,
           categoryFilter.value || undefined,
+          findingSort.value,
         ),
       { content: [], totalElements: 0 },
     );
@@ -507,7 +518,7 @@ watch(
 );
 
 watch(
-  [targetFilter, categoryFilter, severityFilter, statusFilter],
+  [targetFilter, categoryFilter, severityFilter, statusFilter, findingSort],
   () => {
     page.value = 1;
     void load();
@@ -602,6 +613,18 @@ onBeforeUnmount(() => {
         <el-option label="已确认" value="CONFIRMED" />
         <el-option label="误报" value="FALSE_POSITIVE" />
         <el-option label="已修复" value="FIXED" />
+      </el-select>
+      <el-select
+        v-model="findingSort"
+        placeholder="排序"
+        style="width: 150px"
+      >
+        <el-option
+          v-for="opt in FINDING_SORT_OPTIONS"
+          :key="opt.value"
+          :label="opt.label"
+          :value="opt.value"
+        />
       </el-select>
       <el-button
         v-if="hasActiveFilters"

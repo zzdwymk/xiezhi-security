@@ -1072,6 +1072,7 @@ export const endpoints = {
       year?: string;
       knownExploited?: boolean;
       scanSafety?: string;
+      sort?: string;
     } = {},
   ) =>
     api.get<PageResponse<VulnerabilityDefinition>>("/vulnerabilities", {
@@ -1158,6 +1159,7 @@ export const endpoints = {
     severity?: string,
     status?: string,
     category?: string,
+    sort?: string,
   ) =>
     api.get<PageResponse<ProjectFindingRecord>>("/findings", {
       params: {
@@ -1168,6 +1170,7 @@ export const endpoints = {
         severity: severity || undefined,
         status: status || undefined,
         category: category || undefined,
+        sort: sort || undefined,
       },
     }),
   updateFindingStatus: (id: number, status: string) =>

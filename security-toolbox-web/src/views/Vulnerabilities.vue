@@ -56,6 +56,18 @@ const severityFilter = ref("");
 const sourceFilter = ref("");
 const yearFilter = ref("");
 const safetyFilter = ref("");
+const catalogSort = ref("");
+const CATALOG_SORT_OPTIONS = [
+  { label: "缺省排序（已利用+评分+名称）", value: "" },
+  { label: "严重度从高到低", value: "sev-desc" },
+  { label: "严重度从低到高", value: "sev-asc" },
+  { label: "CVSS 从高到低", value: "cvss-desc" },
+  { label: "CVSS 从低到高", value: "cvss-asc" },
+  { label: "名称 A-Z", value: "name-asc" },
+  { label: "名称 Z-A", value: "name-desc" },
+  { label: "更新时间从新到旧", value: "time-desc" },
+  { label: "更新时间从旧到新", value: "time-asc" },
+];
 const knownExploitedOnly = ref(false);
 const page = ref(0);
 // Keep the catalog deliberately compact: exactly ten entries per page.
@@ -859,6 +871,7 @@ async function load() {
         year: yearFilter.value || undefined,
         knownExploited: knownExploitedOnly.value || undefined,
         scanSafety: safetyFilter.value || undefined,
+        sort: catalogSort.value || undefined,
       }),
       endpoints.vulnerabilityStats(),
       endpoints.detectionRules(),
@@ -1481,6 +1494,20 @@ onUnmounted(() => {
             <el-option label="需人工审查" value="REVIEW_REQUIRED" />
             <el-option label="高风险" value="BLOCKED" />
           </el-select>
+          <el-select
+            v-model="catalogSort"
+            size="small"
+            clearable
+            placeholder="排序"
+            @change="searchCatalog"
+          >
+            <el-option
+              v-for="item in CATALOG_SORT_OPTIONS"
+              :key="item.value"
+              :label="item.label"
+              :value="item.value"
+            />
+          </el-select>
         </div>
         <el-checkbox
           v-model="knownExploitedOnly"
@@ -1734,55 +1761,56 @@ onUnmounted(() => {
             将使用当前已同步且可执行的全部
             {{ sourceCatalogCount(source) }} 个 {{ sourceLabel(source) }} PoC。
           </p>
-          <el-select
-            v-else
-            v-model="selectedPocCodes[source]"
-            class="poc-selector"
-            multiple
-            filterable
-            remote
-            reserve-keyword
-            collapse-tags
-            :max-collapse-tags="2"
-            :loading="pocLoading[source]"
-            :placeholder="`搜索并选择 ${sourceLabel(source)} PoC`"
-            style="width: 100%"
-            @remote-method="(value: string) => loadPocOptions(source, value)"
-            @visible-change="(visible: boolean) => visible && loadPocOptions(source)"
-          >
-            <el-option
-              v-for="poc in pocOptions[source]"
-              :key="poc.vulnerabilityCode"
-              :label="pocOptionLabel(poc)"
-              :value="poc.vulnerabilityCode"
+          <template v-else>
+            <el-select
+              v-model="selectedPocCodes[source]"
+              class="poc-selector"
+              multiple
+              filterable
+              remote
+              reserve-keyword
+              collapse-tags
+              :max-collapse-tags="2"
+              :loading="pocLoading[source]"
+              :placeholder="`搜索并选择 ${sourceLabel(source)} PoC`"
+              style="width: 100%"
+              @remote-method="(value: string) => loadPocOptions(source, value)"
+              @visible-change="(visible: boolean) => visible && loadPocOptions(source)"
             >
-              <span class="poc-option">
-                <span>
-                  <b>{{ poc.name }}</b>
-                  <small>{{
-                    poc.sourceExternalId || poc.vulnerabilityCode
-                  }}</small>
+              <el-option
+                v-for="poc in pocOptions[source]"
+                :key="poc.vulnerabilityCode"
+                :label="pocOptionLabel(poc)"
+                :value="poc.vulnerabilityCode"
+              >
+                <span class="poc-option">
+                  <span>
+                    <b>{{ poc.name }}</b>
+                    <small>{{
+                      poc.sourceExternalId || poc.vulnerabilityCode
+                    }}</small>
+                  </span>
+                  <span class="poc-option-tags">
+                    <el-tag size="small" :type="severityType(poc.severity)">{{
+                      severityLabel(poc.severity)
+                    }}</el-tag>
+                    <el-tag size="small" :type="safetyType(poc.scanSafety)">{{
+                      poc.scanSafety || "SAFE"
+                    }}</el-tag>
+                  </span>
                 </span>
-                <span class="poc-option-tags">
-                  <el-tag size="small" :type="severityType(poc.severity)">{{
-                    severityLabel(poc.severity)
-                  }}</el-tag>
-                  <el-tag size="small" :type="safetyType(poc.scanSafety)">{{
-                    poc.scanSafety || "SAFE"
-                  }}</el-tag>
-                </span>
-              </span>
-            </el-option>
-            <template #empty>
-              <div class="poc-empty">
-                未同步到具体 PoC，请在漏洞知识库右上角同步
-                {{ sourceLabel(source) }}。
-              </div>
-            </template>
-          </el-select>
-          <p class="poc-help">
-            已选 {{ selectedPocCodes[source].length }} 个；执行分级仅作风险提示，不限制明确选择的 PoC。
-          </p>
+              </el-option>
+              <template #empty>
+                <div class="poc-empty">
+                  未同步到具体 PoC，请在漏洞知识库右上角同步
+                  {{ sourceLabel(source) }}。
+                </div>
+              </template>
+            </el-select>
+            <p class="poc-help">
+              已选 {{ selectedPocCodes[source].length }} 个；执行分级仅作风险提示，不限制明确选择的 PoC。
+            </p>
+          </template>
         </template>
         <template v-if="includesPortScan">
           <label>扫描端口</label>
@@ -2770,6 +2798,9 @@ onUnmounted(() => {
   )
   .el-segmented__item-selected {
   transform: translateX(100%) translateZ(0) !important;
+}
+.poc-selector {
+  margin-top: 8px;
 }
 .rule-list small {
   display: flex;
