@@ -541,6 +541,12 @@ function scheduleSafetyType(safety?: string) {
   return "success";
 }
 
+function scheduleSafetyLabel(safety?: string) {
+  if (safety === "BLOCKED") return "高风险";
+  if (safety === "REVIEW_REQUIRED") return "需审查";
+  return "安全";
+}
+
 async function loadSchedulePocOptions(search = "") {
   const source = scheduleScannerSource.value;
   if (!source) return;
@@ -2220,10 +2226,10 @@ onUnmounted(() => {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="执行分级" width="90" align="center">
+        <el-table-column label="执行分级" width="95" align="center">
           <template #default="{ row }">
             <el-tag size="small" :type="scheduleSafetyType(row.scanSafety)">
-              {{ row.scanSafety || "SAFE" }}
+              {{ scheduleSafetyLabel(row.scanSafety) }}
             </el-tag>
           </template>
         </el-table-column>

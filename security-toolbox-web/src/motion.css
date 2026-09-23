@@ -5,7 +5,9 @@
 
 /* ===== 加载图标 / 旋转 ===== */
 html[data-anim-loader="off"] .el-loading-spinner,
+html[data-anim-loader="off"] .el-loading-spinner .el-loading-text,
 html[data-anim-loader="off"] .el-loading-mask .el-loading-spinner .circular,
+html[data-anim-loader="off"] .el-loading-mask .el-loading-spinner .path,
 html[data-anim-loader="off"] .el-icon.is-loading,
 html[data-anim-loader="off"] .el-icon.is-loading::before,
 html[data-anim-loader="off"] .rotating,

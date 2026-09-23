@@ -1114,6 +1114,18 @@ function pocSeverityTagType(severity?: string) {
   return "success";
 }
 
+function pocSafetyType(safety?: string) {
+  if (safety === "BLOCKED") return "danger";
+  if (safety === "REVIEW_REQUIRED") return "warning";
+  return "success";
+}
+
+function pocSafetyLabel(safety?: string) {
+  if (safety === "BLOCKED") return "高风险";
+  if (safety === "REVIEW_REQUIRED") return "需审查";
+  return "安全";
+}
+
 async function loadPocOptionsForTool(search = "") {
   const tool = selectedToolNode.value?.data.tool;
   const source = scannerSourceForTool(tool);
@@ -6075,13 +6087,13 @@ onBeforeUnmount(() => {
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="执行分级" width="90" align="center">
+          <el-table-column label="执行分级" width="95" align="center">
             <template #default="{ row }">
               <el-tag
                 size="small"
-                :type="row.scanSafety && row.scanSafety !== 'SAFE' ? 'warning' : 'success'"
+                :type="pocSafetyType(row.scanSafety)"
               >
-                {{ row.scanSafety || "SAFE" }}
+                {{ pocSafetyLabel(row.scanSafety) }}
               </el-tag>
             </template>
           </el-table-column>
