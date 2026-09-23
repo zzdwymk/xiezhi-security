@@ -23,6 +23,7 @@ import {
   VideoPause,
   ArrowDown,
   Dismiss,
+  Search,
   Setting,
 } from "../components/fluentIcons";
 import FluentIcon from "../components/FluentIcon.vue";
@@ -1151,6 +1152,22 @@ async function loadPocOptionsForTool(search = "") {
       pocLoading.value = false;
     }
   }
+}
+
+const workflowPocSearch = ref("");
+let workflowPocSearchTimer: ReturnType<typeof setTimeout> | undefined;
+
+function onWorkflowPocSearchInput() {
+  clearTimeout(workflowPocSearchTimer);
+  workflowPocSearchTimer = setTimeout(() => {
+    void loadPocOptionsForTool(workflowPocSearch.value);
+  }, 250);
+}
+
+function onWorkflowPocSearchClear() {
+  clearTimeout(workflowPocSearchTimer);
+  workflowPocSearch.value = "";
+  void loadPocOptionsForTool("");
 }
 
 watch(
@@ -5212,9 +5229,28 @@ onBeforeUnmount(() => {
                     :multiple-limit="50"
                     :loading="pocLoading"
                     :placeholder="`下拉选择或直接输入编号 (如 NT-xxx)`"
-                    :remote-method="loadPocOptionsForTool"
-                    @visible-change="(visible: boolean) => visible && !pocOptions.length && loadPocOptionsForTool()"
+                    :remote-method="(value: string) => { workflowPocSearch = value; onWorkflowPocSearchInput(); }"
+                    @visible-change="(visible: boolean) => visible && (!pocOptions.length || workflowPocSearch) && loadPocOptionsForTool(workflowPocSearch)"
                   >
+                    <template #prefix>
+                      <el-icon><Search /></el-icon>
+                    </template>
+                    <template #header>
+                      <div class="poc-dropdown-search-wrap" @click.stop @keydown.stop>
+                        <el-input
+                          v-model="workflowPocSearch"
+                          size="small"
+                          clearable
+                          placeholder="输入 CVE、名称或标签即时搜索..."
+                          @input="onWorkflowPocSearchInput"
+                          @clear="onWorkflowPocSearchClear"
+                        >
+                          <template #prefix>
+                            <el-icon><Search /></el-icon>
+                          </template>
+                        </el-input>
+                      </div>
+                    </template>
                     <el-option
                       v-for="poc in pocOptions"
                       :key="poc.vulnerabilityCode"
@@ -7206,6 +7242,10 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
+}
+.poc-dropdown-search-wrap {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--app-border, #e2e8f0);
 }
 :global(.workflow-poc-select-popper) {
   min-width: 320px !important;
