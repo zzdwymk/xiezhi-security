@@ -56,18 +56,6 @@ const severityFilter = ref("");
 const sourceFilter = ref("");
 const yearFilter = ref("");
 const safetyFilter = ref("");
-const catalogSort = ref("");
-const CATALOG_SORT_OPTIONS = [
-  { label: "缺省排序（导入顺序）", value: "" },
-  { label: "严重度从高到低", value: "sev-desc" },
-  { label: "严重度从低到高", value: "sev-asc" },
-  { label: "CVSS 从高到低", value: "cvss-desc" },
-  { label: "CVSS 从低到高", value: "cvss-asc" },
-  { label: "名称 A-Z", value: "name-asc" },
-  { label: "名称 Z-A", value: "name-desc" },
-  { label: "更新时间从新到旧", value: "time-desc" },
-  { label: "更新时间从旧到新", value: "time-asc" },
-];
 const knownExploitedOnly = ref(false);
 const page = ref(0);
 // Keep the catalog deliberately compact: exactly ten entries per page.
@@ -1014,7 +1002,6 @@ async function load() {
         year: yearFilter.value || undefined,
         knownExploited: knownExploitedOnly.value || undefined,
         scanSafety: safetyFilter.value || undefined,
-        sort: catalogSort.value || undefined,
       }),
       endpoints.vulnerabilityStats(),
       endpoints.detectionRules(),
@@ -1639,20 +1626,6 @@ onUnmounted(() => {
             <el-option label="默认安全" value="SAFE" />
             <el-option label="需人工审查" value="REVIEW_REQUIRED" />
             <el-option label="高风险" value="BLOCKED" />
-          </el-select>
-          <el-select
-            v-model="catalogSort"
-            size="small"
-            clearable
-            placeholder="排序"
-            @change="searchCatalog"
-          >
-            <el-option
-              v-for="item in CATALOG_SORT_OPTIONS"
-              :key="item.value"
-              :label="item.label"
-              :value="item.value"
-            />
           </el-select>
         </div>
         <el-checkbox
