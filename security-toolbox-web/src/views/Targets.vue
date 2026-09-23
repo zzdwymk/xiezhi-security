@@ -1887,6 +1887,53 @@ onMounted(load);
   z-index: 1;
 }
 
+/* Ensure action buttons on selected rows keep clean, harmonious styling without opaque white boxes */
+.targets-page :deep(.el-table__body tr.is-selected .el-button.is-link),
+.targets-page :deep(.el-table__body tr:has(.el-checkbox.is-checked) .el-button.is-link) {
+  background: transparent !important;
+  border-color: transparent !important;
+}
+
+.targets-page :deep(.el-table__body tr.is-selected .target-action-edit.el-button.is-link),
+.targets-page :deep(.el-table__body tr:has(.el-checkbox.is-checked) .target-action-edit.el-button.is-link) {
+  color: var(--app-accent, #0078d4) !important;
+}
+.targets-page :deep(.el-table__body tr.is-selected .target-action-edit.el-button.is-link:hover),
+.targets-page :deep(.el-table__body tr:has(.el-checkbox.is-checked) .target-action-edit.el-button.is-link:hover) {
+  color: var(--app-accent-dark, #005a9e) !important;
+  background: rgba(0, 120, 212, 0.08) !important;
+}
+
+.targets-page :deep(.el-table__body tr.is-selected .target-action-delete.el-button.is-link),
+.targets-page :deep(.el-table__body tr:has(.el-checkbox.is-checked) .target-action-delete.el-button.is-link) {
+  color: var(--fluent-danger-bg, #d13438) !important;
+}
+.targets-page :deep(.el-table__body tr.is-selected .target-action-delete.el-button.is-link:hover),
+.targets-page :deep(.el-table__body tr:has(.el-checkbox.is-checked) .target-action-delete.el-button.is-link:hover) {
+  color: var(--fluent-danger-hover-bg, #a80000) !important;
+  background: rgba(209, 52, 56, 0.08) !important;
+}
+
+.targets-page :deep(.el-table__body tr.is-selected .target-action-report),
+.targets-page :deep(.el-table__body tr:has(.el-checkbox.is-checked) .target-action-report) {
+  background: rgba(255, 255, 255, 0.8) !important;
+  border-color: rgba(184, 194, 206, 0.7) !important;
+  color: #263647 !important;
+}
+.targets-page :deep(.el-table__body tr.is-selected .target-action-report:hover),
+.targets-page :deep(.el-table__body tr:has(.el-checkbox.is-checked) .target-action-report:hover) {
+  background: #fff !important;
+  border-color: #52708e !important;
+  color: #172a3d !important;
+}
+
+:root[data-system-theme="dark"] .targets-page :deep(.el-table__body tr.is-selected .target-action-report),
+:root[data-system-theme="dark"] .targets-page :deep(.el-table__body tr:has(.el-checkbox.is-checked) .target-action-report) {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  color: var(--app-text) !important;
+}
+
 .target-clear-btn {
   font-size: 13px;
   margin-right: 2px;
