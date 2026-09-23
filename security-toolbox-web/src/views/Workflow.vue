@@ -1154,20 +1154,131 @@ async function loadPocOptionsForTool(search = "") {
   }
 }
 
-const workflowPocSearch = ref("");
-let workflowPocSearchTimer: ReturnType<typeof setTimeout> | undefined;
+// 工作流步骤 PoC 弹窗挑选状态与操作
+const workflowPocDialogVisible = ref(false);
+const workflowDialogSearch = ref("");
+const workflowDialogSeverity = ref("");
+const workflowDialogSafety = ref("");
+const workflowDialogLoading = ref(false);
+const workflowDialogList = ref<VulnerabilityDefinition[]>([]);
+const workflowDialogTotal = ref(0);
+const workflowDialogPage = ref(0);
+const workflowDialogPageSize = 20;
+const workflowDialogSelected = ref<Set<string>>(new Set());
+const workflowDialogCachedDefs = new Map<string, VulnerabilityDefinition>();
 
-function onWorkflowPocSearchInput() {
-  clearTimeout(workflowPocSearchTimer);
-  workflowPocSearchTimer = setTimeout(() => {
-    void loadPocOptionsForTool(workflowPocSearch.value);
-  }, 250);
+let workflowDialogSearchTimer: ReturnType<typeof setTimeout> | undefined;
+
+function openWorkflowPocDialog() {
+  const tool = selectedToolNode.value?.data.tool;
+  const source = scannerSourceForTool(tool);
+  if (!source) return;
+  workflowDialogSearch.value = "";
+  workflowDialogSeverity.value = "";
+  workflowDialogSafety.value = "";
+  workflowDialogPage.value = 0;
+  workflowDialogSelected.value = new Set(selectedPocCodesList.value);
+  for (const item of pocOptions.value) {
+    workflowDialogCachedDefs.set(item.vulnerabilityCode, item);
+  }
+  workflowPocDialogVisible.value = true;
+  void loadWorkflowDialogData();
 }
 
-function onWorkflowPocSearchClear() {
-  clearTimeout(workflowPocSearchTimer);
-  workflowPocSearch.value = "";
-  void loadPocOptionsForTool("");
+async function loadWorkflowDialogData() {
+  const tool = selectedToolNode.value?.data.tool;
+  const source = scannerSourceForTool(tool);
+  if (!source) return;
+  workflowDialogLoading.value = true;
+  try {
+    const { data } = await endpoints.vulnerabilities({
+      page: workflowDialogPage.value,
+      size: workflowDialogPageSize,
+      source,
+      query: workflowDialogSearch.value.trim() || undefined,
+      severity: workflowDialogSeverity.value || undefined,
+      scanSafety: workflowDialogSafety.value || undefined,
+    });
+    workflowDialogList.value = data.content || [];
+    workflowDialogTotal.value = data.totalElements || 0;
+    for (const item of workflowDialogList.value) {
+      workflowDialogCachedDefs.set(item.vulnerabilityCode, item);
+    }
+  } catch (error) {
+    ElMessage.error(toErrorMessage(error, "加载 PoC 列表失败"));
+  } finally {
+    workflowDialogLoading.value = false;
+  }
+}
+
+function onWorkflowDialogSearchInput() {
+  clearTimeout(workflowDialogSearchTimer);
+  workflowDialogSearchTimer = setTimeout(() => {
+    workflowDialogPage.value = 0;
+    void loadWorkflowDialogData();
+  }, 300);
+}
+
+function handleWorkflowDialogFilterChange() {
+  workflowDialogPage.value = 0;
+  void loadWorkflowDialogData();
+}
+
+function handleWorkflowDialogPageChange(newPage: number) {
+  workflowDialogPage.value = Math.max(0, newPage - 1);
+  void loadWorkflowDialogData();
+}
+
+function toggleWorkflowDialogCode(code: string) {
+  if (workflowDialogSelected.value.has(code)) {
+    workflowDialogSelected.value.delete(code);
+  } else {
+    if (workflowDialogSelected.value.size >= 50) {
+      ElMessage.warning("单步骤最多指定 50 个 PoC / 模板");
+      return;
+    }
+    workflowDialogSelected.value.add(code);
+  }
+  workflowDialogSelected.value = new Set(workflowDialogSelected.value);
+}
+
+function selectAllWorkflowDialogCurrentPage() {
+  for (const item of workflowDialogList.value) {
+    if (workflowDialogSelected.value.size >= 50) {
+      ElMessage.warning("已达到最多 50 个 PoC / 模板限制");
+      break;
+    }
+    workflowDialogSelected.value.add(item.vulnerabilityCode);
+  }
+  workflowDialogSelected.value = new Set(workflowDialogSelected.value);
+}
+
+function deselectAllWorkflowDialogCurrentPage() {
+  for (const item of workflowDialogList.value) {
+    workflowDialogSelected.value.delete(item.vulnerabilityCode);
+  }
+  workflowDialogSelected.value = new Set(workflowDialogSelected.value);
+}
+
+function applyWorkflowDialogSelection() {
+  selectedPocCodesList.value = Array.from(workflowDialogSelected.value);
+  workflowPocDialogVisible.value = false;
+  ElMessage.success(
+    `已为当前步骤选定 ${selectedPocCodesList.value.length} 个 PoC / 模板`,
+  );
+}
+
+function getWorkflowPocName(code: string) {
+  const item =
+    workflowDialogCachedDefs.get(code) ||
+    pocOptions.value.find((p) => p.vulnerabilityCode === code);
+  return item ? item.sourceExternalId || item.name || code : code;
+}
+
+function removeWorkflowPoc(code: string) {
+  selectedPocCodesList.value = selectedPocCodesList.value.filter(
+    (c) => c !== code,
+  );
 }
 
 watch(
@@ -5214,73 +5325,68 @@ onBeforeUnmount(() => {
                   </el-checkbox>
                 </el-form-item>
                 <el-form-item v-if="!selectedAllPocs" label="指定 PoC / 模板">
-                  <el-select
-                    v-model="selectedPocCodesList"
-                    popper-class="workflow-poc-select-popper"
-                    multiple
-                    filterable
-                    allow-create
-                    remote
-                    reserve-keyword
-                    default-first-option
-                    collapse-tags
-                    collapse-tags-tooltip
-                    :max-collapse-tags="2"
-                    :multiple-limit="50"
-                    :loading="pocLoading"
-                    :placeholder="`下拉选择或直接输入编号 (如 NT-xxx)`"
-                    :remote-method="(value: string) => { workflowPocSearch = value; onWorkflowPocSearchInput(); }"
-                    @visible-change="(visible: boolean) => visible && (!pocOptions.length || workflowPocSearch) && loadPocOptionsForTool(workflowPocSearch)"
-                  >
-                    <template #prefix>
-                      <el-icon><Search /></el-icon>
-                    </template>
-                    <template #header>
-                      <div class="poc-dropdown-search-wrap" @click.stop @keydown.stop>
-                        <el-input
-                          v-model="workflowPocSearch"
-                          size="small"
-                          clearable
-                          placeholder="输入 CVE、名称或标签即时搜索..."
-                          @input="onWorkflowPocSearchInput"
-                          @clear="onWorkflowPocSearchClear"
-                        >
-                          <template #prefix>
-                            <el-icon><Search /></el-icon>
-                          </template>
-                        </el-input>
-                      </div>
-                    </template>
-                    <el-option
-                      v-for="poc in pocOptions"
-                      :key="poc.vulnerabilityCode"
-                      :label="formatPocOptionLabel(poc)"
-                      :value="poc.vulnerabilityCode"
+                  <div class="workflow-poc-selector poc-picker-wrapper">
+                    <el-button
+                      v-if="!selectedPocCodesList.length"
+                      type="primary"
+                      plain
+                      style="width: 100%"
+                      :icon="Search"
+                      @click="openWorkflowPocDialog"
                     >
-                      <div class="workflow-poc-option">
-                        <span class="workflow-poc-option-main">
-                          <b>{{ poc.name }}</b>
-                          <small>{{ poc.sourceExternalId || poc.vulnerabilityCode }}</small>
-                        </span>
-                        <span class="workflow-poc-option-tags">
-                          <el-tag size="small" :type="pocSeverityTagType(poc.severity)" effect="plain">
-                            {{ severityLabel(poc.severity) }}
-                          </el-tag>
-                          <el-tag
-                            v-if="poc.scanSafety && poc.scanSafety !== 'SAFE'"
-                            size="small"
-                            type="warning"
-                            effect="plain"
-                          >
-                            {{ poc.scanSafety }}
-                          </el-tag>
-                        </span>
+                      选择 PoC / 模板
+                    </el-button>
+                    <div v-else class="poc-selected-summary-bar">
+                      <span class="poc-selected-count-label">
+                        已选 <b>{{ selectedPocCodesList.length }}</b> / 50 个
+                      </span>
+                      <div class="poc-selected-actions">
+                        <el-button
+                          link
+                          type="primary"
+                          size="small"
+                          @click="openWorkflowPocDialog"
+                        >
+                          修改
+                        </el-button>
+                        <el-button
+                          link
+                          type="danger"
+                          size="small"
+                          @click="selectedPocCodesList = []"
+                        >
+                          清空
+                        </el-button>
                       </div>
-                    </el-option>
-                  </el-select>
-                  <small class="input-hint">
-                    可搜索选择已有 PoC，或直接键入/粘贴编号后回车创建，最多 50 个。
-                  </small>
+                    </div>
+
+                    <!-- 已选 PoC 预览标签 -->
+                    <div
+                      v-if="selectedPocCodesList.length"
+                      class="poc-selected-tags"
+                    >
+                      <el-tag
+                        v-for="code in selectedPocCodesList.slice(0, 4)"
+                        :key="code"
+                        size="small"
+                        closable
+                        type="info"
+                        class="poc-tag-item"
+                        @close="removeWorkflowPoc(code)"
+                      >
+                        {{ getWorkflowPocName(code) }}
+                      </el-tag>
+                      <el-tag
+                        v-if="selectedPocCodesList.length > 4"
+                        size="small"
+                        type="info"
+                        class="poc-tag-more"
+                        @click="openWorkflowPocDialog"
+                      >
+                        +{{ selectedPocCodesList.length - 4 }}...
+                      </el-tag>
+                    </div>
+                  </div>
                 </el-form-item>
               </template>
 
@@ -5874,6 +5980,146 @@ onBeforeUnmount(() => {
           <p class="node-detail-summary">{{ endFindingDetail.remediation }}</p>
         </template>
       </div>
+    </el-dialog>
+
+    <!-- 工作流步骤 PoC / 模板挑选弹窗 -->
+    <el-dialog
+      v-model="workflowPocDialogVisible"
+      :title="`选择 ${selectedToolNode?.data.label || '扫描器'} PoC / 模板`"
+      class="app-dialog app-dialog--wide poc-picker-dialog"
+      align-center
+      destroy-on-close
+      append-to-body
+    >
+      <div class="poc-picker-filters">
+        <el-input
+          v-model="workflowDialogSearch"
+          clearable
+          placeholder="搜索 CVE 编号、名称或标签..."
+          style="width: 280px"
+          @input="onWorkflowDialogSearchInput"
+          @keyup.enter="handleWorkflowDialogFilterChange"
+          @clear="handleWorkflowDialogFilterChange"
+        >
+          <template #prefix>
+            <el-icon><Search /></el-icon>
+          </template>
+        </el-input>
+        <el-select
+          v-model="workflowDialogSeverity"
+          placeholder="严重度"
+          clearable
+          style="width: 130px"
+          @change="handleWorkflowDialogFilterChange"
+        >
+          <el-option label="全部严重度" value="" />
+          <el-option label="严重" value="CRITICAL" />
+          <el-option label="高危" value="HIGH" />
+          <el-option label="中危" value="MEDIUM" />
+          <el-option label="低危" value="LOW" />
+          <el-option label="信息" value="INFO" />
+        </el-select>
+        <el-select
+          v-model="workflowDialogSafety"
+          placeholder="执行分级"
+          clearable
+          style="width: 130px"
+          @change="handleWorkflowDialogFilterChange"
+        >
+          <el-option label="全部分级" value="" />
+          <el-option label="安全 (SAFE)" value="SAFE" />
+          <el-option label="需审查" value="REVIEW_REQUIRED" />
+          <el-option label="高风险" value="BLOCKED" />
+        </el-select>
+        <el-button
+          type="primary"
+          :icon="Search"
+          @click="handleWorkflowDialogFilterChange"
+        >
+          搜索
+        </el-button>
+      </div>
+
+      <div class="poc-picker-table-wrapper" v-loading="workflowDialogLoading">
+        <el-table
+          :data="workflowDialogList"
+          row-key="vulnerabilityCode"
+          size="small"
+          height="360"
+          stripe
+          @row-click="(row: VulnerabilityDefinition) => toggleWorkflowDialogCode(row.vulnerabilityCode)"
+        >
+          <el-table-column width="45" align="center">
+            <template #default="{ row }">
+              <el-checkbox
+                :model-value="workflowDialogSelected.has(row.vulnerabilityCode)"
+                @click.stop
+                @change="toggleWorkflowDialogCode(row.vulnerabilityCode)"
+              />
+            </template>
+          </el-table-column>
+          <el-table-column label="编号 / CVE" min-width="160" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span class="poc-dialog-code">{{ row.sourceExternalId || row.vulnerabilityCode }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="PoC / 漏洞名称" min-width="260" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span class="poc-dialog-name">{{ row.name }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="严重度" width="90" align="center">
+            <template #default="{ row }">
+              <el-tag size="small" :type="pocSeverityTagType(row.severity)">
+                {{ severityLabel(row.severity) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="执行分级" width="90" align="center">
+            <template #default="{ row }">
+              <el-tag
+                size="small"
+                :type="row.scanSafety && row.scanSafety !== 'SAFE' ? 'warning' : 'success'"
+              >
+                {{ row.scanSafety || "SAFE" }}
+              </el-tag>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+
+      <div class="poc-picker-pagination">
+        <el-pagination
+          :current-page="workflowDialogPage + 1"
+          :page-size="workflowDialogPageSize"
+          :total="workflowDialogTotal"
+          layout="total, prev, pager, next"
+          size="small"
+          @current-change="handleWorkflowDialogPageChange"
+        />
+      </div>
+
+      <template #footer>
+        <div class="app-dialog__footer-row">
+          <span class="poc-dialog-count">
+            已选 <b>{{ workflowDialogSelected.size }}</b> / 50 个 PoC
+          </span>
+          <el-button size="small" text type="primary" @click="selectAllWorkflowDialogCurrentPage">
+            选中当页
+          </el-button>
+          <el-button size="small" text @click="deselectAllWorkflowDialogCurrentPage">
+            取消当页
+          </el-button>
+          <el-button size="small" text type="danger" @click="workflowDialogSelected = new Set()">
+            清空
+          </el-button>
+          <span class="app-dialog__footer-spacer" />
+          <el-button @click="workflowPocDialogVisible = false">取消</el-button>
+          <el-button type="primary" @click="applyWorkflowDialogSelection">
+            保存选择 ({{ workflowDialogSelected.size }})
+          </el-button>
+        </div>
+      </template>
     </el-dialog>
   </section>
 </template>
@@ -7236,6 +7482,9 @@ onBeforeUnmount(() => {
   font-size: var(--type-micro);
   color: var(--app-muted);
   font-family: var(--fluent-mono, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .workflow-poc-option-tags {
   display: flex;
@@ -7243,33 +7492,128 @@ onBeforeUnmount(() => {
   gap: 4px;
   flex-shrink: 0;
 }
-.poc-dropdown-search-wrap {
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--app-border, #e2e8f0);
+.workflow-poc-selector {
+  width: 100%;
+}
+.poc-picker-wrapper {
+  margin-top: 4px;
+}
+.poc-selected-summary-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: var(--app-surface, #fff);
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: 4px;
+}
+.poc-selected-count-label {
+  font-size: 12px;
+  color: var(--app-text, #334155);
+}
+.poc-selected-count-label b {
+  color: var(--app-accent, #0284c7);
+}
+.poc-selected-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.poc-selected-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+}
+.poc-tag-item {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+}
+.poc-tag-more {
+  cursor: pointer;
+  font-size: 11px;
+}
+.poc-picker-filters {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.poc-picker-filters :deep(.el-input),
+.poc-picker-filters :deep(.el-select),
+.poc-picker-filters :deep(.el-button),
+.poc-picker-filters :deep(.el-input__wrapper),
+.poc-picker-filters :deep(.el-select__wrapper) {
+  height: 32px !important;
+  min-height: 32px !important;
+  box-sizing: border-box;
+}
+.poc-picker-filters :deep(.el-button) {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+  padding: 0 16px;
+}
+.poc-picker-table-wrapper {
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.poc-dialog-code {
+  font-family: Consolas, monospace;
+  font-weight: 600;
+  font-size: 12px;
+}
+.poc-dialog-name {
+  font-size: 12px;
+}
+.poc-picker-pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+.poc-dialog-count {
+  font-size: 12px;
+  color: var(--app-text, #334155);
+}
+.poc-dialog-count b {
+  color: var(--app-accent, #0284c7);
 }
 :global(.workflow-poc-select-popper) {
-  min-width: 320px !important;
-  max-width: min(480px, calc(100vw - 32px)) !important;
+  min-width: 380px !important;
+  max-width: min(540px, calc(100vw - 32px)) !important;
 }
 :global(.workflow-poc-select-popper .el-select-dropdown__item) {
+  position: relative !important;
   height: auto !important;
   min-height: 42px !important;
-  padding: 6px 14px !important;
+  padding: 6px 38px 6px 14px !important;
   line-height: 1.4 !important;
+}
+:global(.workflow-poc-select-popper .el-select-dropdown__item.is-selected::after) {
+  right: 14px !important;
 }
 :global(.workflow-msf-select-popper) {
   min-width: 360px !important;
   max-width: min(560px, calc(100vw - 32px)) !important;
 }
 :global(.workflow-msf-select-popper .el-select-dropdown__item) {
+  position: relative !important;
   height: auto !important;
   min-height: 32px !important;
-  padding: 6px 14px !important;
+  padding: 6px 38px 6px 14px !important;
   line-height: 1.4 !important;
   white-space: normal !important;
   overflow: visible !important;
   text-overflow: clip !important;
   word-break: break-all !important;
+}
+:global(.workflow-msf-select-popper .el-select-dropdown__item.is-selected::after) {
+  right: 14px !important;
 }
 :global(.workflow-msf-select-popper .el-select__selection) {
   display: flex !important;
