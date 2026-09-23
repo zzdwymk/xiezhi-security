@@ -5975,12 +5975,6 @@ onUnmounted(() => {
             >
             <el-button
               size="small"
-              :loading="projectReportHtmlLoading"
-              @click="downloadProjectSummaryHtml"
-              >导出 HTML</el-button
-            >
-            <el-button
-              size="small"
               type="primary"
               :loading="projectReportPdfLoading"
               @click="downloadProjectSummaryPdf"
@@ -6019,13 +6013,6 @@ onUnmounted(() => {
               :loading="targetReportHtmlLoading"
               @click="openTargetHtmlReport"
               >目标 HTML</el-button
-            >
-            <el-button
-              size="small"
-              :disabled="!reportTarget"
-              :loading="targetReportHtmlLoading"
-              @click="downloadTargetHtmlReport"
-              >导出 HTML</el-button
             >
             <el-button
               size="small"
