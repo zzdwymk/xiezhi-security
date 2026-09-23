@@ -76,7 +76,7 @@ const pocSelectionModes = ref<Record<ActiveScannerSource, "ALL" | "MANUAL">>({
 });
 const POC_SELECTION_MODE_OPTIONS = [
   { label: "全部已同步", value: "ALL" },
-  { label: "手动选择", value: "MANUAL" },
+  { label: "弹窗选择", value: "MANUAL" },
 ];
 const pocOptions = ref<Record<ActiveScannerSource, VulnerabilityDefinition[]>>({
   NUCLEI: [],
@@ -603,24 +603,31 @@ const pocDropdownSearch = ref<Record<ActiveScannerSource, string>>({
 
 let dropdownSearchTimer: ReturnType<typeof setTimeout> | undefined;
 
-function onDropdownSearchInput(source: ActiveScannerSource) {
-  clearTimeout(dropdownSearchTimer);
-  dropdownSearchTimer = setTimeout(() => {
-    void loadPocOptions(source, pocDropdownSearch.value[source]);
-  }, 250);
+let dialogSearchTimer: ReturnType<typeof setTimeout> | undefined;
+
+function onDialogSearchInput() {
+  clearTimeout(dialogSearchTimer);
+  dialogSearchTimer = setTimeout(() => {
+    handlePocDialogFilterChange();
+  }, 300);
 }
 
-function onDropdownSearchClear(source: ActiveScannerSource) {
-  clearTimeout(dropdownSearchTimer);
-  pocDropdownSearch.value[source] = "";
-  void loadPocOptions(source, "");
+function getPocDisplayName(source: ActiveScannerSource, code: string) {
+  const item =
+    pocDialogCachedDefs.get(code) ||
+    pocOptions.value[source].find((p) => p.vulnerabilityCode === code);
+  return item ? item.sourceExternalId || item.name || code : code;
 }
 
-function onPocSelectVisibleChange(source: ActiveScannerSource, visible: boolean) {
-  if (visible) {
-    if (!pocOptions.value[source].length || pocDropdownSearch.value[source]) {
-      void loadPocOptions(source, pocDropdownSearch.value[source]);
-    }
+function removeSelectedPoc(source: ActiveScannerSource, code: string) {
+  selectedPocCodes.value[source] = selectedPocCodes.value[source].filter(
+    (c) => c !== code,
+  );
+}
+
+function onPocModeChange(source: ActiveScannerSource, mode: "ALL" | "MANUAL") {
+  if (mode === "MANUAL" && selectedPocCodes.value[source].length === 0) {
+    openPocDialog(source);
   }
 }
 
@@ -1871,97 +1878,80 @@ onUnmounted(() => {
           </el-checkbox>
         </el-checkbox-group>
         <template v-for="source in selectedScannerSources" :key="source">
-          <div class="poc-label-row">
-            <label>{{ sourceLabel(source) }} PoC</label>
-            <el-button
-              v-if="pocSelectionModes[source] === 'MANUAL'"
-              type="primary"
-              link
-              size="small"
-              class="poc-search-btn"
-              @click="openPocDialog(source)"
-            >
-              <el-icon><Search /></el-icon>
-              <span>弹窗搜索选择</span>
-            </el-button>
-          </div>
+          <label>{{ sourceLabel(source) }} PoC</label>
           <el-segmented
             v-model="pocSelectionModes[source]"
             class="poc-selection-mode"
             :options="POC_SELECTION_MODE_OPTIONS"
+            @change="(mode: 'ALL' | 'MANUAL') => onPocModeChange(source, mode)"
           />
           <p v-if="pocSelectionModes[source] === 'ALL'" class="poc-help">
             将使用当前已同步且可执行的全部
             {{ sourceCatalogCount(source) }} 个 {{ sourceLabel(source) }} PoC。
           </p>
           <template v-else>
-            <el-select
-              v-model="selectedPocCodes[source]"
-              class="poc-selector"
-              multiple
-              filterable
-              remote
-              reserve-keyword
-              collapse-tags
-              :max-collapse-tags="2"
-              :loading="pocLoading[source]"
-              :placeholder="`搜索并选择 ${sourceLabel(source)} PoC`"
-              style="width: 100%"
-              @remote-method="(value: string) => { pocDropdownSearch[source] = value; onDropdownSearchInput(source); }"
-              @visible-change="(visible: boolean) => onPocSelectVisibleChange(source, visible)"
-            >
-              <template #prefix>
-                <el-icon><Search /></el-icon>
-              </template>
-              <template #header>
-                <div class="poc-dropdown-search-wrap" @click.stop @keydown.stop>
-                  <el-input
-                    v-model="pocDropdownSearch[source]"
-                    size="small"
-                    clearable
-                    placeholder="输入 CVE、名称或标签即时搜索..."
-                    @input="onDropdownSearchInput(source)"
-                    @clear="onDropdownSearchClear(source)"
-                  >
-                    <template #prefix>
-                      <el-icon><Search /></el-icon>
-                    </template>
-                  </el-input>
-                </div>
-              </template>
-              <el-option
-                v-for="poc in pocOptions[source]"
-                :key="poc.vulnerabilityCode"
-                :label="pocOptionLabel(poc)"
-                :value="poc.vulnerabilityCode"
+            <div class="poc-selector poc-picker-wrapper">
+              <el-button
+                v-if="!selectedPocCodes[source].length"
+                type="primary"
+                plain
+                style="width: 100%"
+                :icon="Search"
+                @click="openPocDialog(source)"
               >
-                <span class="poc-option">
-                  <span>
-                    <b>{{ poc.name }}</b>
-                    <small>{{
-                      poc.sourceExternalId || poc.vulnerabilityCode
-                    }}</small>
-                  </span>
-                  <span class="poc-option-tags">
-                    <el-tag size="small" :type="severityType(poc.severity)">{{
-                      severityLabel(poc.severity)
-                    }}</el-tag>
-                    <el-tag size="small" :type="safetyType(poc.scanSafety)">{{
-                      poc.scanSafety || "SAFE"
-                    }}</el-tag>
-                  </span>
+                选择 PoC
+              </el-button>
+              <div v-else class="poc-selected-summary-bar">
+                <span class="poc-selected-count-label">
+                  已选 <b>{{ selectedPocCodes[source].length }}</b> 个 PoC
                 </span>
-              </el-option>
-              <template #empty>
-                <div class="poc-empty">
-                  未同步到具体 PoC，请在漏洞知识库右上角同步
-                  {{ sourceLabel(source) }}。
+                <div class="poc-selected-actions">
+                  <el-button
+                    link
+                    type="primary"
+                    size="small"
+                    @click="openPocDialog(source)"
+                  >
+                    修改
+                  </el-button>
+                  <el-button
+                    link
+                    type="danger"
+                    size="small"
+                    @click="selectedPocCodes[source] = []"
+                  >
+                    清空
+                  </el-button>
                 </div>
-              </template>
-            </el-select>
-            <p class="poc-help">
-              已选 {{ selectedPocCodes[source].length }} 个；执行分级仅作风险提示，不限制明确选择的 PoC。
-            </p>
+              </div>
+
+              <!-- 已选 PoC 预览标签 -->
+              <div
+                v-if="selectedPocCodes[source].length"
+                class="poc-selected-tags"
+              >
+                <el-tag
+                  v-for="code in selectedPocCodes[source].slice(0, 4)"
+                  :key="code"
+                  size="small"
+                  closable
+                  type="info"
+                  class="poc-tag-item"
+                  @close="removeSelectedPoc(source, code)"
+                >
+                  {{ getPocDisplayName(source, code) }}
+                </el-tag>
+                <el-tag
+                  v-if="selectedPocCodes[source].length > 4"
+                  size="small"
+                  type="info"
+                  class="poc-tag-more"
+                  @click="openPocDialog(source)"
+                >
+                  +{{ selectedPocCodes[source].length - 4 }}...
+                </el-tag>
+              </div>
+            </div>
           </template>
         </template>
         <template v-if="includesPortScan">
@@ -2083,6 +2073,7 @@ onUnmounted(() => {
     v-model="pocDialogVisible"
     :title="`选择 ${sourceLabel(pocDialogSource)} PoC`"
     class="app-dialog app-dialog--wide poc-picker-dialog"
+    align-center
     destroy-on-close
     append-to-body
   >
@@ -2090,9 +2081,9 @@ onUnmounted(() => {
       <el-input
         v-model="pocDialogSearch"
         clearable
-        size="small"
         placeholder="搜索 CVE 编号、名称或标签..."
         style="width: 280px"
+        @input="onDialogSearchInput"
         @keyup.enter="handlePocDialogFilterChange"
         @clear="handlePocDialogFilterChange"
       >
@@ -2104,8 +2095,7 @@ onUnmounted(() => {
         v-model="pocDialogSeverity"
         placeholder="严重度"
         clearable
-        size="small"
-        style="width: 120px"
+        style="width: 130px"
         @change="handlePocDialogFilterChange"
       >
         <el-option label="全部严重度" value="" />
@@ -2119,8 +2109,7 @@ onUnmounted(() => {
         v-model="pocDialogSafety"
         placeholder="执行分级"
         clearable
-        size="small"
-        style="width: 120px"
+        style="width: 130px"
         @change="handlePocDialogFilterChange"
       >
         <el-option label="全部分级" value="" />
@@ -2130,7 +2119,6 @@ onUnmounted(() => {
       </el-select>
       <el-button
         type="primary"
-        size="small"
         :icon="Search"
         @click="handlePocDialogFilterChange"
       >
@@ -3090,30 +3078,46 @@ onUnmounted(() => {
   .el-segmented__item-selected {
   transform: translateX(100%) translateZ(0) !important;
 }
-.poc-selector {
+.poc-picker-wrapper {
   margin-top: 8px;
 }
-.poc-label-row {
+.poc-selected-summary-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin: 18px 0 8px;
+  padding: 6px 10px;
+  background: var(--app-surface, #fff);
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: 4px;
 }
-.poc-label-row > label {
-  margin: 0 !important;
-  color: #64748b;
-  font-size: 10px;
-  font-weight: 600;
+.poc-selected-count-label {
+  font-size: 12px;
+  color: var(--app-text, #334155);
 }
-.poc-search-btn {
+.poc-selected-count-label b {
+  color: var(--app-accent, #0284c7);
+}
+.poc-selected-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.poc-selected-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+}
+.poc-tag-item {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 11px;
-  padding: 0;
-  height: auto;
-  gap: 3px;
 }
-.poc-dropdown-search-wrap {
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--app-border, #e2e8f0);
+.poc-tag-more {
+  cursor: pointer;
+  font-size: 11px;
 }
 .poc-picker-filters {
   display: flex;
@@ -3121,6 +3125,21 @@ onUnmounted(() => {
   gap: 10px;
   margin-bottom: 12px;
   flex-wrap: wrap;
+}
+.poc-picker-filters :deep(.el-input),
+.poc-picker-filters :deep(.el-select),
+.poc-picker-filters :deep(.el-button),
+.poc-picker-filters :deep(.el-input__wrapper),
+.poc-picker-filters :deep(.el-select__wrapper) {
+  height: 32px !important;
+  min-height: 32px !important;
+  box-sizing: border-box;
+}
+.poc-picker-filters :deep(.el-button) {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+  padding: 0 16px;
 }
 .poc-picker-table-wrapper {
   border: 1px solid var(--app-border, #e2e8f0);

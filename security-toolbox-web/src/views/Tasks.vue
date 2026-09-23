@@ -580,20 +580,127 @@ async function loadSchedulePocOptions(search = "") {
   }
 }
 
-const schedulePocSearch = ref("");
-let schedulePocSearchTimer: ReturnType<typeof setTimeout> | undefined;
+// 定时任务 PoC 弹窗选择状态与操作
+const schedulePocDialogVisible = ref(false);
+const scheduleDialogSearch = ref("");
+const scheduleDialogSeverity = ref("");
+const scheduleDialogLoading = ref(false);
+const scheduleDialogList = ref<VulnerabilityDefinition[]>([]);
+const scheduleDialogTotal = ref(0);
+const scheduleDialogPage = ref(0);
+const scheduleDialogPageSize = 20;
+const scheduleDialogSelected = ref<Set<string>>(new Set());
+const scheduleDialogCachedDefs = new Map<string, VulnerabilityDefinition>();
 
-function onSchedulePocSearchInput() {
-  clearTimeout(schedulePocSearchTimer);
-  schedulePocSearchTimer = setTimeout(() => {
-    void loadSchedulePocOptions(schedulePocSearch.value);
-  }, 250);
+let scheduleDialogSearchTimer: ReturnType<typeof setTimeout> | undefined;
+
+function openSchedulePocDialog() {
+  const source = scheduleScannerSource.value;
+  if (!source) return;
+  scheduleDialogSearch.value = "";
+  scheduleDialogSeverity.value = "";
+  scheduleDialogPage.value = 0;
+  scheduleDialogSelected.value = new Set(scheduleForm.value.pocCodes);
+  for (const item of schedulePocOptions.value) {
+    scheduleDialogCachedDefs.set(item.vulnerabilityCode, item);
+  }
+  schedulePocDialogVisible.value = true;
+  void loadScheduleDialogData();
 }
 
-function onSchedulePocSearchClear() {
-  clearTimeout(schedulePocSearchTimer);
-  schedulePocSearch.value = "";
-  void loadSchedulePocOptions("");
+async function loadScheduleDialogData() {
+  const source = scheduleScannerSource.value;
+  if (!source) return;
+  scheduleDialogLoading.value = true;
+  try {
+    const { data } = await endpoints.vulnerabilities({
+      page: scheduleDialogPage.value,
+      size: scheduleDialogPageSize,
+      source,
+      scanSafety: "SAFE",
+      query: scheduleDialogSearch.value.trim() || undefined,
+      severity: scheduleDialogSeverity.value || undefined,
+    });
+    scheduleDialogList.value = data.content || [];
+    scheduleDialogTotal.value = data.totalElements || 0;
+    for (const item of scheduleDialogList.value) {
+      scheduleDialogCachedDefs.set(item.vulnerabilityCode, item);
+    }
+  } catch (error) {
+    ElMessage.error(toErrorMessage(error, "加载 SAFE PoC 列表失败"));
+  } finally {
+    scheduleDialogLoading.value = false;
+  }
+}
+
+function onScheduleDialogSearchInput() {
+  clearTimeout(scheduleDialogSearchTimer);
+  scheduleDialogSearchTimer = setTimeout(() => {
+    scheduleDialogPage.value = 0;
+    void loadScheduleDialogData();
+  }, 300);
+}
+
+function handleScheduleDialogFilterChange() {
+  scheduleDialogPage.value = 0;
+  void loadScheduleDialogData();
+}
+
+function handleScheduleDialogPageChange(newPage: number) {
+  scheduleDialogPage.value = Math.max(0, newPage - 1);
+  void loadScheduleDialogData();
+}
+
+function toggleScheduleDialogCode(code: string) {
+  if (scheduleDialogSelected.value.has(code)) {
+    scheduleDialogSelected.value.delete(code);
+  } else {
+    if (scheduleDialogSelected.value.size >= 50) {
+      ElMessage.warning("单个定时任务最多选择 50 个 PoC");
+      return;
+    }
+    scheduleDialogSelected.value.add(code);
+  }
+  scheduleDialogSelected.value = new Set(scheduleDialogSelected.value);
+}
+
+function selectAllScheduleDialogCurrentPage() {
+  for (const item of scheduleDialogList.value) {
+    if (scheduleDialogSelected.value.size >= 50) {
+      ElMessage.warning("已达到单个定时任务最多 50 个 PoC 限制");
+      break;
+    }
+    scheduleDialogSelected.value.add(item.vulnerabilityCode);
+  }
+  scheduleDialogSelected.value = new Set(scheduleDialogSelected.value);
+}
+
+function deselectAllScheduleDialogCurrentPage() {
+  for (const item of scheduleDialogList.value) {
+    scheduleDialogSelected.value.delete(item.vulnerabilityCode);
+  }
+  scheduleDialogSelected.value = new Set(scheduleDialogSelected.value);
+}
+
+function applyScheduleDialogSelection() {
+  scheduleForm.value.pocCodes = Array.from(scheduleDialogSelected.value);
+  schedulePocDialogVisible.value = false;
+  ElMessage.success(
+    `已为定时任务选定 ${scheduleForm.value.pocCodes.length} 个 SAFE PoC`,
+  );
+}
+
+function getSchedulePocName(code: string) {
+  const item =
+    scheduleDialogCachedDefs.get(code) ||
+    schedulePocOptions.value.find((p) => p.vulnerabilityCode === code);
+  return item ? item.sourceExternalId || item.name || code : code;
+}
+
+function removeSchedulePoc(code: string) {
+  scheduleForm.value.pocCodes = scheduleForm.value.pocCodes.filter(
+    (c) => c !== code,
+  );
 }
 
 function onScheduleToolChange(toolCode: string) {
@@ -1526,80 +1633,68 @@ onUnmounted(() => {
             </div>
           </el-form-item>
           <el-form-item label="指定 PoC">
-            <el-select
-              v-model="scheduleForm.pocCodes"
-              class="schedule-poc-selector"
-              aria-label="指定 PoC"
-              multiple
-              filterable
-              remote
-              reserve-keyword
-              collapse-tags
-              :max-collapse-tags="2"
-              :multiple-limit="50"
-              :loading="schedulePocLoading"
-              :placeholder="`搜索并选择 ${scheduleScannerSource} PoC`"
-              @remote-method="(value: string) => { schedulePocSearch = value; onSchedulePocSearchInput(); }"
-              @visible-change="
-                (visible: boolean) =>
-                  visible && (!schedulePocOptions.length || schedulePocSearch) && loadSchedulePocOptions(schedulePocSearch)
-              "
-            >
-              <template #prefix>
-                <el-icon><Search /></el-icon>
-              </template>
-              <template #header>
-                <div class="poc-dropdown-search-wrap" @click.stop @keydown.stop>
-                  <el-input
-                    v-model="schedulePocSearch"
-                    size="small"
-                    clearable
-                    placeholder="输入 CVE、名称或标签即时搜索..."
-                    @input="onSchedulePocSearchInput"
-                    @clear="onSchedulePocSearchClear"
-                  >
-                    <template #prefix>
-                      <el-icon><Search /></el-icon>
-                    </template>
-                  </el-input>
-                </div>
-              </template>
-              <el-option
-                v-for="poc in schedulePocOptions"
-                :key="poc.vulnerabilityCode"
-                :label="schedulePocOptionLabel(poc)"
-                :value="poc.vulnerabilityCode"
+            <div class="schedule-poc-selector poc-picker-wrapper">
+              <el-button
+                v-if="!scheduleForm.pocCodes.length"
+                type="primary"
+                plain
+                style="width: 100%"
+                :icon="Search"
+                @click="openSchedulePocDialog"
               >
-                <span class="schedule-poc-option">
-                  <span>
-                    <b>{{ poc.name }}</b>
-                    <small>{{
-                      poc.sourceExternalId || poc.vulnerabilityCode
-                    }}</small>
-                  </span>
-                  <span class="schedule-poc-option-tags">
-                    <el-tag
-                      size="small"
-                      :type="scheduleSeverityType(poc.severity)"
-                      >{{ severityLabel(poc.severity) }}</el-tag
-                    >
-                    <el-tag
-                      size="small"
-                      :type="scheduleSafetyType(poc.scanSafety)"
-                      >{{ poc.scanSafety || "SAFE" }}</el-tag
-                    >
-                  </span>
+                选择 PoC
+              </el-button>
+              <div v-else class="poc-selected-summary-bar">
+                <span class="poc-selected-count-label">
+                  已选 <b>{{ scheduleForm.pocCodes.length }}</b> / 50 个 SAFE PoC
                 </span>
-              </el-option>
-              <template #empty>
-                <div class="schedule-poc-empty">
-                  未检索到 SAFE PoC，请先在漏洞知识库同步并复核对应扫描器目录。
+                <div class="poc-selected-actions">
+                  <el-button
+                    link
+                    type="primary"
+                    size="small"
+                    @click="openSchedulePocDialog"
+                  >
+                    修改
+                  </el-button>
+                  <el-button
+                    link
+                    type="danger"
+                    size="small"
+                    @click="scheduleForm.pocCodes = []"
+                  >
+                    清空
+                  </el-button>
                 </div>
-              </template>
-            </el-select>
-            <p class="schedule-parameter-help">
-              已选择 {{ scheduleForm.pocCodes.length }} / 50 个。
-            </p>
+              </div>
+
+              <!-- 已选 PoC 预览标签 -->
+              <div
+                v-if="scheduleForm.pocCodes.length"
+                class="poc-selected-tags"
+              >
+                <el-tag
+                  v-for="code in scheduleForm.pocCodes.slice(0, 4)"
+                  :key="code"
+                  size="small"
+                  closable
+                  type="success"
+                  class="poc-tag-item"
+                  @close="removeSchedulePoc(code)"
+                >
+                  {{ getSchedulePocName(code) }}
+                </el-tag>
+                <el-tag
+                  v-if="scheduleForm.pocCodes.length > 4"
+                  size="small"
+                  type="info"
+                  class="poc-tag-more"
+                  @click="openSchedulePocDialog"
+                >
+                  +{{ scheduleForm.pocCodes.length - 4 }}...
+                </el-tag>
+              </div>
+            </div>
           </el-form-item>
         </template>
       </section>
@@ -2043,6 +2138,131 @@ onUnmounted(() => {
       <el-button @click="detailVisible = false">关闭</el-button>
     </template>
   </el-dialog>
+
+  <!-- 定时任务指定 SAFE PoC 弹窗 -->
+  <el-dialog
+    v-model="schedulePocDialogVisible"
+    :title="`选择 ${scheduleScannerSource} SAFE PoC`"
+    class="app-dialog app-dialog--wide poc-picker-dialog"
+    align-center
+    destroy-on-close
+    append-to-body
+  >
+    <div class="poc-picker-filters">
+      <el-input
+        v-model="scheduleDialogSearch"
+        clearable
+        placeholder="搜索 CVE 编号、名称或标签..."
+        style="width: 280px"
+        @input="onScheduleDialogSearchInput"
+        @keyup.enter="handleScheduleDialogFilterChange"
+        @clear="handleScheduleDialogFilterChange"
+      >
+        <template #prefix>
+          <el-icon><Search /></el-icon>
+        </template>
+      </el-input>
+      <el-select
+        v-model="scheduleDialogSeverity"
+        placeholder="严重度"
+        clearable
+        style="width: 130px"
+        @change="handleScheduleDialogFilterChange"
+      >
+        <el-option label="全部严重度" value="" />
+        <el-option label="严重" value="CRITICAL" />
+        <el-option label="高危" value="HIGH" />
+        <el-option label="中危" value="MEDIUM" />
+        <el-option label="低危" value="LOW" />
+        <el-option label="信息" value="INFO" />
+      </el-select>
+      <el-button
+        type="primary"
+        :icon="Search"
+        @click="handleScheduleDialogFilterChange"
+      >
+        搜索
+      </el-button>
+    </div>
+
+    <div class="poc-picker-table-wrapper" v-loading="scheduleDialogLoading">
+      <el-table
+        :data="scheduleDialogList"
+        row-key="vulnerabilityCode"
+        size="small"
+        height="360"
+        stripe
+        @row-click="(row: VulnerabilityDefinition) => toggleScheduleDialogCode(row.vulnerabilityCode)"
+      >
+        <el-table-column width="45" align="center">
+          <template #default="{ row }">
+            <el-checkbox
+              :model-value="scheduleDialogSelected.has(row.vulnerabilityCode)"
+              @click.stop
+              @change="toggleScheduleDialogCode(row.vulnerabilityCode)"
+            />
+          </template>
+        </el-table-column>
+        <el-table-column label="编号 / CVE" min-width="160" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span class="poc-dialog-code">{{ row.sourceExternalId || row.vulnerabilityCode }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="PoC / 漏洞名称" min-width="260" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span class="poc-dialog-name">{{ row.name }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="严重度" width="90" align="center">
+          <template #default="{ row }">
+            <el-tag size="small" :type="scheduleSeverityType(row.severity)">
+              {{ severityLabel(row.severity) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="执行分级" width="90" align="center">
+          <template #default="{ row }">
+            <el-tag size="small" :type="scheduleSafetyType(row.scanSafety)">
+              {{ row.scanSafety || "SAFE" }}
+            </el-tag>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
+
+    <div class="poc-picker-pagination">
+      <el-pagination
+        :current-page="scheduleDialogPage + 1"
+        :page-size="scheduleDialogPageSize"
+        :total="scheduleDialogTotal"
+        layout="total, prev, pager, next"
+        size="small"
+        @current-change="handleScheduleDialogPageChange"
+      />
+    </div>
+
+    <template #footer>
+      <div class="app-dialog__footer-row">
+        <span class="poc-dialog-count">
+          已选 <b>{{ scheduleDialogSelected.size }}</b> / 50 个 SAFE PoC
+        </span>
+        <el-button size="small" text type="primary" @click="selectAllScheduleDialogCurrentPage">
+          选中当页
+        </el-button>
+        <el-button size="small" text @click="deselectAllScheduleDialogCurrentPage">
+          取消当页
+        </el-button>
+        <el-button size="small" text type="danger" @click="scheduleDialogSelected = new Set()">
+          清空
+        </el-button>
+        <span class="app-dialog__footer-spacer" />
+        <el-button @click="schedulePocDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="applyScheduleDialogSelection">
+          保存选择 ({{ scheduleDialogSelected.size }})
+        </el-button>
+      </div>
+    </template>
+  </el-dialog>
 </template>
 
 <style scoped>
@@ -2238,9 +2458,104 @@ onUnmounted(() => {
 .schedule-poc-selector {
   width: 100%;
 }
-.poc-dropdown-search-wrap {
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--app-border, #e2e8f0);
+.poc-picker-wrapper {
+  margin-top: 4px;
+}
+.poc-selected-summary-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: var(--app-surface, #fff);
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: 4px;
+}
+.poc-selected-count-label {
+  font-size: 12px;
+  color: var(--app-text, #334155);
+}
+.poc-selected-count-label b {
+  color: var(--app-accent, #0284c7);
+}
+.poc-selected-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.poc-selected-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+}
+.poc-tag-item {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+}
+.poc-tag-more {
+  cursor: pointer;
+  font-size: 11px;
+}
+.poc-picker-filters {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.poc-picker-filters :deep(.el-input),
+.poc-picker-filters :deep(.el-select),
+.poc-picker-filters :deep(.el-button),
+.poc-picker-filters :deep(.el-input__wrapper),
+.poc-picker-filters :deep(.el-select__wrapper) {
+  height: 32px !important;
+  min-height: 32px !important;
+  box-sizing: border-box;
+}
+.poc-picker-filters :deep(.el-button) {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+  padding: 0 16px;
+}
+.poc-picker-table-wrapper {
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.poc-dialog-code {
+  font-family: Consolas, monospace;
+  font-weight: 600;
+  font-size: 12px;
+}
+.poc-dialog-name {
+  font-size: 12px;
+}
+.poc-picker-pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+.poc-dialog-count {
+  font-size: 12px;
+  color: var(--app-text, #334155);
+}
+.poc-dialog-count b {
+  color: var(--app-accent, #0284c7);
+}
+:global(.schedule-poc-select-popper) {
+  min-width: 380px !important;
+  max-width: min(540px, calc(100vw - 32px)) !important;
+}
+:global(.schedule-poc-select-popper .el-select-dropdown__item) {
+  position: relative !important;
+  padding: 6px 38px 6px 14px !important;
+}
+:global(.schedule-poc-select-popper .el-select-dropdown__item.is-selected::after) {
+  right: 14px !important;
 }
 .schedule-poc-option {
   display: flex;

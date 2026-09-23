@@ -1601,6 +1601,19 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
   font-size: 12px;
 }
 
+.el-select-dropdown.is-multiple .el-select-dropdown__item {
+  position: relative !important;
+  padding: 6px 38px 6px 14px !important;
+}
+
+.el-select-dropdown.is-multiple .el-select-dropdown__item.is-selected::after {
+  right: 14px !important;
+}
+
+.el-cascader-node {
+  padding-right: 32px !important;
+}
+
 .el-dropdown-menu__item:hover,
 .el-select-dropdown__item.hover,
 .el-select-dropdown__item.is-hovering,
