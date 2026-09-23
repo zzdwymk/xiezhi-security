@@ -152,6 +152,7 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
           .append(FLUENT_INFO_ICON)
           .append("<div class=\"notice-body\">暂无信息级发现。</div></div>");
     } else {
+      html.append(ReportFormatters.severityChipBar(infoFindings));
       for (Finding finding : infoFindings) appendFinding(html, finding);
     }
     return html.append(

@@ -581,6 +581,7 @@ onBeforeUnmount(() => {
       <el-select
         v-model="targetFilter"
         placeholder="全部目标"
+        filterable
         clearable
         style="width: 170px"
       >

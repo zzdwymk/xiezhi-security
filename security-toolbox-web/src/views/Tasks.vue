@@ -15,7 +15,7 @@ import {
   type TaskControlStatus,
   type VulnerabilityDefinition,
 } from "../api";
-import { InfoCircle } from "../components/fluentIcons";
+import { InfoCircle, Search } from "../components/fluentIcons";
 import AppPagination from "../components/AppPagination.vue";
 import FluentCodeBlock from "../components/FluentCodeBlock.vue";
 import FluentJsonView from "../components/FluentJsonView.vue";
@@ -578,6 +578,22 @@ async function loadSchedulePocOptions(search = "") {
     if (generation === schedulePocLoadGeneration)
       schedulePocLoading.value = false;
   }
+}
+
+const schedulePocSearch = ref("");
+let schedulePocSearchTimer: ReturnType<typeof setTimeout> | undefined;
+
+function onSchedulePocSearchInput() {
+  clearTimeout(schedulePocSearchTimer);
+  schedulePocSearchTimer = setTimeout(() => {
+    void loadSchedulePocOptions(schedulePocSearch.value);
+  }, 250);
+}
+
+function onSchedulePocSearchClear() {
+  clearTimeout(schedulePocSearchTimer);
+  schedulePocSearch.value = "";
+  void loadSchedulePocOptions("");
 }
 
 function onScheduleToolChange(toolCode: string) {
@@ -1523,12 +1539,31 @@ onUnmounted(() => {
               :multiple-limit="50"
               :loading="schedulePocLoading"
               :placeholder="`搜索并选择 ${scheduleScannerSource} PoC`"
-              @remote-method="loadSchedulePocOptions"
+              @remote-method="(value: string) => { schedulePocSearch = value; onSchedulePocSearchInput(); }"
               @visible-change="
                 (visible: boolean) =>
-                  visible && !schedulePocOptions.length && loadSchedulePocOptions()
+                  visible && (!schedulePocOptions.length || schedulePocSearch) && loadSchedulePocOptions(schedulePocSearch)
               "
             >
+              <template #prefix>
+                <el-icon><Search /></el-icon>
+              </template>
+              <template #header>
+                <div class="poc-dropdown-search-wrap" @click.stop @keydown.stop>
+                  <el-input
+                    v-model="schedulePocSearch"
+                    size="small"
+                    clearable
+                    placeholder="输入 CVE、名称或标签即时搜索..."
+                    @input="onSchedulePocSearchInput"
+                    @clear="onSchedulePocSearchClear"
+                  >
+                    <template #prefix>
+                      <el-icon><Search /></el-icon>
+                    </template>
+                  </el-input>
+                </div>
+              </template>
               <el-option
                 v-for="poc in schedulePocOptions"
                 :key="poc.vulnerabilityCode"
@@ -2202,6 +2237,10 @@ onUnmounted(() => {
 }
 .schedule-poc-selector {
   width: 100%;
+}
+.poc-dropdown-search-wrap {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--app-border, #e2e8f0);
 }
 .schedule-poc-option {
   display: flex;

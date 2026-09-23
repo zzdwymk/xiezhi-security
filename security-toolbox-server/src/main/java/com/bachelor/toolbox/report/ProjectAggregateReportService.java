@@ -164,6 +164,8 @@ public class ProjectAggregateReportService {
       html.append("<div class=\"notice\">")
           .append(FLUENT_INFO_ICON)
           .append("<div class=\"notice-body\">暂无信息级发现。</div></div>");
+    } else {
+      html.append(ReportFormatters.severityChipBar(infoFindings));
     }
     for (Finding finding : infoFindings) {
       appendFinding(html, finding);

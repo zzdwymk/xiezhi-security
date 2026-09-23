@@ -5,6 +5,7 @@ import java.awt.Color;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
@@ -117,6 +118,45 @@ final class ReportFormatters {
     };
   }
 
+  /**
+   * 渲染一组按危害等级聚合的胶囊汇总条，用于说明"风险点/信息项"可能包含中危等暴露面条目：
+   * 等级仅表示关注程度，不代表已确认为漏洞。
+   */
+  public static String severityChipBar(List<Finding> findings) {
+    long critical = 0, high = 0, medium = 0, low = 0, info = 0;
+    for (Finding f : findings) {
+      String s = f.getSeverity() == null ? "" : f.getSeverity().toUpperCase(Locale.ROOT);
+      switch (s) {
+        case "CRITICAL" -> critical++;
+        case "HIGH" -> high++;
+        case "MEDIUM" -> medium++;
+        case "LOW" -> low++;
+        default -> info++;
+      }
+    }
+    List<String> chips = new ArrayList<>();
+    appendSeverityChip(chips, "severity-critical", "严重", critical);
+    appendSeverityChip(chips, "severity-high", "高危", high);
+    appendSeverityChip(chips, "severity-medium", "中危", medium);
+    appendSeverityChip(chips, "severity-low", "低危", low);
+    appendSeverityChip(chips, "severity-info", "信息", info);
+    return "<div class=\"rf-count-row\">"
+        + String.join("", chips)
+        + "<span class=\"severity-hint\">等级仅表示该暴露面的关注度，不计入“漏洞发现”。</span></div>";
+  }
+
+  private static void appendSeverityChip(List<String> out, String cls, String label, long count) {
+    if (count <= 0) return;
+    out.add(
+        "<span class=\"severity-badge "
+            + cls
+            + "\">"
+            + label
+            + " "
+            + count
+            + "</span>");
+  }
+
   /** HTML 属性转义，用于写入 data-* 属性值，避免标题中的引号/尖括号破坏标签结构。 */
   public static String escAttr(String value) {
     if (value == null) return "";
@@ -148,7 +188,7 @@ final class ReportFormatters {
 
   /** 导出报告内嵌筛选控件的样式，追加到各报告 <style> 尾部。 */
   public static final String REPORT_FILTER_CSS =
-      ".rf-control{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:12px 14px;background:#f0f6ff;border:1px solid #c7dcff;border-radius:6px;margin:14px 0}.rf-control .rf-title{font-weight:600;color:#172033;margin-right:2px}.rf-control input,.rf-control select{padding:6px 10px;border:1px solid #b7cbe4;border-radius:6px;font:inherit;color:#172033;background:#fff}.rf-control input{flex:1 1 180px;min-width:140px}.rf-control button{padding:6px 14px;border:1px solid #6d98c8;border-radius:6px;background:#fff;color:#0f6cbd;cursor:pointer}.rf-control button:hover{background:#e6f0fb}.rf-control .rf-count{margin-left:auto;color:#65738a;font-size:12px}";
+      ".rf-control{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:12px 14px;background:#f0f6ff;border:1px solid #c7dcff;border-radius:6px;margin:14px 0}.rf-control .rf-title{font-weight:600;color:#172033;margin-right:2px}.rf-control input,.rf-control select{padding:6px 10px;border:1px solid #b7cbe4;border-radius:6px;font:inherit;color:#172033;background:#fff}.rf-control input{flex:1 1 180px;min-width:140px}.rf-control button{padding:6px 14px;border:1px solid #6d98c8;border-radius:6px;background:#fff;color:#0f6cbd;cursor:pointer}.rf-control button:hover{background:#e6f0fb}.rf-control .rf-count{margin-left:auto;color:#65738a;font-size:12px}.rf-count-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0;padding:10px 14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px}.rf-count-row .severity-hint{margin-left:auto;color:#65738a;font-size:12px}";
 
   /**
    * 筛选/搜索/排序的控制条 HTML（放置在漏洞列表之前）。真正的执行脚本 {@link #REPORT_FILTER_SCRIPT}
