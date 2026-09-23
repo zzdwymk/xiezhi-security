@@ -60,13 +60,13 @@ final class ReportFormatters {
   }
 
   public static Color severityColor(String severity) {
-    if (severity == null) return new Color(97, 97, 97);
+    if (severity == null) return new Color(71, 85, 105);
     return switch (severity.toUpperCase(Locale.ROOT)) {
-      case "CRITICAL" -> new Color(196, 43, 28);
-      case "HIGH" -> new Color(188, 75, 0);
-      case "MEDIUM" -> new Color(157, 93, 0);
-      case "LOW" -> new Color(15, 108, 189);
-      default -> new Color(97, 97, 97);
+      case "CRITICAL" -> new Color(164, 38, 44);   // 深蔓越莓红 (Fluent Dark Red)
+      case "HIGH" -> new Color(198, 40, 40);        // 红橙 (Red-Orange)，比严重更亮、偏红
+      case "MEDIUM" -> new Color(152, 111, 11);     // 明亮金黄 (Fluent Marigold/Gold)
+      case "LOW" -> new Color(15, 108, 189);        // 标准蓝 (Fluent Blue)
+      default -> new Color(71, 85, 105);            // 中性灰 (Neutral Slate)
     };
   }
 

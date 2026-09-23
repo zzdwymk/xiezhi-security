@@ -75,15 +75,15 @@ public class ReportService {
     .grid > div { padding: 9px 12px; border-bottom: 1px solid #dce3ed; overflow-wrap: anywhere; }
     .label { background: #f7f9fc; font-weight: 700; }
     .finding { margin: 16px 0; padding: 18px 22px; border: 1px solid #e1dfdd; border-radius: 8px; background: #fff; box-shadow: 0 1.6px 3.6px 0 rgba(0,0,0,0.04), 0 0.3px 0.9px 0 rgba(0,0,0,0.02); page-break-inside: avoid; }
-    .finding.finding-critical { border-color: #fecaca; background: #fffcfc; }
-    .finding.finding-high { border-color: #fed7aa; background: #fffdfa; }
-    .finding.finding-medium { border-color: #fde68a; background: #fffff9; }
-    .finding.finding-low { border-color: #bfdbfe; background: #fdfdff; }
-    .finding.finding-info { border-color: #e2e8f0; background: #fcfcfc; }
+    .finding.finding-critical { border-color: #fca5a5; background: #fffbfa; }
+    .finding.finding-high { border-color: #f2a0a0; background: #fff7f6; }
+    .finding.finding-medium { border-color: #fde047; background: #fefdf0; }
+    .finding.finding-low { border-color: #93c5fd; background: #f8fbff; }
+    .finding.finding-info { border-color: #cbd5e1; background: #fcfcfd; }
     .severity-badge { display: inline-flex; align-items: center; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; line-height: 1.4; border: 1px solid transparent; margin-left: 8px; vertical-align: middle; }
-    .severity-badge.severity-critical { color: #b71c1c; background: #fef2f2; border-color: #fecaca; }
-    .severity-badge.severity-high { color: #c2410c; background: #fff7ed; border-color: #fed7aa; }
-    .severity-badge.severity-medium { color: #b45309; background: #fffbeb; border-color: #fde68a; }
+    .severity-badge.severity-critical { color: #a4262c; background: #fdf2f2; border-color: #fecaca; }
+    .severity-badge.severity-high { color: #c62828; background: #feecec; border-color: #f8c0c0; }
+    .severity-badge.severity-medium { color: #986f0b; background: #fefce8; border-color: #fef08a; }
     .severity-badge.severity-low { color: #0f6cbd; background: #eff6ff; border-color: #bfdbfe; }
     .severity-badge.severity-info { color: #475569; background: #f8fafc; border-color: #e2e8f0; }
     pre { margin: 8px 0 0; padding: 12px; background: #0f172a; color: #e2e8f0; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 6px; }
