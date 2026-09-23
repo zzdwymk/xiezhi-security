@@ -268,6 +268,37 @@ const findingStatusFilter = ref(
 const findingSearchQuery = ref(
   typeof route.query.q === "string" ? route.query.q : "",
 );
+const findingSort = ref("time-desc");
+const FINDING_SORT_OPTIONS = [
+  { label: "严重度从高到低", value: "sev-desc" },
+  { label: "严重度从低到高", value: "sev-asc" },
+  { label: "时间从新到旧", value: "time-desc" },
+  { label: "时间从旧到新", value: "time-asc" },
+  { label: "ID 从大到小", value: "id-desc" },
+  { label: "ID 从小到大", value: "id-asc" },
+  { label: "标题 A-Z", value: "title-asc" },
+];
+function findingRank(s?: string) {
+  const order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"];
+  const i = order.indexOf((s || "").toUpperCase());
+  return i < 0 ? order.length : i;
+}
+function compareProjectFindings(a: ProjectFindingRecord, b: ProjectFindingRecord) {
+  const mode = findingSort.value;
+  if (mode === "sev-desc")
+    return findingRank(a.severity) - findingRank(b.severity);
+  if (mode === "sev-asc")
+    return findingRank(b.severity) - findingRank(a.severity);
+  if (mode === "time-desc")
+    return (new Date(b.createdAt || 0).getTime()) - (new Date(a.createdAt || 0).getTime());
+  if (mode === "time-asc")
+    return (new Date(a.createdAt || 0).getTime()) - (new Date(b.createdAt || 0).getTime());
+  if (mode === "id-desc")
+    return (b.id || 0) - (a.id || 0);
+  if (mode === "title-asc")
+    return String(a.title || "").localeCompare(String(b.title || ""), "zh-Hans-CN");
+  return (a.id || 0) - (b.id || 0);
+}
 
 watch(
   () => [
@@ -330,13 +361,7 @@ const filteredProjectFindings = computed(() => {
       return true;
     })
     .slice()
-    .sort((a, b) => {
-      // 严格倒序排列：最新发现的漏洞/风险项排在最前（按 ID 降序或发现时间降序）
-      const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-      const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-      if (timeB !== timeA) return timeB - timeA;
-      return (b.id || 0) - (a.id || 0);
-    });
+    .sort(compareProjectFindings);
 });
 const {
   page: findingPage,
@@ -383,6 +408,36 @@ const reportSummaryLoading = ref(false);
 const reportPreviewVisible = ref(false);
 const reportPreviewTitle = ref("");
 const reportPreviewHtml = ref("");
+const reportPreviewSource = ref("");
+const previewSearch = ref("");
+const previewSeverity = ref("");
+const previewStatus = ref("");
+const previewSort = ref("sev-desc");
+const PREVIEW_SEVERITY_OPTIONS = [
+  { label: "严重", value: "CRITICAL" },
+  { label: "高危", value: "HIGH" },
+  { label: "中危", value: "MEDIUM" },
+  { label: "低危", value: "LOW" },
+  { label: "信息", value: "INFO" },
+];
+const PREVIEW_STATUS_OPTIONS = [
+  { label: "待处理", value: "OPEN" },
+  { label: "已确认", value: "VERIFIED" },
+  { label: "已复测", value: "RETESTED" },
+  { label: "已关闭", value: "CLOSED" },
+  { label: "误报", value: "FALSE_POSITIVE" },
+];
+const PREVIEW_SORT_OPTIONS = [
+  { label: "严重度从高到低", value: "sev-desc" },
+  { label: "严重度从低到高", value: "sev-asc" },
+  { label: "时间从新到旧", value: "time-desc" },
+  { label: "时间从旧到新", value: "time-asc" },
+  { label: "ID 从大到小", value: "id-desc" },
+  { label: "ID 从小到大", value: "id-asc" },
+];
+const previewHasFindings = computed(() =>
+  reportPreviewSource.value.includes("data-rf-finding"),
+);
 const workflowRunning = ref(false);
 const workflowLog = ref<string[]>([]);
 const workflowProgress = ref(0);
@@ -1737,14 +1792,94 @@ function buildSandboxedReportHtml(source: string): string {
 }
 
 function showReportPreview(source: string, title: string) {
-  reportPreviewHtml.value = buildSandboxedReportHtml(source);
+  reportPreviewSource.value = source;
+  reportPreviewHtml.value = buildFilteredReportHtml(source);
   reportPreviewTitle.value = title;
   reportPreviewVisible.value = true;
 }
 
 function resetReportPreview() {
   reportPreviewHtml.value = "";
+  reportPreviewSource.value = "";
+  previewSearch.value = "";
+  previewSeverity.value = "";
+  previewStatus.value = "";
+  previewSort.value = "sev-desc";
   reportPreviewTitle.value = "";
+}
+
+function rankSeverity(s?: string) {
+  const order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"];
+  const i = order.indexOf((s || "").toUpperCase());
+  return i < 0 ? order.length : i;
+}
+
+function applyPreviewFilters() {
+  if (!reportPreviewSource.value) return;
+  reportPreviewHtml.value = buildFilteredReportHtml(
+    reportPreviewSource.value,
+  );
+}
+
+function resetPreviewFilters() {
+  previewSearch.value = "";
+  previewSeverity.value = "";
+  previewStatus.value = "";
+  previewSort.value = "sev-desc";
+  applyPreviewFilters();
+}
+
+/**
+ * 在沙箱预览外根据搜索/等级/状态/排序控件重排报告中的漏洞卡片，
+ * 再交给只读沙箱序列化。报告无漏洞列表时原样返回（不做任何改动）。
+ */
+function buildFilteredReportHtml(source: string): string {
+  const q = previewSearch.value.trim().toLowerCase();
+  const sev = previewSeverity.value;
+  const status = previewStatus.value;
+  const sort = previewSort.value;
+  const doc = new DOMParser().parseFromString(source, "text/html");
+  const list = doc.querySelector("[data-rf-list]");
+  const items = list
+    ? Array.from(list.querySelectorAll<HTMLElement>("[data-rf-finding]"))
+    : [];
+  if (items.length === 0) return buildSandboxedReportHtml(source);
+
+  const visible: HTMLElement[] = [];
+  items.forEach((it) => {
+    let matches = true;
+    if (sev && it.getAttribute("data-severity") !== sev) matches = false;
+    if (status && it.getAttribute("data-status") !== status) matches = false;
+    if (
+      q &&
+      !(it.textContent || "").toLowerCase().includes(q)
+    )
+      matches = false;
+    it.style.display = matches ? "" : "none";
+    if (matches) visible.push(it);
+  });
+
+  visible.sort((a, b) => {
+    if (sort === "sev-desc")
+      return rankSeverity(a.getAttribute("data-severity") ?? "") - rankSeverity(b.getAttribute("data-severity") ?? "");
+    if (sort === "sev-asc")
+      return rankSeverity(b.getAttribute("data-severity") ?? "") - rankSeverity(a.getAttribute("data-severity") ?? "");
+    if (sort === "time-desc")
+      return (b.getAttribute("data-time") || "").localeCompare(
+        a.getAttribute("data-time") || "",
+      );
+    if (sort === "time-asc")
+      return (a.getAttribute("data-time") || "").localeCompare(
+        b.getAttribute("data-time") || "",
+      );
+    if (sort === "id-desc")
+      return (Number(b.getAttribute("data-id")) || 0) - (Number(a.getAttribute("data-id")) || 0);
+    return (Number(a.getAttribute("data-id")) || 0) - (Number(b.getAttribute("data-id")) || 0);
+  });
+  if (list) {
+    for (const it of visible) list.appendChild(it);
+  }
+  return buildSandboxedReportHtml(doc.documentElement.outerHTML);
 }
 
 async function openProjectSummaryHtml() {
@@ -1763,14 +1898,15 @@ async function openProjectSummaryHtml() {
 }
 
 function downloadCurrentReportHtml() {
-  if (!reportPreviewHtml.value) return;
+  const payload = reportPreviewSource.value || reportPreviewHtml.value;
+  if (!payload) return;
   const safeTitle = (reportPreviewTitle.value || `project-${id}-report`)
     .replace(/[\\/:*?"<>|]+/g, "_")
     .replace(/\s+/g, " ")
     .trim();
   const filename = `${safeTitle}.html`;
   try {
-    downloadText(reportPreviewHtml.value, filename, "text/html;charset=utf-8");
+    downloadText(payload, filename, "text/html;charset=utf-8");
     ElMessage.success("HTML 报告已导出");
   } catch (error: any) {
     ElMessage.error(errorMessage(error, "导出 HTML 报告失败"));
@@ -5403,6 +5539,18 @@ onUnmounted(() => {
             <el-option label="误报" value="FALSE_POSITIVE" />
             <el-option label="已修复" value="FIXED" />
           </el-select>
+          <el-select
+            v-model="findingSort"
+            placeholder="排序"
+            style="width: 150px"
+          >
+            <el-option
+              v-for="opt in FINDING_SORT_OPTIONS"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
           <el-button
             v-if="
               findingCategoryFilter ||
@@ -6323,6 +6471,60 @@ onUnmounted(() => {
           :closable="false"
           show-icon
         />
+        <div v-if="previewHasFindings" class="report-preview-toolbar">
+          <el-input
+            v-model="previewSearch"
+            size="small"
+            clearable
+            placeholder="搜索标题 / 来源 / 规则…"
+            style="width: 220px"
+            @input="applyPreviewFilters"
+          />
+          <el-select
+            v-model="previewSeverity"
+            size="small"
+            clearable
+            placeholder="全部等级"
+            style="width: 130px"
+            @change="applyPreviewFilters"
+          >
+            <el-option
+              v-for="opt in PREVIEW_SEVERITY_OPTIONS"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
+          <el-select
+            v-model="previewStatus"
+            size="small"
+            clearable
+            placeholder="全部状态"
+            style="width: 130px"
+            @change="applyPreviewFilters"
+          >
+            <el-option
+              v-for="opt in PREVIEW_STATUS_OPTIONS"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
+          <el-select
+            v-model="previewSort"
+            size="small"
+            style="width: 170px"
+            @change="applyPreviewFilters"
+          >
+            <el-option
+              v-for="opt in PREVIEW_SORT_OPTIONS"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
+          <el-button size="small" @click="resetPreviewFilters">重置</el-button>
+        </div>
         <iframe
           v-if="reportPreviewHtml"
           class="report-preview-frame"
@@ -7302,6 +7504,19 @@ onUnmounted(() => {
   min-height: 460px;
   flex-direction: column;
   gap: 10px;
+}
+.report-preview-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #f0f6ff;
+  border: 1px solid #c7dcff;
+  border-radius: 8px;
+}
+.report-preview-toolbar :deep(.el-select .el-select__wrapper) {
+  background: #fff;
 }
 .report-preview-frame {
   width: 100%;

@@ -21,9 +21,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class ReportService {
   private static final Logger log = LoggerFactory.getLogger(ReportService.class);
-  private static final ZoneId REPORT_ZONE = ZoneId.of("Asia/Shanghai");
-  private static final DateTimeFormatter TIME_FORMATTER =
-      DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z").withZone(REPORT_ZONE);
+  private static final DateTimeFormatter TIME_FORMATTER = ReportFormatters.TIME_FORMATTER;
   private static final String FLUENT_INFO_ICON =
       "<svg class=\"notice-icon\" viewBox=\"0 0 20 20\" fill=\"currentColor\" aria-hidden=\"true\"><path fill-rule=\"evenodd\" d=\"M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.247.25v3.5a.75.75 0 001.5 0v-3.5A1.75 1.75 0 009.253 9H9z\" clip-rule=\"evenodd\"/></svg>";
 
@@ -46,7 +44,10 @@ public class ReportService {
   public String generateTaskReport(Long taskId) {
     SecurityTask task = taskService.get(taskId);
     AuthorizedTarget target = targetRepository.findById(task.getTargetId()).orElse(null);
-    List<Finding> findings = findingRepository.findAllByTaskIdOrderByCreatedAtAsc(taskId);
+    List<Finding> findings =
+        findingRepository.findAllByTaskIdOrderByCreatedAtAsc(taskId).stream()
+            .sorted(ReportFormatters.FINDING_COMPARATOR)
+            .toList();
     Instant generatedAt = Instant.now();
 
     StringBuilder html = new StringBuilder(16_384);
@@ -73,8 +74,18 @@ public class ReportService {
     .grid { display: grid; grid-template-columns: 180px 1fr; border: 1px solid #dce3ed; border-bottom: 0; }
     .grid > div { padding: 9px 12px; border-bottom: 1px solid #dce3ed; overflow-wrap: anywhere; }
     .label { background: #f7f9fc; font-weight: 700; }
-    .finding { margin: 18px 0; padding: 18px; border: 1px solid #dce3ed; border-radius: 8px; page-break-inside: avoid; }
-    .severity { display: inline-block; margin-left: 8px; padding: 2px 9px; border-radius: 999px; background: #eef2f7; font-size: 12px; }
+    .finding { margin: 18px 0; padding: 18px 20px; border: 1px solid #dce3ed; border-left: 5px solid #8a8886; border-radius: 8px; background: #fff; page-break-inside: avoid; }
+    .finding.finding-critical { border-left-color: #d13438; background: #fffcfc; }
+    .finding.finding-high { border-left-color: #f7630c; background: #fffdfa; }
+    .finding.finding-medium { border-left-color: #d88100; background: #fffff8; }
+    .finding.finding-low { border-left-color: #0078d4; background: #fdfdff; }
+    .finding.finding-info { border-left-color: #8a8886; background: #fcfcfc; }
+    .severity-badge { display: inline-flex; align-items: center; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; line-height: 1.4; border: 1px solid transparent; margin-left: 8px; vertical-align: middle; }
+    .severity-badge.severity-critical { color: #b71c1c; background: #fef2f2; border-color: #fecaca; }
+    .severity-badge.severity-high { color: #c2410c; background: #fff7ed; border-color: #fed7aa; }
+    .severity-badge.severity-medium { color: #b45309; background: #fffbeb; border-color: #fde68a; }
+    .severity-badge.severity-low { color: #0f6cbd; background: #eff6ff; border-color: #bfdbfe; }
+    .severity-badge.severity-info { color: #475569; background: #f8fafc; border-color: #e2e8f0; }
     pre { margin: 8px 0 0; padding: 12px; background: #0f172a; color: #e2e8f0; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 6px; }
     .empty { padding: 18px; color: #526078; background: #f8fafc; border: 1px dashed #b8c4d4; }
     footer { margin-top: 38px; padding-top: 14px; border-top: 1px solid #dce3ed; color: #65738a; font-size: 13px; }
@@ -83,6 +94,10 @@ public class ReportService {
 </head>
 <body><main>
 """);
+
+    html.append("<style>")
+        .append(ReportFormatters.REPORT_FILTER_CSS)
+        .append("</style>");
 
     html.append("<h1>授权安全测试报告</h1>")
         .append("<div class=\"muted\">任务编号：")
@@ -110,7 +125,7 @@ public class ReportService {
         .append(row("工具版本快照", task.getToolVersionSnapshot()))
         .append(row("规则版本 SHA-256", task.getRuleVersionSnapshot()))
         .append(row("Nuclei 模板集合 SHA-256", task.getNucleiTemplateHashSnapshot()))
-        .append(row("任务状态", task.getStatus()))
+        .append(row("任务状态", ReportFormatters.taskStatusLabel(task.getStatus())))
         .append(row("执行进度", task.getProgress() + "%"))
         .append(row("创建时间", format(task.getCreatedAt())))
         .append(row("开始时间", format(task.getStartedAt())))
@@ -132,15 +147,28 @@ public class ReportService {
     if (findings.isEmpty()) {
       html.append("<div class=\"empty\">该任务当前没有生成漏洞记录。此结果不代表目标不存在其他安全风险。</div>");
     } else {
+      html.append("<div data-rf-list>").append(ReportFormatters.REPORT_FILTER_CONTROL);
       for (int index = 0; index < findings.size(); index++) {
         Finding finding = findings.get(index);
-        html.append("<section class=\"finding\"><h3>")
+        String sevClass = ReportFormatters.severityClass(finding.getSeverity());
+        String sevLabel = ReportFormatters.severityLabel(finding.getSeverity());
+        String statusLabel = ReportFormatters.findingStatusLabel(finding.getStatus());
+        html.append("<section class=\"finding finding-")
+            .append(sevClass)
+            .append("\" data-rf-finding")
+            .append(ReportFormatters.findingDataAttrs(finding))
+            .append("><h3>")
             .append(index + 1)
             .append(". ")
             .append(text(finding.getTitle()))
-            .append("<span class=\"severity\">")
-            .append(text(finding.getSeverity()))
+            .append("<span class=\"severity-badge severity-")
+            .append(sevClass)
+            .append("\">")
+            .append(text(sevLabel))
             .append("</span></h3>")
+            .append("<div><strong>当前状态：</strong>")
+            .append(text(statusLabel))
+            .append("</div>")
             .append("<div><strong>来源工具：</strong>")
             .append(text(finding.getSourceTool()))
             .append("</div>")
@@ -158,11 +186,13 @@ public class ReportService {
             .append("</div>")
             .append("</section>");
       }
+      html.append("</div>");
     }
 
     html.append("<footer>报告生成时间：")
         .append(text(format(generatedAt)))
         .append("。报告内容基于任务执行时保存的数据自动生成。</footer>")
+        .append(ReportFormatters.REPORT_FILTER_SCRIPT)
         .append("</main></body></html>");
     return html.toString();
   }

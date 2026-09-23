@@ -27,6 +27,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import jakarta.persistence.criteria.Order;
 
 @RestController
 @RequestMapping("/api/findings")
@@ -58,18 +59,102 @@ public class FindingController {
       @RequestParam(required = false) Long targetId,
       @RequestParam(required = false) String severity,
       @RequestParam(required = false) String status,
-      @RequestParam(required = false) String category) {
-    var pageable =
-        PageRequests.bounded(page, size, 10, 100, Sort.by(Sort.Direction.DESC, "createdAt"));
+      @RequestParam(required = false) String category,
+      @RequestParam(required = false) String sort) {
     String keyword = query == null ? "" : query.trim();
     Specification<Finding> scope = accessibleScope();
     Specification<Finding> filterSpec =
         buildFilterSpecification(targetId, severity, status, category);
     Specification<Finding> searchSpec = keyword.isEmpty() ? null : buildSpecification(keyword);
     Specification<Finding> spec = Specification.allOf(scope, filterSpec, searchSpec);
-    Page<Finding> result = repository.findAll(spec, pageable);
+    SortMode mode = SortMode.from(sort);
+    if (mode == null) {
+      Page<Finding> result =
+          repository.findAll(
+              spec,
+              PageRequests.bounded(
+                  page, size, 10, 100, Sort.by(Sort.Direction.DESC, "createdAt")));
+      populateProjectId(result.getContent());
+      return result;
+    }
+    Page<Finding> result =
+        repository.findAll(
+            spec.and(fromOrdering(mode)),
+            PageRequests.bounded(page, size, 10, 100, Sort.unsorted()));
     populateProjectId(result.getContent());
     return result;
+  }
+
+  /**
+   * 排序模式与对应的 JPA 排序 Specification。危害等级按真实顺序（严重>高危>中危>低危>信息）
+   * 排序，通过 CASE 表达式生成数值键，避免字符串字典序（INFO<CRITICAL<…）的误导。
+   */
+  private enum SortMode {
+    SEV_DESC,
+    SEV_ASC,
+    TIME_DESC,
+    TIME_ASC,
+    ID_DESC,
+    ID_ASC,
+    TITLE_ASC;
+
+    static SortMode from(String sort) {
+      if (sort == null || sort.isBlank()) return null;
+      return switch (sort.trim().toLowerCase(Locale.ROOT)) {
+        case "sev-desc" -> SEV_DESC;
+        case "sev-asc" -> SEV_ASC;
+        case "time-desc" -> TIME_DESC;
+        case "time-asc" -> TIME_ASC;
+        case "id-desc" -> ID_DESC;
+        case "id-asc" -> ID_ASC;
+        case "title-asc" -> TITLE_ASC;
+        default -> null;
+      };
+    }
+  }
+
+  private Specification<Finding> fromOrdering(SortMode mode) {
+    return (root, query, builder) -> {
+      List<Order> orders = new ArrayList<>();
+      switch (mode) {
+        case SEV_DESC -> {
+          orders.add(builder.asc(severityRank(root, builder)));
+          orders.add(builder.desc(root.get("createdAt")));
+        }
+        case SEV_ASC -> {
+          orders.add(builder.desc(severityRank(root, builder)));
+          orders.add(builder.asc(root.get("createdAt")));
+        }
+        case TIME_DESC -> {
+          orders.add(builder.desc(root.get("createdAt")));
+        }
+        case TIME_ASC -> {
+          orders.add(builder.asc(root.get("createdAt")));
+        }
+        case ID_DESC -> {
+          orders.add(builder.desc(root.get("id")));
+        }
+        case ID_ASC -> {
+          orders.add(builder.asc(root.get("id")));
+        }
+        case TITLE_ASC -> {
+          orders.add(builder.asc(root.get("title")));
+        }
+      }
+      query.orderBy(orders);
+      return builder.conjunction();
+    };
+  }
+
+  private jakarta.persistence.criteria.Expression<Integer> severityRank(
+      jakarta.persistence.criteria.Root<Finding> root,
+      jakarta.persistence.criteria.CriteriaBuilder builder) {
+    return builder.<Integer>selectCase()
+        .when(builder.equal(builder.upper(root.get("severity")), "CRITICAL"), 0)
+        .when(builder.equal(builder.upper(root.get("severity")), "HIGH"), 1)
+        .when(builder.equal(builder.upper(root.get("severity")), "MEDIUM"), 2)
+        .when(builder.equal(builder.upper(root.get("severity")), "LOW"), 3)
+        .otherwise(4);
   }
 
   private Specification<Finding> buildFilterSpecification(

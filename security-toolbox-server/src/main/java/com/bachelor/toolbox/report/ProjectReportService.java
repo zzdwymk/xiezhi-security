@@ -37,9 +37,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class ProjectReportService {
   private static final Logger log = LoggerFactory.getLogger(ProjectReportService.class);
-  private static final ZoneId REPORT_ZONE = ZoneId.of("Asia/Shanghai");
-  private static final DateTimeFormatter TIME_FORMATTER =
-      DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z").withZone(REPORT_ZONE);
+  private static final DateTimeFormatter TIME_FORMATTER = ReportFormatters.TIME_FORMATTER;
   private static final String FLUENT_INFO_ICON =
       "<svg class=\"notice-icon\" viewBox=\"0 0 20 20\" fill=\"currentColor\" aria-hidden=\"true\"><path fill-rule=\"evenodd\" d=\"M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.247.25v3.5a.75.75 0 001.5 0v-3.5A1.75 1.75 0 009.253 9H9z\" clip-rule=\"evenodd\"/></svg>";
   private static final List<String> SEVERITY_ORDER =
@@ -72,10 +70,13 @@ h1{margin:0}h2{margin-top:30px;border-bottom:2px solid #dce6f3;padding-bottom:7p
 table{width:100%;border-collapse:collapse;margin:12px 0}th,td{border:1px solid #dce3ed;padding:8px;text-align:left;vertical-align:top;overflow-wrap:anywhere}
 th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;padding:12px 16px;background:#f0f6ff;border:1px solid #c7dcff;border-radius:6px;color:#242424;margin:12px 0;line-height:1.6}.notice-icon{flex-shrink:0;width:18px;height:18px;margin-top:2px;color:#0f6cbd}.notice-body{flex:1;min-width:0}.notice-title{font-weight:600;color:#1a1a1a;margin-bottom:3px}
 .cards{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}.card{padding:13px;border:1px solid #dce3ed;border-radius:7px}.num{font-size:24px;font-weight:700}
-.finding{page-break-inside:avoid;margin:15px 0;padding:15px;border:1px solid #dce3ed;border-radius:7px}.muted{color:#65738a}
+.finding{page-break-inside:avoid;margin:15px 0;padding:15px;border:1px solid #dce3ed;border-left:5px solid #8a8886;border-radius:8px;background:#fff}.finding.finding-critical{border-left-color:#d13438;background:#fffcfc}.finding.finding-high{border-left-color:#f7630c;background:#fffdfa}.finding.finding-medium{border-left-color:#d88100;background:#fffff8}.finding.finding-low{border-left-color:#0078d4;background:#fdfdff}.finding.finding-info{border-left-color:#8a8886;background:#fcfcfc}.severity-badge{display:inline-flex;align-items:center;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:600;line-height:1.4;border:1px solid transparent;margin-left:8px;vertical-align:middle}.severity-badge.severity-critical{color:#b71c1c;background:#fef2f2;border-color:#fecaca}.severity-badge.severity-high{color:#c2410c;background:#fff7ed;border-color:#fed7aa}.severity-badge.severity-medium{color:#b45309;background:#fffbeb;border-color:#fde68a}.severity-badge.severity-low{color:#0f6cbd;background:#eff6ff;border-color:#bfdbfe}.severity-badge.severity-info{color:#475569;background:#f8fafc;border-color:#e2e8f0}.muted{color:#65738a}
 @media print{body{background:#fff}main{margin:0;box-shadow:none}.cards{grid-template-columns:repeat(5,1fr)}}
-</style></head><body><main>
-""");
+</style>
+""" );
+    html.append("<style>")
+        .append(ReportFormatters.REPORT_FILTER_CSS)
+        .append("</style></head><body><main>");
     html.append("<h1>项目级授权安全测试报告</h1><div class=\"muted\">项目以授权目标为边界 · 生成时间：")
         .append(text(format(data.generatedAt)))
         .append("</div>")
@@ -86,12 +87,12 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
         .append("</div><div>")
         .append(multiline(data.target.getAuthorizationNote()))
         .append("</div></div></div><table>")
-        .append(row("目标", data.target.getTargetValue()))
-        .append(row("目标类型", data.target.getTargetType()))
+        .append(row("授权目标", data.target.getTargetValue()))
+        .append(row("目标类型", ReportFormatters.targetTypeLabel(data.target.getTargetType())))
         .append(row("允许端口", data.target.getAllowedPorts()))
-        .append(row("授权生效", format(data.target.getAuthorizationValidFrom())))
-        .append(row("授权到期", format(data.target.getAuthorizationExpiresAt())))
-        .append(row("当前启用", data.target.isEnabled() ? "是" : "否"))
+        .append(row("授权生效时间", format(data.target.getAuthorizationValidFrom())))
+        .append(row("授权到期时间", format(data.target.getAuthorizationExpiresAt())))
+        .append(row("当前启用状态", data.target.isEnabled() ? "已启用" : "已停用"))
         .append("</table><h2>执行概览</h2><table>")
         .append(row("任务总数", String.valueOf(data.tasks.size())))
         .append(row("已完成", String.valueOf(countStatus(data.tasks, "SUCCESS"))))
@@ -104,7 +105,7 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
     data.severityCounts.forEach(
         (severity, count) ->
             html.append("<div class=\"card\"><div>")
-                .append(text(severity))
+                .append(text(ReportFormatters.severityLabel(severity)))
                 .append("</div><div class=\"num\">")
                 .append(count)
                 .append("</div></div>"));
@@ -116,7 +117,7 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
           .append("</td><td>")
           .append(text(task.getToolCode()))
           .append("</td><td>")
-          .append(text(task.getStatus()))
+          .append(text(ReportFormatters.taskStatusLabel(task.getStatus())))
           .append("</td><td>")
           .append(text(format(task.getCreatedAt())))
           .append("</td><td>")
@@ -126,16 +127,24 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
           .append("</td></tr>");
     }
     List<Finding> vulnFindings =
-        data.findings.stream().filter(FindingClassification::isVulnerability).toList();
+        data.findings.stream()
+            .filter(FindingClassification::isVulnerability)
+            .sorted(ReportFormatters.FINDING_COMPARATOR)
+            .toList();
     List<Finding> infoFindings =
-        data.findings.stream().filter(f -> !FindingClassification.isVulnerability(f)).toList();
+        data.findings.stream()
+            .filter(f -> !FindingClassification.isVulnerability(f))
+            .sorted(ReportFormatters.FINDING_COMPARATOR)
+            .toList();
     html.append("</tbody></table><h2>漏洞发现</h2>");
     if (vulnFindings.isEmpty()) {
       html.append("<div class=\"notice\">")
           .append(FLUENT_INFO_ICON)
           .append("<div class=\"notice-body\">当前项目没有漏洞记录；这不等于目标不存在其他安全风险。</div></div>");
     } else {
+      html.append("<div data-rf-list>").append(ReportFormatters.REPORT_FILTER_CONTROL);
       for (Finding finding : vulnFindings) appendFinding(html, finding);
+      html.append("</div>");
     }
     html.append("<h2>风险点 / 信息项（开放端口等资产暴露面，不计入漏洞）</h2>");
     if (infoFindings.isEmpty()) {
@@ -148,7 +157,9 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
     return html.append(
             "<h2>报告说明</h2><div class=\"notice\">")
         .append(FLUENT_INFO_ICON)
-        .append("<div class=\"notice-body\">报告聚合该授权目标下的历史任务与发现，并保留各任务创建时的工具、规则和模板快照。结果应结合授权有效期与人工复核使用。</div></div></main></body></html>")
+        .append("<div class=\"notice-body\">报告聚合该授权目标下的历史任务与发现，并保留各任务创建时的工具、规则和模板快照。结果应结合授权有效期与人工复核使用。</div></div>")
+        .append(ReportFormatters.REPORT_FILTER_SCRIPT)
+        .append("</main></body></html>")
         .toString();
   }
 
@@ -176,11 +187,11 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
           fonts,
           Map.of(
               "授权目标", safe(data.target.getTargetValue()),
-              "目标类型", safe(data.target.getTargetType()),
+              "目标类型", ReportFormatters.targetTypeLabel(data.target.getTargetType()),
               "允许端口", safe(data.target.getAllowedPorts()),
-              "授权生效", format(data.target.getAuthorizationValidFrom()),
-              "授权到期", format(data.target.getAuthorizationExpiresAt()),
-              "当前启用", data.target.isEnabled() ? "是" : "否"));
+              "授权生效时间", format(data.target.getAuthorizationValidFrom()),
+              "授权到期时间", format(data.target.getAuthorizationExpiresAt()),
+              "当前启用状态", data.target.isEnabled() ? "已启用" : "已停用"));
       addHeading(document, "2. 执行与风险概览", fonts);
       LinkedHashMap<String, String> overview = new LinkedHashMap<>();
       overview.put("任务总数", String.valueOf(data.tasks.size()));
@@ -193,7 +204,7 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
               + countStatus(data.tasks, "RUNNING"));
       overview.put("漏洞发现", String.valueOf(FindingClassification.vulnerabilityCount(data.findings)));
       overview.put("风险点", String.valueOf(FindingClassification.informationalCount(data.findings)));
-      data.severityCounts.forEach((key, value) -> overview.put(key, String.valueOf(value)));
+      data.severityCounts.forEach((key, value) -> overview.put(ReportFormatters.severityLabel(key), String.valueOf(value)));
       addKeyValues(document, fonts, overview);
       addHeading(document, "3. 任务与执行环境快照", fonts);
       PdfPTable taskTable = table(new float[] {0.7f, 1.4f, 1.1f, 1.7f, 2.2f});
@@ -204,15 +215,21 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
             fonts,
             String.valueOf(task.getId()),
             safe(task.getToolCode()),
-            safe(task.getStatus()),
+            ReportFormatters.taskStatusLabel(task.getStatus()),
             format(task.getCreatedAt()),
             safe(task.getToolVersionSnapshot()) + "\n" + joinHashes(task));
       }
       document.add(taskTable);
       List<Finding> vulnFindings =
-          data.findings.stream().filter(FindingClassification::isVulnerability).toList();
+          data.findings.stream()
+              .filter(FindingClassification::isVulnerability)
+              .sorted(ReportFormatters.FINDING_COMPARATOR)
+              .toList();
       List<Finding> infoFindings =
-          data.findings.stream().filter(f -> !FindingClassification.isVulnerability(f)).toList();
+          data.findings.stream()
+              .filter(f -> !FindingClassification.isVulnerability(f))
+              .sorted(ReportFormatters.FINDING_COMPARATOR)
+              .toList();
       addHeading(document, "4. 漏洞发现", fonts);
       if (vulnFindings.isEmpty()) {
         addMessageBar(document, fonts, "提示", "当前项目没有漏洞记录；这不等于目标不存在其他安全风险。");
@@ -244,18 +261,27 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
   }
 
   private void appendFinding(StringBuilder html, Finding finding) {
-    html.append("<section class=\"finding\"><strong>#")
+    String sevClass = ReportFormatters.severityClass(finding.getSeverity());
+    String sevLabel = ReportFormatters.severityLabel(finding.getSeverity());
+    String statusLabel = ReportFormatters.findingStatusLabel(finding.getStatus());
+    html.append("<section class=\"finding finding-")
+        .append(sevClass)
+        .append("\" data-rf-finding")
+        .append(ReportFormatters.findingDataAttrs(finding))
+        .append("><strong>#")
         .append(finding.getId())
         .append(" ")
         .append(text(finding.getTitle()))
-        .append(" [")
-        .append(text(finding.getSeverity()))
-        .append("]</strong>")
-        .append("<div>状态：")
-        .append(text(finding.getStatus()))
+        .append("</strong><span class=\"severity-badge severity-")
+        .append(sevClass)
+        .append("\">")
+        .append(text(sevLabel))
+        .append("</span><div style=\"margin-top:6px\">")
+        .append("状态：")
+        .append(text(statusLabel))
         .append(" · 来源：")
         .append(text(finding.getSourceTool()))
-        .append(" · 任务：")
+        .append(" · 任务 ID：")
         .append(finding.getTaskId())
         .append("</div><p>")
         .append(multiline(finding.getDescription()))
@@ -265,14 +291,7 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
   }
 
   private static Color severityColor(String severity) {
-    if (severity == null) return new Color(97, 97, 97);
-    return switch (severity.toUpperCase(Locale.ROOT)) {
-      case "CRITICAL" -> new Color(196, 43, 28);
-      case "HIGH" -> new Color(188, 75, 0);
-      case "MEDIUM" -> new Color(157, 93, 0);
-      case "LOW" -> new Color(15, 108, 189);
-      default -> new Color(97, 97, 97);
-    };
+    return ReportFormatters.severityColor(severity);
   }
 
   private int findingParagraphs(Document document, PdfFonts fonts, int index, Finding finding)
@@ -290,7 +309,7 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
     Font titleFont = new Font(fonts.base, 10.5f, Font.BOLD, severityColor(finding.getSeverity()));
     Paragraph title =
         new Paragraph(
-            index + ". " + safe(finding.getTitle()) + "  [" + safe(finding.getSeverity()) + "]",
+            index + ". " + safe(finding.getTitle()) + "  [" + ReportFormatters.severityLabel(finding.getSeverity()) + "]",
             titleFont);
     title.setSpacingAfter(3);
     cell.addElement(title);
@@ -298,7 +317,7 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
     Paragraph meta =
         new Paragraph(
             "状态："
-                + safe(finding.getStatus())
+                + ReportFormatters.findingStatusLabel(finding.getStatus())
                 + "  ·  来源："
                 + safe(finding.getSourceTool())
                 + "  ·  任务 ID："
