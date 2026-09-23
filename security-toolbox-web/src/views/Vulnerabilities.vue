@@ -1069,9 +1069,12 @@ async function clearImportedCatalog() {
 
 async function syncOfficialCatalog(command: CatalogSyncCommand = "NUCLEI") {
   const sources = command === "ALL" ? scannerSources : [command];
-  await refreshDependencyStatus();
+  // 优先利用页面已缓存的依赖状态，避免在弹窗前发起耗时的全量依赖探测导致界面卡顿
+  if (!dependencies.value.length && !dependencyLoading.value) {
+    await refreshDependencyStatus(false);
+  }
   const missingDependencies = sources.filter(sourceSyncDisabled);
-  if (missingDependencies.length) {
+  if (dependencies.value.length && missingDependencies.length) {
     ElMessage.warning(
       `请先在依赖检测页面安装 ${missingDependencies
         .map(sourceLabel)
