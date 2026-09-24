@@ -185,8 +185,13 @@ try {
     root.style.colorScheme = isDark ? "dark" : "light";
     if (isDark) {
       root.classList.add("dark");
-      root.style.backgroundColor = "#121216";
-      if (document.body) document.body.style.backgroundColor = "#121216";
+      // Keep the early canvas transparent so the DWM Mica/Acrylic backdrop can
+      // shine through the immersive title bar and left navigation. The window
+      // itself is already given a non-white background by main, so there is no
+      // dark flash to mask; the opaque dark surfaces are painted by the theme
+      // tokens once the app mounts.
+      root.style.backgroundColor = "transparent";
+      if (document.body) document.body.style.backgroundColor = "transparent";
     }
   };
   initEarlyTheme();

@@ -1153,6 +1153,16 @@ body,
   content: "";
 }
 
+/* One faint, perfectly uniform scrim painted across the whole frame. Because it
+   is a single element behind every transparent region, the title bar, left
+   navigation and page all composite identically over the native Mica instead of
+   showing a faint seam where their subtrees meet. */
+:root[data-system-theme="dark"]:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-app-frame {
+  background: color-mix(in srgb, #121216 20%, transparent) !important;
+  background-color: color-mix(in srgb, #121216 20%, transparent) !important;
+}
+
 .desktop-v2-native-frame
   > .desktop-v2-shell
   > .desktop-v2-workspace
