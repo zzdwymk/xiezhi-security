@@ -421,6 +421,34 @@ body,
   --v2-sidebar: #16161e;
 }
 
+/* Dark mode Mica & Acrylic: keep sidebar and chrome fully translucent so native DWM material shines through */
+:root[data-system-theme="dark"]:is([data-window-material="mica"], [data-window-material="acrylic"]) {
+  --app-chrome-surface: transparent;
+  --app-sidebar: transparent;
+  --v2-sidebar: transparent;
+}
+
+:root[data-system-theme="dark"]:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-native-frame,
+:root[data-system-theme="dark"]:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-native-frame
+  > .desktop-v2-shell,
+:root[data-system-theme="dark"]:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-native-frame
+  > .desktop-v2-shell
+  > .desktop-v2-sidebar {
+  background: transparent !important;
+  background-color: transparent !important;
+  backdrop-filter: none !important;
+}
+
+:root[data-system-theme="dark"]:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-native-frame
+  .desktop-v2-sidebar-scroll {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
 /* =================================================================
    Dark mode hover & interactive state contrast guarantees
    Ensure text and icons brighten sharply and never wash out on hover
@@ -675,12 +703,83 @@ body,
   background: rgba(255, 255, 255, 0.06);
   border-color: rgba(255, 255, 255, 0.18);
   color: #f8fafc !important;
+  box-shadow: none;
 }
 
 :root[data-system-theme="dark"] .el-button:not(.el-button--primary):not(.is-link):not(.is-text):hover {
   background: rgba(255, 255, 255, 0.12) !important;
   border-color: rgba(255, 255, 255, 0.32) !important;
   color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+:root[data-system-theme="dark"] .el-button:not(.el-button--primary):not(.is-link):not(.is-text):active {
+  background: rgba(255, 255, 255, 0.16) !important;
+  box-shadow: none !important;
+}
+
+:root[data-system-theme="dark"] .el-button--primary:not(.is-plain):not(.is-link):not(.is-text) {
+  background: var(--app-accent);
+  border-color: var(--app-accent);
+  color: #ffffff !important;
+}
+
+:root[data-system-theme="dark"] .el-button--primary:not(.is-plain):not(.is-link):not(.is-text):hover {
+  background: var(--app-accent-dark, #1d4ed8) !important;
+  border-color: var(--app-accent-dark, #1d4ed8) !important;
+  color: #ffffff !important;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--app-accent) 35%, transparent) !important;
+}
+
+:root[data-system-theme="dark"] .el-button--primary:not(.is-plain):not(.is-link):not(.is-text):active {
+  background: color-mix(in srgb, var(--app-accent-dark, #1d4ed8) 85%, #000000) !important;
+  border-color: color-mix(in srgb, var(--app-accent-dark, #1d4ed8) 85%, #000000) !important;
+  box-shadow: none !important;
+}
+
+/* Link & Text buttons in dark mode (table actions, navigation triggers) */
+:root[data-system-theme="dark"] .el-button.is-link,
+:root[data-system-theme="dark"] .el-button.is-text {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  border-radius: 4px;
+  transition: color var(--fluent-fast, 0.15s) ease,
+              background-color var(--fluent-fast, 0.15s) ease;
+}
+
+:root[data-system-theme="dark"] .el-button.is-link:not(.is-disabled):hover,
+:root[data-system-theme="dark"] .el-button.is-text:not(.is-disabled):hover {
+  background: color-mix(in srgb, var(--app-accent) 18%, rgba(255, 255, 255, 0.06)) !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+:root[data-system-theme="dark"] .el-button--primary.is-link:not(.is-disabled),
+:root[data-system-theme="dark"] .el-button--primary.is-text:not(.is-disabled) {
+  color: #60a5fa !important;
+}
+
+:root[data-system-theme="dark"] .el-button--primary.is-link:not(.is-disabled):hover,
+:root[data-system-theme="dark"] .el-button--primary.is-text:not(.is-disabled):hover {
+  color: #93c5fd !important;
+}
+
+:root[data-system-theme="dark"] .el-button--danger.is-link:not(.is-disabled),
+:root[data-system-theme="dark"] .el-button--danger.is-text:not(.is-disabled) {
+  color: #f87171 !important;
+}
+
+:root[data-system-theme="dark"] .el-button--danger.is-link:not(.is-disabled):hover,
+:root[data-system-theme="dark"] .el-button--danger.is-text:not(.is-disabled):hover {
+  background: rgba(239, 68, 68, 0.14) !important;
+  color: #fca5a5 !important;
+}
+
+:root[data-system-theme="dark"] .el-button.is-link:not(.is-disabled):active,
+:root[data-system-theme="dark"] .el-button.is-text:not(.is-disabled):active {
+  background: color-mix(in srgb, var(--app-accent) 28%, rgba(255, 255, 255, 0.10)) !important;
+  box-shadow: none !important;
 }
 
 /* Inputs in dark mode */
@@ -915,7 +1014,6 @@ body,
 :root[data-system-theme="dark"] .desktop-v2-recent-item:hover,
 :root[data-system-theme="dark"] button.settings-row:hover,
 :root[data-system-theme="dark"] .report-card:hover,
-:root[data-system-theme="dark"] .el-button:not(.is-disabled):hover,
 :root[data-system-theme="dark"] .catalog-list button:hover {
   box-shadow: 0 0 14px color-mix(in srgb, var(--app-accent) 22%, transparent),
               0 0 2px color-mix(in srgb, var(--app-accent) 50%, transparent) !important;
@@ -951,6 +1049,13 @@ body,
   overflow: hidden;
   background: var(--app-chrome-surface);
   color: var(--app-text);
+}
+
+:root[data-system-theme="dark"]:is([data-window-material="mica"], [data-window-material="acrylic"]),
+:root[data-system-theme="dark"]:is([data-window-material="mica"], [data-window-material="acrylic"]) body,
+:root[data-system-theme="dark"]:is([data-window-material="mica"], [data-window-material="acrylic"]) #app {
+  background: transparent !important;
+  background-color: transparent !important;
 }
 
 .desktop-v2-native-frame {

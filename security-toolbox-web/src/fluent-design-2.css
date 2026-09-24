@@ -482,6 +482,16 @@ body,
   margin-left: 6px;
 }
 
+.desktop-v2-app-frame .el-table .cell .el-button.is-link,
+.desktop-v2-app-frame .el-table .cell .el-button.is-text {
+  min-height: 24px;
+  height: 24px;
+  line-height: 24px;
+  padding: 0 6px;
+  font-size: 13px;
+  border-radius: 4px;
+}
+
 .desktop-v2-app-frame :where(.el-table th.el-table__cell) {
   background: var(--app-surface-soft);
   color: color-mix(in srgb, var(--app-text) 84%, transparent);
