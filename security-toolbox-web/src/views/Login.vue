@@ -12,7 +12,10 @@ const route = useRoute();
 const desktopMode = Boolean(window.toolboxDesktop?.isDesktop);
 const form = reactive({ username: auth.rememberedUsername, password: "" });
 const rememberMe = ref(auth.rememberMe);
-const loading = ref(false);
+const activeAction = ref<
+  "" | "password" | "credentials" | "hello" | "reset" | "init" | "generate"
+>("");
+const loading = computed(() => activeAction.value !== "");
 const desktopLoginError = ref("");
 const loginBound = ref(false);
 const loginConfigured = ref(false);
@@ -35,6 +38,7 @@ const resetTitle = ref("初始账号密码");
 async function generateInitialPassword() {
   const generate = window.toolboxDesktop?.generateDesktopLogin;
   if (!desktopMode || !generate || loading.value) return;
+  activeAction.value = "generate";
   initMode.value = "generate";
   initialCreds.value = null;
   resetTitle.value = "初始账号密码";
@@ -52,7 +56,7 @@ async function generateInitialPassword() {
     );
     initMode.value = "none";
   } finally {
-    loading.value = false;
+    activeAction.value = "";
   }
 }
 
@@ -63,7 +67,7 @@ async function resetForgottenPassword() {
   initialCreds.value = null;
   resetTitle.value = "已重置的新密码";
   desktopLoginError.value = "";
-  loading.value = true;
+  activeAction.value = "reset";
   try {
     const result = await reset();
     if (!result?.resettled) {
@@ -82,7 +86,7 @@ async function resetForgottenPassword() {
     );
     initMode.value = "none";
   } finally {
-    loading.value = false;
+    activeAction.value = "";
   }
 }
 
@@ -129,7 +133,7 @@ async function initCustomPassword() {
     return ElMessage.warning("自定义密码至少 8 位");
   if (customForm.password !== customForm.confirm)
     return ElMessage.warning("两次输入的密码不一致");
-  loading.value = true;
+  activeAction.value = "init";
   desktopLoginError.value = "";
   try {
     const result = await init(customForm.password);
@@ -142,13 +146,13 @@ async function initCustomPassword() {
       "自定义密码设置失败，请重试",
     );
   } finally {
-    loading.value = false;
+    activeAction.value = "";
   }
 }
 
 async function submit() {
   if (loading.value) return;
-  loading.value = true;
+  activeAction.value = "password";
   try {
     await auth.login(
       form.username,
@@ -159,14 +163,14 @@ async function submit() {
   } catch {
     ElMessage.error("用户名或密码错误，请确认后重试");
   } finally {
-    loading.value = false;
+    activeAction.value = "";
   }
 }
 
 async function loginWithDesktopCredentials() {
   const getCredentials = window.toolboxDesktop?.getDesktopLoginCredentials;
   if (!desktopMode || !getCredentials || loading.value) return;
-  loading.value = true;
+  activeAction.value = "credentials";
   desktopLoginError.value = "";
   let credentials: DesktopLoginCredentials | null | undefined;
   try {
@@ -183,14 +187,14 @@ async function loginWithDesktopCredentials() {
       "本机安全登录未完成，请重新启动桌面应用；也可使用已有账号手动登录。";
   } finally {
     credentials = undefined;
-    loading.value = false;
+    activeAction.value = "";
   }
 }
 
 async function loginWithWindowsHello() {
   const verify = window.toolboxDesktop?.loginWithWindowsHello;
   if (!desktopMode || !verify || loading.value) return;
-  loading.value = true;
+  activeAction.value = "hello";
   desktopLoginError.value = "";
   try {
     const result = await verify();
@@ -216,7 +220,7 @@ async function loginWithWindowsHello() {
     desktopLoginError.value =
       "Windows Hello 登录未完成，请重试或改用其他方式登录。";
   } finally {
-    loading.value = false;
+    activeAction.value = "";
   }
 }
 
@@ -286,7 +290,7 @@ onMounted(async () => {
           type="primary"
           size="large"
           class="login-button"
-          :loading="loading"
+          :loading="activeAction === 'password'"
           :disabled="loading || !form.username || !form.password"
           @click="submit"
           >账号密码登录</el-button
@@ -297,7 +301,7 @@ onMounted(async () => {
             <el-button
               size="large"
               class="login-button desktop-secure-login"
-              :loading="loading"
+              :loading="activeAction === 'credentials'"
               :disabled="loading"
               @click="loginWithDesktopCredentials"
               >使用本机安全凭据登录</el-button
@@ -305,7 +309,7 @@ onMounted(async () => {
             <el-button
               size="large"
               class="login-button desktop-secure-login"
-              :loading="loading"
+              :loading="activeAction === 'hello'"
               :disabled="loading"
               @click="loginWithWindowsHello"
               >使用 Windows Hello（PIN）登录</el-button
@@ -463,7 +467,7 @@ onMounted(async () => {
               type="primary"
               size="large"
               class="login-button"
-              :loading="loading"
+              :loading="activeAction === 'init'"
               :disabled="
                 loading ||
                 customForm.password.length < 8 ||
@@ -500,11 +504,17 @@ onMounted(async () => {
   border-color: var(--app-border-strong);
   background: var(--app-surface-soft);
 }
-.desktop-secure-login:hover,
-.desktop-secure-login:focus-visible {
+.desktop-secure-login:hover:not(.is-disabled):not(:disabled),
+.desktop-secure-login:focus-visible:not(.is-disabled):not(:disabled) {
   color: var(--app-accent-strong);
   border-color: var(--app-accent);
   background: var(--app-accent-soft);
+}
+.desktop-secure-login.is-disabled,
+.desktop-secure-login:disabled {
+  color: var(--fluent-disabled-fg) !important;
+  border-color: var(--fluent-disabled-border) !important;
+  background: var(--fluent-disabled-bg) !important;
 }
 .desktop-login-bind-hint {
   margin: 10px 0 0;
