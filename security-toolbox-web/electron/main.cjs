@@ -138,6 +138,10 @@ function sharedChromeSurface(theme) {
   ) {
     return theme.dark ? "#202020" : "#f3f3f3";
   }
+  // Dark Mica/Acrylic: the title bar and navigation must stay fully
+  // transparent so the native DWM material shows through and the whole window
+  // reads as one continuous sheet (the page surfaces are transparent too).
+  if (theme.dark) return "transparent";
   return theme.windowMaterial === "acrylic"
     ? "color-mix(in srgb, Canvas 32%, transparent)"
     : "color-mix(in srgb, Canvas 22%, transparent)";
@@ -263,6 +267,13 @@ function applyNativeBackdrop(window, theme = currentSystemTheme()) {
         ? theme.windowMaterial
         : "none",
     );
+  }
+  if (typeof window.setTitleBarOverlay === "function") {
+    try {
+      window.setTitleBarOverlay(titleBarOverlay(theme));
+    } catch {
+      // ignore
+    }
   }
 }
 
@@ -7780,15 +7791,19 @@ function createStartupWindow() {
     width: 900,
     height: 620,
     icon: path.join(__dirname, "icon.png"),
-    resizable: false,
-    maximizable: false,
-    show: false,
-    backgroundColor: windowBackgroundColor(startupTheme),
-    backgroundMaterial:
-      startupTheme.transparencyEnabled && !startupTheme.highContrast
-        ? startupTheme.windowMaterial
-        : "none",
-    autoHideMenuBar: true,
+      resizable: false,
+      maximizable: false,
+      show: false,
+      // Immersive title bar so the native caption band no longer separates the
+      // splash chrome from the page; the DOM draws its own transparent title bar.
+      titleBarStyle: "hidden",
+      titleBarOverlay: titleBarOverlay(startupTheme),
+      backgroundColor: windowBackgroundColor(startupTheme),
+      backgroundMaterial:
+        startupTheme.transparencyEnabled && !startupTheme.highContrast
+          ? startupTheme.windowMaterial
+          : "none",
+      autoHideMenuBar: true,
     webPreferences: {
       devTools: !app.isPackaged,
       nodeIntegration: false,
@@ -7847,6 +7862,8 @@ function createMainWindow(port) {
     minWidth: 1000,
     minHeight: 700,
     show: false,
+    titleBarStyle: "hidden",
+    titleBarOverlay: titleBarOverlay(initialTheme),
     backgroundColor: windowBackgroundColor(initialTheme),
     backgroundMaterial:
       initialTheme.transparencyEnabled && !initialTheme.highContrast

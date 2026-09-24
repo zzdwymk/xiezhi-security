@@ -133,9 +133,11 @@ function applySystemTheme(theme: SystemThemeState) {
       ? effectiveTheme.dark
         ? "#202020"
         : "#f3f3f3"
-      : effectiveTheme.windowMaterial === "acrylic"
-        ? "color-mix(in srgb, Canvas 14%, transparent)"
-        : "transparent";
+      : effectiveTheme.dark
+        ? "transparent"
+        : effectiveTheme.windowMaterial === "acrylic"
+          ? "color-mix(in srgb, Canvas 14%, transparent)"
+          : "transparent";
   root.style.setProperty("--shared-chrome-surface", chromeSurface);
   root.style.colorScheme = effectiveTheme.dark ? "dark" : "light";
   root.dataset.systemTheme = effectiveTheme.dark ? "dark" : "light";

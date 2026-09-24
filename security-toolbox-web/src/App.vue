@@ -687,6 +687,16 @@ onBeforeUnmount(() => {
       class="desktop-v2-app-frame"
       :class="{ 'desktop-v2-native-frame': desktopMode }"
     >
+    <header
+      v-if="desktopMode"
+      class="desktop-v2-native-titlebar"
+      aria-label="窗口标题栏"
+    >
+      <span class="desktop-v2-native-titlebar-logo">
+        <img src="./assets/xiezhi-mark.png" alt="" aria-hidden="true" />
+      </span>
+      <span>獬豸授权安全测试平台</span>
+    </header>
     <router-view v-if="route.meta.public" />
     <div
       v-else
