@@ -752,6 +752,14 @@ body,
               opacity var(--fluent-fast, 0.15s) ease;
 }
 
+:root[data-system-theme="dark"] .el-button.is-link.is-disabled,
+:root[data-system-theme="dark"] .el-button.is-text.is-disabled {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  color: var(--fluent-disabled-fg, rgba(255, 255, 255, 0.36)) !important;
+}
+
 :root[data-system-theme="dark"] .el-button.is-link:not(.is-disabled):hover,
 :root[data-system-theme="dark"] .el-button.is-text:not(.is-disabled):hover {
   background: transparent !important;
