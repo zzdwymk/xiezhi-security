@@ -527,6 +527,12 @@ onMounted(async () => {
   justify-content: center;
   margin-top: 12px;
 }
+.desktop-login-forgot :deep(.el-button.is-link),
+.desktop-login-firstrun :deep(.el-button.is-link) {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
 .desktop-login-firstrun {
   display: flex;
   flex-direction: column;

@@ -921,19 +921,40 @@ html
   color: #fff !important;
 }
 
-html .el-button.is-disabled,
-html .el-button:disabled {
+html .el-button.is-disabled:not(.is-link):not(.is-text),
+html .el-button:disabled:not(.is-link):not(.is-text) {
   border-color: var(--fluent-disabled-border) !important;
   background: var(--fluent-disabled-bg) !important;
   color: var(--fluent-disabled-fg) !important;
   opacity: 1 !important;
 }
 
-:root[data-system-theme="dark"] .el-button.el-button--primary.is-disabled,
-html[data-system-theme="dark"] .el-button.el-button--primary.is-disabled {
-  background: color-mix(in srgb, var(--app-accent) 18%, rgba(255, 255, 255, 0.04)) !important;
-  border-color: color-mix(in srgb, var(--app-accent) 24%, rgba(255, 255, 255, 0.08)) !important;
+:root[data-system-theme="dark"]
+  .el-button.el-button--primary.is-disabled:not(.is-link):not(.is-text),
+html[data-system-theme="dark"]
+  .el-button.el-button--primary.is-disabled:not(.is-link):not(.is-text) {
+  background: color-mix(
+    in srgb,
+    var(--app-accent) 18%,
+    rgba(255, 255, 255, 0.04)
+  ) !important;
+  border-color: color-mix(
+    in srgb,
+    var(--app-accent) 24%,
+    rgba(255, 255, 255, 0.08)
+  ) !important;
   color: color-mix(in srgb, var(--fluent-action-fg) 45%, transparent) !important;
+}
+
+html .el-button.is-link.is-disabled,
+html .el-button.is-link:disabled,
+html .el-button.is-text.is-disabled,
+html .el-button.is-text:disabled {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  color: var(--fluent-disabled-fg) !important;
+  opacity: 1 !important;
 }
 
 :root[data-system-theme="dark"] .el-button.is-loading::before,
