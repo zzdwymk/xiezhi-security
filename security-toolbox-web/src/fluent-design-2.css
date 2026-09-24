@@ -479,17 +479,19 @@ body,
 }
 
 .desktop-v2-app-frame .el-table .cell .el-button + .el-button {
-  margin-left: 6px;
+  margin-left: 12px;
 }
 
 .desktop-v2-app-frame .el-table .cell .el-button.is-link,
 .desktop-v2-app-frame .el-table .cell .el-button.is-text {
-  min-height: 24px;
-  height: 24px;
-  line-height: 24px;
-  padding: 0 6px;
+  min-height: auto;
+  height: auto;
+  line-height: inherit;
+  padding: 0;
   font-size: 13px;
-  border-radius: 4px;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
 }
 
 .desktop-v2-app-frame :where(.el-table th.el-table__cell) {
@@ -725,6 +727,10 @@ body,
   --fluent-overlay-hover-bg: #3f3f46;
   --fluent-overlay-selected-bg: #164e63;
   --fluent-overlay-disabled-fg: #a1a1aa;
+  --fluent-disabled-bg: rgba(255, 255, 255, 0.05);
+  --fluent-disabled-border: rgba(255, 255, 255, 0.08);
+  --fluent-disabled-fg: rgba(255, 255, 255, 0.36);
+  --el-mask-color-extra-light: rgba(0, 0, 0, 0.35);
 }
 
 /* Primary and semantic solid buttons use the foreground selected by the
@@ -921,6 +927,18 @@ html .el-button:disabled {
   background: var(--fluent-disabled-bg) !important;
   color: var(--fluent-disabled-fg) !important;
   opacity: 1 !important;
+}
+
+:root[data-system-theme="dark"] .el-button.el-button--primary.is-disabled,
+html[data-system-theme="dark"] .el-button.el-button--primary.is-disabled {
+  background: color-mix(in srgb, var(--app-accent) 18%, rgba(255, 255, 255, 0.04)) !important;
+  border-color: color-mix(in srgb, var(--app-accent) 24%, rgba(255, 255, 255, 0.08)) !important;
+  color: color-mix(in srgb, var(--fluent-action-fg) 45%, transparent) !important;
+}
+
+:root[data-system-theme="dark"] .el-button.is-loading::before,
+html[data-system-theme="dark"] .el-button.is-loading::before {
+  background-color: rgba(0, 0, 0, 0.32) !important;
 }
 
 /* Primary plain buttons need a separate, high-specificity state contract.
