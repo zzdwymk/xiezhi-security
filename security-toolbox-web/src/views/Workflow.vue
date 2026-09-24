@@ -4018,26 +4018,12 @@ async function refit(mode: "overview" | "start" = "overview") {
       const width = canvas?.clientWidth || 1000;
       const height = canvas?.clientHeight || 620;
       const zoom = Math.min(0.9, Math.max(0.78, width / 1100));
-      const firstToolY = Math.min(
-        ...nodes.value.map((node) => node.position.y),
-      );
-      const lastToolBottom = Math.max(
-        ...nodes.value.map(
-          (node) =>
-            node.position.y +
-            (node.data.nodeKind === "tool"
-              ? 150
-              : node.data.nodeKind === "system"
-                ? 72
-                : 108),
-        ),
-      );
-      const graphHeight = lastToolBottom - firstToolY;
+      // 起点聚焦视图应以主干节点高度居中，避免深层阶段多分支工具拉偏视口导致节点沉底
+      const centerY = WORKFLOW_LAYOUT.phaseY + 45;
       void setViewport(
         {
           x: 24 - WORKFLOW_LAYOUT.startX * zoom,
-          y:
-            Math.max(24, (height - graphHeight * zoom) / 2) - firstToolY * zoom,
+          y: Math.round(height / 2 - centerY * zoom),
           zoom,
         },
         { duration: 180 },
