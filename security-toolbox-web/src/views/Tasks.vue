@@ -15,7 +15,7 @@ import {
   type TaskControlStatus,
   type VulnerabilityDefinition,
 } from "../api";
-import { InfoCircle, Search } from "../components/fluentIcons";
+import { InfoCircle, Search, View, MagicStick, Document } from "../components/fluentIcons";
 import AppPagination from "../components/AppPagination.vue";
 import FluentCodeBlock from "../components/FluentCodeBlock.vue";
 import FluentJsonView from "../components/FluentJsonView.vue";
@@ -272,6 +272,9 @@ let stopTaskFeed: (() => void) | undefined;
 let scheduleTargetRequest = 0;
 let schedulePocLoadGeneration = 0;
 const logOutput = ref<HTMLElement>();
+const setLogOutput = (el: HTMLTextAreaElement | null) => {
+  logOutput.value = el ?? undefined;
+};
 
 async function loadNotificationPreferences() {
   const bridge = window.toolboxDesktop;
@@ -1499,38 +1502,50 @@ onUnmounted(() => {
           formatDateTime(scope.row.createdAt)
         }}</template></el-table-column
       >
-      <el-table-column label="操作" min-width="210"
+      <el-table-column label="操作" min-width="300"
         ><template #default="scope"
-          ><el-button link type="primary" @click="showDetail(scope.row)"
-            >详情</el-button
-          ><el-button link type="primary" @click="askCopilot(scope.row)"
-            >AI 分析</el-button
-          ><el-button
-            v-if="['PENDING', 'RUNNING'].includes(scope.row.status)"
-            link
-            type="danger"
-            :loading="cancelling === scope.row.id"
-            @click="cancelTask(scope.row)"
-            >取消</el-button
-          ><el-button
-            v-if="
-              ['FAILED', 'TIMEOUT', 'REJECTED', 'CANCELLED'].includes(
-                scope.row.status,
-              )
-            "
-            link
-            type="danger"
-            :loading="retrying === scope.row.id"
-            :disabled="Boolean(retrying)"
-            @click="retryTask(scope.row)"
-            >重试</el-button
-          ><el-button
-            link
-            :disabled="scope.row.status !== 'SUCCESS'"
-            :loading="downloading === scope.row.id"
-            @click="downloadReport(scope.row.id)"
-            >报告</el-button
-          ></template
+          ><div class="task-row-actions">
+            <el-button
+              class="task-action"
+              size="small"
+              :icon="View"
+              @click="showDetail(scope.row)"
+              >详情</el-button
+            ><el-button
+              class="task-action task-action--ai"
+              size="small"
+              :icon="MagicStick"
+              @click="askCopilot(scope.row)"
+              >AI 分析</el-button
+            ><el-button
+              v-if="['PENDING', 'RUNNING'].includes(scope.row.status)"
+              class="task-action task-action--danger"
+              size="small"
+              :loading="cancelling === scope.row.id"
+              @click="cancelTask(scope.row)"
+              >取消</el-button
+            ><el-button
+              v-if="
+                ['FAILED', 'TIMEOUT', 'REJECTED', 'CANCELLED'].includes(
+                  scope.row.status,
+                )
+              "
+              class="task-action task-action--danger"
+              size="small"
+              :loading="retrying === scope.row.id"
+              :disabled="Boolean(retrying)"
+              @click="retryTask(scope.row)"
+              >重试</el-button
+            ><el-button
+              class="task-action"
+              size="small"
+              :icon="Document"
+              :disabled="scope.row.status !== 'SUCCESS'"
+              :loading="downloading === scope.row.id"
+              @click="downloadReport(scope.row.id)"
+              >报告</el-button
+            >
+          </div></template
         ></el-table-column
       >
     </el-table>
@@ -2096,12 +2111,12 @@ onUnmounted(() => {
           :content="formatExecutionLog(detail.executionLog)"
           empty-text="等待任务开始执行…"
           icon="clipboard-task"
+          wrap
           :max-rows="18"
-        >
-          <pre ref="logOutput" class="task-output task-live-log">{{
-            formatExecutionLog(detail.executionLog) || "等待任务开始执行…"
-          }}</pre>
-        </FluentCodeBlock>
+          live
+          ariaLabel="实时执行日志"
+          :textarea-ref="setLogOutput"
+        />
       </el-descriptions-item>
       <el-descriptions-item label="请求参数" :span="2">
         <div class="task-result-panel">
@@ -2690,14 +2705,6 @@ onUnmounted(() => {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
-.task-output {
-  max-height: 280px;
-  margin: 0;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
-  font-size: 12px;
-}
 .task-result-panel {
   display: flex;
   width: 100%;
@@ -2836,18 +2843,67 @@ onUnmounted(() => {
   font-size: 12px;
   text-align: center;
 }
-.task-live-log {
-  min-height: 180px;
-  max-height: 360px;
-  padding: 12px;
-  border-radius: 4px;
-  background: #111827;
-  color: #d1fae5;
-  font-family: Consolas, "Cascadia Mono", monospace;
-  line-height: 1.55;
-}
 .snapshot-hash {
   word-break: break-all;
+}
+/* Row actions mirror the Results Center (.finding-row-actions) so the same
+   task/finding verbs read identically across the two tables. */
+.task-row-actions {
+  display: grid;
+  width: 100%;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+}
+.task-row-actions :deep(.el-button),
+.task-row-actions :deep(.el-button + .el-button),
+.task-row-actions :deep(.task-action) {
+  width: 100% !important;
+  height: 28px;
+  margin: 0 !important;
+  padding: 0 4px !important;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  border-color: var(--app-border-strong);
+  background: var(--app-surface-strong);
+  color: var(--app-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.task-row-actions :deep(.el-button > span) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+.task-row-actions :deep(.task-action:hover),
+.task-row-actions :deep(.task-action:focus-visible) {
+  border-color: var(--app-accent);
+  background: var(--app-accent-soft);
+  color: var(--app-text);
+}
+.task-row-actions :deep(.task-action--ai) {
+  border-color: var(--app-accent);
+  background: var(--app-accent-soft);
+  color: var(--app-text);
+}
+.task-row-actions :deep(.task-action--danger) {
+  border-color: color-mix(in srgb, #b42318 58%, var(--app-border));
+  color: light-dark(#8f1d17, #ffb4ab);
+}
+.task-row-actions :deep(.task-action--danger:hover),
+.task-row-actions :deep(.task-action--danger:focus-visible) {
+  border-color: #b42318;
+  background: color-mix(in srgb, #b42318 12%, var(--app-surface-strong));
+  color: light-dark(#7a1712, #ffd2cc);
+}
+.task-row-actions :deep(.el-button .el-icon) {
+  font-size: 12px;
 }
 .disabled-target {
   float: right;

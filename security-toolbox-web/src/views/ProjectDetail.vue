@@ -54,6 +54,7 @@ import AppPagination from "../components/AppPagination.vue";
 import AssetTopology from "../components/AssetTopology.vue";
 import DictionaryPanel from "../components/DictionaryPanel.vue";
 import type { DictionaryApi } from "../components/dictionaryTypes";
+import FluentCodeBlock from "../components/FluentCodeBlock.vue";
 import {
   ArrowDown,
   CircleCheck,
@@ -6616,7 +6617,15 @@ onUnmounted(() => {
           ></el-descriptions-item
         >
         <el-descriptions-item label="实时执行日志" :span="2">
-          <pre class="project-live-log">{{ taskLogText(taskDetail) }}</pre>
+          <FluentCodeBlock
+            :content="taskLogText(taskDetail)"
+            empty-text="等待任务开始执行…"
+            icon="clipboard-task"
+            wrap
+            :max-rows="18"
+            live
+            ariaLabel="实时执行日志"
+          />
         </el-descriptions-item>
       </el-descriptions>
       <el-alert
@@ -6657,9 +6666,12 @@ onUnmounted(() => {
           {{ findingDetail.description || "未提供" }}
         </el-descriptions-item>
         <el-descriptions-item label="证据">
-          <pre class="project-json-block">{{
-            findingDetail.evidence || "未提供"
-          }}</pre>
+          <FluentCodeBlock
+            :content="findingDetail.evidence || '未提供'"
+            empty-text="未提供"
+            wrap
+            :max-rows="12"
+          />
         </el-descriptions-item>
         <el-descriptions-item label="修复建议">
           {{ findingDetail.remediation || "未提供" }}
@@ -7379,25 +7391,6 @@ onUnmounted(() => {
   display: block;
   margin-top: 6px;
   line-height: 1.5;
-}
-.project-live-log,
-.project-json-block {
-  max-height: 360px;
-  overflow: auto;
-  margin: 0;
-  padding: 12px;
-  border-radius: 6px;
-  background: #111827;
-  color: #d1fae5;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font:
-    12px/1.55 Consolas,
-    "Cascadia Mono",
-    monospace;
-}
-.project-json-block {
-  max-height: 280px;
 }
 .finding-detail-tags {
   display: inline-flex;

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref, onMounted, onBeforeUnmount } from "vue";
 import { ElMessage } from "element-plus";
 import FluentIcon from "./FluentIcon.vue";
 
@@ -13,6 +14,9 @@ const props = withDefaults(
     minRows?: number;
     maxRows?: number;
     copyable?: boolean;
+    live?: boolean;
+    ariaLabel?: string;
+    textareaRef?: (el: HTMLTextAreaElement | null) => void;
   }>(),
   {
     title: "",
@@ -24,8 +28,21 @@ const props = withDefaults(
     minRows: 6,
     maxRows: 12,
     copyable: true,
+    live: false,
+    ariaLabel: "",
+    textareaRef: undefined,
   },
 );
+
+const inputEl = ref();
+function syncTextarea() {
+  const inner = inputEl.value as
+    | { textarea?: HTMLTextAreaElement }
+    | undefined;
+  props.textareaRef?.(inner?.textarea ?? null);
+}
+onMounted(() => syncTextarea());
+onBeforeUnmount(() => props.textareaRef?.(null));
 
 async function copy() {
   if (!props.content) return;
@@ -58,6 +75,7 @@ async function copy() {
     </div>
     <slot>
       <el-input
+        ref="inputEl"
         class="fluent-code-textarea"
         :class="{ 'is-mono': monospace, 'is-wrap': wrap }"
         :model-value="content"
@@ -65,6 +83,9 @@ async function copy() {
         :autosize="{ minRows, maxRows }"
         readonly
         :placeholder="emptyText"
+        :role="live ? 'log' : undefined"
+        :aria-live="live ? 'polite' : undefined"
+        :aria-label="ariaLabel || undefined"
       />
     </slot>
   </div>
@@ -84,7 +105,7 @@ async function copy() {
   justify-content: space-between;
   gap: 8px;
   padding: 0 2px;
-  font-size: 11px;
+  font-size: var(--type-micro, 11px);
 }
 .fluent-code-title {
   display: inline-flex;
@@ -95,22 +116,23 @@ async function copy() {
 }
 .fluent-subtle-btn {
   display: inline-flex;
+  min-height: 24px;
   align-items: center;
   gap: 4px;
   margin-left: auto;
-  padding: 2px 7px;
+  padding: 3px 8px;
   border: none;
-  border-radius: 3px;
+  border-radius: var(--fluent-radius-control);
   background: transparent;
   color: var(--app-muted, #64748b);
-  font-size: 11px;
+  font-size: var(--type-caption, 12px);
   cursor: pointer;
-  transition: all 120ms ease;
+  transition: all var(--fluent-fast);
 }
 .fluent-subtle-btn:hover {
   background: var(--app-surface-soft, #f1f5f9);
   color: var(--app-accent, #0078d4);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  box-shadow: var(--fluent-shadow-2);
 }
 .fluent-code-textarea :deep(.el-textarea__inner) {
   white-space: pre;

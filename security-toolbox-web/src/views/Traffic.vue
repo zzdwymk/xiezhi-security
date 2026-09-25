@@ -1014,8 +1014,8 @@ async function deleteCaptureFilter(rule: CaptureFilterRule) {
   }
 }
 
-async function load(showError = false) {
-  loading.value = true;
+async function load(showError = false, silent = false) {
+  if (!silent) loading.value = true;
   try {
     const [statusResult, sessionsResult] = await Promise.all([
       api.get<TrafficStatus>("/traffic/status"),
@@ -1045,7 +1045,7 @@ async function load(showError = false) {
     serviceUnavailable.value = true;
     if (showError) ElMessage.warning(readableError(error));
   } finally {
-    loading.value = false;
+    if (!silent) loading.value = false;
   }
 }
 
@@ -2559,7 +2559,7 @@ onMounted(() => {
     );
   }
   refreshTimer = window.setInterval(() => {
-    if (!loading.value) void load();
+    if (!loading.value) void load(false, true);
   }, 2500);
 });
 onUnmounted(() => {
@@ -5326,10 +5326,16 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* Neutralize the legacy `.traffic-ai-pane` padding/overflow. Otherwise this
+     pane is inset 15px, so its flush header renders as an un-rounded card that
+     no longer meets the workbench's rounded corner. */
+  padding: 0;
+  overflow: hidden;
   background: var(--app-surface);
 }
 .traffic-points-body {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 12px 14px;
 }
@@ -6016,8 +6022,14 @@ onUnmounted(() => {
   color: #fff;
 }
 .codex-traffic-page :deep(.el-button--primary:hover) {
-  border-color: var(--app-accent);
-  background: color-mix(in srgb, var(--app-accent) 88%, white);
+  border-color: color-mix(in srgb, var(--app-accent) 74%, #000);
+  background: color-mix(in srgb, var(--app-accent) 74%, #000);
+  color: #fff;
+}
+.codex-traffic-page :deep(.el-button--primary:active),
+.codex-traffic-page :deep(.el-button--primary:focus) {
+  border-color: color-mix(in srgb, var(--app-accent) 74%, #000);
+  background: color-mix(in srgb, var(--app-accent) 74%, #000);
   color: #fff;
 }
 .codex-traffic-page :deep(.packet-copilot-button) {
@@ -6026,8 +6038,8 @@ onUnmounted(() => {
   color: var(--fluent-action-fg) !important;
 }
 .codex-traffic-page :deep(.packet-copilot-button:hover) {
-  border-color: var(--app-accent) !important;
-  background: color-mix(in srgb, var(--app-accent) 88%, white) !important;
+  border-color: var(--fluent-action-bg-hover) !important;
+  background: var(--fluent-action-bg-hover) !important;
   color: #fff !important;
 }
 .codex-traffic-page :deep(.packet-copilot-button .el-icon),
