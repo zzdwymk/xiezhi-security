@@ -17,6 +17,10 @@
     "Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei UI", sans-serif;
   --fluent-font-small:
     "Segoe UI Variable Small", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  /* Fluent 2 code/monospace ramp. Cascadia first, then a CJK face so the
+     Chinese log lines that mix into terminal output still resolve evenly. */
+  --font-mono: "Cascadia Code", "Cascadia Mono", Consolas, "Microsoft YaHei UI",
+    monospace;
   --fluent-caption2-size: 10px;
   --fluent-caption2-line: 14px;
   --fluent-caption1-size: 12px;
@@ -68,6 +72,8 @@
   --fluent-control-height-large: 40px;
   --fluent-stroke-thin: 1px;
   --fluent-stroke-thick: 2px;
+  /* Native desktop caption bar height (see .desktop-v2-native-titlebar). */
+  --desktop-titlebar-height: 38px;
 
   /* Elevation — Fluent 2 dual-layer (directional key + ambient) shadows */
   --fluent-shadow-2:
@@ -244,6 +250,18 @@ select {
 ):focus-visible {
   outline: var(--fluent-stroke-thick) solid var(--app-accent);
   outline-offset: var(--fluent-stroke-thick);
+}
+
+/* Element Plus ships its own lighter focus ring (`--el-button-outline-color`)
+   whose `.el-button:focus-visible` selector outranks the zero-specificity
+   `:where()` rule above, so Element Plus buttons did not match the app-wide
+   Fluent stroke. Normalize every button variant to the same accent ring so
+   native `<button>`s and `el-button`s look identical on keyboard focus. */
+.el-button:focus-visible,
+.el-button.is-text:not(.is-disabled):focus-visible,
+.el-button.is-link:not(.is-disabled):focus-visible {
+  outline: var(--fluent-stroke-thick) solid var(--app-accent) !important;
+  outline-offset: var(--fluent-stroke-thick) !important;
 }
 
 .el-input__wrapper:focus-visible,
@@ -992,8 +1010,8 @@ body,
 
 :root[data-system-theme="dark"] .quiet-icon-button:hover {
   background: rgba(255, 255, 255, 0.12) !important;
-  border-color: var(--app-accent) !important;
-  color: var(--app-accent) !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  color: #f8fafc !important;
 }
 
 /* Vulnerabilities search panel color harmony */
@@ -1285,11 +1303,18 @@ body,
 /* Native desktop: the dialog/message-box mask must fit the work area and round
    its leading corner to match the rounded workspace. The overlay is nested
    inside the app tree (dialog overlays are position:fixed), so scope to any
-   el-overlay that wraps a dialog, wherever it mounts. */
+   el-overlay that wraps a dialog, wherever it mounts. `top` keeps the native
+   caption bar out of the smoke layer so the title stays crisp and draggable
+   instead of being half-dimmed up to the window controls. */
 body:has(.desktop-v2-native-frame) :is(.el-overlay.is-message-box, .el-overlay.is-drawer, .el-overlay:has(> .el-drawer)) {
+  top: var(--desktop-titlebar-height, 38px);
   right: 0;
   left: var(--desktop-sidebar-width, 260px);
   width: auto;
+  /* Element's mask sets height:100%; clear it so top+bottom (not top+height)
+     define the box. Otherwise the 38px caption offset overflows the viewport
+     and the centered dialog is pushed down. */
+  height: auto;
   border-top-left-radius: var(--fluent-workspace-radius);
   overflow: hidden;
 }
@@ -1299,9 +1324,13 @@ body:has(.desktop-v2-native-frame)
   position: absolute;
 }
 body:has(.desktop-v2-native-frame) .el-overlay:has(> .el-overlay-dialog) {
+  top: var(--desktop-titlebar-height, 38px);
   right: 0;
   left: var(--desktop-sidebar-width, 260px);
   width: auto;
+  /* See the mask note above: clear the inherited height:100% so the dialog is
+     centered symmetrically between the caption and the window bottom. */
+  height: auto;
   border-top-left-radius: var(--fluent-workspace-radius);
   overflow: hidden;
 }
@@ -1314,7 +1343,10 @@ body:has(.desktop-v2-native-frame)
   .el-overlay:has(> .el-overlay-dialog)
   .el-dialog {
   max-width: calc(100% - 32px) !important;
-  max-height: calc(100% - 32px);
+  /* Resolve against the viewport, not the (now title-bar-offset) mask, so the
+     dialog always fits the work area below the caption and the footer actions
+     are never clipped — the body scrolls instead. */
+  max-height: calc(100dvh - var(--desktop-titlebar-height, 38px) - 32px) !important;
 }
 
 /* Web (non-native view). The workspace top-left corner is rounded, so the
@@ -1359,6 +1391,13 @@ body:not(:has(.desktop-v2-native-frame))
 body:has(.desktop-v2-native-frame) .el-message,
 body:not(:has(.desktop-v2-native-frame)) .el-message {
   left: calc(50% + var(--desktop-sidebar-width, 260px) / 2);
+}
+
+/* The native frame draws its own 38px title bar, so push toasts below it
+   instead of letting the default 16px offset overlap the caption. A margin
+   (not `top`) keeps Element Plus's inline `top` stacking intact. */
+body:has(.desktop-v2-native-frame) .el-message {
+  margin-top: 38px;
 }
 
 /* Login (and other full-bleed public pages) have no sidebar, so the dialog
@@ -1826,7 +1865,7 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
   --app-dialog-width: 640px;
   display: flex;
   width: min(var(--app-dialog-width), calc(100% - 32px)) !important;
-  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
   overflow: hidden;
   flex-direction: column;
   margin: auto;
@@ -1975,7 +2014,7 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
 @media (max-width: 760px) {
   .app-dialog.el-dialog {
     width: calc(100vw - 32px) !important;
-    max-height: calc(100vh - 20px);
+    max-height: calc(100dvh - 20px);
   }
   .app-dialog.el-dialog > .el-dialog__header {
     padding: 12px 15px;

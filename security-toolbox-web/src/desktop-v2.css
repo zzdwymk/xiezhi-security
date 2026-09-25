@@ -643,8 +643,8 @@ body.sidebar-resizing * {
   cursor: pointer;
 }
 .quiet-icon-button:hover {
-  border-color: #b8c2c8;
-  color: var(--v2-accent);
+  background: var(--app-surface-soft);
+  color: var(--v2-text);
 }
 .quiet-icon-button:disabled {
   cursor: default;

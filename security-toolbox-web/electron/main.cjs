@@ -138,9 +138,9 @@ function sharedChromeSurface(theme) {
   ) {
     return theme.dark ? "#202020" : "#f3f3f3";
   }
-  // Dark Mica/Acrylic: the title bar and navigation must stay fully
-  // transparent so the native DWM material shows through and the whole window
-  // reads as one continuous sheet (the page surfaces are transparent too).
+  // Mica: the chrome must be fully transparent in every theme so the title bar
+  // and navigation match the (also transparent) page and no seam appears.
+  if (theme.windowMaterial === "mica") return "transparent";
   if (theme.dark) return "transparent";
   return theme.windowMaterial === "acrylic"
     ? "color-mix(in srgb, Canvas 32%, transparent)"
