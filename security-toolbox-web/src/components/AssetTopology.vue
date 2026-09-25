@@ -3751,7 +3751,8 @@ onUnmounted(() => {
               <button
                 type="button"
                 class="fluent-subtle-btn"
-                title="复制原始 JSON"
+                aria-label="复制原始 JSON"
+                data-fluent-tooltip="复制原始 JSON"
                 @click="copyEvidence"
               >
                 <FluentIcon name="copy" :size="12" />
@@ -5182,8 +5183,6 @@ html.dark .zoom-controls .divider-v,
 
 .fluent-subtle-btn:hover {
   background: var(--app-surface-soft, #f1f5f9);
-  color: var(--app-accent, #0078d4);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
 .raw-data-textarea :deep(.el-textarea__inner) {

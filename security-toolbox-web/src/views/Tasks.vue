@@ -15,7 +15,7 @@ import {
   type TaskControlStatus,
   type VulnerabilityDefinition,
 } from "../api";
-import { InfoCircle, Search, View, MagicStick, Document } from "../components/fluentIcons";
+import { InfoCircle, Search, View, MagicStick, Document, Switch, Delete } from "../components/fluentIcons";
 import AppPagination from "../components/AppPagination.vue";
 import FluentCodeBlock from "../components/FluentCodeBlock.vue";
 import FluentJsonView from "../components/FluentJsonView.vue";
@@ -1869,30 +1869,34 @@ onUnmounted(() => {
             </div></template
           ></el-table-column
         >
-        <el-table-column label="操作" width="130">
+        <el-table-column label="操作" width="210">
           <template #default="scope">
-            <el-button
-              link
-              type="primary"
-              :loading="
-                scheduleAction ===
-                scheduleActionKey(
-                  scope.row.enabled ? 'disable' : 'enable',
-                  scope.row.id,
-                )
-              "
-              @click="toggleSchedule(scope.row)"
-              >{{ scope.row.enabled ? "停用" : "启用" }}</el-button
-            >
-            <el-button
-              link
-              type="danger"
-              :loading="
-                scheduleAction === scheduleActionKey('delete', scope.row.id)
-              "
-              @click="deleteSchedule(scope.row)"
-              >删除</el-button
-            >
+            <div class="row-actions">
+              <el-button
+                class="row-action"
+                size="small"
+                :icon="Switch"
+                :loading="
+                  scheduleAction ===
+                  scheduleActionKey(
+                    scope.row.enabled ? 'disable' : 'enable',
+                    scope.row.id,
+                  )
+                "
+                @click="toggleSchedule(scope.row)"
+                >{{ scope.row.enabled ? "停用" : "启用" }}</el-button
+              >
+              <el-button
+                class="row-action row-action--danger"
+                size="small"
+                :icon="Delete"
+                :loading="
+                  scheduleAction === scheduleActionKey('delete', scope.row.id)
+                "
+                @click="deleteSchedule(scope.row)"
+                >删除</el-button
+              >
+            </div>
           </template>
         </el-table-column>
       </el-table>

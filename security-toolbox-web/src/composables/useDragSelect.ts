@@ -87,6 +87,7 @@ export function useDragSelect<T extends object>({
   let snapshotSelectedIds = new Set<number | string>();
   let autoScrollRaf = 0;
   let lastClientY = 0;
+  let anchorRowIndex: number | null = null;
 
   const marqueeStyle = computed(() => {
     if (!marqueeRect.value || !isDragging.value) {
@@ -153,7 +154,29 @@ export function useDragSelect<T extends object>({
     document.body.style.cursor = "";
   }
 
+  function rowIndexAtClientY(clientY: number): number | null {
+    const tableEl = getTableEl();
+    if (!tableEl) return null;
+
+    const rowEls = tableEl.querySelectorAll<HTMLTableRowElement>(rowSelector);
+    if (!rowEls.length) return null;
+
+    for (let i = 0; i < rowEls.length; i++) {
+      const r = rowEls[i].getBoundingClientRect();
+      if (r.top <= clientY && clientY <= r.bottom) return i;
+    }
+    // Fall back to nearest row inside the scroll container
+    const bodyWrapper = tableEl.querySelector<HTMLElement>(".el-table__body-wrapper");
+    if (!bodyWrapper) return null;
+
+    const bodyRect = bodyWrapper.getBoundingClientRect();
+    if (clientY < bodyRect.top) return 0;
+    if (clientY > bodyRect.bottom) return rowEls.length - 1;
+    return null;
+  }
+
   function updateIntersections(box: MarqueeRect) {
+    void box;
     const tableEl = getTableEl();
     if (!tableEl) return;
 
@@ -162,35 +185,36 @@ export function useDragSelect<T extends object>({
 
     const currentSelectedIds = getSelectedIdSet();
     const currentItems = items.value;
+    const count = Math.min(currentItems.length, rowEls.length);
 
-    for (let i = 0; i < currentItems.length && i < rowEls.length; i++) {
+    // During auto-scroll the anchor row (where the drag started) is fixed,
+    // while the pointer's row index grows/shrinks with scrolling. Selecting by
+    // a CONTIGUOUS row-index range between the anchor and the current pointer
+    // row keeps newly scrolled-in rows selected even if a frame never happened
+    // to intersect them with the marquee box.
+    const pointerRowIndex = rowIndexAtClientY(lastClientY);
+    if (anchorRowIndex == null || pointerRowIndex == null) return;
+
+    const lo = Math.min(anchorRowIndex, pointerRowIndex);
+    const hi = Math.max(anchorRowIndex, pointerRowIndex);
+
+    for (let i = 0; i < count; i++) {
       const item = currentItems[i];
       if (!item) continue;
 
-      const tr = rowEls[i];
-      const r = tr.getBoundingClientRect();
-
-      // Check 2D intersection
-      const intersects = !(
-        box.right < r.left ||
-        box.left > r.right ||
-        box.bottom < r.top ||
-        box.top > r.bottom
-      );
-
+      const inRange = i >= lo && i <= hi;
       const itemId = getItemId(item);
       const wasInitiallySelected = snapshotSelectedIds.has(itemId);
 
       let shouldSelect = false;
       if (isCtrl) {
-        // Toggle items inside marquee, leave others as initial
-        shouldSelect = intersects ? !wasInitiallySelected : wasInitiallySelected;
-      } else if (isShift) {
-        // Add items inside marquee to initial selection
-        shouldSelect = wasInitiallySelected || intersects;
+        // Toggle items inside the range, leave others as initial
+        shouldSelect = inRange ? !wasInitiallySelected : wasInitiallySelected;
       } else {
-        // Standard drag: only items inside marquee are selected
-        shouldSelect = intersects;
+        // Standard / Shift drag (append): select everything in the range and
+        // never un-select what was already selected (e.g. items scrolled out
+        // of the viewport during auto-scroll).
+        shouldSelect = wasInitiallySelected || inRange;
       }
 
       const isCurrentlySelected = currentSelectedIds.has(itemId);
@@ -284,6 +308,7 @@ export function useDragSelect<T extends object>({
       longPressTimer = undefined;
     }
     isLongPress = false;
+    anchorRowIndex = null;
 
     cleanupWindowListeners();
     resetDragStyles();
@@ -339,6 +364,8 @@ export function useDragSelect<T extends object>({
       return;
     }
 
+    isDragging.value = false;
+    marqueeRect.value = null;
     isPointerDown = true;
     startX = e.clientX;
     startY = e.clientY;
@@ -347,6 +374,7 @@ export function useDragSelect<T extends object>({
     isShift = e.shiftKey;
     isLongPress = false;
     snapshotSelectedIds = getSelectedIdSet();
+    anchorRowIndex = rowIndexAtClientY(startY);
 
     // Long press timer (250ms) for touch / long-press drag
     if (longPressTimer) {

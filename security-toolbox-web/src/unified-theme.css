@@ -1970,6 +1970,78 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
   flex: 1 1 auto;
 }
 
+/* Shared table/row action buttons (Results Center, Tasks, Projects, …).
+   One canonical Fluent small-button look: bordered, 28px, icon + label. Layout
+   is decoupled: wrap several buttons in `<div class="row-actions">` to get a
+   content-aware grid of equal-width buttons (2–3 per row depending on the
+   column); a lone `.row-action` fills a single-action cell at natural width. */
+.row-actions {
+  display: grid;
+  width: 100%;
+  /* ~84px min keeps icon+label readable; auto-fill wraps instead of crushing. */
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+}
+.row-actions > .el-button,
+.row-actions > .row-action {
+  width: 100% !important;
+  padding: 0 6px !important;
+}
+.row-action.el-button,
+.row-action.el-button + .el-button,
+.row-actions .row-action {
+  margin: 0 !important;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-align: center;
+  border: var(--fluent-stroke-thin) solid var(--app-border-strong);
+  background: var(--app-surface-strong);
+  color: var(--app-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.row-action.el-button > span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+.row-action.el-button:hover,
+.row-action.el-button:focus-visible {
+  border-color: var(--app-accent);
+  background: var(--app-accent-soft);
+  color: var(--app-text);
+}
+.row-action--ai.el-button {
+  border-color: var(--app-accent);
+  background: var(--app-accent-soft);
+  color: var(--app-text);
+}
+.row-action--danger.el-button {
+  border-color: color-mix(in srgb, #b42318 58%, var(--app-border));
+  color: light-dark(#8f1d17, #ffb4ab);
+}
+.row-action--danger.el-button:hover,
+.row-action--danger.el-button:focus-visible {
+  border-color: #b42318;
+  background: color-mix(in srgb, #b42318 12%, var(--app-surface-strong));
+  color: light-dark(#7a1712, #ffd2cc);
+}
+/* Element wraps the icon in <i class="el-icon">, itself a flex item. Without
+   `flex: none` it collapses to 0 width under narrow buttons and the 1em glyph
+   overflows across the label. */
+.row-action.el-button .el-icon {
+  flex: none;
+  margin: 0;
+  font-size: 14px;
+}
+
 .app-dialog__intro {
   margin: 0 0 16px;
   color: var(--app-muted);
@@ -2009,6 +2081,32 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
   .el-button--primary:not(.is-plain):not(.is-text):not(.is-link) {
   border-color: var(--app-accent);
   background: var(--app-accent);
+}
+
+/* The rule above sets a solid accent background directly, so it outranks
+   Element Plus' own `.el-button:hover` swap. Without an explicit hover state
+   the primary action in every dialog footer stays flat instead of darkening. */
+.app-dialog.el-dialog
+  > .el-dialog__footer
+  .el-button--primary:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  ):hover,
+.app-dialog.el-dialog
+  > .el-dialog__footer
+  .el-button--primary:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  ):focus-visible {
+  border-color: var(--app-accent-dark);
+  background: var(--app-accent-dark);
+}
+
+.app-dialog.el-dialog
+  > .el-dialog__footer
+  .el-button--primary:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  ):active {
+  border-color: var(--app-accent-dark);
+  background: var(--app-accent-dark);
 }
 
 @media (max-width: 760px) {

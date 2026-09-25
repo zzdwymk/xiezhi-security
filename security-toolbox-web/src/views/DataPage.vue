@@ -200,12 +200,12 @@ watch(() => props.kind, load);
           }}</template>
         </el-table-column>
       </template>
-      <el-table-column v-if="kind === 'audits'" label="操作" width="95">
+      <el-table-column v-if="kind === 'audits'" label="操作" width="110">
         <template #default="scope">
           <el-button
             v-if="canAnalyzeAudit(scope.row)"
-            link
-            type="primary"
+            class="row-action row-action--ai"
+            size="small"
             :icon="MagicStick"
             @click="analyzeAudit(scope.row)"
             >AI 核查</el-button
