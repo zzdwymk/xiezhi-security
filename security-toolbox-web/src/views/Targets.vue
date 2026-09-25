@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox, type TableInstance } from "element-plus";
-import { MagicStick, Search } from "../components/fluentIcons";
+import { MagicStick, Search, Document, EditPen, Delete } from "../components/fluentIcons";
 import {
   endpoints,
   safeGet,
@@ -844,29 +844,33 @@ onMounted(load);
       >
       <el-table-column label="操作" min-width="250"
         ><template #default="scope"
-          ><el-button
-            class="target-action-ai"
-            type="primary"
-            :icon="MagicStick"
-            @click="askCopilot(scope.row)"
-            >AI 规划</el-button
-          ><el-button
-            class="target-action-report"
-            :loading="reporting === scope.row.id"
-            @click="downloadTargetReport(scope.row)"
-            >目标 PDF</el-button
-          ><el-button
-            class="target-action-edit"
-            type="primary"
-            link
-            @click="openEditTarget(scope.row)"
-            >编辑</el-button
-          ><el-button
-            class="target-action-delete"
-            type="danger"
-            link
-            @click="remove(scope.row)"
-            >删除</el-button
+          ><div class="row-actions"
+            ><el-button
+              class="row-action row-action--ai"
+              size="small"
+              :icon="MagicStick"
+              @click="askCopilot(scope.row)"
+              >AI 规划</el-button
+            ><el-button
+              class="row-action"
+              size="small"
+              :icon="Document"
+              :loading="reporting === scope.row.id"
+              @click="downloadTargetReport(scope.row)"
+              >目标 PDF</el-button
+            ><el-button
+              class="row-action"
+              size="small"
+              :icon="EditPen"
+              @click="openEditTarget(scope.row)"
+              >编辑</el-button
+            ><el-button
+              class="row-action row-action--danger"
+              size="small"
+              :icon="Delete"
+              @click="remove(scope.row)"
+              >删除</el-button
+            ></div
           ></template
         ></el-table-column
       >

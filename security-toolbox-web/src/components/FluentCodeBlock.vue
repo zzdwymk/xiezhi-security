@@ -66,7 +66,8 @@ async function copy() {
         v-if="copyable && content"
         type="button"
         class="fluent-subtle-btn"
-        :title="`复制${title || '内容'}`"
+        :aria-label="`复制${title || '内容'}`"
+        :data-fluent-tooltip="`复制${title || '内容'}`"
         @click="copy"
       >
         <FluentIcon name="copy" />
@@ -131,8 +132,6 @@ async function copy() {
 }
 .fluent-subtle-btn:hover {
   background: var(--app-surface-soft, #f1f5f9);
-  color: var(--app-accent, #0078d4);
-  box-shadow: var(--fluent-shadow-2);
 }
 .fluent-code-textarea :deep(.el-textarea__inner) {
   white-space: pre;

@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Search } from "../components/fluentIcons";
+import { Search, View as ViewIcon, EditPen } from "../components/fluentIcons";
 import { endpoints, safeGet, type AssessmentProject } from "../api";
 import AppPagination from "../components/AppPagination.vue";
 import OfflineState from "../components/OfflineState.vue";
@@ -319,22 +319,26 @@ onMounted(load);
           </span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="140">
+      <el-table-column label="操作" width="210">
         <template #default="scope">
-          <el-button
-            link
-            type="primary"
-            @click="router.push(`/projects/${scope.row.id}`)"
-          >
-            进入项目
-          </el-button>
-          <el-button
-            link
-            type="primary"
-            @click="openEdit(scope.row)"
-          >
-            编辑
-          </el-button>
+          <div class="row-actions">
+            <el-button
+              class="row-action"
+              size="small"
+              :icon="ViewIcon"
+              @click="router.push(`/projects/${scope.row.id}`)"
+            >
+              进入项目
+            </el-button>
+            <el-button
+              class="row-action"
+              size="small"
+              :icon="EditPen"
+              @click="openEdit(scope.row)"
+            >
+              编辑
+            </el-button>
+          </div>
         </template>
       </el-table-column>
     </el-table>

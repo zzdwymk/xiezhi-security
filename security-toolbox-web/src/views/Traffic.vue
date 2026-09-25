@@ -8,6 +8,7 @@ import {
   CircleCheck,
   Connection,
   Delete,
+  EditPen,
   Dismiss,
   Filter,
   InfoCircle,
@@ -3533,9 +3534,9 @@ onUnmounted(() => {
                       <td>
                         <el-button
                           v-if="hit.changed"
-                          link
-                          type="primary"
+                          class="row-action"
                           size="small"
+                          :icon="Promotion"
                           @click="fuzzHitToReplay(hit)"
                           >重放</el-button
                         >
@@ -3939,18 +3940,22 @@ onUnmounted(() => {
               @change="toggleCaptureFilter(scope.row)" /></template
         ></el-table-column
         >
-        <el-table-column label="操作" width="100"
+        <el-table-column label="操作" width="210"
           ><template #default="scope"
-            ><el-button
-              link
-              type="primary"
-              @click="editCaptureFilter(scope.row)"
-              >编辑</el-button
-            ><el-button
-              link
-              type="danger"
-              @click="deleteCaptureFilter(scope.row)"
-              >删除</el-button
+            ><div class="row-actions"
+              ><el-button
+                class="row-action"
+                size="small"
+                :icon="EditPen"
+                @click="editCaptureFilter(scope.row)"
+                >编辑</el-button
+              ><el-button
+                class="row-action row-action--danger"
+                size="small"
+                :icon="Delete"
+                @click="deleteCaptureFilter(scope.row)"
+                >删除</el-button
+              ></div
             ></template
           ></el-table-column
         >

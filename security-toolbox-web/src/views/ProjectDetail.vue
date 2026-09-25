@@ -59,13 +59,18 @@ import {
   ArrowDown,
   CircleCheck,
   Delete,
+  Dismiss,
   Download,
   EditPen,
+  List,
   MagicStick,
   Plus,
   Refresh,
   Search,
+  Share,
+  Switch,
   UploadFilled,
+  View,
 } from "../components/fluentIcons";
 import {
   validateFingerprintRuleSyntax,
@@ -4015,11 +4020,12 @@ onUnmounted(() => {
             min-width="90"
             show-overflow-tooltip
           />
-          <el-table-column label="操作" width="100"
+          <el-table-column label="操作" width="110"
             ><template #default="s"
               ><el-button
-                link
-                type="danger"
+                class="row-action row-action--danger"
+                size="small"
+                :icon="Dismiss"
                 @click="removeTargetFromProject(s.row.id)"
                 >移出项目</el-button
               ></template
@@ -4213,9 +4219,15 @@ onUnmounted(() => {
                   </template>
                 </el-table-column>
 
-                <el-table-column label="操作" width="56" align="center">
+                <el-table-column label="操作" width="64" align="center">
                   <template #default="{ row }">
-                    <el-button link type="danger" size="small" @click="removeTargetBatchItem(row.id)">✕</el-button>
+                    <el-button
+                      class="row-action row-action--danger"
+                      size="small"
+                      :icon="Dismiss"
+                      aria-label="移除"
+                      @click="removeTargetBatchItem(row.id)"
+                    />
                   </template>
                 </el-table-column>
               </el-table>
@@ -4748,11 +4760,16 @@ onUnmounted(() => {
                 : s.row.wafName || "未识别"
             }}</template></el-table-column
           >
-          <el-table-column label="证据" width="90"
+          <el-table-column label="证据" width="110"
             ><template #default="s"
               ><el-popover trigger="click" width="420"
                 ><template #reference
-                  ><el-button link type="primary">查看证据</el-button></template
+                  ><el-button
+                    class="row-action"
+                    size="small"
+                    :icon="View"
+                    >查看证据</el-button
+                  ></template
                 >
                 <pre class="json-view">{{
                   JSON.stringify(
@@ -4764,11 +4781,12 @@ onUnmounted(() => {
               </el-popover></template
             ></el-table-column
           >
-          <el-table-column label="安全检测建议" width="130"
+          <el-table-column label="安全检测建议" width="150"
             ><template #default="s">
               <el-button
-                link
-                type="primary"
+                class="row-action"
+                size="small"
+                :icon="View"
                 :disabled="!discoveryFingerprintIds(s.row).length"
                 :loading="
                   pocRecommendationLoading &&
@@ -5424,36 +5442,47 @@ onUnmounted(() => {
               formatDateTime(scope.row.createdAt)
             }}</template></el-table-column
           >
-          <el-table-column label="操作" min-width="180">
+          <el-table-column label="操作" min-width="220">
             <template #default="scope">
-              <el-button link type="primary" @click="showTaskDetail(scope.row)"
-                >实时日志</el-button
-              >
-              <el-button
-                v-if="
-                  ['PENDING', 'QUEUED', 'RUNNING'].includes(scope.row.status)
-                "
-                link
-                type="danger"
-                :loading="taskCancelling === scope.row.id"
-                @click="cancelProjectTask(scope.row)"
-                >取消</el-button
-              >
-              <el-button
-                v-if="
-                  ['FAILED', 'TIMEOUT', 'REJECTED', 'CANCELLED'].includes(
-                    scope.row.status,
-                  )
-                "
-                link
-                type="warning"
-                :loading="taskRetrying === scope.row.id"
-                @click="retryProjectTask(scope.row)"
-                >重试</el-button
-              >
-              <el-button link @click="router.push('/tasks')"
-                >任务中心</el-button
-              >
+              <div class="row-actions">
+                <el-button
+                  class="row-action"
+                  size="small"
+                  :icon="List"
+                  @click="showTaskDetail(scope.row)"
+                  >实时日志</el-button
+                >
+                <el-button
+                  v-if="
+                    ['PENDING', 'QUEUED', 'RUNNING'].includes(scope.row.status)
+                  "
+                  class="row-action row-action--danger"
+                  size="small"
+                  :loading="taskCancelling === scope.row.id"
+                  @click="cancelProjectTask(scope.row)"
+                  >取消</el-button
+                >
+                <el-button
+                  v-if="
+                    ['FAILED', 'TIMEOUT', 'REJECTED', 'CANCELLED'].includes(
+                      scope.row.status,
+                    )
+                  "
+                  class="row-action"
+                  size="small"
+                  :icon="Refresh"
+                  :loading="taskRetrying === scope.row.id"
+                  @click="retryProjectTask(scope.row)"
+                  >重试</el-button
+                >
+                <el-button
+                  class="row-action"
+                  size="small"
+                  :icon="Share"
+                  @click="router.push('/tasks')"
+                  >任务中心</el-button
+                >
+              </div>
             </template>
           </el-table-column>
         </el-table>
@@ -5640,22 +5669,26 @@ onUnmounted(() => {
               formatDateTime(scope.row.createdAt)
             }}</template></el-table-column
           >
-          <el-table-column label="操作" width="150"
+          <el-table-column label="操作" width="210"
             ><template #default="scope"
-              ><el-button
-                link
-                type="primary"
-                @click="
-                  findingDetail = scope.row;
-                  findingDetailVisible = true;
-                "
-                >详情</el-button
-              ><el-button
-                link
-                type="warning"
-                :loading="findingRetesting === scope.row.id"
-                @click="retestProjectFinding(scope.row)"
-                >复测</el-button
+              ><div class="row-actions"
+                ><el-button
+                  class="row-action"
+                  size="small"
+                  :icon="View"
+                  @click="
+                    findingDetail = scope.row;
+                    findingDetailVisible = true;
+                  "
+                  >详情</el-button
+                ><el-button
+                  class="row-action"
+                  size="small"
+                  :icon="Refresh"
+                  :loading="findingRetesting === scope.row.id"
+                  @click="retestProjectFinding(scope.row)"
+                  >复测</el-button
+                ></div
               ></template
             ></el-table-column
           >
@@ -5779,80 +5812,89 @@ onUnmounted(() => {
               ></template
             ></el-table-column
           >
-          <el-table-column label="操作" min-width="180">
+          <el-table-column label="操作" min-width="220">
             <template #default="scope">
-              <el-button
-                link
-                type="primary"
-                @click="
-                  securityActionDetail = scope.row;
-                  securityActionDetailVisible = true;
-                "
-                >详情</el-button
-              >
-              <template
-                v-if="
-                  canManageSecurityActions &&
-                  scope.row.status === 'PENDING_APPROVAL'
-                "
-              >
+              <div class="row-actions">
                 <el-button
-                  link
-                  type="success"
+                  class="row-action"
+                  size="small"
+                  :icon="View"
+                  @click="
+                    securityActionDetail = scope.row;
+                    securityActionDetailVisible = true;
+                  "
+                  >详情</el-button
+                >
+                <template
+                  v-if="
+                    canManageSecurityActions &&
+                    scope.row.status === 'PENDING_APPROVAL'
+                  "
+                >
+                  <el-button
+                    class="row-action"
+                    size="small"
+                    :icon="CircleCheck"
+                    :loading="securityActionMutating === scope.row.id"
+                    @click="decideSecurityAction(scope.row, 'APPROVED')"
+                    >批准</el-button
+                  >
+                  <el-button
+                    class="row-action row-action--danger"
+                    size="small"
+                    :icon="Dismiss"
+                    :loading="securityActionMutating === scope.row.id"
+                    @click="decideSecurityAction(scope.row, 'REJECTED')"
+                    >拒绝</el-button
+                  >
+                </template>
+                <el-button
+                  v-if="
+                    canManageSecurityActions && scope.row.status === 'APPROVED'
+                  "
+                  class="row-action"
+                  size="small"
+                  :icon="Switch"
+                  :disabled="
+                    !projectAuthorizationGuard.active ||
+                    !securityActionWindowState(scope.row).allowed
+                  "
                   :loading="securityActionMutating === scope.row.id"
-                  @click="decideSecurityAction(scope.row, 'APPROVED')"
-                  >批准</el-button
+                  @click="startSecurityAction(scope.row)"
+                  >开始</el-button
                 >
-                <el-button
-                  link
-                  type="danger"
-                  :loading="securityActionMutating === scope.row.id"
-                  @click="decideSecurityAction(scope.row, 'REJECTED')"
-                  >拒绝</el-button
+                <template
+                  v-if="
+                    canManageSecurityActions && scope.row.status === 'RUNNING'
+                  "
                 >
-              </template>
-              <el-button
-                v-if="
-                  canManageSecurityActions && scope.row.status === 'APPROVED'
-                "
-                link
-                type="warning"
-                :disabled="
-                  !projectAuthorizationGuard.active ||
-                  !securityActionWindowState(scope.row).allowed
-                "
-                :loading="securityActionMutating === scope.row.id"
-                @click="startSecurityAction(scope.row)"
-                >开始</el-button
-              >
-              <template
-                v-if="
-                  canManageSecurityActions && scope.row.status === 'RUNNING'
-                "
-              >
+                  <el-button
+                    class="row-action"
+                    size="small"
+                    :icon="CircleCheck"
+                    @click="openSecurityActionOperation(scope.row, 'COMPLETE')"
+                    >完成</el-button
+                  >
+                  <el-button
+                    class="row-action row-action--danger"
+                    size="small"
+                    :icon="Refresh"
+                    @click="openSecurityActionOperation(scope.row, 'ROLLBACK')"
+                    >回滚</el-button
+                  >
+                </template>
                 <el-button
-                  link
-                  type="success"
-                  @click="openSecurityActionOperation(scope.row, 'COMPLETE')"
-                  >完成</el-button
-                >
-                <el-button
-                  link
-                  type="danger"
+                  v-else-if="
+                    canManageSecurityActions &&
+                    ['COMPLETED', 'FAILED'].includes(scope.row.status)
+                  "
+                  class="row-action row-action--danger"
+                  size="small"
+                  :icon="Refresh"
                   @click="openSecurityActionOperation(scope.row, 'ROLLBACK')"
                   >回滚</el-button
                 >
-              </template>
-              <el-button
-                v-else-if="
-                  canManageSecurityActions &&
-                  ['COMPLETED', 'FAILED'].includes(scope.row.status)
-                "
-                link
-                type="danger"
-                @click="openSecurityActionOperation(scope.row, 'ROLLBACK')"
-                >回滚</el-button
-              >
+              </div>
             </template>
           </el-table-column>
         </el-table>
@@ -5930,21 +5972,25 @@ onUnmounted(() => {
             ><template #default="scope">{{
               formatDateTime(scope.row.createdAt)
             }}</template></el-table-column
-          ><el-table-column label="操作" width="120"
+          ><el-table-column label="操作" width="210"
             ><template #default="scope"
               ><template v-if="scope.row.status === 'PENDING'"
-                ><el-button
-                  link
-                  type="success"
-                  :loading="approvalDecision === scope.row.id"
-                  @click="decideApproval(scope.row, 'APPROVED')"
-                  >通过</el-button
-                ><el-button
-                  link
-                  type="danger"
-                  :loading="approvalDecision === scope.row.id"
-                  @click="decideApproval(scope.row, 'REJECTED')"
-                  >拒绝</el-button
+                ><div class="row-actions"
+                  ><el-button
+                    class="row-action"
+                    size="small"
+                    :icon="CircleCheck"
+                    :loading="approvalDecision === scope.row.id"
+                    @click="decideApproval(scope.row, 'APPROVED')"
+                    >通过</el-button
+                  ><el-button
+                    class="row-action row-action--danger"
+                    size="small"
+                    :icon="Dismiss"
+                    :loading="approvalDecision === scope.row.id"
+                    @click="decideApproval(scope.row, 'REJECTED')"
+                    >拒绝</el-button
+                  ></div
                 ></template
               ><span v-else class="muted-text">已决定</span></template
             ></el-table-column
@@ -6095,9 +6141,13 @@ onUnmounted(() => {
             ><template #default="scope">{{
               formatDateTime(scope.row.createdAt)
             }}</template></el-table-column
-          ><el-table-column label="操作" width="70"
+          ><el-table-column label="操作" width="90"
             ><template #default="scope"
-              ><el-button link type="danger" @click="deleteMemory(scope.row.id)"
+              ><el-button
+                class="row-action row-action--danger"
+                size="small"
+                :icon="Delete"
+                @click="deleteMemory(scope.row.id)"
                 >删除</el-button
               ></template
             ></el-table-column
