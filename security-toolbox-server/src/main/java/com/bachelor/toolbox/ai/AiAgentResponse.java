@@ -11,11 +11,42 @@ public record AiAgentResponse(
     AiPlanResponse plan,
     String guardStatus,
     String approvalStatus,
+    Long approvalId,
     boolean executed,
     List<Long> taskIds,
     AgentReview review,
     int memoryMessages,
     Instant completedAt) {
+
+  public AiAgentResponse(
+      String sessionId,
+      Long projectId,
+      Long targetId,
+      String message,
+      AiPlanResponse plan,
+      String guardStatus,
+      String approvalStatus,
+      boolean executed,
+      List<Long> taskIds,
+      AgentReview review,
+      int memoryMessages,
+      Instant completedAt) {
+    this(
+        sessionId,
+        projectId,
+        targetId,
+        message,
+        plan,
+        guardStatus,
+        approvalStatus,
+        null,
+        executed,
+        taskIds,
+        review,
+        memoryMessages,
+        completedAt);
+  }
+
   public record AgentReview(
       String status, String summary, boolean retryAllowed, List<Long> verifiedTaskIds) {}
 }

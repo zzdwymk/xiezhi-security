@@ -45,6 +45,24 @@ public class ProjectApprovalService {
     return saved;
   }
 
+  /**
+   * 由 AI Agent 规划服务在识别到需要审批的动作时受控提交审批请求。
+   * 固定申请主体为系统内置的不可登录服务账号 "ai-agent"，实现人机审批分离。
+   */
+  public ProjectApproval requestByAgent(
+      Long projectId, String action, String comment, String authorizationSnapshotHash) {
+    ProjectApproval approval = new ProjectApproval();
+    approval.setProjectId(projectId);
+    approval.setAction(action);
+    approval.setStatus(PENDING_STATUS);
+    approval.setComment(comment);
+    approval.setAuthorizationSnapshotHash(authorizationSnapshotHash);
+    approval.setRequestedBy("ai-agent");
+    ProjectApproval saved = repository.save(approval);
+    recordRequest(saved, authorizationSnapshotHash);
+    return saved;
+  }
+
   public ProjectApproval decide(Long projectId, Long approvalId, String status, String comment) {
     authorization.requireAdmin();
     ProjectApproval approval = getApproval(projectId, approvalId);

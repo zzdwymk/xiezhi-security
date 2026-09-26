@@ -152,6 +152,7 @@ const fingerprintRuleEditorText = ref("");
 const fingerprintRuleEditorProblems = ref<RuleProblem[]>([]);
 const fingerprintRuleSaving = ref(false);
 const fingerprintRuleDeleting = ref("");
+const fingerprintRuleOpTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const fingerprintRuleEditorConfirmText = ref("");
 const pocRecommendationVisible = ref(false);
 const pocRecommendationLoading = ref(false);
@@ -251,11 +252,77 @@ const {
 } = useClientPagination(projectApprovals);
 const projectAudits = ref<AuditLogRecord[]>([]);
 const projectDataLoading = ref(false);
+const taskSearchQuery = ref("");
+const taskStatusFilter = ref("");
+const taskToolFilter = ref("");
+const taskSort = ref("time-desc");
+const TASK_SORT_OPTIONS = [
+  { label: "时间从新到旧", value: "time-desc" },
+  { label: "时间从旧到新", value: "time-asc" },
+  { label: "ID 从大到小", value: "id-desc" },
+  { label: "ID 从小到大", value: "id-asc" },
+  { label: "工具 A-Z", value: "tool-asc" },
+  { label: "目标 A-Z", value: "target-asc" },
+  { label: "状态 A-Z", value: "status-asc" },
+];
+function compareProjectTasks(a: ProjectTaskRecord, b: ProjectTaskRecord) {
+  const targetName = (task: ProjectTaskRecord) =>
+    taskTargetName(task.targetId) || "";
+  const mode = taskSort.value;
+  if (mode === "time-desc")
+    return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+  if (mode === "time-asc")
+    return new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime();
+  if (mode === "id-desc")
+    return (b.id || 0) - (a.id || 0);
+  if (mode === "id-asc")
+    return (a.id || 0) - (b.id || 0);
+  if (mode === "tool-asc")
+    return aiToolLabel(a.toolCode).localeCompare(aiToolLabel(b.toolCode), "zh-Hans-CN");
+  if (mode === "target-asc")
+    return targetName(a).localeCompare(targetName(b), "zh-Hans-CN");
+  if (mode === "status-asc")
+    return taskStatusLabel(a.status).localeCompare(taskStatusLabel(b.status), "zh-Hans-CN");
+  return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+}
+const filteredProjectTasks = computed(() => {
+  const q = taskSearchQuery.value.trim().toLowerCase();
+  const status = taskStatusFilter.value;
+  const tool = taskToolFilter.value;
+  const targetName = (task: ProjectTaskRecord) =>
+    taskTargetName(task.targetId) || "";
+  return projectTasks.value
+    .filter((task) => {
+      if (status && task.status !== status) return false;
+      if (tool && task.toolCode !== tool) return false;
+      if (
+        q &&
+        ![
+          task.id,
+          task.toolCode,
+          targetName(task),
+          task.status,
+        ]
+          .filter(Boolean)
+          .some((value) => String(value).toLowerCase().includes(q))
+      )
+        return false;
+      return true;
+    })
+    .slice()
+    .sort(compareProjectTasks);
+});
 const {
   page: taskPage,
   pageSize: taskPageSize,
   pagedItems: pagedProjectTasks,
-} = useClientPagination(projectTasks);
+} = useClientPagination(filteredProjectTasks);
+const projectToolCodes = computed(() =>
+  [...new Set(projectTasks.value.map((task) => task.toolCode))].sort(),
+);
+const projectStatusList = computed(() => [
+  ...new Set(projectTasks.value.map((task) => task.status)),
+]);
 const findingCategoryFilter = ref<"" | "vulnerability" | "risk">(
   typeof route.query.category === "string" &&
     ["vulnerability", "risk"].includes(route.query.category)
@@ -1047,6 +1114,15 @@ function taskLogText(task?: ProjectTaskRecord) {
   return formatExecutionLog(task?.executionLog) || "等待任务开始执行…";
 }
 
+function sortProjectTasks() {
+  projectTasks.value = [...projectTasks.value].sort((a, b) => {
+    const left = Date.parse(String(a.createdAt || "")) || 0;
+    const right = Date.parse(String(b.createdAt || "")) || 0;
+    if (left !== right) return right - left;
+    return b.id - a.id;
+  });
+}
+
 function mergeProjectTask(task: ProjectTaskRecord) {
   const index = projectTasks.value.findIndex((item) => item.id === task.id);
   if (index >= 0)
@@ -1055,6 +1131,7 @@ function mergeProjectTask(task: ProjectTaskRecord) {
       ...task,
     });
   else if (task.projectId === id) projectTasks.value.unshift(task);
+  sortProjectTasks();
   if (reportSummary.value)
     reportSummary.value = {
       ...reportSummary.value,
@@ -1113,6 +1190,7 @@ function applyReportSummary(data: ProjectReportSummary) {
   projectTasks.value = Array.isArray(data.vulnerabilityDiscovery)
     ? data.vulnerabilityDiscovery
     : [];
+  sortProjectTasks();
   projectFindings.value = Array.isArray(data.findings) ? data.findings : [];
   projectApprovals.value = Array.isArray(data.approvals) ? data.approvals : [];
   if (data.project) project.value = data.project;
@@ -1164,6 +1242,7 @@ async function loadProjectTasks() {
     );
     if (filtered.length || !projectTasks.value.length)
       projectTasks.value = filtered;
+    sortProjectTasks();
     if (reportSummary.value)
       reportSummary.value = {
         ...reportSummary.value,
@@ -2892,6 +2971,7 @@ async function saveFingerprintRuleFromEditor() {
     return;
   }
   fingerprintRuleSaving.value = true;
+  armFingerprintRuleWatchdog();
   try {
     if (fingerprintRuleEditorMode.value === "add") {
       const updated = (await endpoints.addFingerprintRule(rule)).data;
@@ -2913,6 +2993,7 @@ async function saveFingerprintRuleFromEditor() {
   } catch (error: any) {
     ElMessage.error(errorMessage(error, "指纹规则保存失败，当前版本未更改"));
   } finally {
+    clearFingerprintRuleWatchdog();
     fingerprintRuleSaving.value = false;
   }
 }
@@ -2935,6 +3016,7 @@ async function deleteFingerprintRule(rule: FingerprintRule) {
   ).catch(() => false);
   if (confirmed !== "confirm") return;
   fingerprintRuleDeleting.value = rule.id;
+  armFingerprintRuleWatchdog();
   try {
     const updated = (await endpoints.deleteFingerprintRule(rule.id)).data;
     fingerprintCatalog.value = updated;
@@ -2945,7 +3027,28 @@ async function deleteFingerprintRule(rule: FingerprintRule) {
   } catch (error: any) {
     ElMessage.error(errorMessage(error, "指纹规则删除失败，当前版本未更改"));
   } finally {
+    clearFingerprintRuleWatchdog();
     fingerprintRuleDeleting.value = "";
+  }
+}
+
+/** Guards against a hanging request pinning fingerprintRuleDeleting /
+ *  fingerprintRuleSaving to true forever (which disables every delete
+ *  button with the browser "not-allowed" cursor). If the request does not
+ *  settle within the timeout, release the flags so the UI never freezes. */
+function armFingerprintRuleWatchdog() {
+  clearFingerprintRuleWatchdog();
+  fingerprintRuleOpTimer.value = setTimeout(() => {
+    fingerprintRuleSaving.value = false;
+    fingerprintRuleDeleting.value = "";
+    fingerprintRuleOpTimer.value = null;
+  }, 8000);
+}
+
+function clearFingerprintRuleWatchdog() {
+  if (fingerprintRuleOpTimer.value !== null) {
+    clearTimeout(fingerprintRuleOpTimer.value);
+    fingerprintRuleOpTimer.value = null;
   }
 }
 
@@ -4642,7 +4745,7 @@ onUnmounted(() => {
               : `编辑指纹规则 · ${fingerprintRuleEditingId}`
           "
           width="760px"
-          top="6vh"
+          align-center
           class="fingerprint-rule-editor-dialog"
           :close-on-click-modal="false"
           :close-on-press-escape="!fingerprintRuleSaving"
@@ -5389,6 +5492,68 @@ onUnmounted(() => {
             >刷新任务</el-button
           >
         </div>
+        <div class="project-tab-filters">
+          <el-input
+            v-model="taskSearchQuery"
+            placeholder="搜索 ID / 工具 / 目标 / 状态"
+            clearable
+            :prefix-icon="Search"
+            style="width: 260px"
+          />
+          <el-select
+            v-model="taskToolFilter"
+            placeholder="全部工具"
+            clearable
+            style="width: 160px"
+          >
+            <el-option
+              v-for="code in projectToolCodes"
+              :key="code"
+              :label="aiToolLabel(code)"
+              :value="code"
+            />
+          </el-select>
+          <el-select
+            v-model="taskStatusFilter"
+            placeholder="全部状态"
+            clearable
+            style="width: 140px"
+          >
+            <el-option
+              v-for="s in projectStatusList"
+              :key="s"
+              :label="taskStatusLabel(s)"
+              :value="s"
+            />
+          </el-select>
+          <el-select v-model="taskSort" placeholder="排序" style="width: 150px">
+            <el-option
+              v-for="opt in TASK_SORT_OPTIONS"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
+          <el-button
+            v-if="taskSearchQuery || taskToolFilter || taskStatusFilter"
+            link
+            type="primary"
+            size="small"
+            @click="
+              taskSearchQuery = '';
+              taskToolFilter = '';
+              taskStatusFilter = '';
+            "
+          >
+            重置筛选
+          </el-button>
+          <span
+            v-if="filteredProjectTasks.length !== projectTasks.length"
+            class="finding-filter-hint"
+          >
+            已筛选 {{ filteredProjectTasks.length }} / {{ projectTasks.length }} 条
+          </span>
+        </div>
         <el-alert
           title="任务在创建时会保存授权目标、端口、授权声明、工具版本及规则/模板哈希快照。"
           type="info"
@@ -5399,6 +5564,10 @@ onUnmounted(() => {
           v-if="!projectTasks.length"
           description="本项目暂无检测任务"
         />
+        <el-empty
+          v-else-if="!filteredProjectTasks.length"
+          description="没有符合筛选条件的任务"
+        />
         <el-table
           v-else
           :data="pagedProjectTasks"
@@ -5406,8 +5575,12 @@ onUnmounted(() => {
           size="small"
           class="project-table"
         >
-          <el-table-column prop="id" label="ID" width="55" />
-          <el-table-column label="工具" min-width="120" show-overflow-tooltip>
+          <el-table-column prop="id" label="ID" width="70" />
+          <el-table-column
+            label="工具"
+            min-width="120"
+            show-overflow-tooltip
+          >
             <template #default="scope">
               {{ aiToolLabel(scope.row.toolCode) }}
             </template>
@@ -5438,7 +5611,7 @@ onUnmounted(() => {
               </div></template
             ></el-table-column
           >
-          <el-table-column label="创建时间" min-width="140"
+<el-table-column label="创建时间" min-width="140"
             ><template #default="scope">{{
               formatDateTime(scope.row.createdAt)
             }}</template></el-table-column
@@ -5491,7 +5664,7 @@ onUnmounted(() => {
           v-model:page="taskPage"
           v-model:page-size="taskPageSize"
           class="project-table-pagination"
-          :total="projectTasks.length"
+          :total="filteredProjectTasks.length"
         />
       </el-tab-pane>
       <el-tab-pane label="漏洞与复测" name="findings">
@@ -5956,8 +6129,13 @@ onUnmounted(() => {
           ><el-table-column
             prop="requestedBy"
             label="申请人"
-            width="90"
-          /><el-table-column
+            width="120"
+          ><template #default="scope">
+            <el-tag v-if="scope.row.requestedBy === 'ai-agent'" size="small" type="warning" effect="light">
+              AI 渗透助手
+            </el-tag>
+            <span v-else>{{ scope.row.requestedBy }}</span>
+          </template></el-table-column><el-table-column
             prop="approvedBy"
             label="决定人"
             width="90"
@@ -7366,57 +7544,76 @@ onUnmounted(() => {
   gap: 10px;
 }
 .result-title span {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
+  color: var(--app-muted);
+  font-size: var(--fluent-caption1-size);
 }
 .recon-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 12px;
+  gap: 16px;
 }
 .recon-card {
+  display: flex;
   min-height: 120px;
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
+  flex-direction: column;
+  border: var(--fluent-stroke-thin) solid var(--app-border);
+  border-radius: var(--fluent-radius-card);
   padding: 12px;
-  background: var(--el-fill-color-blank);
+  background: var(--app-surface);
+  box-shadow: var(--fluent-card-shadow);
 }
 .recon-card header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 10px;
-  font-weight: 600;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: var(--app-text);
+  font-weight: var(--fluent-weight-semibold);
 }
 .card-list {
+  display: flex;
   max-height: 220px;
+  flex-direction: column;
+  gap: 6px;
   overflow: auto;
 }
+/* Fluent 文本框：1px 细描边 + 控件圆角 + 实色表面 + 底部品牌色高亮条
+   （选中强调的底部蓝线，对齐 Fluent TextField 的 accent 下划线） */
 .card-list pre {
-  margin: 0 0 6px;
-  padding: 7px;
-  border-radius: 5px;
-  background: var(--el-fill-color-light);
+  margin: 0;
+  padding: 8px 10px 10px;
+  border: var(--fluent-stroke-thin) solid var(--app-border);
+  border-radius: var(--fluent-radius-control);
+  background: var(--app-surface-strong);
+  color: var(--app-text);
+  box-shadow: inset 0 -2px 0 0 var(--app-accent);
   white-space: pre-wrap;
   word-break: break-word;
   font:
-    12px/1.4 Consolas,
+    var(--fluent-caption1-size)/1.5 Consolas,
     monospace;
 }
 .empty-text {
-  color: var(--el-text-color-placeholder);
-  font-size: 12px;
+  color: var(--app-muted);
+  font-size: var(--fluent-caption1-size);
 }
 .evidence-block {
-  margin-top: 14px;
+  margin-top: 16px;
 }
 .evidence-block h4 {
   margin: 0 0 8px;
+  color: var(--app-text);
+  font-size: var(--fluent-caption1-size);
+  font-weight: var(--fluent-weight-semibold);
 }
+/* Fluent 文本框：证据 JSON 采用同款描边、表面与底部品牌色高亮条 */
 .evidence-json {
-  padding: 10px;
-  border-radius: 6px;
-  background: var(--el-fill-color-light);
+  padding: 12px 12px 14px;
+  border: var(--fluent-stroke-thin) solid var(--app-border);
+  border-radius: var(--fluent-radius-control);
+  background: var(--app-surface-strong);
+  box-shadow: inset 0 -2px 0 0 var(--app-accent);
 }
 .project-tab-toolbar {
   display: flex;

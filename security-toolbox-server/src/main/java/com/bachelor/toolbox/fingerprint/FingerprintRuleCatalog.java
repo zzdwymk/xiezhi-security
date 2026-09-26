@@ -19,6 +19,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,6 +37,10 @@ public class FingerprintRuleCatalog {
   private static final int MAX_RULES = 10_000;
   private static final Pattern RULE_ID = Pattern.compile("[a-z0-9][a-z0-9._-]{0,79}");
   private static final String BUILTIN_RESOURCE = "fingerprints/default-rules.json";
+
+  /** Guards rewrite of the on-disk catalog so concurrent mutations cannot corrupt the file. */
+  private final ReentrantLock writeLock = new ReentrantLock();
+  private static final long OPERATION_LOCK_TIMEOUT_SECONDS = 5;
 
   private final ObjectMapper mapper;
   private final Path externalFile;
@@ -61,7 +68,11 @@ public class FingerprintRuleCatalog {
     reload();
   }
 
-  public synchronized CatalogInfo reload() {
+  public CatalogInfo reload() {
+    return runBounded("重载指纹规则", this::reloadInternal);
+  }
+
+  private CatalogInfo reloadInternal() {
     try {
       LoadedCatalog candidate = loadCatalog();
       loadedCatalog = candidate;
@@ -82,7 +93,11 @@ public class FingerprintRuleCatalog {
    * Validates and installs a complete catalog. The currently loaded catalog is only swapped after
    * the new file has been validated, persisted and read back successfully.
    */
-  public synchronized CatalogInfo update(byte[] bytes) {
+  public CatalogInfo update(byte[] bytes) {
+    return runBounded("更新指纹规则", () -> updateInternal(bytes));
+  }
+
+  private CatalogInfo updateInternal(byte[] bytes) {
     try {
       requireSupportedSize(bytes);
       CatalogSource source = externalFile == null ? CatalogSource.MANAGED : CatalogSource.EXTERNAL;
@@ -211,7 +226,11 @@ public class FingerprintRuleCatalog {
   }
 
   /** Adds an individual rule to the managed catalog. The rule is validated before persisting. */
-  public synchronized CatalogInfo addRule(Rule rule) {
+  public CatalogInfo addRule(Rule rule) {
+    return runBounded("新增指纹规则", () -> addRuleInternal(rule));
+  }
+
+  private CatalogInfo addRuleInternal(Rule rule) {
     if (rule == null) {
       throw new ApiException("规则不能为空");
     }
@@ -239,7 +258,11 @@ public class FingerprintRuleCatalog {
   }
 
   /** Updates an existing rule by id in the managed catalog. */
-  public synchronized RuleEditResult updateRule(String id, Rule rule) {
+  public RuleEditResult updateRule(String id, Rule rule) {
+    return runBounded("更新指纹规则", () -> updateRuleInternal(id, rule));
+  }
+
+  private RuleEditResult updateRuleInternal(String id, Rule rule) {
     if (rule == null) {
       throw new ApiException("规则不能为空");
     }
@@ -281,7 +304,11 @@ public class FingerprintRuleCatalog {
   }
 
   /** Deletes an existing rule by id from the managed catalog. */
-  public synchronized CatalogInfo deleteRule(String id) {
+  public CatalogInfo deleteRule(String id) {
+    return runBounded("删除指纹规则", () -> deleteRuleInternal(id));
+  }
+
+  private CatalogInfo deleteRuleInternal(String id) {
     if (id == null || id.isBlank()) {
       throw new ApiException("规则标识不能为空");
     }
@@ -311,6 +338,30 @@ public class FingerprintRuleCatalog {
     Map<String, String> issues = validateRule(rule);
     if (!issues.isEmpty()) {
       throw new ApiException("规则不合法：" + String.join("；", issues.values()));
+    }
+  }
+
+  /**
+   * Runs a catalog mutation under a reentrant write lock that can only be held for a bounded
+   * time. This is the server-side guard against a hung disk/parallel write leaving requests
+   * waiting on the monitor forever (which previously left the web UI's per-operation flags stuck).
+   */
+  private <T> T runBounded(String op, Supplier<T> task) {
+    boolean acquired;
+    try {
+      acquired = writeLock.tryLock(OPERATION_LOCK_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    } catch (InterruptedException ex) {
+      Thread.currentThread().interrupt();
+      throw new ApiException(op + "被中断，请稍后重试");
+    }
+    if (!acquired) {
+      log.warn("指纹规则{}超时未取得写入锁", op);
+      throw new ApiException("指纹规则" + op + "繁忙，请稍后重试");
+    }
+    try {
+      return task.get();
+    } finally {
+      writeLock.unlock();
     }
   }
 

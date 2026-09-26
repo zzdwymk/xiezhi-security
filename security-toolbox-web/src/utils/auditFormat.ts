@@ -136,6 +136,7 @@ export const APPROVAL_ACTION_LABELS: Record<string, string> = {
   SCAN: "主动扫描",
   RETEST: "漏洞复测",
   POST_SCAN: "后续验证",
+  AI_PLAN_EXECUTION: "AI 渗透行动方案",
   OTHER: "其他安全操作",
 };
 
@@ -185,6 +186,7 @@ export function formatAuditOperator(operator?: string): string {
   const op = String(operator).trim();
   if (op === "anonymousUser" || op === "anonymous") return "未认证用户";
   if (op === "system" || op === "SYSTEM") return "系统进程";
+  if (op === "ai-agent") return "AI Agent (助手)";
   return op;
 }
 

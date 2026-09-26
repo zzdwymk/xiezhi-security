@@ -112,7 +112,19 @@ public class AiAuthorizationGuard {
       String reason,
       AiPlanResponse normalizedPlan,
       long activeProjectTasks,
-      long activeTargetTasks) {
+      long activeTargetTasks,
+      Long approvalId) {
+
+    public GuardDecision(
+        String status,
+        String approvalStatus,
+        String reason,
+        AiPlanResponse normalizedPlan,
+        long activeProjectTasks,
+        long activeTargetTasks) {
+      this(status, approvalStatus, reason, normalizedPlan, activeProjectTasks, activeTargetTasks, null);
+    }
+
     public boolean mayExecute() {
       return "ALLOWED".equals(status) && "CONFIRMED_BY_REQUEST".equals(approvalStatus);
     }

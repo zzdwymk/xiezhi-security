@@ -25,6 +25,8 @@ import org.springframework.stereotype.Service;
  */
 @Service
 public class AgentOrchestrator {
+  private static final org.slf4j.Logger log =
+      org.slf4j.LoggerFactory.getLogger(AgentOrchestrator.class);
   private static final Set<String> SENSITIVE_PUBLIC_DATA_KEYS =
       Set.of(
           "apikey",
@@ -62,6 +64,7 @@ public class AgentOrchestrator {
   private final AiContextService contextService;
   private final AuditService audit;
   private final BusinessDataOperationGate operationGate;
+  private final com.bachelor.toolbox.project.ProjectApprovalService approvalService;
 
   @Autowired
   public AgentOrchestrator(
@@ -72,9 +75,10 @@ public class AgentOrchestrator {
       AiPlanningService planner,
       AiAuthorizationGuard guard,
       AiExecutionReviewer reviewer,
-      AiContextService contextService,
+      @Autowired(required = false) AiContextService contextService,
       AuditService audit,
-      BusinessDataOperationGate operationGate) {
+      BusinessDataOperationGate operationGate,
+      @Autowired(required = false) com.bachelor.toolbox.project.ProjectApprovalService approvalService) {
     this.memory = memory;
     this.tools = tools;
     this.runtimeClient = runtimeClient;
@@ -85,6 +89,32 @@ public class AgentOrchestrator {
     this.contextService = contextService;
     this.audit = audit;
     this.operationGate = operationGate;
+    this.approvalService = approvalService;
+  }
+
+  public AgentOrchestrator(
+      AiConversationMemoryService memory,
+      SecurityAgentTools tools,
+      AiAgentRuntimeClient runtimeClient,
+      AiProjectIndexService projectIndex,
+      AiPlanningService planner,
+      AiAuthorizationGuard guard,
+      AiExecutionReviewer reviewer,
+      @Autowired(required = false) AiContextService contextService,
+      AuditService audit,
+      BusinessDataOperationGate operationGate) {
+    this(
+        memory,
+        tools,
+        runtimeClient,
+        projectIndex,
+        planner,
+        guard,
+        reviewer,
+        contextService,
+        audit,
+        operationGate,
+        null);
   }
 
   AgentOrchestrator(
@@ -476,10 +506,33 @@ public class AgentOrchestrator {
             "正在核对当前阶段所需工具、参数、端口与资源配额",
             Map.of());
         AiAuthorizationGuard.GuardDecision decision = guard.evaluate(request, proposed);
+        Long autoApprovalId = null;
+        if ("REQUIRED".equals(decision.approvalStatus()) && approvalService != null) {
+          try {
+            String planSummary = decision.normalizedPlan() != null && decision.normalizedPlan().summary() != null
+                ? decision.normalizedPlan().summary()
+                : "AI 安全评估行动方案";
+            String actionName = "AI_PLAN_EXECUTION";
+            var approvalRecord = approvalService.requestByAgent(
+                request.projectId(),
+                actionName,
+                "AI Agent 请求执行受控安全方案：" + planSummary,
+                request.workflowDigest());
+            if (approvalRecord != null) {
+              autoApprovalId = approvalRecord.getId();
+            }
+          } catch (Exception ex) {
+            log.warn("AI 自动提交项目审批工单未成功，降级为常规会话确认", ex);
+          }
+        }
+
         Map<String, Object> guardData = new LinkedHashMap<>();
         guardData.put("plan", decision.normalizedPlan());
         guardData.put("activeProjectTasks", decision.activeProjectTasks());
         guardData.put("activeTargetTasks", decision.activeTargetTasks());
+        if (autoApprovalId != null) {
+          guardData.put("approvalId", autoApprovalId);
+        }
         emit(
             sink,
             sequence,
@@ -488,6 +541,11 @@ public class AgentOrchestrator {
             decision.status(),
             decision.reason(),
             guardData);
+        Map<String, Object> approvalEventData = new LinkedHashMap<>();
+        approvalEventData.put("executionRequested", request.executionRequested());
+        if (autoApprovalId != null) {
+          approvalEventData.put("approvalId", autoApprovalId);
+        }
         emit(
             sink,
             sequence,
@@ -495,7 +553,7 @@ public class AgentOrchestrator {
             AgentPhase.VALIDATION,
             decision.approvalStatus(),
             approvalMessage(decision.approvalStatus()),
-            Map.of("executionRequested", request.executionRequested()));
+            approvalEventData);
 
         List<Long> taskIds = List.of();
         boolean executed = false;
@@ -580,6 +638,7 @@ public class AgentOrchestrator {
                 decision.normalizedPlan(),
                 decision.status(),
                 decision.approvalStatus(),
+                autoApprovalId,
                 executed,
                 taskIds,
                 review,

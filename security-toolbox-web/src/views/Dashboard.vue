@@ -1098,6 +1098,8 @@ function applyAgentEvent(
     agentEvents: events.slice(-100),
     citations: citations.slice(-30),
     steps,
+    approvalId: (event.data as any)?.approvalId || event.approvalId || message.approvalId,
+    approvalStatus: event.approvalStatus || message.approvalStatus,
     planningStage:
       event.stage || String(event.node || "") || message.planningStage,
     planningStatus:
@@ -1216,6 +1218,8 @@ async function dispatchConversationMessage(
     status: data.taskIds.length ? "running" : "completed",
     provider: data.plan.provider,
     taskIds: data.taskIds,
+    approvalId: (data as any).approvalId || streamedMessage?.approvalId,
+    approvalStatus: (data as any).approvalStatus || streamedMessage?.approvalStatus,
     steps:
       planSteps.length || data.taskIds.length
         ? finalSteps.length
@@ -1265,6 +1269,87 @@ async function latestWorkflowIdentity(
     workflowRevision: Number(workflowRevision),
     workflowDigest,
   };
+}
+
+// 审批状态与操作加载中记录
+const approvingMessageId = ref<string | null>(null);
+
+async function handleAgentApprovalDecision(
+  message: ConversationMessage,
+  decision: "APPROVED" | "REJECTED",
+) {
+  const thread = selectedThread.value;
+  if (!thread) return;
+  const projectId = projectIdForTarget(thread.targetId, thread);
+  if (!projectId) {
+    ElMessage.error("未找到关联的评估项目，无法提交审批裁决");
+    return;
+  }
+  const approvalId = message.approvalId ? Number(message.approvalId) : undefined;
+  if (!approvalId) {
+    ElMessage.warning("未检测到该计划关联的项目审批单号");
+    return;
+  }
+
+  try {
+    approvingMessageId.value = message.id;
+    await endpoints.decideProjectApproval(projectId, approvalId, {
+      status: decision,
+      comment:
+        decision === "APPROVED"
+          ? "管理员在 AI 助手交互卡片中审核通过并授权执行"
+          : "管理员在 AI 助手交互卡片中驳回执行",
+    });
+
+    if (decision === "REJECTED") {
+      conversations.updateMessage(thread.id, message.id, {
+        approvalStatus: "REJECTED",
+        planningStatus: "管理员已驳回执行方案",
+        content: message.content + "\n\n❌ **管理员已驳回本次行动方案**（审批单 #" + approvalId + "）。未派发任何受控任务。",
+      });
+      ElMessage.info("已驳回该行动方案");
+      return;
+    }
+
+    ElMessage.success(`审批单 #${approvalId} 已批准，正在唤醒 AI 派发受控任务...`);
+    conversations.updateMessage(thread.id, message.id, {
+      approvalStatus: "APPROVED",
+      planningStatus: "已批准，正在唤醒执行...",
+    });
+
+    // 唤醒执行：向该对话派发一条系统级的“确认执行”指令
+    const promptText = "已完成人工审批（审批单 #" + approvalId + " 通过），请立即执行已规划的行动方案。";
+    const userMessage = conversations.appendMessage(thread.id, {
+      role: "user",
+      content: promptText,
+      status: "completed",
+      taskIds: [],
+      steps: [],
+      executionRequested: true,
+    });
+    if (!userMessage) return;
+
+    const assistantMessage = conversations.appendMessage(thread.id, {
+      role: "assistant",
+      content: "收到审批通过指令，正在派发受控安全检测任务...",
+      status: "running",
+      taskIds: [],
+      steps: [],
+      replyToId: userMessage.id,
+    });
+    if (!assistantMessage) return;
+
+    sending.value = true;
+    try {
+      await dispatchConversationMessage(thread, userMessage, assistantMessage);
+    } finally {
+      sending.value = false;
+    }
+  } catch (error) {
+    ElMessage.error(readableConversationError(error));
+  } finally {
+    approvingMessageId.value = null;
+  }
 }
 
 // After each exchange, store a concise summary in the project's LlamaIndex so
@@ -2123,6 +2208,49 @@ onBeforeUnmount(() => {
                 "
                 class="execution-plan-card"
               >
+                <!-- 人机协同审批卡片 (HITL Gate) -->
+                <div
+                  v-if="
+                    message.steps.length &&
+                    !message.taskIds.length &&
+                    message.approvalStatus === 'REQUIRED'
+                  "
+                  class="hitl-approval-banner"
+                >
+                  <div class="hitl-approval-info">
+                    <div class="hitl-badge">
+                      <el-icon><WarningFilled /></el-icon>
+                      <span>人机回环安全审查 (HITL)</span>
+                    </div>
+                    <h4>受控操作需要审批授权</h4>
+                    <p>
+                      AI Agent（<strong>ai-agent</strong>）已提交项目级审批工单
+                      <code v-if="message.approvalId">#{{ message.approvalId }}</code>。
+                      该计划包含受控工具调用，在管理员审核通过前保持挂起状态。
+                    </p>
+                  </div>
+                  <div class="hitl-approval-actions">
+                    <el-button
+                      type="success"
+                      size="default"
+                      :loading="approvingMessageId === message.id"
+                      @click="handleAgentApprovalDecision(message, 'APPROVED')"
+                    >
+                      <el-icon><CircleCheck /></el-icon>
+                      批准并执行
+                    </el-button>
+                    <el-button
+                      type="danger"
+                      plain
+                      size="default"
+                      :disabled="approvingMessageId === message.id"
+                      @click="handleAgentApprovalDecision(message, 'REJECTED')"
+                    >
+                      驳回方案
+                    </el-button>
+                  </div>
+                </div>
+
                 <header v-if="message.steps.length">
                   <div>
                     <strong>执行计划清单</strong
@@ -4079,7 +4207,52 @@ a.agent-citation-bubble {
     gap: 8px;
   }
 
-  .execution-plan-card {
+.hitl-approval-banner {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(230, 162, 60, 0.35);
+  border-radius: 6px;
+  background: color-mix(in srgb, #e6a23c 8%, var(--app-surface-soft));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.hitl-approval-banner .hitl-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #e6a23c;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.hitl-approval-banner h4 {
+  margin: 4px 0 2px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--app-text);
+}
+.hitl-approval-banner p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--app-muted);
+  line-height: 1.5;
+}
+.hitl-approval-banner code {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--app-text) 8%, transparent);
+  font-weight: 600;
+  color: var(--app-text);
+}
+.hitl-approval-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+.execution-plan-card {
     width: 100%;
     padding: 14px;
   }
