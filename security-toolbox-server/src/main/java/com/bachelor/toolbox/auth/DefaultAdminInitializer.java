@@ -115,6 +115,19 @@ public class DefaultAdminInitializer implements ApplicationRunner {
       admin.setRole("ADMIN");
       users.save(admin);
     }
+
+    // 初始化系统内置的 AI Agent 服务账号，作为人机协同（HITL）审批的独立申请主体。
+    // 该账号 enabled 为 false 且无已知明文密码，杜绝通过 UI 或 API 凭据登录。
+    User aiAgent = users.findByUsername("ai-agent").orElse(null);
+    if (aiAgent == null) {
+      aiAgent = new User();
+      aiAgent.setUsername("ai-agent");
+      aiAgent.setPasswordHash(encoder.encode(java.util.UUID.randomUUID().toString()));
+      aiAgent.setRole("AI_AGENT");
+      aiAgent.setEnabled(false);
+      users.save(aiAgent);
+      log.info("已初始化 AI Agent 服务账号（仅作审计与提权审批实体，禁止交互登录）");
+    }
     // The desktop admin password is seeded only on first creation and is deliberately NOT
     // re-synced on every launch. This lets a password the user sets in 系统设置 → 修改登录密码
     // persist across restarts so account/password login keeps working. (First launch still

@@ -46,6 +46,7 @@ const wordTotal = ref(0);
 const wordLoading = ref(false);
 const wordQuery = ref("");
 const selected = ref<string[]>([]);
+const tableRef = ref<{ clearSelection: () => void } | null>(null);
 const addText = ref("");
 const addProblems = ref<string[]>([]);
 const importText = ref("");
@@ -120,6 +121,11 @@ function clearSelection() {
   selected.value = [];
 }
 
+function clearSelectionAndTable() {
+  selected.value = [];
+  tableRef.value?.clearSelection();
+}
+
 watch(expanded, (value) => {
   if (value && !loaded.value) {
     loaded.value = true;
@@ -142,7 +148,7 @@ async function loadView() {
     importText.value = "";
     importSummary.value = "";
     removeText.value = "";
-    selected.value = [];
+    clearSelectionAndTable();
   } catch (error) {
     ElMessage.error(toErrorMessage(error, `${props.title}加载失败`));
   } finally {
@@ -378,6 +384,7 @@ async function loadFile(file: File) {
             </div>
             <div v-loading="wordLoading" class="subdomain-dict-table">
               <el-table
+                ref="tableRef"
                 :data="words"
                 size="small"
                 :show-header="false"

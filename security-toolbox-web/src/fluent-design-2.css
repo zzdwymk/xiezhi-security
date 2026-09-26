@@ -721,6 +721,16 @@ body,
   --fluent-warning-hover-bg: #693805;
   --fluent-info-bg: #475569;
   --fluent-info-hover-bg: #334155;
+  --fluent-subtle-hover-bg: color-mix(
+    in srgb,
+    var(--app-text) 6%,
+    transparent
+  );
+  --fluent-subtle-pressed-bg: color-mix(
+    in srgb,
+    var(--app-text) 11%,
+    transparent
+  );
 }
 
 :root[data-system-theme="dark"] {
@@ -816,6 +826,29 @@ body,
   --el-button-hover-text-color: var(--fluent-link-fg);
   --el-button-active-text-color: var(--fluent-link-fg);
   color: var(--fluent-link-fg) !important;
+}
+
+/* Fluent 2 subtle (text) buttons: borderless and transparent at rest, with a
+   two-level neutral overlay for hover and press.  The semantic foreground
+   colours selected above are intentionally preserved; only the surface states
+   follow the Fluent subtle model instead of the outlined control look. */
+html .el-button.is-text:not(.is-disabled) {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+html .el-button.is-text:not(.is-disabled):hover,
+html .el-button.is-text:not(.is-disabled):focus-visible {
+  background: var(--fluent-subtle-hover-bg) !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+html .el-button.is-text:not(.is-disabled):active {
+  background: var(--fluent-subtle-pressed-bg) !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
 }
 
 /* Semantic solid colors are deliberately dark enough for white text in both

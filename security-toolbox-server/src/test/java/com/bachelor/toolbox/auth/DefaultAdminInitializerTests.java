@@ -36,10 +36,14 @@ class DefaultAdminInitializerTests {
     initializer("generated-desktop-password", true, true).run(arguments);
 
     ArgumentCaptor<User> saved = ArgumentCaptor.forClass(User.class);
-    verify(users).save(saved.capture());
-    assertThat(saved.getValue().getUsername()).isEqualTo("admin");
-    assertThat(saved.getValue().getPasswordHash()).isEqualTo("encoded-password");
-    assertThat(saved.getValue().getRole()).isEqualTo("ADMIN");
+    verify(users, org.mockito.Mockito.atLeastOnce()).save(saved.capture());
+    User admin = saved.getAllValues().stream()
+        .filter(u -> "admin".equals(u.getUsername()))
+        .findFirst()
+        .orElseThrow();
+    assertThat(admin.getUsername()).isEqualTo("admin");
+    assertThat(admin.getPasswordHash()).isEqualTo("encoded-password");
+    assertThat(admin.getRole()).isEqualTo("ADMIN");
   }
 
   @Test

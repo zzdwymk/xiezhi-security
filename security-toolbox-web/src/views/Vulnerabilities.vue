@@ -2113,7 +2113,7 @@ onUnmounted(() => {
         @change="handlePocDialogFilterChange"
       >
         <el-option label="全部分级" value="" />
-        <el-option label="安全 (SAFE)" value="SAFE" />
+        <el-option label="安全" value="SAFE" />
         <el-option label="需审查" value="REVIEW_REQUIRED" />
         <el-option label="高风险" value="BLOCKED" />
       </el-select>

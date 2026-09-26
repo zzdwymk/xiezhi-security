@@ -80,6 +80,11 @@ export function useDragSelect<T extends object>({
   let isPointerDown = false;
   let startX = 0;
   let startY = 0;
+  // Pointer-down position converted to content coordinates (adds the scroll
+  // offset at press time) so the marquee is rooted in the document, exactly
+  // like Windows Explorer. Scrolling then makes the box grow naturally.
+  let startContentY = 0;
+  let lastClientX = 0;
   let isCtrl = false;
   let isShift = false;
   let isLongPress = false;
@@ -87,19 +92,32 @@ export function useDragSelect<T extends object>({
   let snapshotSelectedIds = new Set<number | string>();
   let autoScrollRaf = 0;
   let lastClientY = 0;
-  let anchorRowIndex: number | null = null;
 
   const marqueeStyle = computed(() => {
     if (!marqueeRect.value || !isDragging.value) {
       return { display: "none" };
     }
     const { left, top, width, height } = marqueeRect.value;
+
+    // The logical box is anchored in content space and may extend above/below
+    // the scroll viewport (that's how it stretches while scrolling). For
+    // painting, clip it to the visible content area so it can never cover the
+    // window title bar / app chrome.
+    const scroller = getScrollerEl();
+    const sr = scroller.getBoundingClientRect();
+    const drawLeft = Math.max(left, sr.left);
+    const drawTop = Math.max(top, sr.top);
+    const drawRight = Math.min(left + width, sr.right);
+    const drawBottom = Math.min(top + height, sr.bottom);
+    const drawWidth = Math.max(0, drawRight - drawLeft);
+    const drawHeight = Math.max(0, drawBottom - drawTop);
+
     return {
       position: "fixed" as const,
-      left: `${left}px`,
-      top: `${top}px`,
-      width: `${width}px`,
-      height: `${height}px`,
+      left: `${drawLeft}px`,
+      top: `${drawTop}px`,
+      width: `${drawWidth}px`,
+      height: `${drawHeight}px`,
       pointerEvents: "none" as const,
       zIndex: 99999,
     };
@@ -154,27 +172,6 @@ export function useDragSelect<T extends object>({
     document.body.style.cursor = "";
   }
 
-  function rowIndexAtClientY(clientY: number): number | null {
-    const tableEl = getTableEl();
-    if (!tableEl) return null;
-
-    const rowEls = tableEl.querySelectorAll<HTMLTableRowElement>(rowSelector);
-    if (!rowEls.length) return null;
-
-    for (let i = 0; i < rowEls.length; i++) {
-      const r = rowEls[i].getBoundingClientRect();
-      if (r.top <= clientY && clientY <= r.bottom) return i;
-    }
-    // Fall back to nearest row inside the scroll container
-    const bodyWrapper = tableEl.querySelector<HTMLElement>(".el-table__body-wrapper");
-    if (!bodyWrapper) return null;
-
-    const bodyRect = bodyWrapper.getBoundingClientRect();
-    if (clientY < bodyRect.top) return 0;
-    if (clientY > bodyRect.bottom) return rowEls.length - 1;
-    return null;
-  }
-
   function rectsIntersect(a: MarqueeRect, row: DOMRect): boolean {
     return (
       a.left < row.right &&
@@ -182,6 +179,62 @@ export function useDragSelect<T extends object>({
       a.top < row.bottom &&
       a.bottom > row.top
     );
+  }
+
+  // The ACTUAL vertical scroll container for the table. In this app that is
+  // `.desktop-v2-content` (overflow:auto), not `window.scrollY`. Cached lazily.
+  let scrollerEl: HTMLElement | null | undefined;
+
+  function getScrollerEl(): HTMLElement {
+    if (scrollerEl) return scrollerEl;
+    let el: HTMLElement | null = getTableEl()?.parentElement ?? null;
+    let found: HTMLElement | null = null;
+    while (el) {
+      if (el.classList?.contains("desktop-v2-content")) {
+        found = el;
+        break;
+      }
+      const ov = getComputedStyle(el).overflowY;
+      if (ov === "auto" || ov === "scroll" || ov === "overlay") {
+        found = el;
+        break;
+      }
+      el = el.parentElement;
+    }
+    scrollerEl =
+      found ??
+      (document.scrollingElement as HTMLElement | null) ??
+      document.documentElement;
+    return scrollerEl;
+  }
+
+  // Build the marquee in VIEWPORT coordinates. The box is anchored in the
+  // scroller's CONTENT coordinates, so when the user scrolls the content the
+  // anchored edge moves (and can leave the visible area), stretching the box
+  // out exactly like Windows Explorer.
+  function updateMarquee(cx: number, cy: number) {
+    const scroller = getScrollerEl();
+    const rect = scroller.getBoundingClientRect();
+    const scrollTop = scroller.scrollTop;
+
+    const contentStart = startContentY; // content coordinate of the press point
+    const contentNow = scrollTop + (cy - rect.top);
+    const top = Math.min(contentStart, contentNow) - scrollTop + rect.top;
+    const bottom = Math.max(contentStart, contentNow) - scrollTop + rect.top;
+
+    const left = Math.min(startX, cx);
+    const right = Math.max(startX, cx);
+
+    const box: MarqueeRect = {
+      left,
+      right,
+      top,
+      bottom,
+      width: right - left,
+      height: bottom - top,
+    };
+    marqueeRect.value = box;
+    updateIntersections(box);
   }
 
   function updateIntersections(box: MarqueeRect) {
@@ -195,39 +248,31 @@ export function useDragSelect<T extends object>({
     const currentItems = items.value;
     const count = Math.min(currentItems.length, rowEls.length);
 
-    const pointerRowIndex = rowIndexAtClientY(lastClientY);
-    // Drag started on a row, so at least that anchor row is part of the span.
-    const anchorIndex = anchorRowIndex ?? 0;
-    const pointerIndex = pointerRowIndex ?? anchorIndex;
-    const lo = Math.min(anchorIndex, pointerIndex);
-    const hi = Math.max(anchorIndex, pointerIndex);
-
     for (let i = 0; i < count; i++) {
       const item = currentItems[i];
       if (!item) continue;
       const rowEl = rowEls[i];
       if (!rowEl) continue;
 
-      // Primary rule: select any row whose own band intersects the marquee box
-      // (the box is in viewport/client coordinates, row rects are too).
-      const rowRect = rowEl.getBoundingClientRect();
-      const inBox = rectsIntersect(box, rowRect);
-      // Auto-scroll robustness: also keep the contiguous index span between the
-      // anchor row and the current pointer row selected, so rows scrolled in
-      // fast (without a frame having intersected them with the box) are kept.
-      const inRowSpan = i >= lo && i <= hi;
+      // Selection is driven purely by whether the row's own band overlaps the
+      // marquee box. The box and the row rect are both in viewport/client
+      // coordinates, so the highlighted rows always match the visible box.
+      const inBox = rectsIntersect(box, rowEl.getBoundingClientRect());
 
       const itemId = getItemId(item);
       const wasInitiallySelected = snapshotSelectedIds.has(itemId);
 
       let shouldSelect = false;
       if (isCtrl) {
-        // Toggle whatever is covered, leave the rest at its initial state
-        shouldSelect = (inBox || inRowSpan) ? !wasInitiallySelected : wasInitiallySelected;
+        // Toggle whatever is covered, leave the rest at its initial state.
+        shouldSelect = inBox ? !wasInitiallySelected : wasInitiallySelected;
       } else {
-        // Standard / Shift drag: select whatever is covered and never un-select
-        // what was already selected (e.g. items scrolled out during auto-scroll).
-        shouldSelect = wasInitiallySelected || inBox || inRowSpan;
+        // The marquee is the single source of truth: a plain drag replaces the
+        // selection (rows not covered are un-selected), Shift appends to the
+        // pre-drag selection. Because the box is anchored in content space, it
+        // moves with the scrolled rows, so scrolling neither re-selects nor
+        // un-selects anything by itself.
+        shouldSelect = inBox || (isShift && wasInitiallySelected);
       }
 
       const isCurrentlySelected = currentSelectedIds.has(itemId);
@@ -240,35 +285,25 @@ export function useDragSelect<T extends object>({
   function autoScrollLoop() {
     if (!isDragging.value || !isPointerDown) return;
 
-    const tableEl = getTableEl();
-    if (tableEl) {
-      const bodyWrapper = tableEl.querySelector<HTMLElement>(".el-table__body-wrapper");
-      if (bodyWrapper && bodyWrapper.scrollHeight > bodyWrapper.clientHeight) {
-        const rect = bodyWrapper.getBoundingClientRect();
-        const edgeZone = 40;
-        const maxSpeed = 12;
+    // Auto-scroll the REAL scroll container (`.desktop-v2-content`) when the
+    // pointer is near its top/bottom edge.
+    const scroller = getScrollerEl();
+    const edgeZone = 40;
+    const maxSpeed = 14;
+    const rect = scroller.getBoundingClientRect();
 
-        if (lastClientY > rect.bottom - edgeZone && lastClientY < rect.bottom + edgeZone) {
-          const intensity = Math.min(1, (lastClientY - (rect.bottom - edgeZone)) / edgeZone);
-          bodyWrapper.scrollTop += Math.max(2, Math.round(intensity * maxSpeed));
-        } else if (lastClientY < rect.top + edgeZone && lastClientY > rect.top - edgeZone) {
-          const intensity = Math.min(1, (rect.top + edgeZone - lastClientY) / edgeZone);
-          bodyWrapper.scrollTop -= Math.max(2, Math.round(intensity * maxSpeed));
-        }
-      }
+    if (lastClientY > rect.bottom - edgeZone && lastClientY < rect.bottom + edgeZone) {
+      const intensity = Math.min(1, (lastClientY - (rect.bottom - edgeZone)) / edgeZone);
+      scroller.scrollTop += Math.max(2, Math.round(intensity * maxSpeed));
+    } else if (lastClientY < rect.top + edgeZone && lastClientY > rect.top - edgeZone) {
+      const intensity = Math.min(1, (rect.top + edgeZone - lastClientY) / edgeZone);
+      scroller.scrollTop -= Math.max(2, Math.round(intensity * maxSpeed));
     }
 
-    // Also window vertical scroll if near viewport boundaries
-    const viewportHeight = window.innerHeight;
-    if (lastClientY > viewportHeight - 35) {
-      window.scrollBy(0, 8);
-    } else if (lastClientY < 35 && window.scrollY > 0) {
-      window.scrollBy(0, -8);
-    }
-
-    // Refresh intersections if marquee is active
+    // Rebuild the box against the (possibly changed) scroll position, so the
+    // marquee keeps stretching with the scrolled content like Explorer.
     if (marqueeRect.value) {
-      updateIntersections(marqueeRect.value);
+      updateMarquee(lastClientX, lastClientY);
     }
 
     autoScrollRaf = requestAnimationFrame(autoScrollLoop);
@@ -278,6 +313,7 @@ export function useDragSelect<T extends object>({
     if (!isPointerDown) return;
 
     lastClientY = e.clientY;
+    lastClientX = e.clientX;
     const dx = e.clientX - startX;
     const dy = e.clientY - startY;
     const dist = Math.hypot(dx, dy);
@@ -300,16 +336,7 @@ export function useDragSelect<T extends object>({
       e.preventDefault();
     }
 
-    const left = Math.min(startX, e.clientX);
-    const top = Math.min(startY, e.clientY);
-    const width = Math.abs(e.clientX - startX);
-    const height = Math.abs(e.clientY - startY);
-    const right = left + width;
-    const bottom = top + height;
-
-    const box: MarqueeRect = { left, top, width, height, right, bottom };
-    marqueeRect.value = box;
-    updateIntersections(box);
+    updateMarquee(e.clientX, e.clientY);
   }
 
   function onPointerUp(e: PointerEvent) {
@@ -321,7 +348,6 @@ export function useDragSelect<T extends object>({
       longPressTimer = undefined;
     }
     isLongPress = false;
-    anchorRowIndex = null;
 
     cleanupWindowListeners();
     resetDragStyles();
@@ -382,12 +408,16 @@ export function useDragSelect<T extends object>({
     isPointerDown = true;
     startX = e.clientX;
     startY = e.clientY;
+    lastClientX = e.clientX;
     lastClientY = e.clientY;
+    // Anchor the marquee in the scroller's CONTENT coordinates at press time so
+    // scrolling makes it grow (Explorer behaviour) instead of staying frozen.
+    const scrollerRect = getScrollerEl().getBoundingClientRect();
+    startContentY = getScrollerEl().scrollTop + (startY - scrollerRect.top);
     isCtrl = e.ctrlKey || e.metaKey;
     isShift = e.shiftKey;
     isLongPress = false;
     snapshotSelectedIds = getSelectedIdSet();
-    anchorRowIndex = rowIndexAtClientY(startY);
 
     // Long press timer (250ms) for touch / long-press drag
     if (longPressTimer) {
