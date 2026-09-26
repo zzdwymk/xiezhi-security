@@ -2271,13 +2271,13 @@ onUnmounted(() => {
         <span class="poc-dialog-count">
           已选 <b>{{ scheduleDialogSelected.size }}</b> / 50 个 SAFE PoC
         </span>
-        <el-button size="small" text type="primary" @click="selectAllScheduleDialogCurrentPage">
+        <el-button plain type="primary" @click="selectAllScheduleDialogCurrentPage">
           选中当页
         </el-button>
-        <el-button size="small" text @click="deselectAllScheduleDialogCurrentPage">
+        <el-button plain @click="deselectAllScheduleDialogCurrentPage">
           取消当页
         </el-button>
-        <el-button size="small" text type="danger" @click="scheduleDialogSelected = new Set()">
+        <el-button plain type="danger" @click="scheduleDialogSelected = new Set()">
           清空
         </el-button>
         <span class="app-dialog__footer-spacer" />

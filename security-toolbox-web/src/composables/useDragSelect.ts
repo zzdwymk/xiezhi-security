@@ -175,8 +175,16 @@ export function useDragSelect<T extends object>({
     return null;
   }
 
+  function rectsIntersect(a: MarqueeRect, row: DOMRect): boolean {
+    return (
+      a.left < row.right &&
+      a.right > row.left &&
+      a.top < row.bottom &&
+      a.bottom > row.top
+    );
+  }
+
   function updateIntersections(box: MarqueeRect) {
-    void box;
     const tableEl = getTableEl();
     if (!tableEl) return;
 
@@ -187,34 +195,39 @@ export function useDragSelect<T extends object>({
     const currentItems = items.value;
     const count = Math.min(currentItems.length, rowEls.length);
 
-    // During auto-scroll the anchor row (where the drag started) is fixed,
-    // while the pointer's row index grows/shrinks with scrolling. Selecting by
-    // a CONTIGUOUS row-index range between the anchor and the current pointer
-    // row keeps newly scrolled-in rows selected even if a frame never happened
-    // to intersect them with the marquee box.
     const pointerRowIndex = rowIndexAtClientY(lastClientY);
-    if (anchorRowIndex == null || pointerRowIndex == null) return;
-
-    const lo = Math.min(anchorRowIndex, pointerRowIndex);
-    const hi = Math.max(anchorRowIndex, pointerRowIndex);
+    // Drag started on a row, so at least that anchor row is part of the span.
+    const anchorIndex = anchorRowIndex ?? 0;
+    const pointerIndex = pointerRowIndex ?? anchorIndex;
+    const lo = Math.min(anchorIndex, pointerIndex);
+    const hi = Math.max(anchorIndex, pointerIndex);
 
     for (let i = 0; i < count; i++) {
       const item = currentItems[i];
       if (!item) continue;
+      const rowEl = rowEls[i];
+      if (!rowEl) continue;
 
-      const inRange = i >= lo && i <= hi;
+      // Primary rule: select any row whose own band intersects the marquee box
+      // (the box is in viewport/client coordinates, row rects are too).
+      const rowRect = rowEl.getBoundingClientRect();
+      const inBox = rectsIntersect(box, rowRect);
+      // Auto-scroll robustness: also keep the contiguous index span between the
+      // anchor row and the current pointer row selected, so rows scrolled in
+      // fast (without a frame having intersected them with the box) are kept.
+      const inRowSpan = i >= lo && i <= hi;
+
       const itemId = getItemId(item);
       const wasInitiallySelected = snapshotSelectedIds.has(itemId);
 
       let shouldSelect = false;
       if (isCtrl) {
-        // Toggle items inside the range, leave others as initial
-        shouldSelect = inRange ? !wasInitiallySelected : wasInitiallySelected;
+        // Toggle whatever is covered, leave the rest at its initial state
+        shouldSelect = (inBox || inRowSpan) ? !wasInitiallySelected : wasInitiallySelected;
       } else {
-        // Standard / Shift drag (append): select everything in the range and
-        // never un-select what was already selected (e.g. items scrolled out
-        // of the viewport during auto-scroll).
-        shouldSelect = wasInitiallySelected || inRange;
+        // Standard / Shift drag: select whatever is covered and never un-select
+        // what was already selected (e.g. items scrolled out during auto-scroll).
+        shouldSelect = wasInitiallySelected || inBox || inRowSpan;
       }
 
       const isCurrentlySelected = currentSelectedIds.has(itemId);

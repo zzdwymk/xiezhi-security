@@ -1943,6 +1943,66 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
   border-radius: var(--fluent-radius-control);
 }
 
+/* Dialogs are teleported to <body> via `append-to-body`, so the Fluent
+   primary-plain contract scoped to `.desktop-v2-app-frame` never reaches
+   them. Element's default paints a solid accent fill on hover (white label on
+   the accent), which reads as a pressed/selected state. Keep the soft-accent
+   Fluent hover for plain-primary buttons inside dialogs. */
+html
+  .app-dialog.el-dialog
+  .el-button.el-button--primary.is-plain:not(.is-disabled):not(.is-text):not(
+    .is-link
+  ) {
+  --el-button-bg-color: var(--app-surface-strong);
+  --el-button-border-color: var(--app-accent);
+  --el-button-hover-bg-color: var(--app-accent-soft);
+  --el-button-hover-border-color: var(--app-accent-dark);
+  --el-button-active-bg-color: var(--app-accent-soft-strong);
+  --el-button-active-border-color: var(--app-accent-dark);
+  --el-button-text-color: var(--fluent-link-fg);
+  --el-button-hover-text-color: var(--fluent-link-fg);
+  --el-button-active-text-color: var(--fluent-link-fg);
+  border-color: var(--app-accent) !important;
+  background-color: var(--app-surface-strong) !important;
+  color: var(--fluent-link-fg) !important;
+}
+
+html
+  .app-dialog.el-dialog
+  .el-button.el-button--primary.is-plain:not(.is-disabled):not(.is-text):not(
+    .is-link
+  ):hover,
+html
+  .app-dialog.el-dialog
+  .el-button.el-button--primary.is-plain:not(.is-disabled):not(.is-text):not(
+    .is-link
+  ):focus-visible {
+  border-color: var(--app-accent-dark) !important;
+  background-color: var(--app-accent-soft) !important;
+  color: var(--fluent-link-fg) !important;
+}
+
+html
+  .app-dialog.el-dialog
+  .el-button.el-button--primary.is-plain:not(.is-disabled):not(.is-text):not(
+    .is-link
+  ):active {
+  border-color: var(--app-accent-dark) !important;
+  background-color: var(--app-accent-soft-strong) !important;
+  color: var(--fluent-link-fg) !important;
+}
+
+html
+  .app-dialog.el-dialog
+  .el-button.el-button--primary.is-plain:not(.is-disabled)
+  > span,
+html
+  .app-dialog.el-dialog
+  .el-button.el-button--primary.is-plain:not(.is-disabled)
+  .el-icon {
+  color: inherit !important;
+}
+
 .app-dialog.el-dialog > .el-dialog__footer .el-button + .el-button,
 .app-dialog.el-dialog
   > .el-dialog__footer
@@ -2314,8 +2374,8 @@ html .desktop-v2-native-frame .vuln-workbench {
   --el-table-expanded-cell-bg-color: var(--app-surface-strong);
   --el-table-header-bg-color: var(--app-surface-soft);
   --el-table-border-color: var(--app-border);
-  --el-table-row-hover-bg-color: var(--app-accent-soft);
-  --el-table-current-row-bg-color: var(--app-accent-soft);
+  --el-table-row-hover-bg-color: var(--fluent3-table-hover-bg);
+  --el-table-current-row-bg-color: var(--fluent3-table-select-bg);
   --el-table-text-color: color-mix(in srgb, CanvasText 82%, transparent);
   --el-table-header-text-color: var(--app-muted);
 }
