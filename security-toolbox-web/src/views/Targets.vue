@@ -844,7 +844,7 @@ onMounted(load);
       >
       <el-table-column label="操作" min-width="250"
         ><template #default="scope"
-          ><div class="row-actions"
+          ><div class="row-actions row-actions--pair"
             ><el-button
               class="row-action row-action--ai"
               size="small"
@@ -1432,6 +1432,9 @@ onMounted(load);
 .targets-page :deep(.el-table .cell) {
   line-height: 1.45;
 }
+.row-actions.row-actions--pair {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
 .target-save-error {
   margin-bottom: 16px;
 }
@@ -1875,22 +1878,7 @@ onMounted(load);
 
 .targets-page :deep(.el-table__body tr.is-selected > td.el-table__cell),
 .targets-page :deep(.el-table__body tr:has(.el-checkbox.is-checked) > td.el-table__cell) {
-  background: var(--fluent3-select-bg, var(--app-accent-soft, #e8f2fe)) !important;
-}
-
-.targets-page :deep(.el-table__body tr.is-selected > td.el-table__cell:first-child::before),
-.targets-page :deep(.el-table__body tr:has(.el-checkbox.is-checked) > td.el-table__cell:first-child::before) {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: var(--fluent3-slider-width, 3px);
-  height: 60%;
-  border-radius: var(--fluent3-slider-width, 3px);
-  background: var(--fluent3-slider-accent, var(--app-accent, #0078d4));
-  pointer-events: none;
-  z-index: 1;
+  background: var(--fluent3-table-select-bg, var(--app-surface-soft, #f2f3f5)) !important;
 }
 
 /* Ensure action buttons on selected rows keep clean, harmonious styling without opaque white boxes */

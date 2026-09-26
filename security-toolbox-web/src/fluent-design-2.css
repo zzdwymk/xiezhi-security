@@ -760,6 +760,23 @@ body,
   color: var(--fluent-action-fg) !important;
 }
 
+/* Dialogs (and other fluent overlays) mount under <body> via Teleport, so the
+   .desktop-v2-shell-scoped primary-button overrides never reach them and hover
+   would fall back to Element Plus' lighter --el-color-primary-light-3.  Keep
+   the hover/active tint darker for primary buttons living on teleported
+   overlays as well. */
+.el-overlay .el-button--primary:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  ) {
+  --el-button-bg-color: var(--fluent-action-bg);
+  --el-button-border-color: var(--fluent-action-bg);
+  --el-button-hover-bg-color: var(--fluent-action-bg-hover);
+  --el-button-hover-border-color: var(--fluent-action-bg-hover);
+  --el-button-active-bg-color: var(--fluent-action-bg-hover);
+  --el-button-active-border-color: var(--fluent-action-bg-hover);
+  color: var(--fluent-action-fg) !important;
+}
+
 :where(.el-button--primary.is-plain:not(.is-disabled)) {
   --el-button-bg-color: var(--app-surface-strong);
   --el-button-border-color: var(--app-accent);
@@ -919,6 +936,74 @@ html
   border-color: var(--fluent-info-bg) !important;
   background: var(--fluent-info-bg) !important;
   color: #fff !important;
+}
+
+/* Those solid semantic rules pin a fixed background with !important at a
+   specificity that outranks both Element Plus' `.el-button:hover` and any
+   page-level hover override. Without an explicit state the danger / success /
+   warning / info buttons stay flat when hovered or pressed. */
+html
+  .el-button.el-button--danger:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  ):hover,
+html
+  .el-button.el-button--danger:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  ):focus-visible,
+html
+  .el-button.el-button--danger:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  ):active {
+  border-color: var(--fluent-danger-hover-bg) !important;
+  background: var(--fluent-danger-hover-bg) !important;
+}
+
+html
+  .el-button.el-button--success:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  ):hover,
+html
+  .el-button.el-button--success:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  ):focus-visible,
+html
+  .el-button.el-button--success:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  ):active {
+  border-color: var(--fluent-success-hover-bg) !important;
+  background: var(--fluent-success-hover-bg) !important;
+}
+
+html
+  .el-button.el-button--warning:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  ):hover,
+html
+  .el-button.el-button--warning:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  ):focus-visible,
+html
+  .el-button.el-button--warning:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  ):active {
+  border-color: var(--fluent-warning-hover-bg) !important;
+  background: var(--fluent-warning-hover-bg) !important;
+}
+
+html
+  .el-button.el-button--info:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  ):hover,
+html
+  .el-button.el-button--info:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  ):focus-visible,
+html
+  .el-button.el-button--info:not(.is-plain):not(.is-text):not(.is-link):not(
+    .is-disabled
+  ):active {
+  border-color: var(--fluent-info-hover-bg) !important;
+  background: var(--fluent-info-hover-bg) !important;
 }
 
 html .el-button.is-disabled:not(.is-link):not(.is-text),
@@ -1487,7 +1572,7 @@ html
   --el-table-tr-bg-color: var(--app-surface);
   --el-table-header-bg-color: var(--app-surface-soft);
   --el-table-border-color: var(--app-border);
-  --el-table-row-hover-bg-color: var(--app-accent-soft);
+  --el-table-row-hover-bg-color: var(--fluent3-table-hover-bg);
 }
 
 .desktop-v2-app-frame
@@ -1701,7 +1786,7 @@ html
   --el-table-tr-bg-color: var(--app-surface);
   --el-table-header-bg-color: var(--app-surface-soft);
   --el-table-border-color: var(--app-border);
-  --el-table-row-hover-bg-color: var(--app-accent-soft);
+  --el-table-row-hover-bg-color: var(--fluent3-table-hover-bg);
 }
 
 .desktop-v2-app-frame
@@ -2584,11 +2669,7 @@ html
     transparent
   );
   --el-table-border-color: var(--page-border);
-  --el-table-row-hover-bg-color: color-mix(
-    in srgb,
-    var(--app-accent-soft, #eaf2ff) 70%,
-    transparent
-  );
+  --el-table-row-hover-bg-color: var(--fluent3-table-hover-bg);
 }
 
 .desktop-v2-app-frame
@@ -3291,7 +3372,7 @@ body,
   --el-table-bg-color: var(--app-surface);
   --el-table-tr-bg-color: var(--app-surface);
   --el-table-header-bg-color: var(--app-surface-soft);
-  --el-table-row-hover-bg-color: var(--app-accent-soft);
+  --el-table-row-hover-bg-color: var(--fluent3-table-hover-bg);
   --el-table-border-color: var(--app-border);
   --el-table-text-color: var(--app-text);
   --el-table-header-text-color: var(--app-muted);

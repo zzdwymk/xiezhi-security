@@ -355,6 +355,7 @@ const filteredProjectFindings = computed(() => {
       if (
         q &&
         ![
+          finding.id,
           finding.title,
           finding.sourceTool,
           finding.ruleCode,
@@ -4020,7 +4021,7 @@ onUnmounted(() => {
             min-width="90"
             show-overflow-tooltip
           />
-          <el-table-column label="操作" width="110"
+          <el-table-column label="操作" width="124"
             ><template #default="s"
               ><el-button
                 class="row-action row-action--danger"
@@ -5520,7 +5521,7 @@ onUnmounted(() => {
         <div class="project-tab-filters">
           <el-input
             v-model="findingSearchQuery"
-            placeholder="搜索漏洞标题 / 来源 / 规则"
+            placeholder="搜索 ID / 标题 / 来源 / 规则"
             clearable
             :prefix-icon="Search"
             style="width: 260px"
@@ -5812,19 +5813,21 @@ onUnmounted(() => {
               ></template
             ></el-table-column
           >
-          <el-table-column label="操作" min-width="220">
+          <el-table-column label="操作" min-width="210">
             <template #default="scope">
-              <div class="row-actions">
-                <el-button
-                  class="row-action"
-                  size="small"
-                  :icon="View"
-                  @click="
-                    securityActionDetail = scope.row;
-                    securityActionDetailVisible = true;
-                  "
-                  >详情</el-button
-                >
+              <div class="security-action-actions">
+                <el-tooltip content="查看详情" placement="top" :show-after="250">
+                  <el-button
+                    class="row-action row-action--icon"
+                    size="small"
+                    :icon="View"
+                    aria-label="查看详情"
+                    @click="
+                      securityActionDetail = scope.row;
+                      securityActionDetailVisible = true;
+                    "
+                  />
+                </el-tooltip>
                 <template
                   v-if="
                     canManageSecurityActions &&
@@ -7004,7 +7007,12 @@ onUnmounted(() => {
       align-center
       destroy-on-close
     >
-      <el-descriptions v-if="securityActionDetail" :column="2" border>
+      <el-descriptions
+        v-if="securityActionDetail"
+        class="security-action-descriptions"
+        :column="2"
+        border
+      >
         <el-descriptions-item label="行动 ID">{{
           securityActionDetail.id
         }}</el-descriptions-item>
@@ -7051,27 +7059,46 @@ onUnmounted(() => {
           securityActionDetail.purpose
         }}</el-descriptions-item>
         <el-descriptions-item label="执行计划" :span="2">
-          <pre class="security-action-plan-block">{{
-            securityActionDetail.executionPlan
-          }}</pre>
+          <FluentCodeBlock
+            :content="securityActionDetail.executionPlan"
+            empty-text="未记录"
+            wrap
+            :min-rows="3"
+            :max-rows="10"
+          />
         </el-descriptions-item>
         <el-descriptions-item label="回滚计划" :span="2">
-          <pre class="security-action-plan-block">{{
-            securityActionDetail.rollbackPlan
-          }}</pre>
+          <FluentCodeBlock
+            :content="securityActionDetail.rollbackPlan"
+            empty-text="未记录"
+            wrap
+            :min-rows="3"
+            :max-rows="10"
+          />
         </el-descriptions-item>
-        <el-descriptions-item label="终止原因" :span="2">{{
-          securityActionDetail.terminationReason || "未记录"
-        }}</el-descriptions-item>
+        <el-descriptions-item label="终止原因" :span="2">
+          <span v-if="securityActionDetail.terminationReason">{{
+            securityActionDetail.terminationReason
+          }}</span>
+          <span v-else class="security-action-empty">未记录</span>
+        </el-descriptions-item>
         <el-descriptions-item label="执行证据" :span="2">
-          <pre class="security-action-plan-block">{{
-            securityActionDetail.evidence || "未记录"
-          }}</pre>
+          <FluentCodeBlock
+            :content="securityActionDetail.evidence"
+            empty-text="未记录"
+            wrap
+            :min-rows="3"
+            :max-rows="12"
+          />
         </el-descriptions-item>
         <el-descriptions-item label="回滚证据" :span="2">
-          <pre class="security-action-plan-block">{{
-            securityActionDetail.rollbackEvidence || "未记录"
-          }}</pre>
+          <FluentCodeBlock
+            :content="securityActionDetail.rollbackEvidence"
+            empty-text="未记录"
+            wrap
+            :min-rows="3"
+            :max-rows="12"
+          />
         </el-descriptions-item>
       </el-descriptions>
       <template #footer>
@@ -8171,6 +8198,23 @@ onUnmounted(() => {
   font-size: 11px;
   line-height: 1.55;
 }
+.security-action-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.security-action-actions .row-action {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.security-action-actions .row-action--icon {
+  flex: 0 0 auto;
+  width: 28px;
+  min-width: 28px;
+  padding: 0;
+}
 .security-action-flags {
   display: flex;
   flex-wrap: wrap;
@@ -8182,20 +8226,12 @@ onUnmounted(() => {
   grid-template-columns: 150px 1fr;
   gap: 12px;
 }
-.security-action-plan-block {
-  max-height: 180px;
-  overflow: auto;
-  margin: 0;
-  padding: 10px;
-  border-radius: 6px;
-  background: var(--app-surface-soft, var(--el-fill-color-light));
-  color: var(--app-text, var(--el-text-color-primary));
-  white-space: pre-wrap;
-  word-break: break-word;
-  font:
-    12px/1.55 Consolas,
-    "Cascadia Mono",
-    monospace;
+.security-action-empty {
+  color: var(--app-muted, var(--el-text-color-secondary));
+}
+.security-action-descriptions :deep(.el-descriptions__label),
+.security-action-descriptions :deep(.el-descriptions__content) {
+  vertical-align: top;
 }
 .security-action-dialog-alert {
   margin-bottom: 14px;

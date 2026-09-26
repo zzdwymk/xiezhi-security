@@ -6102,13 +6102,13 @@ onBeforeUnmount(() => {
           <span class="poc-dialog-count">
             已选 <b>{{ workflowDialogSelected.size }}</b> / 50 个 PoC
           </span>
-          <el-button size="small" text type="primary" @click="selectAllWorkflowDialogCurrentPage">
+          <el-button plain type="primary" @click="selectAllWorkflowDialogCurrentPage">
             选中当页
           </el-button>
-          <el-button size="small" text @click="deselectAllWorkflowDialogCurrentPage">
+          <el-button plain @click="deselectAllWorkflowDialogCurrentPage">
             取消当页
           </el-button>
-          <el-button size="small" text type="danger" @click="workflowDialogSelected = new Set()">
+          <el-button plain type="danger" @click="workflowDialogSelected = new Set()">
             清空
           </el-button>
           <span class="app-dialog__footer-spacer" />

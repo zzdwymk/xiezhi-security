@@ -2187,13 +2187,13 @@ onUnmounted(() => {
         <span class="poc-dialog-count">
           已选 <b>{{ pocDialogSelected.size }}</b> 个 PoC
         </span>
-        <el-button size="small" text type="primary" @click="selectAllDialogCurrentPage">
+        <el-button plain type="primary" @click="selectAllDialogCurrentPage">
           选中当页
         </el-button>
-        <el-button size="small" text @click="deselectAllDialogCurrentPage">
+        <el-button plain @click="deselectAllDialogCurrentPage">
           取消当页
         </el-button>
-        <el-button size="small" text type="danger" @click="clearAllDialogSelected">
+        <el-button plain type="danger" @click="clearAllDialogSelected">
           清空
         </el-button>
         <span class="app-dialog__footer-spacer" />

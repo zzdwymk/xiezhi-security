@@ -28,6 +28,10 @@
   --fluent3-hover-bg: var(--app-accent-soft);
   --fluent3-card-radius: var(--fluent-radius-xlarge);
   --fluent3-slider-ease: 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* Fluent DataGrid selection uses neutral surfaces, not the brand accent.
+     The accent is reserved for the checkbox (single/single-select focus). */
+  --fluent3-table-hover-bg: color-mix(in srgb, CanvasText 5%, Canvas);
+  --fluent3-table-select-bg: color-mix(in srgb, CanvasText 11%, Canvas);
 }
 
 /* One animated indicator is shared by every navigable list and tab strip. */
@@ -323,47 +327,31 @@ html .el-button.el-button--danger.is-link:not(.is-disabled):hover {
 }
 
 /* =================================================================
-   Table rows - VFluent3 list-view selection pattern
+   Table rows - Fluent DataGrid selection
    ================================================================= */
 
 .desktop-v2-app-frame .el-table__body tr {
   min-height: var(--fluent3-list-item-height);
+  border-radius: var(--fluent3-list-item-radius);
   transition:
     background-color var(--fluent-fast),
     box-shadow var(--fluent-fast);
 }
 
 .desktop-v2-app-frame .el-table__body tr:hover > td.el-table__cell {
-  background: var(--fluent3-hover-bg) !important;
+  background: var(--fluent3-table-hover-bg) !important;
 }
 
+/* Selected (multi-select) rows use a neutral surface: per Fluent DataGrid the
+   selection is carried by the checkbox, so the brand accent is not painted
+   across the row. */
 .desktop-v2-app-frame .el-table__body tr.current-row > td.el-table__cell,
 .desktop-v2-app-frame .el-table__body tr.is-selected > td.el-table__cell {
-  background: var(--fluent3-select-bg) !important;
-}
-
-.desktop-v2-app-frame .el-table__body tr td.el-table__cell:first-child {
-  position: relative;
-}
-
-.desktop-v2-app-frame .el-table__body tr.current-row > td.el-table__cell:first-child::before,
-.desktop-v2-app-frame .el-table__body tr.is-selected > td.el-table__cell:first-child::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: var(--fluent3-slider-width);
-  height: 60%;
-  border-radius: var(--fluent3-slider-width);
-  background: var(--fluent3-slider-accent);
-  transition: height var(--fluent3-slider-ease), opacity var(--fluent-fast);
-  pointer-events: none;
-  z-index: 1;
+  background: var(--fluent3-table-select-bg) !important;
 }
 
 .desktop-v2-app-frame .desktop-v2-content > .workspace-list-page > .el-table {
-  --el-table-row-hover-bg-color: var(--fluent3-hover-bg);
+  --el-table-row-hover-bg-color: var(--fluent3-table-hover-bg);
 }
 
 /* =================================================================
@@ -547,9 +535,7 @@ html .el-button.el-button--danger.is-link:not(.is-disabled):hover {
 @media (max-width: 768px) {
   .desktop-v2-nav-item.active::before,
   .desktop-v2-recent-item.active::before,
-  .offline-tool-index .offline-tool-item.active::before,
-  .desktop-v2-app-frame .el-table__body tr.current-row > td.el-table__cell:first-child::before,
-  .desktop-v2-app-frame .el-table__body tr.is-selected > td.el-table__cell:first-child::before {
+  .offline-tool-index .offline-tool-item.active::before {
     height: 40%;
   }
 }
