@@ -92,6 +92,13 @@ export function useDragSelect<T extends object>({
   let snapshotSelectedIds = new Set<number | string>();
   let autoScrollRaf = 0;
   let lastClientY = 0;
+  // Per-drag caches: the rows do not change identity/reorder during a drag, so
+  // we query them once and reuse the node list instead of re-querying every
+  // frame. This avoids layout thrash and keeps the marquee responsive.
+  let dragRowEls: HTMLTableRowElement[] = [];
+  let dragItems: T[] = [];
+  let scrollerCached: { el: HTMLElement; top: number } | null = null;
+  let lastBox: MarqueeRect | null = null;
 
   const marqueeStyle = computed(() => {
     if (!marqueeRect.value || !isDragging.value) {
@@ -213,14 +220,14 @@ export function useDragSelect<T extends object>({
   // anchored edge moves (and can leave the visible area), stretching the box
   // out exactly like Windows Explorer.
   function updateMarquee(cx: number, cy: number) {
-    const scroller = getScrollerEl();
-    const rect = scroller.getBoundingClientRect();
+    const scroller = scrollerCached?.el || getScrollerEl();
+    const rectTop = scrollerCached?.top ?? scroller.getBoundingClientRect().top;
     const scrollTop = scroller.scrollTop;
 
     const contentStart = startContentY; // content coordinate of the press point
-    const contentNow = scrollTop + (cy - rect.top);
-    const top = Math.min(contentStart, contentNow) - scrollTop + rect.top;
-    const bottom = Math.max(contentStart, contentNow) - scrollTop + rect.top;
+    const contentNow = scrollTop + (cy - rectTop);
+    const top = Math.min(contentStart, contentNow) - scrollTop + rectTop;
+    const bottom = Math.max(contentStart, contentNow) - scrollTop + rectTop;
 
     const left = Math.min(startX, cx);
     const right = Math.max(startX, cx);
@@ -233,19 +240,30 @@ export function useDragSelect<T extends object>({
       width: right - left,
       height: bottom - top,
     };
+
+    // Skip if nothing actually changed this frame (neither the pointer nor the
+    // scroll moved) so we don't churn the row selection / re-render pointlessly.
+    const lb = lastBox;
+    if (
+      lb &&
+      lb.left === box.left &&
+      lb.top === box.top &&
+      lb.right === box.right &&
+      lb.bottom === box.bottom
+    ) {
+      return;
+    }
+    lastBox = box;
     marqueeRect.value = box;
     updateIntersections(box);
   }
 
-  function updateIntersections(box: MarqueeRect) {
-    const tableEl = getTableEl();
-    if (!tableEl) return;
-
-    const rowEls = tableEl.querySelectorAll<HTMLTableRowElement>(rowSelector);
+function updateIntersections(box: MarqueeRect) {
+    const rowEls = dragRowEls;
     if (!rowEls.length) return;
 
     const currentSelectedIds = getSelectedIdSet();
-    const currentItems = items.value;
+    const currentItems = dragItems;
     const count = Math.min(currentItems.length, rowEls.length);
 
     for (let i = 0; i < count; i++) {
@@ -287,24 +305,23 @@ export function useDragSelect<T extends object>({
 
     // Auto-scroll the REAL scroll container (`.desktop-v2-content`) when the
     // pointer is near its top/bottom edge.
-    const scroller = getScrollerEl();
+    const scroller = scrollerCached?.el || getScrollerEl();
+    const rectTop = scrollerCached?.top ?? scroller.getBoundingClientRect().top;
+    const rectBottom = rectTop + scroller.clientHeight;
     const edgeZone = 40;
     const maxSpeed = 14;
-    const rect = scroller.getBoundingClientRect();
 
-    if (lastClientY > rect.bottom - edgeZone && lastClientY < rect.bottom + edgeZone) {
-      const intensity = Math.min(1, (lastClientY - (rect.bottom - edgeZone)) / edgeZone);
+    if (lastClientY > rectBottom - edgeZone && lastClientY < rectBottom + edgeZone) {
+      const intensity = Math.min(1, (lastClientY - (rectBottom - edgeZone)) / edgeZone);
       scroller.scrollTop += Math.max(2, Math.round(intensity * maxSpeed));
-    } else if (lastClientY < rect.top + edgeZone && lastClientY > rect.top - edgeZone) {
-      const intensity = Math.min(1, (rect.top + edgeZone - lastClientY) / edgeZone);
+    } else if (lastClientY < rectTop + edgeZone && lastClientY > rectTop - edgeZone) {
+      const intensity = Math.min(1, (rectTop + edgeZone - lastClientY) / edgeZone);
       scroller.scrollTop -= Math.max(2, Math.round(intensity * maxSpeed));
     }
 
-    // Rebuild the box against the (possibly changed) scroll position, so the
-    // marquee keeps stretching with the scrolled content like Explorer.
-    if (marqueeRect.value) {
-      updateMarquee(lastClientX, lastClientY);
-    }
+    // Rebuild the box against the (possibly changed) scroll position. updateMarquee
+    // is a no-op when nothing moved, so this stays cheap when idle.
+    updateMarquee(lastClientX, lastClientY);
 
     autoScrollRaf = requestAnimationFrame(autoScrollLoop);
   }
@@ -312,8 +329,6 @@ export function useDragSelect<T extends object>({
   function onPointerMove(e: PointerEvent) {
     if (!isPointerDown) return;
 
-    lastClientY = e.clientY;
-    lastClientX = e.clientX;
     const dx = e.clientX - startX;
     const dy = e.clientY - startY;
     const dist = Math.hypot(dx, dy);
@@ -324,6 +339,8 @@ export function useDragSelect<T extends object>({
         document.body.style.userSelect = "none";
         document.body.style.webkitUserSelect = "none";
         document.body.style.cursor = "default";
+        lastClientX = e.clientX;
+        lastClientY = e.clientY;
         if (!autoScrollRaf) {
           autoScrollRaf = requestAnimationFrame(autoScrollLoop);
         }
@@ -336,7 +353,11 @@ export function useDragSelect<T extends object>({
       e.preventDefault();
     }
 
-    updateMarquee(e.clientX, e.clientY);
+    // Just record the pointer; the shared rAF tick recomputes the marquee +
+    // selection once per frame (which coalesces high-rate pointer events and
+    // avoids redundant row work).
+    lastClientX = e.clientX;
+    lastClientY = e.clientY;
   }
 
   function onPointerUp(e: PointerEvent) {
@@ -405,6 +426,7 @@ export function useDragSelect<T extends object>({
 
     isDragging.value = false;
     marqueeRect.value = null;
+    lastBox = null;
     isPointerDown = true;
     startX = e.clientX;
     startY = e.clientY;
@@ -412,8 +434,16 @@ export function useDragSelect<T extends object>({
     lastClientY = e.clientY;
     // Anchor the marquee in the scroller's CONTENT coordinates at press time so
     // scrolling makes it grow (Explorer behaviour) instead of staying frozen.
-    const scrollerRect = getScrollerEl().getBoundingClientRect();
-    startContentY = getScrollerEl().scrollTop + (startY - scrollerRect.top);
+    const scrollerInit = getScrollerEl();
+    const scrollerRect = scrollerInit.getBoundingClientRect();
+    startContentY = scrollerInit.scrollTop + (startY - scrollerRect.top);
+    scrollerCached = { el: scrollerInit, top: scrollerRect.top };
+    // Cache the row list once for this drag; rows keep their identity during a
+    // drag, so we avoid re-querying the DOM every frame.
+    dragRowEls = Array.from(
+      getTableEl()?.querySelectorAll<HTMLTableRowElement>(rowSelector) ?? []
+    );
+    dragItems = items.value.slice();
     isCtrl = e.ctrlKey || e.metaKey;
     isShift = e.shiftKey;
     isLongPress = false;

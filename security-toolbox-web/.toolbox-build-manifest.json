@@ -44,7 +44,7 @@ src\components\offline\IocExtractor.vue|3377|639248805694267537
 src\components\offline\NetworkCalculator.vue|2063|639248805694267537
 src\components\OfflineState.vue|264|639248805694213500
 src\composables\useClientPagination.ts|819|639248805694278790
-src\composables\useDragSelect.ts|15751|639260358928278796
+src\composables\useDragSelect.ts|17170|639260815117635336
 src\composables\useSelectionIndicator.ts|6162|639248805694278790
 src\desktop-v2.css|32175|639259173161462266
 src\env.d.ts|11833|639256595036224576
@@ -288,10 +288,10 @@ tools\zap\ZAP_2.17.0\zap.sh|5259|639248805713408763
 tools\zap\ZAP_2.17.0\zap-2.17.0.jar|5542639|639248805713364906
 topology-current.png|53252|639248842399712799
 tsconfig.app.json|349|639248805713431654
-tsconfig.app.tsbuildinfo|2049|639260359910547400
+tsconfig.app.tsbuildinfo|2049|639260816215305995
 tsconfig.json|92|639248805713431654
 tsconfig.node.json|184|639248805713446679
-tsconfig.node.tsbuildinfo|90926|639260359236204306
+tsconfig.node.tsbuildinfo|90926|639260815820893708
 vite.config.ts|1988|639248805713446679
 vite.log|241|639249941796160435
 vite-start.err.log|0|639249961889702402
