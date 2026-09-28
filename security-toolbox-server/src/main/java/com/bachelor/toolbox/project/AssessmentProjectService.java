@@ -126,7 +126,10 @@ public class AssessmentProjectService {
 
   @Transactional
   public ProjectTarget addTarget(Long projectId, Long targetId) {
-    get(projectId);
+    AssessmentProject project = get(projectId);
+    if ("ARCHIVED".equals(project.getStatus()) || "COMPLETED".equals(project.getStatus())) {
+      throw new ApiException("项目已归档或已完成，无法新增授权目标");
+    }
     validateTargetCanBeAdded(projectId, targetId);
 
     ProjectTarget link = links.save(new ProjectTarget(projectId, targetId));

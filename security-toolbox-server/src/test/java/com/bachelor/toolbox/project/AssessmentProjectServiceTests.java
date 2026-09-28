@@ -327,6 +327,26 @@ class AssessmentProjectServiceTests {
   }
 
   @Test
+  void rejectsAddingTargetToArchivedProject() {
+    when(projects.findById(1L)).thenReturn(Optional.of(project("ARCHIVED")));
+
+    assertThatThrownBy(() -> service.addTarget(1L, 2L))
+        .isInstanceOf(ApiException.class)
+        .hasMessage("项目已归档或已完成，无法新增授权目标");
+    verify(links, never()).save(any(ProjectTarget.class));
+  }
+
+  @Test
+  void rejectsAddingTargetToCompletedProject() {
+    when(projects.findById(1L)).thenReturn(Optional.of(project("COMPLETED")));
+
+    assertThatThrownBy(() -> service.addTarget(1L, 2L))
+        .isInstanceOf(ApiException.class)
+        .hasMessage("项目已归档或已完成，无法新增授权目标");
+    verify(links, never()).save(any(ProjectTarget.class));
+  }
+
+  @Test
   void removesExistingProjectTargetAndRecordsAudit() {
     when(projects.findById(1L)).thenReturn(Optional.of(project("DRAFT")));
     when(links.findByProjectIdAndTargetId(1L, 2L))

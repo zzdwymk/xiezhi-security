@@ -42,12 +42,24 @@ function syncTextarea() {
   props.textareaRef?.(inner?.textarea ?? null);
 }
 onMounted(() => syncTextarea());
-onBeforeUnmount(() => props.textareaRef?.(null));
+
+const copied = ref(false);
+let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+
+onBeforeUnmount(() => {
+  if (copiedTimer) clearTimeout(copiedTimer);
+  props.textareaRef?.(null);
+});
 
 async function copy() {
   if (!props.content) return;
   try {
     await navigator.clipboard.writeText(props.content);
+    copied.value = true;
+    if (copiedTimer) clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => {
+      copied.value = false;
+    }, 1800);
     ElMessage.success(`已复制${props.title || "内容"}`);
   } catch {
     ElMessage.error("复制失败，请手动复制");
@@ -62,17 +74,23 @@ async function copy() {
         <FluentIcon :name="icon" />
         <span>{{ title }}</span>
       </span>
-      <button
-        v-if="copyable && content"
-        type="button"
-        class="fluent-subtle-btn"
-        :aria-label="`复制${title || '内容'}`"
-        :data-fluent-tooltip="`复制${title || '内容'}`"
-        @click="copy"
+      <el-tooltip
+        :content="copied ? `已复制${title || '内容'}` : `复制${title || '内容'}`"
+        placement="top"
+        :show-after="200"
       >
-        <FluentIcon name="copy" />
-        <span>复制</span>
-      </button>
+        <button
+          v-if="copyable && content"
+          type="button"
+          class="fluent-subtle-btn"
+          :class="{ 'is-copied': copied }"
+          :aria-label="`复制${title || '内容'}`"
+          @click="copy"
+        >
+          <FluentIcon :name="copied ? 'checkmark' : 'copy'" />
+          <span>{{ copied ? '已复制' : '复制' }}</span>
+        </button>
+      </el-tooltip>
     </div>
     <slot>
       <el-input
@@ -132,6 +150,20 @@ async function copy() {
 }
 .fluent-subtle-btn:hover {
   background: var(--app-surface-soft, #f1f5f9);
+}
+.fluent-subtle-btn:active {
+  transform: scale(0.96);
+}
+.fluent-subtle-btn.is-copied {
+  color: #107c41 !important;
+  background: #dff6dd !important;
+  font-weight: var(--fluent-weight-medium, 500);
+}
+:root[data-system-theme="dark"] .fluent-subtle-btn.is-copied,
+html.dark .fluent-subtle-btn.is-copied,
+[data-theme="dark"] .fluent-subtle-btn.is-copied {
+  color: #4ade80 !important;
+  background: rgba(34, 197, 94, 0.18) !important;
 }
 .fluent-code-textarea :deep(.el-textarea__inner) {
   white-space: pre;

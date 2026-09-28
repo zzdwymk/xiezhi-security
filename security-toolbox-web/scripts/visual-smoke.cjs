@@ -2335,7 +2335,15 @@ async function verifyTargetAuthorizationTimeDisplay(browser) {
   const deleteColor = await deleteButton.evaluate(
     (element) => getComputedStyle(element).color,
   );
-  assert.equal(deleteColor, "rgb(180, 35, 24)", "删除链接应使用 Fluent danger 红");
+  const reportColor = await page
+    .locator(".target-action-report")
+    .first()
+    .evaluate((element) => getComputedStyle(element).color);
+  assert.equal(
+    deleteColor,
+    reportColor,
+    "操作按钮应与结果中心一致，统一为中性前景",
+  );
   await page.locator(".target-action-edit").first().click();
   const editDialog = page.getByRole("dialog", { name: "编辑授权目标" });
   await editDialog.waitFor();

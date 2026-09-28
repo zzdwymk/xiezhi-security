@@ -42,6 +42,11 @@ const rows = ref<Target[]>([]);
 const projects = ref<AssessmentProject[]>([]);
 const projectIdsByTarget = ref<Record<number, number[]>>({});
 const editingProjects = ref<AssessmentProject[]>([]);
+const assignableProjects = computed(() =>
+  projects.value.filter(
+    (p) => p.status !== "ARCHIVED" && p.status !== "COMPLETED",
+  ),
+);
 const offline = ref(false);
 const dialog = ref(false);
 const targetMode = ref<"single" | "batch">("single");
@@ -340,7 +345,8 @@ function openCreate() {
     return;
   }
   const active =
-    projects.value.find((p) => p.status === "ACTIVE") || projects.value[0];
+    assignableProjects.value.find((p) => p.status === "ACTIVE") ||
+    assignableProjects.value[0];
   targetMode.value = "single";
   Object.assign(form, {
     projectId: active?.id,
@@ -772,6 +778,7 @@ onMounted(load);
         />
         <el-button
           v-if="selectedTargets.length"
+          class="target-batch-delete"
           type="danger"
           plain
           @click="batchDeleteTargets"
@@ -846,26 +853,26 @@ onMounted(load);
         ><template #default="scope"
           ><div class="row-actions row-actions--pair"
             ><el-button
-              class="row-action row-action--ai"
+              class="row-action target-action-ai"
               size="small"
               :icon="MagicStick"
               @click="askCopilot(scope.row)"
               >AI 规划</el-button
             ><el-button
-              class="row-action"
+              class="row-action target-action-report"
               size="small"
               :icon="Document"
               :loading="reporting === scope.row.id"
               @click="downloadTargetReport(scope.row)"
               >目标 PDF</el-button
             ><el-button
-              class="row-action"
+              class="row-action target-action-edit"
               size="small"
               :icon="EditPen"
               @click="openEditTarget(scope.row)"
               >编辑</el-button
             ><el-button
-              class="row-action row-action--danger"
+              class="row-action target-action-delete"
               size="small"
               :icon="Delete"
               @click="remove(scope.row)"
@@ -927,7 +934,7 @@ onMounted(load);
           @change="applyProjectAuthorizationDefaults"
         >
           <el-option
-            v-for="p in projects"
+            v-for="p in assignableProjects"
             :key="p.id"
             :label="`${p.name}（${projectStatusLabel(p.status)}）`"
             :value="p.id"
@@ -1042,7 +1049,7 @@ onMounted(load);
           @change="applyProjectAuthorizationDefaults"
         >
           <el-option
-            v-for="p in projects"
+            v-for="p in assignableProjects"
             :key="p.id"
             :label="`${p.name}（${projectStatusLabel(p.status)}）`"
             :value="p.id"
@@ -1415,7 +1422,7 @@ onMounted(load);
   line-height: 1.5;
 }
 .targets-page .section-head :deep(.el-button) {
-  font-size: 12px;
+  font-size: var(--fluent-body1-size);
 }
 .target-head-actions {
   display: flex;
@@ -1424,9 +1431,9 @@ onMounted(load);
   flex-wrap: wrap;
 }
 .target-batch-hint {
-  color: var(--app-accent);
-  font-size: 12px;
-  font-weight: 600;
+  color: var(--app-text);
+  font-size: var(--fluent-caption1-size);
+  font-weight: var(--fluent-weight-semibold);
   margin-right: 2px;
 }
 .targets-page :deep(.el-table .cell) {
@@ -1747,87 +1754,9 @@ onMounted(load);
 .targets-page :deep(.el-button.is-link) {
   font-size: 12px;
 }
-.targets-page :deep(.target-action-ai) {
-  height: 32px;
-  padding: 0 11px;
-  border: 1px solid var(--app-accent);
-  border-radius: 5px;
-  background: var(--app-accent);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 650;
-}
-.targets-page :deep(.target-action-ai:hover),
-.targets-page :deep(.target-action-ai:focus) {
-  border-color: var(--app-accent-dark);
-  background: var(--app-accent-dark);
-  color: #fff;
-}
-.targets-page :deep(.target-action-ai .el-icon) {
-  color: #fff;
-}
-.targets-page :deep(.target-action-report) {
-  height: 32px;
-  padding: 0 10px;
-  border: 1px solid #b8c2ce;
-  border-radius: 5px;
-  background: #fff;
-  color: #263647;
-  font-size: 12px;
-  font-weight: 600;
-}
-.targets-page :deep(.target-action-report:hover),
-.targets-page :deep(.target-action-report:focus) {
-  border-color: #52708e;
-  background: #eef4f8;
-  color: #172a3d;
-}
-.targets-page :deep(.target-action-delete.el-button--danger.is-link),
-.targets-page
-  :deep(
-    .el-table__body
-      tr.current-row
-      .target-action-delete.el-button--danger.is-link
-  ) {
-  --el-button-text-color: var(--fluent-danger-bg);
-  --el-button-hover-text-color: var(--fluent-danger-hover-bg);
-  --el-button-active-text-color: var(--fluent-danger-hover-bg);
-  color: var(--fluent-danger-bg) !important;
-  font-size: 12px;
-  font-weight: 600;
-}
-.targets-page :deep(.target-action-delete.el-button--danger.is-link > span),
-.targets-page
-  :deep(
-    .el-table__body
-      tr.current-row
-      .target-action-delete.el-button--danger.is-link
-      > span
-  ) {
-  color: inherit !important;
-}
-.targets-page :deep(.target-action-delete.el-button--danger.is-link:hover),
-.targets-page :deep(.target-action-delete.el-button--danger.is-link:focus),
-.targets-page
-  :deep(.target-action-delete.el-button--danger.is-link:focus-visible),
-.targets-page :deep(.target-action-delete.el-button--danger.is-link:active),
-.targets-page
-  :deep(
-    .el-table__body
-      tr.current-row
-      .target-action-delete.el-button--danger.is-link:hover
-  ),
-.targets-page
-  :deep(
-    .el-table__body
-      tr.current-row
-      .target-action-delete.el-button--danger.is-link:focus-visible
-  ) {
-  color: var(--fluent-danger-hover-bg) !important;
-}
-.targets-page :deep(.el-table__body tr.current-row .target-action-report) {
-  color: #263647;
-}
+/* Row actions use the shared neutral small-button contract, matching the
+   Results Center action column: one uniform bordered look, no per-action
+   accent/colour variants. */
 .target-form {
   margin: 0;
   padding: 0;
@@ -1881,55 +1810,50 @@ onMounted(load);
   background: var(--fluent3-table-select-bg, var(--app-surface-soft, #f2f3f5)) !important;
 }
 
-/* Ensure action buttons on selected rows keep clean, harmonious styling without opaque white boxes */
-.targets-page :deep(.el-table__body tr.is-selected .el-button.is-link),
-.targets-page :deep(.el-table__body tr:has(.el-checkbox.is-checked) .el-button.is-link) {
-  background: transparent !important;
-  border-color: transparent !important;
-}
-
-.targets-page :deep(.el-table__body tr.is-selected .target-action-edit.el-button.is-link),
-.targets-page :deep(.el-table__body tr:has(.el-checkbox.is-checked) .target-action-edit.el-button.is-link) {
-  color: var(--app-accent, #0078d4) !important;
-}
-.targets-page :deep(.el-table__body tr.is-selected .target-action-edit.el-button.is-link:hover),
-.targets-page :deep(.el-table__body tr:has(.el-checkbox.is-checked) .target-action-edit.el-button.is-link:hover) {
-  color: var(--app-accent-dark, #005a9e) !important;
-  background: rgba(0, 120, 212, 0.08) !important;
-}
-
-.targets-page :deep(.el-table__body tr.is-selected .target-action-delete.el-button.is-link),
-.targets-page :deep(.el-table__body tr:has(.el-checkbox.is-checked) .target-action-delete.el-button.is-link) {
-  color: var(--fluent-danger-bg, #d13438) !important;
-}
-.targets-page :deep(.el-table__body tr.is-selected .target-action-delete.el-button.is-link:hover),
-.targets-page :deep(.el-table__body tr:has(.el-checkbox.is-checked) .target-action-delete.el-button.is-link:hover) {
-  color: var(--fluent-danger-hover-bg, #a80000) !important;
-  background: rgba(209, 52, 56, 0.08) !important;
-}
-
-.targets-page :deep(.el-table__body tr.is-selected .target-action-report),
-.targets-page :deep(.el-table__body tr:has(.el-checkbox.is-checked) .target-action-report) {
-  background: rgba(255, 255, 255, 0.8) !important;
-  border-color: rgba(184, 194, 206, 0.7) !important;
-  color: #263647 !important;
-}
-.targets-page :deep(.el-table__body tr.is-selected .target-action-report:hover),
-.targets-page :deep(.el-table__body tr:has(.el-checkbox.is-checked) .target-action-report:hover) {
-  background: #fff !important;
-  border-color: #52708e !important;
-  color: #172a3d !important;
-}
-
-:root[data-system-theme="dark"] .targets-page :deep(.el-table__body tr.is-selected .target-action-report),
-:root[data-system-theme="dark"] .targets-page :deep(.el-table__body tr:has(.el-checkbox.is-checked) .target-action-report) {
-  background: rgba(255, 255, 255, 0.08) !important;
-  border-color: rgba(255, 255, 255, 0.16) !important;
-  color: var(--app-text) !important;
+/* Row hover matches the Results Center action column: neutral buttons gain an
+   accent border on hover, and the destructive delete action turns red. The
+   `!important` is required to win over the global selected-row rule in
+   fluent-design-2.css that otherwise forces every non-primary button to accent
+   while its row is selected. */
+.targets-page :deep(.target-action-delete.el-button:hover),
+.targets-page :deep(.target-action-delete.el-button:focus-visible) {
+  border-color: var(--fluent-danger-bg) !important;
+  background: color-mix(
+    in srgb,
+    CanvasText 5%,
+    var(--app-surface-strong)
+  ) !important;
+  color: light-dark(var(--fluent-danger-hover-bg), #ffd2cc) !important;
 }
 
 .target-clear-btn {
   font-size: 13px;
   margin-right: 2px;
+}
+
+/* Fluent has no dedicated danger button appearance: destructive secondary
+   actions carry intent with a red foreground on neutral chrome instead of a
+   red outline. */
+.targets-page :deep(.target-batch-delete.el-button.is-plain) {
+  --el-button-bg-color: var(--app-surface-strong);
+  --el-button-border-color: var(--app-border-strong);
+  --el-button-hover-bg-color: color-mix(
+    in srgb,
+    var(--fluent-danger-bg) 10%,
+    var(--app-surface-strong)
+  );
+  --el-button-hover-border-color: var(--fluent-danger-bg);
+  --el-button-active-bg-color: color-mix(
+    in srgb,
+    var(--fluent-danger-bg) 16%,
+    var(--app-surface-strong)
+  );
+  --el-button-active-border-color: var(--fluent-danger-bg);
+  color: light-dark(var(--fluent-danger-bg), #ffb4ab) !important;
+}
+.targets-page :deep(.target-batch-delete.el-button.is-plain:hover),
+.targets-page :deep(.target-batch-delete.el-button.is-plain:focus-visible),
+.targets-page :deep(.target-batch-delete.el-button.is-plain:active) {
+  color: light-dark(var(--fluent-danger-hover-bg), #ffd2cc) !important;
 }
 </style>

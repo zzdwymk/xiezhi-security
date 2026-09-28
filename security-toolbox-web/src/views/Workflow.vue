@@ -3962,6 +3962,13 @@ async function createTargetInput() {
   const projectId = selectedProjectId.value;
   const input = targetInput.value;
   if (!projectId) return ElMessage.warning("请先选择评估项目");
+  const projectStatus = selectedProject.value?.status;
+  if (
+    projectStatus === "ARCHIVED" ||
+    projectStatus === "COMPLETED"
+  ) {
+    return ElMessage.warning("项目已归档或已完成，无法新增授权目标");
+  }
   if (
     !input.name.trim() ||
     !input.targetValue.trim() ||

@@ -250,20 +250,37 @@
   font-size: 11px;
 }
 .ioc-result-grid header button {
-  display: grid;
-  width: 22px;
+  display: inline-flex;
+  min-width: 22px;
   height: 22px;
+  padding: 0 4px;
   margin-left: auto;
-  place-items: center;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
   border: 0;
   border-radius: 4px;
   background: transparent;
   color: var(--app-muted);
   cursor: pointer;
+  transition: all var(--fluent-fast, 120ms ease);
 }
 .ioc-result-grid header button:hover {
   background: var(--app-surface-soft);
   color: var(--app-accent);
+}
+.ioc-result-grid header button:active {
+  transform: scale(0.96);
+}
+.ioc-result-grid header button.is-copied {
+  color: #107c41 !important;
+  background: #dff6dd !important;
+}
+:root[data-system-theme="dark"] .ioc-result-grid header button.is-copied,
+html.dark .ioc-result-grid header button.is-copied,
+[data-theme="dark"] .ioc-result-grid header button.is-copied {
+  color: #4ade80 !important;
+  background: rgba(34, 197, 94, 0.18) !important;
 }
 .ioc-result-grid .el-textarea__inner,
 .endpoint-results .el-textarea__inner {

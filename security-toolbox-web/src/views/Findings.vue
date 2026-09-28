@@ -1109,18 +1109,26 @@ onBeforeUnmount(() => {
 }
 .finding-row-actions :deep(.finding-action--ai) {
   border-color: var(--app-accent);
-  background: var(--app-accent-soft);
-  color: var(--app-text);
+  background: var(--app-surface-strong);
+  color: var(--fluent-link-fg);
 }
+.finding-row-actions :deep(.finding-action--ai:hover),
+.finding-row-actions :deep(.finding-action--ai:focus-visible) {
+  border-color: var(--app-accent-dark);
+  background: var(--app-accent-soft);
+  color: var(--fluent-link-fg);
+}
+/* Fluent has no dedicated danger appearance: destructive intent is carried by
+   a red foreground over neutral chrome, not a red outline. */
 .finding-row-actions :deep(.finding-action--danger) {
-  border-color: color-mix(in srgb, #b42318 58%, var(--app-border));
-  color: light-dark(#8f1d17, #ffb4ab);
+  border-color: var(--app-border-strong);
+  color: light-dark(var(--fluent-danger-bg), #ffb4ab);
 }
 .finding-row-actions :deep(.finding-action--danger:hover),
 .finding-row-actions :deep(.finding-action--danger:focus-visible) {
-  border-color: #b42318;
-  background: color-mix(in srgb, #b42318 12%, var(--app-surface-strong));
-  color: light-dark(#7a1712, #ffd2cc);
+  border-color: var(--fluent-danger-bg);
+  background: color-mix(in srgb, var(--fluent-danger-bg) 10%, var(--app-surface-strong));
+  color: light-dark(var(--fluent-danger-hover-bg), #ffd2cc);
 }
 .finding-row-actions :deep(.el-button .el-icon) {
   font-size: 12px;
