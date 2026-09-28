@@ -267,6 +267,47 @@ class TargetServiceTests {
   }
 
   @Test
+  void rejectsCreatingTargetInArchivedOrCompletedProject() {
+    AuthorizedTargetRepository repository = mock(AuthorizedTargetRepository.class);
+    AuditService auditService = mock(AuditService.class);
+    AssessmentProjectRepository projects = mock(AssessmentProjectRepository.class);
+    ProjectTargetRepository projectTargets = mock(ProjectTargetRepository.class);
+    AssessmentProject project = new AssessmentProject();
+    project.setId(1L);
+    project.setOwner("admin");
+    project.setStatus("ARCHIVED");
+    when(projects.findById(1L)).thenReturn(Optional.of(project));
+    authenticateAsAdmin();
+    TargetService service =
+        new TargetService(
+            repository,
+            auditService,
+            new PortRangeParser(),
+            projects,
+            projectTargets,
+            new ProjectAuthorizationService(projects),
+            65535);
+
+    assertThatThrownBy(
+            () ->
+                service.create(
+                    new TargetRequest(
+                        "lab",
+                        "127.0.0.1",
+                        "IP",
+                        "written authorization",
+                        "80",
+                        true,
+                        null,
+                        null,
+                        1L)))
+        .isInstanceOf(com.bachelor.toolbox.common.ApiException.class)
+        .hasMessage("项目已归档或已完成，无法新增授权目标");
+    verify(repository, never()).save(any(AuthorizedTarget.class));
+    verify(projectTargets, never()).save(any(ProjectTarget.class));
+  }
+
+  @Test
   void deletesProjectLinksTogetherWithTarget() {
     AuthorizedTargetRepository repository = mock(AuthorizedTargetRepository.class);
     AuditService auditService = mock(AuditService.class);

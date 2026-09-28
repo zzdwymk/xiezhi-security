@@ -936,6 +936,11 @@ const windowActive = computed(() => {
   return now >= start && now < end;
 });
 
+const projectLocked = computed(() => {
+  const status = project.value?.status;
+  return status === "ARCHIVED" || status === "COMPLETED";
+});
+
 function targetWindowActive(target?: {
   enabled?: boolean;
   authorizationValidFrom?: string;
@@ -1072,6 +1077,16 @@ function securityActionRiskType(level: string) {
   if (["HIGH", "CRITICAL"].includes(level)) return "danger";
   if (level === "MEDIUM") return "warning";
   return "info";
+}
+
+function securityActionRiskLabel(level: string) {
+  const labels: Record<string, string> = {
+    LOW: "低",
+    MEDIUM: "中",
+    HIGH: "高",
+    CRITICAL: "严重",
+  };
+  return labels[level] ?? level;
 }
 
 function securityActionWindowState(action: SecurityAction) {
@@ -2528,6 +2543,21 @@ function parseDiscoveryJson(value: unknown): unknown {
   }
 }
 
+function discoveryEvidenceText(value: unknown): string {
+  if (value === undefined || value === null || value === "") return "";
+  const parsed = parseDiscoveryJson(value);
+  if (parsed === undefined || parsed === null || parsed === "") return "";
+  if (Array.isArray(parsed) && parsed.length === 0) return "";
+  if (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    Object.keys(parsed as Record<string, unknown>).length === 0
+  ) {
+    return "";
+  }
+  return typeof parsed === "string" ? parsed : JSON.stringify(parsed, null, 2);
+}
+
 function discoveryFingerprintMatches(
   row: DiscoveryResult,
 ): Array<Record<string, unknown>> {
@@ -2585,6 +2615,14 @@ function discoveryFingerprintNames(row: DiscoveryResult): string[] {
 
 function discoveryRowKey(row: DiscoveryResult) {
   return `${row.id ?? row.targetId}-${row.detectedAt ?? row.createdAt ?? row.url ?? ""}`;
+}
+
+const discoveryEvidenceVisible = ref(false);
+const discoveryEvidenceTarget = ref<DiscoveryResult | null>(null);
+
+function openDiscoveryEvidence(row: DiscoveryResult) {
+  discoveryEvidenceTarget.value = row;
+  discoveryEvidenceVisible.value = true;
 }
 
 async function openPocRecommendations(row: DiscoveryResult) {
@@ -3323,6 +3361,9 @@ const icpBrowserRaw = computed(() => {
   return "";
 });
 
+const icpCopied = ref(false);
+let icpCopiedTimer: ReturnType<typeof setTimeout> | null = null;
+
 async function copyIcpRaw() {
   const text = icpBrowserRaw.value;
   if (!text) {
@@ -3331,6 +3372,11 @@ async function copyIcpRaw() {
   }
   try {
     await navigator.clipboard.writeText(text);
+    icpCopied.value = true;
+    if (icpCopiedTimer) clearTimeout(icpCopiedTimer);
+    icpCopiedTimer = setTimeout(() => {
+      icpCopied.value = false;
+    }, 1800);
     ElMessage.success("原始数据已复制");
   } catch {
     ElMessage.error("复制失败，请手动选取文本复制");
@@ -3346,6 +3392,10 @@ const icpPreviewRaw = computed(() => {
     JSON.stringify(icpDataPreview.value?.data || {}, null, 2)
   );
 });
+
+const icpPreviewCopied = ref(false);
+let icpPreviewCopiedTimer: ReturnType<typeof setTimeout> | null = null;
+
 async function copyIcpPreviewRaw() {
   const text = icpPreviewRaw.value;
   if (!text) {
@@ -3354,6 +3404,11 @@ async function copyIcpPreviewRaw() {
   }
   try {
     await navigator.clipboard.writeText(text);
+    icpPreviewCopied.value = true;
+    if (icpPreviewCopiedTimer) clearTimeout(icpPreviewCopiedTimer);
+    icpPreviewCopiedTimer = setTimeout(() => {
+      icpPreviewCopied.value = false;
+    }, 1800);
     ElMessage.success("原始数据已复制");
   } catch {
     ElMessage.error("复制失败，请手动选取文本复制");
@@ -3973,6 +4028,142 @@ function itemText(value: unknown) {
   return JSON.stringify(value, null, 2);
 }
 
+const reconCardViewMode = reactive<Record<string, "formatted" | "raw">>({});
+
+function isRawMode(rowKey: string | number, groupLabel: string): boolean {
+  return reconCardViewMode[`${rowKey}-${groupLabel}`] === "raw";
+}
+
+function toggleGroupView(rowKey: string | number, groupLabel: string) {
+  const key = `${rowKey}-${groupLabel}`;
+  reconCardViewMode[key] = reconCardViewMode[key] === "raw" ? "formatted" : "raw";
+}
+
+interface ReconKv {
+  key: string;
+  value: string;
+  tag?: { text: string; type: "success" | "warning" | "danger" | "info" };
+}
+
+function formatHttpInfo(item: unknown): ReconKv[] {
+  if (!item || typeof item !== "object") return [];
+  const obj = item as Record<string, unknown>;
+  const list: ReconKv[] = [];
+  if (obj.status !== undefined) {
+    const code = Number(obj.status);
+    const type =
+      code >= 200 && code < 300
+        ? "success"
+        : code >= 300 && code < 400
+          ? "warning"
+          : "danger";
+    list.push({
+      key: "响应状态",
+      value: String(code),
+      tag: { text: `HTTP ${code}`, type },
+    });
+  }
+  if (obj.title) {
+    list.push({ key: "网站标题", value: String(obj.title) });
+  }
+  if (obj.server) {
+    list.push({ key: "Web 服务器", value: String(obj.server) });
+  }
+  if (obj.redirect) {
+    list.push({ key: "跳转地址", value: String(obj.redirect) });
+  }
+  return list.length ? list : formatGenericKv(item);
+}
+
+function formatTlsInfo(item: unknown): ReconKv[] {
+  if (!item || typeof item !== "object") return [];
+  const obj = item as Record<string, unknown>;
+  const list: ReconKv[] = [];
+  if (obj.status) {
+    const isOk = obj.status === "VALID" || obj.status === "OK";
+    list.push({
+      key: "证书状态",
+      value: String(obj.status),
+      tag: { text: isOk ? "有效" : "不可用", type: isOk ? "success" : "info" },
+    });
+  }
+  if (obj.reason) {
+    list.push({ key: "状态说明", value: String(obj.reason) });
+  }
+  if (obj.issuer) {
+    list.push({ key: "颁发者", value: String(obj.issuer) });
+  }
+  if (obj.subject) {
+    list.push({ key: "使用者", value: String(obj.subject) });
+  }
+  if (obj.validTo) {
+    list.push({ key: "到期时间", value: String(obj.validTo) });
+  }
+  return list.length ? list : formatGenericKv(item);
+}
+
+function formatIpInfo(item: unknown): ReconKv[] {
+  if (!item || typeof item !== "object") return [];
+  const obj = item as Record<string, unknown>;
+  const list: ReconKv[] = [];
+  if (Array.isArray(obj.addresses)) {
+    obj.addresses.forEach((addr: any, idx: number) => {
+      if (!addr || typeof addr !== "object") return;
+      const isLocal = addr.siteLocal || addr.loopback;
+      list.push({
+        key: `地址 #${idx + 1}`,
+        value: String(addr.address || ""),
+        tag: {
+          text: isLocal ? "局域网/本地" : `IPv${addr.version || 4}`,
+          type: isLocal ? "info" : "success",
+        },
+      });
+      if (addr.reversedDns) {
+        list.push({ key: "反向解析", value: String(addr.reversedDns) });
+      }
+    });
+  } else {
+    if (obj.ip || obj.address) {
+      list.push({ key: "IP 地址", value: String(obj.ip || obj.address) });
+    }
+    if (obj.country || obj.city || obj.region) {
+      list.push({
+        key: "地理位置",
+        value: [obj.country, obj.region, obj.city].filter(Boolean).join(" · "),
+      });
+    }
+    if (obj.isp || obj.organization) {
+      list.push({ key: "运营商/组织", value: String(obj.isp || obj.organization) });
+    }
+  }
+  return list.length ? list : formatGenericKv(item);
+}
+
+function formatDnsInfo(item: unknown): { type: string; records: string[] }[] {
+  if (!item || typeof item !== "object") return [];
+  const obj = item as Record<string, unknown>;
+  const list: { type: string; records: string[] }[] = [];
+  for (const [key, val] of Object.entries(obj)) {
+    if (Array.isArray(val) && val.length) {
+      list.push({ type: key, records: val.map(String) });
+    }
+  }
+  return list;
+}
+
+function formatGenericKv(item: unknown): ReconKv[] {
+  if (!item || typeof item !== "object") return [];
+  const list: ReconKv[] = [];
+  for (const [k, v] of Object.entries(item as Record<string, unknown>)) {
+    if (typeof v === "object" && v !== null) {
+      list.push({ key: k, value: JSON.stringify(v) });
+    } else if (v !== undefined && v !== null && v !== "") {
+      list.push({ key: k, value: String(v) });
+    }
+  }
+  return list;
+}
+
 async function report() {
   await downloadProjectSummaryPdf();
 }
@@ -4000,6 +4191,8 @@ onUnmounted(() => {
   stopTaskFeed?.();
   stopIcpBrowserListener?.();
   clearTimeout(summaryRefreshTimer);
+  if (icpCopiedTimer) clearTimeout(icpCopiedTimer);
+  if (icpPreviewCopiedTimer) clearTimeout(icpPreviewCopiedTimer);
   if (overviewPollTimer) window.clearInterval(overviewPollTimer);
 });
 </script>
@@ -4097,8 +4290,15 @@ onUnmounted(() => {
               :value="t.id"
             />
           </el-select>
-          <el-button type="primary" @click="add">加入项目</el-button>
-          <el-button @click="openTargetCreate">新建授权目标</el-button>
+          <el-button
+            type="primary"
+            :disabled="projectLocked"
+            @click="add"
+            >加入项目</el-button
+          >
+          <el-button :disabled="projectLocked" @click="openTargetCreate"
+            >新建授权目标</el-button
+          >
           <el-button
             v-if="selectedLinkedTargets.length"
             type="danger"
@@ -4859,25 +5059,15 @@ onUnmounted(() => {
             }}</template></el-table-column
           >
           <el-table-column label="证据" width="110"
-            ><template #default="s"
-              ><el-popover trigger="click" width="420"
-                ><template #reference
-                  ><el-button
-                    class="row-action"
-                    size="small"
-                    :icon="View"
-                    >查看证据</el-button
-                  ></template
-                >
-                <pre class="json-view">{{
-                  JSON.stringify(
-                    parseDiscoveryJson(s.row.evidence) || [],
-                    null,
-                    2,
-                  )
-                }}</pre>
-              </el-popover></template
-            ></el-table-column
+            ><template #default="s">
+              <el-button
+                class="row-action"
+                size="small"
+                :icon="View"
+                @click="openDiscoveryEvidence(s.row)"
+                >查看证据</el-button
+              >
+            </template></el-table-column
           >
           <el-table-column label="安全检测建议" width="150"
             ><template #default="s">
@@ -5020,6 +5210,73 @@ onUnmounted(() => {
               >进入授权漏洞检测</el-button
             ></template
           >
+        </el-dialog>
+        <el-dialog
+          v-model="discoveryEvidenceVisible"
+          title="探测服务证据"
+          class="app-dialog app-dialog--md"
+          align-center
+          destroy-on-close
+        >
+          <div
+            v-if="discoveryEvidenceTarget"
+            class="discovery-evidence-context"
+          >
+            <div>
+              <small>授权目标</small>
+              <strong>{{
+                discoveryEvidenceTarget.targetValue ||
+                discoveryEvidenceTarget.url ||
+                taskTargetName(discoveryEvidenceTarget.targetId) ||
+                "—"
+              }}</strong>
+            </div>
+            <div
+              v-if="
+                discoveryFingerprintNames(discoveryEvidenceTarget).length
+              "
+            >
+              <small>识别指纹</small>
+              <div class="fingerprint-tags">
+                <el-tag
+                  v-for="name in discoveryFingerprintNames(
+                    discoveryEvidenceTarget,
+                  )"
+                  :key="name"
+                  size="small"
+                  effect="plain"
+                  >{{ name }}</el-tag
+                >
+              </div>
+            </div>
+            <div
+              v-if="
+                discoveryEvidenceTarget.waf ||
+                discoveryEvidenceTarget.wafName
+              "
+            >
+              <small>WAF 防护</small>
+              <strong>{{
+                typeof discoveryEvidenceTarget.waf === "string"
+                  ? discoveryEvidenceTarget.waf
+                  : discoveryEvidenceTarget.wafName || "未识别"
+              }}</strong>
+            </div>
+          </div>
+          <FluentCodeBlock
+            title="探测证据"
+            :content="discoveryEvidenceText(discoveryEvidenceTarget?.evidence)"
+            empty-text="暂无证据内容"
+            aria-label="探测证据"
+            wrap
+            :min-rows="6"
+            :max-rows="18"
+          />
+          <template #footer>
+            <el-button @click="discoveryEvidenceVisible = false"
+              >关闭</el-button
+            >
+          </template>
         </el-dialog>
       </el-tab-pane>
       <el-tab-pane label="信息收集" name="recon">
@@ -5310,9 +5567,15 @@ onUnmounted(() => {
             class="icp-captcha-result"
           />
           <div v-if="icpBrowserRaw" class="icp-browser-copy">
-            <el-button size="small" text type="primary" @click="copyIcpRaw">
-              复制原始数据
-            </el-button>
+            <el-tooltip
+              :content="icpCopied ? '已复制原始数据' : '复制原始数据'"
+              placement="top"
+              :show-after="200"
+            >
+              <el-button size="small" text type="primary" @click="copyIcpRaw">
+                {{ icpCopied ? "已复制" : "复制原始数据" }}
+              </el-button>
+            </el-tooltip>
           </div>
           <template #footer>
             <div class="app-dialog__footer-row">
@@ -5369,9 +5632,15 @@ onUnmounted(() => {
               class="icp-preview-raw"
             />
             <div v-if="icpPreviewRaw" class="icp-browser-copy">
-              <el-button size="small" text type="primary" @click="copyIcpPreviewRaw">
-                复制原始数据
-              </el-button>
+              <el-tooltip
+                :content="icpPreviewCopied ? '已复制原始数据' : '复制原始数据'"
+                placement="top"
+                :show-after="200"
+              >
+                <el-button size="small" text type="primary" @click="copyIcpPreviewRaw">
+                  {{ icpPreviewCopied ? "已复制" : "复制原始数据" }}
+                </el-button>
+              </el-tooltip>
             </div>
           </template>
         </el-dialog>
@@ -5438,33 +5707,204 @@ onUnmounted(() => {
                 class="recon-card"
               >
                 <header>
-                  <span>{{ group.label }}</span
-                  ><el-tag size="small" effect="plain">{{
-                    group.data.length
-                  }}</el-tag>
+                  <div class="recon-card-title">
+                    <span>{{ group.label }}</span>
+                    <el-tag size="small" effect="plain">{{
+                      group.data.length
+                    }}</el-tag>
+                  </div>
+                  <el-button
+                    v-if="group.data.length"
+                    size="small"
+                    text
+                    class="recon-view-toggle"
+                    @click="toggleGroupView(row.id || index, group.label)"
+                  >
+                    {{
+                      isRawMode(row.id || index, group.label)
+                        ? "美化视图"
+                        : "原始数据"
+                    }}
+                  </el-button>
                 </header>
-                <div v-if="group.data.length" class="card-list">
-                  <pre
+
+                <!-- 1. 原始数据模式：标准的 Fluent UI 只读代码/文本框 -->
+                <div
+                  v-if="isRawMode(row.id || index, group.label)"
+                  class="card-list card-list--raw"
+                >
+                  <el-input
                     v-for="(item, itemIndex) in group.data"
                     :key="itemIndex"
-                    tabindex="0"
-                    >{{ itemText(item) }}</pre>
+                    class="recon-textbox"
+                    type="textarea"
+                    :model-value="itemText(item)"
+                    :autosize="{ minRows: 2, maxRows: 12 }"
+                    readonly
+                    resize="none"
+                  />
                 </div>
+
+                <!-- 2. 美化视图模式（默认）：结构化清晰展示 -->
+                <div
+                  v-else-if="group.data.length"
+                  class="card-list card-list--formatted"
+                >
+                  <!-- DNS 记录专属美化 -->
+                  <template v-if="group.label === 'DNS 记录'">
+                    <div
+                      v-for="(item, itemIndex) in group.data"
+                      :key="itemIndex"
+                      class="recon-formatted-block"
+                    >
+                      <div
+                        v-for="dns in formatDnsInfo(item)"
+                        :key="dns.type"
+                        class="recon-dns-group"
+                      >
+                        <el-tag size="small" type="info" class="recon-dns-tag">{{
+                          dns.type
+                        }}</el-tag>
+                        <div class="recon-dns-records">
+                          <span
+                            v-for="(rec, rIdx) in dns.records"
+                            :key="rIdx"
+                            class="recon-item-text"
+                            >{{ rec }}</span
+                          >
+                        </div>
+                      </div>
+                      <span
+                        v-if="!formatDnsInfo(item).length"
+                        class="empty-text"
+                        >无有效解析记录</span
+                      >
+                    </div>
+                  </template>
+
+                  <!-- 服务器/网络专属美化 -->
+                  <template v-else-if="group.label === '服务器/网络'">
+                    <div
+                      v-for="(item, itemIndex) in group.data"
+                      :key="itemIndex"
+                      class="recon-formatted-block"
+                    >
+                      <div
+                        v-for="(kv, kvIdx) in formatHttpInfo(item)"
+                        :key="kvIdx"
+                        class="recon-kv-row"
+                      >
+                        <span class="recon-kv-key">{{ kv.key }}</span>
+                        <div class="recon-kv-val">
+                          <el-tag
+                            v-if="kv.tag"
+                            size="small"
+                            :type="kv.tag.type"
+                            >{{ kv.tag.text }}</el-tag
+                          >
+                          <span
+                            v-if="!kv.tag || kv.value !== kv.tag.text"
+                            class="recon-item-text"
+                            >{{ kv.value }}</span
+                          >
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+
+                  <!-- TLS 证书专属美化 -->
+                  <template v-else-if="group.label === 'TLS 证书'">
+                    <div
+                      v-for="(item, itemIndex) in group.data"
+                      :key="itemIndex"
+                      class="recon-formatted-block"
+                    >
+                      <div
+                        v-for="(kv, kvIdx) in formatTlsInfo(item)"
+                        :key="kvIdx"
+                        class="recon-kv-row"
+                      >
+                        <span class="recon-kv-key">{{ kv.key }}</span>
+                        <div class="recon-kv-val">
+                          <el-tag
+                            v-if="kv.tag"
+                            size="small"
+                            :type="kv.tag.type"
+                            >{{ kv.tag.text }}</el-tag
+                          >
+                          <span
+                            v-if="!kv.tag || kv.value !== kv.tag.text"
+                            class="recon-item-text"
+                            >{{ kv.value }}</span
+                          >
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+
+                  <!-- IP/归属地专属美化 -->
+                  <template v-else-if="group.label === 'IP/归属地'">
+                    <div
+                      v-for="(item, itemIndex) in group.data"
+                      :key="itemIndex"
+                      class="recon-formatted-block"
+                    >
+                      <div
+                        v-for="(kv, kvIdx) in formatIpInfo(item)"
+                        :key="kvIdx"
+                        class="recon-kv-row"
+                      >
+                        <span class="recon-kv-key">{{ kv.key }}</span>
+                        <div class="recon-kv-val">
+                          <el-tag
+                            v-if="kv.tag"
+                            size="small"
+                            :type="kv.tag.type"
+                            >{{ kv.tag.text }}</el-tag
+                          >
+                          <span
+                            v-if="!kv.tag || kv.value !== kv.tag.text"
+                            class="recon-item-text"
+                            >{{ kv.value }}</span
+                          >
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+
+                  <!-- 域名、已发现路径、普通列表等：清晰的单行文本列表 -->
+                  <template v-else>
+                    <div
+                      v-for="(item, itemIndex) in group.data"
+                      :key="itemIndex"
+                      class="recon-text-entry"
+                    >
+                      <span class="recon-item-text" :title="itemText(item)">{{
+                        itemText(item)
+                      }}</span>
+                    </div>
+                  </template>
+                </div>
+
                 <span v-else class="empty-text">未收集到</span>
               </article>
             </div>
             <div class="evidence-block">
               <h4>来源与证据</h4>
-              <pre
-                class="json-view evidence-json"
-                tabindex="0"
-                >{{
+              <el-input
+                class="recon-textbox evidence-textbox"
+                type="textarea"
+                :model-value="
                   JSON.stringify(
-                  parseValue(row.evidence || row.sourceEvidence),
-                  null,
-                  2,
-                )
-              }}</pre>
+                    parseValue(row.evidence || row.sourceEvidence),
+                    null,
+                    2,
+                  )
+                "
+                :autosize="{ minRows: 4, maxRows: 14 }"
+                readonly
+                resize="none"
+              />
             </div>
           </el-collapse-item>
         </el-collapse>
@@ -5954,7 +6394,7 @@ onUnmounted(() => {
               ><el-tag
                 size="small"
                 :type="securityActionRiskType(scope.row.riskLevel)"
-                >{{ scope.row.riskLevel }}</el-tag
+                >{{ securityActionRiskLabel(scope.row.riskLevel) }}</el-tag
               ></template
             ></el-table-column
           >
@@ -7120,7 +7560,7 @@ onUnmounted(() => {
               :type="
                 securityActionRiskType(selectedSecurityActionPreset.riskLevel)
               "
-              >{{ selectedSecurityActionPreset.riskLevel }}</el-tag
+              >{{ securityActionRiskLabel(selectedSecurityActionPreset.riskLevel) }}</el-tag
             ></el-form-item
           >
           <el-form-item label="安全属性"
@@ -7208,7 +7648,7 @@ onUnmounted(() => {
           ><el-tag
             size="small"
             :type="securityActionRiskType(securityActionDetail.riskLevel)"
-            >{{ securityActionDetail.riskLevel }}</el-tag
+            >{{ securityActionRiskLabel(securityActionDetail.riskLevel) }}</el-tag
           ></el-descriptions-item
         >
         <el-descriptions-item label="授权目标">{{
@@ -7241,6 +7681,7 @@ onUnmounted(() => {
             wrap
             :min-rows="3"
             :max-rows="10"
+            :copyable="false"
           />
         </el-descriptions-item>
         <el-descriptions-item label="回滚计划" :span="2">
@@ -7250,6 +7691,7 @@ onUnmounted(() => {
             wrap
             :min-rows="3"
             :max-rows="10"
+            :copyable="false"
           />
         </el-descriptions-item>
         <el-descriptions-item label="终止原因" :span="2">
@@ -7265,6 +7707,7 @@ onUnmounted(() => {
             wrap
             :min-rows="3"
             :max-rows="12"
+            :copyable="false"
           />
         </el-descriptions-item>
         <el-descriptions-item label="回滚证据" :span="2">
@@ -7274,6 +7717,7 @@ onUnmounted(() => {
             wrap
             :min-rows="3"
             :max-rows="12"
+            :copyable="false"
           />
         </el-descriptions-item>
       </el-descriptions>
@@ -7569,34 +8013,122 @@ onUnmounted(() => {
   color: var(--app-text);
   font-weight: var(--fluent-weight-semibold);
 }
+.recon-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.recon-view-toggle {
+  height: 24px !important;
+  min-height: 24px !important;
+  padding: 0 6px !important;
+  font-size: var(--fluent-caption1-size) !important;
+  color: var(--fluent-link-fg) !important;
+}
+.recon-view-toggle:hover {
+  background: var(--app-accent-soft) !important;
+}
 .card-list {
   display: flex;
   max-height: 220px;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   overflow: auto;
 }
-/* Fluent 文本框：1px 细描边 + 控件圆角 + 实色表面 + 底部强调条。
-   常态为中性灰线；点击/键盘聚焦(:focus)时才变为品牌色蓝条(accent 下划线)。 */
-.card-list pre {
-  margin: 0;
-  padding: 8px 10px 10px;
+/* 美化列表容器 */
+.card-list--formatted {
+  gap: 6px;
+}
+.recon-formatted-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.recon-kv-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: var(--fluent-radius-control, 4px);
+  background: var(--app-surface-soft);
+  font-size: var(--fluent-caption1-size);
+}
+.recon-kv-key {
+  flex: none;
+  color: var(--app-muted);
+  font-weight: var(--fluent-weight-medium, 500);
+}
+.recon-kv-val {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  text-align: right;
+  word-break: break-all;
+}
+.recon-dns-group {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: var(--fluent-radius-control, 4px);
+  background: var(--app-surface-soft);
+}
+.recon-dns-tag {
+  flex: none;
+  font-weight: var(--fluent-weight-semibold, 600);
+}
+.recon-dns-records {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  word-break: break-all;
+}
+.recon-text-entry {
+  padding: 5px 8px;
+  border-radius: var(--fluent-radius-control, 4px);
   border: var(--fluent-stroke-thin) solid var(--app-border);
-  border-radius: var(--fluent-radius-control);
   background: var(--app-surface-strong);
+  word-break: break-all;
+}
+.recon-item-text {
+  font-family: Consolas, "Cascadia Code", "Fira Code", monospace;
+  font-size: var(--fluent-caption1-size);
   color: var(--app-text);
-  box-shadow: inset 0 -1px 0 0 var(--app-border);
-  white-space: pre-wrap;
-  word-break: break-word;
-  font:
-    var(--fluent-caption1-size)/1.5 Consolas,
-    monospace;
+  line-height: 1.45;
+}
+/* Fluent UI 只读文本域：等宽代码字体、标准描边、浅色实色背景 */
+.recon-textbox {
+  width: 100%;
+}
+.recon-textbox :deep(.el-textarea__inner) {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px !important;
+  border: 0 !important;
+  border-radius: var(--fluent-radius-control, 4px) !important;
+  background: var(--app-surface-strong) !important;
+  color: var(--app-text) !important;
+  box-shadow:
+    inset 0 0 0 1px var(--app-border),
+    inset 0 -1px 0 0 var(--app-border) !important;
+  font-family: Consolas, "Cascadia Code", "Fira Code", monospace !important;
+  font-size: 12px !important;
+  line-height: 1.5 !important;
+  white-space: pre-wrap !important;
+  word-break: break-all !important;
   transition: box-shadow var(--fluent-fast);
 }
-.card-list pre:focus,
-.card-list pre:focus-visible {
-  outline: none;
-  box-shadow: inset 0 -2px 0 0 var(--app-accent);
+/* 点击/聚焦时底部出现 Fluent 标志性的 accent 品牌色蓝条 */
+.recon-textbox :deep(.el-textarea__inner:focus),
+.recon-textbox :deep(.el-textarea__inner:focus-visible) {
+  outline: none !important;
+  box-shadow:
+    inset 0 0 0 1px var(--app-border),
+    inset 0 -2px 0 0 var(--app-accent) !important;
 }
 .empty-text {
   color: var(--app-muted);
@@ -7610,21 +8142,6 @@ onUnmounted(() => {
   color: var(--app-text);
   font-size: var(--fluent-caption1-size);
   font-weight: var(--fluent-weight-semibold);
-}
-/* Fluent 文本框：证据 JSON 用同款描边、表面与底部强调条。
-   常态灰线，点击/聚焦(:focus)显示品牌色蓝条。 */
-.evidence-json {
-  padding: 12px 12px 14px;
-  border: var(--fluent-stroke-thin) solid var(--app-border);
-  border-radius: var(--fluent-radius-control);
-  background: var(--app-surface-strong);
-  box-shadow: inset 0 -1px 0 0 var(--app-border);
-  transition: box-shadow var(--fluent-fast);
-}
-.evidence-json:focus,
-.evidence-json:focus-visible {
-  outline: none;
-  box-shadow: inset 0 -2px 0 0 var(--app-accent);
 }
 .project-tab-toolbar {
   display: flex;
@@ -8341,6 +8858,32 @@ onUnmounted(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
+}
+.discovery-evidence-context {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid var(--app-border, var(--el-border-color));
+  border-radius: var(--fluent-radius-card, 8px);
+  background: var(--app-surface-soft, var(--el-fill-color-light));
+}
+.discovery-evidence-context > div {
+  min-width: 0;
+}
+.discovery-evidence-context small {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--app-muted, var(--el-text-color-secondary));
+  font-size: var(--type-micro, 11px);
+}
+.discovery-evidence-context strong {
+  display: block;
+  overflow: hidden;
+  color: var(--app-text, var(--el-text-color-primary));
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .poc-recommendation-context {
   display: grid;

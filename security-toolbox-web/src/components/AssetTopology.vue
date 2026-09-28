@@ -2415,12 +2415,21 @@ async function confirmRemoveNode(id: number, hostName?: string) {
   }
 }
 
+// 复制链接状态反馈
+const urlCopied = ref(false);
+let urlCopiedTimer: ReturnType<typeof setTimeout> | null = null;
+
 // 复制链接
 async function copyUrl(url?: string) {
   closeContextMenu();
   if (!url) return;
   try {
     await navigator.clipboard.writeText(url);
+    urlCopied.value = true;
+    if (urlCopiedTimer) clearTimeout(urlCopiedTimer);
+    urlCopiedTimer = setTimeout(() => {
+      urlCopied.value = false;
+    }, 1800);
     ElMessage.success("已复制资产 URL 到剪贴板");
   } catch {
     ElMessage.error("复制失败，请手动复制");
@@ -2507,12 +2516,21 @@ const parsedEvidence = computed<ParsedEvidence | null>(() => {
   return null;
 });
 
+// 原始证据复制状态反馈
+const evidenceCopied = ref(false);
+let evidenceCopiedTimer: ReturnType<typeof setTimeout> | null = null;
+
 async function copyEvidence() {
   const raw = selectedAsset.value?.evidence || selectedAsset.value?.technologies;
   if (!raw) return;
   const text = formatEvidence(raw);
   try {
     await navigator.clipboard.writeText(text);
+    evidenceCopied.value = true;
+    if (evidenceCopiedTimer) clearTimeout(evidenceCopiedTimer);
+    evidenceCopiedTimer = setTimeout(() => {
+      evidenceCopied.value = false;
+    }, 1800);
     ElMessage.success("已复制证据数据");
   } catch {
     ElMessage.error("复制失败，请手动复制");
@@ -2610,6 +2628,8 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (positionSaveTimer != null) clearTimeout(positionSaveTimer);
+  if (urlCopiedTimer != null) clearTimeout(urlCopiedTimer);
+  if (evidenceCopiedTimer != null) clearTimeout(evidenceCopiedTimer);
   if (resizeObserver) {
     resizeObserver.disconnect();
   }
@@ -2799,9 +2819,11 @@ onUnmounted(() => {
 
         <el-popover placement="bottom-end" :width="208" trigger="click" :teleported="!isFullscreen">
           <template #reference>
-            <button class="fluent-command-btn" title="视图选项" aria-label="视图选项">
-              <FluentIcon name="settings" />
-            </button>
+            <el-tooltip content="视图选项" placement="bottom" :show-after="200">
+              <button class="fluent-command-btn" aria-label="视图选项">
+                <FluentIcon name="settings" />
+              </button>
+            </el-tooltip>
           </template>
           <div class="view-options">
             <el-checkbox v-model="enableFlowAnim">连接动画</el-checkbox>
@@ -2817,14 +2839,15 @@ onUnmounted(() => {
         </el-popover>
 
         <!-- 全屏模式 -->
-        <button
-          class="fluent-command-btn"
-          :title="isFullscreen ? '退出全屏' : '全屏模式'"
-          :aria-label="isFullscreen ? '退出全屏' : '全屏模式'"
-          @click="toggleFullscreen"
-        >
-          <FluentIcon :name="isFullscreen ? 'fullscreen-exit' : 'fullscreen'" :size="14" />
-        </button>
+        <el-tooltip :content="isFullscreen ? '退出全屏' : '全屏模式'" placement="bottom" :show-after="200">
+          <button
+            class="fluent-command-btn"
+            :aria-label="isFullscreen ? '退出全屏' : '全屏模式'"
+            @click="toggleFullscreen"
+          >
+            <FluentIcon :name="isFullscreen ? 'fullscreen-exit' : 'fullscreen'" :size="14" />
+          </button>
+        </el-tooltip>
       </div>
     </header>
 
@@ -3419,21 +3442,27 @@ onUnmounted(() => {
 
       <div v-if="assets.length" class="canvas-controls" @mousedown.stop @dblclick.stop @wheel.stop>
         <div class="zoom-controls">
-          <button class="fluent-command-btn" title="缩小" aria-label="缩小" @click="zoomOut">
-            <FluentIcon name="subtract" />
-          </button>
+          <el-tooltip content="缩小" placement="top" :show-after="200">
+            <button class="fluent-command-btn" aria-label="缩小" @click="zoomOut">
+              <FluentIcon name="subtract" />
+            </button>
+          </el-tooltip>
           <span class="zoom-level">{{ Math.round(zoom * 100) }}%</span>
-          <button class="fluent-command-btn" title="放大" aria-label="放大" @click="zoomIn">
-            <FluentIcon name="add" />
-          </button>
+          <el-tooltip content="放大" placement="top" :show-after="200">
+            <button class="fluent-command-btn" aria-label="放大" @click="zoomIn">
+              <FluentIcon name="add" />
+            </button>
+          </el-tooltip>
           <span class="divider-v" />
-          <button class="fluent-command-btn" title="适应画布" aria-label="适应画布" @click="fitView">
-            <FluentIcon name="fit" />
-          </button>
+          <el-tooltip content="适应画布" placement="top" :show-after="200">
+            <button class="fluent-command-btn" aria-label="适应画布" @click="fitView">
+              <FluentIcon name="fit" />
+            </button>
+          </el-tooltip>
         </div>
       </div>
 
-      <div v-if="assets.length" class="topology-canvas-help" @mousedown.stop @dblclick.stop @wheel.stop>
+      <div v-if="assets.length" class="topology-canvas-help" :class="{ 'has-minimap': showMinimap }" @mousedown.stop @dblclick.stop @wheel.stop>
         <span>{{ pointerModeHint }}</span>
       </div>
 
@@ -3441,7 +3470,9 @@ onUnmounted(() => {
       <div v-if="showMinimap && assets.length > 0" class="topology-minimap" @dblclick.stop @wheel.stop>
         <div class="minimap-header">
           <span>缩略图</span>
-          <button class="minimap-close" title="隐藏缩略图" aria-label="隐藏缩略图" @click="showMinimap = false"><FluentIcon name="dismiss" /></button>
+          <el-tooltip content="隐藏缩略图" placement="top" :show-after="200">
+            <button class="minimap-close" aria-label="隐藏缩略图" @click="showMinimap = false"><FluentIcon name="dismiss" /></button>
+          </el-tooltip>
         </div>
         <div class="minimap-body">
           <svg
@@ -3551,15 +3582,19 @@ onUnmounted(() => {
       size="min(420px, 100vw)"
       direction="rtl"
       :append-to-body="!isFullscreen"
+      class="asset-detail-drawer"
       custom-class="asset-detail-drawer"
     >
       <div v-if="selectedAsset" class="drawer-body">
         <!-- 资产头部概览卡片 -->
         <div class="asset-hero-card fluent-hero">
-          <div class="hero-icon-box">
+          <div
+            class="hero-icon-box"
+            :class="`is-${parseHost(selectedAsset.url).protocol}`"
+          >
             <FluentIcon
-              :name="parseHost(selectedAsset.url).protocol === 'https' ? 'shield-checkmark' : 'globe'"
-              :size="26"
+              :name="parseHost(selectedAsset.url).protocol === 'https' ? 'lock' : 'globe'"
+              :size="28"
             />
           </div>
           <div class="hero-info">
@@ -3679,15 +3714,22 @@ onUnmounted(() => {
               >
                 <span class="url-text">{{ selectedAsset.url || '-' }}</span>
               </el-tooltip>
-              <button
-                type="button"
-                class="url-copy-btn"
-                title="复制完整 URL"
-                @click="copyUrl(selectedAsset.url)"
+              <el-tooltip
+                :content="urlCopied ? '已复制到剪贴板' : '复制完整 URL'"
+                placement="top"
+                :show-after="200"
               >
-                <FluentIcon name="copy" :size="12" />
-                <span>复制</span>
-              </button>
+                <button
+                  type="button"
+                  class="url-copy-btn"
+                  :class="{ 'is-copied': urlCopied }"
+                  aria-label="复制完整 URL"
+                  @click="copyUrl(selectedAsset.url)"
+                >
+                  <FluentIcon :name="urlCopied ? 'checkmark' : 'copy'" :size="12" />
+                  <span>{{ urlCopied ? '已复制' : '复制' }}</span>
+                </button>
+              </el-tooltip>
             </div>
           </div>
 
@@ -3748,16 +3790,22 @@ onUnmounted(() => {
                 <FluentIcon name="document" :size="13" />
                 <span>原始数据 (JSON)</span>
               </span>
-              <button
-                type="button"
-                class="fluent-subtle-btn"
-                aria-label="复制原始 JSON"
-                data-fluent-tooltip="复制原始 JSON"
-                @click="copyEvidence"
+              <el-tooltip
+                :content="evidenceCopied ? '已复制原始数据' : '复制原始 JSON'"
+                placement="top"
+                :show-after="200"
               >
-                <FluentIcon name="copy" :size="12" />
-                <span>复制</span>
-              </button>
+                <button
+                  type="button"
+                  class="fluent-subtle-btn"
+                  :class="{ 'is-copied': evidenceCopied }"
+                  aria-label="复制原始 JSON"
+                  @click="copyEvidence"
+                >
+                  <FluentIcon :name="evidenceCopied ? 'checkmark' : 'copy'" :size="12" />
+                  <span>{{ evidenceCopied ? '已复制' : '复制' }}</span>
+                </button>
+              </el-tooltip>
             </div>
             <el-input
               :model-value="formatEvidence(selectedAsset.evidence || selectedAsset.technologies)"
@@ -4080,6 +4128,11 @@ html.dark .zoom-controls,
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 缩略图显示时，提示文案左移避免被遮挡 */
+.topology-canvas-help.has-minimap {
+  right: 192px;
 }
 
 .zoom-level {
@@ -4939,7 +4992,72 @@ html.dark .zoom-controls .divider-v,
   margin: 4px 0;
 }
 
-/* Fluent Drawer 样式 */
+/* Fluent Drawer 样式与滚动条规范 */
+:global(.asset-detail-drawer .el-drawer__body) {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  scrollbar-width: thin !important;
+  scrollbar-color: rgba(100, 116, 139, 0.35) transparent !important;
+  scrollbar-gutter: stable;
+  scroll-behavior: smooth;
+  padding-right: 14px;
+}
+
+:global(.asset-detail-drawer .el-drawer__body::-webkit-scrollbar),
+:global(.asset-detail-drawer .el-drawer__body::-webkit-scrollbar:vertical) {
+  display: block !important;
+  width: 6px !important;
+}
+
+:global(.asset-detail-drawer .el-drawer__body:hover::-webkit-scrollbar),
+:global(.asset-detail-drawer .el-drawer__body:hover::-webkit-scrollbar:vertical) {
+  width: 8px !important;
+}
+
+:global(.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-track),
+:global(.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-track:vertical) {
+  display: block !important;
+  background: transparent !important;
+}
+
+:global(.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb),
+:global(.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:vertical) {
+  display: block !important;
+  background-color: rgba(100, 116, 139, 0.32) !important;
+  border-radius: 9999px !important;
+  border: 1px solid transparent !important;
+  background-clip: padding-box !important;
+  transition: background-color 0.15s ease, width 0.15s ease !important;
+}
+
+:global(.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:hover),
+:global(.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:vertical:hover) {
+  background-color: rgba(100, 116, 139, 0.55) !important;
+}
+
+:global(.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:active),
+:global(.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:vertical:active) {
+  background-color: rgba(100, 116, 139, 0.75) !important;
+}
+
+:global(:root[data-system-theme="dark"] .asset-detail-drawer .el-drawer__body),
+:global(html.dark .asset-detail-drawer .el-drawer__body),
+:global([data-theme="dark"] .asset-detail-drawer .el-drawer__body) {
+  scrollbar-color: rgba(255, 255, 255, 0.35) transparent !important;
+}
+
+:global(:root[data-system-theme="dark"] .asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb),
+:global(html.dark .asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb),
+:global([data-theme="dark"] .asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb) {
+  background-color: rgba(255, 255, 255, 0.32) !important;
+}
+
+:global(:root[data-system-theme="dark"] .asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:hover),
+:global(html.dark .asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:hover),
+:global([data-theme="dark"] .asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:hover) {
+  background-color: rgba(255, 255, 255, 0.55) !important;
+}
+
 .drawer-body {
   display: flex;
   flex-direction: column;
@@ -4959,6 +5077,7 @@ html.dark .zoom-controls .divider-v,
 }
 
 .hero-icon-box {
+  --hero-icon-size: 28px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4968,6 +5087,26 @@ html.dark .zoom-controls .divider-v,
   background: var(--app-accent, #0078d4);
   color: #ffffff;
   flex-shrink: 0;
+  transition: all var(--fluent-fast, 0.15s ease);
+}
+
+.hero-icon-box .fluent-system-icon,
+.hero-icon-box .fluent-system-icon svg {
+  width: var(--hero-icon-size);
+  height: var(--hero-icon-size);
+  font-size: var(--hero-icon-size);
+}
+
+.hero-icon-box.is-https {
+  background: color-mix(in srgb, #10b981 16%, var(--app-surface, #ffffff));
+  border: 1px solid color-mix(in srgb, #10b981 32%, var(--app-border, #e2e8f0));
+  color: #10b981;
+}
+
+.hero-icon-box.is-http {
+  background: color-mix(in srgb, #0078d4 16%, var(--app-surface, #ffffff));
+  border: 1px solid color-mix(in srgb, #0078d4 32%, var(--app-border, #e2e8f0));
+  color: #0284c7;
 }
 
 .hero-info {
@@ -5078,6 +5217,17 @@ html.dark .zoom-controls .divider-v,
   color: var(--app-accent-dark, #005a9e);
 }
 
+.url-copy-btn:active {
+  transform: scale(0.96);
+  background: var(--app-accent-soft, #e0f2fe);
+}
+
+.url-copy-btn.is-copied {
+  color: #107c41 !important;
+  background: #dff6dd !important;
+  font-weight: var(--fluent-weight-medium, 500);
+}
+
 /* Fluent 2 结构化指纹匹配卡片 */
 .evidence-entity-list {
   display: flex;
@@ -5185,6 +5335,16 @@ html.dark .zoom-controls .divider-v,
   background: var(--app-surface-soft, #f1f5f9);
 }
 
+.fluent-subtle-btn:active {
+  transform: scale(0.96);
+}
+
+.fluent-subtle-btn.is-copied {
+  color: #107c41 !important;
+  background: #dff6dd !important;
+  font-weight: var(--fluent-weight-medium, 500);
+}
+
 .raw-data-textarea :deep(.el-textarea__inner) {
   font-family: var(--font-mono, "Cascadia Code", "Consolas", monospace);
   font-size: 11.5px;
@@ -5250,9 +5410,16 @@ html.dark .zoom-controls .divider-v,
 }
 
 .fluent-action-btn.fluent-primary-btn:hover,
+:deep(.fluent-action-btn.fluent-primary-btn:hover) {
+  background-color: color-mix(in srgb, var(--app-accent, #0078d4) 88%, #000000) !important;
+  border-color: color-mix(in srgb, var(--app-accent, #0078d4) 88%, #000000) !important;
+  color: #ffffff !important;
+  text-decoration: none !important;
+  box-shadow: none !important;
+}
+
 .fluent-action-btn.fluent-primary-btn:focus,
 .fluent-action-btn.fluent-primary-btn:active,
-:deep(.fluent-action-btn.fluent-primary-btn:hover),
 :deep(.fluent-action-btn.fluent-primary-btn:focus),
 :deep(.fluent-action-btn.fluent-primary-btn:active) {
   background-color: var(--app-accent, #0078d4) !important;
@@ -5306,6 +5473,10 @@ html.dark .zoom-controls .divider-v,
   .topology-minimap {
     bottom: 64px;
     right: 12px;
+  }
+
+  .topology-canvas-help.has-minimap {
+    right: 16px;
   }
 }
 

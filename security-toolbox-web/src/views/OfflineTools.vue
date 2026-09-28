@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, markRaw, ref } from "vue";
+import { computed, markRaw, ref, onBeforeUnmount } from "vue";
 import "../offline-tools.css";
 import "../network-offline-tools.css";
 import { ElMessage } from "element-plus";
 import { formatDateTime } from "../utils/dateTime";
 import {
+  Check,
   Clock,
   Coin,
   Compass,
@@ -318,7 +319,14 @@ const filteredGroups = computed(() => {
     .filter((group) => group.tools.length);
 });
 
-async function copyText(value: string) {
+const copiedHash = ref("");
+let copiedHashTimer: ReturnType<typeof setTimeout> | null = null;
+
+onBeforeUnmount(() => {
+  if (copiedHashTimer) clearTimeout(copiedHashTimer);
+});
+
+async function copyText(value: string, name?: string) {
   if (!value) return ElMessage.warning("暂无可复制内容");
   try {
     await navigator.clipboard.writeText(value);
@@ -331,6 +339,13 @@ async function copyText(value: string) {
     textarea.select();
     document.execCommand("copy");
     textarea.remove();
+  }
+  if (name) {
+    copiedHash.value = name;
+    if (copiedHashTimer) clearTimeout(copiedHashTimer);
+    copiedHashTimer = setTimeout(() => {
+      copiedHash.value = "";
+    }, 1800);
   }
   ElMessage.success("已复制到剪贴板");
 }
@@ -1014,15 +1029,23 @@ function runText() {
           <div v-if="Object.keys(hashResults).length" class="hash-results">
             <article v-for="(value, name) in hashResults" :key="name">
               <header>
-                <strong>{{ name }}</strong
-                ><button
-                  type="button"
-                  class="offline-copy-action"
-                  aria-label="复制摘要"
-                  @click="copyText(value)"
+                <strong>{{ name }}</strong>
+                <el-tooltip
+                  :content="copiedHash === String(name) ? `已复制 ${name} 摘要` : `复制 ${name} 摘要`"
+                  placement="top"
+                  :show-after="200"
                 >
-                  <el-icon><CopyDocument /></el-icon>复制
-                </button>
+                  <button
+                    type="button"
+                    class="offline-copy-action"
+                    :class="{ 'is-copied': copiedHash === String(name) }"
+                    :aria-label="`复制 ${name} 摘要`"
+                    @click="copyText(value, String(name))"
+                  >
+                    <el-icon><component :is="copiedHash === String(name) ? Check : CopyDocument" /></el-icon>
+                    <span>{{ copiedHash === String(name) ? "已复制" : "复制" }}</span>
+                  </button>
+                </el-tooltip>
               </header>
               <code>{{ value }}</code>
             </article>

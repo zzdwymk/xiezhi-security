@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
@@ -99,6 +99,8 @@ async function changeLoginPassword() {
     pwdForm.current = "";
     pwdForm.next = "";
     pwdForm.confirm = "";
+    auth.logout();
+    router.replace("/login");
   } catch (error: any) {
     ElMessage.error(errorText(error, "修改登录密码失败"));
   } finally {
@@ -365,15 +367,31 @@ async function resetDesktopLoginRandom() {
 function closePwdReset() {
   pwdResetCreds.value = null;
   pwdVisible.value = false;
+  auth.logout();
+  router.replace("/login");
 }
+
+const copiedPwdField = ref<"username" | "password" | null>(null);
+let copiedPwdTimer: ReturnType<typeof setTimeout> | null = null;
+
+onBeforeUnmount(() => {
+  if (copiedPwdTimer) clearTimeout(copiedPwdTimer);
+});
 
 function copyPwdResetField(field: "username" | "password") {
   const value = pwdResetCreds.value?.[field];
   if (!value) return;
   navigator.clipboard
     ?.writeText(value)
-    .catch(() => undefined);
-  ElMessage.success("已复制");
+    .then(() => {
+      copiedPwdField.value = field;
+      if (copiedPwdTimer) clearTimeout(copiedPwdTimer);
+      copiedPwdTimer = setTimeout(() => {
+        copiedPwdField.value = null;
+      }, 1800);
+      ElMessage.success(`已复制${field === "username" ? "用户名" : "密码"}`);
+    })
+    .catch(() => ElMessage.error("复制失败，请手动选取复制"));
 }
 
 function errorText(error: unknown, fallback: string) {
@@ -1253,7 +1271,7 @@ watch(
             <span class="settings-row-copy">
 <strong>修改登录密码</strong>
               <small
-                >修改、绑定或重置登录密码（忘记密码可经 Windows Hello 验证后重置）</small
+                >修改、绑定或重置登录密码</small
               >
             </span>
             <el-icon class="settings-row-chevron"><ArrowRight /></el-icon>
@@ -1514,7 +1532,7 @@ watch(
           class="pwd-forgot-row"
         >
           <el-button link type="primary" :loading="resetResetting" @click="resetDesktopLoginRandom"
-            >生成一个随机强密码（经 Windows Hello 验证）</el-button
+            >生成一个随机强密码</el-button
           >
         </div>
       </el-form>
@@ -1530,16 +1548,28 @@ watch(
         <div class="reset-creds-field">
           <span class="reset-creds-label">用户名</span>
           <code class="reset-creds-value">{{ pwdResetCreds.username }}</code>
-          <el-button link type="primary" @click="copyPwdResetField('username')"
-            >复制</el-button
+          <el-tooltip
+            :content="copiedPwdField === 'username' ? '已复制用户名' : '复制用户名'"
+            placement="top"
+            :show-after="200"
           >
+            <el-button link type="primary" @click="copyPwdResetField('username')">
+              {{ copiedPwdField === 'username' ? '已复制' : '复制' }}
+            </el-button>
+          </el-tooltip>
         </div>
         <div class="reset-creds-field">
           <span class="reset-creds-label">密码</span>
           <code class="reset-creds-value">{{ pwdResetCreds.password }}</code>
-          <el-button link type="primary" @click="copyPwdResetField('password')"
-            >复制</el-button
+          <el-tooltip
+            :content="copiedPwdField === 'password' ? '已复制密码' : '复制密码'"
+            placement="top"
+            :show-after="200"
           >
+            <el-button link type="primary" @click="copyPwdResetField('password')">
+              {{ copiedPwdField === 'password' ? '已复制' : '复制' }}
+            </el-button>
+          </el-tooltip>
         </div>
         <p class="reset-creds-hint">
           登录密码已更换为新的随机强密码，仅本次显示。请立即复制保存，或在进入后到「修改登录密码」改成自己记得的密码。

@@ -3632,3 +3632,87 @@ html[data-system-theme="dark"] .el-loading-spinner .el-loading-text,
     stroke-dashoffset: -124px;
   }
 }
+
+/* === Fluent UI 2 Scrollbar for Drawer & Detail Panels ====================
+ * Provide elegant, subtle Windows 11 style scrollbars for flyout drawers
+ * so users can naturally navigate long content without chrome friction.
+ * ========================================================================= */
+.asset-detail-drawer .el-drawer__body,
+.el-drawer.asset-detail-drawer .el-drawer__body {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  scrollbar-width: thin !important;
+  scrollbar-color: rgba(100, 116, 139, 0.35) transparent !important;
+  scrollbar-gutter: stable;
+  scroll-behavior: smooth;
+}
+
+.asset-detail-drawer .el-drawer__body::-webkit-scrollbar,
+.asset-detail-drawer .el-drawer__body::-webkit-scrollbar:vertical,
+.el-drawer.asset-detail-drawer .el-drawer__body::-webkit-scrollbar,
+.el-drawer.asset-detail-drawer .el-drawer__body::-webkit-scrollbar:vertical {
+  display: block !important;
+  width: 6px !important;
+}
+
+.asset-detail-drawer .el-drawer__body:hover::-webkit-scrollbar,
+.asset-detail-drawer .el-drawer__body:hover::-webkit-scrollbar:vertical,
+.el-drawer.asset-detail-drawer .el-drawer__body:hover::-webkit-scrollbar,
+.el-drawer.asset-detail-drawer .el-drawer__body:hover::-webkit-scrollbar:vertical {
+  width: 8px !important;
+}
+
+.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-track,
+.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-track:vertical,
+.el-drawer.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-track,
+.el-drawer.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-track:vertical {
+  display: block !important;
+  background: transparent !important;
+}
+
+.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb,
+.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:vertical,
+.el-drawer.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb,
+.el-drawer.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:vertical {
+  display: block !important;
+  background-color: rgba(100, 116, 139, 0.32) !important;
+  border-radius: 9999px !important;
+  border: 1px solid transparent !important;
+  background-clip: padding-box !important;
+  transition: background-color 0.15s ease, width 0.15s ease !important;
+}
+
+.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:hover,
+.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:vertical:hover,
+.el-drawer.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:hover,
+.el-drawer.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:vertical:hover {
+  background-color: rgba(100, 116, 139, 0.55) !important;
+}
+
+.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:active,
+.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:vertical:active,
+.el-drawer.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:active,
+.el-drawer.asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:vertical:active {
+  background-color: rgba(100, 116, 139, 0.75) !important;
+}
+
+:root[data-system-theme="dark"] .asset-detail-drawer .el-drawer__body,
+html.dark .asset-detail-drawer .el-drawer__body,
+[data-theme="dark"] .asset-detail-drawer .el-drawer__body {
+  scrollbar-color: rgba(255, 255, 255, 0.35) transparent !important;
+}
+
+:root[data-system-theme="dark"] .asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb,
+:root[data-system-theme="dark"] .asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:vertical,
+html.dark .asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb,
+html.dark .asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:vertical,
+[data-theme="dark"] .asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb,
+[data-theme="dark"] .asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:vertical {
+  background-color: rgba(255, 255, 255, 0.32) !important;
+}
+
+:root[data-system-theme="dark"] .asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:hover,
+html.dark .asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:hover,
+[data-theme="dark"] .asset-detail-drawer .el-drawer__body::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.55) !important;
+}

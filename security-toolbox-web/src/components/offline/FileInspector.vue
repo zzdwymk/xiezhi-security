@@ -1,7 +1,7 @@
 ﻿<script setup lang="ts">
-import { ref } from "vue";
+import { ref, onBeforeUnmount } from "vue";
 import { ElMessage } from "element-plus";
-import { CopyDocument, UploadFilled } from "../fluentIcons";
+import { Check, CopyDocument, UploadFilled } from "../fluentIcons";
 import { bytesToHex, md5Bytes } from "../../utils/offlineCrypto";
 import { toErrorMessage } from "../../utils/errorMessage";
 
@@ -122,9 +122,23 @@ function onDrop(event: DragEvent) {
   if (file) analyzeFile(file);
 }
 
-async function copy(value: string) {
+const copiedHash = ref("");
+let copiedHashTimer: ReturnType<typeof setTimeout> | null = null;
+
+onBeforeUnmount(() => {
+  if (copiedHashTimer) clearTimeout(copiedHashTimer);
+});
+
+async function copy(value: string, name?: string) {
   try {
     await navigator.clipboard.writeText(value);
+    if (name) {
+      copiedHash.value = name;
+      if (copiedHashTimer) clearTimeout(copiedHashTimer);
+      copiedHashTimer = setTimeout(() => {
+        copiedHash.value = "";
+      }, 1800);
+    }
     ElMessage.success("已复制");
   } catch (error) {
     ElMessage.error(toErrorMessage(error, "复制失败"));
@@ -184,10 +198,22 @@ function formatSize(value: number) {
       <div class="hash-results file-hash-results">
         <article v-for="(value, name) in result.hashes" :key="name">
           <header>
-            <strong>{{ name }}</strong
-            ><button type="button" @click="copy(value)">
-              <el-icon><CopyDocument /></el-icon>复制
-            </button>
+            <strong>{{ name }}</strong>
+            <el-tooltip
+              :content="copiedHash === name ? `已复制 ${name} 摘要` : `复制 ${name} 摘要`"
+              placement="top"
+              :show-after="200"
+            >
+              <button
+                type="button"
+                :class="{ 'is-copied': copiedHash === name }"
+                :aria-label="`复制 ${name} 摘要`"
+                @click="copy(value, name)"
+              >
+                <el-icon><component :is="copiedHash === name ? Check : CopyDocument" /></el-icon>
+                <span>{{ copiedHash === name ? "已复制" : "复制" }}</span>
+              </button>
+            </el-tooltip>
           </header>
           <code>{{ value }}</code>
         </article>

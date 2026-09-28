@@ -3,6 +3,7 @@ package com.bachelor.toolbox.target;
 import com.bachelor.toolbox.audit.AuditService;
 import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.common.PageRequests;
+import com.bachelor.toolbox.project.AssessmentProject;
 import com.bachelor.toolbox.project.AssessmentProjectRepository;
 import com.bachelor.toolbox.project.ProjectTarget;
 import com.bachelor.toolbox.project.ProjectTargetRepository;
@@ -121,6 +122,7 @@ public class TargetService {
   public AuthorizedTarget create(TargetRequest request) {
     if (request.projectId() == null) throw new ApiException("请先创建安全评估项目，并在项目下登记授权目标");
     authorization.requireManage(request.projectId());
+    validateProjectAssignable(request.projectId());
     AuthorizedTarget target = new AuthorizedTarget();
     apply(target, request);
     AuthorizedTarget saved = repository.save(target);
@@ -132,6 +134,17 @@ public class TargetService {
         "project=" + request.projectId() + ";" + saved.getTargetValue(),
         "SUCCESS");
     return saved;
+  }
+
+  private void validateProjectAssignable(Long projectId) {
+    AssessmentProject project =
+        projects
+            .findById(projectId)
+            .orElseThrow(() -> new ApiException("评估项目不存在"));
+    String status = project.getStatus();
+    if ("ARCHIVED".equals(status) || "COMPLETED".equals(status)) {
+      throw new ApiException("项目已归档或已完成，无法新增授权目标");
+    }
   }
 
   public AuthorizedTarget update(Long id, TargetRequest request) {

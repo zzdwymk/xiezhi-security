@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, onBeforeUnmount } from "vue";
 import { ElMessage } from "element-plus";
-import { CopyDocument } from "../fluentIcons";
+import { Check, CopyDocument } from "../fluentIcons";
 import {
   defangIoc,
   extractIocs,
@@ -51,9 +51,23 @@ function refangInput() {
   result.value = undefined;
 }
 
-async function copy(value: string) {
+const copiedKey = ref("");
+let copiedKeyTimer: ReturnType<typeof setTimeout> | null = null;
+
+onBeforeUnmount(() => {
+  if (copiedKeyTimer) clearTimeout(copiedKeyTimer);
+});
+
+async function copy(value: string, key?: string) {
   if (!value) return;
   await navigator.clipboard.writeText(value);
+  if (key) {
+    copiedKey.value = key;
+    if (copiedKeyTimer) clearTimeout(copiedKeyTimer);
+    copiedKeyTimer = setTimeout(() => {
+      copiedKey.value = "";
+    }, 1800);
+  }
   ElMessage.success("已复制");
 }
 </script>
@@ -85,11 +99,22 @@ async function copy(value: string) {
     <div v-if="sections.length" class="ioc-result-grid">
       <article v-for="section in sections" :key="section.key">
         <header>
-          <strong>{{ section.label }}</strong
-          ><span>{{ section.values.length }}</span
-          ><button type="button" @click="copy(displayValues(section.values))">
-            <el-icon><CopyDocument /></el-icon>
-          </button>
+          <strong>{{ section.label }}</strong>
+          <span>{{ section.values.length }}</span>
+          <el-tooltip
+            :content="copiedKey === section.key ? `已复制 ${section.label} 指标` : `复制 ${section.label} 指标`"
+            placement="top"
+            :show-after="200"
+          >
+            <button
+              type="button"
+              :class="{ 'is-copied': copiedKey === section.key }"
+              :aria-label="`复制 ${section.label} 指标`"
+              @click="copy(displayValues(section.values), section.key)"
+            >
+              <el-icon><component :is="copiedKey === section.key ? Check : CopyDocument" /></el-icon>
+            </button>
+          </el-tooltip>
         </header>
         <el-input :value="displayValues(section.values)" type="textarea" :autosize="{ minRows: 3 }" readonly />
       </article>
