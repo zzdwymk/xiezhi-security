@@ -3009,6 +3009,10 @@ async function forceRefreshFingerprintRules() {
 
 async function deleteFingerprintRule(rule: FingerprintRule) {
   if (fingerprintRuleDeleting.value) return;
+  if (fingerprintRuleSaving.value) {
+    ElMessage.warning("正在保存规则，请稍后再试");
+    return;
+  }
   const confirmed = await ElMessageBox.confirm(
     `确认删除指纹规则「${rule.id}」？此操作无法撤销。`,
     "删除指纹规则",
@@ -4698,11 +4702,6 @@ onUnmounted(() => {
                         <el-button
                           size="small"
                           text
-                          :loading="
-                            fingerprintRuleDeleting === rule.id
-                              ? false
-                              : undefined
-                          "
                           @click="openEditFingerprintRule(rule)"
                         >
                           <el-icon><EditPen /></el-icon>
@@ -4713,11 +4712,6 @@ onUnmounted(() => {
                           text
                           type="danger"
                           :loading="fingerprintRuleDeleting === rule.id"
-                          :disabled="
-                            fingerprintRuleSaving ||
-                            (fingerprintRuleDeleting &&
-                              fingerprintRuleDeleting !== rule.id)
-                          "
                           @click="deleteFingerprintRule(rule)"
                         >
                           <el-icon><Delete /></el-icon>
@@ -5453,6 +5447,7 @@ onUnmounted(() => {
                   <pre
                     v-for="(item, itemIndex) in group.data"
                     :key="itemIndex"
+                    tabindex="0"
                     >{{ itemText(item) }}</pre>
                 </div>
                 <span v-else class="empty-text">未收集到</span>
@@ -5460,8 +5455,11 @@ onUnmounted(() => {
             </div>
             <div class="evidence-block">
               <h4>来源与证据</h4>
-              <pre class="json-view evidence-json">{{
-                JSON.stringify(
+              <pre
+                class="json-view evidence-json"
+                tabindex="0"
+                >{{
+                  JSON.stringify(
                   parseValue(row.evidence || row.sourceEvidence),
                   null,
                   2,
@@ -7578,8 +7576,8 @@ onUnmounted(() => {
   gap: 6px;
   overflow: auto;
 }
-/* Fluent 文本框：1px 细描边 + 控件圆角 + 实色表面 + 底部品牌色高亮条
-   （选中强调的底部蓝线，对齐 Fluent TextField 的 accent 下划线） */
+/* Fluent 文本框：1px 细描边 + 控件圆角 + 实色表面 + 底部强调条。
+   常态为中性灰线；点击/键盘聚焦(:focus)时才变为品牌色蓝条(accent 下划线)。 */
 .card-list pre {
   margin: 0;
   padding: 8px 10px 10px;
@@ -7587,12 +7585,18 @@ onUnmounted(() => {
   border-radius: var(--fluent-radius-control);
   background: var(--app-surface-strong);
   color: var(--app-text);
-  box-shadow: inset 0 -2px 0 0 var(--app-accent);
+  box-shadow: inset 0 -1px 0 0 var(--app-border);
   white-space: pre-wrap;
   word-break: break-word;
   font:
     var(--fluent-caption1-size)/1.5 Consolas,
     monospace;
+  transition: box-shadow var(--fluent-fast);
+}
+.card-list pre:focus,
+.card-list pre:focus-visible {
+  outline: none;
+  box-shadow: inset 0 -2px 0 0 var(--app-accent);
 }
 .empty-text {
   color: var(--app-muted);
@@ -7607,12 +7611,19 @@ onUnmounted(() => {
   font-size: var(--fluent-caption1-size);
   font-weight: var(--fluent-weight-semibold);
 }
-/* Fluent 文本框：证据 JSON 采用同款描边、表面与底部品牌色高亮条 */
+/* Fluent 文本框：证据 JSON 用同款描边、表面与底部强调条。
+   常态灰线，点击/聚焦(:focus)显示品牌色蓝条。 */
 .evidence-json {
   padding: 12px 12px 14px;
   border: var(--fluent-stroke-thin) solid var(--app-border);
   border-radius: var(--fluent-radius-control);
   background: var(--app-surface-strong);
+  box-shadow: inset 0 -1px 0 0 var(--app-border);
+  transition: box-shadow var(--fluent-fast);
+}
+.evidence-json:focus,
+.evidence-json:focus-visible {
+  outline: none;
   box-shadow: inset 0 -2px 0 0 var(--app-accent);
 }
 .project-tab-toolbar {
