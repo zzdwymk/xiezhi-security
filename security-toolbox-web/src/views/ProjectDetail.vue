@@ -40,7 +40,7 @@ import {
   formatApprovalAction,
   auditResultTagType,
 } from "../utils/auditFormat";
-import { aiToolLabel, severityLabel } from "../utils/aiPresentation";
+import { actionRiskLabel, actionStepLabel, findingTitleLabel, aiToolLabel, severityLabel } from "../utils/aiPresentation";
 import {
   taskProgressIndeterminate,
   taskProgressPercentage,
@@ -80,6 +80,10 @@ import {
 } from "../utils/fingerprintRule";
 import { useClientPagination } from "../composables/useClientPagination";
 import { toErrorMessage } from "../utils/errorMessage";
+import {
+  loadNotificationPreferences,
+  notifyWorkflowSkipped,
+} from "../utils/notifications";
 import {
   downloadBlob,
   downloadText,
@@ -300,6 +304,7 @@ const filteredProjectTasks = computed(() => {
         ![
           task.id,
           task.toolCode,
+          aiToolLabel(task.toolCode),
           targetName(task),
           task.status,
         ]
@@ -424,6 +429,7 @@ const filteredProjectFindings = computed(() => {
         ![
           finding.id,
           finding.title,
+          findingTitleLabel(finding.title, finding.sourceTool),
           finding.sourceTool,
           finding.ruleCode,
           finding.vulnerabilityCode,
@@ -1080,13 +1086,7 @@ function securityActionRiskType(level: string) {
 }
 
 function securityActionRiskLabel(level: string) {
-  const labels: Record<string, string> = {
-    LOW: "低",
-    MEDIUM: "中",
-    HIGH: "高",
-    CRITICAL: "严重",
-  };
-  return labels[level] ?? level;
+  return actionRiskLabel(level);
 }
 
 function securityActionWindowState(action: SecurityAction) {
@@ -2392,12 +2392,15 @@ const {
   pagedItems: pagedMemoryRows,
 } = useClientPagination(memoryRows);
 const memoryLoading = ref(false);
+const memoryLoadError = ref("");
 async function loadMemories() {
   memoryLoading.value = true;
+  memoryLoadError.value = "";
   try {
     memoryRows.value = (await endpoints.listMemories(id)).data || [];
-  } catch {
-    memoryRows.value = [];
+  } catch (error) {
+    memoryLoadError.value = toErrorMessage(error, "AI 记忆读取失败，请稍后重试");
+    ElMessage.error(memoryLoadError.value);
   } finally {
     memoryLoading.value = false;
   }
@@ -2415,11 +2418,13 @@ async function deleteMemory(docId: string) {
       "确认删除",
       { type: "warning" },
     );
-    await endpoints.deleteMemory(id, docId);
-    ElMessage.success("已删除对话记忆");
+    const { data } = await endpoints.deleteMemory(id, docId);
+    if (data?.deleted === true) ElMessage.success("已删除对话记忆");
+    else if (data?.deleted === false) ElMessage.info("该条记忆不存在或已删除");
+    else throw new Error("删除结果未确认，请刷新后重试");
     await loadMemories();
   } catch (error) {
-    if (error !== "cancel" && error !== "close") ElMessage.error("删除失败");
+    if (error !== "cancel" && error !== "close") ElMessage.error(toErrorMessage(error, "删除失败"));
   }
 }
 
@@ -3813,7 +3818,7 @@ function applyProjectWorkflowRun(detail: WorkflowRunDetail) {
     `[运行 #${detail.run.id}] ${detail.run.message || workflowStatus.value}`,
     ...detail.tasks.map((task) => {
       const summary = workflowTaskSummary(task);
-      return `[#${task.id}] ${task.toolCode} · ${projectWorkflowTaskStatus(task.status)}${summary ? ` · ${summary}` : ""}`;
+      return `[#${task.id}] ${aiToolLabel(task.toolCode)} · ${projectWorkflowTaskStatus(task.status)}${summary ? ` · ${summary}` : ""}`;
     }),
   ];
   workflowIndeterminate.value =
@@ -3945,6 +3950,13 @@ async function runWorkflow() {
         },
       ).catch(() => false);
       if (skipConfirmed !== "confirm") return;
+      void notifyWorkflowSkipped(
+        {
+          count: preflight.issues.length,
+          labels: preflight.issues.map((issue) => issue.label || issue.toolCode),
+        },
+        await loadNotificationPreferences(),
+      );
     }
 
     const approvedNodeIds: string[] = [];
@@ -3956,8 +3968,8 @@ async function runWorkflow() {
         !skippedNodeIds.includes(nodeId)
       ) {
         const approved = await ElMessageBox.confirm(
-          `步骤“${step.label || step.tool}”风险级别为 ${step.risk || "CAUTION"}，确认对当前授权目标执行？`,
-          "确认高风险步骤",
+          `步骤“${actionStepLabel(step.tool, step.label)}”操作风险为“${actionRiskLabel(step.risk || "CAUTION")}”，确认对当前授权目标执行？`,
+          "确认需审批步骤",
           { type: "warning", confirmButtonText: "确认执行" },
         ).catch(() => false);
         if (approved !== "confirm") return;
@@ -6246,7 +6258,7 @@ onUnmounted(() => {
             label="漏洞"
             min-width="150"
             show-overflow-tooltip
-          />
+          ><template #default="scope">{{ findingTitleLabel(scope.row.title, scope.row.sourceTool) }}</template></el-table-column>
           <el-table-column label="等级" width="75"
             ><template #default="scope"
               ><el-tag
@@ -6714,7 +6726,7 @@ onUnmounted(() => {
       <el-tab-pane label="AI 记忆" name="memory">
         <div class="project-tab-toolbar">
           <span
-            >这些项目级对话摘要会被安全保存并按需查找，用于后续连续分析。</span
+            >对话摘要仅供原会话、同一目标继续检索，默认保留 120 分钟（可由运行时配置调整）；不会自动跨会话共享。</span
           >
           <div class="toolbar-inline">
             <el-button
@@ -6734,7 +6746,7 @@ onUnmounted(() => {
           </div>
         </div>
         <el-empty
-          v-if="!memoryLoading && !memoryRows.length"
+          v-if="!memoryLoading && !memoryRows.length && !memoryLoadError"
           description="暂无项目级 AI 记忆"
         />
         <el-table
@@ -7233,7 +7245,7 @@ onUnmounted(() => {
           taskDetail.id
         }}</el-descriptions-item
         ><el-descriptions-item label="工具">{{
-          taskDetail.toolCode
+          aiToolLabel(taskDetail.toolCode)
         }}</el-descriptions-item>
         <el-descriptions-item label="目标">{{
           taskTargetName(taskDetail.targetId)
@@ -7318,8 +7330,9 @@ onUnmounted(() => {
     >
       <el-descriptions v-if="findingDetail" :column="1" border>
         <el-descriptions-item label="名称">
-          {{ findingDetail.title }}
+          {{ findingTitleLabel(findingDetail.title, findingDetail.sourceTool) }}
         </el-descriptions-item>
+        <el-descriptions-item v-if="findingTitleLabel(findingDetail.title, findingDetail.sourceTool) !== findingDetail.title" label="原始名称">{{ findingDetail.title }}</el-descriptions-item>
         <el-descriptions-item label="等级/状态">
           <div class="finding-detail-tags">
             <el-tag
@@ -7368,7 +7381,7 @@ onUnmounted(() => {
             <el-option
               v-for="task in successfulTasks"
               :key="`base-${task.id}`"
-              :label="`#${task.id} · ${task.toolCode} · ${formatDateTime(task.createdAt)}`"
+              :label="`#${task.id} · ${aiToolLabel(task.toolCode)} · ${formatDateTime(task.createdAt)}`"
               :value="task.id"
             />
           </el-select>
@@ -7382,7 +7395,7 @@ onUnmounted(() => {
             <el-option
               v-for="task in successfulTasks"
               :key="`current-${task.id}`"
-              :label="`#${task.id} · ${task.toolCode} · ${formatDateTime(task.createdAt)}`"
+              :label="`#${task.id} · ${aiToolLabel(task.toolCode)} · ${formatDateTime(task.createdAt)}`"
               :value="task.id"
             />
           </el-select>
@@ -7536,7 +7549,7 @@ onUnmounted(() => {
             <el-option
               v-for="preset in SECURITY_ACTION_PRESETS"
               :key="preset.category"
-              :label="`${preset.label}（${preset.riskLevel}）`"
+              :label="`${preset.label}（${actionRiskLabel(preset.riskLevel)}）`"
               :value="preset.category"
             />
           </el-select>

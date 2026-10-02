@@ -40,7 +40,7 @@ import org.springframework.stereotype.Service;
 public class PostScanPathService {
   private static final int MAX_AUTOMATED_STEPS = 4;
   private static final Set<String> TERMINAL_STATUSES =
-      Set.of("SUCCESS", "FAILED", "REJECTED", "CANCELLED");
+      Set.of("SUCCESS", "FAILED", "TIMEOUT", "REJECTED", "CANCELLED", "SKIPPED");
   private static final Pattern OPEN_PORT_TITLE = Pattern.compile(".*开放 TCP 端口\\s+(\\d{1,5}).*");
 
   private final PostScanPathRepository paths;

@@ -28,7 +28,7 @@ import {
   type ScannerSource,
 } from "../stores/catalogSync";
 import { toErrorMessage } from "../utils/errorMessage";
-import { severityLabel } from "../utils/aiPresentation";
+import { actionRiskLabel, severityLabel } from "../utils/aiPresentation";
 
 const copilot = useCopilotStore();
 const router = useRouter();
@@ -1870,7 +1870,7 @@ onUnmounted(() => {
                   /></el-icon>
                   <span>{{
                     compatibilityHint(rule) ||
-                    `${rule.ruleCode} · ${rule.targetType} · ${rule.riskLevel}`
+                    `${rule.ruleCode} · ${rule.targetType} · ${actionRiskLabel(rule.riskLevel)}`
                   }}</span>
                 </span>
               </small>

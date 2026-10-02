@@ -197,15 +197,21 @@ public class WorkflowRunService {
         steps.stream()
             .sorted(
                 Comparator.comparingInt((Map<String, Object> step) -> integer(step.get("group")))
+                    .thenComparing(step -> WorkflowTaskSchedule.requiresSerialExecution(
+                        text(step.get("risk"), "SAFE"), Boolean.TRUE.equals(step.get("requiresApproval"))))
                     .thenComparing(step -> requiredText(step, "nodeId")))
             .toList();
 
+    WorkflowTaskSchedule schedule = new WorkflowTaskSchedule();
     for (Map<String, Object> step : ordered) {
       String nodeId = requiredText(step, "nodeId");
       String toolCode = requiredText(step, "tool");
       if ("retrieve_project_context".equals(toolCode)) continue;
       List<Long> dependencyTaskIds =
           resolveDependencyTaskIds(step, stepByNode, taskByNode, new LinkedHashSet<>());
+      WorkflowTaskSchedule.Scheduled scheduled = schedule.schedule(
+          integer(step.get("group")), text(step.get("risk"), "SAFE"),
+          Boolean.TRUE.equals(step.get("requiresApproval")), dependencyTaskIds);
       Map<String, Object> createParameters = executionParameters(step, allowedPorts);
       List<String> resolvedBases = preflight.resolvedTargets().get(nodeId);
       if (resolvedBases != null && !resolvedBases.isEmpty()) {
@@ -225,10 +231,10 @@ public class WorkflowRunService {
                 snapshot.specDigest(),
                 nodeId,
                 nodeRunId,
-                integer(step.get("group")),
+                scheduled.group(),
                 text(step.get("risk"), "SAFE"),
                 Boolean.TRUE.equals(step.get("requiresApproval")),
-                dependencyTaskIds,
+                scheduled.dependencyTaskIds(),
                 run.getId(),
                 issue == null ? "预检标记为不可用" : issue.reason());
       } else {
@@ -238,12 +244,17 @@ public class WorkflowRunService {
                 snapshot.specDigest(),
                 nodeId,
                 nodeRunId,
-                integer(step.get("group")),
+                scheduled.group(),
                 text(step.get("risk"), "SAFE"),
                 Boolean.TRUE.equals(step.get("requiresApproval")),
-                dependencyTaskIds,
+                scheduled.dependencyTaskIds(),
                 run.getId());
+        schedule.taskCreated(scheduled, task.getId());
       }
+      // Serialization barriers only require completion. Preserve the immutable
+      // graph's actual success prerequisites separately before this transaction commits.
+      task.setSuccessDependencyTaskIds(objectMapper.writeValueAsString(dependencyTaskIds));
+      tasks.save(task);
       taskByNode.put(nodeId, task.getId());
     }
 
@@ -351,15 +362,20 @@ public class WorkflowRunService {
       String toolCode = requiredText(step, "tool");
       if ("retrieve_project_context".equals(toolCode)) continue;
       String dependencyName = dependencyName(toolCode);
-      if (dependencyName != null
-          && !"AVAILABLE".equals(dependencyStatus.getOrDefault(dependencyName, "MISSING"))) {
-        issues.add(
-            new WorkflowRunDtos.NodeIssue(
-                requiredText(step, "nodeId"),
-                toolCode,
-                label(step),
-                dependencyName + " 未安装或不可用"));
-        continue;
+      if (dependencyName != null) {
+        String status = dependencyStatus.get(dependencyName);
+        if (status == null && "OWASP ZAP".equals(dependencyName)) {
+          status = dependencyStatus.get("ZAP");
+        }
+        if (!"AVAILABLE".equals(status)) {
+          issues.add(
+              new WorkflowRunDtos.NodeIssue(
+                  requiredText(step, "nodeId"),
+                  toolCode,
+                  label(step),
+                  dependencyName + " 未安装或不可用"));
+          continue;
+        }
       }
       if (WEB_TOOLS.contains(toolCode)) {
         List<URI> bases = webTargetResolver.tryResolve(target);
@@ -562,8 +578,8 @@ public class WorkflowRunService {
       parameters.put("check", "cookies");
     }
     if (("afrog_scan".equals(toolCode) || "xray_scan".equals(toolCode))
-        && !Boolean.TRUE.equals(parameters.get("allPocs"))
-        && !(parameters.get("pocCodes") instanceof Collection<?>)) {
+        && !parameters.containsKey("allPocs")
+        && !parameters.containsKey("pocCodes")) {
       parameters.put("allPocs", true);
     }
     return parameters;
@@ -613,8 +629,10 @@ public class WorkflowRunService {
       case "nuclei_scan" -> "Nuclei";
       case "afrog_scan" -> "Afrog";
       case "xray_scan" -> "Xray";
-      case "zap_scan" -> "ZAP";
+      case "zap_scan" -> "OWASP ZAP";
+      case "fscan_scan" -> "fscan";
       case "sqlmap_scan" -> "sqlmap";
+      case "msf_scan" -> "Metasploit";
       default -> null;
     };
   }

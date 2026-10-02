@@ -86,6 +86,17 @@ class PocSelectionParameters(BaseModel):
         return self
 
 
+class NucleiParameters(PocSelectionParameters):
+    """An empty legacy selection uses server defaults; explicit choices stay bounded."""
+
+    @model_validator(mode="after")
+    def require_one_selection_mode(self) -> "NucleiParameters":
+        if self.pocCodes is None and self.allPocs is None:
+            return self
+        super().require_one_selection_mode()
+        return self
+
+
 class RetrievalParameters(BaseModel):
     model_config = ConfigDict(extra="forbid")
     query: StrictStr = Field(min_length=1, max_length=2000)
@@ -98,6 +109,57 @@ class PortScanParameters(BaseModel):
 
 class NmapParameters(PortScanParameters):
     mode: Literal["quick", "service"] = "quick"
+
+
+class FscanParameters(PortScanParameters):
+    vulnMode: Literal["SAFE", "FINGERPRINT", "FULL"] | None = None
+
+
+class ZapParameters(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    spider: StrictBool | None = None
+    strength: Literal["LOW", "MEDIUM", "HIGH", "INSANE"] | None = None
+
+
+MsfModule = Annotated[
+    StrictStr,
+    Field(max_length=256, pattern=r"^(auxiliary|exploit)/[a-z0-9_]+(?:/[a-z0-9_]+)*$"),
+]
+
+
+class WorkflowMsfParameters(BaseModel):
+    """A workflow may defer its module choice; the final action must provide it."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    module: MsfModule | None = None
+    modules: list[MsfModule] | None = Field(default=None, min_length=1, max_length=16)
+    options: dict[
+        Annotated[StrictStr, Field(pattern=r"^[A-Z][A-Z0-9_]{0,63}$")],
+        Annotated[StrictStr, Field(min_length=1, max_length=500)],
+    ] | None = Field(default=None, max_length=32)
+
+    @model_validator(mode="after")
+    def validate_selection_and_options(self) -> "WorkflowMsfParameters":
+        if self.module is not None and self.modules is not None:
+            raise ValueError("select one module or a module list")
+        if self.modules is not None and len(self.modules) != len(set(self.modules)):
+            raise ValueError("MSF modules must be unique")
+        forbidden = {
+            "RHOST", "RHOSTS", "RPORT", "LHOST", "LPORT", "PAYLOAD", "CMD",
+            "COMMAND", "SHELL", "CHOST", "CPORT",
+        }
+        for key, value in (self.options or {}).items():
+            if key in forbidden or any(ord(char) < 32 or ord(char) == 127 or char == ";" for char in value):
+                raise ValueError("MSF option is not allowed")
+        return self
+
+
+class MsfParameters(WorkflowMsfParameters):
+    @model_validator(mode="after")
+    def require_selection(self) -> "MsfParameters":
+        if self.module is None and self.modules is None:
+            raise ValueError("MSF action must select a module")
+        return self
 
 
 class HttpSecurityParameters(BaseModel):
@@ -121,11 +183,15 @@ class WorkflowHttpSecurityParameters(BaseModel):
 
 WorkflowToolParameters = Union[
     EmptyToolParameters,
+    NucleiParameters,
     WorkflowRetrievalParameters,
     PortScanParameters,
     NmapParameters,
     WorkflowHttpSecurityParameters,
     PocSelectionParameters,
+    FscanParameters,
+    ZapParameters,
+    WorkflowMsfParameters,
 ]
 
 GroundedParameterPatch = Union[
@@ -134,6 +200,9 @@ GroundedParameterPatch = Union[
     NmapParameters,
     WorkflowHttpSecurityParameters,
     PocSelectionParameters,
+    FscanParameters,
+    ZapParameters,
+    WorkflowMsfParameters,
 ]
 
 
@@ -176,7 +245,7 @@ class TlsConfigAction(_PlanAction):
 
 class NucleiScanAction(_PlanAction):
     tool: Literal["nuclei_scan"]
-    parameters: EmptyToolParameters
+    parameters: NucleiParameters
 
 
 class AfrogScanAction(_PlanAction):
@@ -187,6 +256,21 @@ class AfrogScanAction(_PlanAction):
 class XrayScanAction(_PlanAction):
     tool: Literal["xray_scan"]
     parameters: PocSelectionParameters
+
+
+class ZapScanAction(_PlanAction):
+    tool: Literal["zap_scan"]
+    parameters: ZapParameters
+
+
+class FscanScanAction(_PlanAction):
+    tool: Literal["fscan_scan"]
+    parameters: FscanParameters
+
+
+class MsfScanAction(_PlanAction):
+    tool: Literal["msf_scan"]
+    parameters: MsfParameters
 
 
 PlanAction = Annotated[
@@ -200,6 +284,9 @@ PlanAction = Annotated[
         NucleiScanAction,
         AfrogScanAction,
         XrayScanAction,
+        ZapScanAction,
+        FscanScanAction,
+        MsfScanAction,
     ],
     Field(discriminator="tool"),
 ]
@@ -247,6 +334,7 @@ class IntentDecision(BaseModel):
         "AUTHORIZED_ACTION_REQUEST",
         "AMBIGUOUS_REQUEST",
     ]
+    executionDecision: Literal["EXECUTE", "PLAN_ONLY", "CLARIFY"] | None = None
 
     @model_validator(mode="after")
     def validate_retrieval_contract(self) -> "IntentDecision":
@@ -265,7 +353,18 @@ class IntentDecision(BaseModel):
             raise ValueError("retrieval intent requires retrievalQuery")
         if not self.needsRetrieval and self.retrievalQuery is not None:
             raise ValueError("non-retrieval intent cannot include retrievalQuery")
+        if self.executionDecision == "EXECUTE" and self.intent != "ACTION_PLAN":
+            raise ValueError("only ACTION_PLAN may request execution")
+        if self.executionDecision == "CLARIFY" and self.intent != "CLARIFY":
+            raise ValueError("CLARIFY execution decision requires CLARIFY intent")
+        if self.intent == "CLARIFY" and self.executionDecision not in {None, "CLARIFY"}:
+            raise ValueError("CLARIFY intent cannot authorize execution or a plan")
         return self
+
+
+class AutoIntentDecision(IntentDecision):
+    """AUTO requires an explicit, finite decision from the model route boundary."""
+    executionDecision: Literal["EXECUTE", "PLAN_ONLY", "CLARIFY"]
 
 
 class EvidenceItem(BaseModel):
@@ -415,6 +514,41 @@ class GroundedPlannerOutput(BaseModel):
         return self
 
 
+class ClarificationPlannerOutput(GroundedPlannerOutput):
+    """A CLARIFY route cannot propose actions or claim a grounded/general answer."""
+
+    intent: Literal["clarify"]
+    knowledgeMode: Literal["INSUFFICIENT_EVIDENCE"]
+    evidenceRefs: list[EvidenceRef] = Field(default_factory=list, max_length=0)
+    actions: list[GroundedPlanAction] = Field(max_length=0)
+
+
+class GeneralQaPlannerOutput(GroundedPlannerOutput):
+    intent: Literal["answer", "clarify"]
+    knowledgeMode: Literal["GENERAL"]
+    evidenceRefs: list[EvidenceRef] = Field(default_factory=list, max_length=0)
+    actions: list[GroundedPlanAction] = Field(max_length=0)
+
+
+class EvidenceOrClarificationPlannerOutput(GroundedPlannerOutput):
+    knowledgeMode: Literal["PROJECT_EVIDENCE", "INSUFFICIENT_EVIDENCE"]
+
+    @model_validator(mode="after")
+    def validate_clarification_mode(self) -> "EvidenceOrClarificationPlannerOutput":
+        if self.intent == "clarify" and self.knowledgeMode != "INSUFFICIENT_EVIDENCE":
+            raise ValueError("retrieval route clarification requires INSUFFICIENT_EVIDENCE")
+        return self
+
+
+class ProjectQaPlannerOutput(EvidenceOrClarificationPlannerOutput):
+    intent: Literal["answer", "clarify"]
+    actions: list[GroundedPlanAction] = Field(max_length=0)
+
+
+class ActionPlanPlannerOutput(EvidenceOrClarificationPlannerOutput):
+    intent: Literal["plan", "clarify"]
+
+
 class WorkflowStep(BaseModel):
     """One user-composed tool step from the visual workflow editor."""
 
@@ -434,6 +568,9 @@ class WorkflowStep(BaseModel):
         "nuclei_scan",
         "afrog_scan",
         "xray_scan",
+        "zap_scan",
+        "fscan_scan",
+        "msf_scan",
     ]
     parameters: WorkflowToolParameters
     risk: Literal["SAFE", "CAUTION"] = "SAFE"
@@ -454,9 +591,12 @@ class WorkflowStep(BaseModel):
         "http_headers": EmptyToolParameters,
         "http_security_check": WorkflowHttpSecurityParameters,
         "tls_config": EmptyToolParameters,
-        "nuclei_scan": EmptyToolParameters,
+        "nuclei_scan": NucleiParameters,
         "afrog_scan": PocSelectionParameters,
         "xray_scan": PocSelectionParameters,
+        "zap_scan": ZapParameters,
+        "fscan_scan": FscanParameters,
+        "msf_scan": WorkflowMsfParameters,
     }
 
     @model_validator(mode="before")
@@ -502,6 +642,8 @@ class LedgerAgentContext(BaseModel):
     authorization: AuthorizationContext = Field(default_factory=AuthorizationContext)
     targetId: int | None = Field(default=None, gt=0)
     mode: str = Field(default="plan", max_length=40)
+    executionIntent: Literal["AUTO"] | None = None
+    currentUserRequest: StrictStr | None = Field(default=None, min_length=1, max_length=4000)
     maxRetries: int | None = Field(default=None, ge=0, le=3)
     workflow: list[WorkflowStep] = Field(default_factory=list, max_length=16)
     runId: str | None = Field(default=None, pattern=r"[A-Za-z0-9_-]{8,80}")
@@ -538,6 +680,10 @@ class LedgerAgentContext(BaseModel):
 
     @model_validator(mode="after")
     def validate_workflow_snapshot(self) -> "LedgerAgentContext":
+        if self.executionIntent == "AUTO" and (
+            self.currentUserRequest is None or not self.currentUserRequest.strip()
+        ):
+            raise ValueError("AUTO requires a separate currentUserRequest")
         metadata = (
             self.workflowId,
             self.workflowRevision,

@@ -153,12 +153,13 @@ public class TaskSnapshotService {
           case "afrog_scan" -> "Afrog";
           case "xray_scan" -> "Xray";
           case "zap_scan" -> "OWASP ZAP";
+          case "fscan_scan" -> "fscan";
+          case "sqlmap_scan" -> "sqlmap";
+          case "msf_scan" -> "Metasploit";
           default -> null;
         };
     if (dependencyName != null) {
-      return dependencies.detect().dependencies().stream()
-          .filter(item -> dependencyName.equals(item.name()))
-          .findFirst()
+      return dependencies.detectCurrent(dependencyName)
           .map(item -> item.version() == null ? item.status() : item.version())
           .orElse("unknown");
     }

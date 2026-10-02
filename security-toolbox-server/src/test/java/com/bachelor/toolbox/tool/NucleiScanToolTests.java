@@ -80,4 +80,45 @@ non-json diagnostic
         .isInstanceOf(com.bachelor.toolbox.common.ApiException.class)
         .hasMessageContaining("授权范围外");
   }
+
+  @Test
+  void deadlineIsReportedAsTimeoutAndStopsLocalProcessWithoutNetwork() throws Exception {
+    NucleiScanTool bounded = new NucleiScanTool(mock(TargetPolicyService.class),
+        new PortRangeParser(), new ObjectMapper(), "unused", ".", 1, 1);
+    Process process = fixtureProcess("wait");
+    try {
+      assertThatThrownBy(() -> bounded.waitFor(process, ToolExecutionObserver.NOOP))
+          .isInstanceOf(java.util.concurrent.TimeoutException.class)
+          .hasMessageContaining("超过 1 秒");
+      assertThat(process.isAlive()).isFalse();
+    } finally { process.destroyForcibly(); }
+  }
+
+  @Test
+  void realCompletionAndUserCancellationRemainDistinct() throws Exception {
+    Process completed = fixtureProcess("complete");
+    try {
+      assertThat(tool.waitFor(completed, ToolExecutionObserver.NOOP)).contains("fixture complete");
+    } finally { completed.destroyForcibly(); }
+    Process cancelled = fixtureProcess("wait");
+    try {
+      assertThatThrownBy(() -> tool.waitFor(cancelled, new ToolExecutionObserver() {
+        @Override public boolean isCancellationRequested() { return true; }
+      })).isInstanceOf(com.bachelor.toolbox.common.ApiException.class).hasMessage("任务已取消");
+      assertThat(cancelled.isAlive()).isFalse();
+    } finally { cancelled.destroyForcibly(); }
+  }
+
+  private Process fixtureProcess(String mode) throws Exception {
+    String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
+    return new ProcessBuilder(java, "-cp", System.getProperty("java.class.path"),
+        ProcessFixture.class.getName(), mode).redirectErrorStream(true).start();
+  }
+
+  public static class ProcessFixture {
+    public static void main(String[] args) throws Exception {
+      Thread.sleep("wait".equals(args[0]) ? 30000 : 100);
+      System.out.println("fixture complete");
+    }
+  }
 }

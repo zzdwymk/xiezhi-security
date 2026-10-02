@@ -79,6 +79,11 @@ public class AgentWorkflowSpecService {
           "finding",
           "closure");
 
+  /** The editor and its advisor use the same capability catalog as workflow validation. */
+  static Set<String> supportedTools() {
+    return RUNTIME_TOOLS;
+  }
+
   private final AgentWorkflowSpecRepository repository;
   private final ObjectMapper objectMapper;
   private final ProjectAuthorizationService authorization;
@@ -92,12 +97,13 @@ public class AgentWorkflowSpecService {
     this.authorization = authorization;
   }
 
-  /** Returns the latest immutable revision for one project without creating a default. */
-  @Transactional(readOnly = true)
-  public Map<String, Object> read(Long scopeId) {
+  /** Returns the latest revision, upgrading only an unchanged shipped legacy default. */
+  @Transactional
+  public synchronized Map<String, Object> read(Long scopeId) {
     requireScope(scopeId, false);
     return repository
         .findFirstByScopeIdOrderByRevisionDesc(scopeId)
+        .map(stored -> upgradeLegacyDefault(scopeId, stored))
         .map(this::toSnapshot)
         .map(WorkflowSnapshot::response)
         .orElseGet(Map::of);
@@ -128,6 +134,7 @@ public class AgentWorkflowSpecService {
           repository
               .findFirstByScopeIdOrderByRevisionDesc(scopeId)
               .orElseGet(() -> appendSnapshot(scopeId, defaultSpec()).stored());
+      stored = upgradeLegacyDefault(scopeId, stored);
     } else {
       if (revision <= 0 || !DIGEST.matcher(specDigest).matches()) {
         throw new ApiException("工作流快照版本或摘要格式无效");
@@ -146,6 +153,16 @@ public class AgentWorkflowSpecService {
 
   public WorkflowSnapshot freezeSnapshot(Long scopeId) {
     return freezeSnapshot(scopeId, null, null, null);
+  }
+
+  private AgentWorkflowSpec upgradeLegacyDefault(Long scopeId, AgentWorkflowSpec stored) {
+    // Only migrate the exact shipped default. Custom graphs and frozen revisions
+    // retain their original dependency semantics and identity. Reading latest is
+    // included because the UI sends that explicit identity when starting a turn.
+    if (stored.getSpecDigest().equals(digest(write(canonicalize(normalize(legacyDefaultSpec())))))) {
+      return appendSnapshot(scopeId, defaultSpec()).stored();
+    }
+    return stored;
   }
 
   /** Keeps the selected immutable revision visible to legacy runtime calls for exactly one turn. */
@@ -460,7 +477,9 @@ public class AgentWorkflowSpecService {
   }
 
   private List<Map<String, Object>> stepsFromNormalized(Map<String, Object> root) {
-    return normalizeLegacySteps(root.get("steps"));
+    // normalize() already computed graph dependencies. Re-running the legacy
+    // group conversion would invent dependencies on unrelated sibling branches.
+    return objectList(root.get("steps"), "steps");
   }
 
   private List<String> topologicalOrder(
@@ -682,6 +701,26 @@ public class AgentWorkflowSpecService {
   }
 
   private Map<String, Object> defaultSpec() {
+    Map<String, Object> value = legacyDefaultSpec();
+    value.put("version", 2);
+    @SuppressWarnings("unchecked")
+    List<Map<String, Object>> steps = (List<Map<String, Object>>) value.get("steps");
+    List<Map<String, Object>> nodes = new ArrayList<>();
+    List<Map<String, Object>> edges = new ArrayList<>();
+    nodes.add(Map.of("id", "__start__", "type", "start", "label", "开始", "phase", "engagement"));
+    nodes.add(Map.of("id", "__end__", "type", "end", "label", "结束", "phase", "report"));
+    for (Map<String, Object> step : steps) {
+      String nodeId = text(step.get("nodeId"));
+      nodes.add(Map.of("id", nodeId, "type", "tool", "label", nodeId, "tool", step.get("tool"), "phase", "discovery"));
+      String source = "context".equals(nodeId) ? "__start__" : "context";
+      edges.add(Map.of("id", source + "-" + nodeId, "source", source, "target", nodeId));
+      if (!"context".equals(nodeId)) edges.add(Map.of("id", nodeId + "-end", "source", nodeId, "target", "__end__"));
+    }
+    value.put("graph", Map.of("nodes", nodes, "edges", edges));
+    return value;
+  }
+
+  private Map<String, Object> legacyDefaultSpec() {
     Map<String, Object> value = new LinkedHashMap<>();
     value.put("version", 1);
     value.put("preset", "runtime-default");

@@ -27,12 +27,15 @@ import {
   Setting,
 } from "../components/fluentIcons";
 import FluentIcon from "../components/FluentIcon.vue";
+import MarkdownBody from "../components/MarkdownBody.vue";
 import {
   Handle,
   MarkerType,
   Position,
   SelectionMode,
   VueFlow,
+  getRectOfNodes,
+  getTransformForBounds,
   type Connection,
   type Edge,
   type EdgeMouseEvent,
@@ -48,6 +51,7 @@ import {
   endpoints,
   streamWorkflowSuggestions,
   type AssessmentProject,
+  type DependencyStatus,
   type ProjectTarget,
   type ProjectTaskRecord,
   type Target,
@@ -64,10 +68,14 @@ import {
   type MsfModuleOption,
 } from "../api";
 import { toErrorMessage } from "../utils/errorMessage";
+import {
+  loadNotificationPreferences,
+  notifyWorkflowSkipped,
+} from "../utils/notifications";
 import { taskbarProgress } from "../utils/taskbarProgress";
 import WorkflowEdge from "./WorkflowEdge.vue";
 import { COMMON_PORT_OPTIONS, normalizeAllowedPorts } from "../utils/ports";
-import { aiToolLabel, severityLabel } from "../utils/aiPresentation";
+import { actionRiskLabel, actionStepLabel, aiToolLabel, severityLabel } from "../utils/aiPresentation";
 
 type PhaseCode =
   | "engagement"
@@ -507,7 +515,6 @@ let suggestSeq = 0;
 let loadSeq = 0;
 let suggestAbort: AbortController | undefined;
 const {
-  fitView,
   setViewport,
   zoomIn,
   zoomOut,
@@ -517,6 +524,7 @@ const {
   nodeLookup,
 } = useVueFlow("red-team-workflow");
 const flowCanvas = ref<HTMLElement | null>(null);
+const workflowMinZoom = ref(0.2);
 const workflowEditorLayoutRef = ref<HTMLElement | null>(null);
 const isFullscreen = ref(false);
 const libraryScroll = ref<HTMLElement | null>(null);
@@ -564,13 +572,23 @@ function zoomCanvasIn() {
 function zoomCanvasOut() {
   void zoomOut();
 }
-function fitWorkflowCanvas(duration: number | unknown = 0) {
+async function fitWorkflowCanvas(duration: number | unknown = 0) {
   const dur = typeof duration === "number" ? duration : 0;
-  void fitView({
-    padding: 0.18,
-    maxZoom: 0.95,
-    ...(dur > 0 ? { duration: dur } : {}),
-  });
+  await nextTick();
+  const canvas = flowCanvas.value;
+  const measuredNodes = Array.from(nodeLookup.value.values()).filter(
+    node => !node.hidden && node.dimensions.width > 0 && node.dimensions.height > 0,
+  );
+  if (!canvas?.clientWidth || !canvas.clientHeight || !measuredNodes.length) return;
+  // The canvas excludes both sidebars. A fixed 20% floor clips the standard
+  // eight-phase graph, so only lower the floor as far as its full overview needs.
+  const viewport = getTransformForBounds(
+    getRectOfNodes(measuredNodes), canvas.clientWidth, canvas.clientHeight,
+    Number.MIN_VALUE, 0.95, 0.18,
+  );
+  workflowMinZoom.value = Math.min(0.2, viewport.zoom);
+  await nextTick();
+  await setViewport(viewport, dur > 0 ? { duration: dur } : undefined);
 }
 
 async function enterFullscreen() {
@@ -655,15 +673,138 @@ function workflowToolY(index: number, count: number) {
   );
 }
 
+const TOOL_DEPENDENCIES: Record<string, string> = {
+  nmap_service_scan: "Nmap",
+  nuclei_scan: "Nuclei",
+  afrog_scan: "Afrog",
+  xray_scan: "Xray",
+  zap_scan: "OWASP ZAP",
+  fscan_scan: "fscan",
+  sqlmap_scan: "sqlmap",
+  msf_scan: "Metasploit",
+};
+
+const dependencies = ref<DependencyStatus[]>([]);
+const dependencyLoading = ref(false);
+const dependencyError = ref(false);
+const onlyAvailableCapabilities = ref(false);
+
+async function loadDependencies(forceRefresh = false) {
+  try {
+    dependencyLoading.value = true;
+    dependencyError.value = false;
+    const { data } = await endpoints.dependencies(forceRefresh);
+    dependencies.value = data?.dependencies || data?.items || [];
+  } catch {
+    dependencyError.value = true;
+    dependencies.value = [];
+  } finally {
+    dependencyLoading.value = false;
+  }
+}
+
+function toolRequiredDependency(tool?: string): string | undefined {
+  if (!tool) return undefined;
+  return TOOL_DEPENDENCIES[tool];
+}
+
+function findDependencyStatus(depName: string): DependencyStatus | undefined {
+  const target = depName.toLowerCase();
+  return dependencies.value.find((d) => {
+    const n = (d.name || "").toLowerCase();
+    return (
+      n === target ||
+      (target === "owasp zap" && n === "zap") ||
+      (target === "zap" && n === "owasp zap")
+    );
+  });
+}
+
+function isToolDependencyReady(tool?: string): boolean {
+  const req = toolRequiredDependency(tool);
+  if (!req) return true;
+  if (!dependencies.value.length) return false;
+  const dep = findDependencyStatus(req);
+  if (!dep) return false;
+  return (
+    dep.installed === true ||
+    ["ready", "installed", "ok", "available"].includes(
+      (dep.status || "").toLowerCase(),
+    )
+  );
+}
+
+function getToolDependencyState(tool?: string): {
+  hasDep: boolean;
+  depName?: string;
+  isReady: boolean;
+  version?: string;
+  statusText: string;
+} {
+  const req = toolRequiredDependency(tool);
+  if (!req) {
+    return {
+      hasDep: false,
+      isReady: true,
+      statusText: "内置免依赖",
+    };
+  }
+  if (dependencyLoading.value && !dependencies.value.length) {
+    return {
+      hasDep: true,
+      depName: req,
+      isReady: false,
+      statusText: "检测中...",
+    };
+  }
+  const dep = findDependencyStatus(req);
+  if (!dep) {
+    return {
+      hasDep: true,
+      depName: req,
+      isReady: false,
+      statusText: dependencyError.value ? "检测结果读取失败" : "尚无检测结果",
+    };
+  }
+  const ready =
+    dep.installed === true ||
+    ["ready", "installed", "ok", "available"].includes(
+      (dep.status || "").toLowerCase(),
+    );
+  return {
+    hasDep: true,
+    depName: req,
+    isReady: ready,
+    version: dep.version,
+    statusText: ready
+      ? dep.version
+        ? `已就绪 v${dep.version}`
+        : "已就绪"
+      : ({ MISSING: "未安装", TIMEOUT: "检测超时", INCOMPATIBLE: "版本不兼容", ERROR: "检测失败" }[String(dep.status).toUpperCase()] || "依赖未就绪"),
+  };
+}
+
+function goToSetupDependencies() {
+  localStorage.removeItem("security_toolbox_setup_complete_v2");
+  router.push({ path: "/setup", query: { redirect: "/workflow" } });
+}
+
 const sortedPhases = computed(() => PHASES);
-const filteredAgents = computed(() =>
-  SUBAGENTS.filter((agent) => agent.phase === selectedPhase.value),
-);
+const filteredAgents = computed(() => {
+  let list = SUBAGENTS.filter((agent) => agent.phase === selectedPhase.value);
+  if (onlyAvailableCapabilities.value) {
+    list = list.filter((agent) => isToolDependencyReady(agent.tool));
+  }
+  return list;
+});
 const selectedNode = computed(() =>
   nodes.value.find((node) => node.id === selectedNodeId.value),
 );
 const selectedToolNode = computed(() =>
   selectedNode.value?.data.nodeKind === "tool" ? selectedNode.value : undefined,
+);
+const selectedToolDepState = computed(() =>
+  getToolDependencyState(selectedToolNode.value?.data.tool),
 );
 const toolNodes = computed(() =>
   nodes.value.filter((node) => node.data.nodeKind === "tool"),
@@ -753,7 +894,10 @@ function workflowToolParameters(
   tool?: string,
   parameters?: Record<string, unknown>,
 ) {
-  if (parameters && Object.keys(parameters).length) return { ...parameters };
+  // An explicit empty object is saved configuration, not a request for defaults.
+  // Only newly created nodes omit parameters and receive the tool defaults.
+  if (parameters !== undefined) return tool === "msf_scan"
+    ? normalizeSingleMsfParameters(parameters) : { ...parameters };
   if (
     tool === "afrog_scan" ||
     tool === "xray_scan" ||
@@ -764,6 +908,23 @@ function workflowToolParameters(
   if (tool === "nmap_service_scan") return { mode: "quick" };
   if (tool === "fscan_scan") return { vulnMode: "SAFE" };
   return {};
+}
+
+function normalizeSingleMsfParameters(parameters: Record<string, unknown>) {
+  const result = { ...parameters };
+  const modules = Array.isArray(result.modules) ? result.modules.map(String)
+    : result.module ? [String(result.module)] : [];
+  const raw = result.msfOptions;
+  if (modules.length !== 1 || !raw || typeof raw !== "object" || Array.isArray(raw)) return result;
+  const entries = Object.entries(raw);
+  // Multiple module settings must remain intact, including currently unselected modules.
+  if (entries.some(([key]) => key.toLowerCase() !== modules[0]!.toLowerCase())) return result;
+  const perModule = entries[0]?.[1];
+  if (perModule && typeof perModule === "object" && !Array.isArray(perModule)) {
+    result.options = { ...(result.options as Record<string, unknown> || {}), ...perModule };
+  }
+  delete result.msfOptions;
+  return result;
 }
 
 function updateSelectedToolParameters(
@@ -1007,12 +1168,16 @@ function focusMsfModule(module: string) {
 
 function msfSavedOptions(): Record<string, string> {
   if (!msfFocusedModule.value) return {};
-  const raw = selectedToolNode.value?.data.parameters?.msfOptions;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-  const perModule = (raw as Record<string, Record<string, unknown>>)[msfFocusedModule.value];
-  if (!perModule || typeof perModule !== "object") return {};
+  const parameters = selectedToolNode.value?.data.parameters || {};
+  const raw = parameters.msfOptions;
+  const perModule = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? (raw as Record<string, Record<string, unknown>>)[msfFocusedModule.value] : {};
+  const common = parameters.options;
   const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(perModule)) out[key] = String(value ?? "");
+  for (const [key, value] of Object.entries({
+    ...(common && typeof common === "object" && !Array.isArray(common) ? common : {}),
+    ...(perModule && typeof perModule === "object" ? perModule : {}),
+  })) out[key] = String(value ?? "");
   return out;
 }
 
@@ -1024,6 +1189,15 @@ function msfOptionValue(opt: MsfModuleOption): string {
 function setMsfOptionValue(opt: MsfModuleOption, value: string) {
   const module = msfFocusedModule.value;
   if (!module) return;
+  const parameters = normalizeSingleMsfParameters(selectedToolNode.value?.data.parameters || {});
+  if (selectedMsfModule.value.length === 1 && parameters.msfOptions === undefined) {
+    const options = { ...msfSavedOptions() };
+    const trimmed = value.trim();
+    if (trimmed) options[opt.name] = trimmed;
+    else delete options[opt.name];
+    updateSelectedToolParameters({ options, msfOptions: parameters.msfOptions });
+    return;
+  }
   const raw = selectedToolNode.value?.data.parameters?.msfOptions;
   const base =
     raw && typeof raw === "object" && !Array.isArray(raw)
@@ -1504,7 +1678,7 @@ function buildPreset(code: PresetCode, retainedSteps?: WorkflowStepSpec[]) {
           },
           undefined,
           tool,
-          migratedStep?.parameters,
+          migratedStep ? (migratedStep.parameters ?? {}) : undefined,
         ),
       );
       phaseToolNodeIds.push(id);
@@ -3051,7 +3225,7 @@ function serializeGraph(): WorkflowSpecV2 {
     nodeId: node.id,
     tool: node.data.tool || "",
     label: node.data.label,
-    parameters: workflowToolParameters(node.data.tool, node.data.parameters),
+    parameters: { ...node.data.parameters },
     risk: node.data.risk || "SAFE",
     requiresApproval: (node.data.risk || "SAFE") !== "SAFE",
     group: Math.max((topo.level.get(node.id) || 0) - firstToolLevel, 0),
@@ -3158,7 +3332,7 @@ const nodeDetailRun = computed(() =>
 );
 const nodeDetailTitle = computed(() => {
   const node = nodes.value.find((item) => item.id === nodeDetailNodeId.value);
-  return node ? `节点详情：${node.data.label}` : "节点详情";
+  return node ? `节点详情：${actionStepLabel(node.data.tool, node.data.label)}` : "节点详情";
 });
 
 interface EndFinding {
@@ -3571,7 +3745,7 @@ function validateExecutionInputs(steps: WorkflowStepSpec[]) {
         step.tool === "fscan_scan") &&
       !String(parameters.ports || "").trim()
     ) {
-      return `步骤“${step.label || step.tool}”缺少端口输入`;
+      return `步骤“${actionStepLabel(step.tool, step.label)}”缺少端口输入`;
     }
     if (
       step.tool === "fscan_scan" &&
@@ -3588,7 +3762,7 @@ function validateExecutionInputs(steps: WorkflowStepSpec[]) {
           ? [parameters.module]
           : [];
       if (!modules.length) {
-        return `步骤“${step.label || step.tool}”必须指定至少一个 Metasploit 模块`;
+        return `步骤“${actionStepLabel(step.tool, step.label)}”必须指定至少一个 Metasploit 模块`;
       }
     }
     if (
@@ -3613,12 +3787,12 @@ function validateExecutionInputs(steps: WorkflowStepSpec[]) {
       const codes = parameters.pocCodes;
       if (parameters.allPocs !== true) {
         if (!Array.isArray(codes) || !codes.length || codes.length > 50) {
-          return `步骤“${step.label || step.tool}”需要选择 1 到 50 个 PoC / 模板`;
+          return `步骤“${actionStepLabel(step.tool, step.label)}”需要选择 1 到 50 个 PoC / 模板`;
         }
         if (
           codes.some((code) => !/^[A-Z]{2}-[A-F0-9]{24}$/.test(String(code)))
         ) {
-          return `步骤“${step.label || step.tool}”包含无效 PoC / 模板编号`;
+          return `步骤“${actionStepLabel(step.tool, step.label)}”包含无效 PoC / 模板编号`;
         }
       }
     }
@@ -3710,6 +3884,13 @@ async function executeWorkflow() {
         },
       ).catch(() => false);
       if (skipConfirmed !== "confirm") return;
+      void notifyWorkflowSkipped(
+        {
+          count: preflight.issues.length,
+          labels: preflight.issues.map((issue) => issue.label || issue.toolCode),
+        },
+        await loadNotificationPreferences(),
+      );
     }
 
     const approvedNodeIds: string[] = [];
@@ -3721,8 +3902,8 @@ async function executeWorkflow() {
         !skippedNodeIds.includes(nodeId)
       ) {
         const approved = await ElMessageBox.confirm(
-          `步骤“${step.label || step.tool}”风险级别为 ${step.risk || "CAUTION"}，确认对当前授权目标执行？`,
-          "确认高风险步骤",
+          `步骤“${actionStepLabel(step.tool, step.label)}”操作风险为“${actionRiskLabel(step.risk || "CAUTION")}”，确认对当前授权目标执行？`,
+          "确认需审批步骤",
           { type: "warning", confirmButtonText: "确认执行" },
         ).catch(() => false);
         if (approved !== "confirm") return;
@@ -3812,7 +3993,7 @@ function toEditorNode(
     position,
     spec.label,
     spec.tool,
-    parameters,
+    parameters ?? {},
   );
 }
 
@@ -4037,7 +4218,7 @@ async function refit(mode: "overview" | "start" = "overview") {
       );
       return;
     }
-    void fitView({ padding: 0.14, maxZoom: 0.95, duration: 180 });
+    void fitWorkflowCanvas(180);
   }, 50);
 }
 
@@ -4086,8 +4267,7 @@ async function refreshSuggestions(reason = "edit") {
         if (event.type === "done") {
           suggestSource.value = event.source || suggestSource.value;
           if (event.note) suggestNote.value = String(event.note);
-          else if (!suggestions.value.length)
-            suggestNote.value = "暂无额外建议";
+          else suggestNote.value = suggestions.value.length ? "建议已生成" : "暂无额外建议";
           return;
         }
         if (event.type === "error") {
@@ -4286,6 +4466,7 @@ onMounted(() => {
   document.addEventListener("fullscreenchange", onFullscreenChange);
   document.addEventListener("webkitfullscreenchange", onFullscreenChange);
   void loadProjects();
+  void loadDependencies();
 });
 onBeforeUnmount(() => {
   taskbarProgress.clearProgress("workflow-run");
@@ -4537,7 +4718,7 @@ onBeforeUnmount(() => {
           <div class="editor-head-actions">
             <el-button
               size="small"
-              :type="workflowConfigVisible ? 'primary' : 'default'"
+              :class="{ 'is-active': workflowConfigVisible }"
               :aria-expanded="workflowConfigVisible"
               aria-controls="workflow-config-panel"
               @click="
@@ -4573,7 +4754,7 @@ onBeforeUnmount(() => {
             :selection-key-code="'Shift'"
             :multi-selection-key-code="['Control', 'Meta']"
             :delete-key-code="null"
-            :min-zoom="0.2"
+            :min-zoom="workflowMinZoom"
             :max-zoom="1.6"
             class="red-team-flow"
             @connect="onConnect"
@@ -4595,7 +4776,10 @@ onBeforeUnmount(() => {
                 :class="[
                   `workflow-node--${data.nodeKind}`,
                   `workflow-node--${data.phase}`,
-                  { 'is-selected': id === selectedNodeId || selectedNodeIds.includes(id) },
+                  {
+                    'is-selected': id === selectedNodeId || selectedNodeIds.includes(id),
+                    'has-missing-dep': data.tool && getToolDependencyState(data.tool).hasDep && !getToolDependencyState(data.tool).isReady,
+                  },
                   nodeStatusClass(id),
                 ]"
                 @click.stop="onNodeClick({ node: nodes.find(n => n.id === id) || { id, data, position: { x: 0, y: 0 } }, event: $event } as any)"
@@ -4619,7 +4803,7 @@ onBeforeUnmount(() => {
                       type="button"
                       class="node-run-status"
                       :class="`is-${nodeRuns[id].status}`"
-                      :aria-label="`查看${data.label}任务详情`"
+                      :aria-label="`查看${actionStepLabel(data.tool, data.label)}任务详情`"
                       title="查看任务详情"
                       @click.stop="openNodeDetail(id)"
                     >
@@ -4636,21 +4820,33 @@ onBeforeUnmount(() => {
                       <el-icon><Delete /></el-icon>
                     </button>
                   </div>
-                  <strong>{{ data.label }}</strong>
+                  <strong>{{ actionStepLabel(data.tool, data.label) }}</strong>
                   <small>{{ data.desc }}</small>
-                  <el-tag
-                    v-if="data.tool"
-                    size="small"
-                    :type="data.risk === 'CAUTION' ? 'warning' : 'info'"
-                    effect="plain"
-                    >{{
-                      nodeRuns[id]
-                        ? nodeRunLabel(nodeRuns[id])
-                        : data.risk === "CAUTION"
-                          ? "需确认"
-                          : "受控能力"
-                    }}</el-tag
-                  >
+                  <div class="node-tags">
+                    <el-tag
+                      v-if="data.tool"
+                      size="small"
+                      :type="data.risk === 'CAUTION' ? 'warning' : 'info'"
+                      effect="plain"
+                      >{{
+                        nodeRuns[id]
+                          ? nodeRunLabel(nodeRuns[id])
+                          : data.risk === "CAUTION"
+                            ? "需确认"
+                            : "受控能力"
+                      }}</el-tag
+                    >
+                    <el-tag
+                      v-if="data.tool && getToolDependencyState(data.tool).hasDep && !getToolDependencyState(data.tool).isReady"
+                      size="small"
+                      type="danger"
+                      effect="plain"
+                      class="node-dep-tag"
+                      :title="`${getToolDependencyState(data.tool).depName}：${getToolDependencyState(data.tool).statusText}`"
+                    >
+                      {{ getToolDependencyState(data.tool).statusText }}
+                    </el-tag>
+                  </div>
                 </div>
                 <Handle
                   v-if="id !== '__end__'"
@@ -4997,7 +5193,7 @@ onBeforeUnmount(() => {
           ><span v-if="selectedNodeIds.length > 1"
             >已多选 {{ selectedNodeIds.length }} 个节点：Ctrl+C 批量复制 / Delete 批量删除</span
           ><span v-else-if="selectedNode"
-            >已选节点：{{ selectedNode.data.label
+            >已选节点：{{ actionStepLabel(selectedNode.data.tool, selectedNode.data.label)
             }}{{
               selectedNode.data.nodeKind === "system"
                 ? "（固定保留）"
@@ -5041,7 +5237,7 @@ onBeforeUnmount(() => {
          >
             <div class="node-editor-header">
               <div class="node-editor-title-row">
-                <h5 class="node-editor-title">已选节点 · {{ selectedToolNode.data.label }}</h5>
+                <h5 class="node-editor-title">已选节点 · {{ actionStepLabel(selectedToolNode.data.tool, selectedToolNode.data.label) }}</h5>
                 <el-tag
                   size="small"
                   :type="agentOf(selectedToolNode.data.tool)?.risk === 'SAFE' ? 'info' : 'warning'"
@@ -5054,6 +5250,36 @@ onBeforeUnmount(() => {
               <p class="node-editor-desc">
                 {{ agentOf(selectedToolNode.data.tool)?.desc || '在授权目标范围内执行具体的检测与分析任务。' }}
               </p>
+              <div
+                v-if="selectedToolDepState.hasDep"
+                class="node-dep-notice-card"
+                :class="selectedToolDepState.isReady ? 'is-ready' : 'is-missing'"
+              >
+                <div class="node-dep-notice-head">
+                  <el-icon class="node-dep-notice-icon">
+                    <CircleCheck v-if="selectedToolDepState.isReady" />
+                    <Warning v-else />
+                  </el-icon>
+                  <div class="node-dep-notice-info">
+                    <span class="node-dep-notice-title">
+                      {{ selectedToolDepState.depName }}：{{ selectedToolDepState.statusText }}
+                    </span>
+                    <p class="node-dep-notice-desc">
+                      与检测依赖页面使用同一份检测结果。执行前仍会核验工具可用性、目标授权和步骤参数。
+                    </p>
+                  </div>
+                </div>
+                <div v-if="!selectedToolDepState.isReady" class="node-dep-notice-foot">
+                  <el-button
+                    type="warning"
+                    size="small"
+                    plain
+                    @click="goToSetupDependencies"
+                  >
+                    前往依赖检测与安装
+                  </el-button>
+                </div>
+              </div>
             </div>
 
             <div class="node-editor-body">
@@ -5671,6 +5897,26 @@ onBeforeUnmount(() => {
                 />
               </el-select>
             </div>
+            <div class="library-filter-row">
+              <el-checkbox
+                v-model="onlyAvailableCapabilities"
+                size="small"
+                class="library-avail-checkbox"
+              >
+                仅显示本机可用能力
+              </el-checkbox>
+              <el-tooltip content="刷新环境依赖检测状态" placement="top" :show-after="350">
+                <button
+                  type="button"
+                  class="quiet-icon-button library-refresh-dep"
+                  :disabled="dependencyLoading"
+                  aria-label="刷新环境依赖"
+                  @click="loadDependencies(true)"
+                >
+                  <el-icon :class="{ 'is-loading': dependencyLoading }"><Refresh /></el-icon>
+                </button>
+              </el-tooltip>
+            </div>
             <div
               id="workflow-capability-library-body"
               class="library-section-body"
@@ -5685,6 +5931,7 @@ onBeforeUnmount(() => {
                   :class="{
                     caution: agent.risk !== 'SAFE',
                     'is-selected': selectedToolNode?.data.tool === agent.tool,
+                    'dep-missing': getToolDependencyState(agent.tool).hasDep && !getToolDependencyState(agent.tool).isReady,
                   }"
                   :data-tool="agent.tool"
                   draggable="true"
@@ -5696,10 +5943,19 @@ onBeforeUnmount(() => {
                   <span class="library-copy"
                     ><strong>{{ agent.name }}</strong
                     ><small>{{ agent.desc }}</small
-                    ><em
-                      >{{ phaseOf(agent.phase).shortLabel }} ·
-                      {{ agent.risk === "SAFE" ? "低影响" : "需人工确认" }}</em
-                    ></span
+                    ><em>
+                      <span>{{ phaseOf(agent.phase).shortLabel }} ·
+                      {{ agent.risk === "SAFE" ? "低影响" : "需人工确认" }}</span>
+                      <span
+                        v-if="getToolDependencyState(agent.tool).hasDep"
+                        class="library-dep-tag"
+                        :class="getToolDependencyState(agent.tool).isReady ? 'is-ready' : 'is-missing'"
+                        :title="`${getToolDependencyState(agent.tool).depName}：${getToolDependencyState(agent.tool).statusText}`"
+                      >
+                        {{ getToolDependencyState(agent.tool).statusText }}
+                      </span>
+                      <span v-else class="library-dep-tag is-builtin">免依赖</span>
+                    </em></span
                   >
                   <el-tooltip
                     content="加入选定阶段"
@@ -5784,6 +6040,11 @@ onBeforeUnmount(() => {
             :inert="!suggestExpanded"
           >
             <div class="suggest-content-inner">
+              <details class="suggest-explainer">
+                <summary>建议如何生成</summary>
+                <p>根据当前节点、所属阶段和有向连线分析执行顺序、并行分支与汇合依赖；拖动位置不影响执行顺序。</p>
+                <p>先检查本地规则，再由大模型结合平台能力补充建议。当前不读取扫描结果、授权端口或本机依赖状态，这些仍需执行前核验。</p>
+              </details>
               <p v-if="suggestNote" class="suggest-note">{{ suggestNote }}</p>
               <div
                 v-if="!suggestions.length && !suggestLoading"
@@ -5806,7 +6067,7 @@ onBeforeUnmount(() => {
                     >{{ suggestionKindLabel(item.kind) }}</el-tag
                   >
                 </header>
-                <p>{{ localizeSuggestionText(item.detail) }}</p>
+                  <MarkdownBody :content="localizeSuggestionText(item.detail)" />
                 <div v-if="item.action" class="suggest-actions">
                   <el-button
                     size="small"
@@ -5990,7 +6251,7 @@ onBeforeUnmount(() => {
     <!-- 工作流步骤 PoC / 模板挑选弹窗 -->
     <el-dialog
       v-model="workflowPocDialogVisible"
-      :title="`选择 ${selectedToolNode?.data.label || '扫描器'} PoC / 模板`"
+      :title="`选择 ${selectedToolNode ? actionStepLabel(selectedToolNode.data.tool, selectedToolNode.data.label) : '扫描器'} PoC / 模板`"
       class="app-dialog app-dialog--wide poc-picker-dialog"
       align-center
       destroy-on-close
@@ -6523,6 +6784,26 @@ onBeforeUnmount(() => {
   margin: 0 !important;
   padding: 0 12px !important;
 }
+.editor-head-actions :deep(.el-button.is-active) {
+  border-color: color-mix(
+    in srgb,
+    var(--app-accent) 24%,
+    var(--app-border)
+  ) !important;
+  background: var(--app-accent-soft-strong) !important;
+  color: var(--app-text) !important;
+}
+.editor-head-actions :deep(.el-button.is-active:hover) {
+  border-color: color-mix(
+    in srgb,
+    var(--app-accent) 34%,
+    var(--app-border)
+  ) !important;
+  background: var(--app-accent-soft-strong) !important;
+}
+.editor-head-actions :deep(.el-button.is-active .el-icon) {
+  color: var(--app-accent) !important;
+}
 .flow-canvas {
   position: relative;
   flex: 1 1 auto;
@@ -6844,6 +7125,10 @@ onBeforeUnmount(() => {
     0 0 0 2px color-mix(in srgb, var(--app-accent) 22%, transparent),
     var(--fluent-card-shadow);
 }
+.workflow-node.has-missing-dep {
+  border-style: dashed;
+  border-color: color-mix(in srgb, #d83b01 70%, var(--app-border-strong));
+}
 .workflow-node--system {
   width: 126px;
   min-height: 72px;
@@ -6929,6 +7214,24 @@ onBeforeUnmount(() => {
   align-self: flex-start;
   margin-top: 2px;
   font-size: 10px;
+}
+.node-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+}
+.node-tags .el-tag {
+  align-self: auto;
+  margin-top: 0;
+  font-size: 10px;
+}
+.node-tags .node-dep-tag {
+  border-color: color-mix(in srgb, #d83b01 40%, transparent);
+  color: #d83b01;
+  background: color-mix(in srgb, #d83b01 10%, transparent);
+  font-weight: 600;
 }
 .node-remove {
   display: grid;
@@ -7137,9 +7440,9 @@ onBeforeUnmount(() => {
 .workflow-library-tabs :deep(.el-segmented) {
   --el-segmented-color: var(--app-muted);
   --el-segmented-bg-color: var(--app-surface-soft);
-  --el-segmented-item-selected-color: #ffffff;
-  --el-segmented-item-selected-bg-color: var(--app-accent);
-  --el-segmented-item-hover-color: #ffffff;
+  --el-segmented-item-selected-color: var(--app-text);
+  --el-segmented-item-selected-bg-color: var(--app-surface-strong);
+  --el-segmented-item-hover-color: var(--app-text);
   --el-segmented-item-hover-bg-color: transparent;
   --el-segmented-item-active-bg-color: transparent;
   --el-border-radius-base: var(--fluent-radius-circular);
@@ -7169,12 +7472,12 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.08) !important;
 }
 .workflow-library-tabs :deep(.el-segmented__item.is-selected) {
-  color: #ffffff !important;
+  color: var(--app-text) !important;
   font-weight: 600;
 }
 .workflow-library-tabs :deep(.el-segmented__item-selected) {
-  background: var(--app-accent) !important;
-  border: none !important;
+  background: var(--app-surface-strong) !important;
+  border: 1px solid color-mix(in srgb, var(--app-border) 85%, transparent) !important;
   border-radius: var(--fluent-radius-circular);
   box-shadow: var(--fluent-shadow-2);
   box-sizing: border-box;
@@ -7211,7 +7514,7 @@ onBeforeUnmount(() => {
   background-color: var(--app-accent);
 }
 .workflow-library-tabs :deep(.el-segmented__item.is-selected) .tab-node-badge {
-  background-color: #ffffff;
+  background-color: var(--app-accent);
 }
 .node-info-list {
   display: flex;
@@ -7532,10 +7835,18 @@ onBeforeUnmount(() => {
   margin-top: 6px;
 }
 .poc-tag-item {
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  max-width: 100%;
+  height: auto;
+  min-height: 20px;
+  padding: 3px 7px;
+  border-radius: var(--fluent-radius-small, 4px);
+  white-space: normal;
+  line-height: 1.4;
   font-size: 11px;
+}
+.poc-tag-item :deep(.el-tag__content) {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .poc-tag-more {
   cursor: pointer;
@@ -7667,6 +7978,62 @@ onBeforeUnmount(() => {
   color: var(--app-muted);
   font-size: var(--type-micro);
   line-height: 1.6;
+}
+.node-dep-notice-card {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: var(--fluent-radius-control);
+  border: 1px solid var(--app-border);
+  background: var(--app-surface-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.node-dep-notice-card.is-ready {
+  border-color: color-mix(in srgb, #107c41 40%, var(--app-border));
+  background: color-mix(in srgb, #107c41 6%, var(--app-surface-soft));
+}
+.node-dep-notice-card.is-ready .node-dep-notice-icon {
+  color: #107c41;
+}
+.node-dep-notice-card.is-missing {
+  border-color: color-mix(in srgb, #d83b01 45%, var(--app-border));
+  background: color-mix(in srgb, #d83b01 7%, var(--app-surface-soft));
+}
+.node-dep-notice-card.is-missing .node-dep-notice-icon {
+  color: #d83b01;
+}
+.node-dep-notice-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.node-dep-notice-icon {
+  font-size: 16px;
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+.node-dep-notice-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.node-dep-notice-title {
+  font-size: var(--type-caption);
+  font-weight: 600;
+  color: var(--app-text);
+}
+.node-dep-notice-desc {
+  margin: 0;
+  font-size: var(--type-micro);
+  color: var(--app-muted);
+  line-height: 1.45;
+}
+.node-dep-notice-foot {
+  display: flex;
+  justify-content: flex-end;
 }
 .node-editor-hint {
   margin: 10px 0 0;
@@ -7813,12 +8180,14 @@ onBeforeUnmount(() => {
 .suggest-panel {
   display: flex;
   flex: 0 0 auto;
+  min-width: 0;
+  min-height: 0;
   max-height: min(220px, 28vh);
   flex-direction: column;
   gap: 8px;
   margin: 8px 0 0;
   padding: 12px 0 0;
-  overflow: auto;
+  overflow: hidden;
   overscroll-behavior: contain;
   border-top: 1px solid var(--app-border);
   scrollbar-width: thin;
@@ -7841,9 +8210,14 @@ onBeforeUnmount(() => {
 }
 .suggest-content {
   display: block;
-  max-height: 520px;
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  overscroll-behavior: contain;
   opacity: 1;
   transition: max-height var(--fluent-collapse-motion, 260ms
         cubic-bezier(0.1, 0.9, 0.2, 1)),
@@ -7851,11 +8225,14 @@ onBeforeUnmount(() => {
 }
 .suggest-content-inner {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 8px;
   overflow: visible;
 }
 .suggest-panel.collapsed .suggest-content {
   max-height: 0;
+  overflow: hidden;
   opacity: 0;
   pointer-events: none;
 }
@@ -7873,6 +8250,10 @@ onBeforeUnmount(() => {
   text-align: left;
   cursor: pointer;
 }
+.suggest-toggle > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .suggest-chevron {
   flex: none;
   margin-top: 2px;
@@ -7882,6 +8263,7 @@ onBeforeUnmount(() => {
 }
 .suggest-head {
   display: flex;
+  flex: none;
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
@@ -7901,6 +8283,21 @@ onBeforeUnmount(() => {
   color: var(--app-muted);
   font-size: var(--type-micro);
   line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.suggest-explainer {
+  min-width: 0;
+  color: var(--app-muted);
+  font-size: var(--type-micro);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.suggest-explainer summary {
+  color: var(--app-accent);
+  cursor: pointer;
+}
+.suggest-explainer p {
+  margin: 6px 0 0;
 }
 .suggest-empty {
   padding: 10px 12px;
@@ -7912,6 +8309,8 @@ onBeforeUnmount(() => {
 }
 .suggest-card {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 6px;
   padding: 10px 11px;
   border: 1px solid var(--app-border);
@@ -7924,22 +8323,30 @@ onBeforeUnmount(() => {
 }
 .suggest-card header {
   display: flex;
-  align-items: center;
+  min-width: 0;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
 }
 .suggest-card strong {
+  flex: 1;
   min-width: 0;
-  overflow: hidden;
   font-size: var(--type-caption);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.suggest-card header .el-tag {
+  flex: none;
 }
 .suggest-card p {
+  min-width: 0;
   margin: 0;
   color: var(--app-text);
   font-size: var(--type-micro);
   line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .suggest-actions {
   display: flex;
@@ -8123,6 +8530,32 @@ onBeforeUnmount(() => {
 .capability-library-head :deep(.el-select__wrapper) {
   min-height: 32px;
 }
+.library-filter-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+  margin-bottom: 2px;
+  padding: 0 2px;
+}
+.library-avail-checkbox {
+  font-size: var(--type-micro);
+}
+.library-refresh-dep {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--fluent-radius-control);
+  color: var(--app-muted);
+  cursor: pointer;
+  background: transparent;
+  border: none;
+}
+.library-refresh-dep:hover:not(:disabled) {
+  background: var(--app-surface-soft);
+  color: var(--app-text);
+}
 .library-item {
   position: relative;
   display: grid;
@@ -8140,6 +8573,10 @@ onBeforeUnmount(() => {
 .library-item:hover {
   border-color: var(--app-accent);
 }
+.library-item.dep-missing {
+  border-color: color-mix(in srgb, #d83b01 62%, var(--app-border));
+  background: color-mix(in srgb, #d83b01 7%, var(--app-surface-strong));
+}
 .library-item.caution {
   border-color: color-mix(in srgb, #d69a2b 48%, var(--app-border));
   background: color-mix(in srgb, #d69a2b 9%, var(--app-surface-strong));
@@ -8152,6 +8589,18 @@ onBeforeUnmount(() => {
     var(--app-surface-strong)
   );
   box-shadow: none;
+}
+.library-item.is-selected::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--app-accent);
+  transform: translateY(-50%);
+  pointer-events: none;
 }
 .library-icon {
   display: grid;
@@ -8177,9 +8626,41 @@ onBeforeUnmount(() => {
   line-height: 1.45;
 }
 .library-copy em {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
   color: var(--app-muted);
   font-size: var(--type-micro);
   font-style: normal;
+}
+.library-dep-tag {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  line-height: 1.2;
+}
+.library-dep-tag.is-ready {
+  background: color-mix(in srgb, #107c41 14%, transparent);
+  color: #107c41;
+}
+.library-dep-tag.is-missing {
+  background: color-mix(in srgb, #d83b01 14%, transparent);
+  color: #d83b01;
+  font-weight: 600;
+}
+.library-dep-tag.is-builtin {
+  background: color-mix(in srgb, var(--app-accent) 12%, transparent);
+  color: var(--app-accent);
+}
+:root[data-system-theme="dark"] .library-dep-tag.is-ready {
+  color: #54b079;
+  background: rgba(84, 176, 121, 0.16);
+}
+:root[data-system-theme="dark"] .library-dep-tag.is-missing {
+  color: #f76363;
+  background: rgba(247, 99, 99, 0.16);
 }
 .library-add {
   display: grid;

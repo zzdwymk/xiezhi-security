@@ -21,9 +21,60 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class ScannerPocSelectionServiceTests {
   @TempDir Path root;
+
+  @ParameterizedTest
+  @ValueSource(strings = {"afrog_scan", "xray_scan", "nuclei_scan"})
+  void resolvedWebMetadataDoesNotBreakSnapshotAndPocChangesStillBlockExecution(String toolCode) throws Exception {
+    String source = ScannerPocSelectionService.sourceForTool(toolCode);
+    byte[] content = "id: snapshot-fixture".getBytes(StandardCharsets.UTF_8);
+    Path file = root.resolve("fixture.yaml");
+    Files.write(file, content);
+    VulnerabilityDefinition item = poc("AP-1234567890ABCDEF12345678", source, "fixture.yaml", "SAFE", content);
+    VulnerabilityDefinitionRepository repository = mock(VulnerabilityDefinitionRepository.class);
+    when(repository.findAllByVulnerabilityCodeIn(List.of(item.getVulnerabilityCode()))).thenReturn(List.of(item));
+    ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+    ScannerPocSelectionService selection = new ScannerPocSelectionService(
+        repository, mapper, root.toString(), root.toString(), root.toString());
+    String plain = mapper.writeValueAsString(Map.of("pocCodes", List.of(item.getVulnerabilityCode())));
+    String withTarget = mapper.writeValueAsString(Map.of("pocCodes", List.of(item.getVulnerabilityCode()),
+        com.bachelor.toolbox.target.WebTargetResolver.PARAM_RESOLVED_BASES, List.of("http://127.0.0.1")));
+    String hash = selection.selectionHash(toolCode, plain);
+    assertThat(selection.selectionHash(toolCode, withTarget)).isEqualTo(hash);
+
+    var dependencies = mock(com.bachelor.toolbox.dependency.DependencyDetectionService.class);
+    when(dependencies.detect()).thenReturn(new com.bachelor.toolbox.dependency.SystemDependenciesResponse(
+        "test", "test", "test", List.of()));
+    var snapshots = new com.bachelor.toolbox.task.TaskSnapshotService(mapper,
+        mock(com.bachelor.toolbox.vulnerability.DetectionRuleRepository.class), dependencies, selection, root.toString());
+    var task = new com.bachelor.toolbox.task.SecurityTask();
+    task.setToolCode(toolCode);
+    task.setRequestJson(withTarget);
+    var target = new com.bachelor.toolbox.target.AuthorizedTarget();
+    target.setId(1L);
+    target.setName("snapshot fixture");
+    target.setTargetValue("127.0.0.1");
+    target.setTargetType("IP");
+    target.setAuthorizationNote("fixture authorization");
+    SecurityTool tool = mock(SecurityTool.class);
+    when(tool.code()).thenReturn(toolCode);
+    snapshots.capture(task, target, tool);
+    assertThat(task.getNucleiTemplateHashSnapshot()).isEqualTo(hash);
+    assertThat(task.getAuthorizationSnapshotHash()).hasSize(64);
+    snapshots.assertCurrentMatches(task, target, tool);
+    assertThat(task.getRequestJson()).isEqualTo(withTarget);
+
+    String unknown = mapper.writeValueAsString(Map.of("pocCodes", List.of(item.getVulnerabilityCode()), "unexpected", true));
+    assertThatThrownBy(() -> selection.selectionHash(toolCode, unknown)).hasMessageContaining("未允许的参数");
+    Files.writeString(file, "id: changed");
+    assertThatThrownBy(() -> selection.selectionHash(toolCode, withTarget)).hasMessageContaining("文件已变化");
+    assertThatThrownBy(() -> snapshots.assertCurrentMatches(task, target, tool))
+        .isInstanceOf(com.bachelor.toolbox.common.ApiException.class);
+  }
 
   @Test
   void resolvesAllFromTheTrustedSourceWithoutReceivingEveryCode() throws Exception {

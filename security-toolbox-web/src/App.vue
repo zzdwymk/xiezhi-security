@@ -35,7 +35,7 @@ import { useConversationStore } from "./stores/conversations";
 import { useEngineStore } from "./stores/engine";
 import { AUTH_EXPIRED_EVENT } from "./authToken";
 import { endpoints, connectTaskEventFeed, type TaskProgressEvent } from "./api";
-import { aiToolLabel } from "./utils/aiPresentation";
+import { aiToolLabel, displayKnownTestName, displayConversationTitle } from "./utils/aiPresentation";
 import { toErrorMessage } from "./utils/errorMessage";
 import { useSelectionIndicator } from "./composables/useSelectionIndicator";
 import { taskbarProgress } from "./utils/taskbarProgress";
@@ -855,9 +855,9 @@ onBeforeUnmount(() => {
                 >
                   <el-icon><ChatDotRound /></el-icon>
                   <span>
-                    <strong>{{ conversation.title }}</strong>
+                    <strong>{{ displayConversationTitle(conversation) }}</strong>
                     <small
-                      >{{ conversation.targetName }} ·
+                      >{{ displayKnownTestName(conversation.targetName) }} ·
                       {{
                         conversations.taskIds(conversation).length
                       }}

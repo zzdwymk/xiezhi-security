@@ -31,6 +31,8 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class PostScanPathServiceTests {
   private static final long PROJECT = 1L;
@@ -142,6 +144,17 @@ class PostScanPathServiceTests {
     assertThatThrownBy(() -> service.plan(new PostScanPathRequest(PROJECT, 7L, List.of(11L), "follow up")))
         .isInstanceOf(ApiException.class)
         .hasMessageContaining("不属于当前授权目标");    verify(pathRepository, never()).save(any());
+    verify(agentTools, never()).executeAuthorizedPlan(any(), any());
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"TIMEOUT", "SKIPPED"})
+  void permitsDraftFollowUpForExistingFindingsFromTerminalTasks(String status) throws Exception {
+    sourceTask.setStatus(status);
+
+    PostScanPathResponse response = service.plan(new PostScanPathRequest(PROJECT, 7L, List.of(11L), "规划后续验证"));
+
+    assertThat(response.status()).isEqualTo("DRAFT");
     verify(agentTools, never()).executeAuthorizedPlan(any(), any());
   }
 }

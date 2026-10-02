@@ -68,9 +68,16 @@ public class AiProjectIndexService {
 
   /** Returns false on any indexing failure; agent planning must continue with direct context. */
   public boolean refreshBestEffort(Long projectId) {
+    return refreshBestEffort(projectId, null);
+  }
+
+  /** Include a server-resolved reference so old records survive the bounded snapshot cutoff. */
+  public boolean refreshBestEffort(Long projectId, AiAgentRuntimeClient.IndexDocument reference) {
     if (!runtime.enabled()) return false;
     try {
-      runtime.indexProject(projectId, collect(projectId));
+      List<AiAgentRuntimeClient.IndexDocument> documents = new ArrayList<>(collect(projectId));
+      if (reference != null) documents.add(0, reference);
+      runtime.indexProject(projectId, documents);
       return true;
     } catch (RuntimeException ex) {
       log.debug("AI project index refresh skipped for project {}: {}", projectId, ex.getMessage());
@@ -119,8 +126,28 @@ public class AiProjectIndexService {
                     "target",
                     Map.of("targetId", target.getId().toString(), "kind", "authorized-target")));
 
-    List<SecurityTask> projectTasks =
-        tail(tasks.findAllByProjectIdOrderByCreatedAtAsc(projectId), 60);
+    List<SecurityTask> allProjectTasks = tasks.findAllByProjectIdOrderByCreatedAtAsc(projectId);
+    List<SecurityTask> projectTasks = tail(allProjectTasks, 60);
+    List<Long> allTaskIds = allProjectTasks.stream().map(SecurityTask::getId).toList();
+    List<Finding> allProjectFindings = allTaskIds.isEmpty() ? List.of()
+        : findings.findAllByTaskIdInOrderByCreatedAtAsc(allTaskIds);
+    if (!links.isEmpty() || !allProjectTasks.isEmpty()) {
+      // Project-level questions need the whole project's summary even when the UI
+      // retains one selected target. Individual evidence remains target-scoped.
+      output.add("项目总览与漏洞整改汇总",
+          "项目编号：" + projectId + "\n项目名称：" + safe(project.getName())
+              + "\n项目目标数：" + links.size() + "\n项目目标："
+              + targetById.values().stream().map(t -> "#" + t.getId() + " " + safe(t.getName()) + " " + safe(t.getTargetValue())).sorted().collect(Collectors.joining("；"))
+              + "\n检测任务总数：" + allProjectTasks.size() + "\n任务状态统计："
+              + allProjectTasks.stream().collect(Collectors.groupingBy(t -> safe(t.getStatus()), java.util.TreeMap::new, Collectors.counting()))
+              + "\n发现记录总数（包括配置风险点，不等于可利用漏洞数）：" + allProjectFindings.size()
+              + "\n发现等级统计：" + allProjectFindings.stream().collect(Collectors.groupingBy(f -> safe(f.getSeverity()), java.util.TreeMap::new, Collectors.counting()))
+              + "\n发现状态统计：" + allProjectFindings.stream().collect(Collectors.groupingBy(f -> safe(f.getStatus()), java.util.TreeMap::new, Collectors.counting()))
+              + "\n最近发现摘要（最多15条，非全部明细）：\n"
+              + tail(allProjectFindings, 15).stream().map(f -> "#" + f.getId() + " 目标#" + f.getTargetId() + " " + safe(f.getTitle()) + " " + safe(f.getSeverity()) + " " + safe(f.getStatus())).collect(Collectors.joining("\n"))
+              + "\n只用于项目级已有资料分析；不授予跨目标执行权限。扫描记录不证明已成功利用。",
+          "project", Map.of("projectId", projectId.toString(), "kind", "project-overview"));
+    }
     for (SecurityTask task : projectTasks) {
       output.add(
           "检测任务 #" + task.getId(),
@@ -131,12 +158,13 @@ public class AiProjectIndexService {
               "规则：" + safe(task.getRuleCode()),
               "漏洞编号：" + safe(task.getVulnerabilityCode()),
               "状态：" + safe(task.getStatus()),
-              "进度：" + task.getProgress() + "%",
+              "最近执行事件：" + AiContextService.redact(task.getProgressMessage(), 300),
               "创建时间：" + time(task.getCreatedAt()),
               "结束时间：" + time(task.getFinishedAt()),
               "终止原因：" + safe(task.getTerminationReason()),
-              "错误摘要：" + limit(task.getErrorMessage(), 1000),
-              "结果摘要：" + limit(task.getResultJson(), 2500)),
+              "错误摘要：" + AiContextService.redact(task.getErrorMessage(), 1000),
+              "结果摘要：" + AiContextService.redact(task.getResultJson(), 2500),
+              "执行日志摘要：" + AiContextService.redact(task.getExecutionLog(), 1500)),
           "task",
           Map.of(
               "taskId",
@@ -147,11 +175,7 @@ public class AiProjectIndexService {
               "scan-task"));
     }
 
-    List<Long> indexedTaskIds = projectTasks.stream().map(SecurityTask::getId).toList();
-    List<Finding> projectFindings =
-        indexedTaskIds.isEmpty()
-            ? List.of()
-            : tail(findings.findAllByTaskIdInOrderByCreatedAtAsc(indexedTaskIds), 60);
+    List<Finding> projectFindings = tail(allProjectFindings, 60);
     for (Finding finding : projectFindings) {
       output.add(
           "漏洞发现：" + safe(finding.getTitle()),

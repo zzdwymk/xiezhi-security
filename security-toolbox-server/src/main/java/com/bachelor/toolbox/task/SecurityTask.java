@@ -47,6 +47,10 @@ public class SecurityTask {
   @Column(columnDefinition = "TEXT")
   private String dependencyTaskIds;
 
+  /** Graph prerequisites requiring success; null preserves legacy all-success dependencies. */
+  @Column(columnDefinition = "TEXT")
+  private String successDependencyTaskIds;
+
   @Column(length = 16)
   private String effectiveRisk;
 

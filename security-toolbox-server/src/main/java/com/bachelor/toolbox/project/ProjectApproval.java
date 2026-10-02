@@ -51,6 +51,31 @@ public class ProjectApproval {
 
   private Instant decidedAt;
 
+  @com.fasterxml.jackson.annotation.JsonIgnore
+  @Column(columnDefinition = "text")
+  private String aiRequestJson;
+
+  @com.fasterxml.jackson.annotation.JsonIgnore
+  @Column(columnDefinition = "text")
+  private String aiPlanJson;
+
+  @com.fasterxml.jackson.annotation.JsonIgnore
+  @Column(columnDefinition = "text")
+  private String aiDispatchJson;
+
+  @com.fasterxml.jackson.annotation.JsonIgnore
+  @Column(columnDefinition = "text")
+  private String aiRecoveryJson;
+
+  @com.fasterxml.jackson.annotation.JsonIgnore
+  @Column(columnDefinition = "text")
+  private String aiTargetBinding;
+
+  @com.fasterxml.jackson.annotation.JsonIgnore
+  @Column(columnDefinition = "text")
+  private String aiProjectBinding;
+
+
   @PrePersist
   void prePersist() {
     createdAt = Instant.now();

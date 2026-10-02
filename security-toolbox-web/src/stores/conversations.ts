@@ -2,6 +2,8 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import type { CopilotReference } from "../types/copilot";
 import type { CopilotMode } from "../types/copilot";
+import { isPublicAiProgressEvent, publicAiProgressText } from "../utils/aiPresentation";
+import { normalizeAiExecutionDecision, type AiExecutionDecision, type AiExecutionIntent } from "../utils/aiIntent";
 
 export interface ConversationStep {
   id?: string;
@@ -10,6 +12,8 @@ export interface ConversationStep {
   group?: number;
   dependsOnNodeIds?: string[];
   toolCode: string;
+  parameters?: Record<string, unknown>;
+  risk?: string;
   title: string;
   reason?: string;
   taskId?: number;
@@ -92,6 +96,7 @@ export interface ConversationAgentEvent {
   maxAttempts?: number;
   approvalId?: string;
   approvalStatus?: string;
+  executionDecision?: AiExecutionDecision;
   citation?: ConversationCitation;
   contractVersion?: number;
   runId?: string;
@@ -111,6 +116,8 @@ export interface ConversationAgentEvent {
   actionCount?: number;
   taskIds?: number[];
   recoverable?: boolean;
+  recorded?: boolean;
+  eventTiming?: string;
   createdAt?: string;
 }
 
@@ -161,10 +168,15 @@ export interface ConversationMessage {
   citations?: ConversationCitation[];
   planningStage?: string;
   planningStatus?: string;
+  progressStartedAt?: string;
+  progressFinishedAt?: string;
+  modelStreamStatus?: "running" | "completed" | "failed" | "interrupted";
   reference?: ConversationReference;
   references?: ConversationReference[];
   copilotMode?: CopilotMode;
   executionRequested?: boolean;
+  executionIntent?: AiExecutionIntent;
+  executionDecision?: AiExecutionDecision;
   approvalId?: number | string;
   approvalStatus?: string;
   replyToId?: string;
@@ -270,7 +282,7 @@ function loadConversations(): ConversationThread[] {
     }
     const legacy = JSON.parse(localStorage.getItem(LEGACY_STORAGE_KEY) || "[]");
     return Array.isArray(legacy)
-      ? migrateLegacy(legacy as LegacyConversationRecord[])
+      ? normalizeConversations(migrateLegacy(legacy as LegacyConversationRecord[]))
       : [];
   } catch {
     return [];
@@ -299,6 +311,8 @@ function sanitizeStoredAgentEvent(event: ConversationAgentEvent) {
   return {
     id: event.id,
     type: event.type,
+    stage: event.stage,
+    summary: isPublicAiProgressEvent(event) ? publicAiProgressText(event.summary || event.message) || undefined : undefined,
     status: event.status,
     stepId: event.stepId,
     stepIndex: finiteNumber(event.stepIndex),
@@ -310,6 +324,7 @@ function sanitizeStoredAgentEvent(event: ConversationAgentEvent) {
     maxAttempts: finiteNumber(event.maxAttempts),
     approvalId: event.approvalId,
     approvalStatus: event.approvalStatus,
+    executionDecision: normalizeAiExecutionDecision(event.executionDecision),
     citation: event.citation
       ? sanitizeStoredCitation(event.citation)
       : undefined,
@@ -333,21 +348,30 @@ function sanitizeStoredAgentEvent(event: ConversationAgentEvent) {
       ? event.taskIds.map(Number).filter((id) => Number.isFinite(id) && id > 0)
       : undefined,
     recoverable: event.recoverable,
+    recorded: event.recorded,
+    eventTiming: event.eventTiming,
     createdAt: event.createdAt,
   } satisfies ConversationAgentEvent;
 }
 
-function normalizeConversations(
+export function normalizeConversations(
   items: ConversationThread[],
 ): ConversationThread[] {
   return items.map((thread) => ({
     ...thread,
     messages: (thread.messages || []).map((message) => ({
       ...message,
+      // A saved browser stream cannot still be connected after a reload.
+      // Keep task states independent; their server records may still be running.
+      modelStreamStatus: message.modelStreamStatus === "running"
+        || (!message.modelStreamStatus && ["sending", "planning", "running", "answering"].includes(message.status))
+        ? "interrupted" : message.modelStreamStatus,
+      executionIntent: message.executionIntent === "AUTO" ? "AUTO" : undefined,
+      executionDecision: normalizeAiExecutionDecision(message.executionDecision),
       taskIds: Array.isArray(message.taskIds) ? message.taskIds : [],
       steps: Array.isArray(message.steps) ? message.steps : [],
       agentEvents: Array.isArray(message.agentEvents)
-        ? message.agentEvents.map(sanitizeStoredAgentEvent)
+        ? message.agentEvents.filter(isPublicAiProgressEvent).map(sanitizeStoredAgentEvent)
         : [],
       citations: Array.isArray(message.citations)
         ? message.citations.map(sanitizeStoredCitation)

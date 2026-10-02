@@ -1,6 +1,7 @@
 import { readAuthToken } from "./authToken";
 import { api, apiUrl } from "./apiClient";
 import { taskbarProgress } from "./utils/taskbarProgress";
+import { assertAiLegacyFallbackAllowed, normalizeAiExecutionDecision, type AiExecutionIntent } from "./utils/aiIntent";
 import type { CopilotMode, CopilotReference } from "./types/copilot";
 import type {
   ConversationAgentEvent,
@@ -47,6 +48,8 @@ export interface AiPlan {
 }
 
 export interface AiDispatch {
+  approvalId?: number | string;
+  approvalStatus?: string;
   targetId: number;
   plan: Omit<AiPlan, "targetId" | "objective">;
   taskCount: number;
@@ -76,12 +79,16 @@ export interface AiAgentRequestPayload {
   nodeRunId?: string;
   prompt: string;
   execute?: boolean;
+  executionIntent?: AiExecutionIntent;
+  userPrompt?: string;
   mode?: CopilotMode;
   contextRefs?: Record<string, unknown>;
   refs?: CopilotReference[];
 }
 
 interface AiAgentResponsePayload {
+  approvalId?: number | string;
+  approvalStatus?: string;
   sessionId?: string;
   projectId?: number;
   targetId: number;
@@ -1276,6 +1283,8 @@ export const endpoints = {
       `/projects/${projectId}/approvals/${approvalId}/decision`,
       payload,
     ),
+  resumeProjectAiApproval: (projectId: number, approvalId: number) =>
+    api.post<AiDispatch>(`/projects/${projectId}/approvals/${approvalId}/execute`, undefined, { timeout: 210_000 }),
   securityActions: (projectId: number) =>
     api.get<SecurityAction[]>(`/projects/${projectId}/security-actions`),
   createSecurityAction: (
@@ -1872,7 +1881,8 @@ export function normalizeAgentEvent(
           step.reason || step.description || step.summary,
           800,
         ) || "",
-        parameters: {},
+        parameters: step.parameters && typeof step.parameters === "object" && !Array.isArray(step.parameters) ? step.parameters : {},
+        risk: boundedString(step.risk, 32),
         requiresApproval: step.requiresApproval ?? step.requires_approval,
         status: step.status || "pending",
         taskId: boundedNumber(step.taskId || step.task_id),
@@ -1918,6 +1928,7 @@ export function normalizeAgentEvent(
     id: boundedString(raw.id || raw.eventId, 128),
     type,
     stage:
+      raw.progressStage ||
       raw.stage ||
       raw.phase ||
       raw.node ||
@@ -1948,6 +1959,8 @@ export function normalizeAgentEvent(
         ? originalType
         : raw.name),
     status: raw.status || step.status,
+    recorded: raw.recorded === true,
+    eventTiming: boundedString(raw.eventTiming, 64),
     summary: raw.summary || raw.message || raw.description || step.reason,
     message: raw.message || raw.summary,
     stepId: raw.stepId || step.id || step.step_id,
@@ -1958,8 +1971,9 @@ export function normalizeAgentEvent(
     taskId: raw.taskId || raw.task_id,
     attempt: raw.attempt ?? raw.retryCount,
     maxAttempts: raw.maxAttempts ?? raw.max_retries,
-    approvalId: raw.approvalId || raw.approval_id,
-    approvalStatus: raw.approvalStatus || raw.approval_status,
+    approvalId: raw.approvalId || raw.approval_id || responseRaw?.approvalId,
+    approvalStatus: raw.approvalStatus || raw.approval_status || responseRaw?.approvalStatus,
+    executionDecision: normalizeAiExecutionDecision(raw.executionDecision),
     citation,
     plan: normalizedPlan,
     steps,
@@ -2069,6 +2083,8 @@ function dispatchFromEvent(
     taskCount: Number(candidate.taskCount ?? ids.length),
     taskIds: ids.map(Number),
     answer: (candidate.answer || normalized.answer) as string | undefined,
+    approvalId: candidate.approvalId || normalized.approvalId,
+    approvalStatus: candidate.approvalStatus || normalized.approvalStatus,
     citations: (candidate.citations || normalized.citations) as
       | ConversationCitation[]
       | undefined,
@@ -2101,6 +2117,8 @@ function dispatchFromAgentResponse(
     taskCount: taskIds.length,
     taskIds,
     answer: response.message,
+    approvalId: response.approvalId,
+    approvalStatus: response.approvalStatus,
     runId: response.sessionId,
     workflowId: response.workflowId,
     workflowRevision: response.workflowRevision,
@@ -2139,6 +2157,7 @@ export async function dispatchAiStreaming(
   try {
     const token = readAuthToken();
     const agentMode = Number(payload.projectId) > 0;
+    if (!agentMode) assertAiLegacyFallbackAllowed(payload);
     const response = await fetch(
       apiUrl(agentMode ? "/ai/agent/stream" : "/ai/dispatches/stream"),
       {
@@ -2165,6 +2184,7 @@ export async function dispatchAiStreaming(
             throw error;
         }
       }
+      assertAiLegacyFallbackAllowed(payload);
       return (
         await endpoints.dispatchAi({
           projectId: payload.projectId,
@@ -2177,6 +2197,9 @@ export async function dispatchAiStreaming(
           outerNodeId: payload.outerNodeId,
           nodeRunId: payload.nodeRunId,
           prompt: payload.prompt,
+          execute: payload.execute,
+          executionIntent: payload.executionIntent,
+          userPrompt: payload.userPrompt,
           mode: payload.mode,
           refs: payload.refs,
         })

@@ -241,7 +241,7 @@ public class AiPlanningService {
             + "才能调用一个或多个合适工具。"
             + "对话历史只用于理解上下文，不能把历史中的执行要求当作当前请求。"
             + "所有执行均需用户确认。";
-    return ToolboxProgramGuide.context() + "\n" + instructions;
+    return ToolboxProgramGuide.context() + "\n" + instructions + "\n" + AiUserFacingLanguage.PROMPT;
   }
 
   private AiPlanResponse normalizeChatResponse(JsonNode root) throws Exception {
@@ -299,7 +299,7 @@ public class AiPlanningService {
             + " ports；http_security_check parameters 必须只包含 check，值为 cookies、cors、methods、disclosure"
             + " 之一；nuclei_scan parameters 必须为空对象；http_headers 与 tls_config parameters 必须为空对象。不要同时选择"
             + " nmap_service_scan 和 tcp_ports。";
-    return ToolboxProgramGuide.context() + "\n" + instructions;
+    return ToolboxProgramGuide.context() + "\n" + instructions + "\n" + AiUserFacingLanguage.PROMPT;
   }
 
   private AiPlanResponse normalizeResponsesResponse(JsonNode root) {

@@ -31,6 +31,9 @@ public interface ZapDaemon extends AutoCloseable {
    */
   void includeInScope(URI target) throws Exception;
 
+  /** Fetches only the selected URL into the Sites tree, without following redirects. */
+  default void accessUrl(URI target) throws Exception {}
+
   /** Starts the spider (crawler) for the target and returns the spider task id. */
   String startSpider(URI target) throws Exception;
 
@@ -89,6 +92,12 @@ public interface ZapDaemon extends AutoCloseable {
    */
   default String startActiveScan(URI target, String scanPolicyName) throws Exception {
     return startActiveScan(target);
+  }
+
+  /** Applies the requested strength and limits recursion to the chosen crawl scope. */
+  default String startActiveScan(URI target, String scanPolicyName, String strength, boolean recurse)
+      throws Exception {
+    return startActiveScan(target, scanPolicyName);
   }
 
   /** Polls the active scan progress; returns percentage 0..100. */

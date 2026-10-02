@@ -28,6 +28,8 @@ import { useAuthStore } from "../stores/auth";
 import { useConversationStore } from "../stores/conversations";
 import { endpoints, type TaskControlStatus } from "../api";
 import { toErrorMessage } from "../utils/errorMessage";
+import AiRelaySettings from "../components/AiRelaySettings.vue";
+import MarkdownBody from "../components/MarkdownBody.vue";
 
 const router = useRouter();
 const auth = useAuthStore();
@@ -108,8 +110,16 @@ async function changeLoginPassword() {
   }
 }
 const aiDialog = ref(false);
+const aiSettingsTab = ref("relay");
+const aiRelayEditor = ref<InstanceType<typeof AiRelaySettings>>();
+const aiRelayEnabled = ref<boolean | null>(null);
+const aiModelList = ref<string[]>([]);
+const aiModelsLoading = ref(false);
+const aiModelsMessage = ref("");
 const aiLoading = ref(false);
 const aiTesting = ref(false);
+const aiTestResult = ref<{ type: "success" | "error"; title: string; reply?: string } | null>(null);
+const aiTestPrompt = ref("你好，请简短介绍自己。");
 const embeddingTesting = ref(false);
 const aiSaving = ref(false);
 const themeMode = ref<ThemeMode>("system");
@@ -167,14 +177,28 @@ const aiForm = reactive<AiSettingsInput>({
   proxyMode: false,
 });
 
+watch(aiForm, () => { aiTestResult.value = null; });
+const aiSettingsBusy = computed(() => aiSaving.value || aiTesting.value || embeddingTesting.value || aiModelsLoading.value || Boolean(aiRelayEditor.value?.busy));
+let aiConnectionRevision = 0;
+watch(() => [aiForm.baseUrl, aiForm.apiKey, aiForm.proxyMode], () => {
+  aiConnectionRevision += 1;
+  aiModelList.value = [];
+  aiModelsMessage.value = "";
+}, { flush: "sync" });
+
 const retrievalBackendOptions = [
   { label: "BM25 关键词", value: "bm25" },
   { label: "真实向量嵌入", value: "real_embedding" },
 ];
-const embeddingConnectionModeOptions = [
-  { label: "复用对话连接", value: "shared" },
+const embeddingConnectionModeOptions = computed(() => [
+  { label: "复用对话连接", value: "shared", disabled: Boolean(aiRelayEnabled.value) },
   { label: "单独配置", value: "custom" },
-];
+]);
+watch(() => [aiRelayEnabled.value, aiForm.retrievalBackend], () => {
+  if (aiRelayEnabled.value && aiForm.retrievalBackend === "real_embedding") {
+    aiForm.embeddingConnectionMode = "custom";
+  }
+});
 
 const hasIndependentEmbedding = computed(
   () =>
@@ -190,8 +214,8 @@ const aiServiceSummary = computed(() => {
   const chatSummary =
     status.provider === "openai-compatible"
       ? status.proxyMode
-        ? `对话使用本地代理连接（${status.model}）`
-        : `对话服务已连接（${status.model}）`
+        ? `已配置本地代理（${status.model}）`
+        : `已配置对话服务（${status.model}）`
       : "对话使用本地规则";
   const embeddingConnection =
     status.embeddingConnectionMode === "shared"
@@ -223,9 +247,9 @@ const toolDownloadSummary = computed(() => {
 const aiConnectionAlert = computed(() => {
   if (aiStatus.value?.provider === "openai-compatible") {
     return {
-      type: "success" as const,
+      type: "info" as const,
       title: aiStatus.value.proxyMode
-        ? "对话服务已通过本地代理连接"
+        ? "已配置本地代理，请测试连接以确认模型可用。"
         : aiStatus.value.keyHint
           ? `对话服务已启用（${aiStatus.value.keyHint}）`
           : "对话服务已启用",
@@ -249,7 +273,9 @@ function rerunSetup() {
 }
 
 function troubleshootWithCopilot() {
-  const provider = aiStatus.value?.provider || "local-rules";
+  const relayEnabled = aiRelayEnabled.value === true;
+  const retrievalBackend = aiStatus.value?.retrievalBackend || aiForm.retrievalBackend;
+  const provider = relayEnabled ? "openai-compatible" : aiStatus.value?.provider || "local-rules";
   copilot.open({
     mode: "troubleshoot",
     prompt: "请根据当前 AI 服务的非敏感配置状态，给出连接诊断和配置检查步骤。",
@@ -261,16 +287,17 @@ function troubleshootWithCopilot() {
         "仅共享 provider、model、代理模式与连接配置状态；API Key、Key 提示和 API 地址均未发送。",
       data: {
         provider,
-        model: aiStatus.value?.model || aiForm.model,
-        retrievalBackend:
-          aiStatus.value?.retrievalBackend || aiForm.retrievalBackend,
-        embeddingModel:
-          aiStatus.value?.embeddingModel || aiForm.embeddingModel,
-        embeddingConnectionMode:
-          aiStatus.value?.embeddingConnectionMode ||
-          aiForm.embeddingConnectionMode,
-        proxyMode: Boolean(aiStatus.value?.proxyMode),
+        model: relayEnabled ? "API 线路自动轮询" : aiStatus.value?.model || aiForm.model,
+        relayEnabled,
+        retrievalBackend,
+        embeddingEnabled: retrievalBackend === "real_embedding",
+        ...(retrievalBackend === "real_embedding" ? {
+          embeddingModel: aiStatus.value?.embeddingModel || aiForm.embeddingModel,
+          embeddingConnectionMode: aiStatus.value?.embeddingConnectionMode || aiForm.embeddingConnectionMode,
+        } : {}),
+        proxyMode: !relayEnabled && Boolean(aiStatus.value?.proxyMode),
         configured:
+          relayEnabled ||
           aiStatus.value?.provider === "openai-compatible" ||
           hasIndependentEmbedding.value,
       },
@@ -395,7 +422,7 @@ function copyPwdResetField(field: "username" | "password") {
 }
 
 function errorText(error: unknown, fallback: string) {
-  return toErrorMessage(error, fallback);
+  return toErrorMessage(error, fallback).replace(/^(?:Error:\s*)?UserFacingError:\s*/i, "");
 }
 
 function clearDataErrorText(error: unknown) {
@@ -555,7 +582,20 @@ async function changeWindowMaterial(material: WindowMaterial) {
 }
 
 async function loadAiSettings(open = false) {
-  if (open) aiDialog.value = true;
+  aiTestResult.value = null;
+  if (open) {
+    aiSettingsTab.value = window.toolboxDesktop ? "relay" : "single";
+    aiDialog.value = true;
+  }
+  if (window.toolboxDesktop?.getAiRelaySettings) {
+    try {
+      const relay = await window.toolboxDesktop.getAiRelaySettings();
+      aiRelayEnabled.value = relay.enabled;
+      if (open) aiSettingsTab.value = "relay";
+    } catch {
+      aiRelayEnabled.value = null;
+    }
+  }
   if (!window.toolboxDesktop?.getAiSettings) return;
   aiLoading.value = true;
   try {
@@ -576,6 +616,27 @@ async function loadAiSettings(open = false) {
   }
 }
 
+async function fetchAiModels() {
+  const revision = aiConnectionRevision;
+  aiModelsLoading.value = true;
+  aiModelsMessage.value = "";
+  try {
+    if (!window.toolboxDesktop?.listAiModels) throw new Error("当前桌面版本不支持获取模型列表");
+    const result = await window.toolboxDesktop.listAiModels({ ...aiForm });
+    if (revision !== aiConnectionRevision) return;
+    aiModelList.value = result.models;
+    aiModelsMessage.value = result.models.length
+      ? `已获取 ${result.models.length} 个模型，可筛选选择，也可手动输入。`
+      : "此 API 未返回模型列表，请手动输入模型名称。";
+  } catch (error) {
+    if (revision !== aiConnectionRevision) return;
+    aiModelsMessage.value = errorText(error, "获取模型列表失败，可手动输入模型名称。")
+      .replace(/^(?:Error:\s*)?UserFacingError:\s*/i, "");
+  } finally {
+    aiModelsLoading.value = false;
+  }
+}
+
 async function testEmbedding() {
   if (!window.toolboxDesktop?.testEmbeddingSettings)
     return ElMessage.warning("向量连接测试仅支持桌面应用");
@@ -591,20 +652,26 @@ async function testEmbedding() {
 }
 
 async function testAi() {
+  if (aiSettingsBusy.value) return;
+  if (!aiTestPrompt.value.trim() || aiTestPrompt.value.length > 4000) return ElMessage.warning("请输入测试内容，最多 4000 字。");
   if (!window.toolboxDesktop?.testAiSettings)
     return ElMessage.warning("AI 设置仅支持桌面应用");
   aiTesting.value = true;
+  aiTestResult.value = null;
   try {
-    const result = await window.toolboxDesktop.testAiSettings({ ...aiForm });
-    ElMessage.success(`连接成功，模型返回：${result.message}`);
+    const result = await window.toolboxDesktop.testAiSettings({ ...aiForm }, aiTestPrompt.value);
+    aiTestResult.value = { type: "success", title: "连接测试成功", reply: result.reply };
   } catch (error) {
-    ElMessage.error(errorText(error, "AI API 连接失败"));
+    const message = errorText(error, "AI API 连接失败");
+    aiTestResult.value = { type: "error", title: `本次连接测试失败：${message}` };
+    ElMessage.error(message);
   } finally {
     aiTesting.value = false;
   }
 }
 
 async function saveAi() {
+  if (aiSettingsBusy.value) return;
   if (!window.toolboxDesktop?.saveAiSettings)
     return ElMessage.warning("AI 设置仅支持桌面应用");
   try {
@@ -621,7 +688,6 @@ async function saveAi() {
     aiStatus.value = await window.toolboxDesktop.saveAiSettings({ ...aiForm });
     aiForm.apiKey = "";
     aiForm.embeddingApiKey = "";
-    aiDialog.value = false;
     ElMessage.success("AI 设置已保存，本地服务已重新加载");
   } catch (error) {
     if (error !== "cancel" && error !== "close")
@@ -938,6 +1004,7 @@ const notifDialog = ref(false);
 const notifLoading = ref(false);
 const notifSaving = ref(false);
 const notifEnabled = ref(true);
+const notifWorkflowSkip = ref(true);
 const notifSeverities = ref<string[]>(["CRITICAL", "HIGH", "MEDIUM"]);
 const notifSummary = computed(() => {
   if (!isDesktop) return "网页模式不支持系统级任务提醒";
@@ -959,6 +1026,7 @@ async function loadNotificationSettings(open = false) {
     const settings = await window.toolboxDesktop.getNotificationSettings();
     notifSeverities.value = settings.severities.slice();
     notifEnabled.value = settings.taskCompleteNotifications;
+    notifWorkflowSkip.value = settings.workflowSkipNotifications !== false;
   } catch (error) {
     ElMessage.error(errorText(error, "无法读取任务提醒设置"));
   } finally {
@@ -976,9 +1044,11 @@ async function saveNotificationSettings() {
     const settings = await window.toolboxDesktop.saveNotificationSettings({
       severities: notifSeverities.value,
       taskCompleteNotifications: notifEnabled.value,
+      workflowSkipNotifications: notifWorkflowSkip.value,
     });
     notifSeverities.value = settings.severities.slice();
     notifEnabled.value = settings.taskCompleteNotifications;
+    notifWorkflowSkip.value = settings.workflowSkipNotifications !== false;
     notifDialog.value = false;
     ElMessage.success("任务提醒设置已保存");
   } catch (error) {
@@ -1162,7 +1232,7 @@ watch(
             <el-icon class="settings-row-icon"><ChatDotRound /></el-icon>
             <span class="settings-row-copy">
               <strong>AI 模型服务</strong>
-              <small>{{ aiServiceSummary }}</small>
+              <small>{{ aiRelayEnabled ? '多 API 轮询已启用 · 管理线路与连接设置' : aiServiceSummary }}</small>
             </span>
             <el-icon class="settings-row-chevron"><ArrowRight /></el-icon>
           </button>
@@ -1314,6 +1384,16 @@ watch(
               >
             </span>
             <el-switch v-model="notifEnabled" />
+          </div>
+          <div class="settings-row settings-row--control">
+            <el-icon class="settings-row-icon"><Warning /></el-icon>
+            <span class="settings-row-copy">
+              <strong>工作流跳过提醒</strong>
+              <small
+                >红队工作流跳过依赖缺失等不可用节点时，以系统通知告知（此开关独立于上方任务完成提醒，仅桌面版生效）</small
+              >
+            </span>
+            <el-switch v-model="notifWorkflowSkip" />
           </div>
           <div class="notif-severity-block">
             <strong>命中以下严重程度时提醒（可多选）</strong>
@@ -1923,91 +2003,47 @@ watch(
     <el-dialog
       v-model="aiDialog"
       title="AI 模型服务"
-      class="app-dialog app-dialog--md ai-model-dialog"
+      class="app-dialog app-dialog--lg ai-model-dialog"
       align-center
       append-to-body
       destroy-on-close
     >
-      <div v-loading="aiLoading" class="ai-settings-dialog">
-        <el-alert
-          v-if="!isDesktop"
-          title="当前是网页模式，请通过 AI_BASE_URL、AI_API_KEY、AI_MODEL 环境变量配置后端。"
-          type="info"
-          :closable="false"
-          show-icon
-        />
-        <el-alert
-          v-else
-          :title="aiConnectionAlert.title"
-          :type="aiConnectionAlert.type"
-          :closable="false"
-          show-icon
-        />
-
-        <el-form label-position="top" class="ai-settings-form">
-          <el-form-item label="API 地址">
-            <el-input
-              v-model="aiForm.baseUrl"
-              placeholder="https://api.openai.com"
-              :disabled="!isDesktop"
-            />
-            <p>
-              支持 CCS 的根地址、以 <code>/v1</code> 结尾的地址，或完整
-              <code>/v1/chat/completions</code> 地址，保存时会自动规范化。
-            </p>
-          </el-form-item>
-          <el-form-item label="CCS 本地代理">
-            <el-switch
-              v-model="aiForm.proxyMode"
-              active-text="通过 CCS / 本地 OpenAI 兼容代理调用"
-              :disabled="!isDesktop"
-            />
-            <p>
-              启用后允许代理不要求 API Key；如果 CCS
-              设置了访问令牌，仍可在下方填写。
-            </p>
-          </el-form-item>
-          <el-form-item v-if="!aiForm.proxyMode" label="API Key">
-            <el-input
-              v-model="aiForm.apiKey"
-              type="password"
-              show-password
-              autocomplete="new-password"
-              :placeholder="
-                aiStatus?.hasApiKey
-                  ? '留空表示继续使用已保存的密钥'
-                  : '请输入 API Key'
-              "
-              :disabled="!isDesktop"
-            />
-            <p>密钥使用 Windows 安全存储加密，不会写入浏览器 localStorage。</p>
-          </el-form-item>
-          <el-form-item label="模型名称">
-            <el-input
-              v-model="aiForm.model"
-              placeholder="gpt-4.1-mini"
-              :disabled="!isDesktop"
-            />
-          </el-form-item>
-          <el-form-item label="知识检索方式">
+      <el-tabs v-model="aiSettingsTab" class="ai-service-tabs">
+        <el-tab-pane v-if="isDesktop" label="API 线路" name="relay" :disabled="aiSettingsBusy" />
+        <el-tab-pane label="知识检索" name="single" :disabled="aiSettingsBusy" />
+      </el-tabs>
+      <div v-if="isDesktop" v-show="aiSettingsTab === 'relay'">
+        <p class="ai-active-connection">{{ aiRelayEnabled ? '正在使用已启用的 API 线路' : '当前沿用现有连接；启用 API 线路后替代。' }}</p>
+        <AiRelaySettings ref="aiRelayEditor" @saved-mode="aiRelayEnabled = $event" />
+      </div>
+      <div v-show="aiSettingsTab === 'single'" v-loading="aiLoading" class="ai-settings-dialog">
+        <el-alert v-if="!isDesktop" title="请通过后端环境变量配置模型服务。" type="info" :closable="false" />
+        <el-form label-position="top" class="ai-settings-form" :disabled="aiSettingsBusy">
+          <el-form-item label="知识检索方式" class="ai-stacked-field">
             <el-segmented
               v-model="aiForm.retrievalBackend"
+              class="settings-segmented"
+              block
               :options="retrievalBackendOptions"
               :disabled="!isDesktop"
             />
             <p>
-              BM25 不调用向量服务；真实向量嵌入可复用对话连接，也可单独配置。
+              BM25 无需模型服务；向量检索需要配置 Embedding 模型。
             </p>
           </el-form-item>
           <el-form-item
             v-if="aiForm.retrievalBackend === 'real_embedding'"
             label="向量服务连接方式"
+            class="ai-stacked-field"
           >
             <el-segmented
               v-model="aiForm.embeddingConnectionMode"
+              class="settings-segmented"
+              block
               :options="embeddingConnectionModeOptions"
               :disabled="!isDesktop"
             />
+            <p v-if="aiRelayEnabled">API 线路仅支持对话。请单独配置支持 Embedding 的服务；没有向量服务时可继续使用 BM25。</p>
           </el-form-item>
           <el-form-item
             v-if="
@@ -2052,58 +2088,75 @@ watch(
               :disabled="!isDesktop"
             />
           </el-form-item>
+          <div v-if="aiForm.retrievalBackend === 'real_embedding'" class="ai-inline-actions">
+            <el-button :loading="embeddingTesting" :disabled="!isDesktop || aiSaving" @click="testEmbedding">测试向量连接</el-button>
+            <el-button v-if="aiForm.embeddingConnectionMode === 'custom' && aiStatus?.hasEmbeddingApiKey" type="danger" text :disabled="aiSaving" @click="clearEmbeddingApiKey">清除向量密钥</el-button>
+          </div>
+          <details class="ai-legacy-settings">
+            <summary>现有连接（兼容设置）</summary>
+            <p class="ai-legacy-note">仅保留旧版连接。新增 API 请使用“API 线路”；启用后旧连接不再处理对话。</p>
+          <el-form-item label="API 地址">
+            <el-input
+              v-model="aiForm.baseUrl"
+              placeholder="https://api.openai.com"
+              :disabled="!isDesktop"
+            />
+            <p>
+              支持基础地址或以 /v1 结尾的地址。
+            </p>
+          </el-form-item>
+          <el-form-item label="本地代理兼容">
+            <el-switch
+              v-model="aiForm.proxyMode"
+              active-text="使用本地 Responses 代理"
+              :disabled="!isDesktop"
+            />
+            <p>
+              本地代理可不填密钥；如需访问令牌，在下方填写。
+            </p>
+          </el-form-item>
+          <el-form-item label="API Key">
+            <el-input
+              v-model="aiForm.apiKey"
+              type="password"
+              show-password
+              autocomplete="new-password"
+              :placeholder="
+                aiStatus?.hasApiKey
+                  ? '留空表示继续使用已保存的密钥'
+                  : '请输入 API Key'
+              "
+              :disabled="!isDesktop"
+            />
+            <p>密钥由 Windows 安全存储加密。</p>
+          </el-form-item>
+          <el-form-item label="模型名称">
+            <div style="display: flex; gap: 8px; width: 100%">
+              <el-select v-model="aiForm.model" filterable allow-create default-first-option placeholder="选择或手动输入模型 ID" :disabled="!isDesktop || aiModelsLoading" style="flex: 1; min-width: 0">
+                <el-option v-for="model in aiModelList" :key="model" :label="model" :value="model" />
+              </el-select>
+              <el-button :loading="aiModelsLoading" :disabled="!isDesktop || aiSaving || !aiForm.baseUrl.trim()" @click="fetchAiModels">获取模型列表</el-button>
+            </div>
+            <p v-if="aiModelsMessage">{{ aiModelsMessage }}</p>
+          </el-form-item>
+            <el-form-item label="测试内容">
+              <el-input v-model="aiTestPrompt" type="textarea" :rows="3" maxlength="4000" show-word-limit placeholder="输入你想发送给模型的内容" />
+            </el-form-item>
+            <div class="ai-inline-actions">
+              <el-button :loading="aiTesting" :disabled="!isDesktop || aiSettingsBusy || !aiTestPrompt.trim()" @click="testAi">发送测试</el-button>
+              <el-button v-if="aiStatus?.hasApiKey" type="danger" text :disabled="aiSaving" @click="clearApiKey">清除密钥</el-button>
+            </div>
+            <el-alert v-if="aiTestResult" :title="aiTestResult.title" :type="aiTestResult.type" :closable="false" />
+                <MarkdownBody v-if="aiTestResult?.reply" class="ai-test-reply" :content="aiTestResult.reply" />
+          </details>
         </el-form>
       </div>
       <template #footer>
         <div class="app-dialog__footer-row">
-          <el-button
-            v-if="aiStatus?.hasApiKey"
-            type="danger"
-            plain
-            :disabled="aiSaving"
-            @click="clearApiKey"
-            >清除对话密钥</el-button
-          >
-          <el-button
-            v-if="
-              aiForm.retrievalBackend === 'real_embedding' &&
-              aiForm.embeddingConnectionMode === 'custom' &&
-              aiStatus?.hasEmbeddingApiKey
-            "
-            type="danger"
-            plain
-            :disabled="aiSaving"
-            @click="clearEmbeddingApiKey"
-            >清除向量密钥</el-button
-          >
           <span class="app-dialog__footer-spacer" />
-          <el-button @click="aiDialog = false">取消</el-button>
-          <el-tooltip
-            content="会真实发送一次极短对话请求，可能产生少量费用"
-            placement="top"
-            :show-after="350"
-          ><el-button
-              :loading="aiTesting"
-              :disabled="!isDesktop || aiSaving"
-              aria-label="测试连接"
-              @click="testAi"
-              >测试连接</el-button
-            ></el-tooltip
-          >
-          <el-button
-            v-if="aiForm.retrievalBackend === 'real_embedding'"
-            :loading="embeddingTesting"
-            :disabled="!isDesktop || aiSaving || aiTesting"
-            @click="testEmbedding"
-            >测试向量连接</el-button
-          >
-          <el-button
-            type="primary"
-            :loading="aiSaving"
-            :disabled="!isDesktop || aiTesting"
-            @click="saveAi"
-            >保存并应用</el-button
-          >
+          <el-button :disabled="aiSettingsBusy" @click="aiDialog = false">取消</el-button>
+          <el-button v-if="aiSettingsTab === 'relay'" type="primary" :loading="aiRelayEditor?.saving" :disabled="aiSettingsBusy || !aiRelayEditor?.canSave" @click="aiRelayEditor?.save()">保存</el-button>
+          <el-button v-else type="primary" :loading="aiSaving" :disabled="!isDesktop || aiSettingsBusy" @click="saveAi">保存</el-button>
         </div>
       </template>
     </el-dialog>
@@ -2112,7 +2165,7 @@ watch(
 
 <style scoped>
 .ai-settings-dialog {
-  min-height: 320px;
+  min-height: 0;
 }
 .ai-settings-form,
 .icp-settings-form {
@@ -2129,6 +2182,17 @@ watch(
 .icp-settings-form code {
   font-family: Consolas, monospace;
 }
+.settings-segmented { width: 100%; }
+.settings-segmented :deep(.el-segmented__item) { min-height: 32px; font-weight: 600; }
+.ai-stacked-field :deep(.el-form-item__content) { flex-direction: column; align-items: stretch; gap: 10px; }
+.ai-settings-form p { flex-basis: 100%; margin-top: 10px; font-size: 12px; line-height: 1.6; }
+.ai-stacked-field p { width: 100%; margin: 0; }
+.ai-test-reply { max-height: 220px; overflow-y: auto; padding: 14px; background: var(--app-surface-soft); border-radius: var(--fluent-radius-control); }
+.ai-active-connection { margin: 0 0 16px; color: var(--app-muted); font-size: 12px; }
+.ai-legacy-settings { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--app-border); }
+.ai-legacy-settings summary { cursor: pointer; color: var(--app-muted); font-size: 13px; }
+.ai-legacy-settings .ai-legacy-note { margin: 12px 0 20px; }
+.ai-inline-actions { display: flex; gap: 12px; margin: 12px 0; }
 .icp-settings-dialog {
   min-height: 190px;
 }

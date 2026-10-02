@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .progress import emit_progress
+
 import asyncio
 import hashlib
 import hmac
@@ -18,12 +20,15 @@ from .authorization import (
     requested_port_intervals,
 )
 from .config import settings
+from .diagnostics import diagnostic_scope, record_diagnostic
 from .model import (
     AgentPlanner,
     HIGH_RISK_TOOLS,
     MODEL_PROVIDER_FAILURE_CODES,
     PlannerOutputError,
+    contract_repair_budget,
     model_failure_code,
+    safe_model_diagnostic,
 )
 from .schemas import (
     EvidenceBundle,
@@ -96,6 +101,9 @@ TOOL_STAGE = {
     "nuclei_scan": "validate",
     "afrog_scan": "validate",
     "xray_scan": "validate",
+    "zap_scan": "validate",
+    "fscan_scan": "map",
+    "msf_scan": "validate",
 }
 
 CONTRACT_VERSION = 3
@@ -572,15 +580,33 @@ class LedgerAgentRuntime:
             int(request_budget.get("maxLlmCalls", settings.max_rag_llm_calls)),
         )
         if call_count > max_llm_calls:
-            raise PlannerOutputError("LLM call budget exceeded")
-        result = await asyncio.wait_for(
-            method(*args), timeout=settings.llm_timeout_seconds
-        )
-        return result, call_count
+            error = PlannerOutputError("LLM call budget exceeded")
+            error.llm_calls_used = 0
+            raise error
+        with diagnostic_scope(state.get("runId", "")), contract_repair_budget(max_llm_calls - call_count) as repair_budget:
+            try:
+                result = await asyncio.wait_for(
+                    method(*args), timeout=settings.llm_timeout_seconds
+                )
+            except Exception as exc:
+                exc.llm_calls_used = 1 + repair_budget.used
+                stage = {"route": "ROUTE", "assess_evidence": "EVIDENCE", "grounded_plan": "GROUNDED",
+                         "plan": "LEGACY"}.get(getattr(method, "__name__", ""), "UNKNOWN")
+                category, diagnostics = safe_model_diagnostic(exc)
+                record_diagnostic(stage, "REJECTED", category, diagnostics, attempt=exc.llm_calls_used)
+                raise
+            return result, call_count + repair_budget.used
+
+    @staticmethod
+    def _failed_llm_call_count(state: AgentState, error: Exception) -> int:
+        return state.get("llmCallCount", 0) + getattr(error, "llm_calls_used", 1)
 
     async def _route_node(self, state: AgentState) -> AgentState:
+        emit_progress("ROUTING")
         try:
             if not settings.rag_enabled:
+                if state["request"].get("executionIntent") == "AUTO":
+                    raise PlannerOutputError("AUTO intent requires the trusted routing boundary")
                 plan, call_count = await self._bounded_planner_call(
                     state, self.planner.plan, state["request"]
                 )
@@ -641,9 +667,7 @@ class LedgerAgentRuntime:
             return {
                 "intentDecision": routed,
                 "plan": plan,
-                "llmCallCount": min(
-                    state.get("llmCallCount", 0) + 1, settings.max_rag_llm_calls
-                ),
+                "llmCallCount": self._failed_llm_call_count(state, exc),
                 "terminationReason": termination_reason,
                 "terminalStatus": "FAILED",
                 "event": _event(
@@ -659,8 +683,9 @@ class LedgerAgentRuntime:
             return "engage"
         if state.get("intentDecision", {}).get("needsRetrieval"):
             return "retrieve"
-        if state.get("intentDecision", {}).get("intent") == "CLARIFY":
-            return "engage"
+        # A clarification still needs the routed, budgeted output contract.
+        # Sending it straight to engage would invoke the legacy planner without
+        # the route decision, allowing an ambiguous question to produce actions.
         return "generate"
 
     async def _retrieval_guard_node(self, state: AgentState) -> AgentState:
@@ -771,6 +796,7 @@ class LedgerAgentRuntime:
         }
 
     async def _retrieve_node(self, state: AgentState) -> AgentState:
+        emit_progress("RETRIEVING")
         request = state["request"]
         round_number = state.get("retrievalRound", 0)
         query = state.get("retrievalQueries", [""])[-1]
@@ -821,6 +847,7 @@ class LedgerAgentRuntime:
                 ),
             }
         bundles = [*state.get("evidenceBundles", []), bundle]
+        emit_progress("EVIDENCE_READY", count=len(bundle.get("items", [])))
         status = "READY" if bundle.get("items") else "EMPTY"
         sources = sorted(
             {
@@ -850,6 +877,7 @@ class LedgerAgentRuntime:
         if state.get("terminationReason") == "RETRIEVAL_FAILED":
             return {}
         bundle = state.get("activeEvidence") or self._empty_evidence(state)
+        emit_progress("ASSESSING")
         try:
             decision, call_count = await self._bounded_planner_call(
                 state,
@@ -867,9 +895,7 @@ class LedgerAgentRuntime:
                 else "EVIDENCE_ASSESSMENT_FAILED"
             )
             return {
-                "llmCallCount": min(
-                    state.get("llmCallCount", 0) + 1, settings.max_rag_llm_calls
-                ),
+                "llmCallCount": self._failed_llm_call_count(state, exc),
                 "terminationReason": termination_reason,
                 "terminalStatus": "FAILED",
                 "plan": self._clarify_plan("证据评估未通过严格契约，已安全停止。", failed=True),
@@ -933,6 +959,7 @@ class LedgerAgentRuntime:
                     ),
                 }
             )
+        emit_progress("ASSESSED", decision=update.get("evidenceDecision", {}).get("decision"))
         return update
 
     def _route_after_assessment(self, state: AgentState) -> str:
@@ -969,6 +996,7 @@ class LedgerAgentRuntime:
         }
 
     async def _grounded_generation_node(self, state: AgentState) -> AgentState:
+        emit_progress("GENERATING")
         active_evidence = state.get("activeEvidence") or self._empty_evidence(state)
         try:
             plan, call_count = await self._bounded_planner_call(
@@ -987,9 +1015,7 @@ class LedgerAgentRuntime:
                 else "GROUNDED_GENERATION_FAILED"
             )
             return {
-                "llmCallCount": min(
-                    state.get("llmCallCount", 0) + 1, settings.max_rag_llm_calls
-                ),
+                "llmCallCount": self._failed_llm_call_count(state, exc),
                 "terminationReason": termination_reason,
                 "terminalStatus": "FAILED",
                 "plan": self._clarify_plan("有依据的回答未通过严格契约，已安全停止。", failed=True),
@@ -1030,7 +1056,7 @@ class LedgerAgentRuntime:
         else:
             guard_update = await self._guard_node(working)
         plan_event = self._stage_event(
-            plan_update["event"], "engage", "planner", "任务启动阶段已形成测试计划"
+            plan_update["event"], "engage", "planner", None
         )
         guard_event = self._stage_event(
             guard_update["event"], "engage", "authorization_guard", None
@@ -1078,7 +1104,13 @@ class LedgerAgentRuntime:
             "event": _event(
                 "plan",
                 "planner",
-                "Planner 已生成项目级执行计划",
+                (
+                    "已生成受控行动提案，尚未创建检测任务"
+                    if actions
+                    else "已生成澄清回复，尚未执行检测"
+                    if plan.get("intent") == "clarify"
+                    else "已生成问答回复，本轮没有检测动作"
+                ),
                 {
                     "summary": plan.get("summary"),
                     "answer": plan.get("answer"),
@@ -1138,6 +1170,7 @@ class LedgerAgentRuntime:
         }
 
     async def _guard_node(self, state: AgentState) -> AgentState:
+        emit_progress("AUTHORIZING")
         request = state["request"]
         authorization = request.get("authorization", {})
         now = datetime.now(timezone.utc)
@@ -1495,7 +1528,7 @@ class LedgerAgentRuntime:
             return {
                 "toolResults": combined,
                 "executorError": (
-                    "受控工具执行失败"
+                    "检索或行动提案处理失败"
                     if failed or state.get("executorError")
                     else None
                 ),
@@ -1503,7 +1536,11 @@ class LedgerAgentRuntime:
                 "event": _event(
                     "tool",
                     stage,
-                    "红队阶段已完成受控工具处理",
+                    (
+                        f"已处理本地检索 {sum(1 for item in results if item.get('executed'))} 项、"
+                        f"行动提案 {sum(1 for item in results if not item.get('executed'))} 项；"
+                        f"处理失败 {len(failed)} 项，尚未创建检测任务"
+                    ),
                     {
                         "stage": stage,
                         "legacyNode": "executor",
@@ -1524,12 +1561,12 @@ class LedgerAgentRuntime:
         except Exception:
             failed_actions = list(state.get("failedActions", [])) + actions
             return {
-                "executorError": "受控工具执行失败",
+                "executorError": "检索或行动提案处理失败",
                 "failedActions": failed_actions,
                 "event": _event(
                     "tool",
                     stage,
-                    "红队阶段执行失败，稍后进入复测与重试判断",
+                    "检索或行动提案处理失败，将检查是否可重试；尚未创建检测任务",
                     {
                         "stage": stage,
                         "legacyNode": "executor",
@@ -1574,8 +1611,8 @@ class LedgerAgentRuntime:
             return {
                 "event": self._stage_progress(
                     "retest",
-                    "COMPLETED",
-                    "已记录清理与复测入口；当前没有失败动作需要重试",
+                    "SKIPPED",
+                    "没有失败的检索或提案处理需要重试；未执行扫描复测",
                     {
                         "legacyNode": "retry",
                         "retryCount": state.get("retryCount", 0),
@@ -1607,6 +1644,13 @@ class LedgerAgentRuntime:
                 )
             )
             if working.get("guardViolations") or working.get("approvalActions"):
+                # _retry_node clears the prior attempt error; keep the unresolved
+                # failure when the fresh guard prevents the actual retry.
+                working["executorError"] = state.get("executorError") or "重试未通过授权校验"
+                events.append(self._stage_progress(
+                    "retest", "SKIPPED", "重试授权未通过或需要审批，未重试检索或行动提案",
+                    {"legacyNode": "retry", "retryCount": working.get("retryCount", 0)},
+                ))
                 break
             working["executorError"] = None
             working["failedActions"] = []
@@ -1624,19 +1668,19 @@ class LedgerAgentRuntime:
                 self._stage_progress(
                     "retest",
                     "FAILED",
-                    "复测阶段未能重试失败动作",
+                    "检索或行动提案处理仍失败，未能继续重试",
                     {
                         "legacyNode": "retry",
                         "retryCount": working.get("retryCount", 0),
                     },
                 )
             )
-        if not working.get("executorError"):
+        if not working.get("executorError") and not working.get("guardViolations") and not working.get("approvalActions"):
             events.append(
                 self._stage_progress(
                     "retest",
                     "COMPLETED",
-                    "复测阶段已完成",
+                    "失败的检索或行动提案已重新处理；未执行扫描复测",
                     {
                         "legacyNode": "retry",
                         "retryCount": working.get("retryCount", 0),
@@ -1665,7 +1709,7 @@ class LedgerAgentRuntime:
         return {
             "review": update.get("review", {}),
             "event": self._stage_event(
-                update["event"], "report", "reviewer", "报告阶段已复核证据并准备交付"
+                update["event"], "report", "reviewer", None
             ),
         }
 
@@ -1684,7 +1728,7 @@ class LedgerAgentRuntime:
             "event": _event(
                 "retry",
                 "retry",
-                "工具处理将重试；重试前重新校验完整授权快照",
+                "准备重试检索或行动提案处理；先重新校验完整授权快照",
                 {"retryCount": retry_count},
             ),
         }
@@ -1726,7 +1770,7 @@ class LedgerAgentRuntime:
             "event": _event(
                 "review",
                 "reviewer",
-                "Reviewer 已复核执行结果与证据",
+                f"已汇总 {len(proposals)} 个行动提案和 {len(references)} 条检索引用；未核验扫描结果",
                 {
                     "status": review["status"],
                     "referenceCount": len(references),
@@ -1779,7 +1823,12 @@ class LedgerAgentRuntime:
         }
         return {
             "final": final,
-            "event": _event("finish", "finish", f"智能体流程结束：{status}", final),
+            "event": _event("finish", "finish", {
+                "COMPLETED": "本轮回答或行动提案处理结束，检测任务状态需另行查看",
+                "DENIED": "本轮未通过授权校验，尚未创建检测任务",
+                "APPROVAL_REQUIRED": "行动提案等待审批，尚未创建检测任务",
+                "FAILED": "本轮回答或行动提案处理失败，尚未创建检测任务",
+            }[status], final),
         }
 
     async def stream(

@@ -115,8 +115,14 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.invoke("toolbox:reset-random-desktop-login"),
     reimportH2ToPostgres: () =>
       ipcRenderer.invoke("toolbox:reimport-h2-to-postgres"),
-    testAiSettings: (settings) =>
-      ipcRenderer.invoke("toolbox:test-ai-settings", settings),
+    testAiSettings: (settings, prompt) =>
+      ipcRenderer.invoke("toolbox:test-ai-settings", settings, prompt),
+    getAiRelaySettings: () => ipcRenderer.invoke("toolbox:get-ai-relay-settings"),
+    listAiRelayModels: (provider) => ipcRenderer.invoke("toolbox:list-ai-relay-models", provider),
+    listAiModels: (settings) => ipcRenderer.invoke("toolbox:list-ai-models", settings),
+    getAiRelayStatus: () => ipcRenderer.invoke("toolbox:get-ai-relay-status"),
+    saveAiRelaySettings: (settings) => ipcRenderer.invoke("toolbox:save-ai-relay-settings", settings),
+    testAiRelayProvider: (provider, prompt) => ipcRenderer.invoke("toolbox:test-ai-relay-provider", provider, prompt),
     testEmbeddingSettings: (settings) =>
       ipcRenderer.invoke("toolbox:test-embedding-settings", settings),
     saveAiSettings: (settings) =>

@@ -54,6 +54,7 @@ public class SystemDependencyController {
     SseEmitter emitter = new SseEmitter(90_000L);
 
     detectionService.detectStreaming(
+        refresh,
         manifests -> {
           try {
             emitter.send(

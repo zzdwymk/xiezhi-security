@@ -19,11 +19,20 @@ const FAILURE_STATUSES = new Set([
 
 export function taskProgressPercentage(task: TaskProgressLike) {
   if (task.status === "SUCCESS") return 100;
-  return Math.max(0, Math.min(100, Number(task.progress) || 0));
+  if (!hasReportedProgress(task)) return 0;
+  return Math.floor((Number(task.progressCompleted) / Number(task.progressTotal)) * 100);
+}
+
+function hasReportedProgress(task: TaskProgressLike) {
+  const completed = task.progressCompleted;
+  const total = task.progressTotal;
+  return task.progressDeterminate === true && typeof completed === "number"
+    && typeof total === "number" && Number.isFinite(completed) && Number.isFinite(total)
+    && total > 0 && completed >= 0 && completed <= total;
 }
 
 export function taskProgressIndeterminate(task: TaskProgressLike) {
-  return task.status === "RUNNING" && !task.progressDeterminate;
+  return task.status === "RUNNING" && !hasReportedProgress(task);
 }
 
 export function taskProgressStatus(
@@ -48,13 +57,11 @@ export function taskProgressText(task: TaskProgressLike) {
           ? "已拒绝"
           : "失败";
   }
-  if (task.status === "RUNNING" && task.progressDeterminate) {
+  if (task.status === "RUNNING" && hasReportedProgress(task)) {
     const percent = taskProgressPercentage(task);
     const completed = Number(task.progressCompleted);
     const total = Number(task.progressTotal);
-    return total > 0 && completed >= 0
-      ? `${percent}% · ${completed}/${total}`
-      : `${percent}%`;
+    return `工具进度 ${percent}% · ${completed}/${total}`;
   }
   return task.progressMessage?.trim() || "执行中";
 }

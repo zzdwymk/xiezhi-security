@@ -667,8 +667,15 @@ public class TaskExecutionService {
   }
 
   private boolean isTimeout(Exception exception) {
-    String message = exception.getMessage();
-    return message != null && (message.contains("超时") || message.contains("超过"));
+    java.util.Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+    for (Throwable current = exception; current != null && seen.add(current); current = current.getCause()) {
+      if (current instanceof java.net.http.HttpTimeoutException
+          || current instanceof java.net.SocketTimeoutException
+          || current instanceof java.util.concurrent.TimeoutException) return true;
+      String message = current.getMessage();
+      if (message != null && (message.contains("超时") || message.contains("超过"))) return true;
+    }
+    return false;
   }
 
   private boolean isAuthorizationChanged(Exception exception) {

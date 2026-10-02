@@ -27,6 +27,34 @@ CONVERSATION_ID = "conversation-rag-graph"
 POLICY_REVISION = "policy-rag-graph-v2"
 
 
+def test_real_graph_emits_progress_before_model_reply_without_changing_ledger(tmp_path):
+    from app.progress import with_public_progress
+
+    async def run():
+        release = asyncio.Event()
+        class WaitingPlanner(FakePlannerApi):
+            async def route(self, request):
+                await release.wait()
+                return await super().route(request)
+
+        runtime = SecurityAgentRuntime(_seed_store(tmp_path))
+        runtime.planner = WaitingPlanner({
+            "intent": "GENERAL_QA", "needsRetrieval": False,
+            "publicReasonCode": "GENERAL_KNOWLEDGE",
+        })
+        stream = with_public_progress(runtime.stream(_request("live-progress")))
+        first = await asyncio.wait_for(anext(stream), 2)
+        assert first == ("progress", {"stage": "ROUTING"})
+        assert not release.is_set()
+        release.set()
+        remaining = [item async for item in stream]
+        ledger_events = [payload for kind, payload in remaining if kind == "event"]
+        assert ledger_events[-1]["type"] == "finish"
+        assert verify_runtime_event_chain(ledger_events)
+        assert any(kind == "progress" and payload["stage"] == "GENERATING" for kind, payload in remaining)
+    asyncio.run(run())
+
+
 @pytest.fixture(autouse=True)
 def _stable_rag_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     graph_settings = replace(
@@ -287,6 +315,36 @@ def test_general_qa_never_retrieves_and_keeps_v2_provenance(tmp_path: Any) -> No
     assert finish["plannerSource"] == "fake-planner-api"
 
 
+def test_auto_clarification_uses_grounded_contract_and_never_legacy_planner(tmp_path: Any) -> None:
+    class ClarifyingPlanner(FakePlannerApi):
+        async def grounded_plan(self, request, active_evidence, intent_decision):
+            self.grounded_calls.append({"evidence": active_evidence, "intent": intent_decision})
+            assert intent_decision["intent"] == "CLARIFY"
+            assert intent_decision["executionDecision"] == "CLARIFY"
+            assert active_evidence["items"] == []
+            return GroundedPlannerOutput(
+                summary="需要明确请求", answer="你希望分析已有结果，还是进行哪项授权检查？",
+                intent="clarify", knowledgeMode="INSUFFICIENT_EVIDENCE",
+                evidenceRefs=[], actions=[],
+            ).model_dump(mode="json") | {"source": "fake-planner-api"}
+
+    runtime = SecurityAgentRuntime(_seed_store(tmp_path))
+    planner = ClarifyingPlanner({"intent": "CLARIFY", "needsRetrieval": False,
+        "publicReasonCode": "AMBIGUOUS_REQUEST", "executionDecision": "CLARIFY"})
+    runtime.planner = planner
+    request = _request("auto-clarify-routing", "帮我处理一下目标")
+    request = request.model_copy(update={"executionIntent": "AUTO", "currentUserRequest": "帮我处理一下目标"})
+    events = _collect(runtime, request)
+    finish = _assert_v3_envelopes(events, request)
+    assert planner.legacy_plan_calls == 0
+    assert len(planner.grounded_calls) == 1
+    assert planner.assess_calls == []
+    assert finish["plan"]["intent"] == "clarify"
+    assert finish["plan"]["actions"] == []
+    assert finish["plannerSource"] == "fake-planner-api"
+    assert finish["retrievalRoundCount"] == 0
+
+
 def test_project_qa_single_round_is_grounded_in_returned_evidence(tmp_path: Any) -> None:
     runtime = SecurityAgentRuntime(_seed_store(tmp_path))
     planner = FakePlannerApi(_project_route(), [("FINALIZE", None)])
@@ -510,6 +568,105 @@ def test_llm_call_budget_fails_closed_before_grounded_generation(
     assert finish["terminationReason"] == "GROUNDED_GENERATION_FAILED"
     assert finish["plannerSource"] == "harness-fail-closed"
     assert finish["plan"]["actions"] == []
+
+
+@pytest.mark.parametrize("second_valid", [True, False])
+def test_actual_planner_correction_preserves_ledger_and_never_executes_rejected_actions(tmp_path, second_valid):
+    from types import SimpleNamespace
+    from app.model import AgentPlanner
+
+    class Responses:
+        def __init__(self, *values):
+            self.values = list(values)
+            self.calls = []
+
+        async def ainvoke(self, payload):
+            self.calls.append(payload)
+            return SimpleNamespace(content=json.dumps(self.values.pop(0)))
+
+    runtime = SecurityAgentRuntime(_seed_store(tmp_path))
+    planner = AgentPlanner(runtime.index_store)
+    planner._llm_requested = True
+    planner._chain_load_attempted = True
+    planner._intent_chain = Responses(_general_route())
+    invalid = {"answer": "PRIVATE_REJECTED_OUTPUT", "actions": [{"tool": "shell", "parameters": {"command": "do-not-run"}}]}
+    valid = {"summary": "能力说明", "answer": "该页面操作尚未接入助手执行工具。", "intent": "answer",
+             "knowledgeMode": "GENERAL", "evidenceRefs": [], "actions": []}
+    planner._grounded_chain = Responses(invalid, valid if second_valid else invalid)
+    runtime.planner = planner
+    request = _request("rag-correction-valid" if second_valid else "rag-correction-rejected", "What can the assistant do?")
+
+    events = _collect(runtime, request)
+
+    finish = _assert_v3_envelopes(events, request)
+    assert len(planner._grounded_chain.calls) == 2
+    assert finish["plan"]["actions"] == []
+    assert not any(event["type"] == "tool" for event in events)
+    assert "PRIVATE_REJECTED_OUTPUT" not in json.dumps(events)
+    assert "PRIVATE_REJECTED_OUTPUT" not in planner._grounded_chain.calls[1]["contract_repair_feedback"]
+    assert finish["plannerSource"] == ("langchain-grounded" if second_valid else "harness-fail-closed")
+    assert finish["status"] == ("COMPLETED" if second_valid else "FAILED")
+
+
+@pytest.mark.parametrize("requires_approval", [False, True])
+def test_auto_does_not_blanket_approve_but_safe_authorized_workflow_remains_executable(tmp_path, requires_approval):
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+    from app.model import AgentPlanner
+
+    class ModelChain:
+        def __init__(self, stage):
+            self.stage = stage
+
+        async def ainvoke(self, payload):
+            if self.stage == "route":
+                assert payload["current_user_request"] == "现在检查当前授权目标HTTP响应头，不执行其他扫描器"
+                output = {"intent": "ACTION_PLAN", "needsRetrieval": True, "retrievalQuery": "alpha service baseline",
+                          "publicReasonCode": "AUTHORIZED_ACTION_REQUEST", "executionDecision": "EXECUTE"}
+            else:
+                bundle = json.loads(payload["untrusted_evidence"].split("\n", 1)[1].rsplit("\n", 1)[0])
+                refs = [bundle["items"][0]["evidenceId"]]
+                if self.stage == "evidence":
+                    assert "headers" in payload["workflow_capabilities"]
+                    assert json.loads(payload["authorization_context"])["approved"] is False
+                    assert json.loads(payload["authorization_context"])["allowedTools"] == ["http_headers"]
+                    output = {"decision": "FINALIZE", "reasonCodes": ["DIRECT_SUPPORT"], "evidenceRefs": refs}
+                else:
+                    assert payload["execution_intent"] == "AUTO"
+                    assert payload["current_user_request"] == "现在检查当前授权目标HTTP响应头，不执行其他扫描器"
+                    assert "历史旧计划：扫描全部端口" in payload["message"]
+                    assert "历史旧计划" not in payload["current_user_request"]
+                    output = {"summary": "响应头检查", "answer": "在已有授权内检查响应头。", "intent": "plan",
+                              "knowledgeMode": "PROJECT_EVIDENCE", "evidenceRefs": refs,
+                              "actions": [{"workflowNodeId": "headers", "parameters": {}, "evidenceRefs": refs}]}
+            return SimpleNamespace(content=json.dumps(output))
+
+    runtime = SecurityAgentRuntime(_seed_store(tmp_path))
+    planner = AgentPlanner(runtime.index_store)
+    planner._llm_requested = True
+    planner._chain_load_attempted = True
+    planner._auto_intent_chain = ModelChain("route")
+    planner._evidence_chain = ModelChain("evidence")
+    planner._grounded_chain = ModelChain("grounded")
+    runtime.planner = planner
+    now = datetime.now(timezone.utc)
+    data = _request("auto-approved-guard-" + str(requires_approval)).model_dump(mode="json")
+    data.update(executionIntent="AUTO", currentUserRequest="现在检查当前授权目标HTTP响应头，不执行其他扫描器")
+    data["messages"] = [{"role": "user", "content": "历史旧计划：扫描全部端口\n当前请求：检查响应头"}]
+    data["authorization"].update(allowedTools=["http_headers"], allowedPorts="80", approved=False,
+        validFrom=(now - timedelta(hours=1)).isoformat(), expiresAt=(now + timedelta(hours=1)).isoformat())
+    data["workflow"] = [{"nodeId": "headers", "tool": "http_headers", "parameters": {},
+                         "risk": "CAUTION" if requires_approval else "SAFE", "requiresApproval": requires_approval,
+                         "group": 0, "dependsOnNodeIds": []}]
+    request = AgentRequest.model_validate(data)
+    events = _collect(runtime, request)
+    finish = _assert_v3_envelopes(events, request)
+    route = next(event["data"] for event in events if event["type"] == "route")
+    assert route["executionDecision"] == "EXECUTE"
+    assert request.authorization.approved is False
+    assert finish["status"] == ("APPROVAL_REQUIRED" if requires_approval else "COMPLETED")
+    assert len(finish["plan"]["actions"]) == 1
+    assert finish["review"]["proposalCount"] == (0 if requires_approval else 1)
 
 
 def test_retrieval_count_budget_stops_before_a_second_store_call(

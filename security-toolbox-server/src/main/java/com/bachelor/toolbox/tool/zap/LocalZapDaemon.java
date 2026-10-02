@@ -389,16 +389,50 @@ final class LocalZapDaemon implements ZapDaemon {
 
   @Override
   public String startActiveScan(URI target, String scanPolicyName) throws Exception {
+    return startActiveScan(target, scanPolicyName, null, true);
+  }
+
+  @Override
+  public void accessUrl(URI target) throws Exception {
+    getJsonRequired("core/action/accessUrl", Map.of("url", target.toString(), "followRedirects", "false"));
+  }
+
+  @Override
+  public String startActiveScan(URI target, String scanPolicyName, String strength, boolean recurse)
+      throws Exception {
+    if (strength != null) configureAttackStrength(scanPolicyName, strength);
     Map<String, String> params = new LinkedHashMap<>();
     params.put("url", target.toString());
-    params.put("recurse", "true");
+    params.put("recurse", Boolean.toString(recurse));
     params.put("inScopeOnly", "false");
     if (scanPolicyName != null && !scanPolicyName.isBlank()) {
       params.put("scanPolicyName", scanPolicyName);
     }
-    JsonNode json = getJson("ascan/action/scan", params);
-    JsonNode scan = json == null ? null : json.get("scan");
-    return scan == null || scan.isNull() ? "" : scan.asText();
+    JsonNode json = getJsonRequired("ascan/action/scan", params);
+    String scanId = json.path("scan").asText("");
+    if (scanId.isBlank()) throw new ApiException("ZAP 未返回主动扫描编号，扫描未启动");
+    return scanId;
+  }
+
+  private void configureAttackStrength(String scanPolicyName, String strength) throws Exception {
+    if (!List.of("LOW", "MEDIUM", "HIGH", "INSANE").contains(strength)) {
+      throw new ApiException("不支持的 ZAP 攻击强度");
+    }
+    Map<String, String> policyParams = new LinkedHashMap<>();
+    if (scanPolicyName != null && !scanPolicyName.isBlank()) policyParams.put("scanPolicyName", scanPolicyName);
+    JsonNode scanners = getJsonRequired("ascan/view/scanners", policyParams).path("scanners");
+    if (!scanners.isArray() || scanners.isEmpty()) {
+      throw new ApiException("ZAP 没有可用的主动扫描规则，扫描未启动");
+    }
+    for (JsonNode scanner : scanners) {
+      String id = scanner.path("id").asText("");
+      if (!id.matches("[0-9]+")) throw new ApiException("ZAP 主动扫描规则编号无效，扫描未启动");
+      Map<String, String> params = new LinkedHashMap<>(policyParams);
+      params.put("id", id);
+      params.put("attackStrength", strength);
+      // Change strength only; preserve every rule's enabled state and alert threshold.
+      getJsonRequired("ascan/action/setScannerAttackStrength", params);
+    }
   }
 
   @Override
@@ -596,14 +630,21 @@ final class LocalZapDaemon implements ZapDaemon {
 
   private JsonNode getJsonRequired(String path, Map<String, String> params) throws Exception {
     HttpResponse<String> response = httpGetJson(path, params);
+    JsonNode json = null;
+    try { json = objectMapper.readTree(response.body()); } catch (Exception ignored) {}
     if (response.statusCode() != 200) {
-      throw new ApiException("ZAP REST 调用失败，HTTP " + response.statusCode());
+      throw new ApiException("ZAP REST 调用失败（" + path + "），HTTP " + response.statusCode() + publicErrorCode(json));
     }
-    try {
-      return objectMapper.readTree(response.body());
-    } catch (Exception ex) {
-      throw new ApiException("无法解析 ZAP REST 响应");
-    }
+    if (json == null) throw new ApiException("无法解析 ZAP REST 响应（" + path + "）");
+    if (json.has("code")) throw new ApiException("ZAP REST 返回错误（" + path + "）" + publicErrorCode(json));
+    return json;
+  }
+
+  private String publicErrorCode(JsonNode json) {
+    String code = json == null ? "" : json.path("code").asText("").toUpperCase(Locale.ROOT);
+    return List.of("URL_NOT_FOUND", "DOES_NOT_EXIST", "BAD_ACTION", "BAD_VIEW", "MISSING_PARAMETER",
+        "ILLEGAL_PARAMETER", "ALREADY_EXISTS", "NO_IMPLEMENTOR", "BAD_FORMAT", "INTERNAL_ERROR")
+        .contains(code) ? "，" + code : "";
   }
 
   private JsonNode postJson(String path, Map<String, String> params) {

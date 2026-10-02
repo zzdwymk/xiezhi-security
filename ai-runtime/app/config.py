@@ -44,6 +44,10 @@ class Settings:
     data_dir: Path = Path(os.getenv("AI_RUNTIME_DATA_DIR", "./data/ai-runtime"))
     llm_enabled: bool = _bool("AI_RUNTIME_LLM_ENABLED", False)
     api_key: str = os.getenv("AI_RUNTIME_API_KEY", "")
+    proxy_mode: bool = _bool("AI_RUNTIME_PROXY_MODE", False)
+    api_mode: str = _choice(
+        "AI_RUNTIME_API_MODE", "chat_completions", {"chat_completions", "responses"}
+    )
     base_url: str = os.getenv("AI_RUNTIME_BASE_URL", "https://api.openai.com/v1")
     model: str = os.getenv("AI_RUNTIME_MODEL", "gpt-4.1-mini")
     rag_prompt_version: str = os.getenv(
@@ -127,7 +131,7 @@ class Settings:
         "AI_RUNTIME_MAX_RAG_LLM_CALLS", 5, 1, 8
     )
     agent_turn_timeout_seconds: float = _bounded_float(
-        "AI_RUNTIME_AGENT_TURN_TIMEOUT_SECONDS", 60.0, 5.0, 300.0
+        "AI_RUNTIME_AGENT_TURN_TIMEOUT_SECONDS", 90.0, 5.0, 300.0
     )
     graph_recursion_limit: int = _bounded_int(
         "AI_RUNTIME_GRAPH_RECURSION_LIMIT", 32, 8, 64

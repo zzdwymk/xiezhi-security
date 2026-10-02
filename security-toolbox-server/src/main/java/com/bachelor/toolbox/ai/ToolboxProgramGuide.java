@@ -59,10 +59,27 @@ final class ToolboxProgramGuide {
   private static String aiSafetyGuide() {
     return String.join(
         "\n",
-        "AI 可派发的白名单工具只有：nmap_service_scan、tcp_ports、http_headers、"
-            + "http_security_check、tls_config、nuclei_scan。http_security_check 可检查 "
+        "AI 可派发的白名单工具有 11 类：nmap_service_scan、tcp_ports、http_headers、"
+            + "http_security_check、tls_config、nuclei_scan、afrog_scan、xray_scan、zap_scan、"
+            + "fscan_scan、msf_scan。实际可用步骤以当前工作流节点、项目授权、工具依赖和审批结果为准。"
+            + "http_security_check 可检查 "
             + "cookies、cors、methods、disclosure；nuclei_scan 用于授权范围内的通用漏洞模板扫描。"
+            + "afrog_scan 和 xray_scan 必须明确选择 PoC；其他扫描器也必须遵守服务端参数和执行策略。"
             + "端口必须属于当前启用的授权目标，最多可覆盖 1-65535。",
+        "fscan 参数的权威含义（以本机工具帮助为依据）：-np 禁用 ping 探测，不是禁用端口扫描；"
+            + "-p 指定扫描端口；-nopoc 禁用 PoC 扫描；-nobr 禁用暴力破解。"
+            + "本平台 SAFE 模式加入 -np、-nopoc、-nobr，仍可进行授权端口探测及工具支持的识别。"
+            + "不能仅凭这些开关断言没有执行服务识别；是否获得服务/版本信息必须根据实际输出判断。"
+            + "解释历史任务时按其真实命令及结果核对开关，不能把当前默认配置当作该历史任务的已执行参数。",
+        "助手可读取项目资料、检索任务和审计证据、回答问题并提出受控检测计划。"
+            + "项目/目标增删改、信息收集与指纹页面操作、任务取消与重试、漏洞复测、报告导出、"
+            + "流量代理启停/重放/过滤、离线工具操作、人工审批决定和系统设置修改尚未接入聊天助手的执行工具；"
+            + "对于这些请求只能说明页面操作路径，不能声称已经执行。流量页面可通过“转交 AI 智能体”将已绑定授权目标的报文交给助手分析。",
+        "必须区分两种审批：AI 检测计划遇到需要审批的步骤时，可自动提交 AI_PLAN_EXECUTION 申请，"
+            + "服务端保存原计划、项目和目标授权快照；管理员在界面批准后可恢复该原计划，驳回不创建检测任务。"
+            + "这不等于助手能批准自己的申请。项目详情 → “安全行动” → “申请高风险行动”则是独立的人工行动记录流程，"
+            + "尚未接入 AI 提交；开始、完成和回滚只登记状态与人工证据，不派发检测任务或执行利用。"
+            + "该页面的非破坏性验证预设是计划说明，不是已注册的自动执行模板，不能用 AI 检测计划审批代替它。",
         "扫描后的 AI 后续路径会在服务端保存并绑定授权、漏洞和来源任务快照，规划本身不会创建任务；"
             + "只有管理员明确确认后，服务端重新校验并派发所选 SAFE 步骤。CVE、CISA KEV、"
             + "高影响模板和公开 PoC 只能作为 CAUTION 人工指导，不能自动执行。AI 只能解释和排序"

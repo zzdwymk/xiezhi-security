@@ -168,11 +168,27 @@ public class NucleiScanTool implements SecurityTool {
     observer.command(command);
     ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);
     Process process = ProcessEnvironmentSanitizer.sanitize(builder).start();
+    try {
+      String outputText = waitFor(process, observer);
+      if (process.exitValue() != 0) {
+        throw new ApiException(
+            "Nuclei 执行失败，退出码 " + process.exitValue() + "：" + abbreviate(outputText, 500));
+      }
+      observer.progressPercent(100d, "Nuclei 扫描完成，正在解析匹配结果");
+      return parseOutput(host, canonicalPorts, outputText);
+    } finally {
+      if (process.isAlive()) process.destroyForcibly();
+      Files.deleteIfExists(targetList);
+    }
+  }
+
+  String waitFor(Process process, ToolExecutionObserver observer) throws Exception {
     ExecutorService readerExecutor = Executors.newSingleThreadExecutor();
     Future<String> output = readerExecutor.submit(() -> readLimited(process, observer));
     try {
       long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds);
       while (!process.waitFor(250, TimeUnit.MILLISECONDS)) {
+        if (output.isDone()) output.get();
         observer.heartbeat("Nuclei 正在按安全模板检查授权目标");
         if (observer.isCancellationRequested()) {
           process.destroyForcibly();
@@ -182,20 +198,13 @@ public class NucleiScanTool implements SecurityTool {
         if (System.nanoTime() >= deadline) {
           process.destroyForcibly();
           process.waitFor(5, TimeUnit.SECONDS);
-          throw new ApiException("Nuclei 扫描超过 " + timeoutSeconds + " 秒，已强制终止");
+          throw new java.util.concurrent.TimeoutException("Nuclei 扫描超过 " + timeoutSeconds + " 秒，已强制终止");
         }
       }
-      String outputText = output.get(10, TimeUnit.SECONDS);
-      if (process.exitValue() != 0) {
-        throw new ApiException(
-            "Nuclei 执行失败，退出码 " + process.exitValue() + "：" + abbreviate(outputText, 500));
-      }
-      observer.progressPercent(100d, "Nuclei 扫描完成，正在解析匹配结果");
-      return parseOutput(host, canonicalPorts, outputText);
+      return output.get(10, TimeUnit.SECONDS);
     } finally {
       if (process.isAlive()) process.destroyForcibly();
       readerExecutor.shutdownNow();
-      Files.deleteIfExists(targetList);
     }
   }
 

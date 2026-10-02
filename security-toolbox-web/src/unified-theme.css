@@ -66,6 +66,7 @@
   --fluent-radius-card: var(--fluent-radius-xlarge);
   --fluent-radius-overlay: var(--fluent-radius-xlarge);
   --fluent-workspace-radius: var(--fluent-radius-xlarge);
+  --desktop-workspace-gap: 3px;
 
   /* Control metrics + stroke widths (heights unchanged to preserve layout) */
   --fluent-control-height: 32px;
@@ -1177,7 +1178,7 @@ body,
 .desktop-v2-native-frame > .desktop-v2-shell > .desktop-v2-workspace {
   position: relative;
   border: 0 !important;
-  border-top-left-radius: var(--fluent-workspace-radius);
+  border-radius: var(--fluent-workspace-radius);
   background: var(--app-workspace-surface) !important;
   background-clip: border-box;
   box-shadow: none !important;
@@ -1191,9 +1192,8 @@ body,
   position: absolute;
   z-index: 20;
   inset: 0;
-  border-top: 1px solid var(--app-border);
-  border-left: 1px solid var(--app-border);
-  border-top-left-radius: inherit;
+  border: 1px solid var(--app-border);
+  border-radius: inherit;
   pointer-events: none;
   content: "";
 }
@@ -1214,32 +1214,31 @@ body,
   > .desktop-v2-content {
   margin: 0;
   overflow: auto;
-  border-top-left-radius: var(--fluent-workspace-radius);
+  border-radius: inherit;
   background: var(--app-content-surface) !important;
 }
 
-/* Web (non-native) view: round the workspace's leading top corner the same way
-   as the desktop app, and keep the topbar/content square corners from poking
-   out of that radius. No contain here so fixed-position dialog masks still
-   cover the whole window (see native comment above). */
+/* Web (non-native) view: round the topbar's top corners and the content's bottom
+   corners to follow the workspace outline. No contain here so fixed-position
+   dialog masks retain their viewport positioning (see native comment above). */
 .desktop-v2-app-frame:not(.desktop-v2-native-frame)
   > .desktop-v2-shell
   > .desktop-v2-workspace {
   position: relative;
-  border-top-left-radius: var(--fluent-workspace-radius);
+  border-radius: var(--fluent-workspace-radius);
   background-clip: border-box;
 }
 .desktop-v2-app-frame:not(.desktop-v2-native-frame)
   > .desktop-v2-shell
   > .desktop-v2-workspace
   > .desktop-v2-topbar {
-  border-top-left-radius: var(--fluent-workspace-radius);
+  border-radius: var(--fluent-workspace-radius) var(--fluent-workspace-radius) 0 0;
 }
 .desktop-v2-app-frame:not(.desktop-v2-native-frame)
   > .desktop-v2-shell
   > .desktop-v2-workspace
   > .desktop-v2-content {
-  border-top-left-radius: var(--fluent-workspace-radius);
+  border-radius: 0 0 var(--fluent-workspace-radius) var(--fluent-workspace-radius);
   background-clip: border-box;
 }
 
@@ -1324,25 +1323,28 @@ body,
 }
 
 .desktop-v2-workspace {
+  margin: 0 var(--desktop-workspace-gap) var(--desktop-workspace-gap) 0;
+  border-radius: var(--fluent-workspace-radius);
   background: var(--app-surface-soft);
 }
 
-/* Native desktop: the dialog/message-box mask must fit the work area and round
-   its leading corner to match the rounded workspace. The overlay is nested
+/* Native desktop: the dialog/message-box mask must fit the inset work area and
+   match all four workspace corners. The overlay is nested
    inside the app tree (dialog overlays are position:fixed), so scope to any
    el-overlay that wraps a dialog, wherever it mounts. `top` keeps the native
    caption bar out of the smoke layer so the title stays crisp and draggable
    instead of being half-dimmed up to the window controls. */
 body:has(.desktop-v2-native-frame) :is(.el-overlay.is-message-box, .el-overlay.is-drawer, .el-overlay:has(> .el-drawer)) {
   top: var(--desktop-titlebar-height, 38px);
-  right: 0;
+  right: var(--desktop-workspace-gap);
+  bottom: var(--desktop-workspace-gap);
   left: var(--desktop-sidebar-width, 260px);
   width: auto;
   /* Element's mask sets height:100%; clear it so top+bottom (not top+height)
      define the box. Otherwise the 38px caption offset overflows the viewport
      and the centered dialog is pushed down. */
   height: auto;
-  border-top-left-radius: var(--fluent-workspace-radius);
+  border-radius: var(--fluent-workspace-radius);
   overflow: hidden;
 }
 body:has(.desktop-v2-native-frame)
@@ -1352,13 +1354,14 @@ body:has(.desktop-v2-native-frame)
 }
 body:has(.desktop-v2-native-frame) .el-overlay:has(> .el-overlay-dialog) {
   top: var(--desktop-titlebar-height, 38px);
-  right: 0;
+  right: var(--desktop-workspace-gap);
+  bottom: var(--desktop-workspace-gap);
   left: var(--desktop-sidebar-width, 260px);
   width: auto;
   /* See the mask note above: clear the inherited height:100% so the dialog is
      centered symmetrically between the caption and the window bottom. */
   height: auto;
-  border-top-left-radius: var(--fluent-workspace-radius);
+  border-radius: var(--fluent-workspace-radius);
   overflow: hidden;
 }
 body:has(.desktop-v2-native-frame)
@@ -1373,20 +1376,20 @@ body:has(.desktop-v2-native-frame)
   /* Resolve against the viewport, not the (now title-bar-offset) mask, so the
      dialog always fits the work area below the caption and the footer actions
      are never clipped — the body scrolls instead. */
-  max-height: calc(100dvh - var(--desktop-titlebar-height, 38px) - 32px) !important;
+  max-height: calc(100dvh - var(--desktop-titlebar-height, 38px) - var(--desktop-workspace-gap) - 32px) !important;
 }
 
-/* Web (non-native view). The workspace top-left corner is rounded, so the
-   dialog/message-box mask must fit the same work area — offset it to sit right
-   of the left navigation rail and round+clip its leading corner, otherwise its
-   square top-left would poke past the rounded corner. The overlay is positioned
+/* Web (non-native view). Keep dialog/message-box masks inside the inset
+   workspace and clip all four corners to the same outline. The overlay is positioned
    inside the app tree (dialog overlays are position:fixed, so still clickable),
    so this scopes to any el-overlay that wraps a dialog, wherever it mounts. */
 body:not(:has(.desktop-v2-native-frame)) :is(.el-overlay.is-message-box, .el-overlay.is-drawer, .el-overlay:has(> .el-drawer)) {
-  right: 0;
+  right: var(--desktop-workspace-gap);
+  bottom: var(--desktop-workspace-gap);
   left: var(--desktop-sidebar-width, 260px);
   width: auto;
-  border-top-left-radius: var(--fluent-workspace-radius);
+  height: auto;
+  border-radius: var(--fluent-workspace-radius);
   overflow: hidden;
 }
 body:not(:has(.desktop-v2-native-frame))
@@ -1396,10 +1399,12 @@ body:not(:has(.desktop-v2-native-frame))
 }
 body:not(:has(.desktop-v2-native-frame))
   .el-overlay:has(> .el-overlay-dialog) {
-  right: 0;
+  right: var(--desktop-workspace-gap);
+  bottom: var(--desktop-workspace-gap);
   left: var(--desktop-sidebar-width, 260px);
   width: auto;
-  border-top-left-radius: var(--fluent-workspace-radius);
+  height: auto;
+  border-radius: var(--fluent-workspace-radius);
   overflow: hidden;
 }
 body:not(:has(.desktop-v2-native-frame))
@@ -1417,7 +1422,7 @@ body:not(:has(.desktop-v2-native-frame))
 /* ElMessage: center horizontally relative to the workspace rather than the full viewport */
 body:has(.desktop-v2-native-frame) .el-message,
 body:not(:has(.desktop-v2-native-frame)) .el-message {
-  left: calc(50% + var(--desktop-sidebar-width, 260px) / 2);
+  left: calc(50% + (var(--desktop-sidebar-width, 260px) - var(--desktop-workspace-gap)) / 2);
 }
 
 /* The native frame draws its own 38px title bar, so push toasts below it
@@ -1427,6 +1432,14 @@ body:has(.desktop-v2-native-frame) .el-message {
   margin-top: 38px;
 }
 
+/* Public pages retain their edge-to-edge layout. */
+body:has(.login-page, .setup-page) {
+  --desktop-workspace-gap: 0px;
+}
+body:has(.setup-page) :is(.el-overlay.is-message-box, .el-overlay.is-drawer, .el-overlay:has(> .el-drawer), .el-overlay:has(> .el-overlay-dialog)) {
+  border-radius: var(--fluent-workspace-radius) 0 0 0;
+}
+
 /* Login (and other full-bleed public pages) have no sidebar, so the dialog
    mask must cover the whole window instead of leaving a strip on the left. */
 body:has(.login-page) .el-overlay.is-message-box,
@@ -1434,7 +1447,7 @@ body:has(.login-page) .el-overlay.is-drawer,
 body:has(.login-page) .el-overlay:has(> .el-drawer),
 body:has(.login-page) .el-overlay:has(> .el-overlay-dialog) {
   left: 0;
-  border-top-left-radius: 0;
+  border-radius: 0;
 }
 body:has(.login-page) .el-message {
   left: 50%;
@@ -2070,6 +2083,10 @@ html
   align-items: center;
   gap: 6px;
   box-sizing: border-box;
+}
+.row-actions--pair,
+.row-actions.row-actions--pair {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 .row-actions > .el-button,
 .row-actions > .row-action {

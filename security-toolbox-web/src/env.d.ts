@@ -11,6 +11,12 @@ interface MotionAreaFlags {
 }
 
 interface ToolboxDesktopBridge {
+  readonly getAiRelaySettings?: () => Promise<AiRelaySettings>;
+  readonly listAiRelayModels?: (provider: AiRelayProvider) => Promise<{ models: string[] }>;
+  readonly listAiModels?: (settings: AiSettingsInput) => Promise<{ models: string[] }>;
+  readonly saveAiRelaySettings?: (settings: AiRelaySettings) => Promise<AiRelaySettings>;
+  readonly testAiRelayProvider?: (provider: AiRelayProvider, prompt?: string) => Promise<{ ok: boolean; message: string; reason?: string | null; model?: string; reply?: string }>;
+  readonly getAiRelayStatus?: () => Promise<AiRelayStatus>;
   readonly isDesktop: true;
   readonly platform: string;
   readonly backendBaseUrl: string;
@@ -172,7 +178,8 @@ interface ToolboxDesktopBridge {
   readonly reimportH2ToPostgres?: () => Promise<{ status: string }>;
   readonly testAiSettings?: (
     settings: AiSettingsInput,
-  ) => Promise<{ ok: boolean; model: string; message: string }>;
+    prompt?: string,
+  ) => Promise<{ ok: boolean; model: string; message: string; reply?: string }>;
   readonly testEmbeddingSettings?: (
     settings: AiSettingsInput,
   ) => Promise<{ ok: boolean; model: string; message: string }>;
@@ -224,12 +231,14 @@ interface ToolboxDesktopBridge {
   readonly saveNotificationSettings?: (payload: {
     severities?: string[];
     taskCompleteNotifications?: boolean;
+    workflowSkipNotifications?: boolean;
   }) => Promise<NotificationSettings>;
 }
 
 interface NotificationSettings {
   readonly severities: NotificationSeverity[];
   readonly taskCompleteNotifications: boolean;
+  readonly workflowSkipNotifications: boolean;
 }
 
 type NotificationSeverity =
@@ -290,6 +299,39 @@ interface IcpBrowserCaptureResult {
   pageText?: string;
   reason?: string;
   error?: string;
+}
+
+interface AiRelayProvider {
+  id: string;
+  name: string;
+  baseUrl: string;
+  model: string;
+  apiMode: "chat_completions" | "responses";
+  codexHeaders: boolean;
+  enabled: boolean;
+  apiKey?: string;
+  hasApiKey?: boolean;
+  keyHint?: string;
+}
+
+interface AiRelaySettings {
+  enabled: boolean;
+  providers: AiRelayProvider[];
+}
+
+interface AiRelayStatus {
+  enabled: boolean;
+  running: boolean;
+  providers: Array<{
+    id: string;
+    name: string;
+    requests: number;
+    successes: number;
+    failures: number;
+    cooldownUntil: number;
+    lastError?: string;
+    lastReason?: string | null;
+  }>;
 }
 
 interface AiSettingsInput {

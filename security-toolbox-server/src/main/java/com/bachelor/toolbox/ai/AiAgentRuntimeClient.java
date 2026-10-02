@@ -37,6 +37,23 @@ import org.springframework.web.client.RestClient;
 /** Optional loopback adapter for the packaged Python LangGraph runtime. */
 @Component
 public class AiAgentRuntimeClient {
+  private final ThreadLocal<Consumer<PublicProgress>> publicProgressSink = new ThreadLocal<>();
+
+  /** Presentation-only, request-local hints; never a plan, ledger entry, or execution permission. */
+  public ProgressScope observePublicProgress(Consumer<PublicProgress> sink) {
+    Consumer<PublicProgress> previous = publicProgressSink.get();
+    publicProgressSink.set(sink);
+    return () -> {
+      if (previous == null) publicProgressSink.remove();
+      else publicProgressSink.set(previous);
+    };
+  }
+
+  public interface ProgressScope extends AutoCloseable {
+    @Override void close();
+  }
+
+  public record PublicProgress(String stage, String message, Integer evidenceCount, String evidenceDecision) {}
   static final int CONTRACT_VERSION = 3;
   private static final String RUNTIME_LEDGER_GENESIS_DIGEST = "sha256:" + "0".repeat(64);
   private static final int MAX_EVIDENCE_EVENT_BYTES = 64 * 1024;
@@ -55,11 +72,19 @@ public class AiAgentRuntimeClient {
           "nuclei_scan",
           "afrog_scan",
           "xray_scan",
-          "zap_scan");
+          "zap_scan",
+          "fscan_scan",
+          "msf_scan");
+  private static final Set<String> FORBIDDEN_MSF_OPTIONS =
+      Set.of("RHOST", "RHOSTS", "RPORT", "LHOST", "LPORT", "PAYLOAD", "CMD", "COMMAND",
+          "SHELL", "CHOST", "CPORT");
   private static final List<String> ACTIVE_TASK_STATUSES = List.of("BLOCKED", "PENDING", "RUNNING");
   private static final List<String> PROJECT_INDEX_SOURCES =
-      List.of("project", "target", "task", "finding", "recon", "probe", "conversation");
+      List.of("project", "target", "task", "finding", "recon", "probe", "reference", "conversation");
   static final String POLICY_REVISION = "java-authoritative-v1";
+  private static final Set<String> MODEL_PROVIDER_FAILURE_CODES =
+      Set.of("MODEL_ACCESS_DENIED", "MODEL_RATE_LIMITED", "MODEL_SERVICE_UNAVAILABLE",
+          "MODEL_TIMEOUT", "MODEL_REQUEST_FAILED");
   private static final Set<String> RUNTIME_EVENT_TYPES =
       Set.of(
           "plan",
@@ -287,7 +312,7 @@ public class AiAgentRuntimeClient {
     }
   }
 
-  /** Append a conversation summary to the project's LlamaIndex store (best-effort). */
+  /** Acknowledge a saved conversation summary; callers may choose best-effort delivery. */
   public void appendMemory(
       long projectId,
       long targetId,
@@ -296,7 +321,7 @@ public class AiAgentRuntimeClient {
       String summary,
       String conversationId,
       String createdAt) {
-    if (!enabled) return;
+    requireMemoryRuntime();
     try {
       Map<String, Object> metadata = new LinkedHashMap<>();
       metadata.put("conversationId", conversationId == null ? "" : conversationId);
@@ -315,15 +340,18 @@ public class AiAgentRuntimeClient {
               .contentType(MediaType.APPLICATION_JSON)
               .accept(MediaType.APPLICATION_JSON);
       authorizeProject(spec, projectId, "index-write");
-      spec.body(Map.of("documents", List.of(document))).retrieve().toBodilessEntity();
-    } catch (Exception ignored) {
-      // memory is best-effort; never fail the conversation because of it
+      JsonNode result = spec.body(Map.of("documents", List.of(document))).retrieve().body(JsonNode.class);
+      if (result == null || !"APPENDED".equals(result.path("status").asText())) {
+        throw new IllegalStateException("Missing memory write acknowledgement");
+      }
+    } catch (Exception ex) {
+      throw memoryUnavailable("保存失败，未确认写入，请稍后重试");
     }
   }
 
   @SuppressWarnings("unchecked")
   public List<Map<String, Object>> listMemories(long projectId) {
-    if (!enabled) return List.of();
+    requireMemoryRuntime();
     try {
       RestClient.RequestHeadersSpec<?> spec =
           restClient
@@ -338,18 +366,19 @@ public class AiAgentRuntimeClient {
       authorizeProject(spec, projectId, "index-read");
       JsonNode root = spec.retrieve().body(JsonNode.class);
       List<Map<String, Object>> out = new ArrayList<>();
-      if (root != null && root.path("documents").isArray()) {
-        for (JsonNode doc : root.path("documents"))
-          out.add(objectMapper.convertValue(doc, Map.class));
+      if (root == null || !root.path("documents").isArray()) {
+        throw new IllegalStateException("Missing memory list");
       }
+      for (JsonNode doc : root.path("documents"))
+        out.add(objectMapper.convertValue(doc, Map.class));
       return out;
     } catch (Exception ex) {
-      return List.of();
+      throw memoryUnavailable("列表读取失败，请检查智能服务后重试");
     }
   }
 
   public boolean deleteMemory(long projectId, String docId) {
-    if (!enabled) return false;
+    requireMemoryRuntime();
     try {
       RestClient.RequestHeadersSpec<?> spec =
           restClient
@@ -362,15 +391,18 @@ public class AiAgentRuntimeClient {
                           .build(projectId, docId))
               .accept(MediaType.APPLICATION_JSON);
       authorizeProject(spec, projectId, "index-write");
-      spec.retrieve().toBodilessEntity();
-      return true;
+      JsonNode result = spec.retrieve().body(JsonNode.class);
+      if (result == null || !result.path("deleted").isBoolean()) {
+        throw new IllegalStateException("Missing memory deletion acknowledgement");
+      }
+      return result.path("deleted").booleanValue();
     } catch (Exception ex) {
-      return false;
+      throw memoryUnavailable("删除失败，请稍后刷新确认或重试");
     }
   }
 
   public int clearMemories(long projectId) {
-    if (!enabled) return 0;
+    requireMemoryRuntime();
     // Prefer bulk clear when the runtime supports DELETE /documents?source=
     try {
       RestClient.RequestHeadersSpec<?> bulk =
@@ -385,11 +417,18 @@ public class AiAgentRuntimeClient {
               .accept(MediaType.APPLICATION_JSON);
       authorizeProject(bulk, projectId, "index-write");
       JsonNode root = bulk.retrieve().body(JsonNode.class);
-      if (root != null && root.path("deleted").isNumber()) {
-        return Math.max(0, root.path("deleted").asInt(0));
+      if (root != null && root.path("deleted").isIntegralNumber()
+          && root.path("deleted").canConvertToInt() && root.path("deleted").intValue() >= 0) {
+        return root.path("deleted").intValue();
       }
-    } catch (Exception ignored) {
-      /* fall through to per-document delete for older runtimes */
+      throw memoryUnavailable("清空结果未确认，请刷新后重试");
+    } catch (org.springframework.web.client.HttpClientErrorException ex) {
+      if (ex.getStatusCode().value() != 404 && ex.getStatusCode().value() != 405) {
+        throw memoryUnavailable("清空失败，请刷新后重试");
+      }
+      // Only older runtimes without the bulk endpoint use individual deletion.
+    } catch (Exception ex) {
+      throw memoryUnavailable("清空失败，请刷新后重试");
     }
     List<Map<String, Object>> docs = listMemories(projectId);
     int deleted = 0;
@@ -399,6 +438,15 @@ public class AiAgentRuntimeClient {
       if (deleteMemory(projectId, String.valueOf(id))) deleted++;
     }
     return deleted;
+  }
+
+  private void requireMemoryRuntime() {
+    if (!enabled) throw memoryUnavailable("服务未启用，请先检查智能服务配置");
+  }
+
+  private org.springframework.web.server.ResponseStatusException memoryUnavailable(String detail) {
+    return new org.springframework.web.server.ResponseStatusException(
+        org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, "AI 对话记忆" + detail);
   }
 
   /**
@@ -472,6 +520,10 @@ public class AiAgentRuntimeClient {
         Objects.requireNonNullElse(
             request.mode(), request.executionRequested() ? "execute" : "plan"));
     body.put("maxRetries", 0);
+    if (request.automaticExecutionIntent()) {
+      body.put("executionIntent", "AUTO");
+      body.put("currentUserRequest", request.userPrompt());
+    }
     body.put("messages", buildPlannerMessages(request, prompt, scopeContext(target, project)));
     body.put("authorization", authorization);
     body.put("workflowId", request.workflowId());
@@ -553,7 +605,7 @@ public class AiAgentRuntimeClient {
         runId,
         POLICY_REVISION,
         holder.stateVersion,
-       holder.provenance());
+       holder.provenance(), holder.executionDecision);
  }
 
   /**
@@ -606,7 +658,7 @@ public class AiAgentRuntimeClient {
         runId,
         POLICY_REVISION,
         holder.stateVersion,
-        holder.provenance());
+        holder.provenance(), holder.executionDecision);
   }
 
   /** Persist a bounded continuation tombstone in the local runtime after Java creates tasks. */
@@ -716,9 +768,16 @@ public class AiAgentRuntimeClient {
 
   void readSse(BufferedReader reader, Consumer<RuntimeEvent> sink) throws IOException {
     StringBuilder data = new StringBuilder();
+    int publicProgressCount = 0;
     String line;
     while ((line = reader.readLine()) != null) {
-      if (line.isBlank()) {
+      if (line.startsWith(": toolbox-progress ")) {
+        if (++publicProgressCount <= 32 && line.length() <= 256) {
+          PublicProgress progress = parsePublicProgress(line.substring(19));
+          Consumer<PublicProgress> progressSink = publicProgressSink.get();
+          if (progress != null && progressSink != null) progressSink.accept(progress);
+        }
+      } else if (line.isBlank()) {
         flushEvent(data, sink);
       } else if (line.startsWith("data:")) {
         if (!data.isEmpty()) data.append('\n');
@@ -738,6 +797,51 @@ public class AiAgentRuntimeClient {
       }
     }
     flushEvent(data, sink);
+  }
+
+  private PublicProgress parsePublicProgress(String text) {
+    try {
+      JsonNode data = objectMapper.reader()
+          .with(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+          .with(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(text);
+      if (data == null || !data.isObject() || !data.path("stage").isTextual()) return null;
+      for (var fields = data.fieldNames(); fields.hasNext();) {
+        if (!Set.of("stage", "count", "decision").contains(fields.next())) return null;
+      }
+      String stage = data.path("stage").textValue();
+      Integer count = null;
+      String decision = null;
+      if (data.has("count")) {
+        if (!"EVIDENCE_READY".equals(stage) || !data.path("count").isIntegralNumber()
+            || !data.path("count").canConvertToInt() || data.path("count").intValue() < 0
+            || data.path("count").intValue() > 10) return null;
+        count = data.path("count").intValue();
+      }
+      if (data.has("decision")) {
+        if (!"ASSESSED".equals(stage) || !data.path("decision").isTextual()) return null;
+        decision = data.path("decision").textValue();
+        if (!Set.of("FINALIZE", "REWRITE_QUERY", "CLARIFY").contains(decision)) return null;
+      }
+      String message = switch (stage) {
+        case "ROUTING" -> "正在等待模型理解当前请求";
+        case "RETRIEVING" -> "正在检索当前项目和目标范围内的资料";
+        case "EVIDENCE_READY" -> count == null ? null : "已找到 " + count + " 条项目依据，正在核对相关性";
+        case "ASSESSING" -> "正在等待模型评估证据是否足以支持回答";
+        case "ASSESSED" -> decision == null ? null : switch (decision) {
+          case "FINALIZE" -> "已评估现有依据，将据此回答并说明证据边界";
+          case "REWRITE_QUERY" -> "现有依据不足，正在调整查询并补充检索";
+          default -> "现有依据不足，需要补充项目资料或缩小问题范围";
+        };
+        case "GENERATING" -> "正在等待模型整理回答或受控计划";
+        case "CONTRACT_RETRY" -> "模型输出未通过格式校验，正在进行一次结构纠正重试，尚未执行工具";
+        case "AUTHORIZING" -> "正在校验计划与授权范围，尚未创建检测任务";
+        default -> null;
+      };
+      return message == null ? null : new PublicProgress(stage, message, count, decision);
+    } catch (IOException | RuntimeException ignored) {
+      // Optional UI hints cannot invalidate an otherwise valid ledger stream.
+      return null;
+    }
   }
 
   private void flushEvent(StringBuilder data, Consumer<RuntimeEvent> sink) {
@@ -1068,6 +1172,8 @@ public class AiAgentRuntimeClient {
           case "http_security_check" -> Set.of("check");
           case "afrog_scan", "xray_scan" -> Set.of("pocCodes", "allPocs");
           case "zap_scan" -> Set.of("spider", "strength");
+          case "fscan_scan" -> Set.of("ports", "vulnMode");
+          case "msf_scan" -> Set.of("module", "modules", "options");
           case "nuclei_scan", "http_headers", "tls_config" -> Set.of();
           default -> throw new RuntimeProtocolException("AI Runtime 工具不在白名单");
         };
@@ -1093,6 +1199,17 @@ public class AiAgentRuntimeClient {
         result.put("check", check);
       }
       case "afrog_scan", "xray_scan" -> result.putAll(strictPocSelection(raw));
+      case "fscan_scan" -> {
+        copyStrictText(raw, result, "ports", 200);
+        if (raw.has("vulnMode")) {
+          String mode = strictText(raw, "vulnMode", 20);
+          if (!Set.of("SAFE", "FINGERPRINT", "FULL").contains(mode)) {
+            throw new RuntimeProtocolException("AI Runtime fscan_scan vulnMode 无效");
+          }
+          result.put("vulnMode", mode);
+        }
+      }
+      case "msf_scan" -> result.putAll(strictMsfParameters(raw));
       case "zap_scan" -> {
         if (raw.has("spider")) {
           if (!raw.path("spider").isBoolean()) {
@@ -1112,6 +1229,61 @@ public class AiAgentRuntimeClient {
       default -> throw new RuntimeProtocolException("AI Runtime 工具不在白名单");
     }
     return Map.copyOf(result);
+  }
+
+  private Map<String, Object> strictMsfParameters(JsonNode raw) {
+    if (raw.has("module") == raw.has("modules")) {
+      throw new RuntimeProtocolException("AI Runtime MSF 必须指定单个模块或模块列表");
+    }
+    Map<String, Object> result = new LinkedHashMap<>();
+    if (raw.has("module")) {
+      String module = strictText(raw, "module", 256);
+      requireMsfModule(module);
+      result.put("module", module);
+    } else {
+      JsonNode modules = raw.path("modules");
+      if (!modules.isArray() || modules.isEmpty() || modules.size() > 16) {
+        throw new RuntimeProtocolException("AI Runtime MSF 模块数量无效");
+      }
+      Set<String> unique = new java.util.LinkedHashSet<>();
+      for (JsonNode module : modules) {
+        if (!module.isTextual() || !unique.add(module.textValue())) {
+          throw new RuntimeProtocolException("AI Runtime MSF 模块无效或重复");
+        }
+        requireMsfModule(module.textValue());
+      }
+      result.put("modules", List.copyOf(unique));
+    }
+    if (raw.has("options")) {
+      JsonNode options = raw.path("options");
+      if (!options.isObject() || options.size() > 32) {
+        throw new RuntimeProtocolException("AI Runtime MSF 选项格式或数量无效");
+      }
+      Map<String, String> values = new LinkedHashMap<>();
+      options.fields().forEachRemaining(entry -> {
+        String key = entry.getKey();
+        JsonNode value = entry.getValue();
+        if (!key.matches("[A-Z][A-Z0-9_]{0,63}")
+            || FORBIDDEN_MSF_OPTIONS.contains(key)
+            || !value.isTextual()
+            || value.textValue().isBlank()
+            || value.textValue().length() > 500
+            || value.textValue().indexOf(';') >= 0
+            || value.textValue().codePoints().anyMatch(Character::isISOControl)) {
+          throw new RuntimeProtocolException("AI Runtime MSF 选项不符合执行边界");
+        }
+        values.put(key, value.textValue());
+      });
+      result.put("options", Map.copyOf(values));
+    }
+    return Map.copyOf(result);
+  }
+
+  private void requireMsfModule(String module) {
+    if (module.length() > 256
+        || !module.matches("(?:auxiliary|exploit)/[a-z0-9_]+(?:/[a-z0-9_]+)*")) {
+      throw new RuntimeProtocolException("AI Runtime MSF 模块路径无效");
+    }
   }
 
   private Map<String, Object> strictPocSelection(JsonNode raw) {
@@ -1203,6 +1375,8 @@ public class AiAgentRuntimeClient {
       case "afrog_scan" -> "Afrog PoC 漏洞扫描";
       case "xray_scan" -> "Xray PoC 漏洞扫描";
       case "zap_scan" -> "OWASP ZAP 主动扫描";
+      case "fscan_scan" -> "fscan 主机扫描";
+      case "msf_scan" -> "Metasploit 授权模块检查";
       case "tcp_ports" -> "授权端口探测";
       case "http_headers" -> "HTTP 安全响应头检查";
       case "http_security_check" -> "HTTP 常见安全检查";
@@ -1450,7 +1624,13 @@ public class AiAgentRuntimeClient {
       String runId,
       String policyRevision,
       int stateVersion,
-      RuntimeProvenance provenance) {}
+      RuntimeProvenance provenance,
+      String executionDecision) {
+    public RuntimePlanResult(AiPlanResponse plan, String answer, String status, String runId,
+        String policyRevision, int stateVersion, RuntimeProvenance provenance) {
+      this(plan, answer, status, runId, policyRevision, stateVersion, provenance, null);
+    }
+  }
 
   public static class RuntimeUnavailableException extends RuntimeException {
     public RuntimeUnavailableException(String message) {
@@ -1504,7 +1684,9 @@ public class AiAgentRuntimeClient {
     private Set<String> activeEvidenceIds = Set.of();
     private String routeQuery = "";
     private String routeStatus = "";
+    private String routeFailureCode = "";
     private String routeIntent = "";
+    private String executionDecision = "";
     private String lastEvidenceQuery = "";
     private String rewrittenQuery = "";
     private String lastEvidenceStatus = "";
@@ -1648,14 +1830,36 @@ public class AiAgentRuntimeClient {
       }
       requireFields(
           data,
-          Set.of("status", "intent", "needsRetrieval", "retrievalQuery", "publicReasonCode"),
+          Set.of("status", "intent", "needsRetrieval", "retrievalQuery", "publicReasonCode", "failureCode", "executionDecision"),
           Set.of("status", "intent", "needsRetrieval", "publicReasonCode"),
           "route data");
       String status = strictText(data, "status", 16);
       if (!Set.of("ROUTED", "RAG_DISABLED", "FAILED").contains(status)) {
         throw new RuntimeProtocolException("AI Runtime route status 无效");
       }
+      if (data.has("failureCode")) {
+        routeFailureCode = safeProtocolIdentifier(data, "failureCode", 64);
+        if (!"FAILED".equals(status)
+            || (!MODEL_PROVIDER_FAILURE_CODES.contains(routeFailureCode)
+                && !"MODEL_RESPONSE_INVALID".equals(routeFailureCode))) {
+          throw new RuntimeProtocolException("AI Runtime route failureCode 无效");
+        }
+      }
       String intent = strictText(data, "intent", 32);
+      if (data.has("executionDecision")) {
+        executionDecision = strictText(data, "executionDecision", 16);
+        if (!Set.of("EXECUTE", "PLAN_ONLY", "CLARIFY").contains(executionDecision)
+            || ("EXECUTE".equals(executionDecision) && !"ACTION_PLAN".equals(intent))
+            || ("CLARIFY".equals(executionDecision) && !"CLARIFY".equals(intent))
+            || ("CLARIFY".equals(intent) && !"CLARIFY".equals(executionDecision))) {
+          throw new RuntimeProtocolException("AI Runtime AUTO executionDecision 与路由不一致");
+        }
+      } else if (request.automaticExecutionIntent() && "ROUTED".equals(status)) {
+        throw new RuntimeProtocolException("AI Runtime AUTO route 缺少 executionDecision");
+      }
+      if (request.automaticExecutionIntent() && "RAG_DISABLED".equals(status)) {
+        throw new RuntimeProtocolException("AUTO 不允许使用旧规划路径推断执行许可");
+      }
       String reason = strictText(data, "publicReasonCode", 64);
       if (!data.path("needsRetrieval").isBoolean()) {
         throw new RuntimeProtocolException("AI Runtime route needsRetrieval 必须是布尔值");
@@ -2413,6 +2617,13 @@ public class AiAgentRuntimeClient {
       }
       if ("FAILED".equals(routeStatus) && !"FAILED".equals(finishStatus)) {
         throw new RuntimeProtocolException("失败的 route 必须传播 FAILED 终态");
+      }
+      if (!routeFailureCode.isBlank()) {
+        String expectedTermination = MODEL_PROVIDER_FAILURE_CODES.contains(routeFailureCode)
+            ? routeFailureCode : "ROUTE_FAILED";
+        if (!expectedTermination.equals(terminationReason)) {
+          throw new RuntimeProtocolException("AI Runtime route failureCode 与终态原因不一致");
+        }
       }
       validateRoutePlanSemantics(parsed, ragDisabledLegacy);
       plan = parsed.plan();

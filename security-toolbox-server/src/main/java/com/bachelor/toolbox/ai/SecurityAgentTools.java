@@ -9,6 +9,7 @@ import com.bachelor.toolbox.target.TargetService;
 import com.bachelor.toolbox.task.CreateTaskRequest;
 import com.bachelor.toolbox.task.SecurityTask;
 import com.bachelor.toolbox.task.TaskService;
+import com.bachelor.toolbox.task.WorkflowTaskSchedule;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.agent.tool.Tool;
 import java.nio.charset.StandardCharsets;
@@ -141,7 +142,7 @@ public class SecurityAgentTools {
   @Transactional
   public AiDispatchResponse executeAuthorizedPlan(
       AiAgentRequest request, AiPlanResponse proposedPlan) throws Exception {
-    return executeAuthorizedPlanInTransaction(request, proposedPlan, null);
+    return executeAuthorizedPlanInTransaction(request, proposedPlan, null, false);
   }
 
   /**
@@ -156,13 +157,20 @@ public class SecurityAgentTools {
       CrossTurnRecoveryService.RecoveryAnchor recoveryAnchor)
       throws Exception {
     if (recoveryAnchor == null) throw new ApiException("Agent 续接锚点不能为空");
-    return executeAuthorizedPlanInTransaction(request, proposedPlan, recoveryAnchor);
+    return executeAuthorizedPlanInTransaction(request, proposedPlan, recoveryAnchor, false);
+  }
+
+  /** Internal resume path; only the persisted approval service may call this, never a model tool. */
+  @Transactional
+  AiDispatchResponse executeApprovedPlan(AiAgentRequest request, AiPlanResponse plan,
+      CrossTurnRecoveryService.RecoveryAnchor recoveryAnchor) throws Exception {
+    return executeAuthorizedPlanInTransaction(request, plan, recoveryAnchor, true);
   }
 
   private AiDispatchResponse executeAuthorizedPlanInTransaction(
       AiAgentRequest request,
       AiPlanResponse proposedPlan,
-      CrossTurnRecoveryService.RecoveryAnchor recoveryAnchor)
+      CrossTurnRecoveryService.RecoveryAnchor recoveryAnchor, boolean approvedPlan)
       throws Exception {
     projects.lockForAgentExecution(request.projectId());
     targets.lockForAgentExecution(request.targetId());
@@ -178,24 +186,29 @@ public class SecurityAgentTools {
       AiPlanResponse normalized = prepareForHarness(request, proposedPlan);
       List<Long> taskIds = parseTaskIds(existing.getTaskIds());
       checkpoint(request, recoveryAnchor, taskIds);
-      return new AiDispatchResponse(request.targetId(), normalized, taskIds.size(), taskIds);
+      return new AiDispatchResponse(request.targetId(), inExecutionOrder(normalized), taskIds.size(), taskIds);
     }
-    AiAuthorizationGuard.GuardDecision decision = guard.evaluate(request, proposedPlan);
+    AiAuthorizationGuard.GuardDecision decision = approvedPlan ? guard.evaluateApproved(request, proposedPlan) : guard.evaluate(request, proposedPlan);
     if (!decision.mayExecute()) {
       throw new ApiException("AI 工具调用尚未获得执行确认");
     }
     AiPlanResponse executablePlan =
         prepareForHarness(request, decision.normalizedPlan());
+    if (approvedPlan && !executablePlan.steps().equals(proposedPlan.steps())) {
+      throw new ApiException("当前校验结果与已批准原计划不一致，请重新申请审批");
+    }
     boolean workflowBound = request.workflowDigest() != null && !request.workflowDigest().isBlank();
     List<Long> taskIds = new java.util.ArrayList<>();
     java.util.Map<String, Long> taskByNode = new java.util.LinkedHashMap<>();
     List<AiPlanResponse.PlanStep> orderedSteps =
         executablePlan.steps().stream()
-            .sorted(java.util.Comparator.comparingInt(AiPlanResponse.PlanStep::group))
+            .sorted(java.util.Comparator.comparingInt(AiPlanResponse.PlanStep::group)
+                .thenComparing(SecurityAgentTools::requiresSerialExecution))
             .toList();
-    rejectUnsafeParallelGroups(orderedSteps);
+    if (!workflowBound) rejectUnsafeParallelGroups(orderedSteps);
+    WorkflowTaskSchedule schedule = new WorkflowTaskSchedule();
     for (AiPlanResponse.PlanStep step : orderedSteps) {
-      List<Long> dependencyTaskIds =
+      List<Long> graphDependencyTaskIds =
           step.dependsOnNodeIds().stream()
               .filter(taskByNode::containsKey)
               .map(taskByNode::get)
@@ -207,9 +220,11 @@ public class SecurityAgentTools {
                       orderedSteps.stream()
                           .anyMatch(candidate -> nodeId.equals(candidate.workflowNodeId())))
               .count();
-      if (dependencyTaskIds.size() != requiredSelectedDependencies) {
+      if (graphDependencyTaskIds.size() != requiredSelectedDependencies) {
         throw new ApiException("工作流任务依赖顺序无效");
       }
+      WorkflowTaskSchedule.Scheduled scheduled = schedule.schedule(
+          step.group(), step.risk(), step.requiresApproval(), graphDependencyTaskIds);
       CreateTaskRequest createRequest =
           new CreateTaskRequest(
               request.projectId(), request.targetId(), step.toolCode(), step.parameters());
@@ -220,12 +235,17 @@ public class SecurityAgentTools {
                   request.workflowDigest(),
                   step.workflowNodeId(),
                   request.nodeRunId() + "." + step.workflowNodeId(),
-                  step.group(),
+                  scheduled.group(),
                   step.risk(),
                   step.requiresApproval(),
-                  dependencyTaskIds)
+                  scheduled.dependencyTaskIds())
               : taskService.create(createRequest);
+      // Scheduling barriers wait for completion, while only graph prerequisites
+      // require success. The task is managed by this transaction and flushed
+      // before TaskService's after-commit enqueue callback can observe it.
+      if (workflowBound) task.setSuccessDependencyTaskIds(objectMapper.writeValueAsString(graphDependencyTaskIds));
       taskIds.add(task.getId());
+      schedule.taskCreated(scheduled, task.getId());
       if (step.workflowNodeId() != null) taskByNode.put(step.workflowNodeId(), task.getId());
     }
     auditService.record(
@@ -236,7 +256,7 @@ public class SecurityAgentTools {
         "ACCEPTED");
     AiDispatchResponse response =
         new AiDispatchResponse(
-            request.targetId(), executablePlan, taskIds.size(), List.copyOf(taskIds));
+            request.targetId(), inExecutionOrder(executablePlan), taskIds.size(), List.copyOf(taskIds));
     AiAgentDispatchRecord record = new AiAgentDispatchRecord();
     record.setIdempotencyKey(idempotencyKey);
     record.setProjectId(request.projectId());
@@ -247,6 +267,14 @@ public class SecurityAgentTools {
     dispatches.save(record);
     checkpoint(request, recoveryAnchor, response.taskIds());
     return response;
+  }
+
+  private AiPlanResponse inExecutionOrder(AiPlanResponse plan) {
+    // taskIds are created in scheduling order; return matching plan rows so the UI
+    // cannot attach one task's progress to a different approved action.
+    return new AiPlanResponse(plan.provider(), plan.model(), plan.summary(), plan.requiresConfirmation(),
+        plan.steps().stream().sorted(java.util.Comparator.comparingInt(AiPlanResponse.PlanStep::group)
+            .thenComparing(SecurityAgentTools::requiresSerialExecution)).toList());
   }
 
   private void checkpoint(
@@ -263,11 +291,14 @@ public class SecurityAgentTools {
     for (List<AiPlanResponse.PlanStep> group : byGroup.values()) {
       if (group.size() > 1
           && group.stream()
-              .anyMatch(
-                  step -> step.requiresApproval() || !"SAFE".equalsIgnoreCase(step.risk()))) {
+              .anyMatch(SecurityAgentTools::requiresSerialExecution)) {
         throw new ApiException("同一拓扑层仅允许独立低风险节点并行执行");
       }
     }
+  }
+
+  private static boolean requiresSerialExecution(AiPlanResponse.PlanStep step) {
+    return WorkflowTaskSchedule.requiresSerialExecution(step.risk(), step.requiresApproval());
   }
 
   private AiPlanResponse prepareForHarness(AiAgentRequest request, AiPlanResponse plan) {

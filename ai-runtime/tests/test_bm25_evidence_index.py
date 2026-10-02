@@ -51,7 +51,7 @@ def test_rag_runtime_limits_and_bm25_health_defaults():
     assert settings.max_evidence_chars == 10_000
     assert settings.retrieval_timeout_seconds == 5
     assert settings.max_rag_llm_calls == 5
-    assert settings.agent_turn_timeout_seconds == 60
+    assert settings.agent_turn_timeout_seconds == 90
     assert settings.graph_recursion_limit == 32
 
 
