@@ -12,10 +12,17 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const {
-  sleep, settle, navigate, pageTitle, selectOn, lastMessage, clearMessages, escapeRe,
+  sleep, settle, navigate, pageTitle, selectOn, lastMessage, escapeRe,
 } = require("../lib/ui.cjs");
 
-const TMP_DIR = "test-data/tmp";
+// Let transient messages expire naturally. Removing their DOM nodes bypasses
+// the UI and can leave Element Plus state out of sync during live acceptance.
+async function clearMessages(page) {
+  await page.locator(".el-message:visible").last()
+    .waitFor({ state: "hidden", timeout: 12000 });
+}
+
+const TMP_DIR = process.env.E2E_FIXTURE_DIR || "test-data/tmp";
 
 /* ------------------------------------------------------------------ */
 /* 断言与小工具                                                        */

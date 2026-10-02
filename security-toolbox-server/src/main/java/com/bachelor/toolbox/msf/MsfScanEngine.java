@@ -61,14 +61,18 @@ public class MsfScanEngine {
       try {
         result = tool.execute(target, params(module, options, perModuleOptions), observer);
       } catch (Exception ex) {
-        perModule.put(module, Map.of("module", module, "error", abbreviate(ex.getMessage(), 200)));
-        runs.add(new ModuleRun(module, 0, true));
-        continue;
+        if (ex instanceof InterruptedException) Thread.currentThread().interrupt();
+        ApiException failure = new ApiException(
+            "Metasploit 模块 " + module + " 未完成；已完成 " + runs.size() + "/" + normalized.size()
+                + " 个模块，后续未执行：" + abbreviate(ex.getMessage(), 200));
+        failure.initCause(ex); // Preserve timeout/cancellation classification at the task boundary.
+        throw failure;
       }
       int matches = matchCount(result);
       totalMatches += matches;
       aggregated.addAll(result.findings());
-      perModule.put(module, Map.of("module", module, "matchCount", matches, "status", "OK"));
+      // Keep actual tool observations as well as counts when aggregating a single or multiple modules.
+      perModule.put(module, Map.of("module", module, "matchCount", matches, "status", "OK", "result", result.data()));
       runs.add(new ModuleRun(module, matches, false));
     }
 

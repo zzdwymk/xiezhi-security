@@ -35,6 +35,8 @@ import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.scheduling.annotation.Async;
@@ -113,6 +115,7 @@ class WorkflowRunServiceTests {
               List<Long> dependencyIds = invocation.getArgument(7);
               SecurityTask task = workflowTask(createdTasks.size() + 11L, nodeId, request.toolCode());
               task.setStatus(dependencyIds.isEmpty() ? "PENDING" : "BLOCKED");
+              task.setWorkflowGroup(invocation.getArgument(4));
               createdTasks.add(task);
               createdRequests.add(request);
               createdDependencies.put(nodeId, List.copyOf(dependencyIds));
@@ -154,6 +157,56 @@ class WorkflowRunServiceTests {
   }
 
   @Test
+  void sameLayerRunsSafeNodesInParallelThenEachApprovedNodeInIsolation() throws Exception {
+    stubSnapshot(List.of(
+        step("safe-a", "http_headers", 0, false, List.of(), Map.of()),
+        step("safe-b", "http_security_check", 0, false, List.of(), Map.of("check", "cookies")),
+        step("caution-c", "http_headers", 0, true, List.of(), Map.of()),
+        step("caution-d", "http_security_check", 0, true, List.of(), Map.of("check", "cors"))));
+
+    service.start(startRequest(List.of("caution-c", "caution-d"), List.of()));
+
+    assertThat(createdDependencies.get("safe-a")).isEmpty();
+    assertThat(createdDependencies.get("safe-b")).isEmpty();
+    assertThat(createdDependencies.get("caution-c")).containsExactly(11L, 12L);
+    assertThat(createdDependencies.get("caution-d")).containsExactly(11L, 12L, 13L);
+    assertThat(createdTasks).extracting(SecurityTask::getWorkflowGroup).containsExactly(0, 0, 1, 2);
+    assertThat(createdTasks).extracting(SecurityTask::getStatus)
+        .containsExactly("PENDING", "PENDING", "BLOCKED", "BLOCKED");
+    assertThat(createdTasks).extracting(SecurityTask::getSuccessDependencyTaskIds)
+        .containsExactly("[]", "[]", "[]", "[]");
+  }
+
+  @Test
+  void skippedOptionalTlsNeverBecomesAnApprovalTaskWaitingDependency() throws Exception {
+    stubSnapshot(List.of(
+        step("a-tls", "tls_config", 0, false, List.of(), Map.of()),
+        step("b-headers", "http_headers", 0, false, List.of(), Map.of()),
+        step("c-approved", "http_security_check", 0, true, List.of(), Map.of("check", "cookies"))));
+    SecurityTask skipped = workflowTask(11L, "a-tls", "tls_config");
+    skipped.setStatus("SKIPPED");
+    when(taskService.createSkippedWorkflowTask(any(), anyString(), eq("a-tls"), anyString(),
+        anyInt(), anyString(), anyBoolean(), anyList(), eq(42L), anyString()))
+        .thenAnswer(invocation -> { createdTasks.add(skipped); return skipped; });
+
+    service.start(startRequest(List.of("c-approved"), List.of("a-tls")));
+
+    assertThat(createdDependencies.get("b-headers")).isEmpty();
+    assertThat(createdDependencies.get("c-approved")).containsExactly(12L);
+  }
+
+  @Test
+  void asymmetricSafeBranchesDoNotAcquireArtificialWaitingDependencies() throws Exception {
+    stubSnapshot(List.of(
+        step("a", "http_headers", 0, false, List.of(), Map.of()),
+        step("b", "http_headers", 0, false, List.of(), Map.of()),
+        step("c", "http_security_check", 1, false, List.of("a"), Map.of())));
+    service.start(startRequest(List.of(), List.of()));
+    assertThat(createdDependencies.get("c")).containsExactly(11L);
+    assertThat(createdTasks.get(2).getSuccessDependencyTaskIds()).isEqualTo("[11]");
+  }
+
+  @Test
   void unavailableNodeMustBeExplicitlySkipped() throws Exception {
     List<Map<String, Object>> steps =
         List.of(step("scan", "nmap_service_scan", 0, false, List.of(), Map.of()));
@@ -185,6 +238,30 @@ class WorkflowRunServiceTests {
     assertThat(detail.tasks()).extracting(SecurityTask::getStatus).containsExactly("SKIPPED");
     verify(taskService).createSkippedWorkflowTask(
         any(), anyString(), eq("scan"), anyString(), anyInt(), anyString(), anyBoolean(), anyList(), eq(42L), anyString());
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"afrog_scan", "xray_scan"})
+  void explicitPocDeselectionCannotBeExpandedToAllPocs(String toolCode) throws Exception {
+    String dependencyName = "afrog_scan".equals(toolCode) ? "Afrog" : "Xray";
+    when(dependencies.detect()).thenReturn(new SystemDependenciesResponse("test", "test", "H2",
+        List.of(new DependencyStatus(dependencyName, "AVAILABLE", "test", "", true,
+            "scanner", "", null, null))));
+    stubSnapshot(List.of(step("scan", toolCode, 0, false, List.of(), Map.of("allPocs", false))));
+    when(scannerPocs.resolve(
+            eq(ScannerPocSelectionService.sourceForTool(toolCode)),
+            eq(Map.of("allPocs", false)), eq(false)))
+        .thenThrow(new ApiException("请至少选择一个 PoC"));
+
+    WorkflowRunDtos.PreflightResponse preflight = service.preflight(
+        new WorkflowRunDtos.SnapshotRequest(PROJECT_ID, TARGET_ID, "workflow-1", 3L, DIGEST));
+
+    assertThat(preflight.issues()).singleElement()
+        .satisfies(issue -> assertThat(issue.reason()).isEqualTo("请至少选择一个 PoC"));
+    assertThatThrownBy(() -> service.start(startRequest(List.of(), List.of())))
+        .hasMessageContaining("请至少选择一个 PoC");
+    assertThat(createdTasks).isEmpty();
+    verify(runs, never()).save(any());
   }
 
   @Test

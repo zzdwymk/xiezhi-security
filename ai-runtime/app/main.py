@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -9,6 +10,8 @@ from typing import AsyncIterator
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
+from .progress import with_public_progress
+from contextlib import aclosing
 
 from .config import settings
 from .graph import (
@@ -213,14 +216,19 @@ async def agent_stream(
         last_state_version = 0
         last_ledger_digest = RUNTIME_LEDGER_GENESIS_DIGEST
         try:
-            async for event in agent_runtime.stream(effective_request):
-                last_state_version = int(event.get("stateVersion", last_state_version + 1))
-                last_ledger_digest = str(
-                    event.get("ledgerEntryDigest", last_ledger_digest)
-                )
-                if await raw_request.is_disconnected():
-                    break
-                yield encode_sse(event)
+            async with aclosing(with_public_progress(agent_runtime.stream(effective_request))) as stream:
+                async for kind, event in stream:
+                    if await raw_request.is_disconnected():
+                        break
+                    if kind == "progress":
+                        # SSE comments never enter the versioned ledger contract.
+                        yield ": toolbox-progress " + json.dumps(event, separators=(",", ":")) + "\n\n"
+                        continue
+                    last_state_version = int(event.get("stateVersion", last_state_version + 1))
+                    last_ledger_digest = str(
+                        event.get("ledgerEntryDigest", last_ledger_digest)
+                    )
+                    yield encode_sse(event)
         except asyncio.CancelledError:
             raise
         except Exception:

@@ -13,9 +13,10 @@ import java.util.List;
 /**
  * One project-scoped turn of the security agent.
  *
- * <p>{@code execute=false} is the safe default and only produces a reviewed plan. Setting {@code
- * execute=true} is the caller's explicit confirmation for the existing low-risk task dispatcher. It
- * never enables tools outside that dispatcher's hard-coded allow-list.
+ * <p>Legacy {@code execute=false} only produces a reviewed plan and {@code execute=true} carries
+ * explicit confirmation. AUTO uses a separate current user sentence and a validated model decision;
+ * the orchestrator resolves execution only after the server policy agrees. Neither path enables
+ * tools outside the dispatcher's hard-coded allow-list.
  */
 public record AiAgentRequest(
     @NotNull(message = "项目 ID 不能为空") Long projectId,
@@ -38,7 +39,26 @@ public record AiAgentRequest(
     @Pattern(regexp = "[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}", message = "外层节点 ID 格式不合法")
         String outerNodeId,
     @Pattern(regexp = "[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}", message = "节点运行 ID 格式不合法")
-        String nodeRunId) {
+        String nodeRunId,
+    ExecutionIntent executionIntent,
+    @Size(max = 4000, message = "本轮用户原句不得超过 4000 个字符") String userPrompt) {
+  public enum ExecutionIntent { AUTO }
+
+  public AiAgentRequest {
+    if (executionIntent == ExecutionIntent.AUTO
+        && (userPrompt == null || userPrompt.isBlank() || userPrompt.length() > 4000)) {
+      throw new IllegalArgumentException("AUTO 请求必须携带独立的本轮用户原句 userPrompt");
+    }
+  }
+
+  /** Compatibility with the existing fully bound request constructor. */
+  public AiAgentRequest(Long projectId, Long targetId, String sessionId, String prompt,
+      Boolean execute, AiPlanRequest.ContextRefs contextRefs, List<AiPlanRequest.ContextRef> refs,
+      String mode, String turnId, String workflowId, Long workflowRevision, String workflowDigest,
+      String outerNodeId, String nodeRunId) {
+    this(projectId, targetId, sessionId, prompt, execute, contextRefs, refs, mode, turnId,
+        workflowId, workflowRevision, workflowDigest, outerNodeId, nodeRunId, null, null);
+  }
   /** Source-compatible constructor for callers that select the latest project workflow. */
   public AiAgentRequest(
       Long projectId,
@@ -99,7 +119,18 @@ public record AiAgentRequest(
   }
 
   public boolean executionRequested() {
-    return Boolean.TRUE.equals(execute);
+    return !automaticExecutionIntent() && Boolean.TRUE.equals(execute);
+  }
+
+  public boolean automaticExecutionIntent() {
+    return executionIntent == ExecutionIntent.AUTO;
+  }
+
+  /** Called only after the trusted runtime decision and server intent policy agree. */
+  public AiAgentRequest withResolvedExecution(boolean resolved) {
+    return new AiAgentRequest(projectId, targetId, sessionId, prompt, resolved, contextRefs,
+        refs, mode, turnId, workflowId, workflowRevision, workflowDigest, outerNodeId,
+        nodeRunId, null, userPrompt);
   }
 
   public AiAgentRequest withWorkflowSnapshot(AgentWorkflowSpecService.WorkflowSnapshot snapshot) {
@@ -117,7 +148,9 @@ public record AiAgentRequest(
         snapshot.revision(),
         snapshot.specDigest(),
         "ledger-agent",
-        stableNodeRunId(projectId, turnId, snapshot.specDigest()));
+        stableNodeRunId(projectId, turnId, snapshot.specDigest()),
+        executionIntent,
+        userPrompt);
   }
 
   private static String stableNodeRunId(Long projectId, String turnId, String workflowDigest) {

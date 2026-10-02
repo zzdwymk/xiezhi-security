@@ -5,6 +5,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.ArgumentMatchers.anyString;
 
 import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.target.AuthorizedTarget;
@@ -134,6 +138,37 @@ class ZapScanToolTests {
     assertThatThrownBy(() -> tool(daemon).execute(target(), Map.of("strength", "cosmic"), ToolExecutionObserver.NOOP))
         .isInstanceOf(ApiException.class)
         .hasMessageContaining("不支持的 ZAP 攻击强度");
+  }
+
+  @Test
+  void disabledSpiderSeedsOnlySelectedUrlAndForwardsLowStrengthWithoutRecursion() throws Exception {
+    ZapDaemon daemon = mock(ZapDaemon.class);
+    when(daemon.startActiveScan(TARGET, null, "LOW", false)).thenReturn("850");
+    when(daemon.activeScanProgress("850")).thenReturn(100);
+    when(daemon.alerts()).thenReturn(List.of());
+    when(daemon.crawlResults(TARGET)).thenReturn(List.of());
+    when(daemon.technologies(TARGET)).thenReturn(List.of());
+
+    tool(daemon).execute(target(), Map.of("spider", false, "strength", "LOW"));
+
+    var order = inOrder(daemon);
+    order.verify(daemon).includeInScope(TARGET);
+    order.verify(daemon).accessUrl(TARGET);
+    order.verify(daemon).startActiveScan(TARGET, null, "LOW", false);
+    verify(daemon, never()).startSpider(any());
+    verify(daemon, never()).startAjaxSpider(any());
+  }
+
+  @Test
+  void missingScanIdStopsBeforePollingAnUnstartedScan() throws Exception {
+    ZapDaemon daemon = mock(ZapDaemon.class);
+    when(daemon.crawlResults(TARGET)).thenReturn(List.of());
+    when(daemon.technologies(TARGET)).thenReturn(List.of());
+    when(daemon.startActiveScan(TARGET, null, "LOW", false)).thenReturn("");
+
+    assertThatThrownBy(() -> tool(daemon).execute(target(), Map.of("spider", false, "strength", "LOW")))
+        .isInstanceOf(ApiException.class).hasMessageContaining("扫描未启动");
+    verify(daemon, never()).activeScanProgress(anyString());
   }
 
   @Test

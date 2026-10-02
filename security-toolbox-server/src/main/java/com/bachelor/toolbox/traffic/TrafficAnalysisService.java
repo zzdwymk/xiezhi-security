@@ -49,7 +49,12 @@ public class TrafficAnalysisService {
         packets.findById(packetId).orElseThrow(() -> new ApiException("流量记录不存在"));
     TrafficSuggestion suggestion =
         suggestions.findByPacketId(packetId).orElseGet(() -> createSuggestion(packet));
-    packet.setAiStatus("PENDING");
+    packet.setAiStatus(
+        switch (suggestion.getStatus()) {
+          case "EXECUTED" -> "DONE";
+          case "IGNORED" -> "IGNORED";
+          default -> "PENDING";
+        });
     packets.save(packet);
     audit.record("ANALYZE_TRAFFIC", "TRAFFIC_PACKET", packetId, "mode=" + mode, "SUCCESS");
     return response(suggestion);

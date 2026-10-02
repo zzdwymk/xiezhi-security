@@ -29,7 +29,7 @@ import org.springframework.stereotype.Component;
  * 读取单个 Metasploit 模块的 Datastore 选项（名称、类型、默认值、是否必填等），供前端在工作流
  * MSF 节点中自动回填「每个模块所需要的必要配置」。
  *
- * <p>通过 {@code msfconsole -Q -x "use &lt;module&gt;; options -j; exit"} 拉取 JSON。RHOST/RHOSTS/
+ * <p>通过 {@code msfconsole -q -x "info -j &lt;module&gt;; exit"} 拉取 JSON。RHOST/RHOSTS/
  * RPORT/LHOST/LPORT/PAYLOAD/CMD/SHELL 等坐标与载荷字段由后端在真正执行时强制固定（见
  * {@code MsfScanTool}），这里一并剔除，避免把授权边界暴露给前端改写。
  */
@@ -65,10 +65,10 @@ public class MsfModuleOptionService {
   public List<ModuleOption> options(String modulePath) {
     String module = normalizeModule(modulePath);
     Path executable = requireExecutable();
-    String script = "use " + module + "; options -j; exit";
+    String script = "info -j " + module + "; exit";
     ProcessBuilder builder =
         ProcessEnvironmentSanitizer.sanitize(
-            new ProcessBuilder(executable.toString(), "-Q", "-x", script));
+            new ProcessBuilder(executable.toString(), "-q", "-x", script));
     builder.redirectErrorStream(true);
     Process process;
     try {
@@ -117,25 +117,28 @@ public class MsfModuleOptionService {
     return module;
   }
 
-  private List<ModuleOption> parse(String module, String output) {
+  List<ModuleOption> parse(String module, String output) {
     JsonNode options = readOptionsJson(module, output);
     List<ModuleOption> result = new ArrayList<>();
-    if (options == null || !options.isObject()) {
-      return result;
-    }
-    Iterator<Map.Entry<String, JsonNode>> it = options.fields();
-    while (it.hasNext()) {
-      Map.Entry<String, JsonNode> field = it.next();
-      String name = field.getKey().trim();
-      if (name.isEmpty() || RESERVED_OPTION_KEYS.contains(name.toUpperCase(Locale.ROOT))) {
-        continue;
+    if (options.isArray()) {
+      for (JsonNode option : options) {
+        if (!option.isObject() || !option.path("name").isTextual()
+            || !option.has("display_value") || !option.path("description").isTextual()) {
+          throw new ApiException("MSF 模块选项数组格式无效");
+        }
+        addOption(result, option.path("name").asText(), option, "display_value", "description");
       }
-      JsonNode node = field.getValue();
-      String type = optionalText(node, "type");
-      boolean required = textualFlag(node, "required");
-      String def = quoteIfNeeded(node, "default");
-      String desc = optionalText(node, "desc");
-      result.add(new ModuleOption(name, type, required, def, desc));
+    } else {
+      Iterator<Map.Entry<String, JsonNode>> it = options.fields();
+      while (it.hasNext()) {
+        Map.Entry<String, JsonNode> field = it.next();
+        JsonNode node = field.getValue();
+        if (!node.isObject() || !node.has("required")
+            || !(node.has("default") || node.has("desc") || node.has("type"))) {
+          throw new ApiException("MSF 模块选项对象格式无效");
+        }
+        addOption(result, field.getKey(), node, "default", "desc");
+      }
     }
     result.sort(
         (a, b) -> {
@@ -145,21 +148,37 @@ public class MsfModuleOptionService {
     return result;
   }
 
+  private void addOption(List<ModuleOption> result, String rawName, JsonNode node,
+      String defaultField, String descriptionField) {
+    String name = rawName.trim();
+    JsonNode required = node.get("required");
+    if (name.isBlank() || required == null || !(required.isBoolean()
+        || required.isTextual() && Set.of("true", "false", "yes", "no").contains(required.asText().toLowerCase(Locale.ROOT)))) {
+      throw new ApiException("MSF 模块选项名称或必填标记无效");
+    }
+    if (RESERVED_OPTION_KEYS.contains(name.toUpperCase(Locale.ROOT))) return;
+    result.add(new ModuleOption(name, optionalText(node, "type"), textualFlag(node, "required"),
+        quoteIfNeeded(node, defaultField), optionalText(node, descriptionField)));
+  }
+
   private JsonNode readOptionsJson(String module, String output) {
     if (output == null || output.isBlank()) {
       throw new ApiException("msfconsole 未输出任何模块选项");
     }
-    int start = output.indexOf('{');
+    String clean = output.replaceAll("\\u001B\\[[0-?]*[ -/]*[@-~]", "");
+    int start = clean.indexOf('{');
     if (start >= 0) {
       try {
-        JsonNode root = objectMapper.readTree(output.substring(start));
+        JsonNode root = objectMapper.readTree(clean.substring(start));
         JsonNode options = root.get("options");
-        if (options != null && options.isObject()) {
+        if (options != null && (options.isObject() || options.isArray())) {
           return options;
         }
-        return root;
+        if (options == null && root.isObject() && !root.isEmpty()
+            && java.util.stream.StreamSupport.stream(root.spliterator(), false)
+                .allMatch(value -> value.isObject() && value.has("required"))) return root;
       } catch (Exception ignore) {
-        log.debug("MSF 模块 {} 选项 JSON 解析失败，回退文本解析", module);
+        log.debug("MSF 模块 {} 选项 JSON 解析失败", module);
       }
     }
     throw new ApiException("无法解析模块 " + module + " 的选项信息（msf 版本可能不兼容）");

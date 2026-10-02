@@ -115,6 +115,10 @@ public class ZapScanTool implements SecurityTool {
           runAjaxSpider(daemon, targetUri, observer);
         }
       }
+      if (!withSpider && !openApiImported) {
+        observer.operation("正在读取选定地址以建立 ZAP 站点记录（不爬取、不跟随重定向）");
+        daemon.accessUrl(targetUri);
+      }
       List<String> crawledUrls = new ArrayList<>(daemon.crawlResults(targetUri));
       List<String> technologies = new ArrayList<>(daemon.technologies(targetUri));
       if (crawledUrls.isEmpty() && openApiImported) {
@@ -125,7 +129,7 @@ public class ZapScanTool implements SecurityTool {
         List<ZapDaemon.ZapAlert> alerts = daemon.alerts();
         return toResult(targetUri, alerts, crawledUrls, technologies, openApiImported);
       }
-      return runActiveScan(daemon, targetUri, strength, scanPolicy, crawledUrls, technologies, openApiImported, observer);
+      return runActiveScan(daemon, targetUri, strength, scanPolicy, withSpider || openApiImported, crawledUrls, technologies, openApiImported, observer);
     } catch (Exception ex) {
       if (ex instanceof ApiException) {
         throw ex;
@@ -167,6 +171,7 @@ public class ZapScanTool implements SecurityTool {
       URI target,
       String strength,
       String scanPolicy,
+      boolean recurse,
       List<String> crawledUrls,
       List<String> technologies,
       boolean openApiImported,
@@ -183,7 +188,10 @@ public class ZapScanTool implements SecurityTool {
             + "，强度 "
             + strength
             + "）");
-    scanId = daemon.startActiveScan(target, scanPolicy);
+    scanId = daemon.startActiveScan(target, scanPolicy, strength, recurse);
+    if (scanId == null || scanId.isBlank()) {
+      throw new ApiException("ZAP 未返回主动扫描编号，扫描未启动");
+    }
     while (true) {
       Integer progress = daemon.activeScanProgress(scanId);
       if (progress == null || progress >= 100) break;

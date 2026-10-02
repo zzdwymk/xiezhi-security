@@ -43,6 +43,14 @@ public class AiAuthorizationGuard {
   }
 
   public GuardDecision evaluate(AiAgentRequest request, AiPlanResponse proposedPlan) {
+    return evaluate(request, proposedPlan, false);
+  }
+
+  GuardDecision evaluateApproved(AiAgentRequest request, AiPlanResponse proposedPlan) {
+    return evaluate(request, proposedPlan, true);
+  }
+
+  private GuardDecision evaluate(AiAgentRequest request, AiPlanResponse proposedPlan, boolean approvedPlan) {
     if (request.projectId() == null || request.targetId() == null) {
       throw new ApiException("AI 工具调用必须绑定评估项目和授权目标");
     }
@@ -62,7 +70,8 @@ public class AiAuthorizationGuard {
             request.refs(),
             request.mode());
     // Tool allow-list, protocol, parameter and port-subset validation.
-    AiPlanResponse normalized = dispatcher.prepare(scoped, proposedPlan);
+    AiPlanResponse normalized = request.workflowDigest() != null && !request.workflowDigest().isBlank()
+        ? dispatcher.prepareWorkflow(request, proposedPlan) : dispatcher.prepare(scoped, proposedPlan);
 
     long activeProjectTasks =
         tasks.countByProjectIdAndStatusIn(request.projectId(), ACTIVE_STATUSES);
@@ -78,7 +87,8 @@ public class AiAuthorizationGuard {
           activeProjectTasks,
           activeTargetTasks);
     }
-    if (!request.executionRequested()) {
+    if (!request.executionRequested() || (!approvedPlan && normalized.steps().stream().anyMatch(step ->
+        step.requiresApproval() || !"SAFE".equalsIgnoreCase(step.risk())))) {
       return new GuardDecision(
           "AWAITING_APPROVAL",
           "REQUIRED",

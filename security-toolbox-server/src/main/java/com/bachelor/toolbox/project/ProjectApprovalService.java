@@ -20,14 +20,20 @@ public class ProjectApprovalService {
   private final ProjectApprovalRepository repository;
   private final AuditService audit;
   private final ProjectAuthorizationService authorization;
+  private final com.bachelor.toolbox.target.TargetService targets;
 
-  public ProjectApprovalService(
-      ProjectApprovalRepository repository,
-      AuditService audit,
-      ProjectAuthorizationService authorization) {
+  @org.springframework.beans.factory.annotation.Autowired
+  public ProjectApprovalService(ProjectApprovalRepository repository, AuditService audit,
+      ProjectAuthorizationService authorization, com.bachelor.toolbox.target.TargetService targets) {
     this.repository = repository;
     this.audit = audit;
     this.authorization = authorization;
+    this.targets = targets;
+  }
+
+  public ProjectApprovalService(ProjectApprovalRepository repository, AuditService audit,
+      ProjectAuthorizationService authorization) {
+    this(repository, audit, authorization, null);
   }
 
   public List<ProjectApproval> list(Long projectId) {
@@ -41,14 +47,16 @@ public class ProjectApprovalService {
     ProjectApproval approval =
         createApproval(projectId, action, comment, authorizationSnapshotHash);
     ProjectApproval saved = repository.save(approval);
-    recordRequest(saved, authorizationSnapshotHash);
+    recordRequest(saved, approval.getAuthorizationSnapshotHash());
     return saved;
   }
 
   /**
-   * 由 AI Agent 规划服务在识别到需要审批的动作时受控提交审批请求。
+   * 由 AI Agent 规划服务在识别到需要人工审批的动作时受控提交审批请求。
    * 固定申请主体为系统内置的不可登录服务账号 "ai-agent"，实现人机审批分离。
    */
+  private static final int HASH_COLUMN_LENGTH = 64;
+
   public ProjectApproval requestByAgent(
       Long projectId, String action, String comment, String authorizationSnapshotHash) {
     ProjectApproval approval = new ProjectApproval();
@@ -56,16 +64,61 @@ public class ProjectApprovalService {
     approval.setAction(action);
     approval.setStatus(PENDING_STATUS);
     approval.setComment(comment);
-    approval.setAuthorizationSnapshotHash(authorizationSnapshotHash);
+    approval.setAuthorizationSnapshotHash(normalizeHash(authorizationSnapshotHash));
     approval.setRequestedBy("ai-agent");
     ProjectApproval saved = repository.save(approval);
-    recordRequest(saved, authorizationSnapshotHash);
+    recordRequest(saved, approval.getAuthorizationSnapshotHash());
     return saved;
   }
 
+  @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
+  public ProjectApproval requestAiPlan(com.bachelor.toolbox.ai.AiAgentRequest request,
+      com.bachelor.toolbox.ai.AiPlanResponse plan,
+      com.bachelor.toolbox.ai.CrossTurnRecoveryService.RecoveryAnchor recoveryAnchor) {
+    AssessmentProject project = authorization.requireAccess(request.projectId());
+    try {
+      var mapper = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();
+      ProjectApproval approval = new ProjectApproval();
+      approval.setProjectId(request.projectId());
+      approval.setAction("AI_PLAN_EXECUTION");
+      approval.setStatus(PENDING_STATUS);
+      approval.setRequestedBy("ai-agent");
+      String summary = java.util.Objects.toString(plan.summary(), "");
+      approval.setComment("AI 请求执行原计划：" + summary.substring(0, Math.min(1800, summary.length())));
+      approval.setAuthorizationSnapshotHash(normalizeHash(request.workflowDigest()));
+      approval.setAiProjectBinding(com.bachelor.toolbox.ai.AiPlanApprovalService.projectBinding(project));
+      if (targets == null) throw new ApiException("审批目标快照服务不可用");
+      approval.setAiTargetBinding(com.bachelor.toolbox.ai.AiPlanApprovalService.targetBinding(targets.get(request.targetId())));
+      approval.setAiRequestJson(mapper.writeValueAsString(request));
+      approval.setAiPlanJson(mapper.writeValueAsString(plan));
+      if (recoveryAnchor != null) approval.setAiRecoveryJson(mapper.writeValueAsString(recoveryAnchor));
+      ProjectApproval saved = repository.save(approval);
+      recordRequest(saved, saved.getAuthorizationSnapshotHash());
+      return saved;
+    } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
+      throw new ApiException("无法保存待审批原计划，未派发任务");
+    }
+  }
+
+  /** 写入前规整快照哈希：去除 "sha256:" 前缀并截断到列长限制（64 字符）。 */
+  private String normalizeHash(String hash) {
+    if (hash == null || hash.isBlank()) {
+      return null;
+    }
+    String value = hash.startsWith("sha256:") ? hash.substring("sha256:".length()) : hash;
+    return value.length() > HASH_COLUMN_LENGTH ? value.substring(0, HASH_COLUMN_LENGTH) : value;
+  }
+
+  @org.springframework.transaction.annotation.Transactional
   public ProjectApproval decide(Long projectId, Long approvalId, String status, String comment) {
     authorization.requireAdmin();
-    ProjectApproval approval = getApproval(projectId, approvalId);
+    if (!"APPROVED".equals(status) && !"REJECTED".equals(status)) throw new ApiException("审批结果只能是 APPROVED 或 REJECTED");
+    ProjectApproval approval = repository.findForUpdate(approvalId, projectId)
+        .orElseThrow(() -> new ApiException("项目审批记录不存在"));
+    if (!PENDING_STATUS.equals(approval.getStatus())) {
+      if (status.equals(approval.getStatus())) return approval;
+      throw new ApiException("该审批已裁决，不能更改结果，请重新申请");
+    }
     applyDecision(approval, status, comment);
 
     ProjectApproval saved = repository.save(approval);
@@ -86,7 +139,7 @@ public class ProjectApprovalService {
     approval.setAction(action);
     approval.setStatus(PENDING_STATUS);
     approval.setComment(comment);
-    approval.setAuthorizationSnapshotHash(authorizationSnapshotHash);
+    approval.setAuthorizationSnapshotHash(normalizeHash(authorizationSnapshotHash));
     approval.setRequestedBy(currentOperator());
     return approval;
   }

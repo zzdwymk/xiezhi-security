@@ -367,6 +367,89 @@ def test_retry_invokes_only_failed_sibling_and_counts_once(
     assert events[-1]["data"]["review"]["proposalCount"] == 2
 
 
+@pytest.mark.parametrize("intent", ["answer", "clarify"])
+def test_no_action_reply_does_not_announce_authorization_or_completed_retest(tmp_path, monkeypatch, intent):
+    runtime = SecurityAgentRuntime(ProjectIndexStore(tmp_path))
+    progress = []
+    monkeypatch.setattr(graph_module, "emit_progress", lambda stage, **kwargs: progress.append(stage))
+
+    async def reply(_request):
+        return {"summary": "说明", "answer": "需要明确范围", "intent": intent, "actions": [], "source": "test"}
+
+    async def unexpected_guard(_state):
+        pytest.fail("a no-action reply must not invoke the execution guard")
+
+    monkeypatch.setattr(runtime.planner, "plan", reply)
+    monkeypatch.setattr(runtime, "_guard_node", unexpected_guard)
+    events = _collect(runtime, _request())
+    assert "AUTHORIZING" not in progress
+    plan = next(event for event in events if event["type"] == "plan")
+    assert plan["data"]["intent"] == intent
+    assert plan["data"]["actionCount"] == 0
+    assert ("澄清" if intent == "clarify" else "问答") in plan["message"]
+    retest = [event for event in events if event["node"] == "retest"]
+    assert retest and all(event["data"]["status"] == "SKIPPED" for event in retest)
+    assert events[-1]["data"]["review"]["proposalCount"] == 0
+
+
+def test_successful_proposal_is_not_a_local_scan_or_completed_retest(tmp_path, monkeypatch):
+    runtime = SecurityAgentRuntime(ProjectIndexStore(tmp_path))
+    progress = []
+    monkeypatch.setattr(graph_module, "emit_progress", lambda stage, **kwargs: progress.append(stage))
+
+    async def plan(_request):
+        return {**_valid_plan(), "source": "test"}
+
+    monkeypatch.setattr(runtime.planner, "plan", plan)
+    events = _collect(runtime, _request())
+    assert progress.count("AUTHORIZING") == 1
+    tool_event = next(event for event in events if event["type"] == "tool")
+    assert tool_event["data"]["localExecutions"] == 0
+    assert tool_event["data"]["javaProposals"] == 1
+    assert "尚未创建检测任务" in tool_event["message"]
+    assert all(event["data"]["status"] == "SKIPPED" for event in events if event["node"] == "retest")
+    final = events[-1]["data"]
+    assert final["status"] == "COMPLETED"
+    assert final["review"]["proposalCount"] == 1
+    assert final["review"]["proposals"][0]["executed"] is False
+
+
+def test_retry_guard_denial_never_emits_completed_retest_or_reinvokes_proposal(tmp_path, monkeypatch):
+    runtime = SecurityAgentRuntime(ProjectIndexStore(tmp_path))
+    original_guard = runtime._guard_node
+    guard_calls = 0
+    proposal_calls = 0
+
+    async def plan(_request):
+        return {**_valid_plan(), "source": "test"}
+
+    async def expire_before_retry(state):
+        nonlocal guard_calls
+        guard_calls += 1
+        if guard_calls > 1:
+            state = {**state, "request": {**state["request"], "authorization": {
+                **state["request"]["authorization"], "expiresAt": "2000-01-01T00:00:00Z",
+            }}}
+        return await original_guard(state)
+
+    class FailingProposal:
+        def invoke(self, _payload):
+            nonlocal proposal_calls
+            proposal_calls += 1
+            raise RuntimeError("proposal failed")
+
+    monkeypatch.setattr(runtime.planner, "plan", plan)
+    monkeypatch.setattr(runtime, "_guard_node", expire_before_retry)
+    runtime.tools["propose_authorized_action"] = FailingProposal()
+    events = _collect(runtime, _request(max_retries=1))
+    assert guard_calls == 2 and proposal_calls == 1
+    retest = [event for event in events if event["node"] == "retest"]
+    assert not any(event["data"].get("status") == "COMPLETED" for event in retest)
+    assert any(event["data"].get("status") == "DENIED" for event in retest)
+    assert events[-1]["data"]["status"] == "DENIED"
+    assert events[-1]["data"]["review"]["status"] == "FAILED"
+
+
 def test_permanent_failure_attempts_exactly_once_plus_retry_budget(
     tmp_path, monkeypatch
 ):

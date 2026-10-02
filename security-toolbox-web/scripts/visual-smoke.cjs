@@ -292,7 +292,7 @@ function trafficSession(index) {
   };
 }
 
-async function installApiMock(page, role = "ADMIN") {
+async function installApiMock(page, role = "ADMIN", { longWorkflowAdvice = false } = {}) {
   let fingerprintCatalog = {
     version: "visual-smoke",
     sha256: "0".repeat(64),
@@ -493,7 +493,11 @@ async function installApiMock(page, role = "ADMIN") {
             kind: "coverage_gap",
             severity: "warning",
             title: "缺少端口发现",
-            detail: "当前直接进行服务识别，可能遗漏非默认端口上的服务。",
+            detail: longWorkflowAdvice
+              ? "请核对节点的上游连线及授权范围。" +
+                "nmap_service_scan/retrieve_project_context/http_security_check/".repeat(10) +
+                "末尾内容完整可读。"
+              : "当前直接进行服务识别，可能遗漏非默认端口上的服务。",
           },
         },
         {
@@ -502,7 +506,9 @@ async function installApiMock(page, role = "ADMIN") {
             id: "orchestration-smoke",
             kind: "orchestration",
             severity: "info",
-            title: "确保并行扫描汇聚后再进入漏洞发现",
+            title: longWorkflowAdvice
+              ? "确保并行扫描汇聚后再进入漏洞发现：长标题应在卡片内部完整换行展示"
+              : "确保并行扫描汇聚后再进入漏洞发现",
             detail: "服务识别和 TLS 检查应全部完成后再触发 discovery。",
           },
         },
@@ -579,6 +585,7 @@ async function createPage(
   viewport,
   reducedMotion = "reduce",
   role = "ADMIN",
+  mockOptions = {},
 ) {
   const context = await browser.newContext({
     viewport,
@@ -586,7 +593,7 @@ async function createPage(
     reducedMotion,
   });
   const page = await context.newPage();
-  await installApiMock(page, role);
+  await installApiMock(page, role, mockOptions);
   await page.addInitScript(() => {
     localStorage.setItem("security_toolbox_setup_complete_v2", "true");
     localStorage.setItem("security_toolbox_token", "visual-smoke-token");
@@ -848,6 +855,115 @@ async function verifySharedSelectionIndicators(browser) {
   assert.equal(await page.locator(".catalog-list button").nth(1).getAttribute("class"), "active");
 
   await context.close();
+}
+
+async function verifyWorkflowAdviceLayout(browser) {
+  const { context, page } = await createPage(
+    browser,
+    { width: 1440, height: 900 },
+    "no-preference",
+    "ADMIN",
+    { longWorkflowAdvice: true },
+  );
+  try {
+    await page.goto(`${baseUrl}/workflow`, { waitUntil: "networkidle" });
+    await page.locator(".suggest-toggle").click();
+    await page.locator(".suggest-card").nth(2).waitFor();
+    assert.match(
+      await page.locator(".suggest-card p").first().innerText(),
+      /末尾内容完整可读。$/,
+    );
+    assert.match(
+      await page.locator(".suggest-card strong").nth(1).innerText(),
+      /长标题应在卡片内部完整换行展示$/,
+    );
+    const content = page.locator(".suggest-content");
+    const assertAdviceFits = async (label) => {
+      const metrics = await page
+        .locator(".suggest-content, .suggest-card, .suggest-card p, .suggest-card strong")
+        .evaluateAll((items) => items.map((item) => {
+          const style = getComputedStyle(item);
+          return {
+            tag: item.tagName,
+            width: item.clientWidth,
+            scrollWidth: item.scrollWidth,
+            height: item.clientHeight,
+            scrollHeight: item.scrollHeight,
+            whiteSpace: style.whiteSpace,
+            lineClamp: style.webkitLineClamp,
+          };
+        }));
+      assert.ok(
+        metrics.every((item) => item.width > 0 && item.scrollWidth <= item.width + 1),
+        `${label} 建议内容不应横向溢出：${JSON.stringify(metrics)}`,
+      );
+      assert.ok(
+        metrics.filter((item) => ["P", "STRONG"].includes(item.tag)).every((item) =>
+          item.height > 0 && item.scrollHeight <= item.height + 1 &&
+          item.whiteSpace !== "nowrap" && ["none", "0", ""].includes(item.lineClamp),
+        ),
+        `${label} 正文和标题应完整换行，不应截断：${JSON.stringify(metrics)}`,
+      );
+      const bottom = await content.evaluate((item) => {
+        item.scrollTop = item.scrollHeight;
+        const lastCard = item.querySelector(".suggest-card:last-child");
+        return {
+          top: item.scrollTop,
+          height: item.clientHeight,
+          total: item.scrollHeight,
+          lastCardBottom: lastCard?.getBoundingClientRect().bottom,
+          contentBottom: item.getBoundingClientRect().bottom,
+        };
+      });
+      assert.ok(
+        bottom.height > 0 && bottom.top + bottom.height >= bottom.total - 1 &&
+          bottom.lastCardBottom <= bottom.contentBottom + 1,
+        `${label} 应能滚动到底并读到最后一条建议：${JSON.stringify(bottom)}`,
+      );
+      return bottom;
+    };
+    for (const width of [1440, 1920, 1024, 760]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.waitForTimeout(300);
+      const bottom = await assertAdviceFits(`${width}px`);
+      assert.ok(bottom.total > bottom.height, `${width}px 长文本夹具应触发垂直滚动`);
+      await page.locator(".suggest-panel").screenshot({
+        path: path.join(outputDir, `workflow-advice-long-text-${width}.png`),
+      });
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await content.evaluate((item) => { item.scrollTop = 0; });
+    await page.waitForTimeout(300);
+    const panel = page.locator(".suggest-panel");
+    const before = await panel.boundingBox();
+    const handle = await page.locator(".suggest-resizer").boundingBox();
+    assert.ok(before && handle, "建议面板和拖动手柄应可见");
+    const handleX = handle.x + handle.width / 2;
+    const handleY = handle.y + handle.height / 2;
+    await page.mouse.move(handleX, handleY);
+    await page.mouse.down();
+    await page.mouse.move(handleX, handleY - 280, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(300);
+    const after = await panel.boundingBox();
+    assert.ok(
+      after && after.height > before.height + 100,
+      `向上拖动手柄应增加建议面板高度：${JSON.stringify({ before, after })}`,
+    );
+    assert.equal(
+      await page.locator("body").evaluate((item) => item.classList.contains("is-resizing-suggest")),
+      false,
+      "释放鼠标后应结束建议面板拖动状态",
+    );
+    await assertAdviceFits("拖动后");
+    await content.evaluate((item) => { item.scrollTop = 0; });
+    await page.screenshot({
+      path: path.join(outputDir, "workflow-advice-long-text.png"),
+    });
+    console.log("工作流长建议已验证四种宽度下完整换行、滚动到底和面板拖动。");
+  } finally {
+    await context.close();
+  }
 }
 
 async function verifyWorkflowStatusSummary(browser) {
@@ -1179,15 +1295,6 @@ async function verifyWorkflowStatusSummary(browser) {
     "false",
     "点击工具节点也不应展开流程阶段区",
   );
-  const nodeInputSpacing = await page.locator(".node-input-editor").evaluate((editor) => {
-    const editorBox = editor.getBoundingClientRect();
-    const titleBox = editor.querySelector("h5")?.getBoundingClientRect();
-    return titleBox ? titleBox.top - editorBox.top : null;
-  });
-  assert.ok(
-    nodeInputSpacing !== null && nodeInputSpacing >= 10 && nodeInputSpacing <= 16,
-    `已选节点标题与区块上边缘应保留适度留白：${nodeInputSpacing}`,
-  );
   const selectedXrayCapability = page.locator(
     '.library-item.is-selected[data-tool="xray_scan"]',
   );
@@ -1198,8 +1305,10 @@ async function verifyWorkflowStatusSummary(browser) {
       const itemStyle = getComputedStyle(element);
       const indicatorStyle = getComputedStyle(element, "::before");
       const indicatorHeight = Number.parseFloat(indicatorStyle.height);
+      const indicatorTransform = new DOMMatrixReadOnly(indicatorStyle.transform);
       const indicatorTop =
-        itemBox.top + itemBox.height / 2 - indicatorHeight / 2;
+        itemBox.top + Number.parseFloat(itemStyle.borderTopWidth) +
+        Number.parseFloat(indicatorStyle.top) + indicatorTransform.m42;
       return {
         content: indicatorStyle.content,
         width: Number.parseFloat(indicatorStyle.width),
@@ -1267,14 +1376,23 @@ async function verifyWorkflowStatusSummary(browser) {
   );
   assert.deepEqual(
     await page.locator(".library-copy strong").allTextContents(),
-    [
-      "Web 风险检查",
-      "Nuclei 漏洞模板扫描",
-      "Afrog PoC 漏洞扫描",
-      "Xray PoC 漏洞扫描",
-    ],
+    libraryLabels,
     "折叠并重新展开后应保留所选阶段和能力列表",
   );
+  // Switching sidebar tabs can reset scroll position; measure node-click scrolling first.
+  const sidebarTabs = page.locator(".workflow-library-tabs");
+  await sidebarTabs.getByText("节点配置", { exact: true }).click();
+  await page.locator(".node-input-editor").waitFor();
+  const nodeInputSpacing = await page.locator(".node-input-editor").evaluate((editor) => {
+    const editorBox = editor.getBoundingClientRect();
+    const titleBox = editor.querySelector(".node-editor-title-row")?.getBoundingClientRect();
+    return titleBox ? titleBox.top - editorBox.top : null;
+  });
+  assert.ok(
+    nodeInputSpacing !== null && nodeInputSpacing >= 10 && nodeInputSpacing <= 16,
+    `已选节点标题行与区块上边缘应保留适度留白：${nodeInputSpacing}`,
+  );
+  await sidebarTabs.getByText("阶段与能力库", { exact: true }).click();
   for (let first = 0; first < nodeBoxes.length; first += 1) {
     for (let second = first + 1; second < nodeBoxes.length; second += 1) {
       const a = nodeBoxes[first];
@@ -1304,7 +1422,7 @@ async function verifyWorkflowStatusSummary(browser) {
     (await workflowContextMenu.getByRole("menuitem").allTextContents()).map((text) =>
       text.trim(),
     ),
-    ["工作流配置", "新增授权输入", "载入所选模板", "使用说明", "适应画布"],
+    ["工作流配置", "新增授权输入", "粘贴节点Ctrl+V", "载入所选模板", "使用说明", "适应画布"],
     "空白画布右键菜单应提供完整配置入口",
   );
   const [menuCanvasBox, contextMenuBox] = await Promise.all([
@@ -2950,6 +3068,8 @@ async function main() {
   try {
     if (process.env.VISUAL_DASHBOARD_ONLY === "1") {
       await verifyDashboardComposer(browser);
+    } else if (process.env.VISUAL_WORKFLOW_ADVICE_ONLY === "1") {
+      await verifyWorkflowAdviceLayout(browser);
     } else if (process.env.VISUAL_WORKFLOW_ONLY === "1") {
       await verifyWorkflowStatusSummary(browser);
     } else if (process.env.VISUAL_TASKS_ONLY === "1") {
@@ -2966,6 +3086,7 @@ async function main() {
       await verifyOfflineToolIndicator(browser);
       await verifySharedSelectionIndicators(browser);
       await verifyWorkflowStatusSummary(browser);
+      await verifyWorkflowAdviceLayout(browser);
       await verifyScheduledScannerConfiguration(browser);
       await verifyDatePickerCorners(browser);
       await verifySettings(browser);

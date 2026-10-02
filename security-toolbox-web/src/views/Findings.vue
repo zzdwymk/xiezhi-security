@@ -26,7 +26,7 @@ import { formatDateTime } from "../utils/dateTime";
 import { toErrorMessage } from "../utils/errorMessage";
 import { useCopilotStore } from "../stores/copilot";
 import { downloadBlob, EmptyDownloadError } from "../utils/download";
-import { aiToolLabel, severityLabel } from "../utils/aiPresentation";
+import { actionRiskLabel, actionStepLabel, findingTitleLabel, aiToolLabel, severityLabel } from "../utils/aiPresentation";
 
 function postScanStatusLabel(status?: string) {
   const map: Record<string, string> = {
@@ -38,14 +38,7 @@ function postScanStatusLabel(status?: string) {
 }
 
 function riskLevelLabel(risk?: string) {
-  const map: Record<string, string> = {
-    SAFE: "低风险",
-    CAUTION: "需谨慎",
-    HIGH: "高风险",
-    CRITICAL: "严重风险",
-    BLOCKED: "已拦截",
-  };
-  return (risk && map[risk]) || risk || "未知";
+  return actionRiskLabel(risk);
 }
 
 function phaseLabel(phase?: string) {
@@ -456,7 +449,7 @@ async function executePostScanPath() {
   );
   try {
     await ElMessageBox.confirm(
-      `将对授权目标 #${plan.targetId} 自动执行 ${selected.length} 个低风险后续验证步骤：${selected.map((step) => step.title).join("、")}。服务端会再次校验漏洞归属、目标授权、端口范围和工具白名单。`,
+      `将对授权目标 #${plan.targetId} 自动执行 ${selected.length} 个低风险后续验证步骤：${selected.map((step) => actionStepLabel(step.toolCode, step.title)).join("、")}。服务端会再次校验漏洞归属、目标授权、端口范围和工具白名单。`,
       "确认自动执行后续验证",
       {
         confirmButtonText: "确认执行",
@@ -651,7 +644,7 @@ onBeforeUnmount(() => {
         label="名称"
         min-width="150"
         show-overflow-tooltip
-      />
+      ><template #default="scope">{{ findingTitleLabel(scope.row.title, scope.row.sourceTool) }}</template></el-table-column>
       <el-table-column label="等级" width="75"
         ><template #default="scope"
           ><el-tag size="small" :type="severityType(scope.row.severity)">{{
@@ -760,8 +753,9 @@ onBeforeUnmount(() => {
   >
     <el-descriptions v-if="detail" :column="1" border>
       <el-descriptions-item label="名称">{{
-        detail.title
+        findingTitleLabel(detail.title, detail.sourceTool)
       }}</el-descriptions-item>
+      <el-descriptions-item v-if="findingTitleLabel(detail.title, detail.sourceTool) !== detail.title" label="原始名称">{{ detail.title }}</el-descriptions-item>
       <el-descriptions-item label="说明">{{
         detail.description || "未提供"
       }}</el-descriptions-item>
@@ -852,7 +846,7 @@ onBeforeUnmount(() => {
                 "
               >
                 <div class="post-step-title">
-                  <b>{{ step.title }}</b
+                  <b>{{ actionStepLabel(step.toolCode, step.title) }}</b
                   ><span
                     ><el-tag
                       size="small"
@@ -868,7 +862,7 @@ onBeforeUnmount(() => {
                 <p>{{ step.reason }}</p>
                 <small
                   >{{ phaseLabel(step.phase) }} · {{
-                    aiToolLabel(step.toolCode) || "无自动工具"
+                    step.toolCode ? aiToolLabel(step.toolCode) : "无自动工具"
                   }} ·
                   预期证据：{{ step.expectedEvidence }}</small
                 >

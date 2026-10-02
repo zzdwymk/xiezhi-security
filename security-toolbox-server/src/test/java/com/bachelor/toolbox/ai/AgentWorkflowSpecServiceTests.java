@@ -88,6 +88,19 @@ class AgentWorkflowSpecServiceTests {
   }
 
   @Test
+  void frozenAsymmetricGraphRetainsOnlyItsActualDependencies() {
+    Map<String, Object> saved = service.save(101L, v2Graph(List.of(
+        edge("__start__", "engage"), edge("engage", "port-scan"),
+        edge("engage", "header-scan"), edge("port-scan", "validation"),
+        edge("header-scan", "__end__"), edge("validation", "__end__"))));
+    AgentWorkflowSpecService.WorkflowSnapshot frozen = service.freezeSnapshot(
+        101L, String.valueOf(saved.get("workflowId")), 1L, String.valueOf(saved.get("specDigest")));
+    assertEquals(List.of("port-scan"), frozen.executableSteps().get(2).get("dependsOnNodeIds"));
+    assertEquals(List.of(), frozen.executableSteps().get(1).get("dependsOnNodeIds"));
+    assertEquals(List.of("port-scan"), service.executableSteps(frozen).get(2).get("dependsOnNodeIds"));
+  }
+
+  @Test
   void v2GraphRejectsCycles() {
     Map<String, Object> body =
         v2Graph(
@@ -279,7 +292,64 @@ class AgentWorkflowSpecServiceTests {
     assertEquals(true, snapshot.executableSteps().get(5).get("requiresApproval"));
     assertEquals(Map.of("allPocs", true), snapshot.executableSteps().get(6).get("parameters"));
     assertEquals(Map.of("allPocs", true), snapshot.executableSteps().get(7).get("parameters"));
-    assertEquals(5, snapshot.executableSteps().get(7).get("group"));
+    assertEquals(1, snapshot.executableSteps().get(7).get("group"));
+    assertTrue(snapshot.executableSteps().subList(1, 8).stream()
+        .allMatch(step -> List.of("context").equals(step.get("dependsOnNodeIds"))));
+  }
+
+  @Test
+  void exactLegacyDefaultUpgradesWithoutChangingFrozenRevision() {
+    Map<String, Object> old = service.save(303L, legacyDefault());
+    AgentWorkflowSpecService.WorkflowSnapshot frozen = service.freezeSnapshot(
+        303L, String.valueOf(old.get("workflowId")), 1L, String.valueOf(old.get("specDigest")));
+    assertEquals(List.of("service-scan", "headers", "tls"),
+        frozen.executableSteps().get(4).get("dependsOnNodeIds"));
+
+    // The dashboard reads latest, then sends an explicit snapshot identity.
+    Map<String, Object> latest = service.read(303L);
+    AgentWorkflowSpecService.WorkflowSnapshot upgraded = service.freezeSnapshot(
+        303L, String.valueOf(latest.get("workflowId")),
+        ((Number) latest.get("revision")).longValue(), String.valueOf(latest.get("specDigest")));
+    assertEquals(2L, upgraded.revision());
+    assertEquals(frozen.workflowId(), upgraded.workflowId());
+    assertNotEquals(frozen.specDigest(), upgraded.specDigest());
+    assertEquals(List.of("context"), upgraded.executableSteps().get(4).get("dependsOnNodeIds"));
+    assertEquals(2L, service.freezeSnapshot(303L).revision());
+    assertEquals(frozen.specDigest(), service.freezeSnapshot(
+        303L, frozen.workflowId(), 1L, frozen.specDigest()).specDigest());
+    assertEquals(2, stored.size());
+  }
+
+  @Test
+  void editedLegacyDefaultKeepsUserDependenciesAndParameters() {
+    Map<String, Object> body = legacyDefault();
+    @SuppressWarnings("unchecked")
+    List<Map<String, Object>> steps = (List<Map<String, Object>>) body.get("steps");
+    steps.get(1).put("parameters", Map.of("ports", "80"));
+    service.save(303L, body);
+    AgentWorkflowSpecService.WorkflowSnapshot snapshot = service.freezeSnapshot(303L);
+    assertEquals(1L, snapshot.revision());
+    assertEquals(Map.of("ports", "80"), snapshot.executableSteps().get(1).get("parameters"));
+    assertEquals(List.of("service-scan", "headers", "tls"),
+        snapshot.executableSteps().get(4).get("dependsOnNodeIds"));
+  }
+
+  private Map<String, Object> legacyDefault() {
+    String[] ids = {"context", "service-scan", "headers", "tls", "http-security", "nuclei", "afrog", "xray"};
+    String[] tools = {"retrieve_project_context", "nmap_service_scan", "http_headers", "tls_config", "http_security_check", "nuclei_scan", "afrog_scan", "xray_scan"};
+    int[] groups = {0, 1, 1, 1, 2, 3, 4, 5};
+    List<Map<String, Object>> steps = new ArrayList<>();
+    for (int i = 0; i < ids.length; i++) {
+      Map<String, Object> step = step(ids[i], tools[i]);
+      step.put("group", groups[i]);
+      if (i >= 5) {
+        step.put("risk", "CAUTION");
+        step.put("requiresApproval", true);
+      }
+      if (i >= 6) step.put("parameters", Map.of("allPocs", true));
+      steps.add(step);
+    }
+    return new LinkedHashMap<>(Map.of("version", 1, "preset", "runtime-default", "steps", steps));
   }
 
   @Test

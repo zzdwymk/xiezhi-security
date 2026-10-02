@@ -15,14 +15,25 @@ import com.bachelor.toolbox.traffic.TrafficSessionRepository;
 import com.bachelor.toolbox.vulnerability.VulnerabilityDefinition;
 import com.bachelor.toolbox.vulnerability.VulnerabilityDefinitionRepository;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.TextNode;
 import java.util.*;
 import java.util.function.Function;
+import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 @Service
 public class AiContextService {
   private static final int MAX_REFERENCES_PER_TYPE = 20;
+  private static final int MAX_REDACTION_DEPTH = 32;
+  private static final String REDACTED = "[REDACTED]";
+  private static final ObjectMapper REDACTION_MAPPER =
+      new ObjectMapper().enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+  private static final Pattern SENSITIVE_FIELD =
+      Pattern.compile("(?i)(authorization|cookie|set-cookie|api[-_ ]?key|token|password|secret)$");
   private final AssessmentProjectService projectService;
   private final SecurityTaskRepository tasks;
   private final FindingRepository findings;
@@ -89,12 +100,16 @@ public class AiContextService {
               + safe(item.getToolCode())
               + ", 状态="
               + safe(item.getStatus())
-              + ", 进度="
-              + item.getProgress()
-              + "%, 漏洞编号="
+              + ", 最近执行事件="
+              + redact(item.getProgressMessage(), 300)
+              + ", 漏洞编号="
               + safe(item.getVulnerabilityCode())
               + ", 错误="
-              + redact(item.getErrorMessage(), 300));
+              + redact(item.getErrorMessage(), 300)
+              + ", 执行结果="
+              + redact(item.getResultJson(), 3000)
+              + ", 执行日志摘要="
+              + redact(item.getExecutionLog(), 1500));
     }
     for (Finding item : load(refs.findingIds(), findings::findById, "发现")) {
       requireTarget(targetId, item.getTargetId(), "发现");
@@ -470,18 +485,90 @@ public class AiContextService {
   private void requireProject(Long expected, Long actual, String label) {
     if (!Objects.equals(expected, actual)) throw new ApiException(label + "不属于当前评估项目");
   }
-  private String redact(String value, int max) {
+  /** Shared by direct references and project indexing; redact before truncating evidence. */
+  static String redact(String value, int max) {
     if (value == null) return "";
-    String sanitized =
-        value
+    String sanitized = redactContent(value, 0);
+    return sanitized.length() <= max ? sanitized : sanitized.substring(0, max) + "…";
+  }
+
+  private static String redactContent(String value, int depth) {
+    if (depth >= MAX_REDACTION_DEPTH) return REDACTED;
+    JsonNode json = parseJson(value);
+    if (json != null) return redactNode(json, depth + 1).toString();
+
+    // Execution logs can contain JSON after a timestamp or other plain text. Parse
+    // complete embedded values too, including strings which encode another JSON value.
+    StringBuilder embedded = new StringBuilder();
+    int copied = 0;
+    for (int start = 0; start < value.length(); start++) {
+      char first = value.charAt(start);
+      if (first != '{' && first != '[' && first != '"') continue;
+      int end = jsonValueEnd(value, start);
+      if (end < 0) continue;
+      JsonNode candidate = parseJson(value.substring(start, end));
+      if (candidate == null) continue;
+      embedded.append(value, copied, start).append(redactNode(candidate, depth + 1));
+      copied = end;
+      start = end - 1;
+    }
+    embedded.append(value, copied, value.length());
+    return embedded.toString()
             .replaceAll("(?i)bearer\\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]")
             .replaceAll(
                 "(?i)(authorization|cookie|set-cookie|api[-_"
-                    + " ]?key|token|password|secret)\\s*[:=]\\s*[^\\r"
-                    + "\\n"
-                    + ",;]+",
+                    + " ]?key|token|password|secret)[\"']?\\s*[:=]\\s*"
+                    + "(?:\"(?:\\\\.|[^\"\\\\\\r\\n])*\"|'(?:\\\\.|[^'\\\\\\r\\n])*'|[^\\r\\n,;]+)",
                 "$1=[REDACTED]");
-    return sanitized.length() <= max ? sanitized : sanitized.substring(0, max) + "…";
+  }
+
+  private static JsonNode parseJson(String value) {
+    String trimmed = value.strip();
+    if (trimmed.isEmpty() || "{[\"".indexOf(trimmed.charAt(0)) < 0) return null;
+    try {
+      return REDACTION_MAPPER.readTree(trimmed);
+    } catch (java.io.IOException ignored) {
+      return null;
+    }
+  }
+
+  private static JsonNode redactNode(JsonNode node, int depth) {
+    if (depth >= MAX_REDACTION_DEPTH) return TextNode.valueOf(REDACTED);
+    if (node.isObject()) {
+      ObjectNode result = REDACTION_MAPPER.createObjectNode();
+      node.fields().forEachRemaining(entry -> result.set(entry.getKey(),
+          SENSITIVE_FIELD.matcher(entry.getKey()).find()
+              ? TextNode.valueOf(REDACTED) : redactNode(entry.getValue(), depth + 1)));
+      return result;
+    }
+    if (node.isArray()) {
+      ArrayNode result = REDACTION_MAPPER.createArrayNode();
+      node.forEach(item -> result.add(redactNode(item, depth + 1)));
+      return result;
+    }
+    if (node.isTextual()) return TextNode.valueOf(redactContent(node.textValue(), depth + 1));
+    return node;
+  }
+
+  private static int jsonValueEnd(String value, int start) {
+    boolean quoted = value.charAt(start) == '"';
+    boolean stringRoot = quoted;
+    boolean escaped = false;
+    int nesting = stringRoot ? 0 : 1;
+    for (int index = start + 1; index < value.length(); index++) {
+      char current = value.charAt(index);
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (current == '\\') escaped = true;
+        else if (current == '"') {
+          quoted = false;
+          if (stringRoot) return index + 1;
+        }
+      } else if (current == '"') quoted = true;
+      else if (current == '{' || current == '[') nesting++;
+      else if ((current == '}' || current == ']') && --nesting == 0) return index + 1;
+    }
+    return -1;
   }
 
   private String safe(String value) {

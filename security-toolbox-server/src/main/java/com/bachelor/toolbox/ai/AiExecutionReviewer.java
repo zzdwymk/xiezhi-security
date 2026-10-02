@@ -20,24 +20,28 @@ public class AiExecutionReviewer {
 
   public AiAgentResponse.AgentReview review(Long projectId, Long targetId, List<Long> taskIds) {
     if (taskIds == null || taskIds.isEmpty()) {
-      return new AiAgentResponse.AgentReview("NO_ACTION", "本轮没有执行工具，无需复核", false, List.of());
+      return new AiAgentResponse.AgentReview("NO_ACTION", "本轮没有创建任务，没有可核对的任务状态", false, List.of());
     }
     List<Long> verified = new ArrayList<>();
     boolean retryAllowed = false;
+    boolean pending = false;
     for (Long taskId : taskIds) {
       SecurityTask task = taskId == null ? null : tasks.findById(taskId).orElse(null);
       if (task == null
           || !Objects.equals(projectId, task.getProjectId())
           || !Objects.equals(targetId, task.getTargetId())) {
         return new AiAgentResponse.AgentReview(
-            "REJECTED", "执行结果无法通过项目与目标归属复核", false, List.copyOf(verified));
+            "REJECTED", "任务无法通过项目与目标归属核对，未核验检测结果", false, List.copyOf(verified));
       }
       verified.add(taskId);
       retryAllowed |= RETRYABLE.contains(task.getStatus());
+      pending |= !"SUCCESS".equals(task.getStatus()) && !RETRYABLE.contains(task.getStatus());
     }
     return new AiAgentResponse.AgentReview(
-        "ACCEPTED",
-        "已复核 " + verified.size() + " 个受控任务，均属于当前项目和授权目标",
+        pending ? "PENDING" : "ACCEPTED",
+        "已核对 " + verified.size() + " 个任务的项目、目标归属和当前状态；"
+            + (pending ? "仍有任务尚未结束，等待实际执行结果；" : "任务状态已终结；")
+            + "此核对不包含检测证据或结果内容验证",
         retryAllowed,
         List.copyOf(verified));
   }

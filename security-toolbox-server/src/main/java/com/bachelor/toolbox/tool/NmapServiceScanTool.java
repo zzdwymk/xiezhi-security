@@ -126,39 +126,52 @@ public class NmapServiceScanTool implements SecurityTool {
         throw new ApiException("Nmap 执行失败，退出码 " + process.exitValue() + suffix);
       }
       observer.progressPercent(100d, "Nmap 扫描完成，正在解析 XML 输出");
-      var parsed = parser.parse(xml);
-      List<Map<String, Object>> openPortObservations =
-          parsed.openPorts().stream()
-              .map(
-                  port -> {
-                    Map<String, Object> observation = new LinkedHashMap<>(port);
-                    observation.put("assessmentType", "ASSET_OBSERVATION");
-                    observation.put("vulnerability", false);
-                    observation.put("note", "开放端口仅代表可达服务，不能单独判定为漏洞");
-                    return observation;
-                  })
-              .toList();
-      Map<String, Object> data = new LinkedHashMap<>();
-      data.put("host", host);
-      data.put("mode", mode);
-      data.put("requestedPorts", canonicalPorts);
-      data.put("requestedPortCount", requested.size());
-      data.put("openPorts", openPortObservations);
-      data.put(
-          "rawSummary",
-          Map.of("exitCode", process.exitValue(), "openPortCount", parsed.openPorts().size()));
-      return new ToolExecutionResult(
-          "Nmap 已扫描 "
-              + requested.size()
-              + " 个授权端口，发现 "
-              + openPortObservations.size()
-              + " 个开放端口（已归类为资产暴露面，不自动判定为漏洞）",
-          data,
-          List.of());
+      return parseResult(xml, host, mode, canonicalPorts, requested.size(), process.exitValue());
     } finally {
       if (process.isAlive()) process.destroyForcibly();
       readers.shutdownNow();
     }
+  }
+
+  ToolExecutionResult parseResult(
+      String xml, String host, String mode, String requestedPorts, int requestedPortCount, int exitCode) {
+    var parsed = parser.parse(xml);
+    List<Map<String, Object>> openPortObservations =
+        parsed.openPorts().stream()
+            .map(
+                port -> {
+                  Map<String, Object> observation = new LinkedHashMap<>(port);
+                  observation.put("assessmentType", "ASSET_OBSERVATION");
+                  observation.put("vulnerability", false);
+                  observation.put("note", "开放端口仅代表可达服务，不能单独判定为漏洞");
+                  return observation;
+                })
+            .toList();
+    Map<String, Object> data = new LinkedHashMap<>();
+    data.put("host", host);
+    data.put("mode", mode);
+    data.put("requestedPorts", requestedPorts);
+    data.put("requestedPortCount", requestedPortCount);
+    data.put(
+        "evidenceNote",
+        "portStates 仅记录 XML 明确列出的逐端口状态；extraports 是状态计数汇总，只有明确的 ports 字段才能对应具体端口。"
+            + "未出现的端口不能推断为 closed；仅有 openPorts 的历史结果也不能区分其他端口是 closed、filtered 或未记录。"
+            + "hostStatuses 的主机状态和 reason 原样来自 Nmap，不能单独证明端口可达。");
+    data.put("hostStatuses", parsed.hostStatuses());
+    data.put("openPorts", openPortObservations);
+    data.put("extraports", parsed.extraports());
+    data.put("portStates", parsed.portStates());
+    data.put(
+        "rawSummary",
+        Map.of("exitCode", exitCode, "openPortCount", parsed.openPorts().size()));
+    return new ToolExecutionResult(
+        "Nmap 已完成 "
+            + requestedPortCount
+            + " 个授权端口的扫描请求，记录 "
+            + openPortObservations.size()
+            + " 个开放端口（已归类为资产暴露面，不自动判定为漏洞）",
+        data,
+        List.of());
   }
 
   List<String> buildCommand(String host, String canonicalPorts, String mode) {

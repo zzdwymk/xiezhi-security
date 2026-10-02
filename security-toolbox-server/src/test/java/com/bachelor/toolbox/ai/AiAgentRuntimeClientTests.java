@@ -31,6 +31,85 @@ import org.junit.jupiter.api.Test;
  */
 class AiAgentRuntimeClientTests {
 
+  @Test
+  void publicProgressIsPublishedBeforeTheReaderReachesTheNextLine() throws Exception {
+    AiAgentRuntimeClient client = newClient();
+    var progress = new java.util.ArrayList<AiAgentRuntimeClient.PublicProgress>();
+    try (var scope = client.observePublicProgress(progress::add)) {
+      client.readSse(new java.io.BufferedReader(new java.io.StringReader("")) {
+        private int line;
+        @Override public String readLine() {
+          if (line++ == 0) return ": toolbox-progress {\"stage\":\"EVIDENCE_READY\",\"count\":3}";
+          assertThat(progress).singleElement().satisfies(value -> {
+            assertThat(value.message()).contains("3 条项目依据");
+            assertThat(value.evidenceCount()).isEqualTo(3);
+          });
+          return null;
+        }
+      }, ignored -> { throw new AssertionError("progress is not a ledger event"); });
+    }
+  }
+
+  @Test
+  void contractRetryIsOnlyFixedPublicProgressAndCannotCarryRejectedOutput() {
+    AiAgentRuntimeClient client = newClient();
+    var progress = new java.util.ArrayList<AiAgentRuntimeClient.PublicProgress>();
+    String comments = ": toolbox-progress {\"stage\":\"CONTRACT_RETRY\"}\n"
+        + ": toolbox-progress {\"stage\":\"CONTRACT_RETRY\",\"output\":\"private\"}\n";
+    try (var scope = client.observePublicProgress(progress::add)) {
+      assertThat(client.consumeStream(RUN_ID, comments + toNdjson(legalGeneralQaStream()), request(), null).answer())
+          .isEqualTo("这是一个通用回答。");
+    }
+    assertThat(progress).singleElement().satisfies(value -> {
+      assertThat(value.stage()).isEqualTo("CONTRACT_RETRY");
+      assertThat(value.message()).contains("一次结构纠正重试", "尚未执行工具").doesNotContain("private");
+    });
+  }
+
+  @Test
+  void progressNeverPublishesUnvalidatedAnswerWhenLedgerStreamFails() {
+    AiAgentRuntimeClient client = newClient();
+    var progress = new java.util.ArrayList<AiAgentRuntimeClient.PublicProgress>();
+    var trusted = new java.util.ArrayList<AiAgentRuntimeClient.RuntimeEvent>();
+    try (var scope = client.observePublicProgress(progress::add)) {
+      assertThatThrownBy(() -> client.consumeStream(RUN_ID,
+          ": toolbox-progress {\"stage\":\"GENERATING\"}\n" + toNdjson(legalGeneralQaStream()[0]),
+          request(), trusted::add)).isInstanceOf(AiAgentRuntimeClient.RuntimeProtocolException.class);
+    }
+    assertThat(progress).hasSize(1);
+    assertThat(trusted).isEmpty();
+  }
+
+  @Test
+  void progressRejectsFreeTextExtraFieldsInvalidCountsAndDuplicateKeysWithoutChangingLedger() {
+    AiAgentRuntimeClient client = newClient();
+    var progress = new java.util.ArrayList<AiAgentRuntimeClient.PublicProgress>();
+    String invalid = String.join("\n",
+        ": toolbox-progress {\"stage\":\"GENERATING\",\"answer\":\"private\"}",
+        ": toolbox-progress {\"stage\":\"private\"}",
+        ": toolbox-progress {\"stage\":\"EVIDENCE_READY\",\"count\":11}",
+        ": toolbox-progress {\"stage\":\"ASSESSED\",\"decision\":\"private\"}",
+        ": toolbox-progress {\"stage\":\"GENERATING\",\"stage\":\"ROUTING\"}") + "\n";
+    try (var scope = client.observePublicProgress(progress::add)) {
+      assertThat(client.consumeStream(RUN_ID, invalid + toNdjson(legalGeneralQaStream()), request(), null).answer())
+          .isEqualTo("这是一个通用回答。");
+    }
+    assertThat(progress).isEmpty();
+  }
+
+  @Test
+  void progressIsBoundedAndListenerIsRemovedWhenTheRequestEnds() throws Exception {
+    AiAgentRuntimeClient client = newClient();
+    var progress = new java.util.ArrayList<AiAgentRuntimeClient.PublicProgress>();
+    String line = ": toolbox-progress {\"stage\":\"ASSESSED\",\"decision\":\"REWRITE_QUERY\"}\n";
+    try (var scope = client.observePublicProgress(progress::add)) {
+      client.readSse(new java.io.BufferedReader(new java.io.StringReader(line.repeat(100))), ignored -> {});
+    }
+    assertThat(progress).hasSize(32).allSatisfy(value -> assertThat(value.message()).contains("补充检索"));
+    client.readSse(new java.io.BufferedReader(new java.io.StringReader(line)), ignored -> {});
+    assertThat(progress).hasSize(32);
+  }
+
   private static final String GENESIS_DIGEST = "sha256:" + "0".repeat(64);
   private static final String WORKFLOW_DIGEST = "sha256:" + "a".repeat(64);
   private static final String WORKFLOW_ID = "wf-test-01";
@@ -79,6 +158,49 @@ class AiAgentRuntimeClientTests {
         WORKFLOW_DIGEST,
         OUTER_NODE_ID,
         NODE_RUN_ID);
+  }
+
+  private AiAgentRequest autoRequest() {
+    AiAgentRequest old = request();
+    return new AiAgentRequest(old.projectId(), old.targetId(), old.sessionId(), old.prompt(), true,
+        old.contextRefs(), old.refs(), old.mode(), old.turnId(), old.workflowId(), old.workflowRevision(),
+        old.workflowDigest(), old.outerNodeId(), old.nodeRunId(), AiAgentRequest.ExecutionIntent.AUTO,
+        "介绍一下当前项目");
+  }
+
+  @Test
+  void autoRouteDecisionIsStrictAndOnlyReturnedAfterValidLedger() {
+    ObjectNode[] events = legalRoutedGeneralQaStream();
+    ((ObjectNode) events[0].get("data")).put("executionDecision", "PLAN_ONLY");
+    resign(events);
+    assertThat(newClient().consumeStream(RUN_ID, toNdjson(events), autoRequest(), null).executionDecision())
+        .isEqualTo("PLAN_ONLY");
+    ((ObjectNode) events[0].get("data")).put("executionDecision", "EXECUTE");
+    resign(events);
+    assertThatThrownBy(() -> newClient().consumeStream(RUN_ID, toNdjson(events), autoRequest(), null))
+        .isInstanceOf(AiAgentRuntimeClient.RuntimeProtocolException.class).hasMessageContaining("路由不一致");
+    ((ObjectNode) events[0].get("data")).put("executionDecision", "UNKNOWN");
+    resign(events);
+    assertThatThrownBy(() -> newClient().consumeStream(RUN_ID, toNdjson(events), autoRequest(), null))
+        .isInstanceOf(AiAgentRuntimeClient.RuntimeProtocolException.class);
+  }
+
+  @Test
+  void autoRequiresExecutionDecisionWhileLegacyRequestRemainsCompatible() {
+    ObjectNode[] events = legalRoutedGeneralQaStream();
+    assertThatThrownBy(() -> newClient().consumeStream(RUN_ID, toNdjson(events), autoRequest(), null))
+        .isInstanceOf(AiAgentRuntimeClient.RuntimeProtocolException.class).hasMessageContaining("缺少 executionDecision");
+    assertThat(newClient().consumeStream(RUN_ID, toNdjson(events), request(), null).plan().steps()).isEmpty();
+  }
+
+  @Test
+  void autoCannotUseLegacyPlannerEvenWithAnExecutionDecision() {
+    ObjectNode[] events = legalGeneralQaStream();
+    events[0].withObject("data").put("executionDecision", "PLAN_ONLY");
+    resign(events);
+    assertThatThrownBy(() -> newClient().consumeStream(RUN_ID, toNdjson(events), autoRequest(), null))
+        .isInstanceOf(AiAgentRuntimeClient.RuntimeProtocolException.class)
+        .hasMessageContaining("AUTO 不允许使用旧规划路径");
   }
 
   /**
@@ -212,6 +334,18 @@ class AiAgentRuntimeClientTests {
     return new ObjectNode[] {route, plan, guard, finish};
   }
 
+  private ObjectNode[] legalRoutedGeneralQaStream() {
+    ObjectNode[] events = legalGeneralQaStream();
+    events[0].withObject("data").put("status", "ROUTED");
+    events[1].withObject("data").put("source", "langchain-grounded");
+    ObjectNode finish = events[3].withObject("data");
+    finish.put("plannerSource", "langchain-grounded");
+    finish.withObject("plan").put("source", "langchain-grounded")
+        .put("knowledgeMode", "GENERAL").set("evidenceRefs", mapper.createArrayNode());
+    resign(events);
+    return events;
+  }
+
   @Test
   void legalV3GeneralQaStreamProducesCompletedResult() {
     AiAgentRuntimeClient client = newClient();
@@ -231,6 +365,73 @@ class AiAgentRuntimeClientTests {
         .containsExactly("route", "plan", "authorization_guard", "finish");
     assertThat(seen).extracting(AiAgentRuntimeClient.RuntimeEvent::ledgerSequence)
         .containsExactly(1L, 2L, 3L, 4L);
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(strings = {
+      "MODEL_ACCESS_DENIED", "MODEL_RATE_LIMITED", "MODEL_SERVICE_UNAVAILABLE",
+      "MODEL_TIMEOUT", "MODEL_REQUEST_FAILED", "MODEL_RESPONSE_INVALID"
+  })
+  void failedRoutePreservesValidatedModelFailureReason(String code) {
+    ObjectNode[] events = failedRouteStream(code);
+    String expectedReason = "MODEL_RESPONSE_INVALID".equals(code) ? "ROUTE_FAILED" : code;
+    java.util.List<AiAgentRuntimeClient.RuntimeEvent> seen = new java.util.ArrayList<>();
+    assertThatThrownBy(() -> newClient().consumeStream(RUN_ID, toNdjson(events), request(), seen::add))
+        .isInstanceOf(AiAgentRuntimeClient.RuntimeProtocolException.class)
+        .hasMessage("AI Runtime 本轮未完成：" + expectedReason);
+    assertThat(seen).isEmpty();
+  }
+
+  @Test
+  void failedRouteCannotDisguiseItsFailureAtFinish() {
+    ObjectNode[] events = failedRouteStream("MODEL_ACCESS_DENIED");
+    events[3].withObject("data").put("terminationReason", "MODEL_TIMEOUT");
+    resign(events);
+    AgentLedgerService ledger = mock(AgentLedgerService.class);
+    assertThatThrownBy(() -> newClientWithLedger(ledger).consumeStream(RUN_ID, toNdjson(events), request(), null))
+        .hasMessageContaining("failureCode 与终态原因不一致");
+    verifyNoInteractions(ledger);
+  }
+
+  @Test
+  void successfulRouteCannotCarryFailureCode() {
+    ObjectNode[] events = legalGeneralQaStream();
+    events[0].withObject("data").put("failureCode", "MODEL_TIMEOUT");
+    resign(events);
+    assertThatThrownBy(() -> newClient().consumeStream(RUN_ID, toNdjson(events), request(), null))
+        .hasMessageContaining("route failureCode 无效");
+  }
+
+  @Test
+  void unknownRouteFailureCodeIsRejected() {
+    ObjectNode[] events = failedRouteStream("UNTRUSTED_FAILURE");
+    assertThatThrownBy(() -> newClient().consumeStream(RUN_ID, toNdjson(events), request(), null))
+        .hasMessageContaining("route failureCode 无效");
+  }
+
+  private ObjectNode[] failedRouteStream(String code) {
+    ObjectNode[] events = legalGeneralQaStream();
+    events[0].withObject("data").put("status", "FAILED")
+        .put("intent", "CLARIFY").put("publicReasonCode", "AMBIGUOUS_REQUEST")
+        .put("failureCode", code);
+    events[1].withObject("data").put("intent", "clarify")
+        .put("knowledgeMode", "INSUFFICIENT_EVIDENCE");
+    ObjectNode finish = events[3].withObject("data");
+    finish.put("status", "FAILED").put("terminationReason",
+        "MODEL_RESPONSE_INVALID".equals(code) ? "ROUTE_FAILED" : code);
+    finish.withObject("plan").put("intent", "clarify")
+        .put("knowledgeMode", "INSUFFICIENT_EVIDENCE")
+        .set("evidenceRefs", mapper.createArrayNode());
+    resign(events);
+    return events;
+  }
+
+  private void resign(ObjectNode[] events) {
+    String previous = GENESIS_DIGEST;
+    for (ObjectNode event : events) {
+      previous = candidateDigest(event, previous);
+      event.put("ledgerEntryDigest", previous);
+    }
   }
 
   @Test

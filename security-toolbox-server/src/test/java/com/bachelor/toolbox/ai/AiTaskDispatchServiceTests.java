@@ -60,6 +60,25 @@ class AiTaskDispatchServiceTests {
   }
 
   @Test
+  void nucleiPreservesBoundedWorkflowSelectionAndLegacyDefault() {
+    when(toolRegistry.require("nuclei_scan")).thenReturn(mock(SecurityTool.class));
+    List<Map<String, Object>> selections = List.of(Map.of(), Map.of("allPocs", true),
+        Map.of("pocCodes", List.of("NU-" + "A".repeat(24))));
+    for (Map<String, Object> parameters : selections) {
+      AiPlanResponse input = new AiPlanResponse("test", "test", "template selection", true,
+          List.of(new AiPlanResponse.PlanStep("nuclei_scan", "Nuclei", "requested", parameters)));
+      assertEquals(parameters, service.prepare(new AiPlanRequest(7L, "plan"), input).steps().get(0).parameters());
+    }
+    for (Map<String, Object> parameters : List.<Map<String, Object>>of(Map.of("allPocs", false),
+        Map.of("allPocs", true, "pocCodes", List.of("NU-" + "A".repeat(24))),
+        Map.of("templates", "/arbitrary/path"), Map.of("pocCodes", List.of("https://example.invalid/poc")))) {
+      AiPlanResponse input = new AiPlanResponse("test", "test", "invalid selection", true,
+          List.of(new AiPlanResponse.PlanStep("nuclei_scan", "Nuclei", "requested", parameters)));
+      assertThrows(ApiException.class, () -> service.prepare(new AiPlanRequest(7L, "plan"), input));
+    }
+  }
+
+  @Test
   void dispatchesValidatedPlanAndCanonicalizesAuthorizedPorts() throws Exception {
     AiPlanRequest request = new AiPlanRequest(7L, "scan selected ports");
     AiPlanResponse generated =

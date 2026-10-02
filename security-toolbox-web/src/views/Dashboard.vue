@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import {
   computed,
   nextTick,
@@ -21,6 +21,7 @@ import {
   Plus,
   Promotion,
   Refresh,
+  Warning,
 } from "../components/fluentIcons";
 import {
   connectTaskEventFeed,
@@ -49,7 +50,11 @@ import { useEngineStore } from "../stores/engine";
 import { useCopilotStore } from "../stores/copilot";
 import { formatDateTime, formatExecutionLog } from "../utils/dateTime";
 import {
+  actionStepLabel,
   aiToolLabel,
+  copilotReferenceTypeLabel,
+  displayKnownTestName,
+  displayConversationTitle,
   localizeAiRuntimeFailure,
   localizeAiToolCodes,
   readableAiConversationError,
@@ -61,6 +66,14 @@ import {
   taskProgressPercentage,
 } from "../utils/taskProgress";
 import { taskbarProgress } from "../utils/taskbarProgress";
+import AiProgressPanel from "../components/AiProgressPanel.vue";
+import ConversationAvatar from "../components/ConversationAvatar.vue";
+import AiApprovalDialog from "../components/AiApprovalDialog.vue";
+import { createAiApprovalPromptGate, isAwaitingAiApproval, isAwaitingAiDispatch } from "../utils/aiApproval";
+import { aiEventStepStatus, findMatchingAiStep, mergeAiStep } from "../utils/aiStepState";
+import { mergeTaskDetailSnapshot } from "../utils/taskDetail";
+import { aiExecutionRequest } from "../utils/aiIntent";
+import { aiProgressFailureText, isPublicAiProgressEvent, publicAiProgressText } from "../utils/aiPresentation";
 
 interface TaskRow {
   id: number;
@@ -68,11 +81,16 @@ interface TaskRow {
   toolCode: string;
   status: string;
   progress: number;
+  progressUpdatedAt?: string;
+  workflowNodeId?: string;
   progressDeterminate?: boolean;
   progressCompleted?: number;
   progressTotal?: number;
   progressMessage?: string;
   executionLog?: string;
+  errorMessage?: string;
+  startedAt?: string;
+  finishedAt?: string;
   createdAt: string;
 }
 
@@ -82,6 +100,7 @@ const TERMINAL_STATUSES = new Set([
   "TIMEOUT",
   "REJECTED",
   "CANCELLED",
+  "SKIPPED",
 ]);
 const route = useRoute();
 const router = useRouter();
@@ -93,7 +112,6 @@ const targets = ref<Target[]>([]);
 const projectByTarget = ref<Record<number, number>>({});
 const selectedTargetId = ref<number>();
 const prompt = ref("");
-const executionRequested = ref(false);
 const composerInputRef = ref<HTMLTextAreaElement | null>(null);
 const quotedMessage = ref<ConversationMessage>();
 const loading = ref(false);
@@ -176,83 +194,10 @@ function displayAgentValue(value: unknown, limit = 1600) {
   return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
 
-function agentEventLabel(event: ConversationAgentEvent) {
-  const publicLabels: Record<string, string> = {
-    ROUTING: "路由中",
-    RETRIEVING: "检索中",
-    GROUNDED: "已形成依据",
-    WAITING_APPROVAL: "等待审批",
-    EXECUTING: "执行中",
-    REVIEWED: "已复核",
-    FAILED: "失败",
-  };
-  if (event.publicNodeStatus)
-    return publicLabels[event.publicNodeStatus] || event.publicNodeStatus;
-  if (event.type === "approval") {
-    const status = String(
-      event.approvalStatus || event.status || "",
-    ).toUpperCase();
-    if (status.includes("CONFIRMED")) return "已确认执行";
-    if (status === "NOT_REQUIRED") return "无需审批";
-    return "等待确认";
-  }
-  const labels: Record<string, string> = {
-    route: "意图路由",
-    evidence: "项目证据",
-    rewrite: "查询改写",
-    plan: "计划",
-    step: "步骤",
-    tool_call: "工具调用",
-    tool_result: "工具结果",
-    state: "状态",
-    guard: "授权校验",
-    review: "结果复核",
-    retry: "重试",
-    citation: "引用",
-    done: "完成",
-    error: "错误",
-  };
-  return labels[event.type] || event.type;
-}
-
-function agentEventClass(event: ConversationAgentEvent) {
-  if (event.publicNodeStatus === "FAILED") return "failed";
-  if (event.publicNodeStatus === "WAITING_APPROVAL") return "approval";
-  if (event.publicNodeStatus === "REVIEWED") return "success";
-  if (
-    ["ROUTING", "RETRIEVING", "EXECUTING"].includes(
-      event.publicNodeStatus || "",
-    )
-  )
-    return "running";
-  if (
-    event.type === "error" ||
-    event.status === "failed" ||
-    event.status === "rejected"
-  )
-    return "failed";
-  if (
-    event.type === "approval" ||
-    event.status === "awaiting_approval" ||
-    event.approvalStatus === "PENDING"
-  )
-    return "approval";
-  if (
-    event.type === "done" ||
-    event.status === "success" ||
-    event.status === "completed"
-  )
-    return "success";
-  if (
-    event.type === "tool_call" ||
-    event.type === "retry" ||
-    event.status === "running"
-  )
-    return "running";
-  return "pending";
-}
-
 function taskState(message: ConversationMessage) {
+  if (isAwaitingAiApproval(message)) return { label: "等待审批", progress: 0, className: "waiting", indeterminate: false };
+  if (isAwaitingAiDispatch(message)) return { label: "已批准，等待派发确认", progress: 0, className: "waiting", indeterminate: false };
+  if (message.approvalStatus === "REJECTED" && !message.taskIds.length) return { label: "方案已驳回", progress: 0, className: "failed", indeterminate: false };
   const related = relatedTasks(message);
   const progress = related.length
     ? Math.round(
@@ -283,7 +228,7 @@ function taskState(message: ConversationMessage) {
     };
   if (!message.taskIds.length)
     return {
-      label: "已回答",
+      label: message.steps.length ? "计划已生成" : "已回答",
       progress: 100,
       className: "success",
       indeterminate: false,
@@ -296,7 +241,7 @@ function taskState(message: ConversationMessage) {
       indeterminate: false,
     };
   const failed = related.filter((item) =>
-    ["FAILED", "TIMEOUT", "REJECTED", "CANCELLED"].includes(item.status),
+    ["FAILED", "TIMEOUT", "REJECTED", "CANCELLED", "SKIPPED"].includes(item.status),
   ).length;
   if (related.every((item) => TERMINAL_STATUSES.has(item.status))) {
     return {
@@ -325,45 +270,13 @@ function planStepState(message: ConversationMessage, index: number) {
   const task = tasks.value.find((item) => item.id === taskId);
   if (!task) {
     const status = String(step?.status || "").toLowerCase();
-    const progress = Math.max(0, Math.min(100, Number(step?.progress) || 0));
-    if (["success", "completed", "done"].includes(status))
-      return {
-        state: "success" as PlanStepVisualState,
-        label: "已完成",
-        progress: 100,
-        indeterminate: false,
-      };
-    if (
-      ["failed", "error", "rejected", "cancelled", "timeout"].includes(status)
-    )
-      return {
-        state: "failed" as PlanStepVisualState,
-        label: status === "timeout" ? "已超时" : "失败",
-        progress,
-        indeterminate: false,
-      };
-    if (["running", "executing", "in_progress"].includes(status))
-      return {
-        state: "running" as PlanStepVisualState,
-        label: progress ? `执行中 ${progress}%` : "执行中",
-        progress,
-        indeterminate: progress <= 0,
-      };
-    if (
-      ["awaiting_approval", "approval_required", "pending_approval"].includes(
-        status,
-      )
-    )
-      return {
-        state: "pending" as PlanStepVisualState,
-        label: "等待审批",
-        progress,
-        indeterminate: false,
-      };
+    if (!taskId && message.approvalStatus === "REJECTED") {
+      return { state: "failed" as PlanStepVisualState, label: "未获批准", progress: 0, indeterminate: false };
+    }
     return {
       state: "pending" as PlanStepVisualState,
-      label: taskId ? "等待状态" : "等待执行",
-      progress,
+      label: taskId ? "等待任务状态" : isAwaitingAiApproval(message) || /approval/.test(status) ? "等待审批" : isAwaitingAiDispatch(message) ? "等待派发确认" : "待执行",
+      progress: 0,
       indeterminate: false,
     };
   }
@@ -374,6 +287,8 @@ function planStepState(message: ConversationMessage, index: number) {
       progress: 100,
       indeterminate: false,
     };
+  if (task.status === "SKIPPED") return { state: "pending" as PlanStepVisualState, label: "已跳过", progress: 0, indeterminate: false };
+  if (task.status === "BLOCKED") return { state: "pending" as PlanStepVisualState, label: "等待前置任务", progress: 0, indeterminate: false };
   if (["FAILED", "TIMEOUT", "REJECTED", "CANCELLED"].includes(task.status)) {
     return {
       state: "failed" as PlanStepVisualState,
@@ -392,7 +307,7 @@ function planStepState(message: ConversationMessage, index: number) {
   if (task.status === "RUNNING")
     return {
       state: "running" as PlanStepVisualState,
-      label: task.progressDeterminate
+      label: !taskProgressIndeterminate(task)
         ? `执行中 ${taskProgressPercentage(task)}%`
         : task.progressMessage || "执行中",
       progress: taskProgressPercentage(task),
@@ -406,22 +321,10 @@ function planStepState(message: ConversationMessage, index: number) {
   };
 }
 
-function planProgress(message: ConversationMessage) {
-  if (!message.steps.length) return 0;
-  return Math.round(
-    message.steps.reduce(
-      (sum, _, index) => sum + planStepState(message, index).progress,
-      0,
-    ) / message.steps.length,
-  );
-}
-
-function planProgressIndeterminate(message: ConversationMessage) {
-  if (!message.steps.length) return false;
-  return message.steps.some((_, index) => {
-    const state = planStepState(message, index);
-    return state.state === "running" && state.indeterminate;
-  });
+function planTaskSummary(message: ConversationMessage) {
+  const related = tasks.value.filter(task => message.taskIds.includes(task.id));
+  const ended = related.filter(task => ["SUCCESS", "FAILED", "TIMEOUT", "CANCELLED", "REJECTED", "SKIPPED"].includes(task.status)).length;
+  return `已结束 ${ended}/${message.taskIds.length} 个任务`;
 }
 
 function formatReferenceValue(value?: string) {
@@ -562,16 +465,16 @@ function citationBubbleHint(citation: ConversationCitation) {
 
 function displayedMessageContent(message: ConversationMessage) {
   return message.role === "assistant" && message.status === "failed"
-    ? localizeAiRuntimeFailure(message.content)
+    ? message.taskIds.length ? aiProgressFailureText(message.content, true) : localizeAiRuntimeFailure(message.content)
     : message.content;
 }
 
 function displayedStepTitle(step: ConversationStep) {
-  return aiToolLabel(step.toolCode, step.title);
+  return actionStepLabel(step.toolCode, step.title);
 }
 
 function displayedStepReason(step: ConversationStep) {
-  return localizeAiToolCodes(step.reason || aiToolLabel(step.toolCode));
+  return publicAiProgressText(step.reason || aiToolLabel(step.toolCode));
 }
 
 function citationSummaryLength(citation: ConversationCitation) {
@@ -606,45 +509,6 @@ function safeCitationUrl(citation: ConversationCitation) {
   } catch {
     return "";
   }
-}
-
-function visibleAgentEvents(message: ConversationMessage) {
-  const collapsed: ConversationAgentEvent[] = [];
-  for (const event of (message.agentEvents || []).filter(isEssentialAgentEvent)) {
-    const previous = collapsed[collapsed.length - 1];
-    if (
-      previous &&
-      previous.outerNodeId === event.outerNodeId &&
-      previous.nodeRunId === event.nodeRunId &&
-      previous.publicNodeStatus === event.publicNodeStatus
-    ) {
-      collapsed[collapsed.length - 1] = event;
-    } else {
-      collapsed.push(event);
-    }
-  }
-  return collapsed.slice(-8);
-}
-
-/** The public UI treats the agent as one black-box node. Internal graph steps are never shown. */
-function isEssentialAgentEvent(event: ConversationAgentEvent) {
-  return Boolean(event.publicNodeStatus);
-}
-
-function publicNodeDetail(event: ConversationAgentEvent) {
-  const details = [
-    event.actionCount !== undefined ? `${event.actionCount} 个动作` : "",
-    event.evidenceCount !== undefined ? `${event.evidenceCount} 条证据引用` : "",
-    event.taskIds?.length ? `任务 ${event.taskIds.join(", ")}` : "",
-    event.recoverable !== undefined
-      ? event.recoverable
-        ? "可恢复"
-        : "不可恢复"
-      : event.publicNodeStatus === "FAILED"
-        ? "恢复资格待服务端确认"
-        : "",
-  ].filter(Boolean);
-  return details.join(" · ") || "状态已通过系统校验";
 }
 
 function genericReferencePrompt(reference: CopilotReference) {
@@ -730,44 +594,8 @@ async function scrollToBottom() {
 }
 
 function eventStepIndex(message: ConversationMessage, event: AgentStreamEvent) {
-  if (event.workflowNodeId) {
-    const byWorkflowNode = message.steps.findIndex(
-      (step) => step.workflowNodeId === String(event.workflowNodeId),
-    );
-    if (byWorkflowNode >= 0) return byWorkflowNode;
-  }
-  if (event.stepIndex !== undefined && Number.isFinite(Number(event.stepIndex)))
-    return Number(event.stepIndex);
-  if (event.stepId) {
-    const byId = message.steps.findIndex(
-      (step) =>
-        step.id === String(event.stepId) ||
-        step.toolCallId === String(event.stepId),
-    );
-    if (byId >= 0) return byId;
-  }
-  if (event.toolCallId) {
-    const byCall = message.steps.findIndex(
-      (step) => step.toolCallId === String(event.toolCallId),
-    );
-    if (byCall >= 0) return byCall;
-  }
-  if (event.toolCode) {
-    const byTool = message.steps.findIndex(
-      (step) => step.toolCode === String(event.toolCode),
-    );
-    if (byTool >= 0) return byTool;
-  }
-  if (event.taskId) {
-    const byTask = message.steps.findIndex(
-      (step) => step.taskId === Number(event.taskId),
-    );
-    if (byTask >= 0) return byTask;
-    const callOrdinal = (message.agentEvents || []).filter(
-      (item) => item.type === "tool_call",
-    ).length;
-    if (callOrdinal < message.steps.length) return callOrdinal;
-  }
+  const match = findMatchingAiStep(message.steps, { id: event.stepId, workflowNodeId: event.workflowNodeId, toolCallId: event.toolCallId, taskId: event.taskId });
+  if (match) return message.steps.indexOf(match);
   return undefined;
 }
 
@@ -794,6 +622,8 @@ function normalizedStep(
       : undefined,
     toolCode,
     title: String(raw.title || raw.name || raw.label || toolCode),
+    parameters: raw.parameters && typeof raw.parameters === "object" && !Array.isArray(raw.parameters) ? raw.parameters as Record<string, unknown> : {},
+    risk: raw.risk ? String(raw.risk) : undefined,
     reason:
       raw.reason || raw.description || raw.summary
         ? String(raw.reason || raw.description || raw.summary)
@@ -821,7 +651,7 @@ function applyAgentEvent(
   incoming: AiDispatchStreamEvent,
 ) {
   const event = normalizeAgentEvent(incoming) as AgentStreamEvent | undefined;
-  if (!event) return;
+  if (!event || !isPublicAiProgressEvent(event)) return;
   const thread = conversations.items.find((item) => item.id === threadId);
   const message = thread?.messages.find((item) => item.id === messageId);
   if (!message) return;
@@ -832,6 +662,7 @@ function applyAgentEvent(
     type: event.type,
     stage: event.stage ? String(event.stage) : undefined,
     status: event.status ? String(event.status) : undefined,
+    summary: publicAiProgressText(event.summary || event.message) || undefined,
     stepId: event.stepId ? String(event.stepId) : undefined,
     stepIndex:
       event.stepIndex !== undefined ? Number(event.stepIndex) : undefined,
@@ -846,6 +677,7 @@ function applyAgentEvent(
     approvalStatus: event.approvalStatus
       ? String(event.approvalStatus)
       : undefined,
+    executionDecision: event.executionDecision,
     citation: event.citation ? publicCitation(event.citation) : undefined,
     contractVersion:
       event.contractVersion !== undefined
@@ -888,11 +720,18 @@ function applyAgentEvent(
     recoverable:
       typeof event.recoverable === "boolean" ? event.recoverable : undefined,
     createdAt: new Date().toISOString(),
+    recorded: event.recorded,
+    eventTiming: event.eventTiming,
   };
   const last = events[events.length - 1];
   const duplicate =
     last &&
     last.type === eventRecord.type &&
+    last.stage === eventRecord.stage &&
+    last.status === eventRecord.status &&
+    last.evidenceCount === eventRecord.evidenceCount &&
+    last.actionCount === eventRecord.actionCount &&
+    last.executionDecision === eventRecord.executionDecision &&
     last.publicNodeStatus === eventRecord.publicNodeStatus &&
     last.stepId === eventRecord.stepId &&
     last.toolCallId === eventRecord.toolCallId &&
@@ -916,21 +755,13 @@ function applyAgentEvent(
       }
     ).actions) as Array<Record<string, unknown>> | undefined;
   if (Array.isArray(rawSteps) && rawSteps.length) {
-    steps = rawSteps.map((step, index) => normalizedStep(step, index));
+    steps = rawSteps.map((step, index) => {
+      const incoming = normalizedStep(step, index);
+      return mergeAiStep(findMatchingAiStep(steps, incoming), incoming);
+    });
   }
   const index = eventStepIndex({ ...message, steps }, event);
-  const stepStatus =
-    event.type === "tool_call"
-      ? "running"
-      : event.type === "tool_result"
-        ? event.status === "failed" || event.error
-          ? "failed"
-          : "success"
-        : event.type === "approval"
-          ? "awaiting_approval"
-          : event.type === "retry"
-            ? "running"
-            : event.status;
+  const stepStatus = aiEventStepStatus(event);
   const hasStepIdentity = Boolean(
     event.stepId ||
     event.toolCode ||
@@ -952,7 +783,7 @@ function applyAgentEvent(
         targetIndex,
       );
     const current = steps[targetIndex];
-    steps[targetIndex] = {
+    steps[targetIndex] = mergeAiStep(current, {
       ...current,
       id: current.id || (event.stepId ? String(event.stepId) : undefined),
       workflowNodeId:
@@ -1000,7 +831,7 @@ function applyAgentEvent(
           ? Number(event.maxAttempts)
           : current.maxAttempts,
       requiresApproval: event.type === "approval" || current.requiresApproval,
-    };
+    });
   }
 
   const citations = [...(message.citations || [])];
@@ -1025,8 +856,7 @@ function applyAgentEvent(
       citations.push(safeCitation);
   }
   const progressSummary =
-    event.summary ||
-    event.message ||
+    eventRecord.summary ||
     (event.type === "tool_call"
       ? `正在调用 ${aiToolLabel(event.toolCode, event.toolName)}`
       : "");
@@ -1058,8 +888,8 @@ function applyAgentEvent(
     approval: "正在确认执行条件",
     approval_required: "等待确认后继续验证",
     session: "正在恢复项目对话记忆",
-    retry: "正在准备重新验证",
-    completed: "红队评估流程已完成",
+    retry: "已收到重试状态反馈",
+    completed: "本轮模型处理结束",
   };
   const hasPlanSteps =
     (Array.isArray(event.steps) && event.steps.length > 0) ||
@@ -1068,10 +898,11 @@ function applyAgentEvent(
       Array.isArray(event.plan.steps) &&
       event.plan.steps.length > 0,
     );
-  const status =
+  const recordedEvent = event.recorded || event.eventTiming === "VERIFIED_RECORD";
+  const status = recordedEvent ? message.status :
     event.type === "error"
       ? "failed"
-      : event.type === "done" && !message.taskIds.length
+      : event.type === "done" && !event.recorded && event.eventTiming !== "VERIFIED_RECORD" && !message.taskIds.length
         ? "completed"
         : event.type === "approval"
           ? "running"
@@ -1083,7 +914,7 @@ function applyAgentEvent(
                 ? "running"
                 : message.status;
   let content = message.content;
-  if (event.type === "error")
+  if (event.type === "error" && !recordedEvent)
     content = readableAiConversationError(
       event.message || event.summary,
       "智能体执行失败。",
@@ -1091,7 +922,7 @@ function applyAgentEvent(
   else if (event.type === "done" && event.answer)
     content = String(event.answer);
   else if (progressSummary && ["planning", "running"].includes(status))
-    content = stageLabel[stage] || "智能体正在执行并校验任务。";
+    content = progressSummary;
   conversations.updateMessage(threadId, messageId, {
     status: status as ConversationMessage["status"],
     content,
@@ -1100,13 +931,13 @@ function applyAgentEvent(
     steps,
     approvalId: (event.data as any)?.approvalId || event.approvalId || message.approvalId,
     approvalStatus: event.approvalStatus || message.approvalStatus,
+    executionDecision: event.executionDecision || message.executionDecision,
     planningStage:
       event.stage || String(event.node || "") || message.planningStage,
     planningStatus:
       event.type === "plan" && steps.length
         ? `已生成 ${steps.length} 步执行计划`
-        : stageLabel[stage] ||
-          String(progressSummary || message.planningStatus || ""),
+        : String(progressSummary || stageLabel[stage] || message.planningStatus || ""),
   });
   void scrollToBottom();
 }
@@ -1138,7 +969,12 @@ async function dispatchConversationMessage(
   const refs = messageReferences(userMessage);
   const projectId = projectIdForTarget(thread.targetId, thread);
   const workflow = await latestWorkflowIdentity(projectId);
-  const data = await dispatchAiStreaming(
+  conversations.updateMessage(thread.id, assistantMessage.id, {
+    modelStreamStatus: "running", progressStartedAt: new Date().toISOString(), progressFinishedAt: undefined,
+  });
+  let data;
+  try {
+    data = await dispatchAiStreaming(
     {
       projectId,
       targetId: thread.targetId,
@@ -1146,12 +982,21 @@ async function dispatchConversationMessage(
       turnId: userMessage.id,
       ...workflow,
       prompt: requestPrompt,
-      execute: userMessage.executionRequested === true,
+      ...aiExecutionRequest(userMessage),
       mode: userMessage.copilotMode,
       refs: agentContextReferences(refs),
     },
     (event) => recordThinkingProgress(thread.id, assistantMessage.id, event),
   );
+    conversations.updateMessage(thread.id, assistantMessage.id, {
+      modelStreamStatus: "completed", progressFinishedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    conversations.updateMessage(thread.id, assistantMessage.id, {
+      modelStreamStatus: "failed", progressFinishedAt: new Date().toISOString(),
+    });
+    throw error;
+  }
   const streamedMessage = conversations.items
     .find((item) => item.id === thread.id)
     ?.messages.find((item) => item.id === assistantMessage.id);
@@ -1183,6 +1028,8 @@ async function dispatchConversationMessage(
         : streamed?.dependsOnNodeIds,
       toolCode,
       title: String(step.title || streamed?.title || toolCode),
+      parameters: step.parameters || streamed?.parameters || {},
+      risk: step.risk || streamed?.risk,
       reason: String(step.reason || streamed?.reason || toolCode),
       taskId: data.taskIds[index] || streamed?.taskId,
       status: data.taskIds[index]
@@ -1218,8 +1065,8 @@ async function dispatchConversationMessage(
     status: data.taskIds.length ? "running" : "completed",
     provider: data.plan.provider,
     taskIds: data.taskIds,
-    approvalId: (data as any).approvalId || streamedMessage?.approvalId,
-    approvalStatus: (data as any).approvalStatus || streamedMessage?.approvalStatus,
+    approvalId: data.approvalId || streamedMessage?.approvalId,
+    approvalStatus: data.approvalStatus || streamedMessage?.approvalStatus,
     steps:
       planSteps.length || data.taskIds.length
         ? finalSteps.length
@@ -1229,9 +1076,13 @@ async function dispatchConversationMessage(
     citations: finalCitations.slice(-30),
     planningStage: "completed",
     planningStatus: data.taskIds.length
-      ? "Plan 已创建，正在执行任务"
+      ? "已创建任务，状态以任务记录为准"
       : "智能体已完成处理",
   });
+  const finalMessage = conversations.items.find(item => item.id === thread.id)?.messages.find(item => item.id === assistantMessage.id);
+  if (finalMessage && shouldPromptApproval(selectedThread.value?.id, thread.id, finalMessage)) {
+    approvalDialogMessageId.value = finalMessage.id;
+  }
   void saveConversationMemory(
     thread,
     userMessage.content,
@@ -1273,11 +1124,25 @@ async function latestWorkflowIdentity(
 
 // 审批状态与操作加载中记录
 const approvingMessageId = ref<string | null>(null);
+const approvalDialogMessageId = ref<string | null>(null);
+const shouldPromptApproval = createAiApprovalPromptGate();
+const approvalDialogMessage = computed(() => selectedThread.value?.messages.find(message => message.id === approvalDialogMessageId.value && isAwaitingAiApproval(message)));
+const approvalTarget = computed(() => targets.value.find(target => target.id === selectedThread.value?.targetId));
+const approvalDialogVisible = computed({ get: () => Boolean(approvalDialogMessage.value), set: value => { if (!value) approvalDialogMessageId.value = null; } });
+watch(() => selectedThread.value?.id, () => { approvalDialogMessageId.value = null; });
+function reopenApproval(message: ConversationMessage) {
+  if (isAwaitingAiApproval(message)) approvalDialogMessageId.value = message.id;
+}
+function decideDialogApproval(decision: "APPROVED" | "REJECTED") {
+  const message = approvalDialogMessage.value;
+  if (message) void handleAgentApprovalDecision(message, decision);
+}
 
 async function handleAgentApprovalDecision(
   message: ConversationMessage,
   decision: "APPROVED" | "REJECTED",
 ) {
+  if (approvingMessageId.value || sending.value) return;
   const thread = selectedThread.value;
   if (!thread) return;
   const projectId = projectIdForTarget(thread.targetId, thread);
@@ -1311,40 +1176,23 @@ async function handleAgentApprovalDecision(
       return;
     }
 
-    ElMessage.success(`审批单 #${approvalId} 已批准，正在唤醒 AI 派发受控任务...`);
     conversations.updateMessage(thread.id, message.id, {
       approvalStatus: "APPROVED",
-      planningStatus: "已批准，正在唤醒执行...",
+      planningStatus: "已批准，正在执行审批单保存的原计划...",
     });
-
-    // 唤醒执行：向该对话派发一条系统级的“确认执行”指令
-    const promptText = "已完成人工审批（审批单 #" + approvalId + " 通过），请立即执行已规划的行动方案。";
-    const userMessage = conversations.appendMessage(thread.id, {
-      role: "user",
-      content: promptText,
-      status: "completed",
-      taskIds: [],
-      steps: [],
-      executionRequested: true,
+    // The server consumes the immutable approved plan. Never ask the model to re-plan.
+    const { data } = await endpoints.resumeProjectAiApproval(projectId, approvalId);
+    conversations.updateMessage(thread.id, message.id, {
+      approvalStatus: "APPROVED",
+      status: data.taskIds.length ? "running" : "completed",
+      modelStreamStatus: "completed",
+      taskIds: data.taskIds,
+      steps: data.plan.steps.map((step, index) => ({ ...step, taskId: data.taskIds[index] })),
+      planningStatus: `已按原审批方案派发 ${data.taskIds.length} 个任务`,
+      content: message.content + `\n\n审批单 #${approvalId} 已批准，原计划已关联 ${data.taskIds.length} 个任务。执行结果以任务记录为准。`,
     });
-    if (!userMessage) return;
-
-    const assistantMessage = conversations.appendMessage(thread.id, {
-      role: "assistant",
-      content: "收到审批通过指令，正在派发受控安全检测任务...",
-      status: "running",
-      taskIds: [],
-      steps: [],
-      replyToId: userMessage.id,
-    });
-    if (!assistantMessage) return;
-
-    sending.value = true;
-    try {
-      await dispatchConversationMessage(thread, userMessage, assistantMessage);
-    } finally {
-      sending.value = false;
-    }
+    await loadTasks();
+    ElMessage.success(`审批单 #${approvalId} 已按原计划派发`);
   } catch (error) {
     ElMessage.error(readableConversationError(error));
   } finally {
@@ -1377,6 +1225,10 @@ async function saveConversationMemory(
 async function sendPrompt() {
   const text = prompt.value.trim();
   if (!text || sending.value) return;
+  if (text.length > 4000) {
+    ElMessage.warning("本轮请求请控制在 4000 字以内");
+    return;
+  }
   const target = selectedTarget.value;
   if (!target) {
     ElMessage.warning(
@@ -1406,7 +1258,7 @@ async function sendPrompt() {
     steps: [],
     references: activeDraft.value?.refs,
     copilotMode: activeDraft.value?.mode,
-    executionRequested: executionRequested.value,
+    executionIntent: "AUTO",
     quote: quotedMessage.value
       ? {
           messageId: quotedMessage.value.id,
@@ -1420,19 +1272,16 @@ async function sendPrompt() {
   clearQuotedMessage();
   const assistantMessage = conversations.appendMessage(thread.id, {
     role: "assistant",
-    content:
-      executionRequested.value
-        ? "我正在理解你的要求。执行检测前，我会先核对授权范围并生成计划。"
-        : "我正在理解你的要求。当前为仅规划模式，不会启动检测任务。",
+    content: "我正在理解你的要求，核对目标范围与已有证据。",
     status: "running",
     taskIds: [],
     steps: [],
+    executionIntent: userMessage.executionIntent,
     replyToId: userMessage.id,
   });
   if (!assistantMessage) return;
 
   prompt.value = "";
-  executionRequested.value = false;
   sending.value = true;
   void scrollToBottom();
   try {
@@ -1498,6 +1347,7 @@ async function retryConversationMessage(message: ConversationMessage) {
         steps: [],
         thinking: [],
         agentEvents: [],
+        progressStartedAt: new Date().toISOString(),
         citations: [],
         planningStage: "status",
         planningStatus: "正在核对授权范围",
@@ -1535,7 +1385,7 @@ async function requestFinalAnswer(
   const key = `${thread.id}:${message.id}`;
   if (answeringMessages.has(key)) return;
   answeringMessages.add(key);
-  conversations.updateMessage(thread.id, message.id, { status: "answering" });
+  conversations.updateMessage(thread.id, message.id, { status: "answering", modelStreamStatus: "running", progressFinishedAt: undefined });
   try {
     const userMessage = thread.messages.find(
       (item) => item.id === message.replyToId,
@@ -1548,7 +1398,7 @@ async function requestFinalAnswer(
       targetId: thread.targetId,
       prompt: requestPrompt,
       taskIds: message.taskIds,
-    });    conversations.updateMessage(thread.id, message.id, { status: "completed" });
+    });    conversations.updateMessage(thread.id, message.id, { status: "completed", modelStreamStatus: "completed", progressFinishedAt: new Date().toISOString() });
     conversations.appendMessage(thread.id, {
       role: "assistant",
       content: data.answer || data.summary || "任务已经执行完成。",
@@ -1560,7 +1410,7 @@ async function requestFinalAnswer(
       replyToId: message.replyToId,
     });
   } catch (error: any) {
-    conversations.updateMessage(thread.id, message.id, { status: "completed" });
+    conversations.updateMessage(thread.id, message.id, { status: "completed", modelStreamStatus: "failed", progressFinishedAt: new Date().toISOString() });
     const summaryError = readableAiConversationError(
       error,
       "暂时无法生成汇总回答。你可以继续追问，或前往“结果中心”查看详细结果。",
@@ -1613,6 +1463,9 @@ function applyTaskEvent(event: TaskProgressEvent) {
     progressCompleted: event.progressCompleted ?? task.progressCompleted,
     progressTotal: event.progressTotal ?? task.progressTotal,
     progressMessage: event.progressMessage || task.progressMessage,
+    errorMessage: event.errorMessage || task.errorMessage,
+    startedAt: event.startedAt || task.startedAt,
+    finishedAt: event.finishedAt || task.finishedAt,
   });
   if (event.logLine) {
     const timestamp = formatDateTime(
@@ -1639,6 +1492,9 @@ async function loadTasks() {
         progressTotal: task.progressTotal,
         progressMessage: task.progressMessage,
         executionLog: task.executionLog,
+        errorMessage: task.errorMessage,
+        startedAt: task.startedAt,
+        finishedAt: task.finishedAt,
         createdAt: task.createdAt,
       }))
     : [];
@@ -1838,9 +1694,9 @@ onBeforeUnmount(() => {
   <div class="chat-page" :class="{ 'has-thread': isConversation }">
     <header class="chat-header">
       <div>
-        <strong>{{ selectedThread?.title || "安全助手" }}</strong>
+        <strong>{{ displayConversationTitle(selectedThread) || "安全助手" }}</strong>
         <span v-if="selectedThread"
-          >{{ selectedThread.targetName }} · 连续对话</span
+          >{{ displayKnownTestName(selectedThread.targetName) }} · 连续对话</span
         >
         <span v-else
           ><i :class="{ offline, checking: engine.status === 'checking' }" />{{
@@ -1949,7 +1805,7 @@ onBeforeUnmount(() => {
           <span
             v-for="reference in activeDraft.refs"
             :key="`${reference.type}-${reference.id || reference.title || reference.label}`"
-            >{{ reference.title || reference.label || reference.type }}</span
+            >{{ displayKnownTestName(reference.title || reference.label) || copilotReferenceTypeLabel(reference.type) }}</span
           >
         </div>
         <textarea
@@ -1957,7 +1813,7 @@ onBeforeUnmount(() => {
           v-model="prompt"
           rows="4"
           :disabled="sending"
-          placeholder="例如：帮我检查这个目标的全部开放端口，并告诉我哪些服务需要重点关注"
+          placeholder="例如：检查目标的开放端口；如需先看方案，可以说“先给方案，不执行”"
           @keydown="handlePromptKeydown"
         />
         <div class="composer-footer">
@@ -1975,10 +1831,10 @@ onBeforeUnmount(() => {
                 v-for="target in enabledTargets"
                 :key="target.id"
                 :value="target.id"
-                :label="target.name"
+                :label="displayKnownTestName(target.name)"
               >
                 <div class="target-option">
-                  <span>{{ target.name }}</span
+                  <span>{{ displayKnownTestName(target.name) }}</span
                   ><small>{{ target.targetValue }}</small>
                 </div>
               </el-option>
@@ -1992,13 +1848,6 @@ onBeforeUnmount(() => {
               <el-icon><Plus /></el-icon>新增授权目标
             </button>
           </div>
-          <el-switch
-            v-model="executionRequested"
-            :disabled="sending"
-            active-text="执行检测"
-            inactive-text="仅规划"
-            aria-label="AI 执行模式"
-          />
           <span class="composer-shortcut">Enter 发送，Shift + Enter 换行</span>
           <el-tooltip content="发送" placement="top" :show-after="350"
             ><button
@@ -2041,9 +1890,7 @@ onBeforeUnmount(() => {
             class="chat-message"
             :class="message.role"
           >
-            <div class="message-avatar">
-              {{ message.role === "assistant" ? "助" : "你" }}
-            </div>
+            <ConversationAvatar class="message-avatar" :role="message.role" />
             <div class="message-column">
               <div class="message-meta">
                 <strong>{{
@@ -2060,12 +1907,18 @@ onBeforeUnmount(() => {
                 >
                 <span>{{ quotePreview(message.quote.content) }}</span>
               </div>
-              <div
-                v-if="message.role === 'assistant'"
-                class="message-bubble markdown-body"
-                v-html="renderMarkdown(displayedMessageContent(message))"
+              <AiProgressPanel
+                v-if="message.role === 'assistant' && (message.status !== 'completed' || message.agentEvents?.length || message.steps.length || message.taskIds.length)"
+                :message="message"
+                :tasks="relatedTasks(message)"
+                @open-tasks="router.push('/tasks')"
               />
-              <div v-else class="message-bubble">{{ message.content }}</div>
+              <div
+                v-if="message.role === 'assistant' && message.status === 'completed'"
+                class="message-bubble markdown-body"
+                v-html="renderMarkdown(displayedMessageContent(message), { localizeToolCodes: message.role === 'assistant' })"
+              />
+              <div v-else-if="message.role === 'user'" class="message-bubble">{{ message.content }}</div>
               <div class="message-actions">
                 <button
                   type="button"
@@ -2152,9 +2005,9 @@ onBeforeUnmount(() => {
               >
                 <header>
                   <span>{{
-                    reference.title || reference.label || reference.type
+                    displayKnownTestName(reference.title || reference.label) || copilotReferenceTypeLabel(reference.type)
                   }}</span
-                  ><code>{{ reference.type }}</code>
+                  ><code>{{ copilotReferenceTypeLabel(reference.type) }}</code>
                 </header>
                 <strong v-if="reference.subtitle">{{
                   reference.subtitle
@@ -2201,39 +2054,41 @@ onBeforeUnmount(() => {
                   }}</span>
                 </el-tooltip>
               </div>
-              <section
+              <details
                 v-if="
                   message.role === 'assistant' &&
-                  (message.steps.length || visibleAgentEvents(message).length)
+                  message.steps.length
                 "
                 class="execution-plan-card"
+                :open="isAwaitingAiApproval(message) || isAwaitingAiDispatch(message)"
               >
+                <summary class="execution-plan-disclosure">执行计划 · {{ message.steps.length }} 项</summary>
                 <!-- 人机协同审批卡片 (HITL Gate) -->
                 <div
                   v-if="
                     message.steps.length &&
                     !message.taskIds.length &&
-                    message.approvalStatus === 'REQUIRED'
+                    (message.approvalStatus === 'REQUIRED' || message.approvalStatus === 'PENDING')
                   "
                   class="hitl-approval-banner"
                 >
                   <div class="hitl-approval-info">
                     <div class="hitl-badge">
-                      <el-icon><WarningFilled /></el-icon>
-                      <span>人机回环安全审查 (HITL)</span>
+                      <el-icon><Warning /></el-icon>
+                      <span>执行前确认</span>
                     </div>
                     <h4>受控操作需要审批授权</h4>
                     <p>
-                      AI Agent（<strong>ai-agent</strong>）已提交项目级审批工单
-                      <code v-if="message.approvalId">#{{ message.approvalId }}</code>。
-                      该计划包含受控工具调用，在管理员审核通过前保持挂起状态。
+                      该计划包含需要审批的检测操作。管理员确认授权后，才会开始执行。
                     </p>
                   </div>
                   <div class="hitl-approval-actions">
+                    <el-button :disabled="sending || approvingMessageId !== null" @click="reopenApproval(message)">查看审批详情</el-button>
                     <el-button
                       type="success"
                       size="default"
                       :loading="approvingMessageId === message.id"
+                      :disabled="sending || approvingMessageId !== null"
                       @click="handleAgentApprovalDecision(message, 'APPROVED')"
                     >
                       <el-icon><CircleCheck /></el-icon>
@@ -2243,13 +2098,18 @@ onBeforeUnmount(() => {
                       type="danger"
                       plain
                       size="default"
-                      :disabled="approvingMessageId === message.id"
+                      :disabled="sending || approvingMessageId !== null"
                       @click="handleAgentApprovalDecision(message, 'REJECTED')"
                     >
                       驳回方案
                     </el-button>
                   </div>
                 </div>
+
+                <p v-if="isAwaitingAiDispatch(message)" class="muted">
+                  审批已通过，尚未确认任务派发结果。
+                  <el-button :disabled="sending || approvingMessageId !== null" @click="handleAgentApprovalDecision(message, 'APPROVED')">恢复原计划执行</el-button>
+                </p>
 
                 <header v-if="message.steps.length">
                   <div>
@@ -2267,14 +2127,7 @@ onBeforeUnmount(() => {
                     查看任务
                   </button>
                 </header>
-                <el-progress
-                  v-if="message.steps.length"
-                  :percentage="planProgress(message)"
-                  :stroke-width="6"
-                  :show-text="false"
-                  :indeterminate="planProgressIndeterminate(message)"
-                  :duration="1.2"
-                />
+                <p v-if="message.taskIds.length" class="muted">{{ planTaskSummary(message) }}</p>
                 <ol v-if="message.steps.length" class="execution-plan-list">
                   <li
                     v-for="(step, index) in message.steps"
@@ -2305,36 +2158,13 @@ onBeforeUnmount(() => {
                   </li>
                 </ol>
                 <details
-                  v-if="visibleAgentEvents(message).length"
-                  class="agent-event-details"
-                  open
-                >
-                  <summary>智能助手处理进度</summary>
-                  <ol class="agent-event-list">
-                    <li
-                      v-for="(event, eventIndex) in visibleAgentEvents(message)"
-                      :key="
-                        event.id || `${message.id}-agent-event-${eventIndex}`
-                      "
-                      :class="agentEventClass(event)"
-                    >
-                      <span>{{ agentEventLabel(event) }}</span>
-                      <div>
-                        <strong>智能助手</strong>
-                        <small>{{ publicNodeDetail(event) }}</small>
-                      </div>
-                    </li>
-                  </ol>
-                </details>
-                <details
                   v-if="taskLogs(message)"
                   class="plan-runtime-details"
-                  open
                 >
-                  <summary>实时命令与执行日志</summary>
+                  <summary>查看详细执行日志</summary>
                   <pre class="task-runtime-log">{{ taskLogs(message) }}</pre>
                 </details>
-              </section>
+              </details>
             </div>
           </article>
           <div v-if="!selectedThread.messages.length" class="thread-empty">
@@ -2346,7 +2176,7 @@ onBeforeUnmount(() => {
       <footer class="chat-composer-wrap">
         <div class="thread-target">
           <span>当前授权目标</span
-          ><strong>{{ selectedThread.targetName }}</strong
+          ><strong>{{ displayKnownTestName(selectedThread.targetName) }}</strong
           ><small>如需更换目标，请新建对话</small>
         </div>
         <div class="thread-composer">
@@ -2372,7 +2202,7 @@ onBeforeUnmount(() => {
             <span
               v-for="reference in activeDraft.refs"
               :key="`${reference.type}-${reference.id || reference.title || reference.label}`"
-              >{{ reference.title || reference.label || reference.type }}</span
+              >{{ displayKnownTestName(reference.title || reference.label) || copilotReferenceTypeLabel(reference.type) }}</span
             >
           </div>
           <textarea
@@ -2380,17 +2210,10 @@ onBeforeUnmount(() => {
             v-model="prompt"
             rows="2"
             :disabled="sending"
-            placeholder="继续提问，或告诉我下一步要执行什么"
+            placeholder="继续提问或说明下一步；只需方案时，请说“先给方案，不执行”"
             @keydown="handlePromptKeydown"
           />
           <div class="thread-composer-footer">
-            <el-switch
-              v-model="executionRequested"
-              :disabled="sending"
-              active-text="执行检测"
-              inactive-text="仅规划"
-              aria-label="AI 执行模式"
-            />
             <span class="composer-shortcut">Enter 发送，Shift + Enter 换行</span>
             <el-tooltip content="发送" placement="top" :show-after="350"
               ><button
@@ -2411,6 +2234,7 @@ onBeforeUnmount(() => {
         >
       </footer>
     </template>
+    <AiApprovalDialog v-model:visible="approvalDialogVisible" :message="approvalDialogMessage" :target-name="displayKnownTestName(approvalTarget?.name || selectedThread?.targetName)" :target-value="approvalTarget?.targetValue || `目标 #${selectedThread?.targetId || ''}`" :allowed-ports="approvalTarget?.allowedPorts || ''" :busy="sending || approvingMessageId !== null" @decide="decideDialogApproval" />
   </div>
 </template>
 
@@ -2689,24 +2513,11 @@ onBeforeUnmount(() => {
 .chat-message.user .message-avatar {
   grid-column: 2;
   grid-row: 1;
-  background: var(--app-surface-soft);
-  color: var(--app-accent);
 }
 .chat-message.user .message-column {
   grid-column: 1;
   grid-row: 1;
   align-items: flex-end;
-}
-.message-avatar {
-  display: grid;
-  width: 32px;
-  height: 32px;
-  place-items: center;
-  border-radius: 9px;
-  background: var(--app-accent);
-  color: var(--app-surface-strong);
-  font-size: 10px;
-  font-weight: 700;
 }
 .message-column {
   display: flex;
@@ -2921,10 +2732,6 @@ onBeforeUnmount(() => {
   }
   .chat-message.user {
     grid-template-columns: minmax(0, 1fr) 29px;
-  }
-  .message-avatar {
-    width: 28px;
-    height: 28px;
   }
   .message-bubble {
     max-width: 96%;
@@ -3909,13 +3716,6 @@ a.agent-citation-bubble {
 .messages-inner {
   padding: 32px 24px 36px;
 }
-.message-avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  font-size: 11px;
-  font-weight: 650;
-}
 .message-meta {
   margin-bottom: 7px;
 }
@@ -4365,4 +4165,8 @@ a.agent-citation-bubble {
     grid-column: 2;
   }
 }
+/* Keep the plan in the message flow; approval plans open by default. */
+.execution-plan-card { width: 100%; margin-top: 4px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.execution-plan-disclosure { min-height: 32px; padding: 6px 0; color: var(--app-text-muted); font-size: 14px; line-height: 20px; cursor: pointer; }
+.execution-plan-disclosure:focus-visible { outline: 2px solid var(--app-text); outline-offset: 2px; }
 </style>

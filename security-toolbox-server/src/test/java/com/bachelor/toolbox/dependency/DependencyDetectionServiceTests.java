@@ -18,6 +18,25 @@ import org.springframework.core.env.Environment;
 
 class DependencyDetectionServiceTests {
   @Test
+  void executionSnapshotChecksOnlySelectedToolAndDoesNotReuseStaleVersion() {
+    AtomicInteger calls = new AtomicInteger();
+    ExecutableLocator locator = candidates -> {
+      assertThat(candidates).contains("fscan");
+      return Optional.of(Path.of("test-data/tools/fscan.exe"));
+    };
+    DependencyDetectionService service = service(locator, (executable, arguments, timeout) -> {
+      assertThat(timeout).isEqualTo(Duration.ofMillis(3500));
+      return CommandResult.completed(0, "fscan version 1.8." + calls.incrementAndGet());
+    });
+
+    assertThat(service.detectCurrent("fscan").orElseThrow().version()).contains("1.8.1");
+    assertThat(service.detectCurrent("fscan").orElseThrow().version()).contains("1.8.2");
+    assertThat(calls).hasValue(2);
+    assertThat(service.detectCurrent("unknown-tool")).isEmpty();
+    assertThat(calls).hasValue(2);
+  }
+
+  @Test
   void detectsAvailableAndIncompatibleCommandsAndSanitizesUserPath() {
     Path userTools = Path.of("test-data", "security-tools");
     ExecutableLocator locator =
@@ -132,7 +151,7 @@ class DependencyDetectionServiceTests {
   }
 
   @Test
-  void cachesCompleteResponseForFiveSecondWindow() {
+  void cachesCompleteResponseAcrossPages() {
     AtomicInteger locateCalls = new AtomicInteger();
     ExecutableLocator locator =
         candidates -> {
@@ -147,6 +166,29 @@ class DependencyDetectionServiceTests {
 
     assertThat(second).isSameAs(first);
     assertThat(locateCalls).hasValue(15);
+  }
+
+  @Test
+  void streamingReusesSharedDetectionAndExplicitRefreshUpdatesIt() throws Exception {
+    AtomicInteger locateCalls = new AtomicInteger();
+    DependencyDetectionService service = service(candidates -> {
+      locateCalls.incrementAndGet();
+      return Optional.empty();
+    }, (executable, arguments, timeout) -> CommandResult.completed(0, "unused"));
+    SystemDependenciesResponse first = service.detect();
+    AtomicReference<List<DependencyStatus>> streamed = new AtomicReference<>();
+    service.detectStreaming(false, manifest -> {
+      assertThat(manifest).allSatisfy(item -> assertThat(item.path()).isNull());
+    }, item -> {}, streamed::set);
+    assertThat(streamed.get()).isEqualTo(first.dependencies());
+    assertThat(locateCalls).hasValue(15);
+
+    java.util.concurrent.CountDownLatch completed = new java.util.concurrent.CountDownLatch(1);
+    service.detectStreaming(true, manifest -> {}, item -> {}, result -> completed.countDown());
+    assertThat(completed.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+    assertThat(locateCalls).hasValue(30);
+    assertThat(service.detect()).isNotSameAs(first);
+    assertThat(locateCalls).hasValue(30);
   }
 
   @Test

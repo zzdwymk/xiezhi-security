@@ -116,7 +116,7 @@ class ProjectApprovalServiceTests {
   void decidesApprovalAndPreservesAuditContract() {
     authenticateAs("审批人", "ROLE_ADMIN");
     ProjectApproval approval = approval(7L, 3L, "snapshot-hash");
-    when(repository.findByIdAndProjectId(7L, 3L)).thenReturn(Optional.of(approval));
+    when(repository.findForUpdate(7L, 3L)).thenReturn(Optional.of(approval));
     when(repository.save(approval)).thenReturn(approval);
     Instant beforeDecision = Instant.now();
 
@@ -139,7 +139,7 @@ class ProjectApprovalServiceTests {
 
   @Test
   void reportsMissingApprovalAsStableChineseApiException() {
-    when(repository.findByIdAndProjectId(99L, 3L)).thenReturn(Optional.empty());
+    when(repository.findForUpdate(99L, 3L)).thenReturn(Optional.empty());
 
     assertThatThrownBy(() -> service.decide(3L, 99L, "APPROVED", null))
         .isInstanceOf(ApiException.class)
@@ -155,13 +155,13 @@ class ProjectApprovalServiceTests {
     assertThatThrownBy(() -> service.decide(3L, 7L, "APPROVED", null))
         .isInstanceOf(ApiException.class)
         .hasMessage("仅管理员可以审批项目");
-    verify(repository, never()).findByIdAndProjectId(any(), any());
+    verify(repository, never()).findForUpdate(any(), any());
     verify(repository, never()).save(any(ProjectApproval.class));
   }
 
   @Test
   void rejectsApprovalFromAnotherProject() {
-    when(repository.findByIdAndProjectId(8L, 3L)).thenReturn(Optional.empty());
+    when(repository.findForUpdate(8L, 3L)).thenReturn(Optional.empty());
 
     assertThatThrownBy(() -> service.decide(3L, 8L, "APPROVED", null))
         .isInstanceOf(ApiException.class)
@@ -183,6 +183,7 @@ class ProjectApprovalServiceTests {
   private ProjectApproval approval(Long id, Long projectId, String hash) {
     ProjectApproval approval = new ProjectApproval();
     approval.setId(id);
+    approval.setStatus("PENDING");
     approval.setProjectId(projectId);
     approval.setAuthorizationSnapshotHash(hash);
     return approval;

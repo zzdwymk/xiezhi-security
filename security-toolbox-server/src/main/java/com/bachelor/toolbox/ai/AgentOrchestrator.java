@@ -175,6 +175,7 @@ public class AgentOrchestrator {
     Consumer<AiAgentEvent> sink = eventSink == null ? ignored -> {} : eventSink;
     EventSequence sequence = new EventSequence(request);
     TurnProvenance provenance = new TurnProvenance();
+    if (request.automaticExecutionIntent()) provenance.executionDecision = "PLAN_ONLY";
     TurnExecutionState executionState = new TurnExecutionState();
     AiConversationMemoryService.SessionHandle session =
         memory.open(request.sessionId(), request.projectId(), request.targetId());
@@ -254,7 +255,14 @@ public class AgentOrchestrator {
             "项目与目标上下文已载入；执行授权将在工具计划确认后重新校验",
             Map.of("scope", scope));
 
-        boolean indexReady = projectIndex.refreshBestEffort(request.projectId());
+        String referencedContext = contextService == null ? "" : Objects.toString(
+            contextService.resolve(request.projectId(), request.targetId(), request.contextRefs(), request.refs()), "");
+        boolean indexReady = referencedContext.isBlank()
+            ? projectIndex.refreshBestEffort(request.projectId())
+            : projectIndex.refreshBestEffort(request.projectId(),
+                new AiAgentRuntimeClient.IndexDocument(
+                    "本轮选中的记录", request.prompt() + "\n" + referencedContext, "reference",
+                    Map.of("targetId", request.targetId().toString(), "kind", "selected-reference")));
         emit(
             sink,
             sequence,
@@ -274,6 +282,7 @@ public class AgentOrchestrator {
             history.isBlank()
                 ? request.prompt()
                 : "以下是同一项目和目标内最近的对话记忆：\n" + history + "\n\n当前请求：" + request.prompt();
+        planningPrompt += referencedContext;
         planningPrompt += "\n\n服务端授权上下文：" + scope;
 
         emit(
@@ -327,10 +336,12 @@ public class AgentOrchestrator {
               "planner_progress",
               AgentPhase.ENGAGEMENT,
               "RUNNING",
-              "正在由 AI 理解你的意图并规划下一步",
+              "正在由 AI 理解当前请求",
               Map.of("runtimeFirst", true));
         }
         String runtimeAnswer = "";
+        boolean automaticExecutionAllowed = false;
+        boolean automaticExplicitRequest = false;
         if (runtimeClient.enabled()) {
           AiAgentRequest runtimeRequest =
               new AiAgentRequest(
@@ -347,8 +358,11 @@ public class AgentOrchestrator {
                   request.workflowRevision(),
                   request.workflowDigest(),
                   request.outerNodeId(),
-                  request.nodeRunId());
-          try {
+                  request.nodeRunId(),
+                  request.executionIntent(),
+                  request.userPrompt());
+          try (AiAgentRuntimeClient.ProgressScope ignored = runtimeClient.observePublicProgress(
+              progress -> emitPublicProgress(sink, sequence, progress))) {
             AiAgentRuntimeClient.RuntimePlanResult runtimeResult =
                 runtimeClient.plan(
                     runtimeRequest,
@@ -361,6 +375,12 @@ public class AgentOrchestrator {
             runtimeAnswer = runtimeResult.answer();
             provenance.apply(runtimeResult.provenance());
             provenance.setRuntimeRunId(runtimeResult.runId());
+            if (request.automaticExecutionIntent()) {
+              automaticExplicitRequest = AiExecutionIntentPolicy.hasExplicitRequest(request, runtimeResult);
+              automaticExecutionAllowed = AiExecutionIntentPolicy.mayExecute(request, runtimeResult);
+              provenance.executionDecision = automaticExplicitRequest ? "EXECUTE"
+                  : "CLARIFY".equals(runtimeResult.executionDecision()) ? "CLARIFY" : "PLAN_ONLY";
+            }
             // The runtime is allowed to downgrade an ambiguous request to an
             // answer/clarification.  Never keep the preliminary Java steps in that
             // case; an empty runtime plan is an explicit no-execution decision.
@@ -371,10 +391,17 @@ public class AgentOrchestrator {
                 "planner_progress",
                 AgentPhase.ENGAGEMENT,
                 "RUNTIME_COMPLETED",
-                !hasSteps(proposed) ? "本地智能体判断当前请求无需执行工具" : "本地智能体运行时已生成行动方案；具体任务仍由受控执行边界派发",
+                !hasSteps(proposed)
+                    ? ("CLARIFY".equals(runtimeResult.status())
+                            || "CLARIFY".equals(runtimeResult.executionDecision())
+                        ? "本地智能体需要补充信息，尚未生成可执行方案"
+                        : "本地智能体已生成回答，本轮尚未创建检测任务")
+                    : "本地智能体运行时已生成行动方案；具体任务仍由受控执行边界派发",
                 provenance.eventData(Map.of("runtimeStatus", runtimeResult.status())));
           } catch (AiAgentRuntimeClient.RuntimeProtocolException ex) {
             provenance.markProtocolRejected();
+            RuntimeProtocolDiagnostics.Failure failure = RuntimeProtocolDiagnostics.classify(ex);
+            log.warn("AI_RUNTIME_PROTOCOL_REJECTED stage={} code={}", failure.stage(), failure.code());
             String runtimeMessage = ex.getMessage();
             if (runtimeMessage != null && runtimeMessage.contains("TURN_TIMEOUT")) {
               throw new ApiException(
@@ -505,24 +532,23 @@ public class AgentOrchestrator {
             "VALIDATING_TOOLS",
             "正在核对当前阶段所需工具、参数、端口与资源配额",
             Map.of());
-        AiAuthorizationGuard.GuardDecision decision = guard.evaluate(request, proposed);
+        AiAgentRequest executionRequest = request.automaticExecutionIntent()
+            ? request.withResolvedExecution(automaticExecutionAllowed) : request;
+        AiAuthorizationGuard.GuardDecision decision = guard.evaluate(executionRequest, proposed);
+        if (request.automaticExecutionIntent() && !automaticExplicitRequest) {
+          decision = new AiAuthorizationGuard.GuardDecision("PLAN_ONLY", "NOT_REQUIRED",
+              "本轮只提供分析或方案，尚未请求执行检测", decision.normalizedPlan(),
+              decision.activeProjectTasks(), decision.activeTargetTasks());
+        }
         Long autoApprovalId = null;
         if ("REQUIRED".equals(decision.approvalStatus()) && approvalService != null) {
           try {
-            String planSummary = decision.normalizedPlan() != null && decision.normalizedPlan().summary() != null
-                ? decision.normalizedPlan().summary()
-                : "AI 安全评估行动方案";
-            String actionName = "AI_PLAN_EXECUTION";
-            var approvalRecord = approvalService.requestByAgent(
-                request.projectId(),
-                actionName,
-                "AI Agent 请求执行受控安全方案：" + planSummary,
-                request.workflowDigest());
+            var approvalRecord = approvalService.requestAiPlan(executionRequest, decision.normalizedPlan(), recoveryAnchor(request, session.id(), provenance));
             if (approvalRecord != null) {
               autoApprovalId = approvalRecord.getId();
             }
           } catch (Exception ex) {
-            log.warn("AI 自动提交项目审批工单未成功，降级为常规会话确认", ex);
+            throw new ApiException("无法保存待审批原计划，未派发任务，请重试申请");
           }
         }
 
@@ -542,7 +568,8 @@ public class AgentOrchestrator {
             decision.reason(),
             guardData);
         Map<String, Object> approvalEventData = new LinkedHashMap<>();
-        approvalEventData.put("executionRequested", request.executionRequested());
+        approvalEventData.put("executionRequested", executionRequest.executionRequested());
+        if (request.automaticExecutionIntent()) approvalEventData.put("executionDecision", provenance.executionDecision);
         if (autoApprovalId != null) {
           approvalEventData.put("approvalId", autoApprovalId);
         }
@@ -567,9 +594,9 @@ public class AgentOrchestrator {
                 recoveryAnchor(request, session.id(), provenance);
             dispatch =
                 recoveryAnchor == null
-                    ? tools.executeAuthorizedPlan(request, decision.normalizedPlan())
+                    ? tools.executeAuthorizedPlan(executionRequest, decision.normalizedPlan())
                     : tools.executeAuthorizedPlan(
-                        request, decision.normalizedPlan(), recoveryAnchor);
+                        executionRequest, decision.normalizedPlan(), recoveryAnchor);
           } catch (ApiException ex) {
             throw ex;
           } catch (Exception ex) {
@@ -593,8 +620,8 @@ public class AgentOrchestrator {
               sequence,
               "state",
               executionPhase,
-              "COMPLETED",
-              "当前阶段已创建 " + taskIds.size() + " 个受控任务",
+              "DISPATCHED",
+              "已派发 " + taskIds.size() + " 个受控任务，等待实际任务执行结果",
               Map.of("taskIds", taskIds));
         } else {
           emit(
@@ -603,11 +630,14 @@ public class AgentOrchestrator {
               "state",
               executionPhase,
               "SKIPPED",
-              decision.normalizedPlan().steps().isEmpty() ? "当前行动方案不需要调用检测工具" : "等待执行确认，尚未创建任务",
+              decision.normalizedPlan().steps().isEmpty() ? "当前行动方案不需要调用检测工具"
+                  : "PLAN_ONLY".equals(decision.status()) ? "本轮仅提供方案，尚未创建任务" : "等待执行确认，尚未创建任务",
               Map.of());
         }
 
-        emit(sink, sequence, "state", AgentPhase.RETEST, "RUNNING", "正在核对执行证据、失败原因和复测条件", Map.of());
+        if (!taskIds.isEmpty()) {
+          emit(sink, sequence, "state", AgentPhase.REPORTING, "RUNNING", "正在核对任务归属和当前执行状态", Map.of());
+        }
         AiAgentResponse.AgentReview review =
             reviewer.review(request.projectId(), request.targetId(), taskIds);
         emit(
@@ -623,11 +653,16 @@ public class AgentOrchestrator {
             sequence,
             "retry",
             AgentPhase.RETEST,
-            review.retryAllowed() ? "MANUAL_RETRY_AVAILABLE" : "NOT_REQUIRED",
-            review.retryAllowed() ? "存在可重试任务；重试必须重新经过当前授权与配额校验" : "本轮无需重试，且智能体不会自动重复执行",
+            review.retryAllowed() ? "MANUAL_RETRY_AVAILABLE"
+                : "PENDING".equals(review.status()) ? "PENDING" : "REJECTED".equals(review.status()) ? "BLOCKED" : "NOT_REQUIRED",
+            review.retryAllowed() ? "已有失败任务可手动重试；其余任务以实际状态为准，重试须重新校验授权与配额"
+                : "PENDING".equals(review.status()) ? "任务尚未结束，等待执行结果后再判断是否需要重试"
+                : "REJECTED".equals(review.status()) ? "任务归属核对未通过，无法判断重试条件"
+                : taskIds.isEmpty() ? "本轮没有创建任务，无任务可重试"
+                : "当前任务状态未发现可重试项，未验证检测结果内容",
             Map.of("automaticRetry", false));
 
-        String message = finalMessage(decision, taskIds, runtimeAnswer);
+        String message = finalMessage(decision, taskIds, autoApprovalId, runtimeAnswer);
         memory.addAssistant(session.id(), message);
         AiAgentResponse response =
             new AiAgentResponse(
@@ -821,13 +856,25 @@ public class AgentOrchestrator {
   }
 
   private String finalMessage(
-      AiAuthorizationGuard.GuardDecision decision, List<Long> taskIds, String preferredAnswer) {
+      AiAuthorizationGuard.GuardDecision decision, List<Long> taskIds, Long approvalId,
+      String preferredAnswer) {
     String summary =
         preferredAnswer == null || preferredAnswer.isBlank()
             ? safe(decision.normalizedPlan().summary(), 1000)
             : safe(preferredAnswer, 4000);
     if (!taskIds.isEmpty()) {
       return summary + "\n\n已创建 " + taskIds.size() + " 个受控任务，可在任务中心查看实时进度。";
+    }
+    if (approvalId != null) {
+      return "本轮实际状态：已保存审批申请 #" + approvalId
+          + "，等待审批，尚未创建检测任务。\n\n" + summary;
+    }
+    if ("PLAN_ONLY".equals(decision.status()) && hasSteps(decision.normalizedPlan())) {
+      // The model produced this prose before the guard and approval persistence ran.
+      // Preserve its useful plan, but make server-owned action state authoritative.
+      return "本轮实际状态：仅生成方案，未提交审批申请，未创建检测任务。"
+          + "下文如有已申请或已执行的表述，不代表本轮实际操作，应以上述服务端状态为准。"
+          + "\n\n方案说明：\n\n" + summary;
     }
     if ("REQUIRED".equals(decision.approvalStatus())) {
       return summary + "\n\n计划已经授权守卫复核，确认执行后才会创建任务。";
@@ -857,8 +904,28 @@ public class AgentOrchestrator {
       data.put("terminationReason", runtimeEvent.terminationReason());
     }
     data.put("source", "python-langgraph-runtime");
-    String status = Objects.toString(runtimeEvent.data().get("status"), "RUNNING");
+    data.put("recorded", true);
+    data.put("eventTiming", "VERIFIED_RECORD");
+    String status = Objects.toString(runtimeEvent.data().get("status"), "RECORDED");
     emit(sink, sequence, runtimeEvent.type(), phase, status, runtimeEvent.message(), data);
+  }
+
+  private void emitPublicProgress(
+      Consumer<AiAgentEvent> sink, EventSequence sequence,
+      AiAgentRuntimeClient.PublicProgress progress) {
+    Map<String, Object> data = new LinkedHashMap<>();
+    data.put("summary", progress.message());
+    data.put("progressStage", progress.stage());
+    data.put("source", "runtime-public-progress");
+    if (progress.evidenceCount() != null) data.put("evidenceCount", progress.evidenceCount());
+    if (progress.evidenceDecision() != null) data.put("evidenceDecision", progress.evidenceDecision());
+    AgentPhase phase = switch (progress.stage()) {
+      case "RETRIEVING", "EVIDENCE_READY", "ASSESSING", "ASSESSED" -> AgentPhase.RECONNAISSANCE;
+      case "AUTHORIZING" -> AgentPhase.VALIDATION;
+      default -> AgentPhase.ENGAGEMENT;
+    };
+    data.put("stage", phase.name());
+    emit(sink, sequence, "planner_progress", phase, "RUNNING", progress.message(), data);
   }
 
   private AgentPhase phaseForRuntimeEvent(AiAgentRuntimeClient.RuntimeEvent event) {
@@ -967,6 +1034,10 @@ public class AgentOrchestrator {
     detail.put("evidenceIds", provenance.evidenceIds);
     detail.put("indexRevision", provenance.indexRevision);
     detail.put("plannerSource", provenance.plannerSource);
+    if (request.automaticExecutionIntent()) {
+      detail.put("executionIntent", "AUTO");
+      detail.put("executionDecision", provenance.executionDecision);
+    }
     detail.put("terminationReason", provenance.terminationReason);
     detail.put("runtimeRunId", provenance.runtimeRunId);
     detail.put("workflowDigest", Objects.toString(request.workflowDigest(), ""));
@@ -985,6 +1056,7 @@ public class AgentOrchestrator {
     private List<String> evidenceIds = List.of();
     private String indexRevision = "";
     private String plannerSource = "";
+    private String executionDecision = "";
     private String terminationReason = "";
     private String runtimeRunId = "";
     private long ledgerSequence;
@@ -1067,6 +1139,7 @@ public class AgentOrchestrator {
       data.put("evidenceIds", evidenceIds);
       data.put("indexRevision", indexRevision);
       data.put("plannerSource", plannerSource);
+      if (!executionDecision.isBlank()) data.put("executionDecision", executionDecision);
       data.put("terminationReason", terminationReason);
       data.put("runtimeRunId", runtimeRunId);
       data.put("ledgerSequence", ledgerSequence);

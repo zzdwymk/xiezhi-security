@@ -54,7 +54,7 @@ class SecurityActionServiceTests {
     project.setAuthorizationExpiresAt(authorizationTo);
 
     when(applicant.getName()).thenReturn("alice");
-    when(users.count()).thenReturn(1L);
+    when(users.countByRoleAndEnabledTrue("ADMIN")).thenReturn(1L);
     when(projects.get(1L)).thenReturn(project);
     doNothing().when(projects).validateProjectTarget(1L, 7L);
     when(repository.save(any(SecurityAction.class)))
@@ -267,7 +267,7 @@ class SecurityActionServiceTests {
   @Test
   void rejectsApprovalByOriginalApplicant() {
     SecurityAction action = action("PENDING_APPROVAL");
-    when(users.count()).thenReturn(2L);
+    when(users.countByRoleAndEnabledTrue("ADMIN")).thenReturn(2L);
     when(repository.findById(42L)).thenReturn(Optional.of(action));
 
     assertThatThrownBy(
@@ -278,6 +278,20 @@ class SecurityActionServiceTests {
         .hasMessage("申请人与审批人必须分离");
     verify(repository, never()).save(any());
     verify(audit, never()).record(any(), any(), any(), any(), any());
+  }
+
+  @Test
+  void zeroEnabledAdministratorsDoesNotEnableSelfApprovalException() {
+    SecurityAction action = action("PENDING_APPROVAL");
+    when(users.countByRoleAndEnabledTrue("ADMIN")).thenReturn(0L);
+    when(repository.findById(42L)).thenReturn(Optional.of(action));
+    var admin = new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
+        "alice", null, List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ADMIN")));
+
+    assertThatThrownBy(() -> service.decide(1L, 42L,
+        new SecurityActionDtos.Decision("APPROVED", "本人确认"), admin))
+        .isInstanceOf(ApiException.class).hasMessage("申请人与审批人必须分离");
+    verify(repository, never()).save(any());
   }
 
   @Test

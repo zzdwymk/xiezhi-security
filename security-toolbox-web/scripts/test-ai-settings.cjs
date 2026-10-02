@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const {
   selectEmbeddingTestConnection,
+  runtimeModelEnvironment,
 } = require("../electron/ai-settings.cjs");
 
 function select(mode, overrides = {}) {
@@ -101,3 +102,23 @@ assert.equal(
 );
 
 console.log("AI 向量连接设置测试通过。");
+assert.throws(() => selectEmbeddingTestConnection({mode: "shared", relayEnabled: true}), /单独配置/);
+const relayEmbedding = selectEmbeddingTestConnection({
+  mode: "custom", relayEnabled: true,
+  submitted: {embeddingBaseUrl: "https://embedding.example.com", embeddingApiKey: ""},
+  existing: {embeddingBaseUrl: "https://embedding.example.com", embeddingApiKey: "embedding-only"},
+});
+assert.equal(relayEmbedding.apiKey, "embedding-only");
+
+const proxyRuntime = runtimeModelEnvironment({ enabled: true, proxyMode: true, apiKey: "", apiMode: "responses" });
+assert.equal(proxyRuntime.AI_RUNTIME_LLM_ENABLED, "true", "passwordless CCS must enable the runtime model");
+assert.equal(proxyRuntime.AI_RUNTIME_PROXY_MODE, "true");
+assert.equal(proxyRuntime.AI_RUNTIME_API_MODE, "responses");
+assert.equal(proxyRuntime.AI_RUNTIME_API_KEY, "", "do not forward the stored direct-provider key to CCS");
+assert.equal(runtimeModelEnvironment({ enabled: false, proxyMode: true }).AI_RUNTIME_LLM_ENABLED, "false");
+assert.equal(runtimeModelEnvironment({ enabled: true, proxyMode: false, apiKey: "" }).AI_RUNTIME_LLM_ENABLED, "false");
+const directRuntime = runtimeModelEnvironment({ enabled: true, proxyMode: false, apiKey: "test-key", apiMode: "chat_completions" });
+assert.equal(directRuntime.AI_RUNTIME_LLM_ENABLED, "true");
+assert.equal(directRuntime.AI_RUNTIME_API_MODE, "chat_completions");
+assert.equal(directRuntime.AI_RUNTIME_API_KEY, "test-key");
+console.log("AI Runtime 代理与直连配置测试通过。");

@@ -19,6 +19,8 @@ import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class AiAnswerServiceTests {
   private static final long PROJECT = 1L;
@@ -48,6 +50,29 @@ class AiAnswerServiceTests {
     target.setId(7L);    target.setName("本地靶场");
     target.setTargetValue("http://127.0.0.1:8080");
     when(targetService.get(7L)).thenReturn(target);
+  }
+
+  @Test
+  void modelReceivesChineseStatusGuidanceWhileTaskStatusAndToolCodeStayIntact() throws Exception {
+    AiModelClient client = mock(AiModelClient.class);
+    when(client.enabled()).thenReturn(true);
+    when(client.model()).thenReturn("test-model");
+    when(client.complete(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString()))
+        .thenReturn("检测执行成功。");
+    service = new AiAnswerService(targetService, projectService, taskRepository, findingRepository,
+        auditService, new ObjectMapper(), client);
+    when(taskRepository.findAllById(List.of(11L)))
+        .thenReturn(List.of(task(11L, 7L, "http_headers", "SUCCESS")));
+    when(findingRepository.findAllByTaskIdInOrderByCreatedAtAsc(List.of(11L))).thenReturn(List.of());
+
+    AiAnswerResponse response = service.answer(new AiAnswerRequest(PROJECT, 7L, "检查结果怎么样？", List.of(11L)));
+
+    org.mockito.ArgumentCaptor<String> system = org.mockito.ArgumentCaptor.forClass(String.class);
+    org.mockito.ArgumentCaptor<String> user = org.mockito.ArgumentCaptor.forClass(String.class);
+    verify(client).complete(system.capture(), user.capture());
+    assertThat(system.getValue()).contains(AiUserFacingLanguage.PROMPT);
+    assertThat(user.getValue()).contains("\"status\":\"SUCCESS\"", "http_headers");
+    assertThat(response.provider()).isEqualTo("openai-compatible");
   }
 
   @Test
@@ -100,6 +125,22 @@ class AiAnswerServiceTests {
     assertThat(response.answer())
         .startsWith(
             "最需要优先处理的是 [MEDIUM] 缺少 Content-Security-Policy。建议先配置严格的 Content-Security-Policy 响应头");
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"TIMEOUT", "SKIPPED"})
+  void summarizesTimeoutAndSkippedTasksAsTerminalResults(String status) {
+    SecurityTask completed = task(41L, 7L, "http_headers", status);
+    completed.setErrorMessage("检测未能完成");
+    when(taskRepository.findAllById(List.of(41L))).thenReturn(List.of(completed));
+    when(findingRepository.findAllByTaskIdInOrderByCreatedAtAsc(List.of(41L)))
+        .thenReturn(List.of());
+
+    AiAnswerResponse response = service.answer(new AiAnswerRequest(PROJECT, 7L, "解释未完成的检测", List.of(41L)));
+
+    assertThat(response.taskCount()).isEqualTo(1);
+    assertThat(response.successCount()).isZero();
+    assertThat(response.answer()).contains("检测未能完成", "对应检查范围不能据此下结论");
   }
 
   @Test

@@ -252,7 +252,7 @@ public class AiTaskDispatchService {
           case "afrog_scan", "xray_scan" -> Set.of("pocCodes", "allPocs");
           case "zap_scan" -> Set.of("spider", "strength");
           case "msf_scan" -> Set.of("module", "modules", "options");
-          case "nuclei_scan" -> Set.of();
+          case "nuclei_scan" -> Set.of("pocCodes", "allPocs");
           case "http_security_check" -> Set.of("check");
           case "http_headers", "tls_config" -> Set.of();
           default -> throw new ApiException("AI 工具不在安全白名单内");
@@ -308,7 +308,10 @@ public class AiTaskDispatchService {
           parameters.put("vulnMode", vulnMode);
         }
       }
-      case "nuclei_scan" -> targetPolicyService.validatedHost(target);
+      case "nuclei_scan" -> {
+        targetPolicyService.validatedHost(target);
+        if (!parameters.isEmpty()) normalizePocSelection(parameters);
+      }
       case "afrog_scan", "xray_scan" -> {
         targetPolicyService.validatedHttpUri(target);
         normalizePocSelection(parameters);

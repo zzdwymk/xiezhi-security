@@ -150,6 +150,27 @@ const replayDocumentTabsElement = ref<HTMLElement | null>(null);
 const filter = ref("");
 const loading = ref(false);
 const changingProxy = ref(false);
+const captureTargets = ref<Target[]>([]);
+const captureTargetsLoading = ref(false);
+const captureTargetId = ref<number>();
+const captureTargetSelection = computed({
+  get: () => status.value.running ? status.value.targetId || undefined : captureTargetId.value,
+  set: (value: number | undefined) => {
+    if (!status.value.running && !changingProxy.value && !changingCapture.value) {
+      captureTargetId.value = value || undefined;
+    }
+  },
+});
+const missingCaptureTarget = computed(() =>
+  captureTargetSelection.value &&
+  !captureTargets.value.some((target) => target.id === captureTargetSelection.value),
+);
+watch(
+  () => [status.value.running, status.value.targetId] as const,
+  ([running, targetId]) => {
+    if (running) captureTargetId.value = targetId || undefined;
+  },
+);
 const deletingId = ref<number | string>();
 const markingId = ref<number | string>();
 const clearingSessions = ref(false);
@@ -795,6 +816,10 @@ function handleTrafficChatKeydown(event: KeyboardEvent) {
 function openTrafficCopilot() {
   const packet = selected.value;
   if (!packet) return;
+  if (!packet.targetId || packet.targetId <= 0) {
+    ElMessage.warning("这条流量尚未绑定授权目标。请先停止代理，在顶部“采集授权目标”中选择目标，再开始拦截并重新访问目标页面。");
+    return;
+  }
   const safeLabel = `${(packet.method || "GET").toUpperCase()} ${packet.host || "流量会话"}${packet.path || ""}`;
   copilot.prepare({
     targetId: packet.targetId,
@@ -1050,13 +1075,57 @@ async function load(showError = false, silent = false) {
   }
 }
 
+function captureTargetDisabledReason(target: Target) {
+  if (!target.enabled) return "已停用";
+  const now = Date.now();
+  const start = Date.parse(target.authorizationValidFrom || "");
+  const end = Date.parse(target.authorizationExpiresAt || "");
+  if (Number.isFinite(start) && now < start) return "授权未生效";
+  if (Number.isFinite(end) && now >= end) return "授权已过期";
+  return "";
+}
+
+function captureTargetLabel(target: Target) {
+  return `${target.name} · ${target.targetValue} (#${target.id})`;
+}
+
+async function loadCaptureTargets(showError = false) {
+  captureTargetsLoading.value = true;
+  try {
+    const { data } = await api.get<Target[]>("/targets");
+    captureTargets.value = Array.isArray(data) ? data : [];
+    return true;
+  } catch (error) {
+    if (showError) ElMessage.error(toErrorMessage(error, "无法加载授权目标"));
+    return false;
+  } finally {
+    captureTargetsLoading.value = false;
+  }
+}
+
 async function ensureProxyRunning() {
   if (status.value.running) return true;
+  const targetId = captureTargetId.value;
+  if (targetId) {
+    if (!(await loadCaptureTargets(true))) return false;
+    const target = captureTargets.value.find((item) => item.id === targetId);
+    if (!target) {
+      ElMessage.warning("所选授权目标已不可用，请重新选择采集目标。");
+      return false;
+    }
+    const unavailable = captureTargetDisabledReason(target);
+    if (unavailable) {
+      ElMessage.warning(`${target.name}：${unavailable}，请选择有效的授权目标。`);
+      return false;
+    }
+  }
   const result = await api.post<TrafficStatus>("/traffic/proxy/start", {
+    targetId,
     handlingMode: "ASK",
   });
   status.value = { ...status.value, ...result.data };
   serviceUnavailable.value = false;
+  if (!status.value.running) ElMessage.error("代理启动失败");
   return status.value.running;
 }
 
@@ -1066,10 +1135,7 @@ async function ensureProxyRunning() {
 async function startCaptureBrowser() {
   changingProxy.value = true;
   try {
-    if (!(await ensureProxyRunning())) {
-      ElMessage.error("代理启动失败");
-      return;
-    }
+    if (!(await ensureProxyRunning())) return;
     if (await openCaptureBrowser()) {
       ElMessage.success(
         `抓包浏览器已启动：${proxyAddress.value}（未拦截，点击“开始拦截”才记录流量）`,
@@ -1096,10 +1162,7 @@ async function stopCaptureBrowser() {
 async function toggleCapture() {
   changingCapture.value = true;
   try {
-    if (!(await ensureProxyRunning())) {
-      ElMessage.error("代理启动失败");
-      return;
-    }
+    if (!(await ensureProxyRunning())) return;
     const enabled = !status.value.capturing;
     const result = await api.post<TrafficStatus>("/traffic/proxy/capture", {
       enabled,
@@ -1118,20 +1181,16 @@ async function toggleCapture() {
 async function toggleProxy() {
   changingProxy.value = true;
   try {
-    const action = status.value.running ? "stop" : "start";
-    if (action === "stop" && window.toolboxDesktop?.closeCaptureBrowser) {
-      await window.toolboxDesktop.closeCaptureBrowser().catch(() => undefined);
-      browserRunning.value = false;
+    if (status.value.running) {
+      if (window.toolboxDesktop?.closeCaptureBrowser) {
+        await window.toolboxDesktop.closeCaptureBrowser().catch(() => undefined);
+        browserRunning.value = false;
+      }
+      const result = await api.post<TrafficStatus>("/traffic/proxy/stop", {});
+      status.value = { ...status.value, ...result.data };
+    } else if (!(await ensureProxyRunning())) {
+      return;
     }
-    const result = await api.post<TrafficStatus>(
-      `/traffic/proxy/${action}`,
-      action === "start"
-        ? {
-            handlingMode: "ASK",
-          }
-        : {},
-    );
-    status.value = { ...status.value, ...result.data };
     serviceUnavailable.value = false;
     ElMessage.success(
       status.value.running ? `代理已启动：${proxyAddress.value}` : "代理已停止",
@@ -2549,6 +2608,7 @@ async function runSqlmapScan(item?: TrafficSession | null) {
 
 onMounted(() => {
   void load();
+  void loadCaptureTargets();
   void loadCaptureFilters();
   void loadFuzzPresets();
   window.addEventListener("pointerdown", onWindowPointerDown);
@@ -2601,6 +2661,7 @@ onUnmounted(() => {
           <el-button
             class="capture-browser-reopen"
             :loading="changingProxy"
+            :disabled="loading || changingCapture"
             @click="startCaptureBrowser"
             ><el-icon><Connection /></el-icon>启动抓包浏览器</el-button
           >
@@ -2640,6 +2701,7 @@ onUnmounted(() => {
         <el-button
           :type="status.capturing ? 'default' : 'primary'"
           :loading="changingCapture"
+          :disabled="loading || changingProxy"
           class="capture-toggle"
           @click="toggleCapture"
         >
@@ -2652,11 +2714,54 @@ onUnmounted(() => {
           v-if="status.running"
           class="proxy-toggle"
           :loading="changingProxy"
+          :disabled="changingCapture"
           @click="toggleProxy"
           >停止代理</el-button
         >
       </div>
     </header>
+
+    <div class="capture-target-row">
+      <label for="capture-authorized-target">采集授权目标</label>
+      <el-select
+        id="capture-authorized-target"
+        v-model="captureTargetSelection"
+        class="capture-target-select"
+        aria-label="采集授权目标"
+        placeholder="未选择，仅抓包"
+        clearable
+        filterable
+        :loading="captureTargetsLoading"
+        :disabled="status.running || loading || changingProxy || changingCapture"
+        @visible-change="(visible) => visible && loadCaptureTargets(true)"
+      >
+        <el-option
+          v-if="missingCaptureTarget"
+          :label="`目标 #${captureTargetSelection}（当前列表不可用）`"
+          :value="captureTargetSelection"
+          disabled
+        />
+        <el-option
+          v-for="target in captureTargets"
+          :key="target.id"
+          :label="captureTargetLabel(target)"
+          :value="target.id"
+          :disabled="Boolean(captureTargetDisabledReason(target))"
+        >
+          <span>{{ captureTargetLabel(target) }}</span>
+          <small v-if="captureTargetDisabledReason(target)">
+            · {{ captureTargetDisabledReason(target) }}
+          </small>
+        </el-option>
+      </el-select>
+      <small v-if="status.running">
+        {{ status.targetId ? "当前会话已绑定授权目标。" : "当前会话仅抓包，流量未绑定授权目标，无法转交 AI 智能体。" }}
+        更换目标需先停止代理；停止拦截不会解除绑定。
+      </small>
+      <small v-else>
+        选择后，新流量仅允许所选目标及授权端口；转交 AI 智能体需要绑定目标。未选择可仅抓包，旧记录不受影响。
+      </small>
+    </div>
 
     <div class="traffic-workbench codex-traffic-workbench">
       <section
@@ -2889,7 +2994,7 @@ onUnmounted(() => {
                 </template>
               </el-dropdown>
               <el-tooltip
-                content="把这条流量转交给 AI 智能体：可跨工具规划并派发授权检测任务（需已绑定授权目标）"
+                :content="selected?.targetId ? '把这条流量转交给 AI 智能体：可跨工具规划并派发授权检测任务' : '这条流量未绑定授权目标；停止代理后，在顶部选择采集授权目标并重新采集'"
                 placement="bottom"
                 :show-after="350"
                 ><el-button
@@ -4137,6 +4242,28 @@ onUnmounted(() => {
 }
 .codex-toolbar-actions {
   gap: 8px;
+}
+.capture-target-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 8px 12px;
+  padding: 10px 0;
+  color: var(--app-muted);
+  font-size: 12px;
+}
+.capture-target-row > label {
+  color: var(--app-text);
+  white-space: nowrap;
+}
+.capture-target-select {
+  width: min(360px, 100%);
+}
+.capture-target-row > small {
+  flex: 1 1 320px;
+  font-size: 11px;
+  line-height: 1.5;
 }
 .capture-browser-option {
   margin: 0 3px 0 6px;

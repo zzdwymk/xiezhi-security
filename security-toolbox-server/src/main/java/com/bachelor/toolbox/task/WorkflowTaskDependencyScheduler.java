@@ -17,7 +17,7 @@ import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
-/** Unlocks persisted workflow tasks only after every predecessor completed successfully. */
+/** Requires graph prerequisites to succeed and serial waiting barriers to finish. */
 @Service
 public class WorkflowTaskDependencyScheduler {
   private static final Set<String> FAILED_TERMINALS =
@@ -142,40 +142,47 @@ public class WorkflowTaskDependencyScheduler {
           continue;
         }
         List<Long> dependencyIds = dependencyIds(task);
+        List<Long> successIds = task.getSuccessDependencyTaskIds() == null
+            ? dependencyIds : parseDependencyIds(task.getSuccessDependencyTaskIds());
         Map<Long, SecurityTask> dependencies =
             tasks.findAllById(dependencyIds).stream()
                 .collect(java.util.stream.Collectors.toMap(SecurityTask::getId, item -> item));
-        if (dependencyIds.stream().anyMatch(id -> !dependencies.containsKey(id))) {
+        if (!dependencyIds.containsAll(successIds)
+            || dependencyIds.stream().anyMatch(id -> !dependencies.containsKey(id))) {
           skip(task, "工作流前置任务不存在", "MISSING_DEPENDENCY");
           changed = true;
           continue;
         }
-        if (dependencies.values().stream()
-            .anyMatch(item -> FAILED_TERMINALS.contains(item.getStatus()))) {
+        if (successIds.stream()
+            .anyMatch(id -> FAILED_TERMINALS.contains(dependencies.get(id).getStatus()))) {
           skip(task, "前置工作流节点未成功，已跳过后继节点", "PREREQUISITE_NOT_COMPLETED");
           changed = true;
           continue;
         }
-        if (dependencies.values().stream().allMatch(item -> "SUCCESS".equals(item.getStatus()))) {
-          activate(task);
-          changed = true;
+        if (dependencies.values().stream().allMatch(item ->
+            "SUCCESS".equals(item.getStatus()) || FAILED_TERMINALS.contains(item.getStatus()))) {
+          changed = activate(task) || changed;
         }
       }
     } while (changed);
   }
 
-  private void activate(SecurityTask task) {
+  private boolean activate(SecurityTask task) {
     if (!runCanExecute(task)) {
       cancelStopped(task);
-      return;
+      return true;
     }
     try {
       projects.validateProjectTarget(task.getProjectId(), task.getTargetId());
       targets.getCurrentlyAuthorized(task.getTargetId(), task.getProjectId());
+      Instant now = Instant.now();
+      String message = "前置节点已完成，等待本地执行资源";
+      // A stop/cancel may commit while authorization checks are in progress.
+      // Never save the earlier BLOCKED snapshot over a new terminal state.
+      if (tasks.activateBlockedWorkflowTask(task.getId(), message, now) != 1) return false;
       task.setStatus("PENDING");
-      task.setProgressMessage("前置节点已完成，等待本地执行资源");
-      task.setProgressUpdatedAt(Instant.now());
-      tasks.save(task);
+      task.setProgressMessage(message);
+      task.setProgressUpdatedAt(now);
       progressEvents.publish(task, "工作流依赖已满足");
       audit.record(
           "UNLOCK_WORKFLOW_TASK",
@@ -184,8 +191,10 @@ public class WorkflowTaskDependencyScheduler {
           "workflowNodeId=" + task.getWorkflowNodeId(),
           "ACCEPTED");
       execution.executeAsync(task.getId());
+      return true;
     } catch (RuntimeException ex) {
       skip(task, "授权或项目范围已变化，后继节点不再执行", "AUTHORIZATION_CHANGED");
+      return true;
     }
   }
 
@@ -232,10 +241,17 @@ public class WorkflowTaskDependencyScheduler {
   }
 
   private List<Long> dependencyIds(SecurityTask task) {
-    String json = task.getDependencyTaskIds();
+    return parseDependencyIds(task.getDependencyTaskIds());
+  }
+
+  private List<Long> parseDependencyIds(String json) {
     if (json == null || json.isBlank()) return List.of();
     try {
-      return objectMapper.readValue(json, new TypeReference<List<Long>>() {});
+      List<Long> ids = objectMapper.readValue(json, new TypeReference<List<Long>>() {});
+      if (ids == null || ids.stream().anyMatch(id -> id == null || id <= 0)) {
+        return List.of(Long.MIN_VALUE);
+      }
+      return ids.stream().distinct().toList();
     } catch (Exception ex) {
       return List.of(Long.MIN_VALUE);
     }

@@ -72,6 +72,7 @@ class AiPlanningModelNormalizationTests {
     ArgumentCaptor<Map<String, Object>> request = ArgumentCaptor.forClass(Map.class);
     verify(client).chat(request.capture());
     assertThat(systemMessage(request.getValue()))
+        .contains(AiUserFacingLanguage.PROMPT)
         .contains("獬豸（Xiezhi）授权安全测试平台")
         .contains("所有执行均需用户确认")
         .contains("nmap_service_scan");
@@ -145,6 +146,10 @@ class AiPlanningModelNormalizationTests {
     AiPlanningService service = service(targets, client);
 
     AiPlanResponse response = service.plan(new AiPlanRequest(24L, "检查 HTTP 响应头"));
+
+    ArgumentCaptor<String> system = ArgumentCaptor.forClass(String.class);
+    verify(client).completeResponsesStream(system.capture(), anyString(), any());
+    assertThat(system.getValue()).contains(AiUserFacingLanguage.PROMPT);
 
     assertThat(response.provider()).isEqualTo("openai-compatible");
     assertThat(response.summary()).isEqualTo("已生成受控计划");

@@ -10,5 +10,10 @@ public interface ProjectApprovalRepository extends JpaRepository<ProjectApproval
 
   List<ProjectApproval> findByProjectId(Long projectId, Pageable pageable);
 
+  @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+  @org.springframework.data.jpa.repository.Query("select a from ProjectApproval a where a.id = :id and a.projectId = :projectId")
+  Optional<ProjectApproval> findForUpdate(@org.springframework.data.repository.query.Param("id") Long id,
+      @org.springframework.data.repository.query.Param("projectId") Long projectId);
+
   Optional<ProjectApproval> findByIdAndProjectId(Long id, Long projectId);
 }

@@ -20,6 +20,7 @@ import com.bachelor.toolbox.vulnerability.VulnerabilityDefinitionRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -45,6 +46,85 @@ class AiContextServiceTests {
           traffic,
           trafficSessions,
           new ObjectMapper());
+  @Test
+  void taskReferenceUsesRecordedEventInsteadOfWeightedProgressPercentage() {
+    SecurityTask task = new SecurityTask();
+    task.setId(9L);
+    task.setTargetId(7L);
+    task.setProjectId(5L);
+    task.setStatus("TIMEOUT");
+    task.setProgress(57);
+    task.setProgressMessage("任务执行超时");
+    when(tasks.findById(9L)).thenReturn(Optional.of(task));
+    String result = service.resolve(5L, 7L,
+        new AiPlanRequest.ContextRefs(7L, List.of(9L), null, null, null, null));
+    assertThat(result).contains("TIMEOUT", "最近执行事件=任务执行超时")
+        .doesNotContain("57%", "进度=57");
+  }
+
+  @Test
+  void taskReferenceContainsBoundedResultsWithoutJsonCredentials() {
+    SecurityTask task = new SecurityTask();
+    task.setId(9L);
+    task.setTargetId(7L);
+    task.setProjectId(5L);
+    task.setToolCode("http_headers");
+    task.setStatus("SUCCESS");
+    task.setResultJson("{\"statusCode\":200,\"server\":\"nginx\",\"api_key\":\"must-not-leak\",\"password\":\"json-secret\"}");
+    task.setExecutionLog("response received; Authorization: Bearer secret-token");
+    when(tasks.findById(9L)).thenReturn(Optional.of(task));
+    String result = service.resolve(5L, 7L,
+        new AiPlanRequest.ContextRefs(7L, List.of(9L), null, null, null, null));
+    assertThat(result).contains("statusCode", "200", "nginx", "response received", "[REDACTED]")
+        .doesNotContain("must-not-leak", "json-secret", "secret-token");
+    verify(projectService).validateProjectTargetMembership(5L, 7L);
+  }
+
+  @Test
+  void taskReferenceRedactsEscapedSecretsAndRecursivelyEncodedJson() throws Exception {
+    ObjectMapper mapper = new ObjectMapper();
+    String encoded = mapper.writeValueAsString(Map.of(
+        "api_key", "nested-prefix\"nested-secret-tail",
+        "access_token", "nested-token-secret",
+        "statusCode", 200));
+    String resultJson = mapper.writeValueAsString(Map.of(
+        "password", "first-part\"escaped-secret-tail\\last-part",
+        "body", encoded,
+        "responses", List.of(Map.of("token", "array-token-secret", "server", "nginx")),
+        "ports", List.of(80)));
+    SecurityTask task = new SecurityTask();
+    task.setId(9L);
+    task.setProjectId(5L);
+    task.setTargetId(7L);
+    task.setResultJson(resultJson);
+    task.setExecutionLog("probe completed: " + mapper.writeValueAsString(Map.of(
+        "response", encoded, "elapsedMs", 27)) + "; diagnostics retained");
+    when(tasks.findById(9L)).thenReturn(Optional.of(task));
+
+    String result = service.resolve(5L, 7L,
+        new AiPlanRequest.ContextRefs(7L, List.of(9L), null, null, null, null));
+
+    assertThat(result).contains("statusCode", "200", "nginx", "80", "elapsedMs", "27",
+            "probe completed", "diagnostics retained", "[REDACTED]")
+        .doesNotContain("first-part", "escaped-secret-tail", "last-part", "nested-prefix",
+            "nested-secret-tail", "nested-token-secret", "array-token-secret");
+    var root = mapper.readTree(AiContextService.redact(resultJson, 3000));
+    assertThat(root.path("password").asText()).isEqualTo("[REDACTED]");
+    assertThat(root.path("ports").get(0).asInt()).isEqualTo(80);
+    var body = mapper.readTree(root.path("body").asText());
+    assertThat(body.path("api_key").asText()).isEqualTo("[REDACTED]");
+    assertThat(body.path("access_token").asText()).isEqualTo("[REDACTED]");
+    assertThat(body.path("statusCode").asInt()).isEqualTo(200);
+  }
+
+  @Test
+  void quotedLogCredentialsAreFullyRedactedBeforeTheOutputIsBounded() {
+    String log = "completed; password=\"prefix\\\"secret-tail\"; status=200; " + "x".repeat(5000);
+    String redacted = AiContextService.redact(log, 100);
+    assertThat(redacted).contains("completed", "password=[REDACTED]", "status=200")
+        .doesNotContain("prefix", "secret-tail").endsWith("…").hasSize(101);
+  }
+
   @Test
   void reloadsReferencesAndRemovesCredentialsAndRawTraffic() {
     Finding finding = new Finding();

@@ -908,6 +908,8 @@ def test_stream_error_does_not_expose_python_exception(
     monkeypatch, runtime_headers
 ):
     async def broken_stream(_request):
+        from app.progress import emit_progress
+        emit_progress("GENERATING")
         if False:
             yield None
         raise RuntimeError("private-python-detail https://internal.invalid")
@@ -924,6 +926,7 @@ def test_stream_error_does_not_expose_python_exception(
         )
 
     assert response.status_code == 200
+    assert ': toolbox-progress {"stage":"GENERATING"}' in response.text
     assert "本地智能服务处理失败" in response.text
     assert "RUNTIME_PROCESSING_FAILED" in response.text
     assert "RuntimeError" not in response.text

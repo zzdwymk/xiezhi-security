@@ -122,10 +122,11 @@ public class MsfScanTool implements SecurityTool {
         throw new ApiException(
             "msfconsole 执行失败，退出码 " + process.exitValue() + "：" + abbreviate(output, 300));
       }
+      requireSuccessfulConsoleOutput(output);
       observer.progressPercent(100d, "MSF 模块完成，正在解析结果");
       return parseOutput(host, module, output);
     } finally {
-      if (process.isAlive()) process.destroyForcibly();
+      if (process.isAlive()) terminateProcessTree(process);
     }
   }
 
@@ -248,13 +249,16 @@ public class MsfScanTool implements SecurityTool {
     for (Map.Entry<String, String> entry : options.entrySet()) {
       script.append("set ").append(entry.getKey()).append(' ').append(entry.getValue()).append(';');
     }
-    script.append(isExploit ? "check" : "run").append(" -j; sleep 2; jobs -k");
+    // Foreground execution waits for the chosen module; exit closes the console only afterwards.
+    script.append(isExploit ? "check" : "run").append("; exit");
     return List.of(executable.toString(), "-q", "-x", script.toString());
   }
 
   ToolExecutionResult parseOutput(String expectedHost, String module, String outputText) {
     List<FindingDraft> findings = new ArrayList<>();
     List<Map<String, Object>> matches = new ArrayList<>();
+    List<Map<String, Object>> observations = new ArrayList<>();
+    boolean headerObservation = "auxiliary/scanner/http/http_header".equals(module);
     List<String> lines = outputText == null ? List.of() : List.of(outputText.split("\\R"));
 
     int total = 0;
@@ -269,6 +273,12 @@ public class MsfScanTool implements SecurityTool {
       }
       // 仅纳入落在授权主机内的命中。
       if (!inScope(expectedHost, message)) {
+        continue;
+      }
+      if (headerObservation) {
+        if (observations.size() < MAX_FINDINGS) observations.add(Map.of(
+            "module", module, "message", message, "evidence", line,
+            "assessmentType", "ASSET_OBSERVATION", "vulnerability", false));
         continue;
       }
       total++;
@@ -295,6 +305,14 @@ public class MsfScanTool implements SecurityTool {
     data.put("matches", matches);
     data.put("truncated", total > MAX_FINDINGS);
     data.put("dependencyPresent", true);
+    if (headerObservation) {
+      data.put("observations", observations);
+      data.put("observationCount", observations.size());
+      data.put("assessmentType", "ASSET_OBSERVATION");
+      return new ToolExecutionResult(
+          "Metasploit HTTP 响应头读取完成，记录 " + observations.size()
+              + " 条原始工具观察；响应头不作为漏洞判定", data, List.of());
+    }
     return new ToolExecutionResult(
         "Metasploit " + module + " 执行完成，得到 " + total + " 项正向命中",
         data,
@@ -344,29 +362,50 @@ public class MsfScanTool implements SecurityTool {
     }
   }
 
-  private String waitFor(Process process, ToolExecutionObserver observer, String module)
+  void requireSuccessfulConsoleOutput(String output) {
+    if (output != null && Pattern.compile(
+        "(?im)(?:Auxiliary failed:|Exploit failed:|Failed to load module|Unknown command:|"
+            + "Error while running command|OptionValidateError|Invalid module:)").matcher(output).find()) {
+      throw new ApiException("Metasploit 模块执行失败：" + abbreviate(output, 300));
+    }
+  }
+
+  String waitFor(Process process, ToolExecutionObserver observer, String module)
       throws Exception {
     ExecutorService reader = Executors.newSingleThreadExecutor();
     Future<String> output = reader.submit(() -> readLimited(process.getInputStream()));
     try {
       long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds);
       while (!process.waitFor(250, TimeUnit.MILLISECONDS)) {
+        // A bounded reader can fail before the process exits. Surface that failure
+        // immediately instead of leaving the child blocked on a full stdout pipe.
+        if (output.isDone()) output.get();
         observer.heartbeat("Metasploit 正在运行：" + module);
         if (observer.isCancellationRequested()) {
-          process.destroyForcibly();
+          terminateProcessTree(process);
           process.waitFor(5, TimeUnit.SECONDS);
           throw new ApiException("任务已取消");
         }
         if (System.nanoTime() >= deadline) {
-          process.destroyForcibly();
+          terminateProcessTree(process);
           process.waitFor(5, TimeUnit.SECONDS);
-          throw new ApiException("Metasploit 执行超过 " + timeoutSeconds + " 秒，已强制终止");
+          throw new java.util.concurrent.TimeoutException("Metasploit 执行超过 " + timeoutSeconds + " 秒，已强制终止");
         }
       }
       return output.get(10, TimeUnit.SECONDS);
     } finally {
+      if (process.isAlive()) terminateProcessTree(process);
       reader.shutdownNow();
     }
+  }
+
+  private void terminateProcessTree(Process process) {
+    // On Windows the process may be a .bat wrapper; stopping only it leaves Ruby scanning.
+    List<ProcessHandle> descendants = process.descendants().toList();
+    for (int index = descendants.size() - 1; index >= 0; index--) {
+      descendants.get(index).destroyForcibly();
+    }
+    process.destroyForcibly();
   }
 
   private String readLimited(InputStream input) throws Exception {

@@ -29,7 +29,7 @@ public class AiAnswerService {
   private static final int MAX_FINDING_DETAILS = 50;
   private static final int MAX_MODEL_CONTEXT_CHARS = 40_000;
   private static final Set<String> TERMINAL_STATUSES =
-      Set.of("SUCCESS", "FAILED", "REJECTED", "CANCELLED");
+      Set.of("SUCCESS", "FAILED", "TIMEOUT", "REJECTED", "CANCELLED", "SKIPPED");
   private static final List<String> SEVERITY_ORDER =
       List.of("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO");
 
@@ -171,7 +171,7 @@ public class AiAnswerService {
         "你是授权安全检测结果分析助手。只能依据提供的任务结果和发现项回答，不得虚构。"
             + "请用简洁中文直接回答用户问题，说明检测是否成功、关键风险、证据局限和优先修复建议；"
             + "任务失败时明确说明未覆盖范围。不要输出攻击步骤、利用代码或未经证据支持的结论。";
-    system = ToolboxProgramGuide.context() + "\n" + system;
+    system = ToolboxProgramGuide.context() + "\n" + system + "\n" + AiUserFacingLanguage.PROMPT;
     return modelClient.complete(system, "用户问题：" + prompt + "\n检测结果(JSON)：" + contextJson);
   }
 

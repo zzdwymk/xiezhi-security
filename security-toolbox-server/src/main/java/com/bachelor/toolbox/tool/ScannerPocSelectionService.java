@@ -1,6 +1,7 @@
 package com.bachelor.toolbox.tool;
 
 import com.bachelor.toolbox.common.ApiException;
+import com.bachelor.toolbox.target.WebTargetResolver;
 import com.bachelor.toolbox.vulnerability.NucleiTemplateCatalogService;
 import com.bachelor.toolbox.vulnerability.ScannerPocCatalogService;
 import com.bachelor.toolbox.vulnerability.VulnerabilityDefinition;
@@ -153,7 +154,11 @@ public class ScannerPocSelectionService {
         requestJson == null || requestJson.isBlank()
             ? Map.of()
             : objectMapper.readValue(requestJson, new TypeReference<Map<String, Object>>() {});
-    List<SelectedPoc> selected = resolve(source, parameters, "nuclei_scan".equals(toolCode));
+    // The workflow stores resolved target metadata beside the scanner options.
+    // Hash exactly the same PoC selection the tool validates at execution time;
+    // retain requestJson intact for target binding and reject every other unknown key.
+    List<SelectedPoc> selected = resolve(
+        source, WebTargetResolver.scanParameters(parameters), "nuclei_scan".equals(toolCode));
     if (selected.isEmpty()) return null;
     String manifest =
         selected.stream()

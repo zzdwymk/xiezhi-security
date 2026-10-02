@@ -22,7 +22,9 @@ const { Worker } = require("worker_threads");
 const { readJsonFile, writeJsonFileAtomic } = require("./json-file.cjs");
 const { createInvalidatableCache } = require("./invalidatable-cache.cjs");
 const { evaluateInstalledRelease } = require("./dependency-version.cjs");
-const { selectEmbeddingTestConnection } = require("./ai-settings.cjs");
+const { selectEmbeddingTestConnection, runtimeModelEnvironment } = require("./ai-settings.cjs");
+const { createAiRelay, listProviderModels } = require("./ai-relay.cjs");
+const { normalizeRelaySettings, publicRelaySettings, resolveRelayProviders, resolveModelDiscoveryProvider } = require("./ai-relay-settings.cjs");
 const {
   UserFacingError,
   diagnosticError,
@@ -712,6 +714,54 @@ function decryptStoredApiKey(settings = readDesktopSettings()) {
   }
 }
 
+let aiRelay;
+let aiRelayConnection;
+const relaySecrets = {
+  encrypt(value) {
+    assertSecureDesktopStorage();
+    return safeStorage.encryptString(value).toString("base64");
+  },
+  decrypt(value) {
+    assertSecureDesktopStorage();
+    try { return safeStorage.decryptString(Buffer.from(value, "base64")); }
+    catch { throw new UserFacingError("中转线路密钥无法解密，请重新填写。"); }
+  },
+};
+
+async function synchronizeAiRelay() {
+  const stored = readDesktopSettings().aiRelay;
+  if (!stored?.enabled) {
+    await aiRelay?.close();
+    aiRelay = undefined;
+    aiRelayConnection = undefined;
+    return;
+  }
+  const providers = resolveRelayProviders(stored, relaySecrets);
+  if (!aiRelay) aiRelay = createAiRelay({ providers });
+  else aiRelay.setProviders(providers);
+  aiRelayConnection = await aiRelay.start();
+}
+
+function validatedRelaySettings(payload, previous) {
+  try { return normalizeRelaySettings(payload, previous, relaySecrets); }
+  catch (error) { throw new UserFacingError(error.message || "中转线路设置无效。"); }
+}
+
+function effectiveAiSettings() {
+  const settings = resolvedAiSettings();
+  if (!readDesktopSettings().aiRelay?.enabled) return settings;
+  if (!aiRelayConnection) throw new UserFacingError("内置中转站尚未就绪。");
+  return {
+    ...settings,
+    baseUrl: aiRelayConnection.baseUrl.replace(/\/v1\/?$/, ""),
+    apiKey: aiRelayConnection.apiKey,
+    model: "xiezhi-relay",
+    proxyMode: false,
+    enabled: true,
+    apiMode: "chat_completions",
+  };
+}
+
 function resolvedAiSettings(settings = readDesktopSettings()) {
   const stored =
     settings.ai && typeof settings.ai === "object" ? settings.ai : undefined;
@@ -818,6 +868,9 @@ function updatedAiSettings(
   const embeddingConnectionMode = normalizeAiEmbeddingConnectionMode(
     payload?.embeddingConnectionMode,
   );
+  if (previousSettings.aiRelay?.enabled && normalizeAiRetrievalBackend(payload?.retrievalBackend) === "real_embedding" && embeddingConnectionMode === "shared") {
+    throw new UserFacingError("API 线路仅支持对话，请单独配置 Embedding 服务，或使用 BM25 关键词检索。");
+  }
   const embeddingBaseUrl = normalizeAiEmbeddingBaseUrl(
     payload?.embeddingBaseUrl,
     baseUrl,
@@ -994,108 +1047,44 @@ function serializeAiSettingsOperation(operation) {
   return next;
 }
 
-async function testAiConnection(payload) {
+async function discoverAiModels(provider) {
+  try { return await listProviderModels(provider); }
+  catch (error) {
+    const code = error?.message;
+    const messages = {
+      timeout: "获取模型列表超时，请稍后重试。",
+      connection_failed: "无法连接 API，请检查地址和网络。",
+      invalid_endpoint: "API 地址无效；非本机地址必须使用 HTTPS。",
+      http_401: "API 身份验证失败，请检查密钥。",
+      http_403: "API 拒绝访问模型列表，请检查密钥权限。",
+      http_404: "此 API 不提供模型列表，请手动填写模型名称。",
+      http_405: "此 API 不支持获取模型列表，请手动填写模型名称。",
+      http_429: "API 请求过多或额度不足，请稍后重试。",
+    };
+    throw new UserFacingError(messages[code] || "无法获取有效模型列表，请检查接口或手动填写模型名称。");
+  }
+}
+
+async function testAiConnection(payload, prompt) {
   const existing = resolvedAiSettings();
   const baseUrl = normalizeAiBaseUrl(payload?.baseUrl);
   const model = normalizeAiModel(payload?.model);
   const submittedApiKey = String(payload?.apiKey || "").trim();
   const proxyMode = Boolean(payload?.proxyMode);
-  if (
-    !proxyMode &&
-    !submittedApiKey &&
-    existing.apiKey &&
-    baseUrl !== existing.baseUrl
-  ) {
-    throw new UserFacingError(
-      "API 地址已变化，请填写新服务对应的 API Key 后再测试",
-    );
-  }
-  const apiKey =
-    submittedApiKey || (baseUrl === existing.baseUrl ? existing.apiKey : "");
-  if (!apiKey && !proxyMode)
-    throw new UserFacingError("请先填写 API Key，或启用 CCS 本地代理模式");
-  const controller = new AbortController();
-  const timeoutMs = proxyMode ? 90000 : 20000;
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const apiKey = submittedApiKey || (baseUrl === existing.baseUrl ? existing.apiKey : "");
+  if (!apiKey && !proxyMode) throw new UserFacingError("请填写当前 API 对应的密钥。");
+  const tester = createAiRelay({ providers: [], attemptTimeoutMs: proxyMode ? 90000 : 20000 });
   try {
-    const headers = { "Content-Type": "application/json" };
-    let endpoint = `${baseUrl}/v1/chat/completions`;
-    let body;
-    if (proxyMode) {
-      headers.Authorization = `Bearer ${apiKey || "ccs-proxy"}`;
-      headers["OpenAI-Beta"] = "responses=experimental";
-      headers.originator = "codex_cli_rs";
-      headers["User-Agent"] = "codex_cli_rs/secbox";
-      endpoint = `${baseUrl}/v1/responses`;
-      body = {
-        model,
-        instructions: "You are a concise assistant.",
-        input: [
-          {
-            type: "message",
-            role: "user",
-            content: [{ type: "input_text", text: "Reply with OK only." }],
-          },
-        ],
-        tools: [],
-        tool_choice: "auto",
-        parallel_tool_calls: true,
-        reasoning: { effort: "medium", summary: "auto" },
-        text: { verbosity: "low" },
-        store: false,
-        stream: true,
-        include: ["reasoning.encrypted_content"],
-        prompt_cache_key: `secbox-test-${crypto.randomUUID()}`,
-      };
-    } else {
-      if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-      body = { model, messages: [{ role: "user", content: "请只回复 OK" }] };
+    const result = await tester.testProvider({ id: "legacy-test", name: "现有连接", baseUrl: `${baseUrl}/v1`,
+      model, apiKey, apiMode: proxyMode ? "responses" : "chat_completions", codexHeaders: proxyMode }, prompt);
+    if (!result.ok) {
+      const messages = { invalid_responses_request: "上游不接受当前 Codex 请求格式。", upstream_overloaded: "上游模型负载已达上限，请稍后重试或更换 API 线路。", upstream_unavailable: "上游没有可用的模型通道。", model_not_found: "此 API 不支持所选模型。", invalid_test_prompt: "测试内容不能为空，且最多 4000 字。", timeout: "连接测试超时，请稍后重试。",
+        upstream_incomplete: "模型回答未完整结束，请缩短问题后重试。", empty_answer: "API 未返回有效回答。" };
+      throw new UserFacingError(messages[result.reason || result.message] || (/^http_\d{3}$/.test(result.message)
+        ? `API 请求失败（HTTP ${result.message.slice(5)}）` : "连接测试失败，请检查 API 配置。"));
     }
-    const response = await electronNet.fetch(endpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      throw new UserFacingError(
-        `AI API 返回错误状态（HTTP ${response.status}）`,
-      );
-    }
-    let content;
-    if (proxyMode) {
-      const streamText = await response.text();
-      content = streamText
-        .split(/\r?\n/)
-        .filter((line) => line.startsWith("data: "))
-        .map((line) => {
-          try {
-            return JSON.parse(line.slice(6));
-          } catch {
-            return undefined;
-          }
-        })
-        .filter((event) => event?.type === "response.output_text.delta")
-        .map((event) => event.delta || "")
-        .join("");
-    } else {
-      const responseBody = await response.json();
-      content = responseBody?.choices?.[0]?.message?.content;
-    }
-    if (typeof content !== "string" || !content.trim()) {
-      throw new UserFacingError("AI API 已响应，但没有返回对话内容");
-    }
-    return { ok: true, model, message: content.trim().slice(0, 120) };
-  } catch (error) {
-    if (error?.name === "AbortError") {
-      throw new UserFacingError(`AI API 连接超时（${timeoutMs / 1000} 秒）`);
-    }
-    if (error instanceof UserFacingError) throw error;
-    writeDesktopStartupDiagnostic("ai-connection-test", error);
-    throw new UserFacingError("无法连接 AI API，请检查网络和服务配置");
-  } finally {
-    clearTimeout(timeout);
-  }
+    return { ...result, model, message: "连接成功" };
+  } finally { await tester.close(); }
 }
 
 // 判断目标是否为目录链接（junction / symbolic link）。
@@ -2519,6 +2508,7 @@ async function testEmbeddingConnection(payload) {
   const model = normalizeAiEmbeddingModel(payload?.embeddingModel);
   const connection = selectEmbeddingTestConnection({
     mode,
+    relayEnabled: Boolean(readDesktopSettings().aiRelay?.enabled),
     submitted: {
       baseUrl: chatBaseUrl,
       embeddingBaseUrl,
@@ -4538,7 +4528,13 @@ async function removeDesktopPostgresDir(dataDir) {
 async function startDesktopPostgres(binDir, dataDir, config) {
   const logFile = path.join(app.getPath("userData"), "logs", "postgres.log");
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
-  const options = `-p ${config.port} -h ${config.host} -k "${dataDir}"`;
+  // Windows clients use the loopback TCP listener. Forcing a Unix socket into the
+  // user-data path can fail with EINVAL (for example, on a long profile path).
+  // Override even a persisted socket directory without changing the data cluster.
+  const socketOptions = process.platform === "win32"
+    ? "-c unix_socket_directories="
+    : `-k "${dataDir}"`;
+  const options = `-p ${config.port} -h ${config.host} ${socketOptions}`;
   // 用 stdio:"ignore" 启动 pg_ctl，避免 postgres 服务进程继承其管道句柄：
   // 即便 pg_ctl 已退出，postgres 仍可能占着管道导致 Electron 收不到 close 而误报超时。
   const ctl = spawn(
@@ -6128,6 +6124,8 @@ function publicNotificationSettings(settings = readDesktopSettings()) {
       stored.length > 0 ? stored : DEFAULT_NOTIFICATION_SEVERITIES,
     taskCompleteNotifications:
       settings.taskCompleteNotifications !== false,
+    workflowSkipNotifications:
+      settings.workflowSkipNotifications !== false,
   };
 }
 handleRendererIpc("toolbox:get-notification-settings", (event) => {
@@ -6155,6 +6153,10 @@ handleRendererIpc("toolbox:set-notification-settings", (event, payload) => {
       next.taskCompleteNotifications === undefined
         ? true
         : Boolean(next.taskCompleteNotifications),
+    workflowSkipNotifications:
+      next.workflowSkipNotifications === undefined
+        ? true
+        : Boolean(next.workflowSkipNotifications),
   });
   return publicNotificationSettings();
 });
@@ -6722,9 +6724,72 @@ handleRendererIpc("toolbox:reimport-h2-to-postgres", async (event) => {
 await restartBackend();
   return { status: "restarted" };
 });
-handleRendererIpc("toolbox:test-ai-settings", (event, payload) => {
+handleRendererIpc("toolbox:test-ai-settings", (event, payload, prompt) => {
   assertMainRenderer(event);
-  return testAiConnection(payload);
+  return testAiConnection(payload, prompt);
+});
+handleRendererIpc("toolbox:get-ai-relay-settings", (event) => {
+  assertMainRenderer(event);
+  return publicRelaySettings(readDesktopSettings().aiRelay);
+});
+handleRendererIpc("toolbox:list-ai-relay-models", (event, payload) => {
+  assertMainRenderer(event);
+  return serializeAiSettingsOperation(async () => {
+    let provider;
+    try { provider = resolveModelDiscoveryProvider(payload, readDesktopSettings().aiRelay, relaySecrets); }
+    catch (error) { throw new UserFacingError(error.message || "线路配置无效。"); }
+    return discoverAiModels(provider);
+  });
+});
+handleRendererIpc("toolbox:list-ai-models", (event, payload) => {
+  assertMainRenderer(event);
+  return serializeAiSettingsOperation(async () => {
+    const existing = resolvedAiSettings();
+    const baseUrl = normalizeAiBaseUrl(payload?.baseUrl);
+    const submitted = payload?.apiKey;
+    if (submitted !== undefined && (typeof submitted !== "string" || submitted.length > 8192 || /[\r\n\x00]/.test(submitted))) {
+      throw new UserFacingError("API Key 格式无效。");
+    }
+    const apiKey = submitted?.trim() || (baseUrl === existing.baseUrl ? existing.apiKey : "");
+    if (!apiKey && !payload?.proxyMode) throw new UserFacingError("请填写当前 API 对应的密钥后获取模型列表。");
+    return discoverAiModels({ baseUrl: `${baseUrl}/v1`, apiKey, codexHeaders: Boolean(payload?.proxyMode) });
+  });
+});
+handleRendererIpc("toolbox:get-ai-relay-status", (event) => {
+  assertMainRenderer(event);
+  return { enabled: Boolean(readDesktopSettings().aiRelay?.enabled), ...(aiRelay?.status() || { running: false, providers: [] }) };
+});
+handleRendererIpc("toolbox:test-ai-relay-provider", (event, payload, prompt) => {
+  assertMainRenderer(event);
+  return serializeAiSettingsOperation(async () => {
+    const parsed = validatedRelaySettings({ enabled: false, providers: [payload] }, readDesktopSettings().aiRelay);
+    const [provider] = resolveRelayProviders(parsed, relaySecrets);
+    const tester = createAiRelay({ providers: [] });
+    try { return await tester.testProvider(provider, prompt); }
+    finally { await tester.close(); }
+  });
+});
+handleRendererIpc("toolbox:save-ai-relay-settings", (event, payload) => {
+  assertMainRenderer(event);
+  return serializeAiSettingsOperation(async () => {
+    const previous = readDesktopSettings();
+    const next = validatedRelaySettings(payload, previous.aiRelay);
+    const embedding = resolvedAiSettings(previous);
+    if (next.enabled && embedding.retrievalBackend === "real_embedding" && embedding.embeddingConnectionMode === "shared") {
+      throw new UserFacingError("启用 API 线路前，请为向量检索单独配置 Embedding 服务，或切换为 BM25 关键词检索。");
+    }
+    writeDesktopSettings({ ...previous, aiRelay: next });
+    try {
+      await synchronizeAiRelay();
+      if (Boolean(previous.aiRelay?.enabled) !== next.enabled) await restartAiRuntimeAndBackend();
+      return publicRelaySettings(next);
+    } catch (error) {
+      writeDesktopSettings(previous);
+      await synchronizeAiRelay().catch(() => {});
+      if (Boolean(previous.aiRelay?.enabled) !== next.enabled) await restartAiRuntimeAndBackend().catch(() => {});
+      throw error;
+    }
+  });
 });
 handleRendererIpc("toolbox:test-embedding-settings", (event, payload) => {
   assertMainRenderer(event);
@@ -7249,6 +7314,7 @@ async function spawnAiRuntime(slot) {
 
 async function allocateAiRuntimeSlot() {
   aiRuntimeStartError = undefined;
+  await synchronizeAiRelay();
   const launch = resolveAiRuntimeLaunch();
   const port = await findFreePort(18121, 18180);
   const userDataDir = app.getPath("userData");
@@ -7297,7 +7363,7 @@ function launchAiRuntimeProcess(slot) {
   fs.mkdirSync(runtimeDataDir, { recursive: true });
   fs.mkdirSync(logDir, { recursive: true });
 
-  const aiSettings = resolvedAiSettings();
+  const aiSettings = effectiveAiSettings();
   const stdout = fs.openSync(path.join(logDir, "ai-runtime.out.log"), "a");
   const stderr = fs.openSync(path.join(logDir, "ai-runtime.err.log"), "a");
   const child = spawn(
@@ -7321,10 +7387,7 @@ function launchAiRuntimeProcess(slot) {
       cwd: launch.cwd,
       env: {
         ...process.env,
-        AI_RUNTIME_LLM_ENABLED: String(
-          Boolean(aiSettings.enabled && aiSettings.apiKey),
-        ),
-        AI_RUNTIME_API_KEY: aiSettings.apiKey,
+        ...runtimeModelEnvironment(aiSettings),
         AI_RUNTIME_BASE_URL: aiRuntimeBaseUrl(aiSettings.baseUrl),
         AI_RUNTIME_MODEL: aiSettings.model,
         AI_RUNTIME_RETRIEVAL_BACKEND: aiSettings.retrievalBackend,
@@ -7426,7 +7489,7 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
   const dataDir = path.join(userDataDir, "data");
   const logDir = path.join(userDataDir, "logs");
   const toolsDir = resolveToolsDirectory();
-  const aiSettings = resolvedAiSettings();
+  const aiSettings = effectiveAiSettings();
   const icpSettings = resolvedIcpSettings();
   fs.mkdirSync(dataDir, { recursive: true });
   fs.mkdirSync(logDir, { recursive: true });
@@ -8068,7 +8131,7 @@ app.on("before-quit", (event) => {
   closeIcpBrowser();
   stopAiRuntime();
   event.preventDefault();
-  stopBackend()
+  Promise.allSettled([stopBackend(), aiRelay?.close()])
     .catch(() => {})
     .finally(() => {
       quitting = true;

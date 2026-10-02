@@ -15,7 +15,7 @@ import {
   type TaskControlStatus,
   type VulnerabilityDefinition,
 } from "../api";
-import { InfoCircle, Search, View, MagicStick, Document, Switch, Delete } from "../components/fluentIcons";
+import { InfoCircle, Search, View, MagicStick, Document, Switch, Delete, Dismiss, Refresh } from "../components/fluentIcons";
 import AppPagination from "../components/AppPagination.vue";
 import FluentCodeBlock from "../components/FluentCodeBlock.vue";
 import FluentJsonView from "../components/FluentJsonView.vue";
@@ -25,7 +25,12 @@ import { formatDateTime, formatExecutionLog } from "../utils/dateTime";
 import { useCopilotStore } from "../stores/copilot";
 import { toErrorMessage } from "../utils/errorMessage";
 import { downloadBlob, EmptyDownloadError } from "../utils/download";
-import { severityLabel } from "../utils/aiPresentation";
+import { findingTitleLabel, aiToolLabel, severityLabel } from "../utils/aiPresentation";
+import {
+  loadNotificationPreferences as loadNotificationPrefs,
+  notifyTaskCompletion as notifyTaskCompletionOnce,
+  type NotificationPreferences,
+} from "../utils/notifications";
 import {
   taskProgressIndeterminate,
   taskProgressPercentage,
@@ -33,6 +38,7 @@ import {
   taskProgressText,
 } from "../utils/taskProgress";
 import { taskbarProgress } from "../utils/taskbarProgress";
+import { createTaskDetailLoader, isTerminalTaskStatus, mergeTaskDetailSnapshot, taskDetailEmptyResultText } from "../utils/taskDetail";
 
 const copilot = useCopilotStore();
 const router = useRouter();
@@ -73,8 +79,7 @@ interface TaskRow {
 
 const rows = ref<TaskRow[]>([]);
 const notifiedTasks = new Set<number>();
-let notifiedSeverities: Set<string> | null = null;
-let notifiedTaskCompleteEnabled = true;
+let notificationPrefs: NotificationPreferences | null = null;
 const statusFilter = ref<string>("");
 const statusOptions = [
   { value: "PENDING", label: "待执行" },
@@ -111,7 +116,7 @@ const filterTools = computed(() => {
     .sort()
     .map((code) => ({
       value: code,
-      label: scheduleToolLabel(code),
+      label: aiToolLabel(code),
     }));
 });
 const filteredTasks = computed(() => {
@@ -137,7 +142,8 @@ const filteredTasks = computed(() => {
       const keyword = idKeyword.value.trim().toLowerCase();
       if (
         !String(task.id).toLowerCase().includes(keyword) &&
-        !String(task.toolCode).toLowerCase().includes(keyword)
+        !String(task.toolCode).toLowerCase().includes(keyword) &&
+        !aiToolLabel(task.toolCode).toLowerCase().includes(keyword)
       )
         return false;
     }
@@ -185,6 +191,30 @@ const controlStatus = ref<TaskControlStatus>();
 const offline = ref(false);
 const detail = ref<TaskRow>();
 const detailVisible = ref(false);
+const detailLoading = ref(false);
+const detailLoadError = ref("");
+const detailLoader = createTaskDetailLoader<TaskRow>({
+  fetch: async id => {
+    const { data } = await endpoints.task(id);
+    return { ...data, progress: data.progress ?? (data.status === "SUCCESS" ? 100 : 0) };
+  },
+  apply: task => {
+    if (!detailVisible.value || detail.value?.id !== task.id) return;
+    detail.value = mergeTaskDetailSnapshot(detail.value, task);
+    const index = rows.value.findIndex(row => row.id === task.id);
+    if (index >= 0) rows.value[index] = mergeTaskDetailSnapshot(rows.value[index], task);
+    void nextTick(() => {
+      if (logOutput.value) logOutput.value.scrollTop = logOutput.value.scrollHeight;
+    });
+  },
+  loading: value => { detailLoading.value = value; },
+  error: error => {
+    detailLoadError.value = error ? toErrorMessage(error, "无法读取最新任务详情，请重试。") : "";
+  },
+  shouldRetry: task => detailVisible.value && detail.value?.id === task.id
+    && isTerminalTaskStatus(detail.value.status) && !isTerminalTaskStatus(task.status),
+});
+watch(detailVisible, visible => { if (!visible) detailLoader.invalidate(); });
 const downloading = ref<number>();
 const retrying = ref<number>();
 const cancelling = ref<number>();
@@ -277,116 +307,25 @@ const setLogOutput = (el: HTMLTextAreaElement | null) => {
 };
 
 async function loadNotificationPreferences() {
-  const bridge = window.toolboxDesktop;
-  if (!bridge?.getNotificationSettings) {
-    notifiedSeverities = new Set(["CRITICAL", "HIGH", "MEDIUM"]);
-    notifiedTaskCompleteEnabled = true;
-    return;
-  }
-  try {
-    const settings = await bridge.getNotificationSettings();
-    notifiedSeverities = new Set(settings.severities);
-    notifiedTaskCompleteEnabled = settings.taskCompleteNotifications !== false;
-  } catch {
-    notifiedSeverities = new Set(["CRITICAL", "HIGH", "MEDIUM"]);
-    notifiedTaskCompleteEnabled = true;
-  }
-}
-
-function collectResultSeverities(resultJson?: string): string[] {
-  if (!resultJson) return [];
-  try {
-    const parsed: unknown = JSON.parse(resultJson);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-      return [];
-    const result = parsed as Record<string, unknown>;
-    const data =
-      result.data && typeof result.data === "object" && !Array.isArray(result.data)
-        ? (result.data as Record<string, unknown>)
-        : undefined;
-    const candidates = [
-      result.matches,
-      data?.matches,
-      result.findings,
-      data?.findings,
-      data?.items,
-      data?.results,
-    ];
-    const list = candidates.find((value) => Array.isArray(value)) as
-      | Array<Record<string, unknown>>
-      | undefined;
-    if (!list) return [];
-    return Array.from(
-      new Set(
-        list
-          .map((item) => item && typeof item === "object" ? item : {})
-          .map((entry) => {
-            const severity =
-              (entry as Record<string, unknown>).severity ??
-              (entry as Record<string, unknown>).level;
-            return typeof severity === "string"
-              ? severity.trim().toUpperCase()
-              : "";
-          })
-          .filter(Boolean),
-      ),
-    );
-  } catch {
-    return [];
-  }
+  notificationPrefs = await loadNotificationPrefs();
 }
 
 async function notifyTaskCompletion(row: TaskRow) {
-  const bridge = window.toolboxDesktop;
-  if (!bridge?.showTaskNotification) return;
-  if (notifiedTasks.has(row.id)) return;
-  const terminal = new Set([
-    "SUCCESS",
-    "FAILED",
-    "TIMEOUT",
-    "REJECTED",
-    "CANCELLED",
-  ]);
-  if (!terminal.has(row.status)) return;
-  notifiedTasks.add(row.id);
-  if (!notifiedSeverities) await loadNotificationPreferences();
-
-  if (row.status === "SUCCESS") {
-    if (!notifiedTaskCompleteEnabled) return;
-    const found = new Set(collectResultSeverities(row.resultJson));
-    const selected = notifiedSeverities ?? new Set<string>();
-    if (!(selected.size > 0 && [...selected].some((s) => found.has(s)))) {
-      return;
-    }
-  }
-
-  const success = row.status === "SUCCESS";
-  const severityHint = success ? matchedSeverityHint(row) : "";
-  void bridge.showTaskNotification({
-    type: success ? "info" : "error",
-    title: success
-      ? severityHint
-        ? `发现${severityHint}漏洞 · #${row.id}`
-        : `任务 #${row.id} 已完成`
-      : `任务 #${row.id} ${statusLabel(row.status)}`,
-    body: success
-      ? severityHint
-        ? `任务发现 ${severityHint} 严重程度漏洞，已生成结果，可在「任务控制中心」查看。`
-        : "任务已完成，可在「任务控制中心」查看结果详情。"
-      : row.errorMessage ||
-        `任务状态为 ${statusLabel(row.status)}，可在「任务控制中心」查看原因。`,
-  });
-}
-
-function matchedSeverityHint(row: TaskRow): string {
-  const found = collectResultSeverities(row.resultJson);
-  const selected = notifiedSeverities ?? new Set<string>();
-  const matched = found
-    .filter((s) => selected.has(s))
-    .sort((a, b) => severityRank(a) - severityRank(b));
-  if (!matched.length) return "";
-  const labels = Array.from(new Set(matched)).map((s) => severityLabel(s));
-  return labels.join("/");
+  if (!notificationPrefs) await loadNotificationPreferences();
+  const prefs = notificationPrefs ?? {
+    severities: ["CRITICAL", "HIGH", "MEDIUM"],
+    taskCompleteNotifications: true,
+    workflowSkipNotifications: true,
+  };
+  await notifyTaskCompletionOnce(
+    {
+      id: row.id,
+      status: row.status,
+      resultJson: row.resultJson,
+      errorMessage: row.errorMessage,
+    },
+    prefs,
+  );
 }
 
 function applyTaskEvent(event: TaskProgressEvent) {
@@ -396,18 +335,12 @@ function applyTaskEvent(event: TaskProgressEvent) {
     void load();
     return;
   }
-  const terminal = new Set([
-    "SUCCESS",
-    "FAILED",
-    "TIMEOUT",
-    "REJECTED",
-    "CANCELLED",
-  ]);
+  const wasTerminal = isTerminalTaskStatus(row.status);
   // Never resurrect a finished/cancelled task with a stale RUNNING progress frame.
   if (
-    terminal.has(row.status) &&
+    wasTerminal &&
     event.status &&
-    !terminal.has(String(event.status))
+    !isTerminalTaskStatus(String(event.status))
   ) {
     if (event.logLine && detail.value?.id === row.id) {
       const timestamp = formatDateTime(
@@ -420,10 +353,7 @@ function applyTaskEvent(event: TaskProgressEvent) {
   const nextStatus = event.status || row.status;
   const patch = {
     status: nextStatus,
-    progress:
-      terminal.has(String(nextStatus)) && nextStatus !== "SUCCESS"
-        ? (event.progress ?? row.progress)
-        : (event.progress ?? row.progress),
+    progress: event.progress ?? row.progress,
     progressDeterminate: event.progressDeterminate ?? row.progressDeterminate,
     progressCompleted: event.progressCompleted ?? row.progressCompleted,
     progressTotal: event.progressTotal ?? row.progressTotal,
@@ -448,22 +378,18 @@ function applyTaskEvent(event: TaskProgressEvent) {
     }
   }
   taskbarProgress.syncTasks(rows.value);
+  if (!wasTerminal && isTerminalTaskStatus(nextStatus) && detailVisible.value && detail.value?.id === row.id)
+    void detailLoader.load(row.id, true);
   void notifyTaskCompletion(row);
 }
 
 async function load() {
   const result = await safeGet<ProjectTaskRecord[]>(endpoints.tasks, []);
-  const terminal = new Set([
-    "SUCCESS",
-    "FAILED",
-    "TIMEOUT",
-    "REJECTED",
-    "CANCELLED",
-  ]);
   const previous = new Map<number, string>();
   for (const row of rows.value) previous.set(row.id, row.status);
+  const previousRows = new Map(rows.value.map(row => [row.id, row]));
   rows.value = Array.isArray(result.data)
-    ? result.data.map((task) => ({
+    ? result.data.map((task) => mergeTaskDetailSnapshot(previousRows.get(task.id), {
         ...task,
         progress: task.progress ?? (task.status === "SUCCESS" ? 100 : 0),
       }))
@@ -471,10 +397,10 @@ async function load() {
   taskbarProgress.syncTasks(rows.value);
   const firstLoad = previous.size === 0;
   for (const row of rows.value) {
-    if (terminal.has(row.status)) {
+    if (isTerminalTaskStatus(row.status)) {
       if (firstLoad) {
         notifiedTasks.add(row.id);
-      } else if (!terminal.has(previous.get(row.id) || "")) {
+      } else if (!isTerminalTaskStatus(previous.get(row.id))) {
         void notifyTaskCompletion(row);
       }
     }
@@ -483,7 +409,7 @@ async function load() {
     const refreshed = rows.value.find((row) => row.id === detail.value?.id);
     if (refreshed) {
       const previousLog = detail.value.executionLog;
-      detail.value = refreshed;
+      detail.value = mergeTaskDetailSnapshot(detail.value, refreshed);
       if (refreshed.executionLog !== previousLog) {
         await nextTick();
         if (logOutput.value)
@@ -914,7 +840,7 @@ function scheduleTargetName(targetId: number) {
 function scheduleToolLabel(toolCode: string) {
   return (
     SCHEDULE_TOOL_OPTIONS.find((item) => item.value === toolCode)?.label ||
-    toolCode
+    aiToolLabel(toolCode)
   );
 }
 
@@ -1204,10 +1130,11 @@ function resultSeverityType(severity?: string) {
 }
 
 function showDetail(row: TaskRow) {
-  detail.value = row;
+  detail.value = { ...row };
   detailResultView.value = "friendly";
   detailRequestView.value = "friendly";
   detailVisible.value = true;
+  void detailLoader.load(row.id);
   void nextTick(() => {
     if (logOutput.value)
       logOutput.value.scrollTop = logOutput.value.scrollHeight;
@@ -1297,7 +1224,20 @@ function statusLabel(status?: string) {
     STOPPED: "已停止",
     PARTIAL_FAILED: "部分失败",
   };
-  return (status && labels[status]) || status || "未知";
+  return (status && labels[status]) || "未知状态";
+}
+
+function terminationLabel(reason?: string) {
+  if (!reason) return "未终止";
+  const labels: Record<string, string> = {
+    TIMEOUT: "执行超时", FAILED: "执行失败", AUTHORIZATION_CHANGED: "授权发生变化",
+    USER_CANCELLED: "用户取消", USER_CANCELED: "用户取消", CANCELLED: "已取消",
+    ZOMBIE_REAPED: "执行进程失联", PREREQUISITE_FAILED: "前置任务失败",
+    UNAVAILABLE_TOOL: "工具不可用", WORKFLOW_STOPPED: "工作流已停止",
+    AUTH_CHANGED: "授权变更", REJECTED: "已拒绝",
+    MISSING_DEPENDENCY: "前置任务不存在", PREREQUISITE_NOT_COMPLETED: "前置任务未成功完成",
+  };
+  return labels[reason] || statusLabel(reason);
 }
 
 function askCopilot(row: TaskRow) {
@@ -1308,7 +1248,7 @@ function askCopilot(row: TaskRow) {
         type: "task",
         id: row.id,
         targetId: row.targetId,
-        title: `任务 #${row.id} · ${row.toolCode}`,
+        title: `任务 #${row.id} · ${aiToolLabel(row.toolCode)}`,
       },
     ],
     mode: "analyze",
@@ -1328,6 +1268,7 @@ onMounted(() => {
   timer = window.setInterval(load, 10_000);
 });
 onUnmounted(() => {
+  detailLoader.invalidate();
   if (timer) window.clearInterval(timer);
   stopTaskFeed?.();
 });
@@ -1474,7 +1415,9 @@ onUnmounted(() => {
     />
     <el-table v-else :data="pagedRows">
       <el-table-column prop="id" label="ID" width="55" />
-      <el-table-column prop="toolCode" label="工具" min-width="110" show-overflow-tooltip />
+      <el-table-column prop="toolCode" label="工具" min-width="170" show-overflow-tooltip>
+        <template #default="scope">{{ aiToolLabel(scope.row.toolCode) }}</template>
+      </el-table-column>
       <el-table-column prop="targetId" label="目标" width="65" />
       <el-table-column label="状态" width="85"
         ><template #default="scope"
@@ -1502,42 +1445,48 @@ onUnmounted(() => {
           formatDateTime(scope.row.createdAt)
         }}</template></el-table-column
       >
-      <el-table-column label="操作" min-width="300"
+      <el-table-column label="操作" min-width="250"
         ><template #default="scope"
-          ><div class="task-row-actions">
+          ><div class="row-actions row-actions--pair">
             <el-button
-              class="task-action"
+              class="row-action"
               size="small"
               :icon="View"
               @click="showDetail(scope.row)"
               >详情</el-button
             ><el-button
-              class="task-action task-action--ai"
+              class="row-action row-action--ai"
               size="small"
               :icon="MagicStick"
               @click="askCopilot(scope.row)"
               >AI 分析</el-button
             ><el-button
               v-if="['PENDING', 'RUNNING'].includes(scope.row.status)"
-              class="task-action task-action--danger"
+              class="row-action row-action--danger"
               size="small"
+              :icon="Dismiss"
               :loading="cancelling === scope.row.id"
               @click="cancelTask(scope.row)"
               >取消</el-button
             ><el-button
-              v-if="
-                ['FAILED', 'TIMEOUT', 'REJECTED', 'CANCELLED'].includes(
-                  scope.row.status,
-                )
-              "
-              class="task-action task-action--danger"
+              v-else
+              class="row-action"
+              :class="{
+                'row-action--danger': [
+                  'FAILED',
+                  'TIMEOUT',
+                  'REJECTED',
+                  'CANCELLED',
+                ].includes(scope.row.status),
+              }"
               size="small"
+              :icon="Refresh"
               :loading="retrying === scope.row.id"
-              :disabled="Boolean(retrying)"
+              :disabled="Boolean(retrying) || scope.row.status === 'SUCCESS'"
               @click="retryTask(scope.row)"
               >重试</el-button
             ><el-button
-              class="task-action"
+              class="row-action"
               size="small"
               :icon="Document"
               :disabled="scope.row.status !== 'SUCCESS'"
@@ -1929,6 +1878,10 @@ onUnmounted(() => {
     class="app-dialog app-dialog--lg"
     align-center
   >
+    <div v-if="detailLoading || detailLoadError" class="task-detail-sync" :class="{ failed: detailLoadError }" :aria-busy="detailLoading">
+      <span v-if="detailLoading" role="status">正在读取最新任务详情与执行结果…</span>
+      <span v-else role="alert">详情更新失败，已保留当前信息：{{ detailLoadError }}</span>
+    </div>
     <el-descriptions v-if="detail" :column="2" border>
       <el-descriptions-item label="任务 ID">{{
         detail.id
@@ -1937,10 +1890,10 @@ onUnmounted(() => {
         detail.targetId
       }}</el-descriptions-item>
       <el-descriptions-item label="工具">{{
-        detail.toolCode
+        aiToolLabel(detail.toolCode)
       }}</el-descriptions-item
       ><el-descriptions-item label="状态">{{
-        detail.status
+        statusLabel(detail.status)
       }}</el-descriptions-item>
       <el-descriptions-item label="实时进度" :span="2"
         ><div class="live-task-progress detail-progress">
@@ -1979,7 +1932,8 @@ onUnmounted(() => {
             >
           </div>
 
-          <p v-if="!detail.resultJson" class="task-result-empty">尚无结果</p>
+          <p v-if="detailLoading && !detail.resultJson" class="task-result-empty" role="status">正在读取最新执行结果…</p>
+          <p v-else-if="!detail.resultJson" class="task-result-empty">{{ detailLoadError ? '尚未取得最新结果，请重试刷新详情。' : taskDetailEmptyResultText(detail) }}</p>
 
           <template v-else-if="detailResultView === 'friendly'">
             <template v-if="parsedDetailResult">
@@ -2016,7 +1970,8 @@ onUnmounted(() => {
                     >{{ severityLabel(match.severity) }}</el-tag
                   >
                   <div class="task-result-match-body">
-                    <strong>{{ match.name }}</strong>
+                    <strong>{{ findingTitleLabel(match.name, detail.toolCode) }}</strong>
+                    <span v-if="findingTitleLabel(match.name, detail.toolCode) !== match.name">原始名称：{{ match.name }}</span>
                     <span v-if="match.cwe" class="task-result-match-cwe">{{
                       match.cwe
                     }}</span>
@@ -2056,7 +2011,7 @@ onUnmounted(() => {
         </div>
       </el-descriptions-item>
       <el-descriptions-item label="终止原因">{{
-        detail.terminationReason || "未终止"
+        terminationLabel(detail.terminationReason)
       }}</el-descriptions-item
       ><el-descriptions-item label="超时时间">{{
         detail.timeoutAt ? formatDateTime(detail.timeoutAt) : "无"
@@ -2160,6 +2115,7 @@ onUnmounted(() => {
       </el-descriptions-item>
     </el-descriptions>
     <template #footer>
+      <el-button :loading="detailLoading" :disabled="!detail" @click="detail && detailLoader.load(detail.id)">{{ detailLoadError ? '重试加载' : '刷新详情' }}</el-button>
       <el-button @click="detailVisible = false">关闭</el-button>
     </template>
   </el-dialog>
@@ -2417,6 +2373,19 @@ onUnmounted(() => {
 .detail-progress {
   width: 100%;
   grid-template-columns: minmax(160px, 1fr) minmax(110px, auto);
+}
+.task-detail-sync {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--app-accent-soft);
+  color: var(--app-text);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.task-detail-sync.failed {
+  background: var(--el-color-danger-light-9);
+  color: var(--el-color-danger);
 }
 .schedule-count {
   display: inline-grid;
@@ -2849,65 +2818,6 @@ onUnmounted(() => {
 }
 .snapshot-hash {
   word-break: break-all;
-}
-/* Row actions mirror the Results Center (.finding-row-actions) so the same
-   task/finding verbs read identically across the two tables. */
-.task-row-actions {
-  display: grid;
-  width: 100%;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  align-items: center;
-  gap: 6px;
-  box-sizing: border-box;
-}
-.task-row-actions :deep(.el-button),
-.task-row-actions :deep(.el-button + .el-button),
-.task-row-actions :deep(.task-action) {
-  width: 100% !important;
-  height: 28px;
-  margin: 0 !important;
-  padding: 0 4px !important;
-  box-sizing: border-box;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  border-color: var(--app-border-strong);
-  background: var(--app-surface-strong);
-  color: var(--app-text);
-  font-size: 12px;
-  font-weight: 600;
-}
-.task-row-actions :deep(.el-button > span) {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  white-space: nowrap;
-}
-.task-row-actions :deep(.task-action:hover),
-.task-row-actions :deep(.task-action:focus-visible) {
-  border-color: var(--app-accent);
-  background: var(--app-accent-soft);
-  color: var(--app-text);
-}
-.task-row-actions :deep(.task-action--ai) {
-  border-color: var(--app-accent);
-  background: var(--app-accent-soft);
-  color: var(--app-text);
-}
-.task-row-actions :deep(.task-action--danger) {
-  border-color: color-mix(in srgb, #b42318 58%, var(--app-border));
-  color: light-dark(#8f1d17, #ffb4ab);
-}
-.task-row-actions :deep(.task-action--danger:hover),
-.task-row-actions :deep(.task-action--danger:focus-visible) {
-  border-color: #b42318;
-  background: color-mix(in srgb, #b42318 12%, var(--app-surface-strong));
-  color: light-dark(#7a1712, #ffd2cc);
-}
-.task-row-actions :deep(.el-button .el-icon) {
-  font-size: 12px;
 }
 .disabled-target {
   float: right;

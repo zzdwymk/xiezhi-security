@@ -74,6 +74,14 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
     return detect(false);
   }
 
+  /** Fresh execution snapshot for one tool; unrelated cold-start probes must not delay dispatch. */
+  public Optional<DependencyStatus> detectCurrent(String name) {
+    return dependencyDescriptors().stream()
+        .filter(descriptor -> descriptor.name().equalsIgnoreCase(name))
+        .findFirst()
+        .map(this::detectSafely);
+  }
+
   public synchronized SystemDependenciesResponse detect(boolean forceRefresh) {
     if (!forceRefresh) {
       SystemDependenciesResponse cachedResponse = findCachedResponse(System.nanoTime());
@@ -98,6 +106,22 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
       Consumer<List<DependencyStatus>> onManifest,
       Consumer<DependencyStatus> onEach,
       Consumer<List<DependencyStatus>> onComplete) {
+    detectStreaming(false, onManifest, onEach, onComplete);
+  }
+
+  public void detectStreaming(
+      boolean forceRefresh,
+      Consumer<List<DependencyStatus>> onManifest,
+      Consumer<DependencyStatus> onEach,
+      Consumer<List<DependencyStatus>> onComplete) {
+    SystemDependenciesResponse cached = forceRefresh ? null : findCachedResponse(System.nanoTime());
+    if (cached != null) {
+      // 检测页、工作流和执行预检共用有效期内的真实结果；明确刷新或过期才重新探测。
+      onManifest.accept(manifests(dependencyDescriptors()));
+      cached.dependencies().forEach(onEach);
+      onComplete.accept(cached.dependencies());
+      return;
+    }
     List<DependencyDescriptor> descriptors = dependencyDescriptors();
     // 先回传“清单”：列出将在检测的每项依赖（无状态/哈希），让前端逐项预置为“检测中”占位。
     onManifest.accept(manifests(descriptors));

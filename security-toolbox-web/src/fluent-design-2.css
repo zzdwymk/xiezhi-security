@@ -2250,8 +2250,19 @@ html
   right: 7px;
   width: 24px;
   height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  line-height: 1;
   border-radius: var(--fluent-radius-control);
   transform: translateY(-50%);
+}
+
+.desktop-v2-app-frame .desktop-v2-recent-delete > .el-icon {
+  margin: 0;
+  width: 16px;
+  height: 16px;
+  line-height: 1;
 }
 
 .desktop-v2-app-frame .desktop-v2-recent-item:hover .desktop-v2-recent-delete,

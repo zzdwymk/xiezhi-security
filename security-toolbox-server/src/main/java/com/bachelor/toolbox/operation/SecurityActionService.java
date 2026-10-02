@@ -333,7 +333,9 @@ public class SecurityActionService {
   }
 
   private boolean isSingleAdminMode() {
-    return users.count() <= 1;
+    // Only an enabled administrator can approve through the security-actions API.
+    // Disabled service accounts and ordinary users cannot provide a second reviewer.
+    return users.countByRoleAndEnabledTrue("ADMIN") == 1;
   }
 
   private boolean isAdministrator(Authentication authentication) {
