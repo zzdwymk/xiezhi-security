@@ -863,11 +863,12 @@ class AgentOrchestratorTests {
 
   @org.junit.jupiter.params.ParameterizedTest
   @org.junit.jupiter.params.provider.ValueSource(strings = {
+      "已创建审批申请，等待管理员批准后执行。",
       "已生成高风险行动申请，等待管理员审批。建议仅对18888端口进行安全模式检查。",
       "建议仅对18888端口进行安全模式检查。需要审批后才能执行。",
       "历史审批已申请成功。本轮未申请。\n```text\napprovalId=52\n```"
   })
-  void planOnlyKeepsModelExplanationButLeadsWithActualUnsubmittedState(String answer) throws Exception {
+  void planOnlyPreservesStructuredPlanWithoutRepeatingUnverifiedActionClaims(String answer) throws Exception {
     var memory = new AiConversationMemoryService(20, 20, 120);
     var tools = mock(SecurityAgentTools.class);
     var runtime = mock(AiAgentRuntimeClient.class);
@@ -894,8 +895,9 @@ class AgentOrchestratorTests {
 
     var response = orchestrator.run(request, events::add);
 
-    assertThat(response.message()).startsWith("本轮实际状态：仅生成方案，未提交审批申请，未创建检测任务。")
-        .contains("以上述服务端状态为准").endsWith(answer);
+    assertThat(response.message()).startsWith("本轮实际状态：仅生成方案，尚未提交审批申请，未创建检测任务。")
+        .doesNotContain(answer);
+    assertThat(response.plan()).isEqualTo(plan);
     assertThat(response.approvalId()).isNull();
     assertThat(response.executed()).isFalse();
     assertThat(response.taskIds()).isEmpty();

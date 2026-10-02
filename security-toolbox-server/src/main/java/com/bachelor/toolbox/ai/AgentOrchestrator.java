@@ -402,33 +402,7 @@ public class AgentOrchestrator {
             provenance.markProtocolRejected();
             RuntimeProtocolDiagnostics.Failure failure = RuntimeProtocolDiagnostics.classify(ex);
             log.warn("AI_RUNTIME_PROTOCOL_REJECTED stage={} code={}", failure.stage(), failure.code());
-            String runtimeMessage = ex.getMessage();
-            if (runtimeMessage != null && runtimeMessage.contains("TURN_TIMEOUT")) {
-              throw new ApiException(
-                  "模型在规定时间内没有完成回答，本轮已停止，未执行任何检测，请检查模型连接后重试");
-            }
-            if (runtimeMessage != null && runtimeMessage.contains("MODEL_ACCESS_DENIED")) {
-              throw new ApiException(
-                  "模型服务拒绝了这次请求，本轮已停止，未执行任何检测。请检查代理权限、模型权限，或改用兼容的模型服务后重试");
-            }
-            if (runtimeMessage != null && runtimeMessage.contains("MODEL_RATE_LIMITED")) {
-              throw new ApiException(
-                  "模型服务当前请求过多，本轮已停止，未执行任何检测。请稍后重试");
-            }
-            if (runtimeMessage != null && runtimeMessage.contains("MODEL_TIMEOUT")) {
-              throw new ApiException(
-                  "模型服务连接超时，本轮已停止，未执行任何检测。请检查服务状态后重试");
-            }
-            if (runtimeMessage != null && runtimeMessage.contains("MODEL_SERVICE_UNAVAILABLE")) {
-              throw new ApiException(
-                  "模型服务暂时不可用，本轮已停止，未执行任何检测。请检查服务状态后重试");
-            }
-            if (runtimeMessage != null && runtimeMessage.contains("MODEL_REQUEST_FAILED")) {
-              throw new ApiException(
-                  "模型服务请求失败，本轮已停止，未执行任何检测。请检查模型地址和连接后重试");
-            }
-            throw new ApiException(
-                "AI Runtime 返回内容未通过 Harness 协议校验：智能服务返回内容格式不完整，本轮已安全停止，请检查模型连接后重试");
+            throw new ApiException(RuntimeProtocolDiagnostics.userMessage(failure));
           } catch (AiAgentRuntimeClient.RuntimeUnavailableException ex) {
             provenance.markFallback("RUNTIME_UNAVAILABLE");
             if (request.executionRequested()) {
@@ -871,10 +845,10 @@ public class AgentOrchestrator {
     }
     if ("PLAN_ONLY".equals(decision.status()) && hasSteps(decision.normalizedPlan())) {
       // The model produced this prose before the guard and approval persistence ran.
-      // Preserve its useful plan, but make server-owned action state authoritative.
-      return "本轮实际状态：仅生成方案，未提交审批申请，未创建检测任务。"
-          + "下文如有已申请或已执行的表述，不代表本轮实际操作，应以上述服务端状态为准。"
-          + "\n\n方案说明：\n\n" + summary;
+      // Keep the structured plan on the response, without repeating unverified claims
+      // about side effects in the message, event stream, or conversation memory.
+      return "本轮实际状态：仅生成方案，尚未提交审批申请，未创建检测任务。"
+          + "请查看本轮方案；确认执行后，系统才会按授权规则提交审批或创建任务。";
     }
     if ("REQUIRED".equals(decision.approvalStatus())) {
       return summary + "\n\n计划已经授权守卫复核，确认执行后才会创建任务。";
