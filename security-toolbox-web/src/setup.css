@@ -593,6 +593,9 @@ body:has(.setup-page) {
   }
 }
 @media (max-width: 900px) {
+  body:has(.setup-page) {
+    --desktop-sidebar-width: 0px;
+  }
   .setup-shell {
     grid-template-columns: 1fr;
   }

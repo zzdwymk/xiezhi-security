@@ -1432,12 +1432,9 @@ body:has(.desktop-v2-native-frame) .el-message {
   margin-top: 38px;
 }
 
-/* Public pages retain their edge-to-edge layout. */
-body:has(.login-page, .setup-page) {
+/* The centered login card has no inset workspace. */
+body:has(.login-page) {
   --desktop-workspace-gap: 0px;
-}
-body:has(.setup-page) :is(.el-overlay.is-message-box, .el-overlay.is-drawer, .el-overlay:has(> .el-drawer), .el-overlay:has(> .el-overlay-dialog)) {
-  border-radius: var(--fluent-workspace-radius) 0 0 0;
 }
 
 /* Login (and other full-bleed public pages) have no sidebar, so the dialog
@@ -2894,7 +2891,9 @@ html .desktop-v2-native-frame .vuln-workbench {
 .setup-content {
   position: relative;
   overflow: hidden;
-  border-top-left-radius: var(--fluent-workspace-radius);
+  margin: 0 var(--desktop-workspace-gap) var(--desktop-workspace-gap) 0;
+  border: 1px solid var(--app-border);
+  border-radius: var(--fluent-workspace-radius);
   background: var(--app-workspace-surface);
   background-clip: border-box;
   contain: paint;
@@ -3363,9 +3362,8 @@ html .desktop-v2-native-frame .vuln-workbench {
 /* Dependency setup page: one geometry, three material surfaces. */
 .desktop-v2-native-frame > .setup-page > .setup-shell > .setup-content {
   overflow: hidden;
-  border-top: 1px solid var(--app-border);
-  border-left: 1px solid var(--app-border);
-  border-top-left-radius: var(--fluent-workspace-radius);
+  border: 1px solid var(--app-border);
+  border-radius: var(--fluent-workspace-radius);
   background-clip: border-box;
   contain: paint;
 }
