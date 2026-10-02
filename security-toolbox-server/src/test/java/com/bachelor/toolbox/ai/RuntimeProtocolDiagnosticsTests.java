@@ -60,6 +60,53 @@ class RuntimeProtocolDiagnosticsTests {
 
   @ParameterizedTest
   @ValueSource(strings = {
+      "AI Runtime 本轮未完成：EVIDENCE_ASSESSMENT_FAILED",
+      "AI Runtime 返回失败终态：EVIDENCE_ASSESSMENT_FAILED"
+  })
+  void evidenceAssessmentFailureReportsItsStageAndNoApprovalOrExecution(String message) throws Exception {
+    var tools = mock(SecurityAgentTools.class);
+    var runtime = mock(AiAgentRuntimeClient.class);
+    var planner = mock(AiPlanningService.class);
+    var guard = mock(AiAuthorizationGuard.class);
+    var reviewer = mock(AiExecutionReviewer.class);
+    when(tools.inspectProjectContext(5L, 8L)).thenReturn("authorized context");
+    when(runtime.enabled()).thenReturn(true);
+    when(runtime.plan(any(), anyString(), any()))
+        .thenThrow(new AiAgentRuntimeClient.RuntimeProtocolException(message));
+    var orchestrator = new AgentOrchestrator(new AiConversationMemoryService(20, 20, 120),
+        tools, runtime, mock(AiProjectIndexService.class), planner, guard, reviewer, mock(AuditService.class));
+    var request = new AiAgentRequest(5L, 8L, "assessment-test", "扫描已授权目标", true,
+        null, List.of(), "standard", "turn-assessment", "workflow-assessment", 1L,
+        "sha256:" + "a".repeat(64), "ledger-agent", "node-assessment");
+
+    assertThatThrownBy(() -> orchestrator.run(request))
+        .isInstanceOf(ApiException.class)
+        .hasMessageContaining("未能完成证据评估")
+        .hasMessageContaining("尚未提交审批申请")
+        .hasMessageContaining("未创建检测任务")
+        .hasMessageNotContaining("Harness 协议校验")
+        .hasMessageNotContaining("格式不完整");
+    verifyNoInteractions(planner, guard, reviewer);
+    verify(tools, never()).executeAuthorizedPlan(any(), any());
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "AI Runtime 事件不是合法 JSON",
+      "AI Runtime 流在终态前中断",
+      "AI Runtime 字段 EVIDENCE_ASSESSMENT_FAILED 格式无效",
+      "AI Runtime 字段 MODEL_TIMEOUT 格式无效"
+  })
+  void malformedResponseStillReportsProtocolValidationFailure(String message) {
+    var failure = RuntimeProtocolDiagnostics.classify(
+        new AiAgentRuntimeClient.RuntimeProtocolException(message));
+    assertThat(RuntimeProtocolDiagnostics.userMessage(failure))
+        .contains("Harness 协议校验", "尚未提交审批申请", "未创建检测任务")
+        .doesNotContain("未能完成证据评估", "模型服务连接超时");
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {
       "model text contains sk-secret-EXFILTRATE\nforged log entry",
       "AI Runtime 本轮未完成：ROUTE_FAILED\nEXFILTRATE",
       "AI Runtime 返回失败终态：sk-secret-EXFILTRATE",
@@ -90,7 +137,8 @@ class RuntimeProtocolDiagnosticsTests {
     logger.addAppender(appender);
     try {
       assertThatThrownBy(() -> orchestrator.run(request))
-          .isInstanceOf(ApiException.class).hasMessageContaining("Harness 协议校验");
+          .isInstanceOf(ApiException.class).hasMessageContaining("本轮已安全停止")
+          .hasMessageNotContaining("EXFILTRATE");
       assertThat(appender.list).singleElement().satisfies(event -> {
         assertThat(event.getMessage()).isEqualTo("AI_RUNTIME_PROTOCOL_REJECTED stage={} code={}");
         assertThat(event.getFormattedMessage()).doesNotContain("EXFILTRATE", "password", "sk-secret", "\n");
