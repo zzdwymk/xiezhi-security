@@ -93,12 +93,14 @@ def _prompt_kind(messages: list[dict[str, Any]]) -> str:
         for message in messages
         if message.get("role") == "system"
     )
-    lowered = system_text.lower()
-    if "grounded planner" in lowered:
+    # Identify the declared role, not downstream stages mentioned in its policy.
+    # The evidence assessor also discusses the grounded planner in its prompt.
+    role = system_text.strip().splitlines()[0] if system_text.strip() else ""
+    if role.startswith("你是授权安全测试平台的 grounded planner。"):
         return "grounded"
-    if "证据充分性检查器" in system_text:
+    if role.startswith("你是证据充分性检查器。"):
         return "evidence"
-    if "意图路由器" in system_text:
+    if role.startswith("你是授权安全测试平台的意图路由器。"):
         return "intent"
     return "legacy"
 

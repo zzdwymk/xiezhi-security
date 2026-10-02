@@ -5,6 +5,10 @@ import json
 import pytest
 
 from app.model import (
+    EVIDENCE_SYSTEM_PROMPT,
+    GROUNDED_SYSTEM_PROMPT,
+    INTENT_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
     PlannerOutputError,
     parse_evidence_decision,
     parse_grounded_planner_output,
@@ -15,10 +19,10 @@ from mock_openai_server import PLAN, _extract_evidence_bundle, _select_response
 
 def _messages(kind: str, request: str, *, round_number: int = 0, items=None):
     systems = {
-        "intent": "你是授权安全测试平台的意图路由器。",
-        "evidence": "你是证据充分性检查器。",
-        "grounded": "你是授权安全测试平台的 grounded planner。",
-        "legacy": "你是旧版规划器。",
+        "intent": INTENT_SYSTEM_PROMPT.format(),
+        "evidence": EVIDENCE_SYSTEM_PROMPT.format(),
+        "grounded": GROUNDED_SYSTEM_PROMPT.format(),
+        "legacy": SYSTEM_PROMPT.format(),
     }
     messages = [{"role": "system", "content": systems[kind]}]
     if kind == "intent":
