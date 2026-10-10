@@ -54,6 +54,10 @@ _WORKFLOW_BLOCK = re.compile(
     r"BEGIN_SERVER_WORKFLOW_CAPABILITIES\s*\r?\n(?P<payload>.*?)\r?\nEND_SERVER_WORKFLOW_CAPABILITIES",
     re.DOTALL,
 )
+_SERVER_OUTPUT_CONTRACT_BLOCK = re.compile(
+    r"BEGIN_SERVER_OUTPUT_CONTRACT\s*\r?\n.*?\r?\nEND_SERVER_OUTPUT_CONTRACT",
+    re.DOTALL,
+)
 _REWRITE_ONCE_MARKERS = (
     "MOCK_REWRITE_ONCE",
     "MOCK_EVIDENCE_REWRITE",
@@ -141,9 +145,22 @@ def _contains_marker(text: str, markers: tuple[str, ...]) -> bool:
     return any(marker in upper for marker in markers)
 
 
+def _without_server_output_contract(text: str) -> str:
+    """Drop the server-owned output contract from classification input.
+
+    The contract is trusted server text that legitimately enumerates every legal
+    value of the stage it constrains. For the intent stage that list contains all
+    four intent names, so matching them as though they were the user's request
+    would route every single turn to PROJECT_QA and produce an empty plan.
+    Only the markers are removed here; the surrounding request text is untouched.
+    """
+    return _SERVER_OUTPUT_CONTRACT_BLOCK.sub("[SERVER_OUTPUT_CONTRACT_REMOVED]", text)
+
+
 def _current_request(text: str) -> str:
+    cleaned = _without_server_output_contract(text)
     marker = "请路由下列对话："
-    request = text.rsplit(marker, 1)[-1].strip() if marker in text else text.strip()
+    request = cleaned.rsplit(marker, 1)[-1].strip() if marker in cleaned else cleaned.strip()
     return request[:2000] or "用户请求"
 
 

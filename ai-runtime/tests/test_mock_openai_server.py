@@ -7,6 +7,7 @@ import pytest
 from app.model import (
     EVIDENCE_SYSTEM_PROMPT,
     GROUNDED_SYSTEM_PROMPT,
+    INTENT_HUMAN_PROMPT,
     INTENT_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
     PlannerOutputError,
@@ -14,6 +15,7 @@ from app.model import (
     parse_grounded_planner_output,
     parse_intent_decision,
 )
+from app.schemas import IntentDecision
 from mock_openai_server import PLAN, _extract_evidence_bundle, _select_response
 
 
@@ -88,6 +90,118 @@ def test_intent_routes_action_and_project_qa_through_retrieval():
     assert project_qa["intent"] == "PROJECT_QA"
     assert project_qa["needsRetrieval"] is True
     assert project_qa["publicReasonCode"] == "PROJECT_CONTEXT_REQUIRED"
+
+
+def _server_output_contract() -> str:
+    """Reproduce the contract block the runtime appends to every stage prompt."""
+    schema = IntentDecision.model_json_schema()
+    payload = {
+        "contract": "IntentDecision",
+        "expectedSchema": schema,
+        "requiredTopLevelFields": schema.get("required", []),
+        "requiredIntentValues": schema["properties"]["intent"]["enum"],
+    }
+    return (
+        "本次回复必须是一个完整的 JSON 对象，直接以 { 开始、以 } 结束。\n"
+        "BEGIN_SERVER_OUTPUT_CONTRACT\n"
+        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        + "\nEND_SERVER_OUTPUT_CONTRACT"
+    )
+
+
+def _deployed_intent_messages(request: str):
+    """The exact message shape the runtime sends: request + server contract.
+
+    The contract enumerates all four intent names, so a classifier that scans the
+    whole prompt for "PROJECT_QA" would route every turn to PROJECT_QA and yield an
+    empty plan. Regression guard for the deployed prompt shape.
+    """
+    return [
+        {"role": "system", "content": INTENT_SYSTEM_PROMPT.format()},
+        {
+            "role": "user",
+            "content": (
+                INTENT_HUMAN_PROMPT.format(
+                    project_id=71,
+                    target_id=91,
+                    auth_status="ACTIVE",
+                    message=request,
+                )
+                + f"\n\n{_server_output_contract()}"
+            ),
+        },
+    ]
+
+
+def test_intent_ignores_enum_names_declared_in_server_output_contract():
+    contract = _server_output_contract()
+    for name in ("GENERAL_QA", "PROJECT_QA", "ACTION_PLAN", "CLARIFY"):
+        assert name in contract, "contract must enumerate every intent name"
+
+    action = _select_response(_deployed_intent_messages("请扫描端口和服务"))
+    assert action["intent"] == "ACTION_PLAN"
+    assert action["needsRetrieval"] is True
+    assert action["publicReasonCode"] == "AUTHORIZED_ACTION_REQUEST"
+
+    project_qa = _select_response(
+        _deployed_intent_messages("MOCK_PROJECT_QA 项目有哪些授权端口")
+    )
+    assert project_qa["intent"] == "PROJECT_QA"
+
+    general_qa = _select_response(
+        _deployed_intent_messages("MOCK_GENERAL_QA 什么是 TLS")
+    )
+    assert general_qa["intent"] == "GENERAL_QA"
+
+
+def test_deployed_intent_prompt_drives_grounded_plan_with_actions():
+    """End-to-end of the two-stage mock: routing must yield a non-empty plan."""
+    route = _select_response(_deployed_intent_messages("请扫描端口和服务"))
+    assert route["intent"] == "ACTION_PLAN"
+
+    bundle = {
+        "projectId": 71,
+        "targetId": 91,
+        "conversationId": None,
+        "query": "请扫描端口和服务",
+        "round": 0,
+        "retrievalMethod": "bm25",
+        "indexRevision": "sha256:" + "f" * 64,
+        "items": [_evidence("ev-real")],
+    }
+    evidence = json.dumps(bundle, ensure_ascii=False, separators=(",", ":"))
+    grounded_messages = [
+        {"role": "system", "content": GROUNDED_SYSTEM_PROMPT.format()},
+        {
+            "role": "user",
+            "content": (
+                f'路由决定：{json.dumps(route, ensure_ascii=False)}\n'
+                "BEGIN_SERVER_WORKFLOW_CAPABILITIES\n"
+                + json.dumps(
+                    {
+                        "nodes": [
+                            {
+                                "nodeId": "nmap-service-scan",
+                                "tool": "nmap_service_scan",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+                + "\nEND_SERVER_WORKFLOW_CAPABILITIES\n\n"
+                f"{_server_output_contract()}\n\n"
+                f"BEGIN_UNTRUSTED_EVIDENCE\n{evidence}\nEND_UNTRUSTED_EVIDENCE"
+            ),
+        },
+    ]
+
+    response = _select_response(grounded_messages)
+
+    assert response["intent"] == "plan"
+    assert response["actions"], "an ACTION_PLAN route must propose at least one action"
+    assert response["actions"][0]["workflowNodeId"] == "nmap-service-scan"
+    assert response["evidenceRefs"] == ["ev-real"]
+
 
 
 def test_general_qa_skips_retrieval():

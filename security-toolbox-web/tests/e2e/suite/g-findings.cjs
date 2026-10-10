@@ -8,19 +8,20 @@
  * 用例顺序有意为之：「后续路径」必须在任何状态变更之前验证，
  * 因为状态变更会清空前端持有的 projectId（见 G-18 缺陷复现）。
  *
- * 本阶段校验的是针对靶机 192.168.136.131:8000（Python SimpleHTTP）
+ * 本阶段校验的是针对唯一授权靶机（lib/audit-target.cjs，ctx.targetIp:ctx.targetWebPort）
  * 实际扫描得到的真实漏洞记录。
  */
 const {
   sleep, navigate, pageTitle, dialog, dialogButton, selectOn,
   lastMessage, clearMessages, rowCount, confirmBoxIfPresent,
 } = require("../lib/ui.cjs");
+const { TARGET_IP } = require("../lib/audit-target.cjs");
 
 async function run(page, H, ctx) {
   H.phase("阶段 G — 漏洞安全发现");
 
   const scopedEntry = await H.run("G-01", "进入安全发现并限定本轮项目的132 Web目标", async () => {
-    if (ctx.targetIp !== "192.168.136.132" || !ctx.projectId || !ctx.webTargetId || !ctx.webTargetName) {
+    if (ctx.targetIp !== TARGET_IP || !ctx.projectId || !ctx.webTargetId || !ctx.webTargetName) {
       throw new Error("缺少本轮项目/Web目标ID，禁止对原数据库任意首行操作");
     }
     await navigate(page, "安全发现");
@@ -49,7 +50,7 @@ async function run(page, H, ctx) {
     if (!selected.includes(ctx.webTargetName)) throw new Error('筛选控件未显示本轮目标');
     ctx.findingsScope = { projectId: ctx.projectId, projectName: ctx.projectName, targetId: ctx.webTargetId, targetName: ctx.webTargetName };
     ctx.scopedFindingResponse = { totalElements: result.totalElements, findingIds: result.content.map(x => x.id) };
-    return { input: ctx.findingsScope, expected: '仅本轮项目/132 Web目标发现', actual: { title: t, selected, ...ctx.scopedFindingResponse } };
+    return { input: ctx.findingsScope, expected: '仅本轮项目/授权靶机 Web目标发现', actual: { title: t, selected, ...ctx.scopedFindingResponse } };
   }, { page });
   if (!scopedEntry?.ok) throw new Error('G-01目标隔离门禁未通过，安全发现阶段停止，未对任意首行操作');
 

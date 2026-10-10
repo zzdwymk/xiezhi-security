@@ -5,7 +5,7 @@
  *          → 查看任务详情（授权快照、工具版本、实时日志）
  *          → 下载任务报告 → 定时任务管理
  *
- * 本阶段验证真实执行结果：业务靶机仅 192.168.136.132。
+ * 本阶段验证真实执行结果：业务靶机仅 lib/audit-target.cjs 声明的唯一授权地址。
  *
  * 注意：任务列表的「目标」列显示的是目标 ID（非 IP），状态列为英文枚举
  *       （PENDING/RUNNING/SUCCESS/FAILED/TIMEOUT/CANCELLED/REJECTED/SKIPPED），
@@ -17,6 +17,7 @@ const {
 } = require("../lib/ui.cjs");
 
 const { captureReport } = require("../lib/report-response.cjs");
+const { TARGET_IP } = require("../lib/audit-target.cjs");
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -26,7 +27,7 @@ const scheduleHash = value => crypto.createHash('sha256').update(value).digest('
 const scheduleBlocked = message => Object.assign(new Error(message), { qaClassification: 'BLOCKED', code: 'QA_BLOCKED' });
 
 function validateScheduleFixtureProof(ctx, proof) {
-  assert.equal(ctx.targetIp, '192.168.136.132');
+  assert.equal(ctx.targetIp, TARGET_IP);
   if (ctx.fullRetestFixtureReady !== true || !ctx.fullRetestFixture || !ctx.fullScheduleFixtureProof)
     throw scheduleBlocked('F schedules require the completed fresh B/C fixture and immutable POST receipt proof');
   const fixture = ctx.fullRetestFixture;
@@ -45,7 +46,7 @@ function validateScheduleFixtureProof(ctx, proof) {
   assert.equal(new URL(target.request.url, 'http://localhost').pathname, '/api/targets');
   assert.equal(target.body.id, fixture.ipTargetId); assert.equal(target.request.body.projectId, fixture.projectId);
   assert.equal(String(target.body.targetType).toUpperCase(), 'IP');
-  assert.equal(target.body.targetValue, '192.168.136.132'); assert.equal(target.request.body.targetValue, '192.168.136.132');
+  assert.equal(target.body.targetValue, TARGET_IP); assert.equal(target.request.body.targetValue, TARGET_IP);
   assert(!proof.beforeTargetIds.map(Number).includes(Number(target.body.id)));
   assert.equal(membership.status, 200); assert.equal(membership.request.method, 'GET');
   assert.equal(new URL(membership.request.url, 'http://localhost').pathname, `/api/projects/${fixture.projectId}/targets`);
@@ -226,7 +227,7 @@ async function runSchedules(page, H, ctx) {
       assert.equal(Intl.DateTimeFormat().resolvedOptions().timeZone, zones.zone, 'Controller timezone must agree'); assert(Math.abs(zones.now - Date.now()) < 3000);
       page.on('request', onRequest); page.on('response', onResponse); page.on('requestfailed', onFailed); await page.route('**/api/scan-schedules**', guard); initialized = true;
       await navigate(page, '检测任务'); state.beforeSchedules = await refreshedSchedules(); persist('old-schedules-frozen');
-      const dlg = await ensureDialog(); return { originalSchedules: state.beforeSchedules, fixture: state.fixture, visible: await dlg.isVisible(), networkTarget: '192.168.136.132' };
+      const dlg = await ensureDialog(); return { originalSchedules: state.beforeSchedules, fixture: state.fixture, visible: await dlg.isVisible(), networkTarget: TARGET_IP };
     });
     await test('F-19', '定时任务表单四类控件可达且新夹具状态齐备', async () => {
       const dlg = await ensureDialog(), text = await dlg.innerText(); for (const label of ['安全评估项目','项目授权目标','检测工具','执行方式']) assert(text.includes(label)); return { text };
@@ -260,7 +261,7 @@ async function runSchedules(page, H, ctx) {
       const list = await refreshedSchedules(); for (const old of state.beforeSchedules) assert.deepEqual(list.find(r => r.id === old.id), old, 'Old schedule changed');
       const saved = list.find(r => r.id === state.ownedId); assert(saved); assert.equal(saved.projectId, state.fixture.projectId); assert.equal(saved.targetId, state.fixture.targetId); assert.equal(saved.cronExpression, state.expectedCron);
       const dlg = await ensureDialog(), row = await exactScheduleRow(page, dlg, state.ownedId, (label,data) => record('F-21-' + label + '-' + Date.now(),data));
-      const text = await row.innerText(); assert(text.includes(state.fixture.projectName) && text.includes('192.168.136.132') && text.includes('TCP 端口探测')); return { saved, visibleText: text };
+      const text = await row.innerText(); assert(text.includes(state.fixture.projectName) && text.includes(TARGET_IP) && text.includes('TCP 端口探测')); return { saved, visibleText: text };
     });
     await test('F-22', '仅停用准确201新ID并从正常UI回读已停用', async () => {
       if (!state.ownedReceiptVerified) throw scheduleBlocked('No verified201 new ID; unsafe to select any schedule row');

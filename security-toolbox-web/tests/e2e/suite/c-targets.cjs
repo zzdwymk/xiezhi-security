@@ -4,7 +4,7 @@
  * 业务顺序：进入目标页 → 新增目标（归属项目 / 类型 / 地址 / 授权记录 / 端口）
  *          → 校验列表展示 → 编辑目标 → 授权范围变更确认
  *
- * 目标固定为靶机 192.168.136.131，授权端口覆盖 SSH(22) 与 Web(8000)。
+ * 目标地址来自 lib/audit-target.cjs 的唯一授权靶机（ctx.targetIp）；端口覆盖 22/80/443/8000/8080。
  */
 const {
   sleep, settle, navigate, pageTitle, dialog, dialogButton,
