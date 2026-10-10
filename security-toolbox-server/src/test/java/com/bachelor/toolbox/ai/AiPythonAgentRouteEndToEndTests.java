@@ -90,14 +90,20 @@ class AiPythonAgentRouteEndToEndTests {
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.plan.provider").value("langgraph-runtime"))
         .andExpect(jsonPath("$.plan.steps[0].toolCode").value("nmap_service_scan"))
-        .andExpect(jsonPath("$.guardStatus").value("ALLOWED"))
-        .andExpect(jsonPath("$.executed").value(true))
-        .andExpect(jsonPath("$.taskIds[0]").isNumber());
+        // A chat turn expresses intent, not confirmation: the Python-planned,
+        // Java-normalized plan is saved for administrator confirmation and the
+        // turn itself must create no task and dispatch nothing.
+        .andExpect(jsonPath("$.guardStatus").value("AWAITING_APPROVAL"))
+        .andExpect(jsonPath("$.approvalStatus").value("REQUIRED"))
+        .andExpect(jsonPath("$.approvalId").isNumber())
+        .andExpect(jsonPath("$.executed").value(false))
+        .andExpect(jsonPath("$.taskIds").isEmpty());
 
-    assertThat(tasks.count()).isEqualTo(1);
+    assertThat(tasks.count()).isZero();
     assertThat(audits.findAll())
         .extracting(AuditLog::getAction)
-        .contains("CREATE_WORKFLOW_TASK", "AI_DISPATCH_TASKS", "AI_AGENT_TURN");
+        .contains("AI_AGENT_TURN")
+        .doesNotContain("CREATE_WORKFLOW_TASK", "AI_DISPATCH_TASKS");
     AuditLog turnAudit =
         audits.findAll().stream()
             .filter(audit -> "AI_AGENT_TURN".equals(audit.getAction()))
@@ -110,7 +116,7 @@ class AiPythonAgentRouteEndToEndTests {
     assertThat(provenance.path("evidenceIds").isEmpty()).isFalse();
     assertThat(provenance.path("plannerSource").asText()).isEqualTo("langchain-grounded");
     assertThat(provenance.path("runtimeRunId").asText()).isNotBlank();
-    verify(executionService, timeout(1_000)).executeAsync(anyLong());
+    verifyNoInteractions(executionService);
   }
 
   @Test
@@ -142,6 +148,8 @@ class AiPythonAgentRouteEndToEndTests {
   void rewrittenQueryStillDispatchesExactlyOnceThroughJavaBoundary() throws Exception {
     String jwt = login();
     long[] scope = createActiveTarget(jwt, "Rewrite E2E 改写查询");
+    long projectId = scope[0];
+    long targetId = scope[1];
     MvcResult streaming =
         mockMvc
             .perform(
@@ -152,7 +160,7 @@ class AiPythonAgentRouteEndToEndTests {
                         """
                         {"projectId":%d,"targetId":%d,"sessionId":"ci-rewrite-route","turnId":"ci-rewrite-route-turn","prompt":"MOCK_REWRITE_ONCE 请扫描端口和服务","execute":true,"mode":"standard"}
                         """
-                            .formatted(scope[0], scope[1])))
+                            .formatted(projectId, targetId)))
             .andExpect(request().asyncStarted())
             .andReturn();
     String ndjson =
@@ -168,7 +176,6 @@ class AiPythonAgentRouteEndToEndTests {
       if (!line.isBlank()) events.add(mapper.readTree(line));
     }
 
-    assertThat(tasks.count()).isEqualTo(1);
     List<String> runtimeTypes =
         events.stream()
             .filter(event -> event.path("data").has("runtimeEventId"))
@@ -186,13 +193,52 @@ class AiPythonAgentRouteEndToEndTests {
     assertThat(done.path("data").path("plannerSource").asText())
         .isEqualTo("langchain-grounded");
     assertThat(done.path("data").path("fallback").asBoolean()).isFalse();
-    assertThat(done.path("data").path("response").path("executed").asBoolean()).isTrue();
-    assertThat(done.path("data").path("response").path("taskIds").size()).isEqualTo(1);
+
+    // A rewritten turn also only saves the reviewed plan: no task, no dispatch.
+    JsonNode response = done.path("data").path("response");
+    assertThat(response.path("guardStatus").asText()).isEqualTo("AWAITING_APPROVAL");
+    assertThat(response.path("executed").asBoolean()).isFalse();
+    assertThat(response.path("taskIds").isEmpty()).isTrue();
+    long approvalId = response.path("approvalId").asLong();
+    assertThat(approvalId).isPositive();
+    assertThat(tasks.count()).isZero();
+    verifyNoInteractions(executionService);
+
+    // Administrator confirmation is the only Java dispatch boundary.
+    mockMvc
+        .perform(
+            post("/api/projects/" + projectId + "/approvals/" + approvalId + "/decision")
+                .header("Authorization", "Bearer " + jwt)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"status\":\"APPROVED\"}"))
+        .andExpect(status().isOk());
+    JsonNode dispatch =
+        mapper.readTree(
+            mockMvc
+                .perform(
+                    post("/api/projects/" + projectId + "/approvals/" + approvalId + "/execute")
+                        .header("Authorization", "Bearer " + jwt))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString());
+
+    assertThat(dispatch.path("taskIds").size()).isEqualTo(1);
+    assertThat(tasks.count()).isEqualTo(1);
     assertThat(
             audits.findAll().stream()
                 .filter(audit -> "AI_DISPATCH_TASKS".equals(audit.getAction()))
                 .count())
         .isEqualTo(1);
+    verify(executionService, timeout(1_000).times(1)).executeAsync(anyLong());
+
+    // The saved plan is the execution identity: confirming again must not dispatch twice.
+    mockMvc
+        .perform(
+            post("/api/projects/" + projectId + "/approvals/" + approvalId + "/execute")
+                .header("Authorization", "Bearer " + jwt))
+        .andExpect(status().isOk());
+    assertThat(tasks.count()).isEqualTo(1);
     verify(executionService, timeout(1_000).times(1)).executeAsync(anyLong());
   }
 
