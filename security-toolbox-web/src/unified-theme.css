@@ -1264,7 +1264,7 @@ body,
 }
 
 .desktop-v2-nav button.active > .el-icon,
-.desktop-v2-recent-item.active .el-icon {
+.desktop-v2-recent-item.active .desktop-v2-recent-open > .el-icon {
   color: var(--app-accent);
 }
 

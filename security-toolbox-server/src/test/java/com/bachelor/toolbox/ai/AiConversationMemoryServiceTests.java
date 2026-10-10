@@ -124,6 +124,55 @@ class AiConversationMemoryServiceTests {
   }
 
   @Test
+  void clearDoesNotHoldSessionLockWhileClearingRuntimeMemory() throws Exception {
+    // 回归：clear() 曾在 lifecycleMonitor/session.monitor 内同步调用 AI Runtime 的
+    // 索引清理接口（读超时 10 秒以上）。慢调用会长时间占锁，使 DELETE 会话请求
+    // 挂起到浏览器放弃（桌面表现为 net::ERR_ABORTED、会话数不减少）。
+    // 这里用一个"卡住"的 runtime 调用来证明：清理运行时记忆期间，同一会话的其他
+    // 操作不会被阻塞，且 clear 最终仍返回正确作用域。
+    RepositoryFixture fixture = new RepositoryFixture();
+    AiAgentRuntimeClient runtime = mock(AiAgentRuntimeClient.class);
+    CountDownLatch runtimeEntered = new CountDownLatch(1);
+    CountDownLatch releaseRuntime = new CountDownLatch(1);
+    doAnswer(
+            invocation -> {
+              runtimeEntered.countDown();
+              await(releaseRuntime);
+              return 1;
+            })
+        .when(runtime)
+        .clearConversationMemories(any(Long.class), any(String.class));
+    AiConversationMemoryService memory = fixture.service(runtime);
+    memory.open("lock-scope", 71L, 72L);
+    memory.addUser("lock-scope", "context");
+
+    ExecutorService workers = Executors.newFixedThreadPool(2);
+    try {
+      Future<AiConversationMemoryService.SessionScope> clearing =
+          workers.submit(() -> memory.clear("lock-scope"));
+      assertThat(runtimeEntered.await(5, TimeUnit.SECONDS))
+          .as("clear 应进入运行时记忆清理")
+          .isTrue();
+
+      // 运行时清理仍在进行时，新的会话操作必须能立刻完成（锁未被占住）。
+      Future<AiConversationMemoryService.SessionHandle> opening =
+          workers.submit(() -> memory.open("other-session", 71L, 72L));
+      AiConversationMemoryService.SessionHandle handle = opening.get(5, TimeUnit.SECONDS);
+      assertThat(handle).isNotNull();
+      assertThat(handle.projectId()).isEqualTo(71L);
+
+      releaseRuntime.countDown();
+      AiConversationMemoryService.SessionScope scope = clearing.get(5, TimeUnit.SECONDS);
+      assertThat(scope.projectId()).isEqualTo(71L);
+      assertThat(scope.targetId()).isEqualTo(72L);
+      verify(runtime).clearConversationMemories(71L, "lock-scope");
+    } finally {
+      releaseRuntime.countDown();
+      workers.shutdownNow();
+    }
+  }
+
+  @Test
   void restoresScopedConversationAfterServiceRestart() {
     RepositoryFixture fixture = new RepositoryFixture();
     AiAgentRuntimeClient runtime = mock(AiAgentRuntimeClient.class);

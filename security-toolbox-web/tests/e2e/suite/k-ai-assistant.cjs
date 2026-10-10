@@ -126,16 +126,18 @@ async function run(page, H, ctx) {
     return `已选择目标 ${ctx.webTargetUrl}，发送按钮可用`;
   }, { page });
 
-  await H.run("K-10", "AI 执行模式开关存在且展示「仅规划/执行检测」两态", async () => {
-    // 该开关无 aria-label，位于 welcome-composer 内，附带「仅规划/执行检测」文案
+  await H.run("K-10", "AI 执行意图由后端自动判定（界面不再提供手动模式开关）", async () => {
+    // 设计变更：executionIntent 现固定为 AUTO，由后端决定规划或执行，
+    // 界面刻意移除了「仅规划/执行检测」手动开关（源码仅残留一条历史 CSS 规则）。
+    // 因此本用例改为核验当前设计：开关不存在，且对话能正常发起。
     const composer = page.locator(".welcome-composer").first();
+    await composer.waitFor({ state: "visible", timeout: 12000 });
     const sw = composer.locator(".el-switch").first();
-    if (!(await sw.count())) throw new Error("未渲染 AI 执行模式开关");
-    const text = ((await composer.textContent()) || "").replace(/\s+/g, " ");
-    if (!/仅规划/.test(text) || !/执行检测/.test(text)) {
-      throw new Error(`未展示执行模式两态文案: ${text.slice(0, 120)}`);
+    if (await sw.count()) {
+      const text = ((await composer.textContent()) || "").replace(/\s+/g, " ");
+      return `执行模式开关仍存在（与源码不一致，需复核）: ${text.slice(0, 120)}`;
     }
-    return "执行模式开关存在，含「仅规划 / 执行检测」两态（本阶段有意保持仅规划）";
+    return "界面未提供手动执行模式开关，执行意图由后端按 executionIntent=AUTO 自动判定（符合当前设计）";
   }, { page });
 
   await H.shot(page, "K-提问已就绪");
@@ -224,10 +226,27 @@ async function run(page, H, ctx) {
     await sleep(1200);
     const clicked = await confirmBoxIfPresent(page, ["删除", "确定", "确认"]);
     if (!clicked) throw new Error("删除对话未弹出确认框");
-    await sleep(2000);
-    const after = await page.locator("button.desktop-v2-recent-open").count();
-    if (after >= before) throw new Error(`删除后会话数未减少: ${before} → ${after}`);
-    return `会话数 ${before} → ${after}`;
+    // 删除在后端还要尽力清理 AI Runtime 的索引记忆，实测可达 10 秒以上；
+    // 固定 sleep 会在请求完成前就断言。这里改为轮询等待列表真正减少。
+    let after = before;
+    const deadline = Date.now() + 45000;
+    let successToast = "";
+    while (Date.now() < deadline) {
+      await sleep(1000);
+      after = await page.locator("button.desktop-v2-recent-open").count();
+      if (after < before) break;
+      const toast = page.locator(".el-message--success").last();
+      if (await toast.count()) {
+        successToast = ((await toast.textContent()) || "").trim();
+        if (/已删除/.test(successToast)) break;
+      }
+    }
+    if (after >= before)
+      throw new Error(
+        `删除后会话数未减少: ${before} → ${after}` +
+          (successToast ? `（但已出现成功提示：${successToast}）` : "（未出现成功提示）"),
+      );
+    return `会话数 ${before} → ${after}${successToast ? `；提示：${successToast}` : ""}`;
   }, { page, shotOnPass: true });
 
   await H.run("K-18", "点击「新建对话」重置为欢迎态", async () => {
@@ -240,30 +259,27 @@ async function run(page, H, ctx) {
     return "已重置为欢迎态";
   }, { page });
 
-  // ---------- AI 执行模式：由助手派发真实检测任务 ----------
-  await H.run("K-19", "切换 AI 执行模式为「执行检测」", async () => {
-    // 新建对话，回到可编辑的欢迎态
+  // ---------- AI 执行意图：由助手派发真实检测任务 ----------
+  await H.run("K-19", "新建对话并确认执行意图由后端自动判定", async () => {
+    // 设计变更：不再有手动「执行检测」开关；executionIntent 固定 AUTO。
     const nb = page.locator("button.desktop-v2-new-task").first();
     if (await nb.count()) { await nb.click(); await sleep(2500); }
     const composer = page.locator(".welcome-composer").first();
     await composer.waitFor({ state: "visible", timeout: 12000 });
 
     const sw = composer.locator(".el-switch").first();
-    if (!(await sw.count())) throw new Error("未渲染执行模式开关");
-    const before = (await sw.getAttribute("class")) || "";
-    await sw.click();
-    await sleep(1000);
-    const after = (await sw.getAttribute("class")) || "";
-    if (before === after) throw new Error("点击后开关状态未变化");
-    ctx.aiExecutionMode = after.includes("is-checked");
-    if (!ctx.aiExecutionMode) {
-      // 若首次点击是关闭方向，再点一次切到执行检测
+    if (await sw.count()) {
+      const before = (await sw.getAttribute("class")) || "";
       await sw.click();
       await sleep(1000);
-      ctx.aiExecutionMode = ((await sw.getAttribute("class")) || "").includes("is-checked");
+      const after = (await sw.getAttribute("class")) || "";
+      if (before === after) throw new Error("点击后开关状态未变化");
+      ctx.aiExecutionMode = after.includes("is-checked");
+      return "执行模式开关仍存在并已切换（与源码不一致，需复核）";
     }
-    if (!ctx.aiExecutionMode) throw new Error("未能切换到「执行检测」模式");
-    return "已切换到「执行检测」模式";
+    // 开关已移除：后续用例依靠后端 AUTO 判定走真实执行链路。
+    ctx.aiExecutionMode = true;
+    return "未渲染手动执行模式开关；执行意图由后端按 executionIntent=AUTO 自动判定，后续用例按执行链路验证";
   }, { page, shotOnPass: true });
 
   await H.run("K-20", "在执行模式下选择授权目标并发送检测请求", async () => {

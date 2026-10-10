@@ -184,6 +184,12 @@ public class AiConversationMemoryService {
 
   public SessionScope clear(String sessionId) {
     if (sessionId == null) return null;
+    // clearRuntimeMemory 会同步调用 AI Runtime 的索引清理接口（读超时可达 10 秒以上）。
+    // 它必须在锁外执行：否则一次慢调用会长时间占住 lifecycleMonitor / session.monitor，
+    // 使 DELETE 会话请求挂起直到浏览器放弃（表现为 net::ERR_ABORTED、会话数不减少），
+    // 并连带阻塞同一会话上的其他操作。
+    Long runtimeProjectId;
+    SessionScope scope;
     synchronized (lifecycleMonitor) {
       Session removed = sessions.get(sessionId);
       if (removed != null) {
@@ -192,19 +198,21 @@ public class AiConversationMemoryService {
           removed.memory.clear();
           removed.turns.clear();
           deletePersisted(sessionId);
-          clearRuntimeMemory(removed.projectId, sessionId);
         }
-        return new SessionScope(removed.projectId, removed.targetId);
-      }
-      AiConversationSessionRecord persisted =
-          repository == null ? null : repository.findById(sessionId).orElse(null);
-      if (persisted != null) {
+        runtimeProjectId = removed.projectId;
+        scope = new SessionScope(removed.projectId, removed.targetId);
+      } else {
+        AiConversationSessionRecord persisted =
+            repository == null ? null : repository.findById(sessionId).orElse(null);
+        if (persisted == null) return null;
         repository.delete(persisted);
-        clearRuntimeMemory(persisted.getProjectId(), sessionId);
-        return new SessionScope(persisted.getProjectId(), persisted.getTargetId());
+        runtimeProjectId = persisted.getProjectId();
+        scope = new SessionScope(persisted.getProjectId(), persisted.getTargetId());
       }
-      return null;
     }
+    // 锁外做"尽力而为"的运行时记忆清理，失败不影响本地删除结果。
+    clearRuntimeMemory(runtimeProjectId, sessionId);
+    return scope;
   }
 
   private void addTurn(Session session, Turn turn) {

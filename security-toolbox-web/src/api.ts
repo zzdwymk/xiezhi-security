@@ -1032,9 +1032,13 @@ export const endpoints = {
     api.post<AiDispatch>("/ai/dispatches", payload, { timeout: 210000 }),
   runAgent: (payload: AiAgentRequestPayload) =>
     api.post<AiAgentResponsePayload>("/ai/agent", payload, { timeout: 210000 }),
+  // 删除会话在后端还要尽力清理 AI Runtime 的索引记忆，可能明显慢于普通请求；
+  // 未显式设置时会被 axios 默认超时（10 秒）掐断，表现为请求被中止、
+  // 会话数不减少（桌面 K-17 稳定复现）。这里给它一个更宽的超时。
   clearAgentSession: (sessionId: string) =>
     api.delete<{ sessionId: string; cleared: boolean }>(
       `/ai/agent/sessions/${encodeURIComponent(sessionId)}`,
+      { timeout: 45_000 },
     ),
   answerAi: (payload: {
     projectId: number;

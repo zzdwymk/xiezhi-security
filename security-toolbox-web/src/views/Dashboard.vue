@@ -994,10 +994,13 @@ function applyAgentEvent(
       event.plan.steps.length > 0,
     );
   const recordedEvent = event.recorded || event.eventTiming === "VERIFIED_RECORD";
+  // 终态事件（done / error）代表这一轮模型交互已经结束，无论是否携带 answer
+  // 正文都必须收尾；否则无关联任务的一轮会永久停留在进行中。
+  const terminalDone = event.type === "done" && event.status !== "FAILED";
   const status = recordedEvent ? message.status :
     event.type === "error"
       ? "failed"
-      : event.type === "done" && Boolean(event.answer?.trim()) && !event.recorded && event.eventTiming !== "VERIFIED_RECORD" && !message.taskIds.length
+      : terminalDone
         ? "completed"
         : event.type === "approval"
           ? "running"
@@ -1009,13 +1012,24 @@ function applyAgentEvent(
                 ? "running"
                 : message.status;
   let content = message.content;
+  // 后端终态事件把模型正文放在 data.response.message（data.response 是对象，
+  // 直接字符串化会得到 "[object Object]"），也可能放在 event.answer。
+  const donePayload = (event.data as any)?.response;
+  const doneAnswer = String(
+    event.answer ||
+      (donePayload && typeof donePayload === "object"
+        ? donePayload.message || donePayload.plan?.summary || ""
+        : donePayload || "") ||
+      event.message ||
+      "",
+  ).trim();
   if (event.type === "error" && !recordedEvent)
     content = readableAiConversationError(
       event.message || event.summary,
       "智能体执行失败。",
     ).slice(0, 2000);
-  else if (event.type === "done" && event.answer?.trim())
-    content = event.answer.trim();
+  else if (event.type === "done" && doneAnswer)
+    content = doneAnswer;
   else if (progressSummary && ["planning", "running"].includes(status))
     content = progressSummary;
   conversations.updateMessage(threadId, messageId, {
@@ -1024,9 +1038,31 @@ function applyAgentEvent(
     agentEvents: events.slice(-100),
     citations: citations.slice(-30),
     steps,
-    approvalId: (event.data as any)?.approvalId || event.approvalId || message.approvalId,
-    approvalStatus: event.approvalStatus || message.approvalStatus,
-    executionDecision: event.executionDecision || message.executionDecision,
+    // 记录模型流的终态，供收尾逻辑判断"这一轮是否已经结束"。
+    modelStreamStatus: terminalDone
+      ? "completed"
+      : event.type === "error" && !recordedEvent
+        ? "failed"
+        : message.modelStreamStatus,
+    approvalId:
+      (donePayload as any)?.approvalId ||
+      (event.data as any)?.approvalId ||
+      event.approvalId ||
+      message.approvalId,
+    approvalStatus:
+      (donePayload as any)?.approvalStatus ||
+      event.approvalStatus ||
+      message.approvalStatus,
+    executionDecision:
+      (donePayload as any)?.guardStatus ||
+      event.executionDecision ||
+      message.executionDecision,
+    // 终态事件会带回本轮是否真的派发了任务；无任务时保持空数组，
+    // 使界面呈现"等待确认/未创建任务"而不是永久进行中。
+    taskIds:
+      Array.isArray((donePayload as any)?.taskIds) && (donePayload as any).taskIds.length
+        ? (donePayload as any).taskIds
+        : message.taskIds,
     planningStage:
       event.stage || String(event.node || "") || message.planningStage,
     planningStatus:
@@ -1034,6 +1070,10 @@ function applyAgentEvent(
         ? `已生成 ${steps.length} 步执行计划`
         : String(progressSummary || stageLabel[stage] || message.planningStatus || ""),
   });
+  // 终态事件到达后立即尝试收尾：无关联任务的一轮不会再有任务事件来触发
+  // reconcileTaskMessages，必须在这里主动调用，否则界面停留在「尚未收到阶段反馈」。
+  if (terminalDone || (event.type === "error" && !recordedEvent))
+    void nextTick(() => reconcileTaskMessages());
   void scrollToBottom();
 }
 
@@ -1585,12 +1625,21 @@ async function requestFinalAnswer(
 function reconcileTaskMessages() {
   for (const thread of conversations.items) {
     for (const message of thread.messages) {
-      if (
-        message.role !== "assistant" ||
-        !["running", "answering"].includes(message.status) ||
-        !message.taskIds.length
-      )
+      if (message.role !== "assistant" || !["running", "answering"].includes(message.status))
         continue;
+      // 无关联任务的一轮（例如模型只产出了待确认的计划、尚未派发任务）：
+      // 这一轮没有可汇总的任务，POST /api/ai/answers 明确要求 taskIds 非空，
+      // 因此不能走 requestFinalAnswer。模型正文已经在终态事件里到达并写入 content，
+      // 这里只需就地收尾，避免界面永久停留在「尚未收到阶段反馈」。
+      if (!message.taskIds.length) {
+        if (message.modelStreamStatus !== "completed") continue;
+        conversations.updateMessage(thread.id, message.id, {
+          status: "completed",
+          progressFinishedAt:
+            message.progressFinishedAt || new Date().toISOString(),
+        });
+        continue;
+      }
       const related = relatedTasks(message);
       if (
         related.length === message.taskIds.length &&
@@ -2078,21 +2127,25 @@ onBeforeUnmount(() => {
                 >
                 <span>{{ quotePreview(message.quote.content) }}</span>
               </div>
-              <div class="message-response" :class="{ 'is-failed': message.role === 'assistant' && message.status === 'failed' }">
-              <AiProgressPanel
+              <div
                 v-if="message.role === 'assistant'"
-                :message="message"
-                :tasks="relatedTasks(message)"
-                :hide-attention="message.status === 'failed'"
-                @open-tasks="router.push('/tasks')"
+                class="message-response"
+                :class="{ 'is-failed': message.status === 'failed' }"
               >
-                <AiFailureNotice v-if="message.status === 'failed'" :message="message" />
-                <div
-                  v-if="message.status === 'completed'"
-                  class="message-bubble markdown-body"
-                  v-html="renderMarkdown(displayedMessageContent(message), { localizeToolCodes: true })"
-                />
-              </AiProgressPanel>
+                <AiProgressPanel
+                  :message="message"
+                  :tasks="relatedTasks(message)"
+                  :hide-attention="message.status === 'failed'"
+                  @open-tasks="router.push('/tasks')"
+                >
+                  <AiFailureNotice v-if="message.status === 'failed'" :message="message" />
+                  <div
+                    v-if="message.status === 'completed'"
+                    class="message-bubble markdown-body"
+                    v-html="renderMarkdown(displayedMessageContent(message), { localizeToolCodes: true })"
+                  />
+                </AiProgressPanel>
+              </div>
               <div
                 v-else-if="message.role === 'user'"
                 class="message-bubble markdown-body"
@@ -2352,7 +2405,6 @@ onBeforeUnmount(() => {
                     <el-icon aria-hidden="true"><EditPen /></el-icon>
                   </button>
                 </el-tooltip>
-              </div>
               </div>
             </div>
           </article>
@@ -4053,11 +4105,20 @@ a.agent-citation-bubble {
 }
 
 .message-actions {
+  display: flex;
+  align-items: center;
   min-height: 32px;
+  margin-top: 6px;
   gap: 4px;
   opacity: 0;
   pointer-events: none;
   transition: opacity 120ms ease;
+}
+.chat-message.assistant .message-actions {
+  justify-content: flex-start;
+}
+.chat-message.user .message-actions {
+  justify-content: flex-end;
 }
 .chat-message:hover .message-actions,
 .chat-message:focus-within .message-actions {
@@ -4120,18 +4181,6 @@ a.agent-citation-bubble {
   border-radius: 0 !important;
   background: transparent !important;
   box-shadow: none;
-}
-.chat-message.assistant .message-response > .message-actions {
-  justify-content: flex-start;
-  align-items: center;
-  margin: 8px 0 0;
-  padding: 0;
-}
-/* Align the actual icon box with the prose, not just its toolbar. Keep the
-   full 32px hit target; user bubbles and the failed-response card retain
-   their existing centered controls. */
-.chat-message.assistant .message-response:not(.is-failed) > .message-actions .message-action {
-  justify-content: flex-start;
 }
 .chat-message.assistant .message-response.is-failed {
   padding: 0;
