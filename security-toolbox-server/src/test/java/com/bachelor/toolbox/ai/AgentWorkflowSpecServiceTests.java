@@ -187,6 +187,29 @@ class AgentWorkflowSpecServiceTests {
   }
 
   @Test
+  void legacySqlmapNodeCannotDisableMandatoryApproval() {
+    Map<String, Object> saved = service.save(101L, Map.of("steps", List.of(Map.of(
+        "tool", "sqlmap_scan", "parameters", Map.of("path", "/Less-1/?id=1"),
+        "risk", "SAFE", "requiresApproval", false, "group", 0))));
+    @SuppressWarnings("unchecked")
+    List<Map<String, Object>> steps = (List<Map<String, Object>>) saved.get("steps");
+    assertEquals(true, steps.get(0).get("requiresApproval"));
+    assertEquals(Map.of("path", "/Less-1/?id=1"), steps.get(0).get("parameters"));
+  }
+
+  @Test
+  void legacyZapFuzzNodeCannotDisableMandatoryApproval() {
+    Map<String, Object> params = Map.of("fuzzRequestUrl", "http://127.0.0.1/?id=1", "method", "GET",
+        "fuzzTargetField", "id", "fuzzPayload", "literal");
+    Map<String, Object> saved = service.save(101L, Map.of("steps", List.of(Map.of(
+        "tool", "zap_fuzz", "parameters", params, "risk", "SAFE", "requiresApproval", false, "group", 0))));
+    @SuppressWarnings("unchecked")
+    List<Map<String, Object>> steps = (List<Map<String, Object>>) saved.get("steps");
+    assertEquals(true, steps.get(0).get("requiresApproval"));
+    assertEquals(params, steps.get(0).get("parameters"));
+  }
+
+  @Test
   void revisionsAreAppendOnlyAndDigestIgnoresClientMetadata() {
     Map<String, Object> body = v2Graph(validEdges());
     body.put("workflowId", "forged");

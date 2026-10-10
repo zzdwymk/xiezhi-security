@@ -28,7 +28,7 @@ import {
   type ScannerSource,
 } from "../stores/catalogSync";
 import { toErrorMessage } from "../utils/errorMessage";
-import { actionRiskLabel, severityLabel } from "../utils/aiPresentation";
+import { actionRiskLabel, severityLabel, targetTypeLabel } from "../utils/aiPresentation";
 
 const copilot = useCopilotStore();
 const router = useRouter();
@@ -518,8 +518,8 @@ function ruleDisabledReason(rule: DetectionRule) {
   ) {
     if (rule.targetType.toUpperCase() === "HTTPS")
       return "当前目标不是 HTTPS 地址";
-    if (rule.targetType.toUpperCase() === "WEB") return "当前目标不是 Web 地址";
-    return `仅适用于 ${rule.targetType} 目标`;
+    if (rule.targetType.toUpperCase() === "WEB") return "当前目标不是网页地址";
+    return `仅适用于${targetTypeLabel(rule.targetType)}目标`;
   }
   if (isFullPortTarget.value && rule.toolCode === "tcp_ports")
     return "全端口不能使用逐端口 TCP 探测，请改用 Nmap";
@@ -1104,6 +1104,10 @@ function describeCatalogLoadError(error: unknown): string {
     if (status === 401 || status === 403)
       return `${base}：登录状态已失效，请重新登录${endpoint}`;
     if (status >= 500) return `${base}：本地服务返回 ${status} 错误${endpoint}`;
+    if (status === 400) {
+      const reason = toErrorMessage(error, `请求失败（HTTP ${status}）`);
+      return `${base}：${reason}${endpoint}`;
+    }
     return `${base}：请求失败（HTTP ${status}）${endpoint}`;
   }
   if (err?.code === "ECONNABORTED")
@@ -1731,7 +1735,7 @@ onUnmounted(() => {
           >
           <span><b>版本</b>{{ selected.sourceVersion || "内置" }}</span>
           <span><b>真实性</b>{{ verificationLabel(selected) }}</span>
-          <span><b>执行分级</b>{{ selected.scanSafety || "SAFE" }}</span>
+          <span><b>执行分级</b>{{ safetyLabel(selected.scanSafety) }}</span>
           <span v-if="selected.cveIds"><b>CVE</b>{{ selected.cveIds }}</span>
           <span v-if="selected.cweIds"><b>CWE</b>{{ selected.cweIds }}</span>
           <span v-if="selected.cvssScore != null"
@@ -1870,7 +1874,7 @@ onUnmounted(() => {
                   /></el-icon>
                   <span>{{
                     compatibilityHint(rule) ||
-                    `${rule.ruleCode} · ${rule.targetType} · ${actionRiskLabel(rule.riskLevel)}`
+                    `${rule.ruleCode} · ${targetTypeLabel(rule.targetType)} · ${actionRiskLabel(rule.riskLevel)}`
                   }}</span>
                 </span>
               </small>
@@ -1882,6 +1886,8 @@ onUnmounted(() => {
           <el-segmented
             v-model="pocSelectionModes[source]"
             class="poc-selection-mode"
+            block
+            :aria-label="`${sourceLabel(source)} PoC 选择方式`"
             :options="POC_SELECTION_MODE_OPTIONS"
             @change="(mode: 'ALL' | 'MANUAL') => onPocModeChange(source, mode)"
           />
@@ -3055,28 +3061,6 @@ onUnmounted(() => {
 }
 .poc-selection-mode {
   width: 100%;
-}
-.poc-selection-mode :deep(.el-segmented) {
-  width: 100%;
-}
-.poc-selection-mode :deep(.el-segmented__item) {
-  min-width: 0;
-  flex: 1;
-}
-.poc-selection-mode :deep(.el-segmented__item-selected) {
-  box-sizing: border-box;
-  width: 50% !important;
-  transform: translateX(0) translateZ(0) !important;
-  will-change: transform;
-  backface-visibility: hidden;
-  transition: transform var(--fluent-duration-normal, 200ms)
-    var(--fluent-curve-standard, ease);
-}
-.poc-selection-mode :deep(.el-segmented__group):has(
-    .el-segmented__item.is-selected:last-child
-  )
-  .el-segmented__item-selected {
-  transform: translateX(100%) translateZ(0) !important;
 }
 .poc-picker-wrapper {
   margin-top: 8px;

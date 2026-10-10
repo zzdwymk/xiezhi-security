@@ -1,9 +1,13 @@
 package com.bachelor.toolbox.task;
 
 import jakarta.validation.Valid;
+import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -43,6 +47,19 @@ public class WorkflowRunController {
   public WorkflowRunDtos.Detail start(@Valid @RequestBody WorkflowRunDtos.StartRequest request)
       throws Exception {
     return service.start(request);
+  }
+
+  @ExceptionHandler(WorkflowPreflightChangedException.class)
+  public ResponseEntity<Map<String, Object>> preflightChanged(WorkflowPreflightChangedException ex) {
+    return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
+        "timestamp", Instant.now(),
+        "status", HttpStatus.CONFLICT.value(),
+        "code", "WORKFLOW_PREFLIGHT_CHANGED",
+        "message", ex.getMessage(),
+        "retryable", true,
+        "requiresPreflight", true,
+        "currentPreflight", ex.currentPreflight(),
+        "rejectedSkippedNodeIds", ex.rejectedSkippedNodeIds()));
   }
 
   @PostMapping("/{id}/stop")

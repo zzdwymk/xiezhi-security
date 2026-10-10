@@ -9,6 +9,7 @@ import {
 } from "../api";
 import { formatDateTime } from "../utils/dateTime";
 import { toErrorMessage } from "../utils/errorMessage";
+import { resolveTopologyCollisions } from "../utils/topologyCollision";
 import {
   clearNodePositions,
   loadGlobalPrefs,
@@ -17,6 +18,8 @@ import {
   saveNodePositions,
 } from "../utils/topologyPersistence";
 import FluentIcon from "./FluentIcon.vue";
+import AppPagination from "./AppPagination.vue";
+import { useClientPagination } from "../composables/useClientPagination";
 
 const props = withDefaults(
   defineProps<{
@@ -165,6 +168,7 @@ const minimapDragStart = ref({ clientX: 0, clientY: 0, initPanX: 0, initPanY: 0 
 // 选中与悬停
 const selectedNodeId = ref<number | null>(null);
 const selectedNodeIds = ref<number[]>([]);
+const selectedNodeIdSet = computed(() => new Set(selectedNodeIds.value));
 const hoveredNodeId = ref<number | null>(null);
 const drawerVisible = ref(false);
 
@@ -308,8 +312,14 @@ const stats = computed(() => {
 // 当前选中的资产详情
 const selectedAsset = computed(() => {
   if (selectedNodeId.value == null) return null;
-  return props.assets.find((a) => a.id === selectedNodeId.value) || null;
+  return assetMetadata.value.get(selectedNodeId.value)?.asset || null;
 });
+const selectedAssetHost = computed(() => parseHost(selectedAsset.value?.url));
+const selectedVulnerabilityCount = computed(() => selectedNodeId.value == null
+  ? 0 : assetMetadata.value.get(selectedNodeId.value)?.vulnCount || 0);
+const selectedEvidenceText = computed(() => formatEvidence(
+  selectedAsset.value?.evidence || selectedAsset.value?.technologies,
+));
 
 const BASELINE_RISK_TOOLS = new Set([
   "http_headers",
@@ -353,57 +363,74 @@ function findingIsVulnerability(finding: {
   return Boolean(code);
 }
 
+// 发现文本和去重键只在数据变化时归一化，避免每个节点、每次拖动都处理完整证据。
+const findingsByProject = computed(() => {
+  const grouped = new Map<number, {
+    finding: ProjectFindingRecord;
+    targetId: number;
+    evidence: string;
+    description: string;
+    title: string;
+    signature: string;
+  }[]>();
+  for (const finding of props.findings || []) {
+    const projectId = Number(finding.projectId ?? (typeof props.projectId === "number" ? props.projectId : undefined));
+    const entries = grouped.get(projectId) || [];
+    entries.push({
+      finding,
+      targetId: Number(finding.targetId),
+      evidence: String(finding.evidence || "").toLowerCase(),
+      description: String(finding.description || "").toLowerCase(),
+      title: String(finding.title || "").toLowerCase(),
+      signature: [finding.targetId, finding.title, finding.severity, finding.sourceTool,
+        finding.vulnerabilityCode, finding.ruleCode, finding.description,
+        finding.evidence, finding.remediation].map((v) => String(v ?? "").trim()).join("\u0001"),
+    });
+    grouped.set(projectId, entries);
+  }
+  return grouped;
+});
+
 // 总览中相同目标可以归属不同项目，卡片和详情只关联本项目的发现。
 function getAssetFindings(asset: DiscoveryResult) {
   const targetId = Number(asset.targetId);
   const host = stripHostPort(parseHost(asset.url).host).toLowerCase();
   const url = (asset.url || "").toLowerCase();
-  const matched = (props.findings || []).filter((f) => {
-    const findingProjectId = f.projectId ?? (typeof props.projectId === "number" ? props.projectId : undefined);
-    if (Number(findingProjectId) !== Number(asset.projectId)) return false;
-    // Findings are target-scoped in the report API. Keep this association
-    // while retaining the project guard above; URL/evidence matching below
-    // also supports path-specific findings.
-    if (Number(f.targetId) === targetId && targetId > 0) return true;
-    const cleanHost = host;
-    const fEvidence = String(f.evidence || "").toLowerCase();
-    const fDesc = String(f.description || "").toLowerCase();
-    const fTitle = String(f.title || "").toLowerCase();
-    if (cleanHost && (fEvidence.includes(cleanHost) || fDesc.includes(cleanHost) || fTitle.includes(cleanHost))) return true;
-    if (url && fEvidence.includes(url)) return true;
-    return false;
-  });
-
-  // 完全相同的发现项才去重：按内容复合键（target/标题/级别/证据等）归一，仅当各字段完全一致时才折叠。
-  // 区别于按 id 去重——报告 API 中同一逻辑风险可能以不同 id 的多条记录出现。
+  const matched: ProjectFindingRecord[] = [];
   const seen = new Set<string>();
-  return matched.filter((f) => {
-    const signature = [
-      f.targetId,
-      f.title,
-      f.severity,
-      f.sourceTool,
-      f.vulnerabilityCode,
-      f.ruleCode,
-      f.description,
-      f.evidence,
-      f.remediation,
-    ]
-      .map((v) => String(v ?? "").trim())
-      .join("\u0001");
-    if (seen.has(signature)) return false;
-    seen.add(signature);
-    return true;
-  });
+  for (const entry of findingsByProject.value.get(Number(asset.projectId)) || []) {
+    const findingProjectId = entry.finding.projectId ?? (typeof props.projectId === "number" ? props.projectId : undefined);
+    if (Number(findingProjectId) !== Number(asset.projectId)) continue;
+    if (!((entry.targetId === targetId && targetId > 0)
+      || (host && (entry.evidence.includes(host) || entry.description.includes(host) || entry.title.includes(host)))
+      || (url && entry.evidence.includes(url)))) continue;
+    // 仅折叠内容完全相同的记录，不能按 finding id 去重。
+    if (seen.has(entry.signature)) continue;
+    seen.add(entry.signature);
+    matched.push(entry.finding);
+  }
+  return matched;
 }
 
 const selectedNodeFindings = computed(() => {
   if (!selectedAsset.value) return [];
   // 漏洞优先排在前面，同类内保持原有顺序（sort 稳定）。
-  return [...getAssetFindings(selectedAsset.value)].sort(
+  return [...(assetMetadata.value.get(selectedAsset.value.id!)?.findings || [])].sort(
     (a, b) => Number(findingIsVulnerability(b)) - Number(findingIsVulnerability(a)),
   );
 });
+
+const {
+  page: findingsPage,
+  pageSize: findingsPageSize,
+  total: findingsTotal,
+  pagedItems: visibleNodeFindings,
+  resetPage: resetFindingsPage,
+} = useClientPagination(selectedNodeFindings);
+watch(selectedAsset, resetFindingsPage, { flush: "sync" });
+watch(drawerVisible, (visible) => {
+  if (visible) resetFindingsPage();
+}, { flush: "sync" });
 
 const HUB_W = 216;
 const HUB_H = 68;
@@ -719,81 +746,13 @@ function resolveNodeCollisions(
   hubs: LayoutHub[],
   customMap: Record<string | number, { x: number; y: number }>,
 ) {
-  if (nodes.length <= 1 && hubs.length <= 1) return;
-  const maxIterations = 24;
-  const paddingX = 26; // 卡片间水平安全距离
-  const paddingY = 18; // 卡片间垂直安全距离
-  const minHubDistX = (HUB_W + CARD_W) / 2 + 32;
-  const minHubDistY = (HUB_H + CARD_H) / 2 + 24;
-
-  for (let iter = 0; iter < maxIterations; iter++) {
-    let hasCollision = false;
-
-    // 1. 避让所有中心卡片
-    for (const hub of hubs) {
-      for (const node of nodes) {
-        if (customMap[node.id] != null) continue;
-        const dx = node.x - hub.x;
-        const dy = node.y - hub.y;
-        const overlapX = minHubDistX - Math.abs(dx);
-        const overlapY = minHubDistY - Math.abs(dy);
-
-        if (overlapX > 0 && overlapY > 0) {
-          hasCollision = true;
-          if (overlapX < overlapY) {
-            node.x += (dx >= 0 ? 1 : -1) * overlapX;
-          } else {
-            node.y += (dy >= 0 ? 1 : -1) * overlapY;
-          }
-        }
-      }
-    }
-
-    // 2. 节点相互碰撞避让 (AABB)
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const a = nodes[i];
-        const b = nodes[j];
-
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const overlapX = CARD_W + paddingX - Math.abs(dx);
-        const overlapY = CARD_H + paddingY - Math.abs(dy);
-
-        if (overlapX > 0 && overlapY > 0) {
-          hasCollision = true;
-          const aCustom = customMap[a.id] != null;
-          const bCustom = customMap[b.id] != null;
-
-          if (overlapX < overlapY) {
-            const push = overlapX * 0.52;
-            const sign = dx >= 0 ? 1 : -1;
-            if (!aCustom && !bCustom) {
-              a.x -= sign * push;
-              b.x += sign * push;
-            } else if (!aCustom) {
-              a.x -= sign * overlapX;
-            } else if (!bCustom) {
-              b.x += sign * overlapX;
-            }
-          } else {
-            const push = overlapY * 0.52;
-            const sign = dy >= 0 ? 1 : -1;
-            if (!aCustom && !bCustom) {
-              a.y -= sign * push;
-              b.y += sign * push;
-            } else if (!aCustom) {
-              a.y -= sign * overlapY;
-            } else if (!bCustom) {
-              b.y += sign * overlapY;
-            }
-          }
-        }
-      }
-    }
-
-    if (!hasCollision) break;
-  }
+  const resolved = resolveTopologyCollisions(nodes, hubs, customMap, {
+    cardWidth: CARD_W, cardHeight: CARD_H, hubWidth: HUB_W, hubHeight: HUB_H,
+  });
+  resolved.forEach((node, index) => {
+    nodes[index]!.x = node.x;
+    nodes[index]!.y = node.y;
+  });
 }
 
 const cx = computed(() => viewportWidth.value / 2);
@@ -871,19 +830,42 @@ const hubPosition = computed(() => {
   return { x: cx.value, y: cy.value };
 });
 
+// 资产内容与坐标分开缓存：拖动、缩放、筛选不再重新匹配整批风险证据。
+const preparedAssets = computed(() => withSyntheticHosts(
+  props.assets.filter((asset) => asset.id != null),
+).map((asset) => ({ asset, host: parseHost(asset.url).host }))
+  .sort((a, b) => a.host.localeCompare(b.host) || a.asset.id! - b.asset.id!)
+  .map(({ asset }) => asset));
+
+const assetMetadata = computed(() => {
+  const metadata = new Map<number, Omit<LayoutNode, "x" | "y"> & { searchValues: string[] }>();
+  for (const asset of preparedAssets.value) {
+    const { host, protocol, rootDomain, isIp } = parseHost(asset.url);
+    const badges = getNodeBadges(asset);
+    const urlPath = assetUrlPathOf(asset);
+    const findings = getAssetFindings(asset);
+    const vulnCount = findings.filter(findingIsVulnerability).length;
+    metadata.set(asset.id!, {
+      id: asset.id!, asset, host, protocol, rootDomain, isIp, badges, urlPath,
+      findings, vulnCount, riskCount: findings.length - vulnCount,
+      statusKind: getAssetStatusKind(asset, protocol), isMatch: true, isSpotlight: true,
+      searchValues: [asset.url, host, urlPath, asset.server, asset.framework, asset.wafName,
+        ...badges, ...findings.map((finding) => finding.title)]
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.toLowerCase()),
+    });
+  }
+  return metadata;
+});
+
 // 计算全部中心节点与资产节点坐标与连线 (支持单项目模式与全部项目多中心模式)
-const layoutData = computed<{
+const positionedLayout = computed<{
   hubs: LayoutHub[];
   nodes: LayoutNode[];
   edges: LayoutEdge[];
   domainNodes: MindmapDomainNode[];
 }>(() => {
-  const q = searchQuery.value.trim().toLowerCase();
-  const allAssets = withSyntheticHosts(
-    props.assets.filter((a) => a.id != null),
-  ).sort((a, b) =>
-    parseHost(a.url).host.localeCompare(parseHost(b.url).host) || a.id! - b.id!,
-  );
+  const allAssets = preparedAssets.value;
   const nodes: LayoutNode[] = [];
   const edges: LayoutEdge[] = [];
   const domainNodes: MindmapDomainNode[] = [];
@@ -975,72 +957,10 @@ const layoutData = computed<{
     autoY: number,
   ): LayoutNode {
     const custom = customPositions.value[asset.id!];
-    const nx = custom ? custom.x : autoX;
-    const ny = custom ? custom.y : autoY;
-
-    const { host, protocol, rootDomain, isIp } = parseHost(asset.url);
-    const badges = getNodeBadges(asset);
-
-    // 解析 URL 路径（如有）
-    let urlPath = "";
-    if (asset.url) {
-      try {
-        const u = new URL(normalizeAssetUrl(asset.url));
-        if (u.pathname && u.pathname !== "/") {
-          urlPath = u.pathname + (u.search || "");
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    // 匹配关联在该资产上的漏洞与风险发现项
-    const nodeFindings = getAssetFindings(asset);
-
-    const vulnCount = nodeFindings.filter(findingIsVulnerability).length;
-    const riskCount = nodeFindings.length - vulnCount;
-
-    const isSearchMatch =
-      !q ||
-      (asset.url || "").toLowerCase().includes(q) ||
-      host.toLowerCase().includes(q) ||
-      urlPath.toLowerCase().includes(q) ||
-      nodeFindings.some((f) => (f.title || "").toLowerCase().includes(q)) ||
-      [asset.server, asset.framework, asset.wafName, ...badges].some((value) =>
-        typeof value === "string" && value.toLowerCase().includes(q),
-      );
-
-    let isSpotlight = true;
-    if (focusedDomain.value) {
-      isSpotlight = rootDomain === focusedDomain.value || host.includes(focusedDomain.value);
-    } else if (spotlightFilter.value === "waf") {
-      isSpotlight = Boolean(asset.wafName || asset.waf);
-    } else if (spotlightFilter.value === "https") {
-      isSpotlight = protocol === "https";
-    } else if (spotlightFilter.value === "http") {
-      isSpotlight = protocol === "http";
-    }
-
-    const isMatch = isSearchMatch && isSpotlight;
-    const statusKind = getAssetStatusKind(asset, protocol);
-
     return {
-      id: asset.id!,
-      asset,
-      x: nx,
-      y: ny,
-      host,
-      protocol,
-      badges,
-      rootDomain,
-      isIp,
-      isMatch,
-      isSpotlight,
-      statusKind,
-      urlPath,
-      vulnCount,
-      riskCount,
-      findings: nodeFindings,
+      ...assetMetadata.value.get(asset.id!)!,
+      x: custom ? custom.x : autoX,
+      y: custom ? custom.y : autoY,
     };
   }
 
@@ -1428,6 +1348,32 @@ const layoutData = computed<{
   return { hubs, nodes, edges, domainNodes };
 });
 
+// 筛选只更新高亮状态，不触发父子关系、布局和碰撞计算。
+const layoutData = computed(() => {
+  const layout = positionedLayout.value;
+  const q = searchQuery.value.trim().toLowerCase();
+  const domain = focusedDomain.value;
+  const spotlight = spotlightFilter.value;
+  if (!q && !domain && !spotlight) return layout;
+  const matchedDomains = new Set<string>();
+  const hubsByProject = new Map(layout.hubs.map((hub) => [hub.projectId, hub]));
+  const nodes = layout.nodes.map((node) => {
+    const isSpotlight = domain
+      ? node.rootDomain === domain || node.host.includes(domain)
+      : spotlight === "waf" ? Boolean(node.asset.wafName || node.asset.waf)
+      : spotlight ? node.protocol === spotlight : true;
+    const isMatch = isSpotlight && (!q || assetMetadata.value.get(node.id)!.searchValues.some((value) => value.includes(q)));
+    if (isMatch) {
+      const hub = hubsByProject.get(node.asset.projectId) || layout.hubs[0];
+      matchedDomains.add(`domain-${hub.id}-${node.rootDomain}`);
+    }
+    return { ...node, isMatch, isSpotlight };
+  });
+  return { ...layout, nodes, domainNodes: layout.domainNodes.map((node) => ({
+    ...node, isMatch: matchedDomains.has(node.id),
+  })) };
+});
+
 // 计算同主域半透明聚类围栏 (>= 2 个节点时绘制气泡底板，理顺资产星系)
 const clusterEnclosures = computed<DomainClusterEnclosure[]>(() => {
   if (layoutMode.value === "orbit") return [];
@@ -1490,9 +1436,9 @@ const matchedNodeIds = computed(() => {
 });
 
 const sceneBounds = computed(() => {
-  const nodes = layoutData.value.nodes;
-  const hubs = layoutData.value.hubs;
-  const dNodes = layoutData.value.domainNodes || [];
+  const nodes = positionedLayout.value.nodes;
+  const hubs = positionedLayout.value.hubs;
+  const dNodes = positionedLayout.value.domainNodes;
 
   let left = Infinity;
   let right = -Infinity;
@@ -2066,8 +2012,25 @@ function computeAlign(
   return { x: sn.x + w / 2, y: sn.y + h / 2, guides, rulers };
 }
 
-// 全局鼠标移动
+// 合并同一帧内的指针事件，避免高频鼠标每次移动都重算布局。
+let pointerRaf = 0;
+let pendingPointerEvent: MouseEvent | null = null;
 function onGlobalMouseMove(e: MouseEvent) {
+  if (!selectingRect.value && draggingHubId.value == null && draggingNodeId.value == null
+    && !isDraggingMinimap.value && !isDraggingCanvas.value) return;
+  pendingPointerEvent = e;
+  if (!pointerRaf) pointerRaf = requestAnimationFrame(flushPointerMove);
+}
+
+function flushPointerMove() {
+  if (pointerRaf) cancelAnimationFrame(pointerRaf);
+  pointerRaf = 0;
+  const event = pendingPointerEvent;
+  pendingPointerEvent = null;
+  if (event) updatePointerPosition(event);
+}
+
+function updatePointerPosition(e: MouseEvent) {
   if (selectingRect.value) {
     const scene = screenToScene(e.clientX, e.clientY);
     const sx = selectionStartScene.value.x;
@@ -2145,6 +2108,8 @@ function onGlobalMouseMove(e: MouseEvent) {
 
 // 全局鼠标松开
 function onGlobalMouseUp() {
+  // 松开前应用最后一次移动，确保快速拖拽的位置和框选范围不丢失。
+  flushPointerMove();
   if (selectingRect.value) {
     const rect = selectionRect.value;
     selectingRect.value = false;
@@ -2569,6 +2534,7 @@ watch(layoutMode, () => {
 });
 watch(() => props.projectId, () => {
   selectedNodeId.value = null;
+  selectedNodeIds.value = [];
   hoveredNodeId.value = null;
   drawerVisible.value = false;
   searchQuery.value = "";
@@ -2579,12 +2545,24 @@ watch(() => props.projectId, () => {
     props.projectId != null ? loadNodePositions(props.projectId) : {};
   void fitView();
 });
-watch(() => props.assets.map((asset) => asset.id).join(","), () => {
-  if (!props.assets.some((asset) => asset.id === selectedNodeId.value)) {
+watch(preparedAssets, (assets, previousAssets) => {
+  const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
+  const ids = new Set(assetsById.keys());
+  // 合成 ID 按当前主机顺序分配，列表变化后不能让复用 ID 接管原来的选择。
+  for (const previous of previousAssets) {
+    if (previous._syntheticHost !== true) continue;
+    const current = assetsById.get(previous.id);
+    if (!current || current.projectId !== previous.projectId || current.url !== previous.url) ids.delete(previous.id);
+  }
+  selectedNodeIds.value = selectedNodeIds.value.filter((id) => ids.has(id));
+  if (!ids.has(selectedNodeId.value ?? undefined)) {
     selectedNodeId.value = null;
     drawerVisible.value = false;
   }
-  void fitView();
+  if (assets.length !== previousAssets.length || assets.some((asset, index) =>
+    asset.id !== previousAssets[index]?.id || asset.url !== previousAssets[index]?.url)) {
+    void fitView();
+  }
 }, { flush: "post" });
 
 // 按项目防抖持久化节点自定义位置
@@ -2627,6 +2605,9 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  if (cameraRaf) cancelAnimationFrame(cameraRaf);
+  if (pointerRaf) cancelAnimationFrame(pointerRaf);
+  pendingPointerEvent = null;
   if (positionSaveTimer != null) clearTimeout(positionSaveTimer);
   if (urlCopiedTimer != null) clearTimeout(urlCopiedTimer);
   if (evidenceCopiedTimer != null) clearTimeout(evidenceCopiedTimer);
@@ -2819,11 +2800,14 @@ onUnmounted(() => {
 
         <el-popover placement="bottom-end" :width="208" trigger="click" :teleported="!isFullscreen">
           <template #reference>
-            <el-tooltip content="视图选项" placement="bottom" :show-after="200">
-              <button class="fluent-command-btn" aria-label="视图选项">
-                <FluentIcon name="settings" />
-              </button>
-            </el-tooltip>
+            <!-- Popover 需要原生触发节点，嵌套 Tooltip 不透传点击事件。 -->
+            <span class="view-options-trigger">
+              <el-tooltip content="视图选项" placement="bottom" :show-after="200">
+                <button type="button" class="fluent-command-btn" aria-label="视图选项">
+                  <FluentIcon name="settings" />
+                </button>
+              </el-tooltip>
+            </span>
           </template>
           <div class="view-options">
             <el-checkbox v-model="enableFlowAnim">连接动画</el-checkbox>
@@ -2884,6 +2868,7 @@ onUnmounted(() => {
         v-else
         ref="svgRef"
         class="topology-svg"
+        :class="{ 'is-overview': zoom < 0.5 }"
         :width="viewportWidth"
         :height="viewportHeight"
       >
@@ -2985,10 +2970,11 @@ onUnmounted(() => {
           </g>
 
           <!-- ==================== 图层 0.6: 同主域半透明聚类围栏 (Grouping Enclosures) ==================== -->
-          <g v-if="layoutMode !== 'orbit'" class="topology-clusters" pointer-events="none">
+          <g v-if="layoutMode !== 'orbit'" v-memo="[clusterEnclosures, focusedDomain]" class="topology-clusters" pointer-events="none">
             <g
               v-for="cluster in clusterEnclosures"
               :key="`cluster-${cluster.domain}`"
+              v-memo="[cluster, focusedDomain === cluster.domain]"
               class="cluster-group"
               :class="{
                 'is-dimmed': !cluster.isMatch,
@@ -3032,10 +3018,11 @@ onUnmounted(() => {
           </g>
 
           <!-- ==================== 图层 1: 连线图层 (真实端点物理接驳) ==================== -->
-          <g class="topology-edges" pointer-events="none">
+          <g v-memo="[layoutData.edges, hoveredNodeId, selectedNodeId, enableFlowAnim, matchedNodeIds]" class="topology-edges" pointer-events="none">
             <g
               v-for="edge in layoutData.edges"
               :key="edge.id"
+              v-memo="[edge.path, hoveredNodeId === edge.targetId, selectedNodeId === edge.targetId, enableFlowAnim, matchedNodeIds.has(edge.targetId)]"
               class="edge-group"
               :class="{
                 'is-hovered': hoveredNodeId === edge.targetId,
@@ -3057,6 +3044,7 @@ onUnmounted(() => {
           <g
             v-for="hub in layoutData.hubs"
             :key="hub.id"
+            v-memo="[hub, customPositions[hub.id] != null]"
             class="topology-hub-node"
             :class="{ 'is-custom-dragged': customPositions[hub.id] != null }"
             :transform="`translate(${hub.x}, ${hub.y})`"
@@ -3125,10 +3113,11 @@ onUnmounted(() => {
           </g>
 
           <!-- ==================== 图层 2.5: 思维导图主域分支中继胶囊 (仅导图模式) ==================== -->
-          <g v-if="layoutMode === 'mindmap'" class="topology-domain-branches">
+          <g v-if="layoutMode === 'mindmap'" v-memo="[layoutData.domainNodes, focusedDomain]" class="topology-domain-branches">
             <g
               v-for="dNode in layoutData.domainNodes"
               :key="dNode.id"
+              v-memo="[dNode, focusedDomain === dNode.domain]"
               class="domain-branch-group"
               :class="{
                 'is-dimmed': !dNode.isMatch,
@@ -3195,15 +3184,16 @@ onUnmounted(() => {
           </g>
 
           <!-- ==================== 图层 3: 资产节点卡片列表 (Fluent Asset Cards) ==================== -->
-          <g class="topology-nodes">
+          <g v-memo="[layoutData.nodes, hoveredNodeId, selectedNodeIdSet, customPositions, newAssetIds]" class="topology-nodes">
             <g
               v-for="node in layoutData.nodes"
               :key="node.id"
+              v-memo="[assetMetadata.get(node.id), node.x, node.y, node.isMatch, hoveredNodeId === node.id, selectedNodeIdSet.has(node.id), customPositions[node.id] != null, newAssetIds.has(node.id)]"
               class="node-card-group"
               :class="{
                 'is-dimmed': !node.isMatch,
                 'is-hovered': hoveredNodeId === node.id,
-                'is-selected': selectedNodeIds.includes(node.id),
+                'is-selected': selectedNodeIdSet.has(node.id),
                 'is-custom-dragged': customPositions[node.id] != null,
               }"
               role="button"
@@ -3231,7 +3221,7 @@ onUnmounted(() => {
                   'card--has-vuln': node.vulnCount > 0,
                   'card--has-risk': node.riskCount > 0 && node.vulnCount === 0,
                 }"
-                :filter="selectedNodeIds.includes(node.id) ? 'url(#nodeCardSelectedShadow)' : hoveredNodeId === node.id ? 'url(#nodeCardHoverShadow)' : 'url(#nodeCardShadow)'"
+                :filter="selectedNodeIdSet.has(node.id) ? 'url(#nodeCardSelectedShadow)' : hoveredNodeId === node.id ? 'url(#nodeCardHoverShadow)' : 'url(#nodeCardShadow)'"
               />
 
               <!-- 右上角态势徽标 (宽度随计数增长，使用 Fluent 图形而非 emoji) -->
@@ -3491,6 +3481,7 @@ onUnmounted(() => {
               class="minimap-viewfinder"
             />
             <!-- 中心宿主小方块群 (置于取景框上方) -->
+            <g v-memo="[layoutData, minimapTransform]">
             <rect
               v-for="hub in layoutData.hubs"
               :key="`mini-${hub.id}`"
@@ -3525,6 +3516,7 @@ onUnmounted(() => {
               stroke-width="0.6"
               :opacity="node.isMatch ? 0.95 : 0.35"
             />
+            </g>
           </svg>
         </div>
       </div>
@@ -3583,6 +3575,7 @@ onUnmounted(() => {
       direction="rtl"
       :append-to-body="!isFullscreen"
       class="asset-detail-drawer"
+      modal-class="asset-detail-overlay"
       custom-class="asset-detail-drawer"
     >
       <div v-if="selectedAsset" class="drawer-body">
@@ -3590,18 +3583,18 @@ onUnmounted(() => {
         <div class="asset-hero-card fluent-hero">
           <div
             class="hero-icon-box"
-            :class="`is-${parseHost(selectedAsset.url).protocol}`"
+            :class="`is-${selectedAssetHost.protocol}`"
           >
             <FluentIcon
-              :name="parseHost(selectedAsset.url).protocol === 'https' ? 'lock' : 'globe'"
+              :name="selectedAssetHost.protocol === 'https' ? 'lock' : 'globe'"
               :size="28"
             />
           </div>
           <div class="hero-info">
-            <h3 class="hero-host">{{ parseHost(selectedAsset.url).host }}</h3>
+            <h3 class="hero-host">{{ selectedAssetHost.host }}</h3>
             <div class="hero-tags">
               <el-tag size="small" effect="light" type="primary">
-                {{ parseHost(selectedAsset.url).protocol.toUpperCase() }}
+                {{ selectedAssetHost.protocol.toUpperCase() }}
               </el-tag>
               <el-tag
                 v-if="isWebPathAsset(selectedAsset)"
@@ -3612,13 +3605,13 @@ onUnmounted(() => {
                 Web 路径资产
               </el-tag>
               <el-tag
-                v-if="selectedNodeFindings.filter(findingIsVulnerability).length > 0"
+                v-if="selectedVulnerabilityCount > 0"
                 size="small"
                 effect="dark"
                 type="danger"
               >
                 <FluentIcon name="shield" />
-                {{ selectedNodeFindings.filter(findingIsVulnerability).length }} 漏洞
+                {{ selectedVulnerabilityCount }} 漏洞
               </el-tag>
               <el-tag
                 v-else-if="selectedNodeFindings.length > 0"
@@ -3664,7 +3657,7 @@ onUnmounted(() => {
           </h4>
           <div class="topology-findings-list">
             <div
-              v-for="f in selectedNodeFindings"
+              v-for="f in visibleNodeFindings"
               :key="f.id"
               class="topology-finding-card"
               :class="findingIsVulnerability(f) ? 'card--vuln' : 'card--risk'"
@@ -3688,17 +3681,25 @@ onUnmounted(() => {
               </div>
               <p class="finding-card-desc">{{ f.description }}</p>
               <div v-if="f.evidence" class="finding-card-evidence">
-                <el-input
-                  :model-value="f.evidence"
-                  type="textarea"
-                  :autosize="{ minRows: 1, maxRows: 8 }"
-                  resize="none"
+                <!-- 原生文本域由 CSS 自适应高度，避免每条证据触发 JS 测量和强制布局。 -->
+                <textarea
+                  :value="f.evidence"
+                  :aria-label="`${f.title || '安全发现'}的证据`"
+                  rows="1"
                   readonly
                   class="finding-evidence-textarea"
                 />
               </div>
             </div>
           </div>
+          <AppPagination
+            v-model:page="findingsPage"
+            v-model:page-size="findingsPageSize"
+            class="findings-pagination"
+            :total="findingsTotal"
+            aria-label="关联安全发现分页"
+            @size-change="resetFindingsPage"
+          />
         </div>
 
         <!-- 核心属性列表 -->
@@ -3808,9 +3809,9 @@ onUnmounted(() => {
               </el-tooltip>
             </div>
             <el-input
-              :model-value="formatEvidence(selectedAsset.evidence || selectedAsset.technologies)"
+              :model-value="selectedEvidenceText"
               type="textarea"
-              :autosize="{ minRows: 6, maxRows: 12 }"
+              :rows="8"
               readonly
               placeholder="暂无原始数据"
               class="raw-data-textarea"
@@ -3832,7 +3833,7 @@ onUnmounted(() => {
             type="danger"
             plain
             class="fluent-action-btn"
-            @click="confirmRemoveNode(selectedAsset.id!, parseHost(selectedAsset.url).host)"
+            @click="confirmRemoveNode(selectedAsset.id!, selectedAssetHost.host)"
           >
             {{ assetRemovalLabel(selectedAsset) }}
           </el-button>
@@ -4208,6 +4209,10 @@ html.dark .zoom-controls .fluent-command-btn:hover,
 html.dark .zoom-controls .divider-v,
 [data-theme="dark"] .zoom-controls .divider-v {
   background: rgba(255, 255, 255, 0.2) !important;
+}
+
+.view-options-trigger {
+  display: inline-flex;
 }
 
 .view-options {
@@ -4625,6 +4630,11 @@ html.dark .zoom-controls .divider-v,
   cursor: grabbing;
 }
 
+.node-card-group:active:hover .node-card-bg {
+  fill: color-mix(in srgb, var(--app-accent, #0078d4) 12%, var(--app-surface-strong, #ffffff));
+  transition-duration: 0s;
+}
+
 .node-card-bg {
   fill: var(--app-surface-strong, #ffffff);
   stroke: var(--app-border, #cbd5e1);
@@ -4642,6 +4652,12 @@ html.dark .zoom-controls .divider-v,
 .node-card-bg.card--has-risk {
   stroke: var(--fluent-warning-bg, #8a4b08) !important;
   stroke-width: 1.5px !important;
+}
+
+/* 总览下卡片已缩得很小，阴影几乎不可见，却会让整张 SVG 反复栅格化。
+   保留风险边框和选中描边，放大到可阅读尺寸后恢复原来的卡片阴影。 */
+.topology-svg.is-overview .node-card-bg {
+  filter: none !important;
 }
 
 /* 态势徽标 (右上角) */
@@ -4681,6 +4697,55 @@ html.dark .zoom-controls .divider-v,
   flex-direction: column;
   gap: 10px;
   margin-top: 10px;
+}
+
+.findings-pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+/* Use the shared controls, arranged in two rows to fit the detail drawer. */
+.findings-pagination :deep(.el-pagination) {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  max-width: 100%;
+}
+
+.findings-pagination :deep(.el-pagination__total) {
+  grid-area: 1 / 1 / 2 / 4;
+  justify-self: start;
+  margin: 0;
+}
+
+.findings-pagination :deep(.el-pagination__sizes) {
+  grid-area: 1 / 1 / 2 / 4;
+  justify-self: end;
+  margin: 0;
+}
+
+.findings-pagination :deep(.el-pager) {
+  justify-self: end;
+}
+
+/* The drawer is teleported outside the app frame; retain its pager styling. */
+.findings-pagination :deep(.el-pager li) {
+  border-radius: var(--fluent-radius-control);
+  transition: background-color var(--fluent-fast), color var(--fluent-fast);
+}
+
+.findings-pagination :deep(.el-pager li.is-active) {
+  background: var(--fluent3-select-bg);
+  color: var(--app-accent);
+  font-weight: var(--fluent-weight-semibold);
+}
+
+@media (max-width: 380px) {
+  .findings-pagination :deep(.el-pagination) {
+    gap: 4px;
+    --el-pagination-button-width: 24px;
+  }
 }
 
 .topology-finding-card {
@@ -4734,7 +4799,14 @@ html.dark .zoom-controls .divider-v,
 }
 
 /* Fluent 2 只读文本框：完整展示证据内容，长文本自动换行 */
-.finding-evidence-textarea :deep(.el-textarea__inner) {
+.finding-evidence-textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  field-sizing: content;
+  min-height: 29px;
+  max-height: 144px;
+  overflow: auto;
   font-family: var(--font-mono, "Cascadia Code", "Consolas", monospace);
   font-size: 11px;
   line-height: 1.5;
@@ -4751,11 +4823,11 @@ html.dark .zoom-controls .divider-v,
   transition: box-shadow 150ms ease;
 }
 
-.finding-evidence-textarea :deep(.el-textarea__inner:hover) {
+.finding-evidence-textarea:hover {
   box-shadow: 0 0 0 1px light-dark(rgba(0, 0, 0, 0.16), rgba(255, 255, 255, 0.18)) inset !important;
 }
 
-.finding-evidence-textarea :deep(.el-textarea__inner:focus) {
+.finding-evidence-textarea:focus {
   outline: none !important;
   box-shadow:
     inset 0 0 0 1px var(--app-border-strong, #cbd5e1),
@@ -4979,11 +5051,13 @@ html.dark .zoom-controls .divider-v,
 }
 
 .menu-item.text-danger {
-  color: #d83b01;
+  color: light-dark(var(--fluent-danger-bg), #ffb4ab);
 }
 
-.menu-item.text-danger:hover {
-  background: #fdf3f2;
+.menu-item.text-danger:hover,
+.menu-item.text-danger:focus-visible {
+  background: color-mix(in srgb, var(--fluent-danger-bg) 10%, var(--app-surface-strong));
+  color: light-dark(var(--fluent-danger-hover-bg), #ffd2cc);
 }
 
 .menu-divider {
@@ -4993,6 +5067,26 @@ html.dark .zoom-controls .divider-v,
 }
 
 /* Fluent Drawer 样式与滚动条规范 */
+:global(.asset-detail-overlay) {
+  --el-transition-duration: 160ms;
+  transition: background-color 160ms ease-out;
+}
+
+:global(.asset-detail-drawer) {
+  transition: transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+:global(html[data-anim-decorative="off"] .asset-detail-overlay) {
+  transition: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :global(.asset-detail-overlay),
+  :global(.asset-detail-drawer) {
+    transition: none !important;
+  }
+}
+
 :global(.asset-detail-drawer .el-drawer__body) {
   overflow-y: auto !important;
   overflow-x: hidden !important;

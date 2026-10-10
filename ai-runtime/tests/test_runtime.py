@@ -51,6 +51,25 @@ def _collect(runtime: SecurityAgentRuntime, request: AgentRequest) -> list[dict]
     return asyncio.run(run())
 
 
+def _install_model_output(runtime, *, tools=(), answer="模型根据本轮请求生成的回答", intent=None):
+    """Exercise the production provider boundary with explicit test output."""
+    actions = [{"tool": tool, "parameters": {"check": "cors"} if tool == "http_security_check" else {"allPocs": True} if tool == "nuclei_scan" else {},
+                "risk": "CAUTION" if tool == "nuclei_scan" else "SAFE", "requiresApproval": False, "group": index}
+               for index, tool in enumerate(tools)]
+    payload = {"summary": "模型输出", "answer": answer, "intent": intent or ("plan" if actions else "answer"), "actions": actions}
+    class ModelChain:
+        def __init__(self):
+            self.calls = []
+        async def ainvoke(self, inputs):
+            self.calls.append(inputs)
+            return SimpleNamespace(content=json.dumps(payload))
+    chain = ModelChain()
+    runtime.planner._llm_requested = True
+    runtime.planner._chain_load_attempted = True
+    runtime.planner._planner_chain = chain
+    return chain
+
+
 @pytest.fixture
 def runtime_headers(monkeypatch):
     token = "test-runtime-token-at-least-24-characters"
@@ -613,6 +632,7 @@ def test_v3_public_event_strips_sensitive_runtime_payloads():
 
 def test_project_question_uses_guarded_retrieval_not_saved_workflow(tmp_path):
     runtime = SecurityAgentRuntime(ProjectIndexStore(tmp_path))
+    _install_model_output(runtime)
     request = AgentRequest(
         projectId=7,
         targetId=11,
@@ -641,6 +661,7 @@ def test_project_question_uses_guarded_retrieval_not_saved_workflow(tmp_path):
 
 def test_explicit_scan_can_activate_saved_workflow(tmp_path):
     runtime = SecurityAgentRuntime(ProjectIndexStore(tmp_path))
+    _install_model_output(runtime, tools=["nmap_service_scan"])
     request = AgentRequest(
         projectId=8,
         targetId=12,
@@ -668,6 +689,7 @@ def test_explicit_scan_can_activate_saved_workflow(tmp_path):
 
 def test_informational_question_does_not_require_active_project(tmp_path, monkeypatch):
     runtime = SecurityAgentRuntime(ProjectIndexStore(tmp_path))
+    _install_model_output(runtime)
     request = AgentRequest(
         projectId=2,
         messages=[{"role": "user", "content": "总结项目资料"}],
@@ -687,8 +709,9 @@ def test_informational_question_does_not_require_active_project(tmp_path, monkey
     assert events[-1]["data"]["status"] == "COMPLETED"
 
 
-def test_local_runtime_explains_project_report_without_actions(tmp_path):
+def test_model_explains_project_report_without_actions(tmp_path):
     runtime = SecurityAgentRuntime(ProjectIndexStore(tmp_path))
+    _install_model_output(runtime, answer="可根据项目报告页面信息选择导出。")
     request = AgentRequest(
         projectId=22,
         targetId=33,
@@ -704,6 +727,7 @@ def test_local_runtime_explains_project_report_without_actions(tmp_path):
 
 def test_unsupported_high_risk_request_fails_closed(tmp_path):
     runtime = SecurityAgentRuntime(ProjectIndexStore(tmp_path))
+    _install_model_output(runtime, intent="clarify", answer="该请求超出平台支持范围。")
     request = AgentRequest(
         projectId=3,
         targetId=7,
@@ -721,7 +745,7 @@ def test_unsupported_high_risk_request_fails_closed(tmp_path):
     )
     events = _collect(runtime, request)
     plan = next(event for event in events if event["type"] == "plan")
-    assert plan["data"]["source"] == "local-rules"
+    assert plan["data"]["source"] == "langchain"
     assert plan["data"]["intent"] == "clarify"
     assert plan["data"]["actionCount"] == 0
     assert not any(event["type"] == "approval_required" for event in events)
@@ -730,6 +754,7 @@ def test_unsupported_high_risk_request_fails_closed(tmp_path):
 
 def test_external_tool_is_only_a_java_proposal(tmp_path, monkeypatch):
     runtime = SecurityAgentRuntime(ProjectIndexStore(tmp_path))
+    _install_model_output(runtime, tools=["nmap_service_scan"])
     request = AgentRequest(
         projectId=4,
         targetId=9,
@@ -754,6 +779,7 @@ def test_external_tool_is_only_a_java_proposal(tmp_path, monkeypatch):
 
 def test_failed_stage_retries_through_guard_and_retest(tmp_path, monkeypatch):
     runtime = SecurityAgentRuntime(ProjectIndexStore(tmp_path))
+    _install_model_output(runtime, tools=["nmap_service_scan", "http_security_check"])
     calls = {"count": 0}
 
     def flaky_proposal(payload):
@@ -828,6 +854,7 @@ def test_guard_denies_external_tool_when_authorized_target_snapshot_is_empty(
     tmp_path, monkeypatch
 ):
     runtime = SecurityAgentRuntime(ProjectIndexStore(tmp_path))
+    _install_model_output(runtime, tools=["nmap_service_scan"])
     request = AgentRequest(
         projectId=5,
         targetId=9,
@@ -850,7 +877,7 @@ def test_guard_denies_external_tool_when_authorized_target_snapshot_is_empty(
     assert events[-1]["data"]["status"] == "DENIED"
 
 
-def test_natural_scan_intents_create_actions(tmp_path):
+def test_model_selected_actions_are_preserved_for_natural_requests(tmp_path):
     runtime = SecurityAgentRuntime(ProjectIndexStore(tmp_path))
     cases = {
         "对目标进行漏扫": {"nuclei_scan"},
@@ -859,6 +886,7 @@ def test_natural_scan_intents_create_actions(tmp_path):
         "扫描端口": {"nmap_service_scan"},
     }
     for prompt, expected in cases.items():
+        chain = _install_model_output(runtime, tools=sorted(expected))
         request = AgentRequest(
             projectId=9,
             targetId=19,
@@ -884,11 +912,13 @@ def test_natural_scan_intents_create_actions(tmp_path):
         )
         plan = asyncio.run(runtime.planner.plan(request.model_dump(mode="json")))
         tools = {action["tool"] for action in plan["actions"]}
-        assert expected <= tools, prompt
+        assert expected == tools, prompt
+        assert prompt in chain.calls[0]["message"]
 
 
 def test_how_to_scan_stays_informational(tmp_path):
     runtime = SecurityAgentRuntime(ProjectIndexStore(tmp_path))
+    _install_model_output(runtime)
     request = AgentRequest(
         projectId=10,
         targetId=20,

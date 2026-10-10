@@ -7,8 +7,8 @@ final class RuntimeProtocolDiagnostics {
   enum Stage { RUNTIME_TERMINAL, JAVA_LEDGER, JAVA_SEMANTIC, JAVA_FIELDS, JAVA_STREAM, JAVA_PROTOCOL }
 
   enum Code {
-    ROUTE_FAILED, GROUNDED_GENERATION_FAILED, EVIDENCE_ASSESSMENT_FAILED, RETRIEVAL_FAILED,
-    RETRIEVAL_GUARD_DENIED, TURN_TIMEOUT, MODEL_ACCESS_DENIED, MODEL_RATE_LIMITED,
+    ROUTE_FAILED, GROUNDED_GENERATION_FAILED, GROUNDED_REFERENCE_INVALID, EVIDENCE_ASSESSMENT_FAILED, RETRIEVAL_FAILED,
+    RETRIEVAL_GUARD_DENIED, TURN_TIMEOUT, MODEL_NOT_CONFIGURED, MODEL_ACCESS_DENIED, MODEL_RATE_LIMITED,
     MODEL_TIMEOUT, MODEL_SERVICE_UNAVAILABLE, MODEL_REQUEST_FAILED, UNKNOWN_RUNTIME_TERMINAL,
     LEDGER_DIGEST_INVALID, LEDGER_PERSISTENCE_INVALID, EVENT_IDENTITY_INVALID,
     ROUTE_PLAN_MISMATCH, AUTO_DECISION_INVALID, PLAN_EVENT_MISMATCH,
@@ -19,9 +19,9 @@ final class RuntimeProtocolDiagnostics {
   record Failure(Stage stage, Code code) {}
 
   private static final Set<Code> TERMINAL_CODES = Set.of(
-      Code.ROUTE_FAILED, Code.GROUNDED_GENERATION_FAILED, Code.EVIDENCE_ASSESSMENT_FAILED,
+      Code.ROUTE_FAILED, Code.GROUNDED_GENERATION_FAILED, Code.GROUNDED_REFERENCE_INVALID, Code.EVIDENCE_ASSESSMENT_FAILED,
       Code.RETRIEVAL_FAILED, Code.RETRIEVAL_GUARD_DENIED, Code.TURN_TIMEOUT,
-      Code.MODEL_ACCESS_DENIED, Code.MODEL_RATE_LIMITED, Code.MODEL_TIMEOUT,
+      Code.MODEL_NOT_CONFIGURED, Code.MODEL_ACCESS_DENIED, Code.MODEL_RATE_LIMITED, Code.MODEL_TIMEOUT,
       Code.MODEL_SERVICE_UNAVAILABLE, Code.MODEL_REQUEST_FAILED);
 
   private RuntimeProtocolDiagnostics() {}
@@ -29,22 +29,26 @@ final class RuntimeProtocolDiagnostics {
   static String userMessage(Failure failure) {
     String stopped = "本轮已安全停止，尚未提交审批申请，未创建检测任务，未执行任何检测。";
     if (failure.stage() != Stage.RUNTIME_TERMINAL) {
-      return "AI Runtime 返回内容未通过 Harness 协议校验：智能服务返回内容格式不完整，"
+      return "智能服务返回内容未通过完整性校验，"
           + stopped + "请检查模型连接后重试";
     }
     return switch (failure.code()) {
       case EVIDENCE_ASSESSMENT_FAILED ->
-          "AI Runtime 未能完成证据评估，" + stopped + "请检查模型连接后重试";
+          "智能服务未能完成证据评估，" + stopped + "请检查模型连接后重试";
       case GROUNDED_GENERATION_FAILED ->
-          "AI Runtime 未能根据项目证据生成回答，" + stopped + "请检查模型连接后重试";
+          "AI 生成的回答或检测方案未通过完整性与一致性检查，" + stopped + "请重试；如持续失败，请查看 AI 诊断记录";
+      case GROUNDED_REFERENCE_INVALID ->
+          "AI 生成的回答或检测方案引用了本轮证据中不存在的编号，" + stopped + "请重试；如持续失败，请查看 AI 诊断记录";
       case ROUTE_FAILED ->
-          "AI Runtime 未能完成请求意图判断，" + stopped + "请检查模型连接后重试";
+          "智能服务未能完成请求意图判断，" + stopped + "请检查模型连接后重试";
       case RETRIEVAL_FAILED ->
-          "AI Runtime 项目证据检索失败，" + stopped + "请检查项目索引和检索服务后重试";
+          "项目证据检索失败，" + stopped + "请检查项目索引和检索服务后重试";
       case RETRIEVAL_GUARD_DENIED ->
-          "AI Runtime 项目证据检索未通过授权检查，" + stopped + "请检查项目和目标授权范围";
+          "项目证据检索未通过授权检查，" + stopped + "请检查项目和目标授权范围";
       case TURN_TIMEOUT ->
           "模型在规定时间内没有完成回答，" + stopped + "请检查模型连接后重试";
+      case MODEL_NOT_CONFIGURED ->
+          "AI 模型未配置或未启用，" + stopped + "请在系统设置中配置并启用模型后重试";
       case MODEL_ACCESS_DENIED ->
           "模型服务拒绝了这次请求，" + stopped + "请检查代理权限、模型权限，或改用兼容的模型服务后重试";
       case MODEL_RATE_LIMITED ->
@@ -55,7 +59,7 @@ final class RuntimeProtocolDiagnostics {
           "模型服务暂时不可用，" + stopped + "请检查服务状态后重试";
       case MODEL_REQUEST_FAILED ->
           "模型服务请求失败，" + stopped + "请检查模型地址和连接后重试";
-      default -> "AI Runtime 未能完成本轮请求，" + stopped + "请检查服务状态后重试";
+      default -> "智能服务未能完成本轮请求，" + stopped + "请检查服务状态后重试";
     };
   }
 
@@ -101,6 +105,7 @@ final class RuntimeProtocolDiagnostics {
           "PROJECT_EVIDENCE 计划缺少证据引用", "INSUFFICIENT_EVIDENCE 只能返回无行动澄清" ->
           new Failure(Stage.JAVA_SEMANTIC, Code.EVIDENCE_SCOPE_INVALID);
       case "AI Runtime 未授权执行本轮计划", "AI Runtime 未获授权却发送 tool 事件",
+          "AI Runtime SQLMap 计划必须要求审批",
           "AI Runtime authorization_guard status 与计划不一致",
           "AI Runtime authorization_guard 决策明细不一致",
           "AI Runtime NOT_APPLICABLE 授权守卫与计划不一致",

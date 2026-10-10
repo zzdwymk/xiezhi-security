@@ -69,9 +69,34 @@ for (const flag of [{ recorded: true }, { eventTiming: 'VERIFIED_RECORD' }]) {
 test('Dashboard still accepts real live done and error lifecycle events', () => {
   for (const [type, status] of [['done', 'completed'], ['error', 'failed']]) {
     const { current, apply } = fixture();
-    apply({ type, message: 'live event' });
+    apply({ type, message: 'live event', ...(type === 'done' ? { answer: 'complete answer' } : {}) });
     assert.equal(current.status, status);
     assert.equal(current.agentEvents.length, 1);
   }
+});
+
+test('Dashboard does not complete from an empty terminal event without an answer', () => {
+  const { current, apply } = fixture();
+  apply({ type: 'done', message: 'live event' });
+  assert.equal(current.status, 'running');
+});
+test('model decision provenance survives wire parsing, Dashboard storage and history reload', () => {
+  const { current, apply } = fixture();
+  apply({ type: 'planner_progress', data: { progressStage: 'ASSESSED', source: 'runtime-public-progress', eventTiming: 'LIVE', assessmentSource: 'MODEL', modelDecision: 'REWRITE_QUERY', evidenceDecision: 'CLARIFY', reasonCodes: ['PARTIAL_SUPPORT'], guardReason: 'REWRITE_LIMIT_REACHED', message: '模型认为现有证据仅部分支持；系统已达到检索次数上限，请补充信息。' } });
+  const event = current.agentEvents[0];
+  assert.equal(event.assessmentSource, 'MODEL'); assert.equal(event.modelDecision, 'REWRITE_QUERY');
+  assert.equal(event.evidenceDecision, 'CLARIFY'); assert.equal(event.guardReason, 'REWRITE_LIMIT_REACHED');
+  assert.deepEqual(Array.from(event.reasonCodes), ['PARTIAL_SUPPORT']);
+  assert.equal(buildAiProgress(current, [], Date.now()).decisionLabel, '模型决策摘要');
+  const { normalizeConversations } = load(path.join(root, 'src/stores/conversations.ts'));
+  const restored = normalizeConversations([{ id: 'thread', messages: [current] }])[0].messages[0];
+  assert.equal(restored.agentEvents[0].source, 'runtime-public-progress');
+  assert.equal(restored.agentEvents[0].guardReason, 'REWRITE_LIMIT_REACHED');
+  assert.equal(buildAiProgress(restored, [], Date.now()).decisionLabel, '模型决策摘要');
+});
+test('legacy fixed phase prose does not claim to be a model decision', () => {
+  const { current, apply } = fixture();
+  apply({ type: 'planner_progress', data: { progressStage: 'ASSESSED', message: '已评估现有依据，将据此回答并说明证据边界' } });
+  assert.equal(buildAiProgress(current, [], Date.now()).decisionLabel, '运行状态');
 });
 console.log(`${passed} AI progress lifecycle integration checks passed.`);

@@ -205,6 +205,10 @@ interface ToolboxDesktopBridge {
   ) => Promise<CaptureBrowserStatus>;
   readonly closeCaptureBrowser?: () => Promise<CaptureBrowserStatus>;
   readonly getCaptureBrowserStatus?: () => Promise<CaptureBrowserStatus>;
+  readonly setCaptureBrowserProxyState?: (state: {
+    running: boolean | null;
+    capturing: boolean;
+  }) => Promise<void>;
   readonly setProgressBar?: (
     progress: number,
     options?: {
@@ -223,22 +227,33 @@ interface ToolboxDesktopBridge {
     callback: (event: DependencyInstallProgressEvent) => void,
   ) => () => void;
   readonly showTaskNotification?: (payload: {
+    eventKey?: string;
+    category?: string;
+    outcome?: string;
     title?: string;
     body?: string;
-    type?: "info" | "error";
-  }) => Promise<void>;
-  readonly getNotificationSettings?: () => Promise<NotificationSettings>;
-  readonly saveNotificationSettings?: (payload: {
+    route?: string;
     severities?: string[];
-    taskCompleteNotifications?: boolean;
-    workflowSkipNotifications?: boolean;
-  }) => Promise<NotificationSettings>;
+    type?: "info" | "error";
+  }) => Promise<{ delivered: boolean; reason?: string }>;
+  readonly getNotificationSettings?: () => Promise<NotificationSettings>;
+  readonly saveNotificationSettings?: (payload: Partial<Omit<NotificationSettings, "severities">> & { severities?: string[] }) => Promise<NotificationSettings>;
+  readonly onNotificationClick?: (callback: (route: string) => void) => () => void;
+  readonly onNotificationSettingsChanged?: (callback: (settings: NotificationSettings) => void) => () => void;
 }
 
 interface NotificationSettings {
   readonly severities: NotificationSeverity[];
+  readonly enabled: boolean;
   readonly taskCompleteNotifications: boolean;
+  readonly taskFailureNotifications: boolean;
+  readonly findingNotifications: boolean;
+  readonly workflowCompleteNotifications: boolean;
   readonly workflowSkipNotifications: boolean;
+  readonly approvalNotifications: boolean;
+  readonly scheduleNotifications: boolean;
+  readonly trafficNotifications: boolean;
+  readonly serviceNotifications: boolean;
 }
 
 type NotificationSeverity =

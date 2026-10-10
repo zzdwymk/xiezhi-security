@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { chromium } = require('playwright-core');
 const { navigate, openSettings, selectOn, sleep } = require('./lib/ui.cjs');
+const { captureAiWire } = require('./lib/ai-wire.cjs');
 const ROOT = path.resolve(__dirname, '../../..');
 const OUT = path.join(ROOT, '.run/ai-ui-test', `script-${new Date().toISOString().replace(/[:.]/g, '-')}`);
 const onlyArg = process.argv.find(x => x.startsWith('--only='));
@@ -72,6 +73,7 @@ async function send(prompt, execute = false, options = {}) {
       }
     }catch(e){samplingError=String(e.message).slice(0,300);}finally{sampling=false;}
   };
+  const capture=await captureAiWire(page);
   const responsePromise=page.waitForResponse(r=>/\/ai\/(agent|dispatches)\/stream(?:\?|$)/.test(r.url())&&r.request().method()==='POST',{timeout:20000});
   await page.locator('.send-button:visible').click();
   const observe=process.argv.includes('--observe-progress');
@@ -80,9 +82,10 @@ async function send(prompt, execute = false, options = {}) {
   try{
     if(observe)await sample();
     response=await responsePromise;
-    wire=parseWire((await response.body()).toString('utf8'));
+    wire=parseWire((await capture.body(response)).toString('utf8'));
     streamCompletedMs=Date.now()-startedAt;
   }finally{
+    await capture.close();
     if(sampler)clearInterval(sampler);
     if(observe){
       while(sampling)await sleep(50);
@@ -112,7 +115,7 @@ async function send(prompt, execute = false, options = {}) {
     const error=!observed.length?'运行期间没有可见进度':observed[0].ms>=3000?'首条可见进度超过3秒':!observed.some(x=>x.ms<streamCompletedMs-500&&/理解请求|检索|证据|生成|授权|等待模型/.test(x.title))?'未观察到流结束前的阶段进度':'';
     if(error){const e=new Error(error);e.detail=result;throw e;}
   }
-  requireTrue(answer.trim().length>8, '未取得完整界面回答');
+  requireTrue(answer.trim().length >= (options.minAnswerLength || 9), '未取得完整界面回答');
   requireTrue(!!bodyText||(execute&&result.evidence.some(x=>/taskIds$/.test(x.field)&&Array.isArray(x.value)&&x.value.length)),'没有回答正文，不能将进度说明当成模型回答');
   // A grounded diagnosis may correctly describe a failed HTTP request or model
   // incident. Transport/stream errors are checked above, not guessed from prose.
@@ -121,11 +124,22 @@ async function send(prompt, execute = false, options = {}) {
   const serverRuleAccepted=options.planProviders?.includes(terminalPlanProvider)===true;
   if(!sources.includes(terminalPlannerSource)&&!serverRuleAccepted) { const e=new Error('回答来源不符合验收要求：'+answer.slice(0,300));e.detail=result;throw e; }
   result.answerSource=terminalPlannerSource||terminalPlanProvider;
+  result.publicProgress=wire.filter(event=>event.type==='planner_progress').map(event=>{
+    const data=event.data||event;
+    return {stage:data.progressStage,source:data.source,eventTiming:data.eventTiming,assessmentSource:data.assessmentSource,modelDecision:data.modelDecision,evidenceDecision:data.evidenceDecision,reasonCodes:data.reasonCodes,guardReason:data.guardReason,message:event.message||data.message};
+  });
   result.answerKind=serverRuleAccepted?'SERVER_RULE_ANALYSIS':terminalPlannerSource==='langchain-grounded'?'MODEL':'HARNESS_CLARIFICATION';
   return result;
 }
 async function newChat() {
+  async function preserveDraft() {
+    const input=page.locator('.welcome-composer textarea,.thread-composer textarea');
+    requireTrue(!await page.locator('.composer-edit-notice:visible,.composer-quote:visible').count(),'当前有编辑或引用草稿，停止验收以保留用户输入');
+    if(await input.count()) requireTrue(!(await input.inputValue()).trim(),'当前有未发送草稿，停止验收以保留用户输入');
+  }
+  await preserveDraft();
   await navigate(page,'AI 安全助手');
+  await preserveDraft();
   await page.getByRole('button',{name:'新对话',exact:true}).click();
   await composer().waitFor({state:'visible'});
 }
@@ -196,7 +210,7 @@ async function relayStatus() {
   return {note};
 }
 async function findingRow() {
-  await navigate(page,'结果中心');
+  await navigate(page,'安全发现');
   await page.getByPlaceholder('搜索名称、等级、工具、规则...').fill('SQL 注入');
   await sleep(800);
   return page.locator('.el-table__row').filter({hasText:'SQL 注入'}).filter({hasText:'294'}).first();
@@ -281,6 +295,50 @@ const cases={
     requireTrue(rendered.unsafeElements===0,'Markdown包含不安全元素');
     return {...result,rendered};
   },
+  async markdown_user(){
+    await newChat();
+    const prompt='仅做文字排版验收，不执行任何检测。请回复“已收到”。\n\n## 用户格式验收\n\n**保留工具代码**：fscan_scan\n\n- 第一项\n- 第二项\n\n| 检查项 | 状态 |\n| --- | --- |\n| 用户正文 | 待核对 |\n\n```json\n{"tool":"fscan_scan"}\n```';
+    await composer().fill(prompt);
+    const preview=page.locator('.composer-preview:visible');
+    await preview.locator('h2').waitFor();
+    requireTrue(await preview.locator('h2').innerText()==='用户格式验收','输入框标题未实时预览');
+    requireTrue(await preview.locator('table').count()===1&&await preview.locator('ul li').count()===2,'输入框表格或列表未预览');
+    requireTrue((await preview.locator('pre code').innerText()).trim()==='{"tool":"fscan_scan"}','预览改写了用户代码');
+    const toggle=preview.getByRole('button',{name:'实时预览',exact:true});
+    await toggle.click();requireTrue(await preview.locator('.composer-preview-body').isVisible()===false,'预览未折叠');
+    await toggle.click();requireTrue(await composer().inputValue()===prompt,'折叠预览改变了输入');
+    await shot('composer-preview-before-send');
+    const result=await send(prompt,false,{minAnswerLength:1});
+    const bubble=page.locator('article.chat-message.user .message-bubble').last();
+    requireTrue(await bubble.locator('h2').innerText()==='用户格式验收','用户标题未渲染');
+    requireTrue(await bubble.locator('ul li').count()===2&&await bubble.locator('table').count()===1,'用户列表或表格未渲染');
+    requireTrue((await bubble.locator('pre code').innerText()).trim()==='{"tool":"fscan_scan"}','用户代码内容被修改');
+    requireTrue(result.request.userPrompt===prompt,'发送给后端的用户原文发生变化');
+    requireTrue(await page.locator('.composer-preview').count()===0,'发送后残留旧输入预览');
+    const avatars=await page.locator('article.chat-message .conversation-avatar').evaluateAll(els=>els.map(el=>({role:el.classList.contains('user')?'user':'assistant',radius:getComputedStyle(el).borderRadius,width:el.getBoundingClientRect().width,height:el.getBoundingClientRect().height})));
+    requireTrue(avatars.some(a=>a.role==='user')&&avatars.some(a=>a.role==='assistant')&&avatars.every(a=>a.radius==='50%'&&a.width===a.height),'用户和AI头像未统一为圆形');
+    return {...result,composerPreview:true,avatars};
+  },
+  async progress_decision(){
+    const row=await findingRow();
+    await row.getByRole('button',{name:'AI 研判',exact:true}).click();
+    const result=await send('仅分析当前引用的风险证据，解释已知事实和不确定性，不创建或执行检测。');
+    const assessment=result.publicProgress.find(event=>event.stage==='ASSESSED'&&event.assessmentSource==='MODEL');
+    requireTrue(assessment&&assessment.source==='runtime-public-progress'&&assessment.eventTiming==='LIVE'&&assessment.modelDecision&&assessment.reasonCodes?.length,'实际模型未返回可核验的结构化评估摘要');
+    const panel=page.locator('article.chat-message.assistant .ai-progress-panel').last();
+    if(await panel.locator('.progress-toggle').getAttribute('aria-expanded')!=='true')await panel.locator('.progress-toggle').click();
+    requireTrue((await panel.innerText()).includes('模型决策摘要'),'真实模型摘要未显示来源');
+    requireTrue((await panel.innerText()).includes(assessment.message),'界面摘要与实际事件不一致');
+    const modelEvents=result.publicProgress.filter(event=>event.stage==='ASSESSED'&&event.assessmentSource==='MODEL'&&event.eventTiming==='LIVE');
+    requireTrue(await panel.locator('.progress-timeline li').count()===modelEvents.length,'模型摘要区混入非模型流程记录');
+    requireTrue(await panel.locator('.progress-facts,.progress-milestones,.progress-note').count()===0,'摘要区残留系统阶段或说明占位');
+    const before=(await panel.locator('.progress-timeline').innerText());
+    await page.reload();await page.locator('#desktop-v2-primary-navigation').waitFor();
+    const restored=page.locator('article.chat-message.assistant .ai-progress-panel').last();
+    if(await restored.locator('.progress-toggle').getAttribute('aria-expanded')!=='true')await restored.locator('.progress-toggle').click();
+    requireTrue((await restored.locator('.progress-timeline').innerText())===before,'刷新丢失真实来源或摘要');
+    return {...result,assessment,historyRestored:true};
+  },
   async markdown_links(){
     await newChat();
     const result=await send('只做文字排版验收，不执行检测、不访问地址。请原样回复下面这一句话，不要使用代码块、不要添加Markdown链接括号或空格：http://192.168.136.132的响应头。扫描尚未完成。');
@@ -308,6 +366,22 @@ const cases={
     const row=await findingRow();
     await row.getByRole('button',{name:'AI 研判',exact:true}).click();
     return send();
+  },
+  async finding_local(){
+    await navigate(page,'安全发现');
+    await page.getByPlaceholder('搜索名称、等级、工具、规则...').fill('referrer-policy');
+    const row=page.locator('.el-table__row').filter({hasText:'referrer-policy'}).filter({hasText:'298'}).first();
+    await row.getByRole('button',{name:'AI 研判',exact:true}).waitFor();
+    await row.getByRole('button',{name:'AI 研判',exact:true}).click();
+    try {
+      const result=await send();
+      requireTrue(result.request.targetId===298&&result.request.refs.some(ref=>ref.type==='finding'),'未复测截图中的本机发现');
+      requireTrue(!/\b(?:AI Runtime|Harness|Ledger|HIGH|MEDIUM|LOW|OPEN|FAILED|SUCCESS)\b/.test(result.answer),'面向用户的研判仍暴露内部标签');
+      return result;
+    } catch(error) {
+      error.detail={...error.detail,duplicateErrorToasts:await page.locator('.el-message--error:visible').count()};
+      throw error;
+    }
   },
   async path(){
     const row=await findingRow();
@@ -391,7 +465,10 @@ const cases={
   },
   async diagnosis(){
     await openSettings(page);
-    await page.locator('button.settings-row').filter({hasText:'AI 配置诊断'}).click();
+    await page.locator('button.settings-row').filter({hasText:'AI 模型服务'}).click();
+    const d=page.getByRole('dialog',{name:'AI 模型服务',exact:true});
+    await d.getByRole('tab',{name:'配置诊断',exact:true}).click();
+    await d.getByRole('button',{name:'在 AI 助手中诊断',exact:true}).click();
     return send();
   },
   async memory(){

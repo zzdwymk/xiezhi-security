@@ -13,7 +13,7 @@ def require_runtime_token(request: Request) -> None:
     if not settings.token:
         raise HTTPException(status_code=503, detail="本地智能服务未配置访问令牌")
     supplied = request.headers.get("X-AI-Runtime-Token", "")
-    if not supplied or not hmac.compare_digest(supplied, settings.token):
+    if not supplied or not supplied.isascii() or not hmac.compare_digest(supplied, settings.token):
         raise HTTPException(status_code=401, detail="本地智能服务令牌无效")
 
 
@@ -55,7 +55,7 @@ def require_project_authorization(
     ):
         raise HTTPException(status_code=403, detail="项目级智能服务授权无效或已过期")
     expected = project_authorization_value(project_id, scope, expires_at).rsplit(":", 1)[1]
-    if not hmac.compare_digest(signature, expected):
+    if not signature.isascii() or not hmac.compare_digest(signature, expected):
         raise HTTPException(status_code=403, detail="项目级智能服务授权签名无效")
 
 

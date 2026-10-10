@@ -16,4 +16,6 @@ public interface ProjectApprovalRepository extends JpaRepository<ProjectApproval
       @org.springframework.data.repository.query.Param("projectId") Long projectId);
 
   Optional<ProjectApproval> findByIdAndProjectId(Long id, Long projectId);
+
+  Optional<ProjectApproval> findByAiRequestKey(String aiRequestKey);
 }

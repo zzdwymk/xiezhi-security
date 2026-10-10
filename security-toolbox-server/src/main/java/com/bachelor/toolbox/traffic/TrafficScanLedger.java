@@ -49,8 +49,17 @@ public class TrafficScanLedger {
   @Column(length = 2000)
   private String message;
 
+  /** Final result for reopening a completed operation from a desktop notification. */
+  @com.fasterxml.jackson.annotation.JsonIgnore
+  @Column(columnDefinition = "text")
+  private String resultJson;
+
   @Column(nullable = false, updatable = false)
   private Instant createdAt;
+
+  private Instant startedAt;
+
+  private Instant finishedAt;
 
   @PrePersist
   void prePersist() {

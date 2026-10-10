@@ -8,7 +8,7 @@ import {
   shallowRef,
   watch,
 } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   Check,
@@ -27,7 +27,9 @@ import {
   Setting,
 } from "../components/fluentIcons";
 import FluentIcon from "../components/FluentIcon.vue";
+import FluentCodeBlock from "../components/FluentCodeBlock.vue";
 import MarkdownBody from "../components/MarkdownBody.vue";
+import ProjectEvidenceResult from "../components/ProjectEvidenceResult.vue";
 import {
   Handle,
   MarkerType,
@@ -68,14 +70,14 @@ import {
   type MsfModuleOption,
 } from "../api";
 import { toErrorMessage } from "../utils/errorMessage";
+import { msfOptionPresentation } from "../utils/msfOptionPresentation";
 import {
-  loadNotificationPreferences,
   notifyWorkflowSkipped,
 } from "../utils/notifications";
 import { taskbarProgress } from "../utils/taskbarProgress";
 import WorkflowEdge from "./WorkflowEdge.vue";
 import { COMMON_PORT_OPTIONS, normalizeAllowedPorts } from "../utils/ports";
-import { actionRiskLabel, actionStepLabel, aiToolLabel, severityLabel } from "../utils/aiPresentation";
+import { actionRiskLabel, actionStepLabel, aiProviderLabel, aiToolLabel, localizeAiDisplayText, severityLabel } from "../utils/aiPresentation";
 
 type PhaseCode =
   | "engagement"
@@ -108,6 +110,7 @@ interface EditorNodeData {
 }
 
 interface NodeRunState {
+  toolCode?: string;
   status:
     "pending" | "running" | "success" | "failed" | "skipped" | "cancelled";
   taskId?: number;
@@ -166,7 +169,7 @@ const PHASES: PhaseMeta[] = [
     code: "retest",
     label: "复测与修复确认",
     shortLabel: "复测修复",
-    desc: "验证修复结果并记录扫描 Diff。",
+    desc: "验证修复结果并记录扫描结果差异。",
     icon: "sync",
   },
   {
@@ -295,10 +298,18 @@ const SUBAGENTS: {
     phase: "validation",
   },
   {
+    tool: "zap_fuzz",
+    name: "ZAP 单次参数变异验证",
+    icon: "shield-task",
+    desc: "向授权地址发送一次参数变异请求，使用一个已有字段和一个指定测试值；执行前需确认。",
+    risk: "CAUTION",
+    phase: "validation",
+  },
+  {
     tool: "msf_scan",
     name: "Metasploit 模块执行",
     icon: "shield-task",
-    desc: "对授权主机执行用户明确选择的 Metasploit auxiliary/exploit 模块，爆破与越权默认禁止",
+    desc: "对授权主机执行用户明确选择的 Metasploit 辅助探测或利用模块，爆破与越权默认禁止",
     risk: "CAUTION",
     phase: "discovery",
   },
@@ -342,22 +353,17 @@ function suggestionKindLabel(kind?: string) {
 }
 
 function localizeSuggestionText(value?: string) {
-  let text = String(value || "");
-  Object.entries(SUGGESTION_TERM_LABELS).forEach(([term, label]) => {
-    text = text.replace(new RegExp(`\\b${term}\\b`, "gi"), label);
+  return localizeAiDisplayText(value, {
+    nodeLabels: suggestionNodeLabels.value,
+    termLabels: SUGGESTION_TERM_LABELS,
   });
-  return text;
 }
 
 function suggestSourceLabel(source?: string) {
-  const map: Record<string, string> = {
-    "llm+local": "大模型+本地规则",
-    "local-rules": "本地规则",
-    local: "本地规则",
-    llm: "大模型",
-  };
-  const key = String(source || "").trim().toLowerCase();
-  return map[key] || String(source || "");
+  if (source === "model-failed") return "未获得模型建议";
+  if (source === "本地规则") return "本地结构参考 · 未获得模型建议";
+  if (source === "大模型+本地规则") return "模型审阅 · 本地结构参考";
+  return aiProviderLabel(source);
 }
 
 const PRESETS = [
@@ -379,7 +385,7 @@ const PRESETS = [
   {
     value: "retest",
     label: "漏洞复测",
-    desc: "针对已有发现验证修复效果并交付 Diff。",
+    desc: "针对已有发现验证修复效果并交付结果差异。",
   },
 ] as const;
 type PresetCode = (typeof PRESETS)[number]["value"];
@@ -423,11 +429,19 @@ const targetInput = ref({
 const targetInputSelectedPorts = ref<string[]>(["80", "443"]);
 const targetInputFullPortAccess = ref(false);
 const router = useRouter();
+const route = useRoute();
 const executing = ref(false);
 const executeProgress = ref(0);
 const executeIndeterminate = ref(false);
 const executeStatus = ref("待执行");
 const executeLogs = ref<string[]>([]);
+const runDetailsExpanded = ref(false);
+const executeProgressStatus = computed(() => {
+  if (executeStatus.value === "已完成") return "success";
+  if (["执行失败", "部分失败", "部分任务失败"].includes(executeStatus.value))
+    return "exception";
+  return undefined;
+});
 const executeTaskIds = ref<number[]>([]);
 const nodeRuns = ref<Record<string, NodeRunState>>({});
 const workflowRuns = ref<WorkflowRunSummary[]>([]);
@@ -442,6 +456,9 @@ let runPollGeneration = 0;
 const showGuide = ref(false);
 const preset = ref<PresetCode>("standard");
 const nodes = shallowRef<EditorNode[]>([]);
+const suggestionNodeLabels = computed(() => Object.fromEntries(nodes.value.map(node => [
+  node.id, actionStepLabel(node.data.tool, node.data.label),
+])));
 const edges = shallowRef<Edge[]>([]);
 const selectedNodeId = ref("");
 const selectedNodeIds = ref<string[]>([]);
@@ -469,6 +486,7 @@ const suggestLoading = ref(false);
 const suggestNote = ref("");
 const suggestSource = ref("");
 const suggestions = ref<WorkflowSuggestion[]>([]);
+const suggestionOrigins = ref<Record<string, string>>({});
 const suggestExpanded = ref(false);
 const suggestHeight = ref<number | null>(null);
 const SUGGEST_MIN_HEIGHT = 96;
@@ -679,6 +697,7 @@ const TOOL_DEPENDENCIES: Record<string, string> = {
   afrog_scan: "Afrog",
   xray_scan: "Xray",
   zap_scan: "OWASP ZAP",
+  zap_fuzz: "OWASP ZAP",
   fscan_scan: "fscan",
   sqlmap_scan: "sqlmap",
   msf_scan: "Metasploit",
@@ -785,8 +804,7 @@ function getToolDependencyState(tool?: string): {
 }
 
 function goToSetupDependencies() {
-  localStorage.removeItem("security_toolbox_setup_complete_v2");
-  router.push({ path: "/setup", query: { redirect: "/workflow" } });
+  router.push({ path: "/setup", query: { redirect: router.currentRoute.value.fullPath } });
 }
 
 const sortedPhases = computed(() => PHASES);
@@ -1017,6 +1035,32 @@ const selectedNmapMode = computed({
   set: (value: string) => updateSelectedToolParameters({ mode: value }),
 });
 
+const selectedSqlmapPath = computed({
+  get: () => String(selectedToolNode.value?.data.parameters?.path || ""),
+  set: (value: string) => updateSelectedToolParameters({ path: value.trim() || undefined }),
+});
+
+function selectedTextParameter(key: string, fallback = "") {
+  return computed({
+    get: () => String(selectedToolNode.value?.data.parameters?.[key] ?? fallback),
+    set: (value: string) => updateSelectedToolParameters({ [key]: value || undefined }),
+  });
+}
+const selectedFuzzUrl = selectedTextParameter("fuzzRequestUrl");
+const selectedRetrievalQuery = selectedTextParameter("query");
+const selectedFuzzMethod = selectedTextParameter("method", "GET");
+const selectedFuzzField = selectedTextParameter("fuzzTargetField");
+const selectedFuzzPayload = selectedTextParameter("fuzzPayload");
+const selectedFuzzBody = selectedTextParameter("fuzzPostBody");
+const selectedSqlmapLevel = computed({
+  get: () => Number(selectedToolNode.value?.data.parameters?.level ?? 1),
+  set: (value: number) => updateSelectedToolParameters({ level: value }),
+});
+const selectedSqlmapTechnique = computed({
+  get: () => String(selectedToolNode.value?.data.parameters?.technique ?? "BEUT"),
+  set: (value: string) => updateSelectedToolParameters({ technique: value.toUpperCase() }),
+});
+
 const selectedFscanVulnMode = computed({
   get: () =>
     String(
@@ -1212,8 +1256,15 @@ function setMsfOptionValue(opt: MsfModuleOption, value: string) {
 }
 
 const editableMsfOptions = computed(() =>
-  msfOptions.value.filter((opt) => opt.name && opt.name.trim()),
+  msfOptions.value
+    .filter((opt) => opt.name && opt.name.trim())
+    .map((opt) => ({ ...opt, ...msfOptionPresentation(opt) })),
 );
+
+function msfCategoryLabel(category: string) {
+  const labels: Record<string, string> = { auxiliary: "辅助探测", exploit: "利用模块" };
+  return labels[category.trim().toLowerCase()] || "其他模块";
+}
 
 function rankLabel(rank?: string) {
   const aliases: Record<string, string> = {
@@ -1225,7 +1276,7 @@ function rankLabel(rank?: string) {
     great: "优秀",
     excellent: "极佳",
   };
-  return aliases[String(rank || "").toLowerCase()] || String(rank || "");
+  return aliases[String(rank || "").trim().toLowerCase()] || "等级未说明";
 }
 
 function moduleOptionLabel(mod: {
@@ -3424,8 +3475,8 @@ function syncEndResultsToCenter() {
   const count = endNodeSummary.value.findings.length;
   ElMessage.success(
     count
-      ? `已留存 ${count} 条发现到结果中心`
-      : "本轮运行未产生可留存的发现，已打开结果中心核对",
+      ? `已留存 ${count} 条发现到安全发现`
+      : "本轮运行未产生可留存的发现，已打开安全发现核对",
   );
 }
 
@@ -3439,7 +3490,7 @@ function isRunTerminal(status: string) {
 }
 
 function runStatusLabel(status: string) {
-  switch (status) {
+  switch (status.trim().toUpperCase()) {
     case "PREPARING":
       return "准备中";
     case "RUNNING":
@@ -3455,7 +3506,7 @@ function runStatusLabel(status: string) {
     case "FAILED":
       return "执行失败";
     default:
-      return status || "未知状态";
+      return "未知状态";
   }
 }
 
@@ -3466,6 +3517,7 @@ function taskStatusLabel(status: string) {
     BLOCKED: "等待前置节点",
     RUNNING: "执行中",
     SUCCESS: "成功",
+    COMPLETED: "已完成",
     FAILED: "失败",
     TIMEOUT: "超时",
     REJECTED: "已拒绝",
@@ -3476,7 +3528,7 @@ function taskStatusLabel(status: string) {
     STOPPED: "已停止",
     PARTIAL_FAILED: "部分失败",
   };
-  return labels[status] || status;
+  return labels[status.trim().toUpperCase()] || "未知状态";
 }
 
 function nodeStatusFromTask(status: string): NodeRunState["status"] {
@@ -3511,7 +3563,7 @@ function structuredResultCount(
     result.data?.items,
     result.data?.results,
   ];
-  const found = candidates.find((value) => Array.isArray(value));
+  const found = candidates.find((value) => Array.isArray(value) && value.length);
   return found?.length || undefined;
 }
 
@@ -3524,6 +3576,7 @@ function nodeRunFromTask(task: ProjectTaskRecord): NodeRunState {
     undefined;
   return {
     status: nodeStatusFromTask(task.status),
+    toolCode: task.toolCode,
     taskId: task.id,
     log: task.executionLog || task.errorMessage,
     summary,
@@ -3563,7 +3616,7 @@ function applyWorkflowRunDetail(detail: WorkflowRunDetail) {
         task.errorMessage ||
         task.progressMessage ||
         "";
-      return `[#${task.id}] ${task.toolCode} · ${taskStatusLabel(task.status)}${summary ? ` · ${summary}` : ""}`;
+      return `[#${task.id}] ${actionStepLabel(task.toolCode)} · ${taskStatusLabel(task.status)}${summary ? ` · ${summary}` : ""}`;
     }),
   ];
   if (linkedTargets.value.some((target) => target.id === detail.run.targetId)) {
@@ -3753,7 +3806,7 @@ function validateExecutionInputs(steps: WorkflowStepSpec[]) {
         String(parameters.vulnMode || "").toUpperCase(),
       )
     ) {
-      return "fscan 扫描模式必须是 SAFE、FINGERPRINT 或 FULL";
+      return "fscan 扫描模式必须是安全、仅指纹或完整扫描";
     }
     if (step.tool === "msf_scan") {
       const modules = Array.isArray(parameters.modules)
@@ -3856,7 +3909,7 @@ async function executeWorkflow() {
       const lines = Object.entries(resolvedTargets)
         .map(
           ([nodeId, urls]) =>
-            `· ${nodeId}: ${(urls ?? []).join("、") || "（无可达地址）"}`,
+            `· ${suggestionNodeLabels.value[nodeId] || "检测步骤"}: ${(urls ?? []).join("、") || "（无可达地址）"}`,
         )
         .join("\n");
       const confirmed = await ElMessageBox.confirm(
@@ -3889,7 +3942,6 @@ async function executeWorkflow() {
           count: preflight.issues.length,
           labels: preflight.issues.map((issue) => issue.label || issue.toolCode),
         },
-        await loadNotificationPreferences(),
       );
     }
 
@@ -3898,7 +3950,6 @@ async function executeWorkflow() {
       const nodeId = step.nodeId || step.tool;
       if (
         step.requiresApproval &&
-        step.tool !== "retrieve_project_context" &&
         !skippedNodeIds.includes(nodeId)
       ) {
         const approved = await ElMessageBox.confirm(
@@ -4242,6 +4293,7 @@ async function refreshSuggestions(reason = "edit") {
   const signal = suggestAbort.signal;
   suggestLoading.value = true;
   suggestions.value = [];
+  suggestionOrigins.value = {};
   suggestNote.value = reason === "manual" ? "" : suggestNote.value;
   suggestSource.value = "";
   try {
@@ -4261,6 +4313,7 @@ async function refreshSuggestions(reason = "edit") {
             )
           ) {
             suggestions.value = [...suggestions.value, tip];
+            suggestionOrigins.value[tip.id] = event.origin || "";
           }
           return;
         }
@@ -4271,6 +4324,7 @@ async function refreshSuggestions(reason = "edit") {
           return;
         }
         if (event.type === "error") {
+          suggestSource.value = event.source || "model-failed";
           suggestNote.value = String(event.message || "工作流建议流中断");
         }
       },
@@ -4278,8 +4332,9 @@ async function refreshSuggestions(reason = "edit") {
     );
   } catch (error: any) {
     if (signal.aborted || seq !== suggestSeq) return;
+    suggestSource.value = "model-failed";
+    suggestNote.value = "未获得模型建议，AI 审阅未完成，请检查模型连接后重试。";
     if (reason === "manual") {
-      suggestNote.value = "建议服务暂时不可用，请稍后重试";
       ElMessage.warning("无法获取工作流建议");
     }
   } finally {
@@ -4459,16 +4514,41 @@ watch(
   { immediate: true },
 );
 
+let notificationRunGeneration = 0;
+let notificationRunReady = false;
+async function openNotificationRun() {
+  const generation = ++notificationRunGeneration;
+  const runId = Number(route.query.runId);
+  if (!notificationRunReady || !Number.isSafeInteger(runId) || runId <= 0) return;
+  try {
+    const { data } = await endpoints.workflowRun(runId);
+    if (generation !== notificationRunGeneration) return;
+    selectedProjectId.value = data.run.projectId;
+    await loadProjectTargets();
+    if (generation !== notificationRunGeneration) return;
+    selectedRunId.value = runId;
+    selectedRunDetail.value = data;
+    upsertWorkflowRun(data.run);
+    viewSelectedRunSnapshot();
+    await nextTick();
+    document.querySelector(".execute-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (error) {
+    if (generation === notificationRunGeneration) ElMessage.error(toErrorMessage(error, "无法打开工作流运行记录"));
+  }
+}
+watch(() => [route.query.runId, route.query._notice], () => { void openNotificationRun(); });
+
 onMounted(() => {
   scheduleSuggestions();
   window.addEventListener("keydown", onWorkflowKeydown);
   window.addEventListener("resize", onWorkflowWindowResize);
   document.addEventListener("fullscreenchange", onFullscreenChange);
   document.addEventListener("webkitfullscreenchange", onFullscreenChange);
-  void loadProjects();
+  void loadProjects().then(() => { notificationRunReady = true; return openNotificationRun(); });
   void loadDependencies();
 });
 onBeforeUnmount(() => {
+  notificationRunGeneration += 1;
   taskbarProgress.clearProgress("workflow-run");
   taskbarProgress.stopIndeterminate("workflow-run");
   runPollGeneration += 1;
@@ -4607,100 +4687,6 @@ onBeforeUnmount(() => {
         </li>
       </ul>
     </el-alert>
-
-    <div
-      v-if="
-        workflowRuns.length ||
-        selectedRunDetail ||
-        executing ||
-        executeLogs.length
-      "
-      class="execute-panel"
-      aria-label="工作流执行状态"
-    >
-      <div class="execute-head">
-        <strong>工作流运行历史</strong>
-        <div class="execute-head-actions">
-          <el-select
-            v-if="workflowRuns.length"
-            v-model="selectedRunId"
-            size="small"
-            class="run-history-select"
-            aria-label="工作流运行历史"
-            @change="selectWorkflowRun"
-          >
-            <el-option
-              v-for="run in workflowRuns"
-              :key="run.id"
-              :label="runOptionLabel(run)"
-              :value="run.id"
-            />
-          </el-select>
-          <span>{{ executeStatus }}</span>
-          <el-button
-            v-if="selectedRunDetail && !executing"
-            size="small"
-            type="danger"
-            plain
-            @click="clearSelectedRun"
-          >
-            清空结果
-          </el-button>
-          <el-button
-            size="small"
-            type="primary"
-            plain
-            @click="router.push('/findings')"
-          >
-            查看结果中心
-          </el-button>
-          <el-button
-            v-if="
-              selectedRunDetail &&
-              selectedRunDetail.run.workflowDigest !==
-                workflowSnapshot.specDigest &&
-              !viewingRunSnapshot
-            "
-            size="small"
-            type="primary"
-            plain
-            @click="viewSelectedRunSnapshot"
-          >
-            查看该次拓扑
-          </el-button>
-          <el-button
-            v-if="viewingRunSnapshot"
-            size="small"
-            plain
-            @click="returnToCurrentWorkflow"
-          >
-            返回当前工作流
-          </el-button>
-        </div>
-      </div>
-      <el-alert
-        v-if="
-          selectedRunDetail &&
-          selectedRunDetail.run.workflowDigest !==
-            workflowSnapshot.specDigest &&
-          !viewingRunSnapshot
-        "
-        type="warning"
-        :closable="false"
-        title="当前画布版本与该次运行不同，节点结果暂不映射到当前拓扑。"
-      />
-      <el-progress
-        :percentage="Math.round(executeProgress)"
-        :status="
-          executeStatus === '执行失败' || executeStatus === '部分任务失败'
-            ? 'exception'
-            : undefined
-        "
-        :indeterminate="executeIndeterminate"
-        :duration="1.2"
-      />
-      <pre class="execute-log">{{ executeLogs.join("\n") }}</pre>
-    </div>
 
     <div
       ref="workflowEditorLayoutRef"
@@ -5210,6 +5196,8 @@ onBeforeUnmount(() => {
           <el-segmented
             v-model="rightSidebarTab"
             class="workflow-library-tabs"
+            block
+            aria-label="工作流侧栏视图"
             :options="rightSidebarTabs"
           >
             <template #default="{ item }">
@@ -5262,11 +5250,8 @@ onBeforeUnmount(() => {
                   </el-icon>
                   <div class="node-dep-notice-info">
                     <span class="node-dep-notice-title">
-                      {{ selectedToolDepState.depName }}：{{ selectedToolDepState.statusText }}
+                      {{ selectedToolDepState.depName }}：{{ selectedToolDepState.isReady ? "已就绪" : selectedToolDepState.statusText }}
                     </span>
-                    <p class="node-dep-notice-desc">
-                      与检测依赖页面使用同一份检测结果。执行前仍会核验工具可用性、目标授权和步骤参数。
-                    </p>
                   </div>
                 </div>
                 <div v-if="!selectedToolDepState.isReady" class="node-dep-notice-foot">
@@ -5386,6 +5371,45 @@ onBeforeUnmount(() => {
                 </el-radio-group>
               </el-form-item>
 
+              <template v-if="selectedToolNode.data.tool === 'zap_fuzz'">
+                <el-form-item label="请求地址">
+                  <el-input v-model="selectedFuzzUrl" maxlength="2000" placeholder="留空沿用当前授权目标地址" />
+                </el-form-item>
+                <el-form-item label="请求方法">
+                  <el-radio-group v-model="selectedFuzzMethod">
+                    <el-radio-button value="GET">GET</el-radio-button>
+                    <el-radio-button value="POST">POST 表单</el-radio-button>
+                  </el-radio-group>
+                </el-form-item>
+                <el-form-item v-if="selectedFuzzMethod === 'POST'" label="原始表单">
+                  <el-input v-model="selectedFuzzBody" type="textarea" :rows="3" maxlength="4000" placeholder="application/x-www-form-urlencoded 格式，包含待测字段" />
+                </el-form-item>
+                <el-form-item label="待测字段">
+                  <el-input v-model="selectedFuzzField" maxlength="128" placeholder="已有且唯一的查询或表单字段" />
+                </el-form-item>
+                <el-form-item label="测试值">
+                  <el-input v-model="selectedFuzzPayload" maxlength="1000" placeholder="仅使用这一个指定测试值" />
+                  <small class="input-hint">仅替换所选字段并发送一次请求，不加载字典，不跟随重定向。执行前需确认。</small>
+                </el-form-item>
+              </template>
+
+              <template v-if="selectedToolNode.data.tool === 'sqlmap_scan'">
+                <el-form-item label="检测路径">
+                  <el-input v-model="selectedSqlmapPath" maxlength="2000" placeholder="留空沿用授权目标的路径与查询参数" />
+                  <small class="input-hint">URL 必须包含待测查询参数，且属于当前授权主机与端口。</small>
+                </el-form-item>
+                <el-form-item label="检测级别">
+                  <el-input-number v-model="selectedSqlmapLevel" :min="1" :max="5" :step="1" step-strictly />
+                </el-form-item>
+                <el-form-item label="检测技术">
+                  <el-input v-model="selectedSqlmapTechnique" maxlength="4" placeholder="BEUT" />
+                  <small class="input-hint">B 布尔、E 报错、U 联合查询、T 时间检测；每项只填一次。AI 仅允许风险等级 1，执行前需要审批。</small>
+                </el-form-item>
+                <el-alert v-if="Number(selectedToolNode.data.parameters?.risk ?? 1) !== 1" type="warning" :closable="false" title="此节点保存的风险等级不适用于 AI 检测">
+                  <el-button text type="primary" @click="updateSelectedToolParameters({ risk: 1 })">改为风险等级 1</el-button>
+                </el-alert>
+              </template>
+
               <el-form-item
                 v-if="selectedToolNode.data.tool === 'msf_scan'"
                 label="Metasploit 模块"
@@ -5408,7 +5432,7 @@ onBeforeUnmount(() => {
                     <el-option-group
                       v-for="cat in msfCatalog.categories"
                       :key="cat.category"
-                      :label="cat.label"
+                      :label="msfCategoryLabel(cat.category)"
                     >
                       <el-option
                         v-for="mod in cat.modules"
@@ -5437,7 +5461,7 @@ onBeforeUnmount(() => {
                       @click="selectMsfCategory(cat.category)"
                     >
                       <FluentIcon name="checkmark" />
-                      <span>全选{{ cat.label }}</span>
+                      <span>全选{{ msfCategoryLabel(cat.category) }}</span>
                     </button>
                     <button
                       type="button"
@@ -5468,17 +5492,22 @@ onBeforeUnmount(() => {
                   />
                 </template>
                 <small class="input-hint">
-                  单次最多选择 {{ MSF_ALLOWED }} 个模块，支持 auxiliary/exploit 分类；仅作用于授权主机与端口。
+                  单次最多选择 {{ MSF_ALLOWED }} 个模块，支持辅助探测与利用模块；仅作用于授权主机与端口。
                 </small>
 
                 <div v-if="selectedMsfModule.length" class="msf-options-panel">
                   <div class="msf-options-head">
-                    <span class="msf-options-title">模块必要配置（自动识别）</span>
+                    <div class="msf-options-heading">
+                      <span class="msf-options-title">模块参数</span>
+                      <span class="msf-options-caption">自动识别</span>
+                    </div>
                     <el-select
                       v-model="msfFocusedModule"
                       size="small"
                       class="msf-options-module"
                       placeholder="选择要配置的模块"
+                      aria-label="当前配置模块"
+                      :title="msfFocusedModule"
                       @change="focusMsfModule"
                     >
                       <el-option
@@ -5503,26 +5532,49 @@ onBeforeUnmount(() => {
                       :key="opt.name"
                       class="msf-option-row"
                     >
-                      <div class="msf-option-meta">
-                        <span class="msf-option-name">{{ opt.name }}</span>
+                      <div class="msf-option-heading">
+                        <label :for="`msf-option-${opt.name}`" class="msf-option-name">{{ opt.displayLabel }}</label>
                         <el-tag
                           v-if="opt.required"
+                          class="msf-option-required"
                           size="small"
                           type="danger"
                           effect="plain"
                         >
                           必填
                         </el-tag>
-                        <small v-if="opt.description" class="msf-option-desc">
-                          {{ opt.description }}
-                        </small>
+                        <span v-if="opt.displayLabel !== opt.name" class="msf-option-key">{{ opt.name }}</span>
                       </div>
-                      <el-input
+                      <el-select
+                        v-if="opt.booleanInput"
+                        :id="`msf-option-${opt.name}`"
                         :model-value="msfOptionValue(opt)"
-                        size="small"
+                        :aria-label="opt.displayLabel"
+                        :aria-required="opt.required"
+                        :aria-describedby="opt.displayDescription ? `msf-option-desc-${opt.name}` : undefined"
+                        placeholder="未设置"
+                        :clearable="!opt.required"
+                        @update:model-value="(v: string | undefined) => setMsfOptionValue(opt, v ?? '')"
+                      >
+                        <el-option label="启用" value="true" />
+                        <el-option label="关闭" value="false" />
+                      </el-select>
+                      <el-input
+                        v-else
+                        :id="`msf-option-${opt.name}`"
+                        :model-value="msfOptionValue(opt)"
                         :placeholder="opt.defaultValue || '留空'"
+                        :aria-required="opt.required"
+                        :aria-describedby="opt.displayDescription ? `msf-option-desc-${opt.name}` : undefined"
                         @update:model-value="(v: string | number) => setMsfOptionValue(opt, String(v))"
                       />
+                      <small
+                        v-if="opt.displayDescription"
+                        :id="`msf-option-desc-${opt.name}`"
+                        class="msf-option-desc"
+                      >
+                        {{ opt.displayDescription }}
+                      </small>
                     </div>
                   </div>
                   <div v-else class="msf-options-status">
@@ -5531,6 +5583,13 @@ onBeforeUnmount(() => {
                 </div>
               </el-form-item>
 
+              <el-form-item
+                v-if="selectedToolNode.data.tool === 'retrieve_project_context'"
+                label="检索内容"
+              >
+                <el-input v-model="selectedRetrievalQuery" type="textarea" :rows="3" maxlength="2000" show-word-limit placeholder="当前目标的授权范围、扫描发现与待核实证据" />
+                <small class="input-hint">留空时检索当前目标的授权范围、扫描发现与待核实证据；结果会保存在本次节点记录中。</small>
+              </el-form-item>
               <el-form-item
                 v-if="selectedToolNode.data.tool === 'http_security_check'"
                 label="检查项目"
@@ -5624,7 +5683,6 @@ onBeforeUnmount(() => {
               <div
                 v-if="
                   [
-                    'retrieve_project_context',
                     'http_headers',
                     'tls_config',
                   ].includes(selectedToolNode.data.tool || '')
@@ -5656,7 +5714,7 @@ onBeforeUnmount(() => {
                     <el-tag size="small" type="success" effect="plain" class="node-risk-tag">结果</el-tag>
                   </div>
                   <p class="node-editor-desc">
-                    聚合当前运行全部任务的发现并给出整体结论，可同步留存到结果中心。
+                    聚合当前运行全部任务的发现并给出整体结论，可同步留存到安全发现。
                   </p>
                 </div>
                 <div class="node-editor-body">
@@ -5714,10 +5772,10 @@ onBeforeUnmount(() => {
                       class="node-config-action"
                       @click="syncEndResultsToCenter"
                     >
-                      同步到结果中心
+                      同步到安全发现
                     </el-button>
                     <p class="node-editor-hint">
-                      发现已随任务执行自动留存，点击同步打开结果中心核对与导出。
+                      发现已随任务执行自动留存，点击同步打开安全发现核对与跟进。
                     </p>
                   </template>
                   <template v-else>
@@ -6043,9 +6101,9 @@ onBeforeUnmount(() => {
               <details class="suggest-explainer">
                 <summary>建议如何生成</summary>
                 <p>根据当前节点、所属阶段和有向连线分析执行顺序、并行分支与汇合依赖；拖动位置不影响执行顺序。</p>
-                <p>先检查本地规则，再由大模型结合平台能力补充建议。当前不读取扫描结果、授权端口或本机依赖状态，这些仍需执行前核验。</p>
+                <p>本地规则提供结构参考，每次审阅都由大模型结合当前拓扑和平台能力生成建议；模型失败会明确提示未完成。当前不读取扫描结果、授权端口或本机依赖状态，这些仍需执行前核验。</p>
               </details>
-              <p v-if="suggestNote" class="suggest-note">{{ suggestNote }}</p>
+              <p v-if="suggestNote" class="suggest-note">{{ localizeSuggestionText(suggestNote) }}</p>
               <div
                 v-if="!suggestions.length && !suggestLoading"
                 class="suggest-empty"
@@ -6060,6 +6118,7 @@ onBeforeUnmount(() => {
               >
                 <header>
                   <strong>{{ localizeSuggestionText(item.title) }}</strong>
+                  <small>{{ suggestionOrigins[item.id] === 'llm' ? '模型建议' : '本地结构参考' }}</small>
                   <el-tag
                     size="small"
                     effect="plain"
@@ -6067,7 +6126,7 @@ onBeforeUnmount(() => {
                     >{{ suggestionKindLabel(item.kind) }}</el-tag
                   >
                 </header>
-                  <MarkdownBody :content="localizeSuggestionText(item.detail)" />
+                  <MarkdownBody :content="item.detail" :node-labels="suggestionNodeLabels" :term-labels="SUGGESTION_TERM_LABELS" />
                 <div v-if="item.action" class="suggest-actions">
                   <el-button
                     size="small"
@@ -6090,6 +6149,102 @@ onBeforeUnmount(() => {
         </div>
       </aside>
     </div>
+
+    <section
+      v-if="workflowRuns.length || selectedRunDetail || executing || executeLogs.length"
+      class="execute-panel"
+      aria-label="工作流执行状态"
+    >
+      <div class="execute-head">
+        <div class="execute-overview">
+          <strong class="execute-title"><FluentIcon name="clipboard-text" />运行结果</strong>
+          <span
+            class="execute-status"
+            :class="executeProgressStatus ? `is-${executeProgressStatus}` : ''"
+            role="status"
+          >{{ executeStatus }}</span>
+          <el-progress
+            class="execute-progress"
+            :percentage="Math.round(executeProgress)"
+            :status="executeProgressStatus"
+            :indeterminate="executeIndeterminate"
+            :stroke-width="4"
+            :duration="1.2"
+          />
+          <el-select
+            v-if="workflowRuns.length"
+            v-model="selectedRunId"
+            size="small"
+            class="run-history-select"
+            aria-label="工作流运行历史"
+            @change="selectWorkflowRun"
+          >
+            <el-option
+              v-for="run in workflowRuns"
+              :key="run.id"
+              :label="runOptionLabel(run)"
+              :value="run.id"
+            />
+          </el-select>
+        </div>
+        <div class="execute-head-actions">
+          <el-button
+            v-if="selectedRunDetail && selectedRunDetail.run.workflowDigest !== workflowSnapshot.specDigest && !viewingRunSnapshot"
+            size="small"
+            link
+            type="primary"
+            @click="viewSelectedRunSnapshot"
+          >查看该次拓扑</el-button>
+          <el-button
+            v-if="viewingRunSnapshot"
+            size="small"
+            link
+            @click="returnToCurrentWorkflow"
+          >返回当前工作流</el-button>
+          <el-button size="small" link type="primary" @click="router.push('/findings')">
+            查看安全发现
+          </el-button>
+          <el-button
+            size="small"
+            class="execute-toggle"
+            :aria-expanded="runDetailsExpanded"
+            aria-controls="workflow-run-details"
+            :aria-label="runDetailsExpanded ? '收起运行日志' : '展开运行日志'"
+            @click="runDetailsExpanded = !runDetailsExpanded"
+          >
+            {{ runDetailsExpanded ? '收起日志' : '展开日志' }}
+            <FluentIcon :name="runDetailsExpanded ? 'chevron-down' : 'chevron-up'" />
+          </el-button>
+        </div>
+      </div>
+      <el-alert
+        v-if="selectedRunDetail && selectedRunDetail.run.workflowDigest !== workflowSnapshot.specDigest && !viewingRunSnapshot"
+        type="warning"
+        :closable="false"
+        title="当前画布版本与该次运行不同，节点结果暂不映射到当前拓扑。"
+      />
+      <div v-show="runDetailsExpanded" id="workflow-run-details" class="execute-details">
+        <div class="execute-details-head">
+          <span>执行日志</span>
+          <el-button
+            v-if="selectedRunDetail && !executing"
+            size="small"
+            link
+            type="danger"
+            @click="clearSelectedRun"
+          >清空结果</el-button>
+        </div>
+        <FluentCodeBlock
+          :content="executeLogs.join('\n')"
+          empty-text="暂无运行日志"
+          aria-label="工作流执行日志"
+          :min-rows="3"
+          :max-rows="8"
+          wrap
+          live
+        />
+      </div>
+    </section>
 
     <el-dialog
       v-model="targetInputVisible"
@@ -6178,7 +6333,8 @@ onBeforeUnmount(() => {
     <el-dialog
       v-model="nodeDetailVisible"
       :title="nodeDetailTitle"
-      width="640px"
+      class="app-dialog app-dialog--md"
+      align-center
       append-to-body
     >
       <div v-if="nodeDetailRun" class="node-detail-body">
@@ -6193,15 +6349,26 @@ onBeforeUnmount(() => {
             >{{ nodeDetailRun.resultCount }} 项结果</span
           >
         </p>
-        <p v-if="nodeDetailRun.summary" class="node-detail-summary">
-          {{ nodeDetailRun.summary }}
-        </p>
-        <pre v-if="nodeDetailRun.output" class="node-detail-log">{{
-          JSON.stringify(nodeDetailRun.output, null, 2)
-        }}</pre>
-        <pre v-if="nodeDetailRun.log" class="node-detail-log">{{
-          nodeDetailRun.log
-        }}</pre>
+        <MarkdownBody v-if="nodeDetailRun.summary" class="node-detail-summary" :content="nodeDetailRun.summary" :node-labels="suggestionNodeLabels" />
+        <ProjectEvidenceResult v-if="nodeDetailRun.toolCode === 'retrieve_project_context' && nodeDetailRun.output" :data="nodeDetailRun.output" />
+        <FluentCodeBlock
+          v-else-if="nodeDetailRun.output"
+          title="节点输出"
+          :content="JSON.stringify(nodeDetailRun.output, null, 2)"
+          aria-label="工作流节点输出"
+          :min-rows="4"
+          :max-rows="16"
+          wrap
+        />
+        <FluentCodeBlock
+          v-if="nodeDetailRun.log && nodeDetailRun.toolCode !== 'retrieve_project_context'"
+          title="节点日志"
+          :content="nodeDetailRun.log"
+          aria-label="工作流节点日志"
+          :min-rows="3"
+          :max-rows="16"
+          wrap
+        />
         <el-empty
           v-if="
             !nodeDetailRun.summary &&
@@ -6216,7 +6383,8 @@ onBeforeUnmount(() => {
     <el-dialog
       v-model="endFindingDetailVisible"
       :title="endFindingDetail?.title || '发现详情'"
-      width="620px"
+      class="app-dialog app-dialog--md"
+      align-center
       append-to-body
     >
       <div v-if="endFindingDetail" class="end-finding-detail">
@@ -6234,16 +6402,20 @@ onBeforeUnmount(() => {
             >任务 #{{ endFindingDetail.taskId }}</span
           >
         </div>
-        <p v-if="endFindingDetail.description" class="node-detail-summary">
-          {{ endFindingDetail.description }}
-        </p>
+        <MarkdownBody v-if="endFindingDetail.description" class="node-detail-summary" :content="endFindingDetail.description" />
         <template v-if="endFindingDetail.evidence">
           <h6 class="end-finding-field">证据</h6>
-          <pre class="node-detail-log">{{ endFindingDetail.evidence }}</pre>
+          <FluentCodeBlock
+            :content="endFindingDetail.evidence"
+            aria-label="发现详情证据"
+            :min-rows="3"
+            :max-rows="16"
+            wrap
+          />
         </template>
         <template v-if="endFindingDetail.remediation">
           <h6 class="end-finding-field">修复建议</h6>
-          <p class="node-detail-summary">{{ endFindingDetail.remediation }}</p>
+          <MarkdownBody class="node-detail-summary" :content="endFindingDetail.remediation" />
         </template>
       </div>
     </el-dialog>
@@ -7024,8 +7196,13 @@ onBeforeUnmount(() => {
   cursor: not-allowed;
   opacity: 0.58;
 }
-.workflow-context-menu button.is-danger {
-  color: var(--el-color-danger);
+.workflow-context-menu button.is-danger:not(:disabled) {
+  color: light-dark(var(--fluent-danger-bg), #ffb4ab);
+}
+.workflow-context-menu button.is-danger:hover:not(:disabled),
+.workflow-context-menu button.is-danger:focus-visible:not(:disabled) {
+  background: color-mix(in srgb, var(--fluent-danger-bg) 10%, var(--app-surface-strong));
+  color: light-dark(var(--fluent-danger-hover-bg), #ffd2cc);
 }
 .workflow-context-menu button .el-icon,
 .workflow-context-menu button > :deep(.fluent-icon) {
@@ -7245,9 +7422,10 @@ onBeforeUnmount(() => {
   color: var(--app-muted);
   cursor: pointer;
 }
-.node-remove:hover {
-  background: var(--app-surface-soft);
-  color: #c8503f;
+.node-remove:hover:not(:disabled),
+.node-remove:focus-visible:not(:disabled) {
+  background: color-mix(in srgb, var(--fluent-danger-bg) 10%, var(--app-surface-strong));
+  color: light-dark(var(--fluent-danger-hover-bg), #ffd2cc);
 }
 
 .node-run-status {
@@ -7310,8 +7488,9 @@ onBeforeUnmount(() => {
 
 .execute-panel {
   flex: none;
-  margin: 0 20px 12px;
-  padding: 12px 16px;
+  min-width: 0;
+  margin: 10px 0 0;
+  overflow: hidden;
   border: 1px solid var(--app-border);
   border-radius: var(--fluent-radius-card);
   background: var(--app-surface);
@@ -7319,40 +7498,100 @@ onBeforeUnmount(() => {
 .execute-head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   justify-content: space-between;
-  margin-bottom: 8px;
-  font-size: var(--type-caption);
+  gap: 8px 16px;
+  padding: 10px 14px;
+  font-size: 12px;
 }
-.execute-head strong {
+.execute-overview {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+}
+.execute-title {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  color: var(--app-text);
+  font-size: 13px;
   font-weight: 600;
+}
+.execute-title > svg {
+  width: 17px;
+  height: 17px;
+  color: var(--app-muted);
+}
+.execute-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--app-muted);
+}
+.execute-status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+}
+.execute-status.is-success {
+  color: var(--el-color-success);
+}
+.execute-status.is-exception {
+  color: var(--el-color-danger);
+}
+.execute-progress {
+  width: 110px;
+  flex: none;
+}
+.execute-progress :deep(.el-progress__text) {
+  min-width: 30px;
+  font-size: 11px !important;
 }
 .execute-head-actions {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   justify-content: flex-end;
+  margin-left: auto;
   gap: 12px;
 }
+.execute-head-actions :deep(.el-button) {
+  margin: 0;
+}
+.execute-toggle :deep(svg) {
+  width: 14px;
+  height: 14px;
+  margin-left: 6px;
+}
 .run-history-select {
-  width: min(320px, 42vw);
+  width: 280px;
+  max-width: 100%;
 }
 .execute-panel > .el-alert {
-  margin-bottom: 10px;
+  width: auto;
+  margin: 0 14px 10px;
 }
-.execute-log {
-  max-height: 160px;
-  margin: 10px 0 0;
-  overflow: auto;
-  padding: 8px 10px;
-  border-radius: var(--fluent-radius-control);
-  background: var(--app-surface-subtle);
-  color: var(--app-text);
-  font-family: var(--fluent-mono);
+.execute-details {
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--app-border);
+  background: var(--app-surface-soft);
+}
+.execute-details-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 24px;
+  margin-bottom: 6px;
+  color: var(--app-muted);
   font-size: 11px;
-  line-height: 1.5;
-  white-space: pre-wrap;
 }
-
 .node-detail-body {
   display: flex;
   flex-direction: column;
@@ -7364,18 +7603,6 @@ onBeforeUnmount(() => {
   gap: 12px;
   margin: 0;
   font-size: var(--type-caption);
-}
-.node-detail-log {
-  max-height: 360px;
-  overflow: auto;
-  margin: 0;
-  padding: 12px;
-  border-radius: var(--fluent-radius-control);
-  background: var(--app-surface-subtle);
-  font-family: var(--fluent-mono);
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
 }
 .node-handle {
   z-index: 3;
@@ -7436,63 +7663,6 @@ onBeforeUnmount(() => {
 }
 .workflow-library-tabs {
   width: 100%;
-}
-.workflow-library-tabs :deep(.el-segmented) {
-  --el-segmented-color: var(--app-muted);
-  --el-segmented-bg-color: var(--app-surface-soft);
-  --el-segmented-item-selected-color: var(--app-text);
-  --el-segmented-item-selected-bg-color: var(--app-surface-strong);
-  --el-segmented-item-hover-color: var(--app-text);
-  --el-segmented-item-hover-bg-color: transparent;
-  --el-segmented-item-active-bg-color: transparent;
-  --el-border-radius-base: var(--fluent-radius-circular);
-  min-height: 32px;
-  padding: 2px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--fluent-radius-circular);
-  background: var(--el-segmented-bg-color);
-}
-.workflow-library-tabs :deep(.el-segmented__group) {
-  display: flex;
-  width: 100%;
-}
-.workflow-library-tabs :deep(.el-segmented__item) {
-  min-width: 0;
-  flex: 1;
-  min-height: 28px;
-  border-radius: var(--fluent-radius-circular);
-  color: var(--app-muted);
-  background: transparent !important;
-  font-weight: 500;
-  transition: color var(--fluent-duration-fast, 150ms)
-    var(--fluent-curve-standard, ease);
-}
-.workflow-library-tabs :deep(.el-segmented__item:hover) {
-  color: var(--app-text);
-  background: rgba(255, 255, 255, 0.08) !important;
-}
-.workflow-library-tabs :deep(.el-segmented__item.is-selected) {
-  color: var(--app-text) !important;
-  font-weight: 600;
-}
-.workflow-library-tabs :deep(.el-segmented__item-selected) {
-  background: var(--app-surface-strong) !important;
-  border: 1px solid color-mix(in srgb, var(--app-border) 85%, transparent) !important;
-  border-radius: var(--fluent-radius-circular);
-  box-shadow: var(--fluent-shadow-2);
-  box-sizing: border-box;
-  width: 50% !important;
-  transform: translateX(0) translateZ(0) !important;
-  will-change: transform;
-  backface-visibility: hidden;
-  transition: transform var(--fluent-duration-normal, 200ms)
-    var(--fluent-curve-standard, ease);
-}
-.workflow-library-tabs :deep(.el-segmented__group):has(
-    .el-segmented__item.is-selected:last-child
-  )
-  .el-segmented__item-selected {
-  transform: translateX(100%) translateZ(0) !important;
 }
 .workflow-tab-label {
   display: inline-flex;
@@ -7655,15 +7825,22 @@ onBeforeUnmount(() => {
   cursor: not-allowed;
 }
 
-.quick-action-toolbar .fluent-quick-btn.is-danger {
-  color: var(--app-danger, #c42b1c);
-  border-color: color-mix(in srgb, var(--app-danger, #c42b1c) 35%, var(--app-border-strong, #cbd5e1));
+.quick-action-toolbar .fluent-quick-btn.is-danger:not(:disabled) {
+  color: light-dark(var(--fluent-danger-bg), #ffb4ab);
+  border-color: color-mix(in srgb, var(--fluent-danger-bg) 35%, var(--app-border-strong, #cbd5e1));
 }
 
-.quick-action-toolbar .fluent-quick-btn.is-danger:hover:not(:disabled) {
-  color: var(--app-danger, #c42b1c);
-  border-color: var(--app-danger, #c42b1c);
-  background: color-mix(in srgb, var(--app-danger, #c42b1c) 10%, transparent);
+.quick-action-toolbar .fluent-quick-btn.is-danger:hover:not(:disabled),
+.quick-action-toolbar .fluent-quick-btn.is-danger:focus-visible:not(:disabled) {
+  color: light-dark(var(--fluent-danger-hover-bg), #ffd2cc);
+  border-color: var(--fluent-danger-bg);
+  background: color-mix(in srgb, var(--fluent-danger-bg) 10%, var(--app-surface-strong));
+}
+
+.quick-action-toolbar .fluent-quick-btn.is-danger:focus-visible:not(:disabled) {
+  box-shadow:
+    0 0 0 2px var(--app-surface-strong, #ffffff),
+    0 0 0 4px color-mix(in srgb, var(--fluent-danger-bg) 55%, transparent);
 }
 
 .quick-action-toolbar .fluent-quick-btn.is-warning {
@@ -7694,27 +7871,41 @@ onBeforeUnmount(() => {
   flex: none;
 }
 .msf-options-panel {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   margin-top: 10px;
-  padding: 10px 12px;
+  padding: 14px;
   border: 1px solid var(--app-border, #e2e8f0);
   border-radius: var(--fluent-radius-card, 8px);
   background: var(--app-surface-soft, rgba(0, 0, 0, 0.02));
 }
 .msf-options-head {
   display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.msf-options-heading {
+  display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 10px;
+  line-height: 1.5;
 }
 .msf-options-title {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--app-text);
 }
+.msf-options-caption {
+  color: var(--app-muted);
+  font-size: 12px;
+}
 .msf-options-module {
-  width: 210px;
+  width: 100%;
+  min-width: 0;
 }
 .msf-options-status {
   display: flex;
@@ -7731,38 +7922,61 @@ onBeforeUnmount(() => {
 .msf-option-fields {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 14px;
 }
 .msf-option-row {
   display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.msf-option-meta {
-  display: flex;
   flex-direction: column;
-  gap: 2px;
   min-width: 0;
-  flex: 1 1 40%;
+  gap: 6px;
+  line-height: 1.5;
+}
+.msf-option-row + .msf-option-row {
+  padding-top: 14px;
+  border-top: 1px solid var(--app-border, #e2e8f0);
+}
+.msf-option-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  min-width: 0;
 }
 .msf-option-name {
-  font-family: var(--font-mono, "Cascadia Code", "Consolas", monospace);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--app-text);
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.msf-option-key {
+  min-width: 0;
+  color: var(--app-muted);
+  font-family: var(--font-mono, "Cascadia Code", "Consolas", monospace);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.msf-option-required {
+  flex: none;
+  width: auto;
+  height: 20px;
+  min-height: 20px;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 18px;
 }
 .msf-option-desc {
-  font-size: var(--type-micro, 11px);
+  display: block;
+  font-size: 12px;
   color: var(--app-muted);
-  line-height: 1.4;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
 }
-.msf-option-row > .el-input {
-  flex: 1 1 auto;
+.msf-option-row > .el-input,
+.msf-option-row > .el-select {
+  width: 100%;
   min-width: 0;
 }
 .workflow-poc-option {
@@ -8025,12 +8239,6 @@ onBeforeUnmount(() => {
   font-weight: 600;
   color: var(--app-text);
 }
-.node-dep-notice-desc {
-  margin: 0;
-  font-size: var(--type-micro);
-  color: var(--app-muted);
-  line-height: 1.45;
-}
 .node-dep-notice-foot {
   display: flex;
   justify-content: flex-end;
@@ -8200,12 +8408,13 @@ onBeforeUnmount(() => {
   flex: none;
   height: 8px;
   margin: -4px 0 -4px;
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cpath d='M14 2 L9.5 7 L18.5 7 Z M14 26 L9.5 21 L18.5 21 Z' fill='%23000'/%3E%3C/svg%3E") 14 14, ns-resize;
+  cursor: row-resize;
   touch-action: none;
   user-select: none;
 }
-.is-resizing-suggest {
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cpath d='M14 2 L9.5 7 L18.5 7 Z M14 26 L9.5 21 L18.5 21 Z' fill='%23000'/%3E%3C/svg%3E") 14 14, ns-resize !important;
+:global(body.is-resizing-suggest),
+:global(body.is-resizing-suggest *) {
+  cursor: row-resize !important;
   user-select: none !important;
 }
 .suggest-content {

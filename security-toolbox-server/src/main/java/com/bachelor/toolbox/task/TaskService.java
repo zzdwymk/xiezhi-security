@@ -22,6 +22,12 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 @Service
 public class TaskService {
+  private com.bachelor.toolbox.notification.TaskNotificationPublisher taskNotifications;
+
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  public void setTaskNotifications(com.bachelor.toolbox.notification.TaskNotificationPublisher value) {
+    taskNotifications = value;
+  }
   private static final int LIST_LIMIT = 1000;
   private static final Sort LIST_SORT =
       Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id"));
@@ -38,6 +44,9 @@ public class TaskService {
   private final AssessmentProjectService projectService;
   private final TaskProgressEventService progressEvents;
   private final ApplicationEventPublisher eventPublisher;
+  @Autowired private com.bachelor.toolbox.project.ProjectAuthorizationService authorization;
+  @Autowired private org.springframework.transaction.PlatformTransactionManager transactionManager;
+  @jakarta.persistence.PersistenceContext private jakarta.persistence.EntityManager entityManager;
 
   @Autowired
   public TaskService(
@@ -300,14 +309,66 @@ public class TaskService {
   }
 
   public SecurityTask retry(Long id) {
+    return retryTask(get(id), null);
+  }
+
+  @Transactional(rollbackFor = Exception.class)
+  public SecurityTask retry(Long id, String idempotencyKey) {
+    if (idempotencyKey == null) return retry(id);
+    if (!idempotencyKey.matches("[A-Za-z0-9_-]{1,128}")) {
+      throw new ApiException("Idempotency-Key 格式无效，长度应为 1–128 个字母、数字、下划线或连字符");
+    }
+    String operator = authorization.currentUsername();
     SecurityTask original = get(id);
+    // Serialize even the first retry, before a row with this key exists.
+    entityManager.lock(original, jakarta.persistence.LockModeType.PESSIMISTIC_WRITE);
+    entityManager.refresh(original);
+    var project = projectService.lockForAgentExecution(original.getProjectId());
+    entityManager.refresh(project);
+    projectService.get(original.getProjectId());
+    var target = targetService.lockForAgentExecution(original.getTargetId());
+    entityManager.refresh(target);
+    String input = java.util.stream.Stream.of(id.toString(), operator, idempotencyKey)
+        .map(value -> value.length() + ":" + value).collect(java.util.stream.Collectors.joining("\n"));
+    String key;
+    try {
+      key = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+          .digest(input.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    } catch (java.security.NoSuchAlgorithmException ex) {
+      throw new IllegalStateException("SHA-256 unavailable", ex);
+    }
+    return retryTask(original, key);
+  }
+
+  private SecurityTask retryTask(SecurityTask original, String retryKey) {
+    // A failed workflow node is still bound to its reviewed graph and dependencies.
+    // Cloning it as a standalone task would silently discard that execution boundary.
+    if (original.getWorkflowDigest() != null || original.getWorkflowRunId() != null
+        || original.getWorkflowNodeId() != null || Boolean.TRUE.equals(original.getWorkflowApprovalRequired())) {
+      throw new ApiException("工作流任务请重新提交原方案并确认执行，不能以普通重试跳过工作流依赖或审批");
+    }
+    projectService.validateProjectTarget(original.getProjectId(), original.getTargetId());
+    var target = targetService.getCurrentlyAuthorized(original.getTargetId(), original.getProjectId());
+    var tool = registry.require(original.getToolCode());
+    if (retryKey != null) {
+      var existing = repository.findByRetryRequestKey(retryKey);
+      if (existing.isPresent()) {
+        SecurityTask saved = existing.get();
+        if (!java.util.Objects.equals(saved.getSourceTaskId(), original.getId())
+            || !java.util.Objects.equals(saved.getProjectId(), original.getProjectId())
+            || !java.util.Objects.equals(saved.getTargetId(), original.getTargetId())
+            || !java.util.Objects.equals(saved.getToolCode(), original.getToolCode())
+            || !java.util.Objects.equals(saved.getRuleCode(), original.getRuleCode())
+            || !java.util.Objects.equals(saved.getVulnerabilityCode(), original.getVulnerabilityCode())
+            || !java.util.Objects.equals(saved.getRequestJson(), original.getRequestJson())) {
+          throw new ApiException("同一重试请求的原任务或执行范围已变化，请重新发起重试");
+        }
+        return saved;
+      }
+    }
     if (!RETRYABLE_STATUSES.contains(original.getStatus())) {
       throw new ApiException("仅失败、被拒绝或已取消的任务可以重试");
     }
-    var target =
-        targetService.getCurrentlyAuthorized(original.getTargetId(), original.getProjectId());
-    projectService.validateProjectTarget(original.getProjectId(), original.getTargetId());
-    var tool = registry.require(original.getToolCode());
 
     SecurityTask retry = new SecurityTask();
     retry.setTargetId(original.getTargetId());
@@ -323,6 +384,7 @@ public class TaskService {
     retry.setQueueEnteredAt(java.time.Instant.now());
     retry.setRequestJson(original.getRequestJson());
     retry.setSourceTaskId(original.getId());
+    retry.setRetryRequestKey(retryKey);
     snapshotService.capture(retry, target, tool);
     return saveAndExecute(retry, "RETRY_TASK", original.getId());
   }
@@ -390,7 +452,12 @@ public class TaskService {
   }
 
   private void enqueueAfterCommit(Long taskId) {
-    repository.findById(taskId).ifPresent(task -> enqueue(task, false));
+    // afterCommit still has the completed transaction's resources bound to the thread.
+    // Persist a queue rejection in a fresh transaction so replay returns its real state.
+    var transaction = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+    transaction.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+    transaction.executeWithoutResult(status ->
+        repository.findById(taskId).ifPresent(task -> enqueue(task, false)));
   }
 
   private void publishTerminalAfterCommit(Long taskId) {
@@ -417,6 +484,8 @@ public class TaskService {
       task.setProgressUpdatedAt(java.time.Instant.now());
       task.setErrorMessage("本地任务队列已满，请稍后重试");
       repository.save(task);
+      if (taskNotifications != null) taskNotifications.publish(task);
+      publishTerminalAfterCommit(task.getId());
       if (propagateFailure) {
         throw new ApiException("本地任务队列已满，请稍后重试");
       }

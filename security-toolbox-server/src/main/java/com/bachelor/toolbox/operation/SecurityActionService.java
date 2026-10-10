@@ -4,13 +4,10 @@ import com.bachelor.toolbox.audit.AuditService;
 import com.bachelor.toolbox.auth.UserRepository;
 import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.common.PageRequests;
-import com.bachelor.toolbox.finding.Finding;
-import com.bachelor.toolbox.project.AssessmentProject;
 import com.bachelor.toolbox.project.AssessmentProjectService;
 import com.bachelor.toolbox.target.TargetService;
 import java.time.Instant;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
 import org.springframework.data.domain.Sort;
@@ -23,26 +20,12 @@ public class SecurityActionService {
   private static final int LIST_LIMIT = 1000;
   private static final Sort LIST_SORT =
       Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id"));
-  private static final Set<String> CATEGORIES =
-      Set.of(
-          "VULNERABILITY_VALIDATION",
-          "CONTROLLED_EXPLOITATION",
-          "PRIVILEGE_VALIDATION",
-          "INTERNAL_ASSESSMENT",
-          "PERSISTENCE_VALIDATION");
-  private static final Set<String> RISK_LEVELS = Set.of("LOW", "MEDIUM", "HIGH", "CRITICAL");
-  private static final Set<String> APPROVAL_DECISIONS = Set.of("APPROVED", "REJECTED");
   private static final Set<String> ROLLBACK_STATUSES = Set.of("RUNNING", "COMPLETED", "FAILED");
 
-  private static final String STATUS_PENDING_APPROVAL = "PENDING_APPROVAL";
   private static final String STATUS_APPROVED = "APPROVED";
   private static final String STATUS_RUNNING = "RUNNING";
   private static final String STATUS_COMPLETED = "COMPLETED";
   private static final String STATUS_ROLLED_BACK = "ROLLED_BACK";
-  private static final long MAX_WINDOW_SECONDS = 8 * 60 * 60L;
-  private static final int MAX_TITLE_LENGTH = 200;
-  private static final int MAX_PURPOSE_LENGTH = 4000;
-  private static final int MAX_PLAN_LENGTH = 4000;
   private static final int MAX_EVIDENCE_LENGTH = 8000;
   private static final int MAX_REASON_LENGTH = 4000;
 
@@ -70,7 +53,6 @@ public class SecurityActionService {
   private final AssessmentProjectService projects;
   private final TargetService targets;
   private final AuditService audit;
-  private final UserRepository users;
 
   public SecurityActionService(
       SecurityActionRepository repository,
@@ -82,7 +64,6 @@ public class SecurityActionService {
     this.projects = projects;
     this.targets = targets;
     this.audit = audit;
-    this.users = users;
   }
 
   public List<SecurityAction> list(Long projectId) {
@@ -102,51 +83,16 @@ public class SecurityActionService {
   @Transactional
   public SecurityAction create(
       Long projectId, SecurityActionDtos.Create request, Authentication authentication) {
-    requireCreateRequest(request);
-    validateTarget(projectId, request.targetId());
-
-    AssessmentProject project = projects.get(projectId);
-    validateCategory(request.category());
-    validateExecutionWindow(project, request.windowStart(), request.windowEnd());
-    validateRelatedFinding(projectId, request.targetId(), request.findingId());
-    validateSafetyBoundary(request.nonDestructive(), request.lateralMovement());
-    validateCreateText(request);
-
-    String riskLevel = normalizeRiskLevel(request.riskLevel());
-    String requestedBy = requireApplicant(authentication);
-    SecurityAction action = buildAction(projectId, request, riskLevel, requestedBy);
-
-    SecurityAction saved = repository.save(action);
-    audit.record(
-        "REQUEST_SECURITY_ACTION", "PROJECT", projectId, "actionId=" + saved.getId(), "SUCCESS");
-    return saved;
+    projects.get(projectId);
+    throw new ApiException("高风险行动申请已合并，请由 AI 提交方案并在执行确认与审计中确认执行");
   }
 
   @Transactional
   public SecurityAction decide(
       Long projectId, Long id, SecurityActionDtos.Decision request, Authentication authentication) {
-    if (request == null) {
-      throw new ApiException("审批决定不能为空");
-    }
-
-    SecurityAction action = get(projectId, id);
-    requireStatus(action, STATUS_PENDING_APPROVAL, "动作已完成审批");
-    String approvedBy = requireIndependentApprover(action, authentication);
-    String decision = normalizeDecision(request.decision());
-    requireSafeText(request.comment(), "审批备注", MAX_REASON_LENGTH, false);
-
-    action.setStatus(decision);
-    action.setApprovedBy(approvedBy);
-    action.setApprovedAt(Instant.now());
-    action.setTerminationReason(trimNullable(request.comment()));
-
-    audit.record(
-        "DECIDE_SECURITY_ACTION",
-        "PROJECT",
-        projectId,
-        "actionId=" + id + ",decision=" + decision,
-        "SUCCESS");
-    return repository.save(action);
+    projects.get(projectId);
+    get(projectId, id);
+    throw new ApiException("历史高风险行动不再支持审批，请由 AI 重新提交方案并确认执行");
   }
 
   @Transactional
@@ -208,147 +154,10 @@ public class SecurityActionService {
     return repository.save(action);
   }
 
-  private void requireCreateRequest(SecurityActionDtos.Create request) {
-    if (request == null) {
-      throw new ApiException("安全动作申请不能为空");
-    }
-  }
-
-  private void validateTarget(Long projectId, Long targetId) {
-    if (targetId == null) {
-      throw new ApiException("必须指定授权目标");
-    }
-    projects.validateProjectTarget(projectId, targetId);
-    targets.getCurrentlyAuthorized(targetId, projectId);
-  }
-
-  private void validateCategory(String category) {
-    if (!CATEGORIES.contains(category)) {
-      throw new ApiException("不支持的安全动作类型");
-    }
-  }
-
-  private void validateExecutionWindow(
-      AssessmentProject project, Instant windowStart, Instant windowEnd) {
-    if (windowStart == null
-        || windowEnd == null
-        || !windowEnd.isAfter(windowStart)
-        || windowEnd.isAfter(windowStart.plusSeconds(MAX_WINDOW_SECONDS))) {
-      throw new ApiException("执行时间窗无效或超过8小时");
-    }
-
-    Instant authorizationFrom = project.getAuthorizationValidFrom();
-    Instant authorizationTo = project.getAuthorizationExpiresAt();
-    if (authorizationFrom == null || authorizationTo == null) {
-      throw new ApiException("项目授权有效期无效");
-    }
-    if (windowStart.isBefore(authorizationFrom) || windowEnd.isAfter(authorizationTo)) {
-      throw new ApiException("执行时间窗必须完全位于项目授权有效期内");
-    }
-  }
-
-  private void validateRelatedFinding(Long projectId, Long targetId, Long findingId) {
-    if (findingId == null) {
-      return;
-    }
-
-    Finding finding =
-        projects.projectFindings(projectId).stream()
-            .filter(item -> findingId.equals(item.getId()))
-            .findFirst()
-            .orElseThrow(() -> new ApiException("关联漏洞不属于当前项目"));
-    if (!targetId.equals(finding.getTargetId())) {
-      throw new ApiException("关联漏洞与授权目标不一致");
-    }
-  }
-
-  private void validateSafetyBoundary(Boolean nonDestructive, Boolean lateralMovement) {
-    if (Boolean.TRUE.equals(lateralMovement)) {
-      throw new ApiException("禁止未授权横向移动；请将每个目标显式加入项目后分别申请动作");
-    }
-    if (!Boolean.TRUE.equals(nonDestructive)) {
-      throw new ApiException("当前系统仅允许非破坏性验证");
-    }
-  }
-
-  private void validateCreateText(SecurityActionDtos.Create request) {
-    requireSafeText(request.title(), "动作标题", MAX_TITLE_LENGTH, true);
-    requireSafeText(request.purpose(), "验证目的", MAX_PURPOSE_LENGTH, true);
-    requireSafeText(request.executionPlan(), "执行计划", MAX_PLAN_LENGTH, true);
-    requireSafeText(request.rollbackPlan(), "回滚计划", MAX_PLAN_LENGTH, true);
-  }
-
-  private String normalizeRiskLevel(String riskLevel) {
-    String normalized = riskLevel == null ? "MEDIUM" : riskLevel.trim().toUpperCase(Locale.ROOT);
-    if (!RISK_LEVELS.contains(normalized)) {
-      throw new ApiException("风险等级无效");
-    }
-    return normalized;
-  }
-
-  private String requireApplicant(Authentication authentication) {
-    if (authentication == null
-        || authentication.getName() == null
-        || authentication.getName().isBlank()) {
-      throw new ApiException("无法识别申请人");
-    }
-    return authentication.getName();
-  }
-
-  private SecurityAction buildAction(
-      Long projectId, SecurityActionDtos.Create request, String riskLevel, String requestedBy) {
-    SecurityAction action = new SecurityAction();
-    action.setProjectId(projectId);
-    action.setTargetId(request.targetId());
-    action.setFindingId(request.findingId());
-    action.setCategory(request.category());
-    action.setTitle(request.title().trim());
-    action.setPurpose(request.purpose().trim());
-    action.setRiskLevel(riskLevel);
-    action.setNonDestructive(true);
-    action.setLateralMovement(false);
-    action.setExecutionPlan(request.executionPlan().trim());
-    action.setRollbackPlan(request.rollbackPlan().trim());
-    action.setWindowStart(request.windowStart());
-    action.setWindowEnd(request.windowEnd());
-    action.setRequestedBy(requestedBy);
-    return action;
-  }
-
   private void requireStatus(SecurityAction action, String requiredStatus, String errorMessage) {
     if (!requiredStatus.equals(action.getStatus())) {
       throw new ApiException(errorMessage);
     }
-  }
-
-  private String requireIndependentApprover(SecurityAction action, Authentication authentication) {
-    if (authentication == null || authentication.getName() == null) {
-      throw new ApiException("无法识别审批人");
-    }
-    if (authentication.getName().equals(action.getRequestedBy())
-        && !(isSingleAdminMode() && isAdministrator(authentication))) {
-      throw new ApiException("申请人与审批人必须分离");
-    }
-    return authentication.getName();
-  }
-
-  private boolean isSingleAdminMode() {
-    // Only an enabled administrator can approve through the security-actions API.
-    // Disabled service accounts and ordinary users cannot provide a second reviewer.
-    return users.countByRoleAndEnabledTrue("ADMIN") == 1;
-  }
-
-  private boolean isAdministrator(Authentication authentication) {
-    return authentication.getAuthorities().stream()
-        .anyMatch(authority -> "ROLE_ADMIN".equals(authority.getAuthority()));
-  }
-
-  private String normalizeDecision(String decision) {
-    String normalized = decision == null ? "REJECTED" : decision.trim().toUpperCase(Locale.ROOT);
-    if (!APPROVAL_DECISIONS.contains(normalized)) {
-      throw new ApiException("审批结果无效");
-    }
-    return normalized;
   }
 
   private void ensurePersistedSafetyBoundary(SecurityAction action) {

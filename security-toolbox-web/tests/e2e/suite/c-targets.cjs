@@ -226,8 +226,13 @@ async function run(page, H, ctx) {
   await H.run("C-19", "填写 Web 目标地址与授权记录", async () => {
     const dlg = await dialog(page, "新增授权目标");
     await fillByLabel(dlg, page, "地址", ctx.webTargetUrl);
-    await fillByLabel(dlg, page, "授权记录",
-      `靶机 Web 服务 ${ctx.webTargetUrl} 已获书面授权，允许执行 HTTP 安全检查。授权编号 AUTH-${ctx.stamp}-WEB。`);
+    const note = `靶机 Web 服务 ${ctx.webTargetUrl} 已获书面授权，允许执行 HTTP 安全检查。授权编号 AUTH-${ctx.stamp}-WEB。`;
+    const input = dlg.getByPlaceholder("填写授权来源、允许测试的范围和有效期", { exact: true });
+    await input.fill("");
+    // CDP's per-character IPC cost under a visible Electron run is higher than
+    // the nominal key delay. Budget the entire sequence and verify no truncation.
+    await input.type(note, { delay: 12, timeout: Math.max(30000, note.length * 250) });
+    if (await input.inputValue() !== note) throw new Error("授权记录逐字输入不完整");
     return `地址=${ctx.webTargetUrl}`;
   }, { page });
 
@@ -272,7 +277,8 @@ async function run(page, H, ctx) {
     const row = await waitRow(page, ctx.webTargetName, 20000);
     const text = ((await row.textContent()) || "").replace(/\s+/g, " ");
     if (!text.includes(ctx.webTargetUrl)) throw new Error(`未显示完整 URL: ${text.slice(0, 200)}`);
-    if (!/URL/i.test(text)) throw new Error(`未显示 URL 类型: ${text.slice(0, 200)}`);
+    const cells = await row.locator('td').allTextContents();
+    if (!cells.some(cell => /^(网址|URL)$/i.test(cell.trim()))) throw new Error(`未显示网址类型单元格: ${JSON.stringify(cells)}`);
     return `行内容: ${text.slice(0, 150)}`;
   }, { page });
 

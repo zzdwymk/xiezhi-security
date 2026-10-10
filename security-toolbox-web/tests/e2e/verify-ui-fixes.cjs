@@ -65,12 +65,12 @@ const EXE_PATH = path.join(
     await nav.waitFor({ state: "visible", timeout: 15000 });
 
     // -------------------------------------------------------------
-    // 1. 验证“结果中心”操作按钮完美 3x2 网格对齐
+    // 1. 验证“安全发现”操作按钮完美 3x2 网格对齐
     // -------------------------------------------------------------
-    console.log("1. 前往「结果中心」检查按钮对齐...");
-    await navigate(page, "结果中心");
+    console.log("1. 前往「安全发现」检查按钮对齐...");
+    await navigate(page, "安全发现");
 
-    // 截屏保存结果中心按钮对齐效果
+    // 截屏保存安全发现按钮对齐效果
     await page.screenshot({ path: path.join(ROOT, "docs", "fix-buttons-aligned.png") });
     console.log("操作按钮对齐截图已保存至: docs/fix-buttons-aligned.png");
 

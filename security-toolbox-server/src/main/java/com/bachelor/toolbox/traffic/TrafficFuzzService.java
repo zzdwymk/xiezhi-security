@@ -3,11 +3,15 @@ package com.bachelor.toolbox.traffic;
 import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.dependency.DependencyDetectionService;
 import com.bachelor.toolbox.dependency.SystemDependenciesResponse;
+import com.bachelor.toolbox.target.AuthorizedTarget;
+import com.bachelor.toolbox.target.TargetPolicyService;
+import com.bachelor.toolbox.target.TargetService;
 import com.bachelor.toolbox.tool.zap.ZapDaemon;
 import com.bachelor.toolbox.tool.zap.ZapDaemonSupplier;
 import com.bachelor.toolbox.traffic.TrafficReplayService.ReplayRequest;
 import com.bachelor.toolbox.traffic.TrafficReplayService.ReplayResponse;
 import java.net.URI;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
@@ -17,10 +21,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -45,35 +48,48 @@ import org.springframework.stereotype.Service;
  *   <li>{@code CLUSTER_BOMB}: Cartesian product of all payload sets (aliased as {@code CARTESIAN}).</li>
  * </ul>
  *
- * <p>When an OWASP ZAP installation is detected, the whole request is handed to ZAP's fuzzer (which
- * contributes ZAP's own Fuzz DB / payload generation and encoders) and the resulting alerts are
- * folded into a {@code engine=ZAP} response; otherwise the self-contained loop runs {@code
- * engine=LOOP}. ZAP is best-effort: any detection, start, or version mismatch degrades back to the
- * loop instead of failing. A baseline request always runs first in the loop path so all payloads can
- * be diffed for response changes.
+ * <p>ZAP sends one literal query/form field mutation per selected candidate and collects passive
+ * alerts. AUTO may choose LOOP before any ZAP request is attempted, with an explicit reason. Once
+ * sending begins, errors stop the run without repeating requests through another engine.
  */
 @Service
 public class TrafficFuzzService {
-  private static final Logger LOGGER = LoggerFactory.getLogger(TrafficFuzzService.class);
   private static final String MARKER = "\u00a7name\u00a7"; // §name§
   private static final Pattern VARIABLE = Pattern.compile("§([^§]+)§");
   private static final int MAX_PAYLOADS = 200;
   private static final int MAX_PAYLOAD_LENGTH = 4 * 1024;
   private static final int MAX_DISPLAY_PAYLOAD = 48;
+  // Match JavaScript String.trim(): ASCII whitespace, Unicode separators and BOM.
+  private static final Pattern DICTIONARY_EDGE_WHITESPACE =
+      Pattern.compile("^[\\s\\p{Z}\\uFEFF]+|[\\s\\p{Z}\\uFEFF]+$");
   private static final long ZAP_FUZZ_DEADLINE_MINUTES = 8;
 
   private final TrafficReplayService replay;
   private final ZapDaemonSupplier daemonSupplier;
   private final DependencyDetectionService dependencies;
+  private final TrafficPacketRepository packets;
+  private final TargetService targets;
+  private final TargetPolicyService targetPolicy;
 
   @Autowired
   public TrafficFuzzService(
       TrafficReplayService replay,
       ZapDaemonSupplier daemonSupplier,
-      DependencyDetectionService dependencies) {
+      DependencyDetectionService dependencies,
+      TrafficPacketRepository packets,
+      TargetService targets,
+      TargetPolicyService targetPolicy) {
     this.replay = replay;
     this.daemonSupplier = daemonSupplier;
     this.dependencies = dependencies;
+    this.packets = packets;
+    this.targets = targets;
+    this.targetPolicy = targetPolicy;
+  }
+
+  public TrafficFuzzService(TrafficReplayService replay, ZapDaemonSupplier daemonSupplier,
+      DependencyDetectionService dependencies) {
+    this(replay, daemonSupplier, dependencies, null, null, null);
   }
 
   /** Backwards-compatible constructor used by tests when no ZAP path is required. */
@@ -94,26 +110,43 @@ public class TrafficFuzzService {
     }
 
     Map<String, List<String>> payloadGroups = request.multiPayloads();
-    if (payloadGroups == null || payloadGroups.isEmpty()) {
+    if ((payloadGroups == null || payloadGroups.isEmpty())
+        && !isMultiDictionaryCombination(request.combination())) {
       payloadGroups = Map.of("name", normalizePayloads(request.payloads()));
     }
     String combination = request.combination();
     if (combination == null || combination.isBlank()) {
       combination = "SNIPER";
     }
+    if (isMultiDictionaryCombination(combination)) {
+      Map<String, List<String>> normalized = new LinkedHashMap<>();
+      for (String variable : variables) {
+        normalized.put(variable, normalizeDictionaryPayloads(payloadGroups.get(variable)));
+      }
+      requireNonEmptyDictionaryGroups(new ArrayList<>(variables), new ArrayList<>(normalized.values()));
+      payloadGroups = normalized;
+    }
+    if (payloadGroups.values().stream().allMatch(values -> normalizePayloads(values).isEmpty())) {
+      throw new ApiException("请提供至少一个非空候选值");
+    }
+    String engine = request.engine() == null ? "AUTO" : request.engine().trim().toUpperCase(java.util.Locale.ROOT);
+    if (!Set.of("AUTO", "LOOP", "ZAP").contains(engine)) throw new ApiException("未知模糊测试引擎");
 
-    boolean forceLoop = "LOOP".equalsIgnoreCase(request.engine());
+    boolean forceLoop = "LOOP".equals(engine);
     if (forceLoop) {
       return loopFuzz(packetId, request, url, body, headers, variables, payloadGroups, combination);
     }
-    FuzzResponse zapResult = zapFuzz(packetId, request, url, body, headers);
-    if (zapResult != null) {
-      return zapResult;
+    try {
+      List<Map<String, String>> candidates = buildCombinations(variables, payloadGroups, combination);
+      List<ZapDaemon.FuzzSpec> specs = prepareZapSpecs(packetId, request, url, body, headers, candidates);
+      return zapFuzz(packetId, request, specs);
+    } catch (ZapUnavailable unavailable) {
+      if ("ZAP".equals(engine)) throw new ApiException(unavailable.getMessage());
+      FuzzResponse result = loopFuzz(packetId, request, url, body, headers, variables, payloadGroups, combination);
+      return new FuzzResponse(result.packetId(), result.method(), result.url(), result.results(),
+          result.payloadCount(), "LOOP", result.status(), "AUTO 已使用内置循环重放：" + unavailable.getMessage(),
+          result.completedRequests());
     }
-    if ("ZAP".equalsIgnoreCase(request.engine())) {
-      throw new ApiException("ZAP 引擎不可用，请先安装或启动 OWASP ZAP，或改用内置循环引擎");
-    }
-    return loopFuzz(packetId, request, url, body, headers, variables, payloadGroups, combination);
   }
 
   private Set<String> collectVariables(String url, String body, String headers) {
@@ -136,49 +169,205 @@ public class TrafficFuzzService {
     }
   }
 
-  /**
-   * Attempts to fuzz the whole request through a local ZAP fuzzer (its own Fuzz DB). Returns null on
-   * any unavailability or failure so the caller falls back to the self-loop. Best effort only.
-   */
-  private FuzzResponse zapFuzz(Long packetId, FuzzRequest request, String url, String body,
-      String headers) {
-    if (daemonSupplier == null || dependencies == null || !zapAvailable()) {
-      return null;
+  private static boolean isMultiDictionaryCombination(String combination) {
+    String value = combination == null ? "" : combination.trim().toUpperCase(java.util.Locale.ROOT);
+    return Set.of("PITCHFORK", "SHORTEST", "PITCHFORK_LONGEST", "LONGEST",
+        "CLUSTER_BOMB", "CLUSTERBOMB", "CARTESIAN").contains(value);
+  }
+
+  private void requireNonEmptyDictionaryGroups(List<String> names, List<List<String>> groups) {
+    List<String> missing = new ArrayList<>();
+    for (int i = 0; i < names.size(); i++) {
+      if (groups.get(i).isEmpty()) missing.add("§" + names.get(i) + "§");
     }
-    try (ZapDaemon daemon = daemonSupplier.create()) {
-      daemon.start();
-      URI target = URI.create(url);
-      daemon.includeInScope(target);
-      String requestUrl = stripPlaceholders(url);
-      String postBody = stripPlaceholders(body);
-      ZapDaemon.FuzzSpec spec =
-          new ZapDaemon.FuzzSpec(target, requestUrl, request.method(), postBody, "", "");
-      String fuzzId = daemon.startFuzz(spec);
-      if (fuzzId == null || fuzzId.isBlank()) {
-        LOGGER.info("ZAP fuzz 未启动，降级到自研循环重放");
-        return null;
-      }
-      long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(ZAP_FUZZ_DEADLINE_MINUTES);
-      while (System.nanoTime() < deadline) {
-        String state = daemon.fuzzStatus(fuzzId);
-        if (state.contains("stopped") && !state.contains("stopped=false")) {
-          break;
-        }
-        Thread.sleep(800);
-      }
-      List<ZapDaemon.ZapAlert> alerts = daemon.alerts();
-      return toZapResponse(packetId, request.method(), url, alerts);
-    } catch (Exception ex) {
-      LOGGER.info("ZAP 模糊引擎不可用，降级为自研循环重放: {}", ex.getMessage());
-      return null;
+    if (!missing.isEmpty()) {
+      throw new ApiException("多字典模式的每个占位符都需要至少一行非空载荷：" + String.join("、", missing));
     }
   }
 
-  private String stripPlaceholders(String value) {
-    if (value == null) {
-      return "";
+  private List<String> normalizeDictionaryPayloads(List<String> values) {
+    if (values == null) return List.of();
+    List<String> trimmed = new ArrayList<>();
+    for (String value : values) {
+      if (value == null) continue;
+      String candidate = DICTIONARY_EDGE_WHITESPACE.matcher(value).replaceAll("");
+      if (!candidate.isEmpty()) trimmed.add(candidate);
     }
-    return substitute(value, Map.of());
+    // Keep duplicate payloads and the established per-value/count limits.
+    return normalizePayloads(trimmed);
+  }
+
+  private static final class ZapUnavailable extends RuntimeException {
+    ZapUnavailable(String message) { super(message); }
+  }
+
+  /** Validate the whole candidate list before starting ZAP or sending any request. */
+  private List<ZapDaemon.FuzzSpec> prepareZapSpecs(Long packetId, FuzzRequest request,
+      String url, String body, String headers, List<Map<String, String>> candidates) {
+    if (daemonSupplier == null || dependencies == null || !zapAvailable()) {
+      throw new ZapUnavailable("OWASP ZAP 未安装或不可用");
+    }
+    String method = request.method() == null ? "" : request.method().trim().toUpperCase(java.util.Locale.ROOT);
+    if (!Set.of("GET", "POST").contains(method)) {
+      throw new ZapUnavailable("ZAP 单次参数变异仅支持 GET 查询或 POST 表单字段");
+    }
+    Matcher allMarkers = VARIABLE.matcher(url + "\n" + body + "\n" + headers);
+    int markerCount = 0;
+    while (allMarkers.find()) markerCount++;
+    if (markerCount != 1) throw new ZapUnavailable("ZAP 单次参数变异仅支持一个占位符；多字段组合请使用 LOOP");
+    if (VARIABLE.matcher(headers).find()) throw new ZapUnavailable("ZAP 单次参数变异不支持请求头占位符");
+    String baselineUrl = substitute(url, Map.of());
+    URI uri;
+    try { uri = URI.create(baselineUrl); }
+    catch (RuntimeException ex) { throw new ApiException("模糊测试 URL 无效"); }
+    validateZapScope(packetId, request, uri);
+    validateZapHeaders(headers, method, uri);
+    if (("GET".equals(method) && !body.isEmpty()) || ("POST".equals(method) && VARIABLE.matcher(url).find())) {
+      throw new ZapUnavailable("ZAP GET 只变异查询字段，POST 只变异表单字段");
+    }
+    String template = "GET".equals(method) ? URI.create(url).getRawQuery() : body;
+    if (template == null || !VARIABLE.matcher(template).find()) {
+      throw new ZapUnavailable("ZAP 占位符必须位于现有查询或表单字段的值中");
+    }
+    String fieldName = null;
+    String valueTemplate = null;
+    for (String field : template.split("&", -1)) {
+      String[] pair = field.split("=", 2);
+      if (!VARIABLE.matcher(field).find()) continue;
+      if (pair.length != 2 || VARIABLE.matcher(pair[0]).find()) {
+        throw new ZapUnavailable("ZAP 占位符必须位于字段值中，不能变异字段名");
+      }
+      try {
+        fieldName = URLDecoder.decode(pair[0], StandardCharsets.UTF_8);
+        valueTemplate = URLDecoder.decode(pair[1], StandardCharsets.UTF_8);
+      } catch (IllegalArgumentException invalid) {
+        throw new ZapUnavailable("ZAP 查询或表单字段必须使用合法的 URL 编码");
+      }
+    }
+    List<ZapDaemon.FuzzSpec> specs = new ArrayList<>();
+    for (Map<String, String> bindings : candidates) {
+      try {
+        ZapDaemon.FuzzSpec spec = new ZapDaemon.FuzzSpec(uri, baselineUrl, method,
+            substitute(body, Map.of()), substitute(valueTemplate, bindings), fieldName);
+        spec.requestMessage();
+        specs.add(spec);
+      } catch (ApiException invalid) {
+        throw new ZapUnavailable("ZAP 单次参数变异无法表达此请求：" + invalid.getMessage());
+      }
+    }
+    return List.copyOf(specs);
+  }
+
+  private void validateZapScope(Long packetId, FuzzRequest request, URI uri) {
+    if (packets == null || targets == null || targetPolicy == null) {
+      throw new ZapUnavailable("ZAP 授权范围校验未配置");
+    }
+    TrafficPacket source = packets.findById(packetId).orElseThrow(() -> new ApiException("流量记录不存在"));
+    if (uri.getHost() == null || !uri.getHost().equalsIgnoreCase(source.getHost())) {
+      throw new ApiException("ZAP 请求主机必须与源流量一致");
+    }
+    int port = uri.getPort() > 0 ? uri.getPort() : ("https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80);
+    int sourcePort = source.getPort() > 0 ? source.getPort() : ("https".equalsIgnoreCase(source.getScheme()) ? 443 : 80);
+    if (port != sourcePort) throw new ApiException("ZAP 请求端口必须与源流量一致");
+    if (request.targetId() == null || request.targetId() <= 0) {
+      throw new ZapUnavailable("ZAP 单次参数变异需要选择启用的授权目标");
+    }
+    AuthorizedTarget target = targets.get(request.targetId());
+    if (target == null) throw new ApiException("授权目标不存在");
+    TrafficRequestSafety.validateAuthorization(target);
+    if (!targetPolicy.validatedHost(target).equalsIgnoreCase(uri.getHost())) {
+      throw new ApiException("ZAP 请求主机与授权目标不一致");
+    }
+    targetPolicy.validateAuthorizedPort(target, port);
+  }
+
+  private void validateZapHeaders(String headers, String method, URI uri) {
+    for (String line : headers.split("\r?\n")) {
+      if (line.isBlank()) continue;
+      int colon = line.indexOf(':');
+      if (colon < 1) throw new ZapUnavailable("ZAP 单次参数变异无法无损保留这些请求头，请使用 LOOP");
+      String name = line.substring(0, colon).trim().toLowerCase(java.util.Locale.ROOT);
+      String value = line.substring(colon + 1).trim();
+      boolean supported = switch (name) {
+        case "host" -> value.equalsIgnoreCase(uri.getRawAuthority());
+        case "content-type" -> "POST".equals(method)
+            && value.matches("(?i)application/x-www-form-urlencoded(?:;\\s*charset=UTF-8)?");
+        case "content-length" -> value.matches("[0-9]+");
+        case "connection" -> "close".equalsIgnoreCase(value);
+        default -> false;
+      };
+      if (!supported) throw new ZapUnavailable("ZAP 单次参数变异无法无损保留请求头 " + name + "，请使用 LOOP");
+    }
+  }
+
+  private FuzzResponse zapFuzz(Long packetId, FuzzRequest request, List<ZapDaemon.FuzzSpec> specs) {
+    int attempted = 0;
+    int completed = 0;
+    List<ZapDaemon.ZapAlert> alerts = List.of();
+    try (ZapDaemon daemon = daemonSupplier.create()) {
+      try {
+        daemon.start();
+        daemon.includeInScope(specs.get(0).target());
+        long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(ZAP_FUZZ_DEADLINE_MINUTES);
+        for (ZapDaemon.FuzzSpec spec : specs) {
+          if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+          if (System.nanoTime() >= deadline) throw new TimeoutException("ZAP 参数变异验证超时");
+          attempted++;
+          String fuzzId = daemon.startFuzz(spec);
+          if (fuzzId == null || fuzzId.isBlank()) throw new ApiException("ZAP 未确认请求响应");
+          awaitZapCompletion(daemon, fuzzId, deadline);
+          List<ZapDaemon.ZapAlert> observed = daemon.alerts();
+          if (observed == null) throw new ApiException("ZAP 未返回有效被动告警结果");
+          alerts = observed.stream().filter(alert -> inScope(alert, spec.target())).toList();
+          completed++;
+        }
+      } catch (Exception failure) {
+        try { daemon.kill(); } catch (Exception cleanup) { failure.addSuppressed(cleanup); }
+        throw failure;
+      }
+    } catch (Exception failure) {
+      if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
+      if (attempted == 0 && !(failure instanceof InterruptedException)) {
+        throw new ZapUnavailable("ZAP 在发送前启动失败：" + safeReason(failure));
+      }
+      String status = failure instanceof TimeoutException || failure instanceof java.net.http.HttpTimeoutException
+          || failure instanceof java.net.SocketTimeoutException ? "TIMEOUT"
+          : failure instanceof InterruptedException ? "CANCELLED" : "FAILED";
+      return toZapResponse(packetId, request.method(), request.url(), alerts, specs.size(), completed, status,
+          "ZAP 单次参数变异未完成：" + safeReason(failure) + "；已尝试 " + attempted
+              + " 次、确认完成 " + completed + " 次。后续请求已停止，未切换引擎重复发送。");
+    }
+    return toZapResponse(packetId, request.method(), request.url(), alerts, specs.size(), completed, "COMPLETED",
+        "ZAP 单次参数变异验证完成，共确认 " + completed + " 次请求、" + alerts.size()
+            + " 项被动告警；不包含响应基线比较或字典生成器。");
+  }
+
+  void awaitZapCompletion(ZapDaemon daemon, String fuzzId, long deadline) throws Exception {
+    while (true) {
+      if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+      if (System.nanoTime() >= deadline) throw new TimeoutException("ZAP 参数变异验证超时");
+      String state = daemon.fuzzStatus(fuzzId);
+      String phase = state == null ? "" : state.split(";", 2)[0];
+      if ("stopped".equals(phase)) return;
+      if (!"running".equals(phase)) throw new ApiException("ZAP 返回未知执行状态");
+      Thread.sleep(250);
+    }
+  }
+
+  private boolean inScope(ZapDaemon.ZapAlert alert, URI target) {
+    if (alert == null || alert.url() == null) return false;
+    try {
+      URI uri = URI.create(alert.url());
+      int port = uri.getPort() > 0 ? uri.getPort() : ("https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80);
+      int targetPort = target.getPort() > 0 ? target.getPort() : ("https".equalsIgnoreCase(target.getScheme()) ? 443 : 80);
+      return uri.getHost() != null && uri.getHost().equalsIgnoreCase(target.getHost()) && port == targetPort;
+    } catch (RuntimeException invalid) { return false; }
+  }
+
+  private String safeReason(Exception failure) {
+    String value = failure.getMessage();
+    if (value == null || value.isBlank()) return "执行未完成";
+    return value.length() > 250 ? value.substring(0, 250) : value;
   }
 
   private boolean zapAvailable() {
@@ -199,7 +388,8 @@ public class TrafficFuzzService {
   }
 
   private FuzzResponse toZapResponse(
-      Long packetId, String method, String url, List<ZapDaemon.ZapAlert> alerts) {
+      Long packetId, String method, String url, List<ZapDaemon.ZapAlert> alerts,
+      int payloadCount, int completed, String status, String message) {
     List<FuzzHit> results = new ArrayList<>();
     if (alerts != null) {
       for (ZapDaemon.ZapAlert alert : alerts) {
@@ -218,7 +408,7 @@ public class TrafficFuzzService {
                 true));
       }
     }
-    return new FuzzResponse(packetId, method, url, results, results.size(), "ZAP");
+    return new FuzzResponse(packetId, method, url, results, payloadCount, "ZAP", status, message, completed);
   }
 
   private String riskPrefix(String risk) {
@@ -235,7 +425,8 @@ public class TrafficFuzzService {
       Set<String> variables,
       Map<String, List<String>> payloadGroups,
       String combination) {
-    ReplayResponse baseline = run(packetId, request, url, body, headers, Map.of());
+    ReplayRequest baselineRequest = resolveRequest(request, url, body, headers, Map.of());
+    ReplayResponse baseline = replay.replay(packetId, baselineRequest);
     String baselineDigest = digestOf(baseline);
 
     List<FuzzHit> results = new ArrayList<>();
@@ -248,12 +439,14 @@ public class TrafficFuzzService {
             baseline.responseBytes(),
             baselineDigest.substring(0, Math.min(8, baselineDigest.length())),
             baseline.statusCode(),
-            false));
+            false,
+            requestSnapshot(baselineRequest, baseline)));
 
     List<Map<String, String>> combos = buildCombinations(variables, payloadGroups, combination);
     for (Map<String, String> bindings : combos) {
       String label = describeBindings(bindings);
-      ReplayResponse result = run(packetId, request, url, body, headers, bindings);
+      ReplayRequest resolvedRequest = resolveRequest(request, url, body, headers, bindings);
+      ReplayResponse result = replay.replay(packetId, resolvedRequest);
       String digest = digestOf(result);
       boolean changed =
           !statusAndLen(result).equals(statusAndLen(baseline)) || !digest.equals(baselineDigest);
@@ -266,14 +459,15 @@ public class TrafficFuzzService {
               result.responseBytes(),
               digest.substring(0, Math.min(8, digest.length())),
               result.statusCode(),
-              changed));
+              changed,
+              requestSnapshot(resolvedRequest, result)));
     }
     return new FuzzResponse(packetId, request.method(), url, results, combos.size(), "LOOP");
   }
 
   /**
    * Builds the ordered list of variable bindings to replay according to the combination strategy.
-   * Payload groups that have no entries for a variable keep the variable's empty value.
+   * Multi-dictionary groups are validated before the baseline or any candidate is sent.
    */
   private List<Map<String, String>> buildCombinations(
       Set<String> variables,
@@ -286,6 +480,7 @@ public class TrafficFuzzService {
       rawGroups.add(values);
     }
     String comb = combination == null ? "SNIPER" : combination.trim().toUpperCase(java.util.Locale.ROOT);
+    if (isMultiDictionaryCombination(comb)) requireNonEmptyDictionaryGroups(ordered, rawGroups);
     if ("BATTERING_RAM".equals(comb) || "BATTERINGRAM".equals(comb) || "RAM".equals(comb)) {
       return buildBatteringRam(ordered, payloadGroups, rawGroups);
     }
@@ -395,31 +590,15 @@ public class TrafficFuzzService {
   /** Aligned iteration. shortest=true: stop at the shortest list; false (longest): go to the longest list, short lists repeat their last value. */
   private List<Map<String, String>> buildAligned(
       List<String> names, List<List<String>> groups, boolean shortest) {
-    int maxLen = 1;
-    int minLen = Integer.MAX_VALUE;
-    for (List<String> group : groups) {
-      if (group.isEmpty()) {
-        minLen = 0;
-        continue;
-      }
-      maxLen = Math.max(maxLen, group.size());
-      minLen = Math.min(minLen, group.size());
-    }
-    int count = shortest ? (minLen == Integer.MAX_VALUE ? 0 : minLen) : maxLen;
-    if (minLen == 0 && shortest) {
-      count = 0;
-    }
+    int count = shortest ? groups.stream().mapToInt(List::size).min().orElse(0)
+        : groups.stream().mapToInt(List::size).max().orElse(0);
     List<Map<String, String>> plans = new ArrayList<>();
-    if (count <= 0) {
-      plans.add(new LinkedHashMap<>());
-      return plans;
-    }
     for (int i = 0; i < count; i++) {
       Map<String, String> binding = new LinkedHashMap<>();
       for (int j = 0; j < names.size(); j++) {
         String name = names.get(j);
         List<String> group = groups.get(j);
-        binding.put(name, group.isEmpty() ? "" : group.get(Math.min(i, group.size() - 1)));
+        binding.put(name, group.get(Math.min(i, group.size() - 1)));
       }
       plans.add(binding);
     }
@@ -432,7 +611,7 @@ public class TrafficFuzzService {
     for (int j = 0; j < names.size(); j++) {
       List<Map<String, String>> next = new ArrayList<>();
       List<String> group = groups.get(j);
-      List<String> values = group.isEmpty() ? List.of("") : group;
+      List<String> values = group;
       for (Map<String, String> base : plans) {
         for (String value : values) {
           Map<String, String> copy = new LinkedHashMap<>(base);
@@ -477,8 +656,7 @@ public class TrafficFuzzService {
     return sb.length() == 0 ? "<<empty>>" : sb.toString();
   }
 
-  private ReplayResponse run(
-      Long packetId,
+  private ReplayRequest resolveRequest(
       FuzzRequest request,
       String url,
       String body,
@@ -487,14 +665,14 @@ public class TrafficFuzzService {
     String resolvedUrl = substitute(url, bindings);
     String resolvedHeaders = substitute(headers, bindings);
     String resolvedBody = substitute(body, bindings);
-    ReplayRequest nested =
-        new ReplayRequest(
-            request.targetId(),
-            request.method(),
-            resolvedUrl,
-            resolvedHeaders,
-            resolvedBody);
-    return replay.replay(packetId, nested);
+    return new ReplayRequest(
+        request.targetId(), request.method(), resolvedUrl, resolvedHeaders, resolvedBody);
+  }
+
+  private FuzzReplayRequest requestSnapshot(ReplayRequest request, ReplayResponse response) {
+    // Keep the exact resolved input used for this exchange; the display label can be truncated
+    // or contain multiple bindings. Revalidation and authorization still happen on every replay.
+    return new FuzzReplayRequest(response.method(), response.url(), request.headers(), request.body());
   }
 
   /** Replaces every {@code §name§} in {@code value} with its binding (or "" if unset). */
@@ -519,7 +697,7 @@ public class TrafficFuzzService {
       return result;
     }
     for (String payload : payloads) {
-      if (payload == null || payload.isBlank()) {
+      if (payload == null || payload.isEmpty()) {
         continue;
       }
       String value =
@@ -563,9 +741,8 @@ public class TrafficFuzzService {
   }
 
   /**
-   * Request descriptor. {@code payloads} (legacy single {@code §name§} list) and {@code multiPayloads}
-   * are mutually convertible: when only {@code payloads} is present it is used as the tenantId list
-   * for the variable "name".
+   * Request descriptor. Single-dictionary modes may use legacy {@code payloads} for "name";
+   * multi-dictionary modes require an explicit list for every participating variable.
    */
   public record FuzzRequest(
       Long targetId,
@@ -579,13 +756,14 @@ public class TrafficFuzzService {
       String combination) {
 
     /**
-     * Variable name → payload list. When only the legacy single {@code payloads} is supplied it is
-     * used as the payload list for the variable "name".
+     * Variable name → payload list. Legacy single {@code payloads} may supply "name" only outside
+     * multi-dictionary modes; it must never silently fill an omitted multi-dictionary group.
      */
     public Map<String, List<String>> multiPayloads() {
       if (multiPayloads != null && !multiPayloads.isEmpty()) {
         return multiPayloads;
       }
+      if (isMultiDictionaryCombination(combination)) return Map.of();
       return Map.of("name", payloads == null ? List.of() : payloads);
     }
 
@@ -619,7 +797,16 @@ public class TrafficFuzzService {
       long responseBytes,
       String digestPrefix,
       Integer effectiveStatus,
-      boolean changed) {}
+      boolean changed,
+      FuzzReplayRequest request) {
+    /** Legacy persisted results and ZAP passive alerts have no unambiguous request snapshot. */
+    public FuzzHit(String payload, Integer statusCode, String reason, long durationMs,
+        long responseBytes, String digestPrefix, Integer effectiveStatus, boolean changed) {
+      this(payload, statusCode, reason, durationMs, responseBytes, digestPrefix, effectiveStatus, changed, null);
+    }
+  }
+
+  public record FuzzReplayRequest(String method, String url, String headers, String body) {}
 
   public record FuzzPreset(String id, String name, String category, List<String> payloads) {}
 
@@ -669,5 +856,13 @@ public class TrafficFuzzService {
       String url,
       List<FuzzHit> results,
       int payloadCount,
-      String engine) {}
+      String engine,
+      String status,
+      String message,
+      int completedRequests) {
+    public FuzzResponse(Long packetId, String method, String url, List<FuzzHit> results,
+        int payloadCount, String engine) {
+      this(packetId, method, url, results, payloadCount, engine, "COMPLETED", "内置循环重放完成", results.size());
+    }
+  }
 }

@@ -2,6 +2,7 @@ package com.bachelor.toolbox.ai;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -57,6 +58,39 @@ class AiTaskDispatchServiceTests {
     AiPlanResponse response = service.prepare(request, generated);
 
     assertEquals(List.of(), response.steps());
+  }
+
+  @Test
+  void sqlmapDetectionUsesAuthorizedQueryUrlDefaultsAndMandatoryApproval() {
+    service = new AiTaskDispatchService(targetService, new TargetPolicyService(false, portRangeParser),
+        toolRegistry, portRangeParser, 20, 65535);
+    target.setTargetValue("http://127.0.0.1/Less-1/?id=1");
+    when(toolRegistry.require("sqlmap_scan")).thenReturn(mock(SecurityTool.class));
+    AiPlanResponse response = service.prepare(new AiPlanRequest(7L, "SQL注入检测"), sqlmapPlan(Map.of()));
+    assertEquals(Map.of("level", 1, "risk", 1, "technique", "BEUT"), response.steps().get(0).parameters());
+    assertTrue(response.steps().get(0).requiresApproval());
+    response = service.prepare(new AiPlanRequest(7L, "SQL注入检测"), sqlmapPlan(Map.of("path", "/Less-2/?id=2", "level", 3)));
+    assertEquals("/Less-2/?id=2", response.steps().get(0).parameters().get("path"));
+    assertEquals(3, response.steps().get(0).parameters().get("level"));
+  }
+
+  @Test
+  void sqlmapRejectsOutOfScopeUrlsMissingQueriesAndForbiddenOptions() {
+    service = new AiTaskDispatchService(targetService, new TargetPolicyService(false, portRangeParser),
+        toolRegistry, portRangeParser, 20, 65535);
+    target.setTargetValue("http://127.0.0.1/Less-1/?id=1");
+    when(toolRegistry.require("sqlmap_scan")).thenReturn(mock(SecurityTool.class));
+    for (Map<String, Object> parameters : List.<Map<String, Object>>of(
+        Map.of("path", "http://127.0.0.2/?id=1"), Map.of("path", "http://127.0.0.1:22/?id=1"),
+        Map.of("data", "id=1"), Map.of("dump", true), Map.of("risk", 2), Map.of("level", "1"),
+        Map.of("__resolvedWebBases", List.of("https://other.invalid")), Map.of("path", "/without-query"))) {
+      assertThrows(ApiException.class, () -> service.prepare(new AiPlanRequest(7L, "SQL检测"), sqlmapPlan(parameters)));
+    }
+  }
+
+  private AiPlanResponse sqlmapPlan(Map<String, Object> parameters) {
+    return new AiPlanResponse("test", "model", "SQLMap检测", false, List.of(
+        new AiPlanResponse.PlanStep("sqlmap_scan", "SQLMap", "用户请求", parameters)));
   }
 
   @Test

@@ -2,6 +2,9 @@ package com.bachelor.toolbox.traffic;
 
 import com.bachelor.toolbox.audit.AuditService;
 import com.bachelor.toolbox.common.ApiException;
+import com.bachelor.toolbox.target.AuthorizedTarget;
+import com.bachelor.toolbox.target.TargetPolicyService;
+import com.bachelor.toolbox.target.TargetService;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import java.io.ByteArrayOutputStream;
@@ -54,22 +57,31 @@ public class TrafficReplayService {
 
   private final TrafficPacketRepository packets;
   private final AuditService audit;
+  private final TargetService targets;
+  private final TargetPolicyService policy;
 
   @Autowired
-  public TrafficReplayService(TrafficPacketRepository packets, AuditService audit) {
+  public TrafficReplayService(TrafficPacketRepository packets, AuditService audit,
+      TargetService targets, TargetPolicyService policy) {
     this.packets = packets;
     this.audit = audit;
+    this.targets = targets;
+    this.policy = policy;
   }
 
   public ReplayResponse replay(Long packetId, ReplayRequest request) {
     TrafficPacket source =
         packets.findById(packetId).orElseThrow(() -> new ApiException("流量记录不存在"));
-    if (source.getTargetId() != null
-        && source.getTargetId() > 0
-        && !source.getTargetId().equals(request.targetId())) {
-      throw new ApiException("已绑定授权目标的流量不允许切换到其他目标发送");
-    }
     URI uri = validateUri(request.url(), source.getHost());
+    if (request.targetId() == null || request.targetId() <= 0) {
+      throw new ApiException("发送请求前请选择授权目标；已有流量无需重新采集");
+    }
+    AuthorizedTarget target = targets.get(request.targetId());
+    TrafficRequestSafety.validateAuthorization(target);
+    if (!normalizeHost(policy.validatedHost(target)).equals(normalizeHost(uri.getHost()))) {
+      throw new ApiException("发包 URL 主机与授权目标不一致");
+    }
+    policy.validateAuthorizedPort(target, effectivePort(uri));
     String method = validateMethod(request.method());
     byte[] body =
         request.body() == null ? new byte[0] : request.body().getBytes(StandardCharsets.UTF_8);
@@ -198,7 +210,6 @@ public class TrafficReplayService {
           && !normalized.equals(normalizeHost(sourceHost))) {
         throw new ApiException("发包 URL 主机必须与源流量及授权目标一致");
       }
-      // Replay is intentionally independent from authorization targets.
       return uri;
     } catch (ApiException ex) {
       throw ex;

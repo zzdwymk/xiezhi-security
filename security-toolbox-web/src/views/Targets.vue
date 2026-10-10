@@ -24,6 +24,7 @@ import {
   validateDomainTarget,
 } from "../utils/ports";
 import { parseBatchTargets, type ParsedTargetItem } from "../utils/targetParser";
+import { targetTypeLabel } from "../utils/aiPresentation";
 
 const copilot = useCopilotStore();
 const router = useRouter();
@@ -196,7 +197,7 @@ function projectStatusLabel(status?: string) {
     COMPLETED: '已完成',
     ARCHIVED: '已归档',
   };
-  return status ? labels[status] || status : '';
+  return status ? labels[status] || '未知状态' : '';
 }
 
 function projectsForTarget(row: Target) {
@@ -805,7 +806,9 @@ onMounted(load);
       <el-table-column type="selection" width="40" />
       <el-table-column prop="name" label="名称" min-width="110" show-overflow-tooltip />
       <el-table-column prop="targetValue" label="地址" min-width="130" show-overflow-tooltip />
-      <el-table-column prop="targetType" label="类型" width="70" />
+      <el-table-column label="类型" width="90">
+        <template #default="scope">{{ targetTypeLabel(scope.row.targetType) }}</template>
+      </el-table-column>
       <el-table-column prop="allowedPorts" label="端口" min-width="90" show-overflow-tooltip />
       <el-table-column
         prop="authorizationNote"
@@ -872,7 +875,7 @@ onMounted(load);
               @click="openEditTarget(scope.row)"
               >编辑</el-button
             ><el-button
-              class="row-action target-action-delete"
+              class="row-action row-action--danger target-action-delete"
               size="small"
               :icon="Delete"
               @click="remove(scope.row)"
@@ -910,6 +913,8 @@ onMounted(load);
       <el-segmented
         v-model="targetMode"
         class="target-mode-segmented"
+        block
+        aria-label="目标录入方式"
         :options="targetModeOptions"
       />
     </div>
@@ -1451,28 +1456,6 @@ onMounted(load);
 .target-mode-segmented {
   width: 100%;
 }
-.target-mode-segmented :deep(.el-segmented) {
-  width: 100%;
-}
-.target-mode-segmented :deep(.el-segmented__item) {
-  min-height: 32px;
-  font-weight: 600;
-}
-.target-mode-segmented :deep(.el-segmented__item-selected) {
-  box-sizing: border-box;
-  width: 50% !important;
-  transform: translateX(0) translateZ(0) !important;
-  will-change: transform;
-  backface-visibility: hidden;
-  transition: transform var(--fluent-duration-normal, 200ms)
-    var(--fluent-curve-standard, ease);
-}
-.target-mode-segmented :deep(.el-segmented__group):has(
-    .el-segmented__item.is-selected:last-child
-  )
-  .el-segmented__item-selected {
-  transform: translateX(100%) translateZ(0) !important;
-}
 .batch-preview-card {
   margin: -4px 0 16px;
   padding: 12px 14px;
@@ -1810,50 +1793,9 @@ onMounted(load);
   background: var(--fluent3-table-select-bg, var(--app-surface-soft, #f2f3f5)) !important;
 }
 
-/* Row hover matches the Results Center action column: neutral buttons gain an
-   accent border on hover, and the destructive delete action turns red. The
-   `!important` is required to win over the global selected-row rule in
-   fluent-design-2.css that otherwise forces every non-primary button to accent
-   while its row is selected. */
-.targets-page :deep(.target-action-delete.el-button:hover),
-.targets-page :deep(.target-action-delete.el-button:focus-visible) {
-  border-color: var(--fluent-danger-bg) !important;
-  background: color-mix(
-    in srgb,
-    CanvasText 5%,
-    var(--app-surface-strong)
-  ) !important;
-  color: light-dark(var(--fluent-danger-hover-bg), #ffd2cc) !important;
-}
-
 .target-clear-btn {
   font-size: 13px;
   margin-right: 2px;
 }
 
-/* Fluent has no dedicated danger button appearance: destructive secondary
-   actions carry intent with a red foreground on neutral chrome instead of a
-   red outline. */
-.targets-page :deep(.target-batch-delete.el-button.is-plain) {
-  --el-button-bg-color: var(--app-surface-strong);
-  --el-button-border-color: var(--app-border-strong);
-  --el-button-hover-bg-color: color-mix(
-    in srgb,
-    var(--fluent-danger-bg) 10%,
-    var(--app-surface-strong)
-  );
-  --el-button-hover-border-color: var(--fluent-danger-bg);
-  --el-button-active-bg-color: color-mix(
-    in srgb,
-    var(--fluent-danger-bg) 16%,
-    var(--app-surface-strong)
-  );
-  --el-button-active-border-color: var(--fluent-danger-bg);
-  color: light-dark(var(--fluent-danger-bg), #ffb4ab) !important;
-}
-.targets-page :deep(.target-batch-delete.el-button.is-plain:hover),
-.targets-page :deep(.target-batch-delete.el-button.is-plain:focus-visible),
-.targets-page :deep(.target-batch-delete.el-button.is-plain:active) {
-  color: light-dark(var(--fluent-danger-hover-bg), #ffd2cc) !important;
-}
 </style>

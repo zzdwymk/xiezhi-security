@@ -21,6 +21,11 @@ class TrafficScanLedgerServiceTests {
   private final TrafficScanLedgerRepository repository = mock(TrafficScanLedgerRepository.class);
   private final TrafficScanLedgerService service = new TrafficScanLedgerService(repository);
 
+  @org.junit.jupiter.api.BeforeEach
+  void authorizeAdministrator() {
+    service.setAuthorization(mock(com.bachelor.toolbox.project.ProjectAuthorizationService.class));
+  }
+
   @Test
   void recordsAnEntry() {
     TrafficScanLedger entry = new TrafficScanLedger();

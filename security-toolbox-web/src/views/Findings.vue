@@ -4,7 +4,6 @@ import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   Delete as DeleteIcon,
-  Document,
   MagicStick,
   Search,
   VideoPlay,
@@ -20,13 +19,15 @@ import {
   type Target,
 } from "../api";
 import AppPagination from "../components/AppPagination.vue";
+import TrafficScanRecords from "../components/TrafficScanRecords.vue";
+import { useAuthStore } from "../stores/auth";
 import OfflineState from "../components/OfflineState.vue";
 import { useClientPagination } from "../composables/useClientPagination";
 import { formatDateTime } from "../utils/dateTime";
 import { toErrorMessage } from "../utils/errorMessage";
 import { useCopilotStore } from "../stores/copilot";
-import { downloadBlob, EmptyDownloadError } from "../utils/download";
-import { actionRiskLabel, actionStepLabel, findingTitleLabel, aiToolLabel, severityLabel } from "../utils/aiPresentation";
+import { actionRiskLabel, actionStepLabel, findingTitleLabel, aiProviderLabel, aiToolLabel, severityLabel } from "../utils/aiPresentation";
+import MarkdownBody from "../components/MarkdownBody.vue";
 
 function postScanStatusLabel(status?: string) {
   const map: Record<string, string> = {
@@ -34,11 +35,15 @@ function postScanStatusLabel(status?: string) {
     DISPATCHED: "已下发",
     EXPIRED: "已过期",
   };
-  return (status && map[status]) || status || "未知";
+  return (status && map[status]) || "未知状态";
 }
 
 function riskLevelLabel(risk?: string) {
   return actionRiskLabel(risk);
+}
+
+function confidenceLabel(confidence?: string) {
+  return ({ HIGH: "高", MEDIUM: "中", LOW: "低" } as Record<string, string>)[confidence || ""] || "未评估";
 }
 
 function phaseLabel(phase?: string) {
@@ -57,8 +62,11 @@ function phaseLabel(phase?: string) {
     retest: "修复核验",
     REPORTING: "报告交付",
     report: "报告交付",
+    "Web 基线": "网页安全基线",
+    "Web 相邻风险": "网页关联风险",
   };
-  return (phase && map[phase]) || phase || "未指定阶段";
+  if (!phase) return "未指定阶段";
+  return map[phase] || (/[\u4e00-\u9fff]/.test(phase) ? phase : "未知阶段");
 }
 
 function diffChangeLabel(type?: string) {
@@ -68,7 +76,7 @@ function diffChangeLabel(type?: string) {
     PERSISTENT: "持续存在",
     SEVERITY_CHANGED: "等级变化",
   };
-  return (type && labels[type]) || type || "未知";
+  return (type && labels[type]) || "未知变化";
 }
 
 function diffChangeTagType(type?: string): "success" | "danger" | "warning" | "info" {
@@ -94,12 +102,20 @@ function taskStatusLabel(status?: string) {
     REJECTED: "已拒绝",
     SKIPPED: "已跳过",
   };
-  return (status && labels[status]) || status || "未知";
+  return (status && labels[status]) || "未知状态";
 }
 
 const copilot = useCopilotStore();
 const router = useRouter();
 const route = useRoute();
+const auth = useAuthStore();
+const canReadTraffic = computed(() => auth.user?.role === "ADMIN");
+const recordSource = computed({
+  get: () => canReadTraffic.value && route.query.source === "traffic" ? "traffic" : "project",
+  set: (source: string) => { void router.replace({ query: {
+    ...route.query, source: source === "traffic" ? "traffic" : undefined, scanId: undefined,
+  } }); },
+});
 
 interface FindingRow {
   id: number;
@@ -120,7 +136,6 @@ const rows = ref<FindingRow[]>([]);
 const offline = ref(false);
 const detail = ref<FindingRow>();
 const detailVisible = ref(false);
-const downloading = ref<number>();
 const loading = ref(false);
 const deleting = ref<number>();
 const retesting = ref<number>();
@@ -151,6 +166,7 @@ watch(diffVisible, (visible) => {
 });
 const postScanVisible = ref(false);
 const postScanLoading = ref(false);
+const postScanRefreshing = ref(false);
 const postScanExecuting = ref(false);
 const postScanPlan = ref<PostScanPath>();
 const selectedPostScanSteps = ref<string[]>([]);
@@ -171,6 +187,18 @@ const categoryFilter = ref<"" | "vulnerability" | "risk">(
 const targetFilter = ref<number | undefined>(
   route.query.targetId ? Number(route.query.targetId) : undefined,
 );
+const taskFilter = computed(() => {
+  const value = Number(route.query.taskId);
+  return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+});
+
+function clearTaskFilter() {
+  void router.replace({ query: { ...route.query, taskId: undefined } });
+}
+
+function showSourceTask(taskId: number) {
+  void router.push({ path: "/tasks", query: { taskId: String(taskId) } });
+}
 const severityFilter = ref<string>(
   typeof route.query.severity === "string" ? route.query.severity : "",
 );
@@ -193,12 +221,14 @@ const hasActiveFilters = computed(() =>
     searchQuery.value.trim() ||
       categoryFilter.value ||
       targetFilter.value !== undefined ||
+      taskFilter.value !== undefined ||
       severityFilter.value ||
       statusFilter.value,
   ),
 );
 
 function resetFilters() {
+  if (taskFilter.value !== undefined) clearTaskFilter();
   searchQuery.value = "";
   categoryFilter.value = "";
   targetFilter.value = undefined;
@@ -236,6 +266,7 @@ async function load() {
           statusFilter.value || undefined,
           categoryFilter.value || undefined,
           findingSort.value,
+          taskFilter.value,
         ),
       { content: [], totalElements: 0 },
     );
@@ -269,20 +300,6 @@ async function updateStatus(row: FindingRow, status: string) {
     ElMessage.success("状态已更新");
   } catch {
     ElMessage.error("状态更新失败");
-  }
-}
-
-async function downloadReport(taskId: number) {
-  downloading.value = taskId;
-  try {
-    const { data } = await endpoints.downloadReport(taskId);
-    downloadBlob(data, `security-report-task-${taskId}.html`);
-  } catch (error) {
-    ElMessage.error(
-      error instanceof EmptyDownloadError ? error.message : "报告下载失败",
-    );
-  } finally {
-    downloading.value = undefined;
   }
 }
 
@@ -347,7 +364,7 @@ async function loadDiff() {
     diff.value = (await endpoints.scanDiff(baseline, current)).data;
     resetDiffPage();
   } catch (error) {
-    ElMessage.error(toErrorMessage(error, "扫描 Diff 获取失败"));
+    ElMessage.error(toErrorMessage(error, "扫描差异获取失败"));
   } finally {
     diffLoading.value = false;
   }
@@ -358,7 +375,7 @@ async function clearFindings() {
   try {
     await ElMessageBox.confirm(
       `确定清空全部 ${total.value} 条结果吗？该操作无法恢复。`,
-      "清空结果中心",
+      "清空安全发现",
       {
         confirmButtonText: "全部清空",
         cancelButtonText: "取消",
@@ -376,7 +393,7 @@ async function clearFindings() {
     total.value = 0;
     detailVisible.value = false;
     detail.value = undefined;
-    ElMessage.success("结果中心已清空");
+    ElMessage.success("安全发现已清空");
   } catch {
     ElMessage.error("清空失败，请稍后重试");
   } finally {
@@ -437,6 +454,24 @@ async function generatePostScanPath(row: FindingRow) {
     ElMessage.error(toErrorMessage(error, "无法生成后续验证路径"));
   } finally {
     postScanLoading.value = false;
+  }
+}
+
+async function refreshPostScanPath() {
+  const id = postScanPlan.value?.id;
+  if (!id || postScanRefreshing.value) return;
+  postScanRefreshing.value = true;
+  try {
+    const { data } = await endpoints.postScanPath(id);
+    if (postScanPlan.value?.id !== id) return;
+    postScanPlan.value = data;
+    selectedPostScanSteps.value = selectedPostScanSteps.value.filter((stepId) =>
+      data.steps.some((step) => step.id === stepId && step.automated && step.riskLevel === "SAFE"),
+    );
+  } catch (error: unknown) {
+    ElMessage.error(toErrorMessage(error, "无法读取已保存的验证路径"));
+  } finally {
+    postScanRefreshing.value = false;
   }
 }
 
@@ -511,7 +546,7 @@ watch(
 );
 
 watch(
-  [targetFilter, categoryFilter, severityFilter, statusFilter, findingSort],
+  [targetFilter, taskFilter, categoryFilter, severityFilter, statusFilter, findingSort],
   () => {
     page.value = 1;
     void load();
@@ -530,16 +565,16 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="panel findings-page workspace-list-page" v-loading="loading">
+  <section class="panel findings-page workspace-list-page" v-loading="loading && recordSource === 'project'">
     <div class="section-head">
       <div>
-        <h3>结果中心</h3>
+        <h3>安全发现</h3>
         <p>统一管理全量授权目标的漏洞发现、安全基线风险与技术证据。</p>
       </div>
-      <div class="finding-head-actions section-head-actions">
+      <div v-if="recordSource === 'project'" class="finding-head-actions section-head-actions">
         <el-button @click="load">刷新</el-button>
         <el-button type="warning" plain @click="diffVisible = true"
-          >扫描 Diff</el-button
+          >扫描差异</el-button
         >
         <el-button
           type="danger"
@@ -552,8 +587,17 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+    <el-tabs v-if="canReadTraffic" v-model="recordSource" aria-label="发现来源">
+      <el-tab-pane label="项目发现" name="project" />
+      <el-tab-pane label="流量发现" name="traffic" />
+    </el-tabs>
+    <TrafficScanRecords v-if="recordSource === 'traffic'" mode="findings" />
+    <template v-else>
     <!-- 多维组合检索与过滤栏 -->
     <div class="findings-filter-toolbar">
+      <el-tag v-if="taskFilter !== undefined" closable @close="clearTaskFilter">
+        来源任务 #{{ taskFilter }}
+      </el-tag>
       <el-input
         v-model="searchQuery"
         :prefix-icon="Search"
@@ -700,10 +744,9 @@ onBeforeUnmount(() => {
             <el-button
               class="finding-action"
               size="small"
-              :icon="Document"
-              :loading="downloading === scope.row.taskId"
-              @click="downloadReport(scope.row.taskId)"
-              >报告</el-button
+              :icon="View"
+              @click="showSourceTask(scope.row.taskId)"
+              >来源任务</el-button
             >
             <el-button
               class="finding-action"
@@ -720,7 +763,7 @@ onBeforeUnmount(() => {
               >复测</el-button
             >
             <el-button
-              class="finding-action finding-action--danger"
+              class="finding-action finding-action--danger row-action row-action--danger"
               size="small"
               :icon="DeleteIcon"
               :loading="deleting === scope.row.id"
@@ -743,6 +786,7 @@ onBeforeUnmount(() => {
         load();
       "
     />
+    </template>
   </section>
 
   <el-dialog
@@ -756,9 +800,9 @@ onBeforeUnmount(() => {
         findingTitleLabel(detail.title, detail.sourceTool)
       }}</el-descriptions-item>
       <el-descriptions-item v-if="findingTitleLabel(detail.title, detail.sourceTool) !== detail.title" label="原始名称">{{ detail.title }}</el-descriptions-item>
-      <el-descriptions-item label="说明">{{
-        detail.description || "未提供"
-      }}</el-descriptions-item>
+      <el-descriptions-item label="说明">
+        <MarkdownBody :content="detail.description || '未提供'" />
+      </el-descriptions-item>
       <el-descriptions-item label="证据">
         <el-input
           :model-value="detail.evidence || '未提供'"
@@ -769,9 +813,9 @@ onBeforeUnmount(() => {
           class="finding-evidence"
         />
       </el-descriptions-item>
-      <el-descriptions-item label="修复建议">{{
-        detail.remediation || "未提供"
-      }}</el-descriptions-item>
+      <el-descriptions-item label="修复建议">
+        <MarkdownBody :content="detail.remediation || '未提供'" />
+      </el-descriptions-item>
     </el-descriptions>
     <template #footer
       ><el-button @click="detailVisible = false">关闭</el-button
@@ -801,13 +845,13 @@ onBeforeUnmount(() => {
           show-icon
         />
         <section class="post-scan-analysis">
-          <div>
-            <el-tag size="small">{{ postScanPlan.provider }}</el-tag
+          <div class="post-scan-meta">
+            <el-tag size="small">{{ postScanPlan.provider === 'openai-compatible' ? '模型分析 · 规则规划' : aiProviderLabel(postScanPlan.provider) }}</el-tag
             ><el-tag size="small" type="info">{{
               postScanStatusLabel(postScanPlan.status)
             }}</el-tag>
           </div>
-          <p>{{ postScanPlan.analysis }}</p>
+          <MarkdownBody class="post-scan-summary" :content="postScanPlan.analysis" />
         </section>
         <section class="post-scan-paths">
           <h4>建议验证路径</h4>
@@ -818,20 +862,41 @@ onBeforeUnmount(() => {
                 riskLevelLabel(path.riskLevel)
               }}</el-tag
               ><el-tag size="small" type="info"
-                >置信度 {{ path.confidence }}</el-tag
+                >置信度 {{ confidenceLabel(path.confidence) }}</el-tag
               >
             </header>
-            <p>{{ path.goal }}</p>
-            <small>证据：{{ path.evidenceBasis || "源扫描结果" }}</small>
+            <MarkdownBody class="post-scan-prose" :content="path.goal" />
+            <div v-if="path.prerequisites?.length" class="post-scan-field">
+              <strong>前置条件</strong>
+              <MarkdownBody :content="path.prerequisites.join('\n\n')" />
+            </div>
+            <div class="post-scan-field">
+              <strong>证据</strong>
+              <MarkdownBody :content="path.evidenceBasis || '源扫描结果'" />
+            </div>
             <div class="path-limits">
-              <span>限制：{{ path.limitations.join("；") }}</span
-              ><span>停止条件：{{ path.stopConditions.join("；") }}</span>
+              <div class="post-scan-field">
+                <strong>限制</strong>
+                <MarkdownBody :content="path.limitations.join('\n\n') || '未提供'" />
+              </div>
+              <div class="post-scan-field">
+                <strong>停止条件</strong>
+                <MarkdownBody :content="path.stopConditions.join('\n\n') || '未提供'" />
+              </div>
             </div>
           </article>
         </section>
         <section class="post-scan-steps">
           <h4>下一步编排</h4>
-          <el-checkbox-group v-model="selectedPostScanSteps">
+          <el-alert
+            v-if="!postScanPlan.steps.length"
+            title="暂无可执行步骤"
+            description="当前发现尚未匹配到支持的后续验证操作。上方分析仅供人工复核，尚未创建或执行任务。"
+            type="info"
+            :closable="false"
+            show-icon
+          />
+          <el-checkbox-group v-else v-model="selectedPostScanSteps">
             <article
               v-for="step in postScanPlan.steps"
               :key="step.id"
@@ -859,16 +924,25 @@ onBeforeUnmount(() => {
                     ></span
                   >
                 </div>
-                <p>{{ step.reason }}</p>
+                <MarkdownBody class="post-scan-prose" :content="step.reason" />
+                <div v-if="step.prerequisites?.length" class="post-scan-field">
+                  <strong>执行前置条件</strong>
+                  <MarkdownBody :content="step.prerequisites.join('\n\n')" />
+                </div>
                 <small
                   >{{ phaseLabel(step.phase) }} · {{
                     step.toolCode ? aiToolLabel(step.toolCode) : "无自动工具"
-                  }} ·
-                  预期证据：{{ step.expectedEvidence }}</small
+                  }}</small
                 >
-                <small v-if="step.blockedReason" class="blocked-reason">{{
-                  step.blockedReason
-                }}</small>
+                <div class="post-scan-field">
+                  <strong>预期证据</strong>
+                  <MarkdownBody :content="step.expectedEvidence" />
+                </div>
+                <div v-if="step.impact" class="post-scan-field">
+                  <strong>预期影响</strong>
+                  <MarkdownBody :content="step.impact" />
+                </div>
+                <MarkdownBody v-if="step.blockedReason" class="blocked-reason" :content="step.blockedReason" />
               </el-checkbox>
             </article>
           </el-checkbox-group>
@@ -884,6 +958,12 @@ onBeforeUnmount(() => {
     <template #footer
       ><el-button @click="postScanVisible = false">关闭</el-button
       ><el-button
+        v-if="postScanPlan"
+        :loading="postScanRefreshing"
+        :disabled="postScanExecuting"
+        @click="refreshPostScanPath"
+        >刷新状态</el-button
+      ><el-button
         v-if="postScanPlan?.status === 'DRAFT'"
         type="primary"
         :icon="VideoPlay"
@@ -897,7 +977,7 @@ onBeforeUnmount(() => {
 
   <el-dialog
     v-model="diffVisible"
-    title="扫描 Diff"
+    title="扫描差异"
     class="app-dialog app-dialog--lg"
     align-center
   >
@@ -1112,18 +1192,6 @@ onBeforeUnmount(() => {
   background: var(--app-accent-soft);
   color: var(--fluent-link-fg);
 }
-/* Fluent has no dedicated danger appearance: destructive intent is carried by
-   a red foreground over neutral chrome, not a red outline. */
-.finding-row-actions :deep(.finding-action--danger) {
-  border-color: var(--app-border-strong);
-  color: light-dark(var(--fluent-danger-bg), #ffb4ab);
-}
-.finding-row-actions :deep(.finding-action--danger:hover),
-.finding-row-actions :deep(.finding-action--danger:focus-visible) {
-  border-color: var(--fluent-danger-bg);
-  background: color-mix(in srgb, var(--fluent-danger-bg) 10%, var(--app-surface-strong));
-  color: light-dark(var(--fluent-danger-hover-bg), #ffd2cc);
-}
 .finding-row-actions :deep(.el-button .el-icon) {
   font-size: 12px;
 }
@@ -1191,6 +1259,7 @@ onBeforeUnmount(() => {
   }
 }
 .post-scan-dialog {
+  min-width: 0;
   min-height: 180px;
 }
 .post-scan-analysis {
@@ -1200,16 +1269,15 @@ onBeforeUnmount(() => {
   border-radius: 6px;
   background: var(--app-surface-soft);
 }
-.post-scan-analysis > div {
+.post-scan-meta {
   display: flex;
   gap: 6px;
 }
-.post-scan-analysis p {
+.post-scan-summary {
   margin: 10px 0 0;
   color: var(--app-text);
   font-size: 13px;
   line-height: 1.75;
-  white-space: pre-wrap;
 }
 .post-scan-paths h4,
 .post-scan-steps h4 {
@@ -1226,6 +1294,7 @@ onBeforeUnmount(() => {
 }
 .post-scan-paths header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 7px;
 }
@@ -1233,8 +1302,7 @@ onBeforeUnmount(() => {
   margin-right: auto;
   font-size: 12px;
 }
-.post-scan-paths p,
-.post-scan-steps p {
+.post-scan-prose {
   margin: 7px 0;
   color: var(--app-muted);
   font-size: 11px;
@@ -1254,6 +1322,21 @@ onBeforeUnmount(() => {
   color: var(--app-muted);
   font-size: 10px;
 }
+.post-scan-field {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  margin-top: 7px;
+  color: var(--app-muted);
+}
+.post-scan-field > strong {
+  font-size: 12px;
+}
+.post-scan-field > .markdown-body {
+  color: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+}
 .post-scan-steps article.manual {
   background: var(--app-surface-soft);
 }
@@ -1268,6 +1351,7 @@ onBeforeUnmount(() => {
 }
 .post-step-title {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -1283,15 +1367,14 @@ onBeforeUnmount(() => {
 }
 .blocked-reason {
   margin-top: 5px;
-  color: var(--app-warning) !important;
+  color: var(--el-color-warning) !important;
 }
 .post-scan-paths article,
 .post-scan-steps article {
   margin-bottom: 10px;
   padding: 14px;
 }
-.post-scan-paths p,
-.post-scan-steps p {
+.post-scan-prose {
   margin: 9px 0;
   font-size: 12px;
 }

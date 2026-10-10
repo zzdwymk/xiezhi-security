@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
+import FluentIcon from "./FluentIcon.vue";
 import MarkdownBody from "./MarkdownBody.vue";
 
 const bridge = window.toolboxDesktop;
@@ -244,13 +245,13 @@ function cooldown(until: number) {
           </div>
           <small v-if="modelMessages[provider.id]" class="relay-help">{{ modelMessages[provider.id] }}</small>
         </el-form-item>
-        <el-form-item label="API Key">
+        <el-form-item label="API 密钥">
           <el-input v-model="provider.apiKey" type="password" autocomplete="new-password" :placeholder="provider.hasApiKey ? '已存密钥；留空保留原密钥' : '输入密钥；本地匿名 API 可留空'" />
           <small v-if="provider.hasApiKey" class="relay-help">更换地址需重新填写密钥。</small>
         </el-form-item>
         <el-form-item><el-switch v-model="provider.enabled" active-text="启用此线路" /></el-form-item>
         <details class="relay-details">
-          <summary>高级选项</summary>
+          <summary><FluentIcon name="chevron-right" />高级选项</summary>
           <el-form-item label="接口协议">
             <el-select v-model="provider.apiMode" style="width: 100%" @change="provider.apiMode !== 'responses' && (provider.codexHeaders = false)">
               <el-option label="Chat Completions" value="chat_completions" />
@@ -260,7 +261,7 @@ function cooldown(until: number) {
           <el-form-item><el-checkbox v-model="provider.codexHeaders" @change="provider.codexHeaders && (provider.apiMode = 'responses')">Codex 兼容模式（Responses）</el-checkbox></el-form-item>
         </details>
         <details class="relay-details">
-          <summary>测试连接</summary>
+          <summary><FluentIcon name="chevron-right" />测试连接</summary>
           <el-form-item label="测试内容">
             <el-input v-model="testPrompt" type="textarea" :rows="3" maxlength="4000" show-word-limit placeholder="输入要发送给模型的内容" />
           </el-form-item>
@@ -275,7 +276,7 @@ function cooldown(until: number) {
     <div v-else class="relay-empty"><span>尚未添加 API</span><el-button type="primary" :disabled="busy" @click="addProvider">添加 API</el-button></div>
 
     <details class="relay-status relay-details">
-      <summary>运行状态与重试机制</summary>
+      <summary><FluentIcon name="chevron-right" />运行状态与重试机制</summary>
       <div class="relay-toolbar">
         <strong>运行状态</strong>
         <el-button size="small" :loading="refreshing" @click="refreshStatus">刷新状态</el-button>
@@ -309,8 +310,28 @@ function cooldown(until: number) {
 .relay-status-row { display: grid; gap: 5px; padding: 8px 0; overflow-wrap: anywhere; }
 .relay-status-row small { color: var(--el-color-danger); }
 .relay-empty { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px; border: 1px dashed var(--el-border-color); border-radius: 8px; color: var(--el-text-color-secondary); }
-.relay-details > summary { cursor: pointer; color: var(--el-text-color-secondary); font-size: 13px; padding-bottom: 12px; }
-.relay-details[open] > summary { margin-bottom: 4px; }
+.relay-form > .relay-details { margin-bottom: 20px; }
+.relay-details > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  min-height: 40px;
+  padding: 8px 0;
+  border-radius: var(--fluent-radius-control, 4px);
+  color: var(--el-text-color-primary);
+  font-size: var(--fluent-body1-size, 14px);
+  font-weight: var(--fluent-weight-semibold, 600);
+  line-height: var(--fluent-body1-line, 20px);
+  list-style: none;
+  cursor: pointer;
+}
+.relay-details > summary::-webkit-details-marker { display: none; }
+.relay-details > summary:hover { background: var(--el-fill-color-light); }
+.relay-details > summary:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: 2px; }
+.relay-details > summary > .fluent-system-icon { flex: none; width: 16px; height: 16px; }
+.relay-details[open] > summary { margin-bottom: 12px; }
+.relay-details[open] > summary > .fluent-system-icon { transform: rotate(90deg); }
 .relay-test-reply { margin: 12px 0; padding: 12px; border-radius: var(--fluent-radius-control, 6px); background: var(--el-fill-color-light); }
 @media (max-width: 660px) { .relay-editor { grid-template-columns: 1fr; } .relay-list { flex-direction: row; flex-wrap: wrap; } }
 </style>

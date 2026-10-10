@@ -32,7 +32,6 @@ public class TrafficProxyService {
           PACKET_LIST_LIMIT,
           Sort.by(Sort.Direction.DESC, "createdAt")
               .and(Sort.by(Sort.Direction.DESC, "id")));
-  private static final Pageable RECENT_SESSION_PACKETS = PageRequest.of(0, PACKET_LIST_LIMIT);
   private static final Pageable CLEANUP_BATCH = PageRequest.of(0, CLEANUP_BATCH_SIZE);
 
   private final TrafficSessionRepository sessions;
@@ -50,6 +49,7 @@ public class TrafficProxyService {
   private LocalTrafficProxy proxy;
   private TrafficSession current;
   private volatile boolean capturing;
+  private long proxyGeneration;
 
   public TrafficProxyService(
       TrafficSessionRepository sessions,
@@ -80,10 +80,8 @@ public class TrafficProxyService {
     if (proxy != null) {
       throw new ApiException("流量代理已经在运行");
     }
-    AuthorizedTarget target = request.targetId() == null ? null : targets.get(request.targetId());
-    if (target != null) {
-      policy.validatedHost(target);
-    }
+    // Capture is independent of project and target authorization. Keep legacy request fields compatible.
+    AuthorizedTarget target = null;
     int port = request.port() == null ? 19080 : request.port();
     if (port < 19080 || port > 19120) {
       throw new ApiException("代理端口必须在 19080-19120 范围");
@@ -96,14 +94,18 @@ public class TrafficProxyService {
     session.setListenPort(port);
     session.setHandlingMode(mode);
     session.setStatus("STARTING");
-    session = sessions.save(session);
-
+    LocalTrafficProxy starting = null;
+    long generation = ++proxyGeneration;
+    capturing = false;
+    current = null;
     try {
+      session = sessions.save(session);
       TrafficSession active = session;
-      proxy =
+      starting =
           new LocalTrafficProxy(
-              target, policy, certificateAuthority, capture -> saveCapture(active, capture));
-      proxy.start(port);
+              target, policy, certificateAuthority, capture -> saveCapture(generation, active, capture));
+      proxy = starting;
+      starting.start(port);
       capturing = false;
       session.setStatus("RUNNING");
       session.setStartedAt(Instant.now());
@@ -116,27 +118,36 @@ public class TrafficProxyService {
           "SUCCESS");
       return status();
     } catch (Exception ex) {
+      capturing = false;
+      proxyGeneration++;
+      proxy = null;
+      current = null;
+      if (starting != null) starting.close();
       LOGGER.error("启动流量代理失败，监听端口={}", port, ex);
       session.setStatus("FAILED");
       session.setErrorMessage("启动流量代理失败，请查看服务日志");
-      sessions.save(session);
-      proxy = null;
+      try {
+        if (session.getId() != null) sessions.save(session);
+      } catch (RuntimeException saveFailure) {
+        LOGGER.warn("保存流量代理启动失败状态失败，会话={}", session.getId(), saveFailure);
+      }
       throw new ApiException("启动流量代理失败，请查看服务日志");
     }
   }
 
   public synchronized Status stop() {
     capturing = false;
-    if (proxy != null) {
-      proxy.close();
-    }
+    proxyGeneration++;
+    LocalTrafficProxy stopping = proxy;
+    TrafficSession stopped = current;
     proxy = null;
-    if (current != null) {
-      current.setStatus("STOPPED");
-      current.setStoppedAt(Instant.now());
-      sessions.save(current);
-      audit.record("STOP_TRAFFIC_PROXY", "TRAFFIC_SESSION", current.getId(), "stopped", "SUCCESS");
-      current = null;
+    current = null;
+    if (stopping != null) stopping.close();
+    if (stopped != null) {
+      stopped.setStatus("STOPPED");
+      stopped.setStoppedAt(Instant.now());
+      sessions.save(stopped);
+      audit.record("STOP_TRAFFIC_PROXY", "TRAFFIC_SESSION", stopped.getId(), "stopped", "SUCCESS");
     }
     return status();
   }
@@ -155,7 +166,7 @@ public class TrafficProxyService {
     return status();
   }
 
-  public Status status() {
+  public synchronized Status status() {
     Long targetId =
         current == null || current.getTargetId() == null || current.getTargetId() <= 0
             ? null
@@ -173,11 +184,8 @@ public class TrafficProxyService {
   }
 
   public List<TrafficPacket> packets() {
-    if (current == null) {
-      return packets.findAll(RECENT_PACKETS).getContent();
-    }
-    return packets.findAllBySessionIdOrderByCreatedAtDescIdDesc(
-        current.getId(), RECENT_SESSION_PACKETS);
+    // Recording controls collection, not the scope of the traffic workspace history.
+    return packets.findAll(RECENT_PACKETS).getContent();
   }
 
   public TrafficPacket getPacket(Long id) {
@@ -306,8 +314,9 @@ public class TrafficProxyService {
     sessions.saveAll(sessionBatch);
   }
 
-  private synchronized void saveCapture(TrafficSession session, LocalTrafficProxy.Capture capture) {
-    if (!capturing || filters.shouldExclude(capture)) {
+  private synchronized void saveCapture(long generation, TrafficSession session, LocalTrafficProxy.Capture capture) {
+    if (generation != proxyGeneration || proxy == null || current == null
+        || !session.getId().equals(current.getId()) || !capturing || filters.shouldExclude(capture)) {
       return;
     }
     CaptureResult saved = transactions.execute(ignored -> persistCapture(session, capture));

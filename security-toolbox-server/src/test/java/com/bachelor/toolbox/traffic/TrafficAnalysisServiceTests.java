@@ -5,11 +5,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.bachelor.toolbox.ai.AiModelClient;
 import com.bachelor.toolbox.audit.AuditService;
+import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.project.ProjectTarget;
 import com.bachelor.toolbox.project.ProjectTargetRepository;
 import com.bachelor.toolbox.task.CreateTaskRequest;
@@ -38,26 +40,38 @@ class TrafficAnalysisServiceTests {
 
   @ParameterizedTest
   @CsvSource({"EXECUTED,DONE", "IGNORED,IGNORED", "PENDING,PENDING"})
-  void rereadingAnAnalysisPreservesItsDecisionState(String suggestionStatus, String packetStatus) {
+  void reanalysisCallsTheModelAgainAndPreservesItsDecisionState(String suggestionStatus, String packetStatus) throws Exception {
     TrafficSuggestion suggestion = executableSuggestion();
     suggestion.setStatus(suggestionStatus);
+    suggestion.setTaskId(101L);
+    suggestion.setDecidedAt(java.time.Instant.parse("2026-10-01T00:00:00Z"));
     TrafficPacket packet = analysisPacket();
     packet.setAiStatus(packetStatus);
     when(packets.findById(PACKET_ID)).thenReturn(Optional.of(packet));
     when(suggestions.findByPacketId(PACKET_ID)).thenReturn(Optional.of(suggestion));
+    when(suggestions.save(suggestion)).thenReturn(suggestion);
+    when(modelClient.enabled()).thenReturn(true);
+    when(modelClient.complete(any(), any())).thenReturn("第一次模型分析", "第二次模型分析");
 
+    service.analyze(PACKET_ID, "SUGGEST_ONLY");
     TrafficAnalysisService.AnalysisResponse response = service.analyze(PACKET_ID, "SUGGEST_ONLY");
 
+    assertThat(response.summary()).isEqualTo("第二次模型分析");
+    assertThat(response.suggestionId()).isEqualTo(SUGGESTION_ID);
+    assertThat(response.taskId()).isEqualTo(101L);
     assertThat(response.status()).isEqualTo(suggestionStatus);
+    assertThat(suggestion.getDecidedAt()).isEqualTo(java.time.Instant.parse("2026-10-01T00:00:00Z"));
     assertThat(packet.getAiStatus()).isEqualTo(packetStatus);
-    verify(packets).save(packet);
-    verify(suggestions, never()).save(any(TrafficSuggestion.class));
-    verify(modelClient, never()).enabled();
+    verify(packets, times(2)).save(packet);
+    verify(suggestions, times(2)).save(suggestion);
+    verify(modelClient, times(2)).complete(any(), any());
+    verify(tasks, never()).create(any());
   }
 
   @Test
   void enhancesNewAnalysisWithAiWhileRetainingTheControlledAction() throws Exception {
     TrafficPacket packet = analysisPacket();
+    packet.setRequestHeaders("Authorization: Bearer raw-token");
     prepareNewAnalysis(packet);
     when(modelClient.enabled()).thenReturn(true);
     when(modelClient.complete(any(), any())).thenReturn("模型引用 401 响应建议检查认证配置。");
@@ -66,7 +80,8 @@ class TrafficAnalysisServiceTests {
 
     ArgumentCaptor<String> prompt = ArgumentCaptor.forClass(String.class);
     verify(modelClient).complete(any(), prompt.capture());
-    assertThat(prompt.getValue()).contains("method=GET", "url=https://127.0.0.1:8443/login", "status=401");
+    assertThat(prompt.getValue()).contains("method=GET", "url=https://127.0.0.1:8443/login", "status=401",
+        "本地规则参考模板", "Content-Security-Policy", "[REDACTED]").doesNotContain("raw-token");
     ArgumentCaptor<TrafficSuggestion> saved = ArgumentCaptor.forClass(TrafficSuggestion.class);
     verify(suggestions).save(saved.capture());
     assertThat(saved.getValue().getSource()).isEqualTo("AI");
@@ -78,20 +93,39 @@ class TrafficAnalysisServiceTests {
   }
 
   @Test
-  void modelFailureKeepsTheLocalAnalysisAvailable() throws Exception {
+  void modelFailureDoesNotSaveLocalRulesAsAnAiAnalysis() throws Exception {
     prepareNewAnalysis(analysisPacket());
     when(modelClient.enabled()).thenReturn(true);
     when(modelClient.complete(any(), any())).thenThrow(new IllegalStateException("provider-detail"));
 
-    TrafficAnalysisService.AnalysisResponse response = service.analyze(PACKET_ID, "SUGGEST_ONLY");
-
-    assertThat(response.summary()).contains("被动分析").doesNotContain("provider-detail");
-    assertThat(response.reasons()).anyMatch(reason -> reason.contains("Content-Security-Policy"));
-    assertThat(response.status()).isEqualTo("PENDING");
-    ArgumentCaptor<TrafficSuggestion> saved = ArgumentCaptor.forClass(TrafficSuggestion.class);
-    verify(suggestions).save(saved.capture());
-    assertThat(saved.getValue().getSource()).isEqualTo("ZAP_PASSIVE");
+    assertThatThrownBy(() -> service.analyze(PACKET_ID, "SUGGEST_ONLY"))
+        .isInstanceOf(ApiException.class).hasMessageContaining("未能完成流量分析")
+        .hasMessageNotContaining("provider-detail");
+    verify(suggestions, never()).save(any(TrafficSuggestion.class));
+    verify(packets, never()).save(any(TrafficPacket.class));
     verify(tasks, never()).create(any(CreateTaskRequest.class));
+  }
+
+  @Test
+  void disabledModelDoesNotReportASuccessfulAnalysis() throws Exception {
+    prepareNewAnalysis(analysisPacket());
+    when(modelClient.enabled()).thenReturn(false);
+    assertThatThrownBy(() -> service.analyze(PACKET_ID, "SUGGEST_ONLY"))
+        .isInstanceOf(ApiException.class).hasMessageContaining("尚未配置或启用 AI 模型");
+    verify(modelClient, never()).complete(any(), any());
+    verify(suggestions, never()).save(any());
+    verify(packets, never()).save(any());
+  }
+
+  @Test
+  void emptyModelResponseDoesNotSaveAnAnalysis() throws Exception {
+    prepareNewAnalysis(analysisPacket());
+    when(modelClient.enabled()).thenReturn(true);
+    when(modelClient.complete(any(), any())).thenReturn(" ");
+    assertThatThrownBy(() -> service.analyze(PACKET_ID, "SUGGEST_ONLY"))
+        .isInstanceOf(ApiException.class).hasMessageContaining("未能完成流量分析");
+    verify(suggestions, never()).save(any());
+    verify(packets, never()).save(any());
   }
 
   private void prepareNewAnalysis(TrafficPacket packet) {
@@ -175,6 +209,7 @@ class TrafficAnalysisServiceTests {
 
   private TrafficSuggestion executableSuggestion() {
     TrafficSuggestion suggestion = new TrafficSuggestion();
+    suggestion.setId(SUGGESTION_ID);
     suggestion.setPacketId(PACKET_ID);
     suggestion.setTargetId(TARGET_ID);
     suggestion.setSummary("建议检查 Web 安全基线");

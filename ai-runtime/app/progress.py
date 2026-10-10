@@ -8,18 +8,49 @@ from typing import Any, AsyncIterator, Callable
 
 _STAGES = {"ROUTING", "RETRIEVING", "EVIDENCE_READY", "ASSESSING", "ASSESSED", "GENERATING", "CONTRACT_RETRY", "AUTHORIZING"}
 _DECISIONS = {"FINALIZE", "REWRITE_QUERY", "CLARIFY"}
+_REASONS = {
+    "FINALIZE": {"DIRECT_SUPPORT", "PARTIAL_SUPPORT"},
+    "REWRITE_QUERY": {"PARTIAL_SUPPORT", "NO_RELEVANT_EVIDENCE", "QUERY_TOO_BROAD"},
+    "CLARIFY": {"NO_RELEVANT_EVIDENCE", "CONFLICTING_EVIDENCE", "SCOPE_MISMATCH"},
+}
+_GUARD_REASONS = {"REWRITE_LIMIT_REACHED", "REWRITE_REJECTED"}
 _listener: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar("public_progress", default=None)
 
 
-def emit_progress(stage: str, *, count: int | None = None, decision: str | None = None) -> None:
+def emit_progress(
+    stage: str, *, count: int | None = None, decision: str | None = None,
+    model_decision: str | None = None, reason_codes: list[str] | None = None,
+    assessment_source: str | None = None, guard_reason: str | None = None,
+) -> None:
     listener = _listener.get()
     if listener is None or stage not in _STAGES:
         return
     payload: dict[str, Any] = {"stage": stage}
     if type(count) is int and 0 <= count <= 10:
         payload["count"] = count
-    if decision in _DECISIONS:
+    if isinstance(decision, str) and decision in _DECISIONS:
         payload["decision"] = decision
+    if any(value is not None for value in (model_decision, reason_codes, assessment_source, guard_reason)):
+        # Only validated finite assessment facts may cross this UI channel.
+        # Reject the entire hint rather than relabel a guard decision as the
+        # model's original decision or leak a free-form reason.
+        if (stage != "ASSESSED" or not isinstance(model_decision, str) or model_decision not in _DECISIONS
+                or not isinstance(decision, str) or decision not in _DECISIONS
+                or not isinstance(assessment_source, str) or assessment_source not in {"MODEL", "LOCAL_RULE"}
+                or not isinstance(reason_codes, list) or not 1 <= len(reason_codes) <= 4
+                or any(not isinstance(reason, str) or reason not in _REASONS[model_decision]
+                       for reason in reason_codes)
+                or len(set(reason_codes)) != len(reason_codes)):
+            return
+        if guard_reason is not None:
+            if (not isinstance(guard_reason, str) or guard_reason not in _GUARD_REASONS or model_decision != "REWRITE_QUERY"
+                    or decision != "CLARIFY"):
+                return
+            payload["guardReason"] = guard_reason
+        elif model_decision != decision:
+            return
+        payload.update(modelDecision=model_decision, reasonCodes=list(reason_codes),
+                       assessmentSource=assessment_source)
     listener(payload)
 
 

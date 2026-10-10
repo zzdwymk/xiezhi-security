@@ -35,6 +35,12 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class ScanScheduleService {
+  private com.bachelor.toolbox.notification.NotificationService notifications;
+
+  @Autowired(required = false)
+  public void setNotifications(com.bachelor.toolbox.notification.NotificationService value) {
+    notifications = value;
+  }
   private static final Logger log = LoggerFactory.getLogger(ScanScheduleService.class);
   private static final Sort LIST_SORT =
       Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id"));
@@ -297,8 +303,12 @@ public class ScanScheduleService {
       schedule.setLastError(null);
       advanceSchedule(schedule, dispatchTime);
     } catch (Exception exception) {
+      String previousError = schedule.getLastError();
       schedule.setLastError(scheduleErrorMessage(exception));
       advanceSchedule(schedule, dispatchTime);
+      if (!Objects.equals(previousError, schedule.getLastError())) {
+        publishScheduleError(schedule, false, dispatchTime);
+      }
       log.warn("扫描计划调度失败，已推进到下次执行时间：scheduleId={}", schedule.getId(), exception);
     }
   }
@@ -308,6 +318,7 @@ public class ScanScheduleService {
     schedule.setNextRunAt(null);
     schedule.setLastError(scheduleErrorMessage(exception));
     repository.save(schedule);
+    publishScheduleError(schedule, true, Instant.now());
     log.warn("扫描计划复验失败，已自动停用：scheduleId={}", schedule.getId(), exception);
   }
 
@@ -315,6 +326,15 @@ public class ScanScheduleService {
     String message = exception.getMessage();
     if (message == null || message.isBlank()) message = "定时任务执行失败，请查看服务日志";
     return message.length() <= 1000 ? message : message.substring(0, 1000);
+  }
+
+  private void publishScheduleError(ScanSchedule schedule, boolean disabled, Instant occurredAt) {
+    if (notifications == null) return;
+    notifications.publish("schedule:" + schedule.getId() + ":" + (disabled ? "disabled:" : "error:") + occurredAt,
+        schedule.getProjectId(), false, "schedule", disabled ? "warning" : "error",
+        disabled ? "定时扫描已自动停用" : "定时扫描调度失败",
+        "计划 #" + schedule.getId() + "（" + schedule.getToolCode() + "）：" + schedule.getLastError(),
+        "/tasks?scheduleId=" + schedule.getId(), List.of());
   }
 
   private Map<String, Object> deserializeParameters(String parametersJson) throws Exception {

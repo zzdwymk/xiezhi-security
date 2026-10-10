@@ -15,9 +15,11 @@ import {
   ChatDotRound,
   CircleCheck,
   Connection,
+  CopyDocument,
   Delete,
   Dismiss,
   DocumentChecked,
+  EditPen,
   Plus,
   Promotion,
   Refresh,
@@ -39,6 +41,7 @@ import {
 } from "../api";
 import {
   useConversationStore,
+  ConversationStorageError,
   type ConversationMessage,
   type ConversationThread,
   type ConversationAgentEvent,
@@ -58,22 +61,31 @@ import {
   localizeAiRuntimeFailure,
   localizeAiToolCodes,
   readableAiConversationError,
+  publicProgressProvenance,
 } from "../utils/aiPresentation";
 import type { CopilotDraft, CopilotReference } from "../types/copilot";
-import { renderMarkdown } from "../utils/markdown";
+import { markdownToPlainText, renderMarkdown } from "../utils/markdown";
 import {
   taskProgressIndeterminate,
   taskProgressPercentage,
 } from "../utils/taskProgress";
 import { taskbarProgress } from "../utils/taskbarProgress";
 import AiProgressPanel from "../components/AiProgressPanel.vue";
+import AiFailureNotice from "../components/AiFailureNotice.vue";
+import FluentIcon from "../components/FluentIcon.vue";
+import MarkdownComposerPreview from "../components/MarkdownComposerPreview.vue";
 import ConversationAvatar from "../components/ConversationAvatar.vue";
 import AiApprovalDialog from "../components/AiApprovalDialog.vue";
-import { createAiApprovalPromptGate, isAwaitingAiApproval, isAwaitingAiDispatch } from "../utils/aiApproval";
+import FluentCodeBlock from "../components/FluentCodeBlock.vue";
+import { createAiApprovalPromptGate, isAwaitingAiApproval, isAwaitingAiDispatch, isAiDispatchRejected, aiDispatchFailureStatus } from "../utils/aiApproval";
 import { aiEventStepStatus, findMatchingAiStep, mergeAiStep } from "../utils/aiStepState";
 import { mergeTaskDetailSnapshot } from "../utils/taskDetail";
 import { aiExecutionRequest } from "../utils/aiIntent";
+import { aiAnswerSource, isLocalAiAnswer, requireAiAnswer } from "../utils/aiAnswer";
+import { resolveAuditConversationScope } from "../utils/auditConversationScope";
 import { aiProgressFailureText, isPublicAiProgressEvent, publicAiProgressText } from "../utils/aiPresentation";
+import messageQuoteIcon from "@fluentui/svg-icons/icons/text_quote_24_regular.svg?url";
+const messageQuoteStyle = { maskImage: `url("${messageQuoteIcon}")` };
 
 interface TaskRow {
   id: number;
@@ -113,13 +125,25 @@ const projectByTarget = ref<Record<number, number>>({});
 const selectedTargetId = ref<number>();
 const prompt = ref("");
 const composerInputRef = ref<HTMLTextAreaElement | null>(null);
-const quotedMessage = ref<ConversationMessage>();
+type QuotedMessage = Pick<ConversationMessage, "id" | "role" | "content" | "createdAt">;
+const quotedMessage = ref<QuotedMessage>();
+interface MessageEditState {
+  threadId: string;
+  messageId: string;
+  references: NonNullable<ConversationMessage["references"]>;
+  mode?: ConversationMessage["copilotMode"];
+  previous: { prompt: string; draft?: CopilotDraft; quote?: QuotedMessage };
+}
+const editingMessage = ref<MessageEditState>();
+const copiedMessageId = ref<string>();
+let copiedMessageTimer: ReturnType<typeof setTimeout> | undefined;
 const loading = ref(false);
 const sending = ref(false);
 const messagesElement = ref<HTMLElement>();
 const answeringMessages = new Set<string>();
 const retryingMessageIds = ref(new Set<string>());
 const activeDraft = ref<CopilotDraft>();
+const composerReferences = computed(() => (editingMessage.value?.references || activeDraft.value?.refs || []) as CopilotReference[]);
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let stopTaskFeed: (() => void) | undefined;
 
@@ -148,6 +172,15 @@ function projectIdForTarget(targetId: number, thread?: ConversationThread) {
       ?.projectId,
   );
   return draftProjectId > 0 ? draftProjectId : projectByTarget.value[targetId];
+}
+
+function auditScopeForMessage(
+  references: ConversationMessage["references"],
+  targetId?: number,
+  projectId?: number,
+) {
+  return resolveAuditConversationScope(references as CopilotReference[] | undefined,
+    targets.value, targetId, projectId, endpoints);
 }
 
 const quickActions = [
@@ -196,6 +229,8 @@ function displayAgentValue(value: unknown, limit = 1600) {
 
 function taskState(message: ConversationMessage) {
   if (isAwaitingAiApproval(message)) return { label: "等待审批", progress: 0, className: "waiting", indeterminate: false };
+  if (isAiDispatchRejected(message)) return { label: "执行已拒绝，未派发任务", progress: 0, className: "failed", indeterminate: false };
+  if (isAwaitingAiDispatch(message) && message.approvalDispatchStatus === "unknown") return { label: "派发结果待核实", progress: 0, className: "waiting", indeterminate: false };
   if (isAwaitingAiDispatch(message)) return { label: "已批准，等待派发确认", progress: 0, className: "waiting", indeterminate: false };
   if (message.approvalStatus === "REJECTED" && !message.taskIds.length) return { label: "方案已驳回", progress: 0, className: "failed", indeterminate: false };
   const related = relatedTasks(message);
@@ -270,6 +305,7 @@ function planStepState(message: ConversationMessage, index: number) {
   const task = tasks.value.find((item) => item.id === taskId);
   if (!task) {
     const status = String(step?.status || "").toLowerCase();
+    if (!taskId && isAiDispatchRejected(message)) return { state: "failed" as PlanStepVisualState, label: "执行已拒绝", progress: 0, indeterminate: false };
     if (!taskId && message.approvalStatus === "REJECTED") {
       return { state: "failed" as PlanStepVisualState, label: "未获批准", progress: 0, indeterminate: false };
     }
@@ -363,9 +399,61 @@ function messageContextContent(message: ConversationMessage) {
 }
 
 function quoteMessage(message: ConversationMessage) {
+  if (sending.value) return;
   quotedMessage.value = message;
   focusComposer();
 }
+
+function cloneMessageDraft<T>(value: T): T {
+  return value === undefined ? value : JSON.parse(JSON.stringify(value));
+}
+
+function editMessage(message: ConversationMessage) {
+  const thread = selectedThread.value;
+  if (sending.value || !thread || message.role !== "user" || !thread.messages.some(item => item.id === message.id)) return;
+  const previous = editingMessage.value?.previous || {
+    prompt: prompt.value, draft: cloneMessageDraft(activeDraft.value), quote: cloneMessageDraft(quotedMessage.value),
+  };
+  editingMessage.value = {
+    threadId: thread.id, messageId: message.id, previous,
+    references: cloneMessageDraft(messageReferences(message)), mode: message.copilotMode,
+  };
+  prompt.value = message.content;
+  activeDraft.value = undefined;
+  quotedMessage.value = message.quote ? {
+    id: message.quote.messageId, role: message.quote.role, content: message.quote.content, createdAt: message.quote.createdAt,
+  } : undefined;
+  focusComposer();
+}
+
+function cancelMessageEdit() {
+  const editing = editingMessage.value;
+  if (!editing || sending.value) return;
+  prompt.value = editing.previous.prompt;
+  activeDraft.value = editing.previous.draft;
+  quotedMessage.value = editing.previous.quote;
+  editingMessage.value = undefined;
+  focusComposer();
+}
+
+function openAiDiagnostics() {
+  void router.push({ path: "/settings", query: { ai: "diagnostics" } });
+}
+
+async function copyMessage(message: ConversationMessage, format: "markdown" | "plain" = "markdown") {
+  try {
+    const text = format === "plain" ? markdownToPlainText(message.content) : message.content;
+    await navigator.clipboard.writeText(text);
+    copiedMessageId.value = message.id;
+    if (copiedMessageTimer) clearTimeout(copiedMessageTimer);
+    copiedMessageTimer = setTimeout(() => { copiedMessageId.value = undefined; }, 2000);
+    ElMessage.success(format === "plain" ? "已复制无格式文本" : "已复制原始 Markdown");
+  } catch {
+    ElMessage.error("复制失败，请检查剪贴板权限后重试");
+  }
+}
+
+onBeforeUnmount(() => { if (copiedMessageTimer) clearTimeout(copiedMessageTimer); });
 
 function focusComposer() {
   void nextTick(() => {
@@ -658,6 +746,7 @@ function applyAgentEvent(
 
   const events = [...(message.agentEvents || [])];
   const eventRecord: ConversationAgentEvent = {
+    ...publicProgressProvenance({ ...event }),
     id: event.id ? String(event.id) : `${Date.now()}-${events.length}`,
     type: event.type,
     stage: event.stage ? String(event.stage) : undefined,
@@ -736,6 +825,12 @@ function applyAgentEvent(
     last.stepId === eventRecord.stepId &&
     last.toolCallId === eventRecord.toolCallId &&
     last.summary === eventRecord.summary &&
+    last.source === eventRecord.source &&
+    last.assessmentSource === eventRecord.assessmentSource &&
+    last.modelDecision === eventRecord.modelDecision &&
+    last.evidenceDecision === eventRecord.evidenceDecision &&
+    last.guardReason === eventRecord.guardReason &&
+    JSON.stringify(last.reasonCodes) === JSON.stringify(eventRecord.reasonCodes) &&
     ![
       "tool_call",
       "tool_result",
@@ -902,7 +997,7 @@ function applyAgentEvent(
   const status = recordedEvent ? message.status :
     event.type === "error"
       ? "failed"
-      : event.type === "done" && !event.recorded && event.eventTiming !== "VERIFIED_RECORD" && !message.taskIds.length
+      : event.type === "done" && Boolean(event.answer?.trim()) && !event.recorded && event.eventTiming !== "VERIFIED_RECORD" && !message.taskIds.length
         ? "completed"
         : event.type === "approval"
           ? "running"
@@ -919,8 +1014,8 @@ function applyAgentEvent(
       event.message || event.summary,
       "智能体执行失败。",
     ).slice(0, 2000);
-  else if (event.type === "done" && event.answer)
-    content = String(event.answer);
+  else if (event.type === "done" && event.answer?.trim())
+    content = event.answer.trim();
   else if (progressSummary && ["planning", "running"].includes(status))
     content = progressSummary;
   conversations.updateMessage(threadId, messageId, {
@@ -964,10 +1059,10 @@ async function dispatchConversationMessage(
   thread: ConversationThread,
   userMessage: ConversationMessage,
   assistantMessage: ConversationMessage,
+  projectId = projectIdForTarget(thread.targetId, thread),
 ) {
   const requestPrompt = buildContextPrompt(thread, userMessage.id);
   const refs = messageReferences(userMessage);
-  const projectId = projectIdForTarget(thread.targetId, thread);
   const workflow = await latestWorkflowIdentity(projectId);
   conversations.updateMessage(thread.id, assistantMessage.id, {
     modelStreamStatus: "running", progressStartedAt: new Date().toISOString(), progressFinishedAt: undefined,
@@ -1054,16 +1149,17 @@ async function dispatchConversationMessage(
     );
   });
   const planSummary = data.plan.summary?.trim();
+  const answerText = data.answer?.trim() || planSummary;
+  const operationalReceipt = !answerText && (data.taskIds.length > 0 || data.approvalId || streamedMessage?.approvalId);
+  const finalContent = operationalReceipt
+    ? data.taskIds.length
+      ? `已按授权范围派发 ${data.taskIds.length} 个任务。执行状态以任务记录为准，结束后将生成检测结论。`
+      : "方案已提交确认，请查看本次操作和授权范围。"
+    : requireAiAnswer(answerText);
   conversations.updateMessage(thread.id, assistantMessage.id, {
-    content:
-      data.answer?.trim() ||
-      (data.taskCount
-        ? `${planSummary || "执行 Plan 已创建。"}\n\n已按授权范围派发 ${data.taskCount} 个任务。我会持续查看执行进度，完成后直接在这里回复检测结论。`
-        : planSummary ||
-          streamedMessage?.content ||
-          "智能体已完成本次处理。"),
+    content: finalContent,
     status: data.taskIds.length ? "running" : "completed",
-    provider: data.plan.provider,
+    provider: operationalReceipt ? "operation-receipt" : data.plan.provider,
     taskIds: data.taskIds,
     approvalId: data.approvalId || streamedMessage?.approvalId,
     approvalStatus: data.approvalStatus || streamedMessage?.approvalStatus,
@@ -1083,11 +1179,8 @@ async function dispatchConversationMessage(
   if (finalMessage && shouldPromptApproval(selectedThread.value?.id, thread.id, finalMessage)) {
     approvalDialogMessageId.value = finalMessage.id;
   }
-  void saveConversationMemory(
-    thread,
-    userMessage.content,
-    data.answer?.trim() || planSummary || streamedMessage?.content || "",
-  );
+  if (answerText && !isLocalAiAnswer(data.plan.provider))
+    void saveConversationMemory(thread, userMessage.content, answerText);
   await loadTasks();
 }
 
@@ -1156,6 +1249,8 @@ async function handleAgentApprovalDecision(
     return;
   }
 
+  let dispatchStarted = false;
+  let dispatchReceived = false;
   try {
     approvingMessageId.value = message.id;
     await endpoints.decideProjectApproval(projectId, approvalId, {
@@ -1170,7 +1265,7 @@ async function handleAgentApprovalDecision(
       conversations.updateMessage(thread.id, message.id, {
         approvalStatus: "REJECTED",
         planningStatus: "管理员已驳回执行方案",
-        content: message.content + "\n\n❌ **管理员已驳回本次行动方案**（审批单 #" + approvalId + "）。未派发任何受控任务。",
+        content: message.content + "\n\n❌ **管理员已驳回本次行动方案**（确认记录 #" + approvalId + "）。未派发任何受控任务。",
       });
       ElMessage.info("已驳回该行动方案");
       return;
@@ -1178,23 +1273,41 @@ async function handleAgentApprovalDecision(
 
     conversations.updateMessage(thread.id, message.id, {
       approvalStatus: "APPROVED",
-      planningStatus: "已批准，正在执行审批单保存的原计划...",
+      approvalDispatchStatus: "dispatching",
+      approvalDispatchError: undefined,
+      approvalDispatchUpdatedAt: new Date().toISOString(),
+      planningStatus: "已确认，正在请求派发保存的原方案...",
     });
     // The server consumes the immutable approved plan. Never ask the model to re-plan.
+    dispatchStarted = true;
     const { data } = await endpoints.resumeProjectAiApproval(projectId, approvalId);
+    dispatchReceived = true;
     conversations.updateMessage(thread.id, message.id, {
       approvalStatus: "APPROVED",
+      approvalDispatchStatus: "dispatched",
+      approvalDispatchError: undefined,
+      approvalDispatchUpdatedAt: new Date().toISOString(),
       status: data.taskIds.length ? "running" : "completed",
       modelStreamStatus: "completed",
       taskIds: data.taskIds,
       steps: data.plan.steps.map((step, index) => ({ ...step, taskId: data.taskIds[index] })),
-      planningStatus: `已按原审批方案派发 ${data.taskIds.length} 个任务`,
-      content: message.content + `\n\n审批单 #${approvalId} 已批准，原计划已关联 ${data.taskIds.length} 个任务。执行结果以任务记录为准。`,
+      planningStatus: `已按确认的原方案派发 ${data.taskIds.length} 个任务`,
+      content: message.content + `\n\n确认记录 #${approvalId} 已确认，原方案已关联 ${data.taskIds.length} 个任务。执行结果以任务记录为准。`,
     });
     await loadTasks();
-    ElMessage.success(`审批单 #${approvalId} 已按原计划派发`);
+    ElMessage.success(`确认记录 #${approvalId} 已按原计划派发`);
   } catch (error) {
-    ElMessage.error(readableConversationError(error));
+    const detail = readableConversationError(error);
+    if (dispatchStarted && !dispatchReceived) {
+      const state = aiDispatchFailureStatus(error);
+      conversations.updateMessage(thread.id, message.id, {
+        approvalDispatchStatus: state,
+        approvalDispatchError: detail,
+        approvalDispatchUpdatedAt: new Date().toISOString(),
+        planningStatus: state === "rejected" ? "执行已拒绝，未派发任务" : "派发结果待核实，请查看任务或恢复原审批",
+      });
+    }
+    ElMessage.error(detail);
   } finally {
     approvingMessageId.value = null;
   }
@@ -1229,7 +1342,7 @@ async function sendPrompt() {
     ElMessage.warning("本轮请求请控制在 4000 字以内");
     return;
   }
-  const target = selectedTarget.value;
+  let target = selectedTarget.value;
   if (!target) {
     ElMessage.warning(
       enabledTargets.value.length
@@ -1239,77 +1352,80 @@ async function sendPrompt() {
     return;
   }
 
-  let thread = selectedThread.value;
-  if (!thread) {
-    thread = conversations.createThread(
-      target.id,
-      target.name,
-      text,
-      projectIdForTarget(target.id),
-    );
-    await router.replace({ path: "/", query: { conversation: thread.id } });
+  const editing = editingMessage.value;
+  if (editing && selectedThread.value?.id !== editing.threadId) {
+    ElMessage.warning("请回到原对话继续编辑，或取消本次编辑");
+    return;
   }
-
-  const userMessage = conversations.appendMessage(thread.id, {
-    role: "user",
-    content: text,
-    status: "completed",
-    taskIds: [],
-    steps: [],
-    references: activeDraft.value?.refs,
-    copilotMode: activeDraft.value?.mode,
-    executionIntent: "AUTO",
-    quote: quotedMessage.value
-      ? {
-          messageId: quotedMessage.value.id,
-          role: quotedMessage.value.role,
-          content: quotedMessage.value.content.slice(0, 4000),
-          createdAt: quotedMessage.value.createdAt,
-        }
-      : undefined,
-  });
-  if (!userMessage) return;
-  clearQuotedMessage();
-  const assistantMessage = conversations.appendMessage(thread.id, {
-    role: "assistant",
-    content: "我正在理解你的要求，核对目标范围与已有证据。",
-    status: "running",
-    taskIds: [],
-    steps: [],
-    executionIntent: userMessage.executionIntent,
-    replyToId: userMessage.id,
-  });
-  if (!assistantMessage) return;
-
-  prompt.value = "";
+  const references = cloneMessageDraft(editing?.references || activeDraft.value?.refs);
+  const mode = editing?.mode || activeDraft.value?.mode;
+  const quote = cloneMessageDraft(quotedMessage.value);
+  let thread = selectedThread.value;
+  let assistantMessage: ConversationMessage | undefined;
+  // Lock before creating a branch or awaiting navigation so double submits cannot fork twice.
   sending.value = true;
-  void scrollToBottom();
   try {
-    await dispatchConversationMessage(thread, userMessage, assistantMessage);
-  } catch (error: any) {
-    const message = readableConversationError(error);
-    conversations.updateMessage(thread.id, assistantMessage.id, {
-      content: message,
-      status: "failed",
+    const auditScope = await auditScopeForMessage(references, target.id,
+      projectIdForTarget(target.id, thread));
+    if (auditScope) {
+      target = auditScope.target;
+      selectedTargetId.value = target.id;
+      // Server sessions bind their target permanently. Repair old failed audit chats in a new session.
+      if (!thread || thread.targetId !== target.id || thread.projectId !== auditScope.projectId)
+        thread = conversations.createThread(target.id, target.name, text, auditScope.projectId,
+          editing ? { threadId: editing.threadId, messageId: editing.messageId } : undefined);
+    }
+    if (editing && (!auditScope || thread?.id === editing.threadId)) {
+      try { thread = conversations.forkBeforeMessage(editing.threadId, editing.messageId, text); }
+      catch (error) {
+        ElMessage.error(error instanceof Error ? error.message : "未能创建分支，原对话仍保留");
+        return;
+      }
+    } else if (!thread) {
+      thread = conversations.createThread(target.id, target.name, text, projectIdForTarget(target.id));
+    }
+    const turn = conversations.appendTurn(thread.id, {
+      role: "user", content: text, status: "completed", taskIds: [], steps: [],
+      references, copilotMode: mode, executionIntent: "AUTO",
+      quote: quote ? { messageId: quote.id, role: quote.role, content: quote.content.slice(0, 4000), createdAt: quote.createdAt } : undefined,
+    }, {
+      role: "assistant", content: "我正在理解你的要求，核对目标范围与已有证据。",
+      status: "running", taskIds: [], steps: [], executionIntent: "AUTO",
     });
-    ElMessage.error(message);
-  } finally {
+    if (!turn) return;
+    const userMessage = turn.userMessage;
+    assistantMessage = turn.assistantMessage;
+    const projectId = projectIdForTarget(thread.targetId, thread);
+    editingMessage.value = undefined;
     activeDraft.value = undefined;
+    clearQuotedMessage();
+    prompt.value = "";
+    if (selectedThread.value?.id !== thread.id)
+      await router.replace({ path: "/", query: { conversation: thread.id } });
+    void scrollToBottom();
+    await dispatchConversationMessage(thread, userMessage, assistantMessage, projectId);
+  } catch (error: any) {
+    const message = error instanceof ConversationStorageError ? error.message : readableConversationError(error);
+    if (thread && assistantMessage)
+      conversations.updateMessage(thread.id, assistantMessage.id, { content: message, status: "failed", modelStreamStatus: "failed" });
+    else ElMessage.error(message);
+  } finally {
     sending.value = false;
     void scrollToBottom();
   }
 }
 
 async function retryConversationMessage(message: ConversationMessage) {
-  const thread = selectedThread.value;
+  let thread = selectedThread.value;
   if (
     !thread ||
+    sending.value ||
     message.role !== "assistant" ||
     message.status !== "failed" ||
     retryingMessageIds.value.has(message.id)
   )
     return;
-  const userMessage = thread.messages.find(
+  let userMessage = thread.messages.find(
     (item) => item.id === message.replyToId,
   );
   if (!userMessage) {
@@ -1318,12 +1434,34 @@ async function retryConversationMessage(message: ConversationMessage) {
   }
 
   const answerRetry = message.taskIds.length > 0;
+  const retryMessageId = message.id;
   retryingMessageIds.value = new Set(retryingMessageIds.value).add(message.id);
   sending.value = true;
   try {
+    if (!answerRetry) {
+      const scope = await auditScopeForMessage(messageReferences(userMessage), thread.targetId,
+        projectIdForTarget(thread.targetId, thread));
+      if (scope && (thread.targetId !== scope.target.id || thread.projectId !== scope.projectId)) {
+        thread = conversations.createThread(scope.target.id, scope.target.name, userMessage.content, scope.projectId,
+          { threadId: thread.id, messageId: userMessage.id });
+        const turn = conversations.appendTurn(thread.id, {
+          role: "user", content: userMessage.content, status: "completed", taskIds: [], steps: [],
+          references: cloneMessageDraft(messageReferences(userMessage)), copilotMode: userMessage.copilotMode,
+          quote: cloneMessageDraft(userMessage.quote),
+          executionIntent: userMessage.executionIntent, executionRequested: userMessage.executionRequested,
+        }, {
+          role: "assistant", content: "正在重新核查审计记录。", status: "planning", taskIds: [], steps: [],
+          executionIntent: userMessage.executionIntent,
+        })!;
+        userMessage = turn.userMessage;
+        message = turn.assistantMessage;
+        selectedTargetId.value = scope.target.id;
+        await router.replace({ path: "/", query: { conversation: thread.id } });
+      }
+    }
     if (answerRetry) {
       conversations.updateMessage(thread.id, message.id, {
-        content: "任务已经结束，正在重新生成检测结论。",
+        content: "正在根据已关联任务重新生成回复。",
         status: "answering",
       });
       const requestPrompt = buildContextPrompt(thread, userMessage.id);
@@ -1332,9 +1470,12 @@ async function retryConversationMessage(message: ConversationMessage) {
         targetId: thread.targetId,
         prompt: requestPrompt,
         taskIds: message.taskIds,
-      });      conversations.updateMessage(thread.id, message.id, {
-        content: data.answer || data.summary || "任务已经执行完成。",
+      });
+      const answer = requireAiAnswer(data.answer, data.summary);
+      conversations.updateMessage(thread.id, message.id, {
+        content: answer,
         status: "completed",
+        modelStreamStatus: "completed",
         provider: data.provider,
         taskIds: data.taskIds || message.taskIds,
         citations: data.citations || message.citations,
@@ -1356,15 +1497,19 @@ async function retryConversationMessage(message: ConversationMessage) {
     }
     ElMessage.success("重试成功");
   } catch (error: any) {
+    if (error instanceof ConversationStorageError) {
+      ElMessage.error(error.message);
+      return;
+    }
     const errorMessage = readableConversationError(error);
     conversations.updateMessage(thread.id, message.id, {
       content: errorMessage,
       status: "failed",
+      modelStreamStatus: "failed",
     });
-    ElMessage.error(errorMessage);
   } finally {
     const next = new Set(retryingMessageIds.value);
-    next.delete(message.id);
+    next.delete(retryMessageId);
     retryingMessageIds.value = next;
     sending.value = false;
     void scrollToBottom();
@@ -1372,6 +1517,12 @@ async function retryConversationMessage(message: ConversationMessage) {
 }
 
 function handlePromptKeydown(event: KeyboardEvent) {
+  if (event.isComposing || event.keyCode === 229) return;
+  if (event.key === "Escape" && editingMessage.value && !event.isComposing) {
+    event.preventDefault();
+    cancelMessageEdit();
+    return;
+  }
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     void sendPrompt();
@@ -1398,22 +1549,24 @@ async function requestFinalAnswer(
       targetId: thread.targetId,
       prompt: requestPrompt,
       taskIds: message.taskIds,
-    });    conversations.updateMessage(thread.id, message.id, { status: "completed", modelStreamStatus: "completed", progressFinishedAt: new Date().toISOString() });
+    });
+    const answer = requireAiAnswer(data.answer, data.summary);
+    conversations.updateMessage(thread.id, message.id, { status: "completed", modelStreamStatus: "completed", progressFinishedAt: new Date().toISOString() });
     conversations.appendMessage(thread.id, {
       role: "assistant",
-      content: data.answer || data.summary || "任务已经执行完成。",
+      content: answer,
       status: "completed",
       provider: data.provider,
       taskIds: data.taskIds || message.taskIds,
       steps: [],
       citations: data.citations,
       replyToId: message.replyToId,
-    });
+    }, { keepInMemoryOnFailure: true });
   } catch (error: any) {
     conversations.updateMessage(thread.id, message.id, { status: "completed", modelStreamStatus: "failed", progressFinishedAt: new Date().toISOString() });
     const summaryError = readableAiConversationError(
       error,
-      "暂时无法生成汇总回答。你可以继续追问，或前往“结果中心”查看详细结果。",
+      "暂时无法生成汇总回答。你可以继续追问，或前往“安全发现”查看详细结果。",
     );
     conversations.appendMessage(thread.id, {
       role: "assistant",
@@ -1422,7 +1575,7 @@ async function requestFinalAnswer(
       taskIds: message.taskIds,
       steps: [],
       replyToId: message.replyToId,
-    });
+    }, { keepInMemoryOnFailure: true });
   } finally {
     answeringMessages.delete(key);
     void scrollToBottom();
@@ -1559,6 +1712,14 @@ async function load() {
       selectedTargetId.value = copilotDraft.targetId;
     }
     if (!prompt.value) prompt.value = copilotDraft.prompt.slice(0, 4000);
+    try {
+      const scope = await auditScopeForMessage(copilotDraft.refs, selectedTargetId.value,
+        selectedTargetId.value ? projectIdForTarget(selectedTargetId.value) : undefined);
+      if (scope) selectedTargetId.value = scope.target.id;
+    } catch (error) {
+      selectedTargetId.value = undefined;
+      ElMessage.warning(readableConversationError(error));
+    }
   }
   const draft =
     typeof route.query.draft === "string" ? route.query.draft.trim() : "";
@@ -1575,6 +1736,7 @@ async function load() {
 }
 
 function startNewConversation() {
+  editingMessage.value = undefined;
   prompt.value = "";
   activeDraft.value = undefined;
   clearQuotedMessage();
@@ -1637,6 +1799,7 @@ async function clearConversations() {
 }
 
 watch(selectedThread, (thread) => {
+  if (editingMessage.value && thread?.id !== editingMessage.value.threadId) cancelMessageEdit();
   clearQuotedMessage();
   if (
     thread &&
@@ -1746,6 +1909,11 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
+    <div v-if="conversations.persistenceError" class="conversation-storage-notice" role="alert">
+      <p>{{ conversations.persistenceError.message }}</p>
+      <button v-if="conversations.hasUnsavedChanges" type="button" @click="conversations.retryPersist()">重试保存</button>
+    </div>
+
     <section v-if="!selectedThread" class="chat-welcome">
       <div class="welcome-mark" aria-hidden="true">
         <el-icon><ChatDotRound /></el-icon>
@@ -1782,7 +1950,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="welcome-stat welcome-stat--link"
-          title="点击查看结果中心全部发现项"
+          title="点击查看安全发现全部发现项"
           @click="router.push('/findings')"
         >
           <strong>{{ dashboardStats.findings }}</strong
@@ -1801,9 +1969,9 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="welcome-composer">
-        <div v-if="activeDraft?.refs.length" class="copilot-draft-refs">
+        <div v-if="composerReferences.length" class="copilot-draft-refs">
           <span
-            v-for="reference in activeDraft.refs"
+            v-for="reference in composerReferences"
             :key="`${reference.type}-${reference.id || reference.title || reference.label}`"
             >{{ displayKnownTestName(reference.title || reference.label) || copilotReferenceTypeLabel(reference.type) }}</span
           >
@@ -1816,6 +1984,7 @@ onBeforeUnmount(() => {
           placeholder="例如：检查目标的开放端口；如需先看方案，可以说“先给方案，不执行”"
           @keydown="handlePromptKeydown"
         />
+        <MarkdownComposerPreview :content="prompt" />
         <div class="composer-footer">
           <div class="target-picker">
             <span>授权目标</span>
@@ -1887,6 +2056,7 @@ onBeforeUnmount(() => {
           <article
             v-for="message in selectedThread.messages"
             :key="message.id"
+            :data-message-id="message.id"
             class="chat-message"
             :class="message.role"
           >
@@ -1897,6 +2067,7 @@ onBeforeUnmount(() => {
                   message.role === "assistant" ? "安全助手" : "你"
                 }}</strong
                 ><span>{{ formatTime(message.createdAt) }}</span>
+                <span v-if="message.role === 'assistant' && ['completed', 'failed'].includes(message.status)" class="message-answer-source">{{ aiAnswerSource(message.provider, message.status === 'failed') }}</span>
               </div>
               <div v-if="message.quote" class="message-quote">
                 <strong
@@ -1907,41 +2078,26 @@ onBeforeUnmount(() => {
                 >
                 <span>{{ quotePreview(message.quote.content) }}</span>
               </div>
+              <div class="message-response" :class="{ 'is-failed': message.role === 'assistant' && message.status === 'failed' }">
               <AiProgressPanel
-                v-if="message.role === 'assistant' && (message.status !== 'completed' || message.agentEvents?.length || message.steps.length || message.taskIds.length)"
+                v-if="message.role === 'assistant'"
                 :message="message"
                 :tasks="relatedTasks(message)"
+                :hide-attention="message.status === 'failed'"
                 @open-tasks="router.push('/tasks')"
-              />
+              >
+                <AiFailureNotice v-if="message.status === 'failed'" :message="message" />
+                <div
+                  v-if="message.status === 'completed'"
+                  class="message-bubble markdown-body"
+                  v-html="renderMarkdown(displayedMessageContent(message), { localizeToolCodes: true })"
+                />
+              </AiProgressPanel>
               <div
-                v-if="message.role === 'assistant' && message.status === 'completed'"
+                v-else-if="message.role === 'user'"
                 class="message-bubble markdown-body"
-                v-html="renderMarkdown(displayedMessageContent(message), { localizeToolCodes: message.role === 'assistant' })"
+                v-html="renderMarkdown(message.content)"
               />
-              <div v-else-if="message.role === 'user'" class="message-bubble">{{ message.content }}</div>
-              <div class="message-actions">
-                <button
-                  type="button"
-                  :disabled="sending"
-                  @click="quoteMessage(message)"
-                >
-                  引用
-                </button>
-                <button
-                  v-if="
-                    message.role === 'assistant' && message.status === 'failed'
-                  "
-                  type="button"
-                  :disabled="sending || retryingMessageIds.has(message.id)"
-                  @click="retryConversationMessage(message)"
-                >
-                  <el-icon
-                    :class="{ rotating: retryingMessageIds.has(message.id) }"
-                    ><Refresh
-                  /></el-icon>
-                  {{ retryingMessageIds.has(message.id) ? "重试中" : "重试" }}
-                </button>
-              </div>
               <div
                 v-if="
                   message.reference && isTrafficReference(message.reference)
@@ -1973,27 +2129,19 @@ onBeforeUnmount(() => {
                   <div class="traffic-reference-packets">
                     <article>
                       <h4>请求头</h4>
-                      <pre>{{
-                        formatReferenceValue(message.reference.requestHeaders)
-                      }}</pre>
+                      <FluentCodeBlock class="reference-output" :content="formatReferenceValue(message.reference.requestHeaders)" aria-label="引用报文请求头" :min-rows="3" :max-rows="8" wrap />
                     </article>
                     <article>
                       <h4>请求体</h4>
-                      <pre>{{
-                        formatReferenceValue(message.reference.requestBody)
-                      }}</pre>
+                      <FluentCodeBlock class="reference-output" :content="formatReferenceValue(message.reference.requestBody)" aria-label="引用报文请求体" :min-rows="3" :max-rows="8" wrap />
                     </article>
                     <article>
                       <h4>响应头</h4>
-                      <pre>{{
-                        formatReferenceValue(message.reference.responseHeaders)
-                      }}</pre>
+                      <FluentCodeBlock class="reference-output" :content="formatReferenceValue(message.reference.responseHeaders)" aria-label="引用报文响应头" :min-rows="3" :max-rows="8" wrap />
                     </article>
                     <article>
                       <h4>响应体</h4>
-                      <pre>{{
-                        formatReferenceValue(message.reference.responseBody)
-                      }}</pre>
+                      <FluentCodeBlock class="reference-output" :content="formatReferenceValue(message.reference.responseBody)" aria-label="引用报文响应体" :min-rows="3" :max-rows="8" wrap />
                     </article>
                   </div>
                 </details>
@@ -2017,7 +2165,7 @@ onBeforeUnmount(() => {
                   v-if="reference.data && Object.keys(reference.data).length"
                 >
                   <summary>查看引用详情</summary>
-                  <pre>{{ JSON.stringify(reference.data, null, 2) }}</pre>
+                  <FluentCodeBlock class="reference-output" :content="JSON.stringify(reference.data, null, 2)" aria-label="引用详情原始数据" :min-rows="4" :max-rows="10" wrap />
                 </details>
               </div>
               <div
@@ -2060,7 +2208,7 @@ onBeforeUnmount(() => {
                   message.steps.length
                 "
                 class="execution-plan-card"
-                :open="isAwaitingAiApproval(message) || isAwaitingAiDispatch(message)"
+                :open="isAwaitingAiApproval(message) || isAwaitingAiDispatch(message) || isAiDispatchRejected(message)"
               >
                 <summary class="execution-plan-disclosure">执行计划 · {{ message.steps.length }} 项</summary>
                 <!-- 人机协同审批卡片 (HITL Gate) -->
@@ -2077,13 +2225,13 @@ onBeforeUnmount(() => {
                       <el-icon><Warning /></el-icon>
                       <span>执行前确认</span>
                     </div>
-                    <h4>受控操作需要审批授权</h4>
+                    <h4>AI 方案等待管理员确认</h4>
                     <p>
-                      该计划包含需要审批的检测操作。管理员确认授权后，才会开始执行。
+                      AI 已提交本次执行方案。请查看目标和操作参数，确认后执行。
                     </p>
                   </div>
                   <div class="hitl-approval-actions">
-                    <el-button :disabled="sending || approvingMessageId !== null" @click="reopenApproval(message)">查看审批详情</el-button>
+                    <el-button :disabled="sending || approvingMessageId !== null" @click="reopenApproval(message)">查看方案详情</el-button>
                     <el-button
                       type="success"
                       size="default"
@@ -2092,7 +2240,7 @@ onBeforeUnmount(() => {
                       @click="handleAgentApprovalDecision(message, 'APPROVED')"
                     >
                       <el-icon><CircleCheck /></el-icon>
-                      批准并执行
+                      确认并执行
                     </el-button>
                     <el-button
                       type="danger"
@@ -2106,8 +2254,13 @@ onBeforeUnmount(() => {
                   </div>
                 </div>
 
-                <p v-if="isAwaitingAiDispatch(message)" class="muted">
-                  审批已通过，尚未确认任务派发结果。
+                <el-alert v-if="isAiDispatchRejected(message)" class="approval-dispatch-error" type="error" :closable="false" show-icon title="执行已拒绝，未派发任务" :description="message.approvalDispatchError" />
+                <p v-if="isAiDispatchRejected(message)" class="muted">
+                  原方案和批准记录已保留。请先核对授权；再次确认仍使用原审批并重新校验当前范围。
+                  <el-button :disabled="sending || approvingMessageId !== null" @click="handleAgentApprovalDecision(message, 'APPROVED')">重新校验原方案</el-button>
+                </p>
+                <p v-else-if="isAwaitingAiDispatch(message)" class="muted">
+                  {{ message.approvalDispatchStatus === "unknown" ? "派发结果尚未核实，请查看任务记录或恢复原审批确认。" : "方案已确认，尚未收到任务派发结果。" }}
                   <el-button :disabled="sending || approvingMessageId !== null" @click="handleAgentApprovalDecision(message, 'APPROVED')">恢复原计划执行</el-button>
                 </p>
 
@@ -2162,9 +2315,45 @@ onBeforeUnmount(() => {
                   class="plan-runtime-details"
                 >
                   <summary>查看详细执行日志</summary>
-                  <pre class="task-runtime-log">{{ taskLogs(message) }}</pre>
+                  <FluentCodeBlock class="runtime-output" :content="taskLogs(message)" aria-label="AI 任务详细执行日志" :min-rows="3" :max-rows="8" wrap live />
                 </details>
               </details>
+              <div class="message-actions" role="toolbar" aria-label="消息操作">
+                <el-tooltip content="引用消息" placement="top" :show-after="350">
+                  <button type="button" class="message-action" aria-label="引用消息" :disabled="sending" @click="quoteMessage(message)">
+                    <span class="message-quote-icon" :style="messageQuoteStyle" aria-hidden="true" />
+                  </button>
+                </el-tooltip>
+                <el-dropdown trigger="click" placement="bottom-start" :disabled="!message.content" @command="copyMessage(message, $event)">
+                  <button type="button" class="message-action" :class="{ 'is-copied': copiedMessageId === message.id }" :title="copiedMessageId === message.id ? '已复制，可选择格式再次复制' : '选择复制格式'" aria-label="选择复制格式" :disabled="!message.content">
+                    <el-icon aria-hidden="true"><CircleCheck v-if="copiedMessageId === message.id" /><CopyDocument v-else /></el-icon>
+                  </button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item command="markdown">复制 Markdown</el-dropdown-item>
+                      <el-dropdown-item command="plain">复制无格式文本</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
+                <template v-if="message.role === 'assistant' && message.status === 'failed'">
+                  <el-tooltip :content="message.taskIds.length ? '重新生成回复' : '重试回复'" placement="top" :show-after="350">
+                    <button type="button" class="message-action" :aria-label="message.taskIds.length ? '重新生成回复' : '重试回复'" :disabled="sending || retryingMessageIds.has(message.id)" @click="retryConversationMessage(message)">
+                      <FluentIcon name="arrow-clockwise" aria-hidden="true" />
+                    </button>
+                  </el-tooltip>
+                  <el-tooltip content="配置诊断" placement="top" :show-after="350">
+                    <button type="button" class="message-action" aria-label="配置诊断" :disabled="sending || retryingMessageIds.has(message.id)" @click="openAiDiagnostics">
+                      <FluentIcon name="settings" aria-hidden="true" />
+                    </button>
+                  </el-tooltip>
+                </template>
+                <el-tooltip v-if="message.role === 'user'" content="编辑消息" placement="top" :show-after="350">
+                  <button type="button" class="message-action" aria-label="编辑消息" :disabled="sending" @click="editMessage(message)">
+                    <el-icon aria-hidden="true"><EditPen /></el-icon>
+                  </button>
+                </el-tooltip>
+              </div>
+              </div>
             </div>
           </article>
           <div v-if="!selectedThread.messages.length" class="thread-empty">
@@ -2180,6 +2369,11 @@ onBeforeUnmount(() => {
           ><small>如需更换目标，请新建对话</small>
         </div>
         <div class="thread-composer">
+          <div v-if="editingMessage" class="composer-edit-notice" role="status">
+            <el-icon aria-hidden="true"><EditPen /></el-icon>
+            <span><strong>编辑消息</strong><span class="composer-edit-help">发送后新建分支，原对话及后续消息保留。</span></span>
+            <el-tooltip content="取消编辑（Esc）" placement="top" :show-after="350"><button type="button" :disabled="sending" aria-label="取消编辑" @click="cancelMessageEdit"><el-icon aria-hidden="true"><Dismiss /></el-icon></button></el-tooltip>
+          </div>
           <div v-if="quotedMessage" class="composer-quote">
             <span
               ><strong
@@ -2198,9 +2392,9 @@ onBeforeUnmount(() => {
                 <el-icon><Dismiss /></el-icon></button
             ></el-tooltip>
           </div>
-          <div v-if="activeDraft?.refs.length" class="copilot-draft-refs">
+          <div v-if="composerReferences.length" class="copilot-draft-refs">
             <span
-              v-for="reference in activeDraft.refs"
+              v-for="reference in composerReferences"
               :key="`${reference.type}-${reference.id || reference.title || reference.label}`"
               >{{ displayKnownTestName(reference.title || reference.label) || copilotReferenceTypeLabel(reference.type) }}</span
             >
@@ -2213,13 +2407,14 @@ onBeforeUnmount(() => {
             placeholder="继续提问或说明下一步；只需方案时，请说“先给方案，不执行”"
             @keydown="handlePromptKeydown"
           />
+          <MarkdownComposerPreview :content="prompt" />
           <div class="thread-composer-footer">
             <span class="composer-shortcut">Enter 发送，Shift + Enter 换行</span>
-            <el-tooltip content="发送" placement="top" :show-after="350"
+            <el-tooltip :content="editingMessage ? '发送编辑并新建分支' : '发送'" placement="top" :show-after="350"
               ><button
                 type="button"
                 class="send-button"
-                aria-label="发送"
+                :aria-label="editingMessage ? '发送编辑并新建分支' : '发送'"
                 :disabled="sending || !prompt.trim()"
                 @click="sendPrompt"
               >
@@ -2239,6 +2434,17 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.conversation-storage-notice {
+  flex: none;
+  margin: 8px 18px;
+  padding: 10px 12px;
+  border: 1px solid var(--el-color-danger-light-5);
+  border-radius: 8px;
+  background: var(--el-color-danger-light-9);
+  color: var(--el-color-danger);
+}
+.conversation-storage-notice p { margin: 0; }
+.conversation-storage-notice button { margin-top: 8px; }
 .chat-page {
   display: flex;
   height: 100%;
@@ -2308,14 +2514,15 @@ onBeforeUnmount(() => {
   font-size: 11px;
   cursor: pointer;
 }
-.chat-header-actions button:hover {
+.chat-header-actions button:hover:not(:disabled) {
   border-color: var(--app-border);
   background: var(--app-surface-soft);
 }
-.chat-header-actions button.danger:hover {
-  border-color: #efd2d2;
-  background: color-mix(in srgb, #b74e4e 10%, transparent);
-  color: #b74e4e;
+.chat-header-actions button.danger:hover:not(:disabled),
+.chat-header-actions button.danger:focus-visible:not(:disabled) {
+  border-color: var(--fluent-danger-bg);
+  background: color-mix(in srgb, var(--fluent-danger-bg) 10%, var(--app-surface-strong));
+  color: light-dark(var(--fluent-danger-hover-bg), #ffd2cc);
 }
 .chat-welcome {
   display: flex;
@@ -2389,11 +2596,15 @@ onBeforeUnmount(() => {
 }
 .composer-footer {
   display: grid;
-  grid-template-columns:
-    minmax(210px, 280px) max-content minmax(0, 1fr) 36px;
+  grid-template-columns: minmax(0, 1fr) max-content 36px;
   align-items: center;
   gap: 12px;
-  padding: 8px 10px 11px 18px;
+  padding: 8px 18px 11px;
+}
+.composer-footer .target-picker {
+  width: 100%;
+  max-width: 290px;
+  min-width: 0;
 }
 .target-picker {
   display: grid;
@@ -2527,6 +2738,7 @@ onBeforeUnmount(() => {
 }
 .message-meta {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   margin: 0 3px 6px;
@@ -2995,39 +3207,17 @@ onBeforeUnmount(() => {
   color: var(--app-muted);
   font-size: 9px;
 }
-.traffic-reference-packets pre {
-  max-height: 180px;
-  overflow: auto;
-  margin: 0;
+.reference-output {
   padding: 9px;
-  color: var(--app-text);
-  font:
-    10px/1.55 ui-monospace,
-    Consolas,
-    monospace;
-  white-space: pre-wrap;
-  word-break: break-all;
+  box-sizing: border-box;
 }
 @media (max-width: 760px) {
   .traffic-reference-packets {
     grid-template-columns: 1fr;
   }
 }
-.task-runtime-log {
-  max-height: 180px;
-  overflow: auto;
-  margin: 9px 0 0;
-  padding: 8px;
-  border: 1px solid var(--app-border);
-  border-radius: 6px;
-  background: var(--app-surface-soft);
-  color: var(--app-accent);
-  font:
-    10px/1.55 ui-monospace,
-    Consolas,
-    monospace;
-  white-space: pre-wrap;
-  word-break: break-word;
+.runtime-output {
+  margin-top: 10px;
 }
 .agent-event-details {
   margin-top: 6px;
@@ -3325,6 +3515,8 @@ a.agent-citation-bubble {
   display: block;
   max-width: 100%;
   overflow: auto;
+  overflow-wrap: normal;
+  word-break: normal;
   margin: 10px 0;
   border-collapse: collapse;
 }
@@ -3413,19 +3605,6 @@ a.agent-citation-bubble {
   color: var(--app-accent);
   font-size: 10px;
   cursor: pointer;
-}
-.copilot-reference-card pre {
-  max-height: 220px;
-  overflow: auto;
-  margin: 0;
-  padding: 10px 12px;
-  color: var(--app-text);
-  font:
-    10px/1.55 ui-monospace,
-    Consolas,
-    monospace;
-  white-space: pre-wrap;
-  word-break: break-all;
 }
 .desktop-v2-native-frame .chat-page {
   border: 0;
@@ -3531,12 +3710,12 @@ a.agent-citation-bubble {
     border-color 100ms ease,
     transform 60ms ease;
 }
-.chat-header-actions button:hover,
+.chat-header-actions button:hover:not(:disabled),
 .create-target:hover {
   border-color: var(--app-border);
   background: var(--app-surface-soft);
 }
-.chat-header-actions button:active,
+.chat-header-actions button:active:not(:disabled),
 .create-target:active,
 .quick-actions button:active {
   transform: scale(0.98);
@@ -3593,8 +3772,20 @@ a.agent-citation-bubble {
   color: var(--app-muted);
   font-size: var(--type-caption);
 }
+.welcome-stat.warn {
+  --welcome-stat-warning: #c8503f;
+}
+.welcome-stat--link.warn:hover {
+  border-color: var(--welcome-stat-warning);
+  background: color-mix(in srgb, var(--welcome-stat-warning) 10%, var(--app-surface-soft));
+  box-shadow: 0 4px 14px rgba(200, 80, 63, 0.12);
+}
+.welcome-stat--link:focus-visible {
+  outline: 2px solid var(--app-accent);
+  outline-offset: 2px;
+}
 .welcome-stat.warn strong {
-  color: #c8503f;
+  color: var(--welcome-stat-warning);
 }
 @media (max-width: 760px) {
   .welcome-stats {
@@ -3650,9 +3841,8 @@ a.agent-citation-bubble {
   padding: 18px 20px 8px;
 }
 .composer-footer {
-  grid-template-columns:
-    minmax(220px, 290px) max-content minmax(0, 1fr) 36px;
-  padding: 8px 10px 10px 18px;
+  grid-template-columns: minmax(0, 1fr) max-content 36px;
+  padding: 8px 18px 10px;
 }
 .target-picker > span,
 .composer-shortcut {
@@ -3762,9 +3952,6 @@ a.agent-citation-bubble {
 .traffic-reference-packets article {
   border-radius: 8px;
 }
-.task-runtime-log {
-  border-radius: 8px;
-}
 .chat-composer-wrap {
   padding: 10px 22px 16px;
 }
@@ -3815,7 +4002,7 @@ a.agent-citation-bubble {
   min-height: 170px;
 }
 
-.chat-welcome .welcome-composer textarea {
+.chat-welcome .welcome-composer:not(:has(.composer-preview--expanded)) textarea {
   box-sizing: border-box;
   height: 112px;
   min-height: 112px;
@@ -3825,7 +4012,6 @@ a.agent-citation-bubble {
 .chat-welcome .quick-actions button,
 .chat-welcome .create-target,
 .chat-header-actions button,
-.message-actions button,
 .execution-plan-card > header button {
   color: var(--app-text);
 }
@@ -3865,6 +4051,138 @@ a.agent-citation-bubble {
   gap: 6px;
   padding: 0 10px;
 }
+
+.message-actions {
+  min-height: 32px;
+  gap: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+.chat-message:hover .message-actions,
+.chat-message:focus-within .message-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.message-actions .message-action {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-muted);
+  font-size: 16px;
+}
+.message-actions .message-action:hover:not(:disabled),
+.message-actions .message-action:focus-visible {
+  background: var(--app-surface-soft);
+  color: var(--app-text);
+}
+.message-actions .message-action:focus-visible {
+  outline: 2px solid var(--app-accent);
+  outline-offset: 2px;
+}
+.message-actions .message-action.is-copied { color: var(--app-accent); }
+.message-quote-icon {
+  width: 18px;
+  height: 18px;
+  background: currentColor;
+  mask-position: center;
+  mask-size: contain;
+  mask-repeat: no-repeat;
+}
+.message-response { display: contents; }
+.chat-message.assistant .message-response {
+  display: block;
+  width: min(100%, 720px);
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 12px 16px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface-strong);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 4%);
+}
+/* Every assistant state shares the outer chat bubble. Keep the prose inside
+   that bubble unboxed, including under the native desktop surface rules. */
+.chat-message.assistant .message-response .message-bubble {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none;
+}
+.chat-message.assistant .message-response > .message-actions {
+  justify-content: flex-start;
+  align-items: center;
+  margin: 8px 0 0;
+  padding: 0;
+}
+/* Align the actual icon box with the prose, not just its toolbar. Keep the
+   full 32px hit target; user bubbles and the failed-response card retain
+   their existing centered controls. */
+.chat-message.assistant .message-response:not(.is-failed) > .message-actions .message-action {
+  justify-content: flex-start;
+}
+.chat-message.assistant .message-response.is-failed {
+  padding: 0;
+  overflow: hidden;
+}
+.message-response.is-failed :deep(.ai-progress-panel) { width: auto; margin: 0; padding: 0; border: 0; background: transparent; }
+.message-response.is-failed :deep(.progress-header) { min-height: 32px; margin: 12px 16px 0; flex-wrap: wrap; }
+.message-response.is-failed :deep(.progress-execution) { margin: 8px 16px; }
+.message-response.is-failed :deep(.progress-timeline-wrap) { margin: 0 16px 12px; }
+.message-response.is-failed :deep(.progress-heading strong) { font-weight: 600; }
+.message-response.is-failed :deep(.progress-toggle) { min-height: 32px; padding: 0 6px; }
+.message-response.is-failed .message-actions { display: flex; justify-content: flex-start; gap: 4px; margin: 0; padding: 8px 12px; min-height: 32px; border-top: 1px solid var(--app-border); opacity: 1; pointer-events: auto; background: var(--app-surface-soft); }
+.message-response.is-failed .message-actions .message-action { border: 1px solid transparent; }
+.message-response.is-failed .message-actions .message-action:hover:not(:disabled) { border-color: var(--app-border); }
+.composer-edit-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 4px;
+  color: var(--app-text-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+.composer-edit-notice > .el-icon { flex: none; font-size: 16px; }
+.composer-edit-notice > span { flex: 1; min-width: 0; }
+.composer-edit-notice strong { margin-right: 8px; color: var(--app-text); font-weight: 500; }
+.composer-edit-help { overflow-wrap: anywhere; }
+.composer-edit-notice button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--app-text-muted);
+  font-size: 16px;
+  cursor: pointer;
+}
+.composer-edit-notice button:hover:not(:disabled) { background: var(--app-surface-soft); color: var(--app-text); }
+.composer-edit-notice button:disabled { opacity: .45; cursor: not-allowed; }
+.composer-edit-notice button:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 2px; }
+@media (hover: none), (pointer: coarse), (max-width: 640px) {
+  .message-actions { opacity: 1; pointer-events: auto; min-height: 40px; }
+  .message-actions .message-action { width: 40px; height: 40px; }
+}
+@media (prefers-reduced-motion: reduce) { .message-actions { transition: none; } }
 
 .execution-plan-card {
   margin-top: 14px;
@@ -3977,13 +4295,6 @@ a.agent-citation-bubble {
   padding: 8px 9px;
   font-size: 10px;
   line-height: 1.55;
-}
-
-.task-runtime-log {
-  margin-top: 10px;
-  padding: 10px;
-  font-size: 11px;
-  line-height: 1.6;
 }
 
 .composer-quote button {

@@ -50,6 +50,15 @@ public class SqlmapScanTool implements SecurityTool {
   private static final Pattern DBMS = Pattern.compile("(?im)back-end DBMS:\\s*(.+)");
   private static final Pattern PARAMETER_WITH_METHOD =
       Pattern.compile("^(.*?)\\s*\\(([^)]+)\\)\\s*$");
+  private static final Pattern NEGATIVE_CONCLUSION =
+      Pattern.compile(
+          "(?im)^[\\t ]*(?:\\[[^\\]\\r\\n]+\\][\\t ]*)?\\[(?:CRITICAL|WARNING|INFO)\\]"
+              + "[\\t ]*all tested parameters do not appear to be injectable\\b[^\\r\\n]*$");
+  private static final Pattern ERROR_LINE =
+      Pattern.compile(
+          "(?im)^[\\t ]*(?:\\[[^\\]\\r\\n]+\\][\\t ]*)?\\[(ERROR|CRITICAL)\\][^\\r\\n]*$");
+  private static final Pattern COMPLETED =
+      Pattern.compile("(?m)^[\\t ]*\\[\\*\\][\\t ]*ending @[^\\r\\n]+$");
 
   private final TargetPolicyService policy;
   private final ExecutableLocator locator;
@@ -155,32 +164,51 @@ public class SqlmapScanTool implements SecurityTool {
       }
       try {
         String stdout = waitForProcess(process, observer, timeoutSeconds, onLine);
-        observer.progressPercent(100d, "sqlmap 完成，正在解析注入结果");
-        return parseOutput(url, stdout);
+        ToolExecutionResult result = parseOutput(url, stdout, process.exitValue());
+        observer.progressPercent(100d, "sqlmap 已完成，检测结果已核验");
+        return result;
       } finally {
-        if (process.isAlive()) process.destroyForcibly();
+        if (process.isAlive()) terminateProcessTree(process);
       }
     } finally {
       deleteRecursive(outputDir);
     }
   }
 
-  private URI resolveTarget(AuthorizedTarget target, Map<String, Object> parameters, String path) {
+  URI resolveTarget(AuthorizedTarget target, Map<String, Object> parameters, String path) {
     List<URI> bases = WebTargetResolver.basesFromParameters(parameters);
-    if (!bases.isEmpty()) {
-      return joinBase(bases.get(0), path);
+    URI uri =
+        bases.isEmpty()
+            ? policy.validatedHttpUri(target, path.isBlank() ? null : path)
+            : joinBase(bases.get(0), path);
+    // 内部预解析基址不构成授权凭证；拼接绝对路径后仍须复核最终主机与端口。
+    String authorizedHost = policy.validatedHost(target);
+    if (!"http".equalsIgnoreCase(uri.getScheme())
+        && !"https".equalsIgnoreCase(uri.getScheme())) {
+      throw new ApiException("SQL 注入检测仅支持 http 或 https 目标");
     }
-    return policy.validatedHttpUri(target, path.isBlank() ? null : path);
+    if (uri.getHost() == null || !uri.getHost().equalsIgnoreCase(authorizedHost)) {
+      throw new ApiException("路径主机与授权目标不一致");
+    }
+    if (uri.getRawUserInfo() != null || uri.getRawFragment() != null) {
+      throw new ApiException("检测 URL 不允许包含用户信息或片段");
+    }
+    int port =
+        uri.getPort() >= 0
+            ? uri.getPort()
+            : ("https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80);
+    policy.validateAuthorizedPort(target, port);
+    return uri;
   }
 
   private URI joinBase(URI base, String path) {
     if (path == null || path.isBlank() || "/".equals(path.trim())) return base;
     String p = path.trim();
-    if (p.startsWith("http://") || p.startsWith("https://")) {
+    if (p.matches("(?i)^[a-z][a-z0-9+.-]*:.*") || p.startsWith("//")) {
       try {
         return URI.create(p);
       } catch (RuntimeException ex) {
-        return base;
+        throw new ApiException("路径 URL 格式不正确");
       }
     }
     if (!p.startsWith("/")) p = "/" + p;
@@ -194,12 +222,29 @@ public class SqlmapScanTool implements SecurityTool {
     try {
       return new URI(base.getScheme(), null, base.getHost(), base.getPort(), rawPath, rawQuery, null);
     } catch (Exception ex) {
-      return base;
+      throw new ApiException("目标路径格式不正确");
     }
   }
 
   ToolExecutionResult parseOutput(String url, String outputText) {
+    return parseOutput(url, outputText, 0);
+  }
+
+  ToolExecutionResult parseOutput(String url, String outputText, int exitCode) {
     String text = outputText == null ? "" : outputText;
+    if (exitCode != 0) {
+      throw new ApiException("sqlmap 执行失败（退出码 " + exitCode + "），检测未完成");
+    }
+    Matcher error = ERROR_LINE.matcher(text);
+    while (error.find()) {
+      // sqlmap 使用 CRITICAL 记录正常阴性结论，不能把它与连接/运行错误混为一谈。
+      if (!NEGATIVE_CONCLUSION.matcher(error.group()).matches()) {
+        throw new ApiException("sqlmap 执行时报告错误，检测未完成，请查看执行过程");
+      }
+    }
+    if (text.contains("Traceback (most recent call last):") || !COMPLETED.matcher(text).find()) {
+      throw new ApiException("sqlmap 未返回完整的检测结果，无法判断是否存在 SQL 注入");
+    }
     Map<String, Object> data = new LinkedHashMap<>();
     data.put("url", url);
     List<FindingDraft> findings = new ArrayList<>();
@@ -241,6 +286,9 @@ public class SqlmapScanTool implements SecurityTool {
               "STB-SQLMAP-001",
               sqlmapSecurityKey(parameter)));
     } else {
+      if (!NEGATIVE_CONCLUSION.matcher(text).find()) {
+        throw new ApiException("sqlmap 未返回明确的检测结论，无法判断是否存在 SQL 注入");
+      }
       data.put("vulnerable", false);
     }
 
@@ -305,7 +353,7 @@ public class SqlmapScanTool implements SecurityTool {
     return List.copyOf(candidates);
   }
 
-  private String waitForProcess(
+  String waitForProcess(
       Process process, ToolExecutionObserver observer, long timeout, Consumer<String> onLine)
       throws Exception {
     ExecutorService reader = Executors.newSingleThreadExecutor();
@@ -313,22 +361,33 @@ public class SqlmapScanTool implements SecurityTool {
     try {
       long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeout);
       while (!process.waitFor(250, TimeUnit.MILLISECONDS)) {
+        if (output.isDone()) output.get();
         observer.heartbeat("sqlmap 正在探测");
         if (observer.isCancellationRequested()) {
-          process.destroyForcibly();
+          terminateProcessTree(process);
           process.waitFor(5, TimeUnit.SECONDS);
           throw new ApiException("任务已取消");
         }
         if (System.nanoTime() >= deadline) {
-          process.destroyForcibly();
+          terminateProcessTree(process);
           process.waitFor(5, TimeUnit.SECONDS);
           throw new ApiException("sqlmap 探测超过 " + timeout + " 秒，已强制终止");
         }
       }
       return output.get(10, TimeUnit.SECONDS);
     } finally {
+      if (process.isAlive()) terminateProcessTree(process);
       reader.shutdownNow();
     }
+  }
+
+  private void terminateProcessTree(Process process) {
+    // Windows 的 .bat 包装器会启动 Python；先快照并终止子进程，避免只停止包装器后继续探测。
+    List<ProcessHandle> descendants = process.descendants().toList();
+    for (int index = descendants.size() - 1; index >= 0; index--) {
+      descendants.get(index).destroyForcibly();
+    }
+    process.destroyForcibly();
   }
 
   private String readLimited(Process process, InputStream input, Consumer<String> onLine)
@@ -340,7 +399,7 @@ public class SqlmapScanTool implements SecurityTool {
       String line;
       while ((line = reader.readLine()) != null) {
         if (output.length() + line.length() + 1 > MAX_READ_BYTES) {
-          process.destroyForcibly();
+          terminateProcessTree(process);
           throw new ApiException("sqlmap 输出超过安全大小限制");
         }
         output.append(line).append('\n');

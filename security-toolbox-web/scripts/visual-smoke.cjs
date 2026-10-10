@@ -2460,7 +2460,7 @@ async function verifyTargetAuthorizationTimeDisplay(browser) {
   assert.equal(
     deleteColor,
     reportColor,
-    "操作按钮应与结果中心一致，统一为中性前景",
+    "操作按钮应与安全发现一致，统一为中性前景",
   );
   await page.locator(".target-action-edit").first().click();
   const editDialog = page.getByRole("dialog", { name: "编辑授权目标" });

@@ -105,7 +105,7 @@ const cases = {
   async navigation() {
     const routes = [['AI 安全助手', /#\/(?:\?|$)/], ['红队工作流', /\/workflow/], ['评估项目', /\/projects/],
       ['授权目标', /\/targets/], ['资产拓扑', /\/assets\/topology/], ['主动检测', /\/vulnerabilities/],
-      ['检测任务', /\/tasks/], ['结果中心', /\/findings/], ['流量分析', /\/traffic/], ['审计日志', /\/audits/], ['离线工具集', /\/offline-tools/]];
+      ['检测任务', /\/tasks/], ['安全发现', /\/findings/], ['流量分析', /\/traffic/], ['审计日志', /\/audits/], ['离线工具集', /\/offline-tools/]];
     for (const [name, expected] of routes) {
       await runCase('nav-' + name, name + '可达性', async () => {
         await navigate(page, name);
@@ -155,7 +155,7 @@ const cases = {
     return `任务${taskId}筛选和详情通过；未点击取消、重试或新建任务`;
   },
   async findings() {
-    await navigate(page, '结果中心');
+    await navigate(page, '安全发现');
     await waitRows();
     await filteredEmpty(page.getByPlaceholder('搜索名称、等级、工具、规则...'));
     const row = (await waitRows()).first();

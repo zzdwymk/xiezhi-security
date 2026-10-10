@@ -152,7 +152,7 @@ public class TaskSnapshotService {
           case "nuclei_scan" -> "Nuclei";
           case "afrog_scan" -> "Afrog";
           case "xray_scan" -> "Xray";
-          case "zap_scan" -> "OWASP ZAP";
+          case "zap_scan", "zap_fuzz" -> "OWASP ZAP";
           case "fscan_scan" -> "fscan";
           case "sqlmap_scan" -> "sqlmap";
           case "msf_scan" -> "Metasploit";

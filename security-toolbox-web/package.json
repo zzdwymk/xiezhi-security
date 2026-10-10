@@ -16,8 +16,13 @@
     "test:ai-progress-view": "node scripts/test-ai-progress-view.cjs",
     "test:ai-progress-browser": "node scripts/test-ai-progress-browser.cjs",
     "test:ai-intent-request": "node scripts/test-ai-intent-request.cjs",
+    "test:stream-auth": "node scripts/test-stream-auth.cjs",
+    "test:traffic-scan-status": "node scripts/test-traffic-scan-status-browser.cjs",
     "test:task-detail": "node scripts/test-task-detail.cjs",
     "test:postgres-startup": "node scripts/test-postgres-startup.cjs",
+    "test:setup-auto-continue": "node scripts/test-setup-auto-continue-browser.cjs",
+    "test:startup-navigation": "node scripts/test-startup-navigation-browser.cjs",
+    "test:desktop-dev-runner": "node scripts/test-desktop-dev-runner.cjs",
     "test:ai-relay": "node scripts/test-ai-relay-settings.cjs && node scripts/test-ai-relay.cjs && node scripts/test-ai-relay-models.cjs",
     "test:ai-relay-runtime": "node scripts/test-ai-relay-runtime.cjs",
     "test:offline": "node scripts/verify-offline-tools.cjs",
@@ -27,7 +32,9 @@
     "preview": "vite preview",
     "desktop:dev": "node electron/dev-runner.cjs",
     "desktop:pack": "npm run build:desktop && electron-builder --dir",
-    "desktop:build": "npm run build:desktop && electron-builder --win nsis"
+    "desktop:build": "npm run build:desktop && electron-builder --win nsis",
+    "test:notifications": "node scripts/test-notifications.cjs && node scripts/test-notification-center.cjs",
+    "test:notifications-browser": "node scripts/test-notification-settings-browser.cjs && node scripts/test-global-notifications-browser.cjs && node scripts/test-notification-pages-browser.cjs"
   },
   "dependencies": {
     "adm-zip": "^0.6.0"

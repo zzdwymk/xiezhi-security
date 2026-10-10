@@ -206,7 +206,7 @@
         <button id="back" type="button" title="后退" disabled>‹</button>
         <button id="forward" type="button" title="前进" disabled>›</button>
         <button id="reload" type="button" title="刷新">↻</button>
-        <button id="home" type="button" title="返回授权目标">⌂</button>
+        <button id="home" type="button" title="返回起始页">⌂</button>
         <label class="address"
           ><i></i
           ><input
@@ -219,8 +219,8 @@
         <button class="go" type="submit">访问</button>
       </form>
       <div class="statusbar">
-        <span class="proxy">代理已配置 <b id="proxy"></b></span
-        ><span id="status" class="page-status">正在打开授权目标…</span>
+        <span class="proxy"><span id="proxy-state">代理状态待确认</span> <b id="proxy"></b></span
+        ><span id="status" class="page-status">请输入要访问的网址</span>
       </div>
       <webview id="browser"></webview>
     </div>
@@ -238,6 +238,15 @@
         const forward = document.getElementById("forward");
         const reload = document.getElementById("reload");
         const home = document.getElementById("home");
+        const proxyState = document.getElementById("proxy-state");
+        let loadFailed = false;
+        window.setCaptureProxyState = (state) => {
+          if (state.proxy) document.getElementById("proxy").textContent = state.proxy;
+          proxyState.textContent = state.running === true
+            ? state.capturing ? "代理运行 · 正在记录" : "代理运行 · 记录暂停"
+            : state.running === false ? "代理已关闭 · 请在流量工作区开始记录" : "代理状态未知 · 请检查本地服务";
+          proxyState.classList.toggle("error", state.running !== true);
+        };
         document.getElementById("proxy").textContent = proxy;
         address.value = target === "about:blank" ? "" : target;
         browser.setAttribute("partition", partition);
@@ -285,12 +294,13 @@
             ? browser.loadURL("about:blank")
             : navigate(target),
         );
-        browser.addEventListener("did-start-loading", () =>
-          setStatus("正在通过本地代理加载…"),
-        );
+        browser.addEventListener("did-start-loading", () => {
+          loadFailed = false;
+          setStatus("正在通过本地代理加载…");
+        });
         browser.addEventListener("did-stop-loading", () => {
           syncNavigation(browser.getURL());
-          setStatus("页面加载完成");
+          if (!loadFailed) setStatus(browser.getURL() === "about:blank" ? "请输入要访问的网址" : "页面加载完成");
         });
         browser.addEventListener("did-navigate", (event) =>
           syncNavigation(event.url),
@@ -302,7 +312,8 @@
           document.title = `${event.title || "页面"} · 獬豸抓包浏览器`;
         });
         browser.addEventListener("did-fail-load", (event) => {
-          if (event.errorCode === -3) return;
+          if (event.errorCode === -3 || event.isMainFrame === false) return;
+          loadFailed = true;
           setStatus("页面加载失败，请检查目标地址和网络连接", true);
         });
       })();

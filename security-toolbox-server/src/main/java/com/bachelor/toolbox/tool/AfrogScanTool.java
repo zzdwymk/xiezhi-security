@@ -7,6 +7,7 @@ import com.bachelor.toolbox.target.TargetPolicyService;
 import com.bachelor.toolbox.target.WebTargetResolver;
 import com.bachelor.toolbox.vulnerability.ScannerPocCatalogService;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -18,14 +19,19 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -34,6 +40,12 @@ public class AfrogScanTool implements SecurityTool {
   private static final int MAX_FINDINGS = 500;
   private static final int MAX_OUTPUT_CHARS = 2 * 1024 * 1024;
   private static final int MAX_JSON_BYTES = 16 * 1024 * 1024;
+  private static final Pattern SCAN_STARTED = Pattern.compile(
+      "^\\[(?:INF|INFO)\\]\\s+VULN-SCAN\\s*\\|\\s*started\\s*\\|\\s*targets=(\\d+) pocs=(\\d+) tasks=(\\d+).*$");
+  private static final Pattern SCAN_COMPLETED = Pattern.compile(
+      "^\\[(?:INF|INFO)\\]\\s+VULN-SCAN\\s*\\|\\s*completed\\s*\\|\\s*tasks=(\\d+)/(\\d+) found=(\\d+).*$");
+  private static final Pattern RESPONSE_MARKER = Pattern.compile("^\\[\\d+\\]\\[([^\\]\\r\\n]+)\\] Dumped Response$");
+  private static final Pattern HTTP_STATUS = Pattern.compile("^HTTP/[0-9.]+ [1-5]\\d\\d(?: .*)?$");
 
   private final TargetPolicyService policy;
   private final ObjectMapper objectMapper;
@@ -101,8 +113,10 @@ public class AfrogScanTool implements SecurityTool {
       if (process.exitValue() != 0) {
         throw new ApiException("Afrog 执行失败，退出码 " + process.exitValue() + "：" + abbreviate(stdout, 500));
       }
-      observer.progressPercent(100d, "Afrog 扫描完成，正在解析结果");
-      return parseOutput(targetUri, selected, readJson(output));
+      ToolExecutionResult result = parseCompletedOutput(targetUri, selected, output, stdout);
+      assertNotCancelled(observer);
+      observer.progressPercent(100d, "Afrog 扫描完成，已核验执行结果");
+      return result;
     } finally {
       deleteTree(work);
     }
@@ -139,7 +153,9 @@ public class AfrogScanTool implements SecurityTool {
         "-retries",
         "0",
         "-no-color",
-        "-silent");
+        // Completed task counts alone include failed network requests in Afrog 3.5.7.
+        // Debug emits the PoC ID and actual response, which we reduce to evidence below.
+        "-debug");
   }
 
   ToolExecutionResult parseOutput(
@@ -151,11 +167,26 @@ public class AfrogScanTool implements SecurityTool {
     Map<String, ScannerPocSelectionService.SelectedPoc> allowed = new LinkedHashMap<>();
     selected.forEach(item -> allowed.put(item.externalId(), item));
     try {
-      JsonNode root = json == null || json.isBlank() ? objectMapper.createArrayNode() : objectMapper.readTree(json);
+      if (json == null || json.isBlank()) {
+        throw new ApiException("Afrog 检测结果为空，无法确认检测是否完成。请重试。");
+      }
+      JsonNode root = objectMapper.reader()
+          .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+          .with(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+          .readTree(json);
+      if (root.hasNonNull("error") || root.hasNonNull("errors")
+          || (root.has("success") && !root.path("success").asBoolean())) {
+        throw new ApiException("Afrog 返回了错误结果，本次检测未完成。请检查检测工具配置后重试。");
+      }
       List<JsonNode> items = new ArrayList<>();
       if (root.isArray()) root.forEach(items::add);
       else if (root.path("results").isArray()) root.path("results").forEach(items::add);
+      else throw new ApiException("Afrog 检测结果格式异常，无法确认检测结论。请检查 Afrog 版本后重试。");
       for (JsonNode item : items) {
+        if (!item.isObject()) throw new ApiException("Afrog 检测结果格式异常，无法确认检测结论。请重试。");
+        if (item.has("isvul") && !item.path("isvul").asBoolean()) {
+          throw new ApiException("Afrog 检测结果包含未经确认的发现，无法确认检测结论。请重试。");
+        }
         // Afrog 3.x 将命中信息放在 pocinfo 子节点（id/infoname/infoseg/…），
         // 旧版放顶层 id + info.*。这里做兼容取读，避免取到空 id 而被误判为"未选择的 PoC"。
         JsonNode poc = item.path("pocinfo");
@@ -195,22 +226,75 @@ public class AfrogScanTool implements SecurityTool {
     return new ToolExecutionResult("Afrog 扫描完成，匹配 " + matches.size() + " 项潜在问题", data, findings);
   }
 
-  private String waitFor(Process process, ToolExecutionObserver observer, String operation) throws Exception {
+  ToolExecutionResult parseCompletedOutput(
+      URI expectedTarget, List<ScannerPocSelectionService.SelectedPoc> selected,
+      Path output, String evidence) throws Exception {
+    long startedTasks = -1;
+    long loadedPocs = -1;
+    long completedTasks = -1;
+    long totalTasks = -1;
+    long reportedFindings = -1;
+    Set<String> respondedPocs = new HashSet<>();
+    for (String line : evidence.split("\\R")) {
+      Matcher started = SCAN_STARTED.matcher(line);
+      Matcher completed = SCAN_COMPLETED.matcher(line);
+      Matcher responded = RESPONSE_MARKER.matcher(line);
+      if (started.matches()) {
+        loadedPocs = Long.parseLong(started.group(2));
+        startedTasks = Long.parseLong(started.group(3));
+      } else if (completed.matches()) {
+        completedTasks = Long.parseLong(completed.group(1));
+        totalTasks = Long.parseLong(completed.group(2));
+        reportedFindings = Long.parseLong(completed.group(3));
+      } else if (responded.matches()) {
+        respondedPocs.add(responded.group(1));
+      }
+    }
+    if (loadedPocs == 0 || (loadedPocs > 0 && loadedPocs < selected.size())) {
+      throw new ApiException("所选漏洞检测规则未能全部加载，本次检测不完整。请检查 Afrog 规则库后重试。");
+    }
+    if (loadedPocs <= 0 || startedTasks <= 0 || totalTasks != startedTasks
+        || completedTasks != totalTasks || totalTasks < selected.size()) {
+      throw new ApiException("未收到完整的检测执行记录，无法确认本次检测已完成。请检查 Afrog 版本和检测工具配置后重试。");
+    }
+    long verifiedPocs = selected.stream().filter(poc -> respondedPocs.contains(poc.externalId())).count();
+    if (verifiedPocs == 0) {
+      throw new ApiException("未收到目标对漏洞检测请求的有效响应，无法确认检测完成。请确认目标已开机、网站已启动，并检查网络连接；非网页检测规则也可能无法核验。");
+    }
+    if (verifiedPocs < selected.size()) {
+      throw new ApiException("部分漏洞检测规则未收到可核验的目标响应，本次检测不完整。请检查目标连接及所选规则后重试。");
+    }
+    // Like Xray, Afrog omits the result file for a genuine zero-match run.
+    // A reported match must never be lost by normalizing a missing file to [].
+    if (reportedFindings > 0 && !Files.isRegularFile(output)) {
+      throw new ApiException("Afrog 已报告检测发现，但结果文件缺失，无法读取检测结论。请重试。");
+    }
+    ToolExecutionResult result = parseOutput(expectedTarget, selected, readJson(output));
+    if (((Number) result.data().get("matchCount")).longValue() != reportedFindings) {
+      throw new ApiException("Afrog 返回的检测发现与结果文件不一致，无法确认完整结论。请重试。");
+    }
+    Map<String, Object> data = new LinkedHashMap<>(result.data());
+    data.put("executionVerified", true);
+    data.put("verifiedPocCount", verifiedPocs);
+    data.put("completedTaskCount", completedTasks);
+    return new ToolExecutionResult(result.summary(), data, result.findings());
+  }
+
+  String waitFor(Process process, ToolExecutionObserver observer, String operation) throws Exception {
     ExecutorService reader = Executors.newSingleThreadExecutor();
     Future<String> output = reader.submit(() -> readLimited(process));
     try {
+      assertNotCancelled(observer);
       long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds);
       while (!process.waitFor(250, TimeUnit.MILLISECONDS)) {
         observer.heartbeat(operation);
-        if (observer.isCancellationRequested()) {
-          process.destroyForcibly();
-          throw new ApiException("任务已取消");
-        }
+        assertNotCancelled(observer);
         if (System.nanoTime() >= deadline) {
           process.destroyForcibly();
-          throw new ApiException("Afrog 扫描超过 " + timeoutSeconds + " 秒，已强制终止");
+          throw new TimeoutException("Afrog 检测超过 " + timeoutSeconds + " 秒，已停止运行，检测未完成。");
         }
       }
+      assertNotCancelled(observer);
       return output.get(10, TimeUnit.SECONDS);
     } finally {
       if (process.isAlive()) process.destroyForcibly();
@@ -218,17 +302,35 @@ public class AfrogScanTool implements SecurityTool {
     }
   }
 
+  private void assertNotCancelled(ToolExecutionObserver observer) {
+    if (Thread.currentThread().isInterrupted() || observer.isCancellationRequested()) {
+      throw new CancellationException("Afrog 检测已取消");
+    }
+  }
+
   private String readLimited(Process process) throws Exception {
-    StringBuilder output = new StringBuilder();
     try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-      String line;
-      while ((line = reader.readLine()) != null) {
-        if (output.length() + line.length() > MAX_OUTPUT_CHARS) {
-          process.destroyForcibly();
-          throw new ApiException("Afrog 输出超过安全大小限制");
-        }
-        output.append(line).append('\n');
+      return readExecutionEvidence(reader);
+    }
+  }
+
+  String readExecutionEvidence(BufferedReader reader) throws Exception {
+    StringBuilder output = new StringBuilder();
+    String pendingResponse = null;
+    String line;
+    while ((line = reader.readLine()) != null) {
+      String clean = line.replaceAll("\\u001B\\[[;\\d]*[A-Za-z]", "").trim();
+      if (pendingResponse != null) {
+        if (HTTP_STATUS.matcher(clean).matches()) output.append(pendingResponse).append('\n');
+        pendingResponse = null;
       }
+      if (RESPONSE_MARKER.matcher(clean).matches()) {
+        pendingResponse = clean;
+      } else if (SCAN_STARTED.matcher(clean).matches() || SCAN_COMPLETED.matcher(clean).matches()) {
+        output.append(clean).append('\n');
+      }
+      // Do not retain debug request/response bodies or interpret their text as engine errors.
+      if (output.length() > MAX_OUTPUT_CHARS) throw new ApiException("Afrog 执行记录超过安全大小限制");
     }
     return output.toString();
   }

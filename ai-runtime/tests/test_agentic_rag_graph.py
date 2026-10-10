@@ -55,6 +55,96 @@ def test_real_graph_emits_progress_before_model_reply_without_changing_ledger(tm
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("decision,reasons,round_number,rewritten_query,final_decision,guard_reason", [
+    ("FINALIZE", ["DIRECT_SUPPORT"], 0, None, "FINALIZE", None),
+    ("FINALIZE", ["PARTIAL_SUPPORT"], 0, None, "FINALIZE", None),
+    ("CLARIFY", ["CONFLICTING_EVIDENCE", "SCOPE_MISMATCH"], 0, None, "CLARIFY", None),
+    ("REWRITE_QUERY", ["QUERY_TOO_BROAD"], 0, "private rewritten query", "REWRITE_QUERY", None),
+    ("REWRITE_QUERY", ["QUERY_TOO_BROAD"], 0, "alpha service baseline", "CLARIFY", "REWRITE_REJECTED"),
+    ("REWRITE_QUERY", ["NO_RELEVANT_EVIDENCE"], 1, "private third query", "CLARIFY", "REWRITE_LIMIT_REACHED"),
+])
+def test_assessment_progress_preserves_model_reason_and_separate_guard_decision(
+    tmp_path, decision, reasons, round_number, rewritten_query, final_decision, guard_reason,
+):
+    from types import SimpleNamespace
+    from app.model import AgentPlanner
+    from app.progress import with_public_progress
+
+    store = _seed_store(tmp_path)
+    bundle = store.evidence_bundle(PROJECT_ID, "alpha service baseline", round_number,
+                                   CONVERSATION_ID, TARGET_ID)
+    original = {"decision": decision, "reasonCodes": reasons,
+                "evidenceRefs": [bundle["items"][0]["evidenceId"]] if decision == "FINALIZE" else []}
+    if rewritten_query is not None:
+        original["rewrittenQuery"] = rewritten_query
+    class ModelChain:
+        async def ainvoke(self, payload):
+            return SimpleNamespace(content=json.dumps(original))
+
+    runtime = SecurityAgentRuntime(store)
+    planner = AgentPlanner(store)
+    planner._llm_requested = True
+    planner._chain_load_attempted = True
+    planner._evidence_chain = ModelChain()
+    runtime.planner = planner
+    state = {"runId": "public-assessment", "request": _request("public-assessment").model_dump(mode="json"),
+             "activeEvidence": bundle, "retrievalRound": round_number,
+             "retrievalQueries": ["alpha service baseline"]}
+    async def collect():
+        async def events():
+            yield await runtime._assess_node(state)
+        return [item async for item in with_public_progress(events())]
+
+    emitted = asyncio.run(collect())
+    assessed = next(payload for kind, payload in emitted if kind == "progress" and payload["stage"] == "ASSESSED")
+    assert assessed == {"stage": "ASSESSED", "decision": final_decision, "modelDecision": decision,
+                        "reasonCodes": reasons, "assessmentSource": "MODEL",
+                        **({"guardReason": guard_reason} if guard_reason else {})}
+    assert "private" not in json.dumps(assessed) and "rewrittenQuery" not in assessed
+    update = next(payload for kind, payload in emitted if kind == "event")
+    assert update["evidenceDecision"]["decision"] == final_decision
+    assert original["decision"] == decision
+
+
+def test_missing_model_never_emits_a_successful_evidence_assessment(tmp_path):
+    from app.model import AgentPlanner
+    from app.progress import with_public_progress
+
+    runtime = SecurityAgentRuntime(_seed_store(tmp_path))
+    runtime.planner = AgentPlanner(runtime.index_store)
+    runtime.planner._llm_requested = False
+    request = _request("local-assessment").model_dump(mode="json")
+    state = {"request": request, "activeEvidence": runtime._empty_evidence({"request": request})}
+    async def collect():
+        async def events():
+            yield await runtime._assess_node(state)
+        return [item async for item in with_public_progress(events())]
+    output = asyncio.run(collect())
+    assert not any(kind == "progress" and payload["stage"] == "ASSESSED" for kind, payload in output)
+    update = next(payload for kind, payload in output if kind == "event")
+    assert update["terminalStatus"] == "FAILED"
+    assert update["terminationReason"] == "MODEL_NOT_CONFIGURED"
+    assert update["llmCallCount"] == 0
+
+
+@pytest.mark.parametrize("patch", [
+    {"reason_codes": ["PRIVATE_REASONING"]}, {"reason_codes": ["NO_RELEVANT_EVIDENCE"]},
+    {"reason_codes": ["DIRECT_SUPPORT", "DIRECT_SUPPORT"]}, {"reason_codes": []},
+    {"assessment_source": "PRIVATE"}, {"model_decision": {}},
+    {"decision": "CLARIFY"}, {"guard_reason": "REWRITE_REJECTED"},
+])
+def test_public_assessment_rejects_free_text_and_inconsistent_facts(patch):
+    from app.progress import emit_progress, with_public_progress
+    async def collect():
+        async def events():
+            emit_progress("ASSESSED", **{
+                "decision": "FINALIZE", "model_decision": "FINALIZE", "reason_codes": ["DIRECT_SUPPORT"],
+                "assessment_source": "MODEL", **patch})
+            yield {"status": "unchanged"}
+        return [item async for item in with_public_progress(events())]
+    assert asyncio.run(collect()) == [("event", {"status": "unchanged"})]
+
+
 @pytest.fixture(autouse=True)
 def _stable_rag_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     graph_settings = replace(
@@ -555,14 +645,27 @@ def test_llm_call_budget_fails_closed_before_grounded_generation(
         replace(graph_module.settings, max_rag_llm_calls=1),
     )
     runtime = SecurityAgentRuntime(_seed_store(tmp_path))
-    planner = FakePlannerApi(_general_route())
+    from types import SimpleNamespace
+    from app.model import AgentPlanner
+    class Chain:
+        def __init__(self, result):
+            self.calls = 0
+            self.result = result
+        async def ainvoke(self, inputs):
+            self.calls += 1
+            return SimpleNamespace(content=json.dumps(self.result))
+    planner = AgentPlanner(runtime.index_store)
+    planner._llm_requested = True
+    planner._chain_load_attempted = True
+    planner._intent_chain = Chain({key: value for key, value in _general_route().items() if value is not None})
+    planner._grounded_chain = Chain({})
     runtime.planner = planner
     request = _request("rag-llm-budget-0001", "What is TLS?")
 
     events = _collect(runtime, request)
 
-    assert planner.route_calls == 1
-    assert planner.grounded_calls == []
+    assert planner._intent_chain.calls == 1
+    assert planner._grounded_chain.calls == 0
     finish = _assert_v3_envelopes(events, request)
     assert finish["status"] == "FAILED"
     assert finish["terminationReason"] == "GROUNDED_GENERATION_FAILED"
@@ -669,6 +772,113 @@ def test_auto_does_not_blanket_approve_but_safe_authorized_workflow_remains_exec
     assert finish["review"]["proposalCount"] == (0 if requires_approval else 1)
 
 
+@pytest.mark.parametrize("reference_mode,authorization_mode", [
+    ("answer-only", "approval"),
+    ("empty", "approval"),
+    ("answer-only", "authorized"),
+    ("empty", "authorized"),
+    ("answer-only", "denied"),
+    ("empty", "denied"),
+    ("unknown-action", "authorized"),
+    ("unknown-first", "approval"),
+    ("unknown-first", "authorized"),
+    ("unknown-first", "denied"),
+])
+def test_actual_grounded_reference_union_preserves_graph_guards_and_ledger(
+    tmp_path, reference_mode, authorization_mode,
+):
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+    from app.model import AgentPlanner
+
+    class GroundedResponses:
+        def __init__(self):
+            self.calls = []
+            self.output = None
+            self.bundle = None
+
+        async def ainvoke(self, payload):
+            self.calls.append(payload)
+            self.bundle = json.loads(payload["untrusted_evidence"].split("\n", 1)[1].rsplit("\n", 1)[0])
+            answer_ref, action_ref = [item["evidenceId"] for item in self.bundle["items"]]
+            self.output = {
+                "summary": "授权范围内的响应头检查", "answer": "按当前证据提出响应头检查。",
+                "intent": "plan", "knowledgeMode": "PROJECT_EVIDENCE",
+                "evidenceRefs": [answer_ref] if reference_mode == "answer-only" else [],
+                "actions": [{"workflowNodeId": "headers", "parameters": {},
+                             "evidenceRefs": ["ev-outside-active-bundle" if reference_mode == "unknown-action"
+                                              or (reference_mode == "unknown-first" and len(self.calls) == 1)
+                                              else action_ref]}],
+            }
+            return SimpleNamespace(content=json.dumps(self.output))
+
+    runtime = SecurityAgentRuntime(_seed_store(tmp_path, documents=2))
+    real_planner = AgentPlanner(runtime.index_store)
+    real_planner._llm_requested = True
+    real_planner._chain_load_attempted = True
+    responses = real_planner._grounded_chain = GroundedResponses()
+
+    class RealGroundedPlanner(FakePlannerApi):
+        async def grounded_plan(self, request, active_evidence, intent_decision):
+            self.grounded_calls.append({"evidence": active_evidence, "intent": intent_decision})
+            return await real_planner.grounded_plan(request, active_evidence, intent_decision)
+
+    planner = runtime.planner = RealGroundedPlanner({
+        "intent": "ACTION_PLAN", "needsRetrieval": True, "retrievalQuery": "alpha service baseline",
+        "publicReasonCode": "AUTHORIZED_ACTION_REQUEST", "executionDecision": "EXECUTE",
+    }, [("FINALIZE", None)])
+    now = datetime.now(timezone.utc)
+    data = _request(f"reference-union-{reference_mode}-{authorization_mode}").model_dump(mode="json")
+    data.update(executionIntent="AUTO", currentUserRequest="检查当前已授权目标的响应头")
+    data["authorization"].update(
+        allowedTools=[] if authorization_mode == "denied" else ["http_headers"],
+        allowedPorts="80", approved=False,
+        validFrom=(now - timedelta(hours=1)).isoformat(), expiresAt=(now + timedelta(hours=1)).isoformat(),
+    )
+    data["workflow"] = [{"nodeId": "headers", "tool": "http_headers", "parameters": {},
+                         "risk": "SAFE", "requiresApproval": authorization_mode == "approval",
+                         "group": 0, "dependsOnNodeIds": []}]
+    request = AgentRequest.model_validate(data)
+
+    events = _collect(runtime, request)
+    finish = _assert_v3_envelopes(events, request)
+    assert len(planner.grounded_calls) == len(planner.assess_calls) == 1
+    assert len(responses.calls) == (2 if reference_mode in {"unknown-action", "unknown-first"} else 1)
+    assert planner.route_calls == 1 and planner.legacy_plan_calls == 0
+    assert request.authorization.approved is False
+    tool_events = [event["data"] for event in events if event["type"] == "tool"]
+    if reference_mode == "unknown-action":
+        assert finish["status"] == "FAILED"
+        assert finish["terminationReason"] == "GROUNDED_REFERENCE_INVALID"
+        assert finish["plan"]["actions"] == finish["evidenceIds"] == []
+        assert tool_events == []
+        assert "ev-outside-active-bundle" not in json.dumps(events)
+        return
+
+    answer_ref, action_ref = [item["evidenceId"] for item in responses.bundle["items"]]
+    expected_refs = [answer_ref, action_ref] if reference_mode == "answer-only" else [action_ref]
+    plan_event = next(event["data"] for event in events if event["type"] == "plan")
+    assert plan_event["evidenceRefs"] == finish["plan"]["evidenceRefs"] == expected_refs
+    assert finish["evidenceIds"] == sorted(expected_refs)
+    assert finish["plannerSource"] == "langchain-grounded"
+    assert finish["plan"]["actions"][0]["evidenceRefs"] == [action_ref]
+    assert finish["plan"]["actions"][0]["workflowNodeId"] == "headers"
+    assert responses.output["evidenceRefs"] == ([answer_ref] if reference_mode == "answer-only" else [])
+    assert responses.output["actions"] == [{"workflowNodeId": "headers", "parameters": {}, "evidenceRefs": [action_ref]}]
+    guard = next(event["data"] for event in events if event["type"] == "authorization_guard")
+    assert guard["status"] == {"approval": "APPROVAL_REQUIRED", "authorized": "AUTHORIZED", "denied": "DENIED"}[authorization_mode]
+    assert finish["status"] == {"approval": "APPROVAL_REQUIRED", "authorized": "COMPLETED", "denied": "DENIED"}[authorization_mode]
+    if authorization_mode == "authorized":
+        assert finish["review"]["proposalCount"] == 1
+        assert len(tool_events) == 1
+        assert tool_events[0]["localExecutions"] == 0 and tool_events[0]["javaProposals"] == 1
+        assert finish["review"]["proposals"][0]["executed"] is False
+        assert finish["review"]["proposals"][0]["executionBoundary"] == "JAVA_AUTHORIZED_EXECUTOR"
+    else:
+        assert finish["review"]["proposalCount"] == 0
+        assert tool_events == []
+
+
 def test_retrieval_count_budget_stops_before_a_second_store_call(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -708,6 +918,41 @@ def test_retrieval_count_budget_stops_before_a_second_store_call(
     assert finish["status"] == "DENIED"
     assert finish["retrievalRoundCount"] == 1
     assert finish["terminationReason"] == "RETRIEVAL_GUARD_DENIED"
+
+
+def test_sqlmap_graph_produces_an_approval_proposal_and_never_a_tool_execution(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from app.model import validate_workflow_action_closure
+
+    class SqlmapPlanner(FakePlannerApi):
+        async def grounded_plan(self, request, active_evidence, intent_decision):
+            refs = [active_evidence["items"][0]["evidenceId"]]
+            return {"summary": "SQL注入检测方案", "answer": "审批后检测指定参数，不导出数据。",
+                    "intent": "plan", "knowledgeMode": "PROJECT_EVIDENCE", "evidenceRefs": refs,
+                    "source": "langchain-grounded", "actions": validate_workflow_action_closure([
+                        {"workflowNodeId": "sqlmap-01", "parameters": {}, "evidenceRefs": refs}], request["workflow"])}
+
+    runtime = SecurityAgentRuntime(_seed_store(tmp_path))
+    runtime.planner = SqlmapPlanner({"intent": "ACTION_PLAN", "needsRetrieval": True,
+        "retrievalQuery": "alpha service baseline", "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
+        "executionDecision": "EXECUTE"}, [("FINALIZE", None)])
+    now = datetime.now(timezone.utc)
+    data = _request("sqlmap-approval-proposal").model_dump(mode="json")
+    data.update(executionIntent="AUTO", currentUserRequest="对已授权URL参数进行SQL注入检测")
+    data["authorization"].update(allowedTools=["sqlmap_scan"], allowedPorts="80", approved=False,
+        validFrom=(now - timedelta(hours=1)).isoformat(), expiresAt=(now + timedelta(hours=1)).isoformat())
+    data["workflow"] = [{"nodeId": "sqlmap-01", "tool": "sqlmap_scan",
+                         "parameters": {"path": "/Less-1/?id=1"}, "requiresApproval": False,
+                         "risk": "SAFE", "group": 0, "dependsOnNodeIds": []}]
+    request = AgentRequest.model_validate(data)
+    events = _collect(runtime, request)
+    finish = _assert_v3_envelopes(events, request)
+    assert finish["status"] == "APPROVAL_REQUIRED"
+    assert finish["plan"]["actions"][0]["parameters"] == {
+        "path": "/Less-1/?id=1", "level": 1, "risk": 1, "technique": "BEUT"}
+    assert finish["plan"]["actions"][0]["requiresApproval"] is True
+    assert finish["review"]["proposalCount"] == 0
+    assert not any(event["type"] == "tool" for event in events)
 
 
 def test_evidence_character_budget_prevents_second_retrieval(

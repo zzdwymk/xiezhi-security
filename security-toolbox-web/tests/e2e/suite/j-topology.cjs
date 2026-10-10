@@ -67,10 +67,20 @@ async function chooseAllProjects(page) {
 async function waitTopologyLoaded(page, timeout = 30000) {
   const deadline = Date.now() + timeout;
   const loadingOverlay = page.locator(".topology-state-overlay", { hasText: /正在加载资产/ }).first();
+  let stable = 0, previous = "";
   while (Date.now() < deadline) {
-    if (!(await loadingOverlay.isVisible().catch(() => false))) {
-      await sleep(450);
-      return;
+    const loading = await loadingOverlay.isVisible().catch(() => false);
+    const canvas = await page.locator('.topology-svg').first().isVisible().catch(() => false);
+    const empty = await page.locator('.topology-state-overlay', { hasText: '暂无资产节点' }).first().isVisible().catch(() => false);
+    const noProjects = await page.locator('.empty-project-prompt').first().isVisible().catch(() => false);
+    if (!loading && (canvas || empty || noProjects)) {
+      const signature = JSON.stringify([canvas, empty, noProjects, await page.locator('.node-card-group').count(), await page.locator('.topology-hub-node').count()]);
+      stable = signature === previous ? stable + 1 : 1;
+      previous = signature;
+      if (stable >= 3) return;
+    } else {
+      stable = 0;
+      previous = "";
     }
     await sleep(250);
   }
@@ -176,6 +186,7 @@ async function run(page, H, ctx) {
   }, { page });
 
   await H.run("J-02", "全部项目模式按项目渲染独立中心节点", async () => {
+    await waitTopologyLoaded(page);
     const projectNames = ctx.topologyProjectOptions || [];
     if (ctx.topologyNoProjects) {
       const emptyText = compact(await page.locator(".empty-project-prompt").first().textContent().catch(() => ""));
@@ -194,13 +205,15 @@ async function run(page, H, ctx) {
     }
     const hubs = await visibleHubTitles(page);
     const meta = compact(await page.locator(".toolbar-meta-group").textContent().catch(() => ""));
-    if (hubs.length !== projectNames.length) {
-      throw new Error(`中心节点数与项目数不一致：项目=${projectNames.length}，中心=${hubs.length}（${hubs.join(" / ")}）`);
+    // The graph groups assets, so projects with no assets intentionally have
+    // no hub. J-03 checks each project's actual assets against the all view.
+    if (!hubs.length || hubs.length > projectNames.length || new Set(hubs).size !== hubs.length) {
+      throw new Error(`有资产项目中心数量异常：选择器项目=${projectNames.length}，中心=${hubs.length}（${hubs.join(" / ")}）`);
     }
-    const missing = projectNames.filter((name) => !hubs.some((title) => title === name));
-    if (missing.length) throw new Error(`中心节点缺少项目：${missing.join("、")}`);
-    if (!meta.includes(`${projectNames.length} 个项目`)) {
-      throw new Error(`顶部项目统计异常：期望包含「${projectNames.length} 个项目」，实际=${meta}`);
+    const unexpected = hubs.filter(name => !projectNames.includes(name));
+    if (unexpected.length) throw new Error(`中心包含选择器以外项目：${unexpected.join("、")}`);
+    if (!meta.includes(`${hubs.length} 个项目`)) {
+      throw new Error(`顶部有资产项目统计异常：期望包含「${hubs.length} 个项目」，实际=${meta}`);
     }
     return `项目中心 ${hubs.length} 个：${hubs.join(" / ")}`;
   }, { page, shotOnPass: true });

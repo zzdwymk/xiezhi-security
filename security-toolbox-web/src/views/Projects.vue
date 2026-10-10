@@ -36,7 +36,7 @@ function projectStatusLabel(status?: string) {
     COMPLETED: "已完成",
     ARCHIVED: "已归档",
   };
-  return (status && map[status]) || status || "未知";
+  return (status && map[status]) || "未知状态";
 }
 
 function projectWindowActive(row: {

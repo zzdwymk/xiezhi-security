@@ -110,6 +110,51 @@ class AiAgentRuntimeClientTests {
     assertThat(progress).hasSize(32);
   }
 
+  @Test
+  void assessmentProgressExplainsValidatedReasonsAndKeepsModelAndGuardDecisionsSeparate() throws Exception {
+    AiAgentRuntimeClient client = newClient();
+    var progress = new java.util.ArrayList<AiAgentRuntimeClient.PublicProgress>();
+    String comments = """
+        : toolbox-progress {"stage":"ASSESSED","decision":"FINALIZE","modelDecision":"FINALIZE","reasonCodes":["DIRECT_SUPPORT","PARTIAL_SUPPORT"],"assessmentSource":"MODEL"}
+        : toolbox-progress {"stage":"ASSESSED","decision":"CLARIFY","modelDecision":"REWRITE_QUERY","reasonCodes":["QUERY_TOO_BROAD"],"assessmentSource":"MODEL","guardReason":"REWRITE_LIMIT_REACHED"}
+        : toolbox-progress {"stage":"ASSESSED","decision":"CLARIFY","modelDecision":"CLARIFY","reasonCodes":["NO_RELEVANT_EVIDENCE"],"assessmentSource":"LOCAL_RULE"}
+        """;
+    try (var scope = client.observePublicProgress(progress::add)) {
+      client.readSse(new java.io.BufferedReader(new java.io.StringReader(comments)), ignored -> {});
+    }
+    assertThat(progress).hasSize(3);
+    assertThat(progress.get(0).message()).contains("模型评估", "直接支持", "部分支持", "据此生成回答或方案");
+    var overridden = progress.get(1);
+    assertThat(overridden.modelDecision()).isEqualTo("REWRITE_QUERY");
+    assertThat(overridden.evidenceDecision()).isEqualTo("CLARIFY");
+    assertThat(overridden.reasonCodes()).containsExactly("QUERY_TOO_BROAD");
+    assertThat(overridden.guardReason()).isEqualTo("REWRITE_LIMIT_REACHED");
+    assertThat(overridden.message()).contains("模型评估", "查询范围过宽", "系统已达到", "最终改为请求补充信息");
+    assertThat(progress.get(2).message()).contains("本地规则评估", "未发现相关证据").doesNotContain("模型评估");
+  }
+
+  @Test
+  void assessmentProgressRejectsUnknownReasonsAndInconsistentOverridesWithoutAffectingLedger() {
+    AiAgentRuntimeClient client = newClient();
+    var progress = new java.util.ArrayList<AiAgentRuntimeClient.PublicProgress>();
+    String comments = """
+        : toolbox-progress {"stage":"ASSESSED","decision":"FINALIZE","modelDecision":"FINALIZE","reasonCodes":["PRIVATE_REASONING"],"assessmentSource":"MODEL"}
+        : toolbox-progress {"stage":"ASSESSED","decision":"FINALIZE","modelDecision":"FINALIZE","reasonCodes":["NO_RELEVANT_EVIDENCE"],"assessmentSource":"MODEL"}
+        : toolbox-progress {"stage":"ASSESSED","decision":"FINALIZE","modelDecision":"FINALIZE","reasonCodes":["DIRECT_SUPPORT","DIRECT_SUPPORT"],"assessmentSource":"MODEL"}
+        : toolbox-progress {"stage":"ASSESSED","decision":"FINALIZE","modelDecision":"FINALIZE","reasonCodes":[],"assessmentSource":"MODEL"}
+        : toolbox-progress {"stage":"ASSESSED","decision":"FINALIZE","modelDecision":"FINALIZE","reasonCodes":["DIRECT_SUPPORT"],"assessmentSource":"PRIVATE"}
+        : toolbox-progress {"stage":"ASSESSED","decision":"CLARIFY","modelDecision":"REWRITE_QUERY","reasonCodes":["QUERY_TOO_BROAD"],"assessmentSource":"MODEL"}
+        : toolbox-progress {"stage":"ASSESSED","decision":"FINALIZE","modelDecision":"FINALIZE","reasonCodes":["DIRECT_SUPPORT"],"assessmentSource":"MODEL","guardReason":"REWRITE_LIMIT_REACHED"}
+        : toolbox-progress {"stage":"GENERATING","decision":"CLARIFY","modelDecision":"CLARIFY","reasonCodes":["NO_RELEVANT_EVIDENCE"],"assessmentSource":"MODEL"}
+        : toolbox-progress {"stage":"ASSESSED","decision":"FINALIZE","modelDecision":"FINALIZE","reasonCodes":["DIRECT_SUPPORT"],"assessmentSource":"MODEL","reasoning":"private"}
+        """;
+    try (var scope = client.observePublicProgress(progress::add)) {
+      assertThat(client.consumeStream(RUN_ID, comments + toNdjson(legalGeneralQaStream()), request(), null).answer())
+          .isEqualTo("这是一个通用回答。");
+    }
+    assertThat(progress).isEmpty();
+  }
+
   private static final String GENESIS_DIGEST = "sha256:" + "0".repeat(64);
   private static final String WORKFLOW_DIGEST = "sha256:" + "a".repeat(64);
   private static final String WORKFLOW_ID = "wf-test-01";
@@ -344,6 +389,29 @@ class AiAgentRuntimeClientTests {
         .put("knowledgeMode", "GENERAL").set("evidenceRefs", mapper.createArrayNode());
     resign(events);
     return events;
+  }
+
+  @Test
+  void pythonFinishCallCountIsAcceptedWithinTheRequestBudget() {
+    for (int count : new int[] {0, 3, 4}) {
+      ObjectNode[] events = legalGeneralQaStream();
+      events[3].withObject("data").put("llmCallCount", count);
+      resign(events);
+      assertThat(newClient().consumeStream(RUN_ID, toNdjson(events), request(), null).status())
+          .isEqualTo("COMPLETED");
+    }
+  }
+
+  @Test
+  void pythonFinishCallCountRejectsWrongTypesAndExceededBudgets() throws Exception {
+    for (String value : new String[] {"-1", "5", "1.5", "\"3\"", "null", "true", "2147483648"}) {
+      ObjectNode[] events = legalGeneralQaStream();
+      events[3].withObject("data").set("llmCallCount", mapper.readTree(value));
+      resign(events);
+      assertThatThrownBy(() -> newClient().consumeStream(RUN_ID, toNdjson(events), request(), null))
+          .isInstanceOf(AiAgentRuntimeClient.RuntimeProtocolException.class)
+          .hasMessageContaining("llmCallCount");
+    }
   }
 
   @Test

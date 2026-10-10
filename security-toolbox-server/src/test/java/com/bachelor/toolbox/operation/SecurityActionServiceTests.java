@@ -102,196 +102,28 @@ class SecurityActionServiceTests {
   }
 
   @Test
-  void createsOnlyWhenWindowIsInsideProjectAuthorization() {
+  void rejectsManualActionCreationWithoutPersistence() {
     Instant start = futureStart();
-
-    SecurityAction created =
-        service.create(1L, request(7L, null, start, start.plusSeconds(1800)), applicant);
-
-    assertThat(created.getId()).isEqualTo(42L);
-    assertThat(created.getStatus()).isEqualTo("PENDING_APPROVAL");
-    assertThat(created.getRequestedBy()).isEqualTo("alice");
-    assertThat(created.isNonDestructive()).isTrue();
-    assertThat(created.isLateralMovement()).isFalse();
-
-    InOrder persistedThenAudited = inOrder(repository, audit);
-    persistedThenAudited.verify(repository).save(created);
-    persistedThenAudited
-        .verify(audit)
-        .record("REQUEST_SECURITY_ACTION", "PROJECT", 1L, "actionId=42", "SUCCESS");
-  }
-
-  @Test
-  void rejectsWindowOutsideProjectAuthorization() {
-    Instant end = authorizationTo.plusSeconds(1);
-
-    assertThatThrownBy(
-            () -> service.create(1L, request(7L, null, end.minusSeconds(1800), end), applicant))
-        .isInstanceOf(ApiException.class)
-        .hasMessageContaining("授权有效期");
+    assertThatThrownBy(() -> service.create(1L, request(7L, null, start, start.plusSeconds(1800)), applicant))
+        .isInstanceOf(ApiException.class).hasMessageContaining("高风险行动申请已合并");
     verify(repository, never()).save(any());
   }
 
   @Test
-  void rejectsFindingThatIsNotInProject() {
-    when(projects.projectFindings(1L)).thenReturn(List.of());
-    Instant start = futureStart();
-
-    assertThatThrownBy(
-            () -> service.create(1L, request(7L, 99L, start, start.plusSeconds(1800)), applicant))
-        .isInstanceOf(ApiException.class)
-        .hasMessage("关联漏洞不属于当前项目");
-    verify(repository, never()).save(any());
-  }
-
-  @Test
-  void rejectsFindingForAnotherTarget() {
-    Finding finding = new Finding();
-    finding.setId(99L);
-    finding.setTargetId(8L);
-    when(projects.projectFindings(1L)).thenReturn(List.of(finding));
-    Instant start = futureStart();
-
-    assertThatThrownBy(
-            () -> service.create(1L, request(7L, 99L, start, start.plusSeconds(1800)), applicant))
-        .isInstanceOf(ApiException.class)
-        .hasMessage("关联漏洞与授权目标不一致");
-    verify(repository, never()).save(any());
-  }
-
-  @Test
-  void rejectsSecretsAndCommandSyntaxInAllUserSuppliedText() {
-    Instant start = futureStart();
-    SecurityActionDtos.Create secretPurpose =
-        new SecurityActionDtos.Create(
-            7L,
-            null,
-            "VULNERABILITY_VALIDATION",
-            "验证",
-            "token: abc123",
-            "MEDIUM",
-            true,
-            false,
-            "服务端验证流程",
-            "服务端回滚流程",
-            start,
-            start.plusSeconds(1800));
-    assertThatThrownBy(() -> service.create(1L, secretPurpose, applicant))
-        .isInstanceOf(ApiException.class)
-        .hasMessageContaining("明文凭据");
-
-    SecurityActionDtos.Create commandPlan =
-        new SecurityActionDtos.Create(
-            7L,
-            null,
-            "VULNERABILITY_VALIDATION",
-            "验证",
-            "确认影响",
-            "MEDIUM",
-            true,
-            false,
-            "nmap --script vuln",
-            "服务端回滚流程",
-            start,
-            start.plusSeconds(1800));
-    assertThatThrownBy(() -> service.create(1L, commandPlan, applicant))
-        .isInstanceOf(ApiException.class)
-        .hasMessageContaining("命令");
-    verify(repository, never()).save(any());
-  }
-
-  @Test
-  void rejectsOversizedPurposeBeforePersistence() {
-    Instant start = futureStart();
-    SecurityActionDtos.Create request =
-        new SecurityActionDtos.Create(
-            7L,
-            null,
-            "VULNERABILITY_VALIDATION",
-            "验证",
-            "x".repeat(4001),
-            "MEDIUM",
-            true,
-            false,
-            "服务端验证流程",
-            "服务端回滚流程",
-            start,
-            start.plusSeconds(1800));
-
-    assertThatThrownBy(() -> service.create(1L, request, applicant))
-        .isInstanceOf(ApiException.class)
-        .hasMessageContaining("长度");
-    verify(repository, never()).save(any());
-  }
-
-  @Test
-  void approvesPendingActionWithIndependentReviewer() {
+  void refusesLegacyDecisionsForBothOriginalApplicantAndOtherAdministrator() {
     SecurityAction action = action("PENDING_APPROVAL");
-    Authentication reviewer = mock(Authentication.class);
-    when(reviewer.getName()).thenReturn("bob");
     when(repository.findById(42L)).thenReturn(Optional.of(action));
-    SecurityActionDtos.Decision request = new SecurityActionDtos.Decision(" approved ", " 已复核 ");
-
-    SecurityAction approved = service.decide(1L, 42L, request, reviewer);
-
-    assertThat(approved.getStatus()).isEqualTo("APPROVED");
-    assertThat(approved.getApprovedBy()).isEqualTo("bob");
-    assertThat(approved.getApprovedAt()).isNotNull();
-    assertThat(approved.getTerminationReason()).isEqualTo("已复核");
-
-    InOrder auditedThenPersisted = inOrder(audit, repository);
-    auditedThenPersisted
-        .verify(audit)
-        .record(
-            "DECIDE_SECURITY_ACTION", "PROJECT", 1L, "actionId=42,decision=APPROVED", "SUCCESS");
-    auditedThenPersisted.verify(repository).save(action);
-  }
-
-  @Test
-  void allowsSingleAdministratorToApproveOwnActionWithExplicitConfirmation() {
-    SecurityAction action = action("PENDING_APPROVAL");
-    org.springframework.security.authentication.UsernamePasswordAuthenticationToken admin =
-        new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
-            "alice",
-            null,
-            List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ADMIN")));
-    when(repository.findById(42L)).thenReturn(Optional.of(action));
-
-    SecurityAction approved =
-        service.decide(1L, 42L, new SecurityActionDtos.Decision("APPROVED", "管理员已二次确认"), admin);
-
-    assertThat(approved.getStatus()).isEqualTo("APPROVED");
-    assertThat(approved.getApprovedBy()).isEqualTo("alice");
-  }
-
-  @Test
-  void rejectsApprovalByOriginalApplicant() {
-    SecurityAction action = action("PENDING_APPROVAL");
-    when(users.countByRoleAndEnabledTrue("ADMIN")).thenReturn(2L);
-    when(repository.findById(42L)).thenReturn(Optional.of(action));
-
-    assertThatThrownBy(
-            () ->
-                service.decide(
-                    1L, 42L, new SecurityActionDtos.Decision("APPROVED", "复核完成"), applicant))
-        .isInstanceOf(ApiException.class)
-        .hasMessage("申请人与审批人必须分离");
+    for (String name : List.of("alice", "admin")) {
+      var reviewer = new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
+          name, null, List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ADMIN")));
+      for (String decision : List.of("APPROVED", "REJECTED")) {
+        assertThatThrownBy(() -> service.decide(1L, 42L, new SecurityActionDtos.Decision(decision, "确认"), reviewer))
+            .isInstanceOf(ApiException.class).hasMessageContaining("请由 AI 重新提交方案");
+      }
+    }
+    assertThat(action.getStatus()).isEqualTo("PENDING_APPROVAL");
     verify(repository, never()).save(any());
     verify(audit, never()).record(any(), any(), any(), any(), any());
-  }
-
-  @Test
-  void zeroEnabledAdministratorsDoesNotEnableSelfApprovalException() {
-    SecurityAction action = action("PENDING_APPROVAL");
-    when(users.countByRoleAndEnabledTrue("ADMIN")).thenReturn(0L);
-    when(repository.findById(42L)).thenReturn(Optional.of(action));
-    var admin = new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
-        "alice", null, List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ADMIN")));
-
-    assertThatThrownBy(() -> service.decide(1L, 42L,
-        new SecurityActionDtos.Decision("APPROVED", "本人确认"), admin))
-        .isInstanceOf(ApiException.class).hasMessage("申请人与审批人必须分离");
-    verify(repository, never()).save(any());
   }
 
   @Test

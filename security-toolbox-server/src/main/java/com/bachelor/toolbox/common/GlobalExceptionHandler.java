@@ -1,5 +1,7 @@
 package com.bachelor.toolbox.common;
 
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.ConnectException;
@@ -10,6 +12,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.authentication.BadCredentialsException;
@@ -19,8 +22,12 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.method.HandlerMethod;
+import org.springframework.web.context.request.async.AsyncRequestTimeoutException;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
+import org.springframework.web.servlet.HandlerMapping;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -89,6 +96,29 @@ public class GlobalExceptionHandler {
   public ResponseEntity<ApiErrorResponse> handleHttpTimeout(Exception ex) {
     log.warn("外部请求连接超时: {}", ex.getMessage());
     return error(HttpStatus.INTERNAL_SERVER_ERROR, "外部连接超时，请稍后重试或检查网络");
+  }
+
+  @ExceptionHandler(AsyncRequestTimeoutException.class)
+  public ResponseEntity<ApiErrorResponse> handleAsyncTimeout(
+      HttpServletRequest request, HttpServletResponse response) {
+    // A started event stream has already sent its status and media type. Never
+    // append an API JSON error to it or try to change a committed response.
+    if (response.isCommitted()) return null;
+    boolean eventStream =
+        response.getContentType() != null
+            && MediaType.TEXT_EVENT_STREAM.includes(MediaType.parseMediaType(response.getContentType()));
+    // DispatcherServlet clears the producible-media-types attribute before
+    // exception resolution, so a stream that has not sent its first event must
+    // be identified from the original handler rather than that attribute.
+    Object originalHandler = request.getAttribute(HandlerMapping.BEST_MATCHING_HANDLER_ATTRIBUTE);
+    if (originalHandler instanceof HandlerMethod handler) {
+      eventStream |= SseEmitter.class.isAssignableFrom(handler.getReturnType().getParameterType());
+    }
+    if (eventStream) {
+      response.setStatus(HttpStatus.SERVICE_UNAVAILABLE.value());
+      return null;
+    }
+    return error(HttpStatus.SERVICE_UNAVAILABLE, "请求处理超时，请稍后重试");
   }
 
   @ExceptionHandler(ConnectException.class)

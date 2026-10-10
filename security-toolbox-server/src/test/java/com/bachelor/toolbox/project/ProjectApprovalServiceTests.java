@@ -72,44 +72,68 @@ class ProjectApprovalServiceTests {
   }
 
   @Test
-  void requestsPendingApprovalAsAdmin() {
-    when(repository.save(any(ProjectApproval.class)))
-        .thenAnswer(
-            invocation -> {
-              ProjectApproval approval = invocation.getArgument(0);
-              approval.setId(7L);
-              return approval;
-            });
-
-    ProjectApproval approval = service.request(3L, "SCAN", "申请扫描", "snapshot-hash");
-
-    assertThat(approval.getProjectId()).isEqualTo(3L);
-    assertThat(approval.getAction()).isEqualTo("SCAN");
-    assertThat(approval.getStatus()).isEqualTo("PENDING");
-    assertThat(approval.getComment()).isEqualTo("申请扫描");
-    assertThat(approval.getAuthorizationSnapshotHash()).isEqualTo("snapshot-hash");
-    assertThat(approval.getRequestedBy()).isEqualTo("admin");
-    verify(audit)
-        .record(
-            "PROJECT_APPROVAL_REQUEST",
-            "PROJECT",
-            3L,
-            "approvalId=7",
-            "SUCCESS",
-            null,
-            "snapshot-hash");
+  void rejectsManualSubmissionEvenWhenItClaimsAiPlanAction() {
+    for (String action : List.of("SCAN", "AI_PLAN_EXECUTION")) {
+      assertThatThrownBy(() -> service.request(3L, action, "申请", null))
+          .isInstanceOf(ApiException.class).hasMessageContaining("请由 AI 提交方案");
+    }
+    verify(repository, never()).save(any());
   }
 
   @Test
-  void usesCurrentAuthenticationNameForRequester() {
-    authenticateAs("申请人", "ROLE_USER");
-    when(projects.findById(3L)).thenReturn(Optional.of(project(3L, "申请人")));
-    when(repository.save(any(ProjectApproval.class)))
-        .thenAnswer(invocation -> invocation.getArgument(0));
+  void publicControllerCannotSpoofAiSourceOrSavedPlan() {
+    var controller = new ProjectApprovalController(service);
+    assertThatThrownBy(() -> controller.request(3L, java.util.Map.of(
+        "action", "AI_PLAN_EXECUTION", "requestedBy", "ai-agent", "aiPlanJson", "{}")))
+        .isInstanceOf(ApiException.class).hasMessageContaining("请由 AI 提交方案");
+    verify(repository, never()).save(any());
+  }
 
-    ProjectApproval approval = service.request(3L, "REPORT", null, null);
+  @Test
+  void rejectsLegacyManualPendingDecisionWithoutMutation() {
+    ProjectApproval approval = approval(7L, 3L, "hash");
+    approval.setRequestedBy("admin");
+    when(repository.findForUpdate(7L, 3L)).thenReturn(Optional.of(approval));
+    assertThatThrownBy(() -> service.decide(3L, 7L, "APPROVED", "确认"))
+        .isInstanceOf(ApiException.class).hasMessageContaining("历史手动申请");
+    assertThat(approval.getStatus()).isEqualTo("PENDING");
+    verify(repository, never()).save(any());
+  }
 
-    assertThat(approval.getRequestedBy()).isEqualTo("申请人");
+  @Test
+  void aiSourceCannotDecideEvenWithErroneouslyGrantedAdminRole() {
+    authenticateAs("ai-agent", "ROLE_ADMIN");
+    assertThatThrownBy(() -> service.decide(3L, 7L, "APPROVED", null))
+        .isInstanceOf(ApiException.class).hasMessageContaining("AI 不能确认");
+    verify(repository, never()).findForUpdate(any(), any());
+  }
+
+  @Test
+  void readsExactSavedPlanAndDispatchWithoutMutation() throws Exception {
+    var mapper = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();
+    var request = new com.bachelor.toolbox.ai.AiAgentRequest(3L, 9L, "session", "private prompt", true,
+        null, List.of(), "AUTO", "turn");
+    var plan = new com.bachelor.toolbox.ai.AiPlanResponse("provider", "model", "原计划", true,
+        List.of(new com.bachelor.toolbox.ai.AiPlanResponse.PlanStep("HTTP_HEADERS", "检查响应头", "授权检查", java.util.Map.of())));
+    var dispatch = new com.bachelor.toolbox.ai.AiDispatchResponse(9L, plan, 1, List.of(55L));
+    var approval = approval(7L, 3L, "hash");
+    approval.setAiRequestJson(mapper.writeValueAsString(request));
+    approval.setAiPlanJson(mapper.writeValueAsString(plan));
+    approval.setAiDispatchJson(mapper.writeValueAsString(dispatch));
+    when(repository.findByIdAndProjectId(7L, 3L)).thenReturn(Optional.of(approval));
+    var detail = service.planDetail(3L, 7L);
+    assertThat(detail.targetId()).isEqualTo(9L);
+    assertThat(detail.plan()).isEqualTo(plan);
+    assertThat(detail.dispatch().taskIds()).containsExactly(55L);
+    verify(repository, never()).save(any());
+  }
+
+  @Test
+  void refusesPlanReadBeforeLoadingAnotherOwnersRecord() {
+    authenticateAs("alice", "ROLE_USER");
+    when(projects.findById(3L)).thenReturn(Optional.of(project(3L, "bob")));
+    assertThatThrownBy(() -> service.planDetail(3L, 7L)).hasMessage("无权访问该评估项目");
+    verify(repository, never()).findByIdAndProjectId(any(), any());
   }
 
   @Test
@@ -184,6 +208,10 @@ class ProjectApprovalServiceTests {
     ProjectApproval approval = new ProjectApproval();
     approval.setId(id);
     approval.setStatus("PENDING");
+    approval.setAction("AI_PLAN_EXECUTION");
+    approval.setRequestedBy("ai-agent");
+    approval.setAiRequestJson("{}");
+    approval.setAiPlanJson("{}");
     approval.setProjectId(projectId);
     approval.setAuthorizationSnapshotHash(hash);
     return approval;

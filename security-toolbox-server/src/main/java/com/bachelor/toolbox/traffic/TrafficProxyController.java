@@ -1,13 +1,16 @@
 package com.bachelor.toolbox.traffic;
 
+import com.bachelor.toolbox.audit.AuditRequestContext;
 import jakarta.validation.Valid;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.security.concurrent.DelegatingSecurityContextExecutorService;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -23,10 +26,10 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 @RestController
 @RequestMapping("/api/traffic")
 public class TrafficProxyController {
-  private static final ExecutorService ZAP_STREAM_EXECUTOR =
+  private static final ExecutorService SCAN_STREAM_EXECUTOR =
       Executors.newCachedThreadPool(
           runnable -> {
-            Thread thread = new Thread(runnable, "zap-scan-stream");
+            Thread thread = new Thread(runnable, "traffic-scan-stream");
             thread.setDaemon(true);
             return thread;
           });
@@ -40,7 +43,26 @@ public class TrafficProxyController {
   private final TrafficScanService scanService;
   private final TrafficScanLedgerService scanLedger;
   private final TrafficAssetSyncService assetSync;
+  private final ExecutorService scanStreamExecutor;
+  private TrafficFuzzBatchService fuzzBatches;
 
+  @Autowired(required = false)
+  public void setFuzzBatches(TrafficFuzzBatchService fuzzBatches) {
+    this.fuzzBatches = fuzzBatches;
+  }
+
+  @GetMapping("/scans/{id}")
+  public TrafficScanLedgerService.Detail scanDetail(@PathVariable Long id) {
+    return scanLedger.detail(id);
+  }
+
+  @PostMapping("/fuzz-batches")
+  public TrafficFuzzBatchService.Result fuzzBatch(@Valid @RequestBody TrafficFuzzBatchService.Request request) {
+    if (fuzzBatches == null) throw new com.bachelor.toolbox.common.ApiException("批量测试服务不可用");
+    return fuzzBatches.run(request);
+  }
+
+  @Autowired
   public TrafficProxyController(
       TrafficProxyService proxy,
       TrafficAnalysisService analysis,
@@ -51,6 +73,21 @@ public class TrafficProxyController {
       TrafficScanService scanService,
       TrafficScanLedgerService scanLedger,
       TrafficAssetSyncService assetSync) {
+    this(proxy, analysis, replay, filters, chat, fuzz, scanService, scanLedger, assetSync,
+        SCAN_STREAM_EXECUTOR);
+  }
+
+  TrafficProxyController(
+      TrafficProxyService proxy,
+      TrafficAnalysisService analysis,
+      TrafficReplayService replay,
+      TrafficCaptureFilterService filters,
+      TrafficAiChatService chat,
+      TrafficFuzzService fuzz,
+      TrafficScanService scanService,
+      TrafficScanLedgerService scanLedger,
+      TrafficAssetSyncService assetSync,
+      ExecutorService scanStreamExecutor) {
     this.proxy = proxy;
     this.analysis = analysis;
     this.replay = replay;
@@ -60,14 +97,17 @@ public class TrafficProxyController {
     this.scanService = scanService;
     this.scanLedger = scanLedger;
     this.assetSync = assetSync;
+    // Capture the submitting request's identity and restore/clear it when the worker finishes.
+    this.scanStreamExecutor = new DelegatingSecurityContextExecutorService(scanStreamExecutor);
   }
 
   @GetMapping("/scans")
   public org.springframework.data.domain.Page<TrafficScanLedger> scans(
       @RequestParam(defaultValue = "0") int page,
       @RequestParam(defaultValue = "20") int size,
-      @RequestParam(required = false) String engine) {
-    return scanLedger.list(page, size, engine);
+      @RequestParam(required = false) String engine,
+      @RequestParam(defaultValue = "false") boolean findingsOnly) {
+    return scanLedger.list(page, size, engine, findingsOnly);
   }
 
   @GetMapping("/scans/recent")
@@ -150,9 +190,10 @@ public class TrafficProxyController {
   @PostMapping(value = "/packets/{id}/zap-scan/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
   public SseEmitter zapScanStream(
       @PathVariable Long id, @RequestBody(required = false) TrafficScanService.ZapScanRequest request) {
-    SseEmitter emitter = new SseEmitter(240_000L);
-    ZAP_STREAM_EXECUTOR.execute(
-        () -> runStream(emitter, () -> scanService.zapScan(id, request, listenerFor(emitter))));
+    SseEmitter emitter = new SseEmitter(scanService.zapScanStreamTimeoutMillis());
+    scanStreamExecutor.execute(
+        AuditRequestContext.wrap(
+            () -> runStream(emitter, () -> scanService.zapScan(id, request, listenerFor(emitter)))));
     emitter.onTimeout(emitter::complete);
     emitter.onError(error -> {});
     return emitter;
@@ -168,6 +209,8 @@ public class TrafficProxyController {
       } catch (Exception ignored) {
         // 客户端已断开，忽略
       }
+    } finally {
+      // The scan may finish after its listener stopped writing to a disconnected client.
       emitter.complete();
     }
   }
@@ -179,6 +222,11 @@ public class TrafficProxyController {
 
   private static TrafficScanService.ZapScanListener listenerFor(SseEmitter emitter) {
     return new TrafficScanService.ZapScanListener() {
+      @Override
+      public void onRecord(Long scanId) {
+        sendEvent(emitter, Map.of("type", "record", "scanId", scanId));
+      }
+
       @Override
       public void onStart(String targetUrl) {
         sendEvent(emitter, Map.of("type", "start", "targetUrl", targetUrl == null ? "" : targetUrl));
@@ -227,8 +275,9 @@ public class TrafficProxyController {
   public SseEmitter xrayScanStream(
       @PathVariable Long id, @RequestBody(required = false) TrafficScanService.XrayScanRequest request) {
     SseEmitter emitter = new SseEmitter(240_000L);
-    ZAP_STREAM_EXECUTOR.execute(
-        () -> runStream(emitter, () -> scanService.xrayScan(id, request, listenerFor(emitter))));
+    scanStreamExecutor.execute(
+        AuditRequestContext.wrap(
+            () -> runStream(emitter, () -> scanService.xrayScan(id, request, listenerFor(emitter)))));
     emitter.onTimeout(emitter::complete);
     emitter.onError(error -> {});
     return emitter;
@@ -244,8 +293,9 @@ public class TrafficProxyController {
   public SseEmitter sqlmapScanStream(
       @PathVariable Long id, @RequestBody(required = false) TrafficScanService.SqlmapScanRequest request) {
     SseEmitter emitter = new SseEmitter(600_000L);
-    ZAP_STREAM_EXECUTOR.execute(
-        () -> runStream(emitter, () -> scanService.sqlmapScan(id, request, listenerFor(emitter))));
+    scanStreamExecutor.execute(
+        AuditRequestContext.wrap(
+            () -> runStream(emitter, () -> scanService.sqlmapScan(id, request, listenerFor(emitter)))));
     emitter.onTimeout(emitter::complete);
     emitter.onError(error -> {});
     return emitter;
@@ -254,6 +304,12 @@ public class TrafficProxyController {
   @PostMapping("/packets/{id}/fuzz")
   public TrafficFuzzService.FuzzResponse fuzz(
       @PathVariable Long id, @Valid @RequestBody TrafficFuzzService.FuzzRequest request) {
+    if (fuzzBatches != null) {
+      TrafficFuzzBatchService.Result batch = fuzzBatches.run(new TrafficFuzzBatchService.Request(List.of(id), request));
+      TrafficFuzzService.FuzzResponse result = batch.results().get(id);
+      if (result == null) throw new com.bachelor.toolbox.common.ApiException(batch.message());
+      return result;
+    }
     return fuzz.fuzz(id, request);
   }
 

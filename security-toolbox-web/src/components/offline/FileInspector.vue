@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { ref, onBeforeUnmount } from "vue";
 import { ElMessage } from "element-plus";
 import { Check, CopyDocument, UploadFilled } from "../fluentIcons";
@@ -59,9 +59,6 @@ function calculateEntropy(bytes: Uint8Array) {
 const dragOver = ref(false);
 
 function analyzeFile(file: File) {
-  if (file.size > 128 * 1024 * 1024) {
-    return ElMessage.error("为避免占用过多内存，单个文件最大支持 128 MB");
-  }
   loading.value = true;
   file
     .arrayBuffer()
@@ -167,7 +164,7 @@ function formatSize(value: number) {
       <input type="file" :disabled="loading" @change="selectFile" />
       <el-icon><UploadFilled /></el-icon>
       <strong>{{ loading ? "正在计算文件摘要…" : "选择本地文件" }}</strong>
-      <small>最大 128 MB</small>
+      <small>不限文件大小</small>
     </label>
     <template v-if="result">
       <div class="file-meta-grid">

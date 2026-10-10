@@ -24,7 +24,7 @@ defineProps<{ role: string }>();
   place-items: center;
   align-self: start;
   border: 1px solid color-mix(in srgb, var(--app-accent) 24%, var(--app-border));
-  border-radius: 11px;
+  border-radius: 50%;
   color: var(--app-accent);
   background: linear-gradient(
     145deg,
@@ -35,7 +35,6 @@ defineProps<{ role: string }>();
 }
 .conversation-avatar.user {
   border-color: var(--app-border);
-  border-radius: 50%;
   color: var(--app-muted);
   background: var(--app-surface-soft);
   box-shadow: none;

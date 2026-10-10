@@ -75,6 +75,7 @@ class ProjectControllerContractTests {
   void keepsApprovalApiPathsCompatible() throws NoSuchMethodException {
     assertBasePath(ProjectApprovalController.class, "/api/projects/{projectId}/approvals");
     assertGetPath(ProjectApprovalController.class, "list", "", Long.class);
+    assertGetPath(ProjectApprovalController.class, "plan", "/{approvalId}/plan", Long.class, Long.class);
     assertPostPath(ProjectApprovalController.class, "request", "", Long.class, Map.class);
     assertPostPath(
         ProjectApprovalController.class,

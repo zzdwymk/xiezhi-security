@@ -14,6 +14,7 @@ import {
   type IcpBatchResult,
   type MemoryDoc,
   type ProjectApproval,
+  type AiApprovalPlanDetail,
   type ProjectFindingRecord,
   type ProjectReportSummary,
   type ProjectTaskRecord,
@@ -24,7 +25,6 @@ import {
   type SafePocRecommendation,
   type ScanDiff,
   type SecurityAction,
-  type SecurityActionCategory,
   type Target,
   type TaskProgressEvent,
   type WorkflowRunDetail,
@@ -40,7 +40,9 @@ import {
   formatApprovalAction,
   auditResultTagType,
 } from "../utils/auditFormat";
-import { actionRiskLabel, actionStepLabel, findingTitleLabel, aiToolLabel, severityLabel } from "../utils/aiPresentation";
+import { actionRiskLabel, actionStepLabel, findingTitleLabel, aiToolLabel, severityLabel, targetTypeLabel } from "../utils/aiPresentation";
+import { approvalParameterRows } from "../utils/aiApproval";
+import MarkdownBody from "../components/MarkdownBody.vue";
 import {
   taskProgressIndeterminate,
   taskProgressPercentage,
@@ -48,6 +50,7 @@ import {
   taskProgressText,
 } from "../utils/taskProgress";
 import { taskbarProgress } from "../utils/taskbarProgress";
+import { taskTerminationLabel } from "../utils/taskDetail";
 import { useAuthStore } from "../stores/auth";
 import { useCopilotStore } from "../stores/copilot";
 import AppPagination from "../components/AppPagination.vue";
@@ -81,7 +84,6 @@ import {
 import { useClientPagination } from "../composables/useClientPagination";
 import { toErrorMessage } from "../utils/errorMessage";
 import {
-  loadNotificationPreferences,
   notifyWorkflowSkipped,
 } from "../utils/notifications";
 import {
@@ -109,7 +111,6 @@ const PROJECT_TABS = new Set([
   "recon",
   "tasks",
   "findings",
-  "security-actions",
   "audits",
   "report",
   "memory",
@@ -117,6 +118,7 @@ const PROJECT_TABS = new Set([
 
 function requestedProjectTab(value: unknown) {
   const name = Array.isArray(value) ? value[0] : value;
+  if (name === "security-actions" || name === "approvals") return "audits";
   return typeof name === "string" && PROJECT_TABS.has(name) ? name : "overview";
 }
 
@@ -470,14 +472,33 @@ const {
 } = useClientPagination(diffItems);
 const diffBaselineTaskId = ref<number>();
 const diffCurrentTaskId = ref<number>();
-const approvalDialog = ref(false);
-const approvalSaving = ref(false);
-const approvalForm = ref({
-  action: "SCAN",
-  comment: "",
-  authorizationSnapshotHash: "",
-});
 const approvalDecision = ref<number>();
+const planReviewVisible = ref(false);
+const planReview = ref<AiApprovalPlanDetail>();
+const planReviewApproval = ref<ProjectApproval>();
+const planReviewTarget = computed(() => targets.value.find(target => target.id === planReview.value?.targetId));
+const planReviewText = computed(() => {
+  const detail = planReview.value;
+  const approval = planReviewApproval.value;
+  if (!detail || !approval) return "";
+  const target = planReviewTarget.value;
+  const lines = [
+    `方案 #${approval.id} · ${approvalStatusLabel(approval.status)}`,
+    `授权目标：${target?.name || detail.targetId}`,
+    `目标地址：${target?.targetValue || '目标详情暂不可用'}`,
+    `授权端口：${target?.allowedPorts || '以登记的授权范围为准'}`,
+  ];
+  if (approval.initiatedBy) lines.push(`发起人：${approval.initiatedBy}`);
+  lines.push("", "方案说明", detail.plan.summary || "", "", "执行步骤");
+  detail.plan.steps.forEach((step, index) => {
+    lines.push(`${index + 1}. ${aiToolLabel(step.toolCode)} · ${step.risk === 'CAUTION' || step.requiresApproval ? '需谨慎确认' : '受控操作'}`);
+    if (step.reason) lines.push(step.reason);
+    const parameters = approvalParameterRows(step.parameters);
+    lines.push(...(parameters.length ? parameters.map(row => `${row.label}：${row.value}`) : ["使用该步骤已保存的默认配置。"]), "");
+  });
+  if (detail.dispatch) lines.push(`关联任务：${detail.dispatch.taskIds.join('、') || '无'}`);
+  return lines.join("\n");
+});
 const auditLoading = ref(false);
 const reportTargetId = ref<number | "ALL">("ALL");
 const projectReportHtmlLoading = ref(false);
@@ -523,95 +544,19 @@ const workflowLog = ref<string[]>([]);
 const workflowProgress = ref(0);
 const workflowIndeterminate = ref(false);
 const workflowStatus = ref("待执行");
+const workflowDetailsExpanded = ref(false);
+const workflowProgressStatus = computed(() => {
+  if (workflowStatus.value === "工作流完成") return "success";
+  if (["执行失败", "部分任务失败"].includes(workflowStatus.value))
+    return "exception";
+  return undefined;
+});
 const workflowTaskIds = ref<number[]>([]);
 const workflowRunId = ref<number>();
 const workflowStopping = ref(false);
 let workflowPollGeneration = 0;
 let stopTaskFeed: (() => void) | undefined;
 let stopIcpBrowserListener: (() => void) | undefined;
-
-interface SecurityActionPreset {
-  category: SecurityActionCategory;
-  label: string;
-  title: string;
-  riskLevel: "MEDIUM" | "HIGH";
-  description: string;
-  executionPlan: string;
-  rollbackPlan: string;
-}
-
-const SECURITY_ACTION_PRESETS: readonly SecurityActionPreset[] = [
-  {
-    category: "VULNERABILITY_VALIDATION",
-    label: "非破坏性漏洞验证",
-    title: "非破坏性漏洞验证",
-    riskLevel: "MEDIUM",
-    description: "针对已记录漏洞执行一次受控复现，确认可达性与影响边界。",
-    executionPlan:
-      "仅调用服务端受控漏洞验证流程，对选定漏洞执行单次非破坏性复现并记录最小必要证据；不写入或删除业务数据。",
-    rollbackPlan:
-      "停止受控验证流程，清理本次验证生成的临时会话与标记，并复核目标服务状态。",
-  },
-  {
-    category: "CONTROLLED_EXPLOITATION",
-    label: "受控利用价值验证",
-    title: "受控利用价值验证",
-    riskLevel: "HIGH",
-    description: "在明确停止条件下验证漏洞实际影响，不扩大目标范围。",
-    executionPlan:
-      "仅使用服务端登记的受控验证能力，在单一授权目标内验证最小影响路径；达到证据要求或停止条件后立即结束。",
-    rollbackPlan:
-      "终止受控验证流程，清除临时验证状态，确认业务数据、配置和服务可用性未发生改变。",
-  },
-  {
-    category: "PRIVILEGE_VALIDATION",
-    label: "权限边界验证",
-    title: "权限边界验证",
-    riskLevel: "HIGH",
-    description: "验证现有身份或漏洞能否越过既定权限边界，不读取敏感凭据。",
-    executionPlan:
-      "通过服务端受控检查验证授权目标上的权限边界，仅记录权限级别与访问结果摘要，不导出凭据或敏感数据。",
-    rollbackPlan:
-      "撤销本次验证产生的临时授权上下文，结束相关会话，并复核原有权限边界。",
-  },
-  {
-    category: "INTERNAL_ASSESSMENT",
-    label: "授权内网边界评估",
-    title: "授权内网边界评估",
-    riskLevel: "HIGH",
-    description: "只在项目已显式纳入的目标上验证内部暴露面，禁止横向移动。",
-    executionPlan:
-      "仅对当前项目内已登记目标执行服务端受控边界检查，不探测未登记地址，不进行横向移动。",
-    rollbackPlan:
-      "停止边界检查并关闭临时会话，确认未对项目外地址产生后续请求。",
-  },
-  {
-    category: "PERSISTENCE_VALIDATION",
-    label: "持久化风险模拟验证",
-    title: "持久化风险模拟验证",
-    riskLevel: "HIGH",
-    description: "仅模拟评估持久化条件，不植入后门、不建立真实维持机制。",
-    executionPlan:
-      "仅调用服务端登记的模拟检查评估持久化前置条件，不创建账号、计划任务、启动项或远程控制通道。",
-    rollbackPlan:
-      "结束模拟检查，清理所有临时验证标记，并复核系统启动项、账号与服务状态未发生改变。",
-  },
-];
-
-function newSecurityActionForm() {
-  const start = new Date(Date.now() + 5 * 60_000);
-  start.setSeconds(0, 0);
-  const end = new Date(start.getTime() + 60 * 60_000);
-  return {
-    targetId: undefined as number | undefined,
-    findingId: undefined as number | undefined,
-    category: "VULNERABILITY_VALIDATION" as SecurityActionCategory,
-    purpose: "",
-    windowStart: start as Date | null,
-    windowEnd: end as Date | null,
-    acknowledged: false,
-  };
-}
 
 const securityActions = ref<SecurityAction[]>([]);
 const {
@@ -620,10 +565,7 @@ const {
   pagedItems: pagedSecurityActions,
 } = useClientPagination(securityActions);
 const securityActionLoading = ref(false);
-const securityActionDialog = ref(false);
-const securityActionSaving = ref(false);
 const securityActionMutating = ref<number>();
-const securityActionForm = ref(newSecurityActionForm());
 const securityActionDetail = ref<SecurityAction>();
 const securityActionDetailVisible = ref(false);
 const securityActionOperationDialog = ref(false);
@@ -845,19 +787,6 @@ const reportTarget = computed(() =>
 const reportMetricTargetId = computed(() =>
   reportTargetId.value !== "ALL" ? String(reportTargetId.value) : undefined,
 );
-const selectedSecurityActionPreset = computed(
-  () =>
-    SECURITY_ACTION_PRESETS.find(
-      (item) => item.category === securityActionForm.value.category,
-    ) || SECURITY_ACTION_PRESETS[0],
-);
-const securityActionFindings = computed(() =>
-  projectFindings.value.filter(
-    (item) =>
-      !securityActionForm.value.targetId ||
-      item.targetId === securityActionForm.value.targetId,
-  ),
-);
 const canManageSecurityActions = computed(() => auth.user?.role === "ADMIN");
 const canUpdateFingerprintCatalog = computed(() => auth.user?.role === "ADMIN");
 const canManageSubdomainDictionary = computed(() => auth.user?.role === "ADMIN");
@@ -875,7 +804,7 @@ const projectAuthorizationGuard = computed(() => {
   if (project.value.status !== "ACTIVE")
     return {
       active: false,
-      text: `项目当前为「${projectStatusLabel(project.value.status)}」，必须切换为「进行中」后才能申请或启动安全行动`,
+      text: `项目当前为「${projectStatusLabel(project.value.status)}」，必须切换为「进行中」后才能执行行动`,
     };
   const now = Date.now();
   const start = Date.parse(project.value.authorizationValidFrom);
@@ -968,7 +897,7 @@ function projectStatusLabel(status?: string) {
     COMPLETED: "已完成",
     ARCHIVED: "已归档",
   };
-  return (status && labels[status]) || status || "未知";
+  return (status && labels[status]) || "未知状态";
 }
 
 function projectStatusType(
@@ -1012,16 +941,16 @@ function taskStatusLabel(status?: string) {
     STOPPED: "已停止",
     PARTIAL_FAILED: "部分失败",
   };
-  return (status && labels[status]) || status || "未知";
+  return (status && labels[status]) || "未知状态";
 }
 
 function approvalStatusLabel(status?: string) {
   const labels: Record<string, string> = {
-    PENDING: "待审批",
-    APPROVED: "已通过",
+    PENDING: "待确认",
+    APPROVED: "已允许",
     REJECTED: "已拒绝",
   };
-  return (status && labels[status]) || status || "未知";
+  return (status && labels[status]) || "未知状态";
 }
 
 function findingStatusLabel(status?: string) {
@@ -1032,7 +961,7 @@ function findingStatusLabel(status?: string) {
     FIXED: "已修复",
     REOPENED: "已复现",
   };
-  return (status && labels[status]) || status || "未知";
+  return (status && labels[status]) || "未知状态";
 }
 
 function findingSeverityType(severity: string) {
@@ -1068,14 +997,14 @@ function securityActionStatusLabel(status: string) {
         FAILED: "执行失败",
         ROLLED_BACK: "已回滚",
       } as Record<string, string>
-    )[status] || status
+    )[status] || "未知状态"
   );
 }
 
 function securityActionCategoryLabel(category: string) {
   return (
-    SECURITY_ACTION_PRESETS.find((item) => item.category === category)?.label ||
-    category
+    ({ VULNERABILITY_VALIDATION: "非破坏性漏洞验证", CONTROLLED_EXPLOITATION: "受控利用价值验证", PRIVILEGE_VALIDATION: "权限边界验证", INTERNAL_ASSESSMENT: "授权内网边界评估", PERSISTENCE_VALIDATION: "持久化风险模拟验证" } as Record<string, string>)[category] ||
+    "未知行动类型"
   );
 }
 
@@ -1119,7 +1048,7 @@ function openProjectCopilot(
     kind === "recon"
       ? `请结合安全评估项目 #${id} 当前已保存的信息收集、探测服务、网站指纹和 WAF 证据，整理资产清单、可信度、未知项和下一步低风险验证建议。不要把开放端口或公开资产直接判定为漏洞。`
       : kind === "findings"
-        ? `请汇总安全评估项目 #${id} 当前漏洞与复测记录，按风险和证据完整性排序，指出需要人工复核的误报边界、扫描 Diff 关注点和整改优先级；只分析已有结果，不要重复发起扫描。`
+        ? `请汇总安全评估项目 #${id} 当前漏洞与复测记录，按风险和证据完整性排序，指出需要人工复核的误报边界、扫描差异关注点和整改优先级；只分析已有结果，不要重复发起扫描。`
         : `请介绍安全评估项目 #${id} 的授权范围、目标、检测任务、漏洞/复测、审批审计和项目报告状态，并给出当前最合适的下一步。只基于项目已有资料，不要创建检测任务。`;
   copilot.open({ targetId: target.id, mode: "analyze", prompt });
   void router.push("/");
@@ -1305,122 +1234,6 @@ async function loadSecurityActions(showError = false) {
       ElMessage.error(errorMessage(error, "安全行动记录加载失败"));
   } finally {
     securityActionLoading.value = false;
-  }
-}
-
-function openSecurityActionDialog() {
-  if (!canManageSecurityActions.value)
-    return ElMessage.warning("只有管理员可以申请高风险安全行动");
-  if (!projectAuthorizationGuard.value.active)
-    return ElMessage.warning(projectAuthorizationGuard.value.text);
-  if (!linkedTargets.value.length)
-    return ElMessage.warning("项目尚未添加授权目标");
-  const form = newSecurityActionForm();
-  form.targetId = linkedTargets.value[0]?.id;
-  securityActionForm.value = form;
-  securityActionDialog.value = true;
-}
-
-async function createSecurityAction() {
-  const form = securityActionForm.value;
-  const preset = selectedSecurityActionPreset.value;
-  if (!canManageSecurityActions.value)
-    return ElMessage.warning("只有管理员可以申请高风险安全行动");
-  if (!projectAuthorizationGuard.value.active)
-    return ElMessage.warning(projectAuthorizationGuard.value.text);
-  if (!form.targetId || !linkedIds.value.has(form.targetId))
-    return ElMessage.warning("请选择当前项目内的授权目标");
-  if (!form.purpose.trim()) return ElMessage.warning("请填写本次验证目的");
-  if (!form.windowStart || !form.windowEnd)
-    return ElMessage.warning("请选择完整的执行时间窗");
-  const windowStart = form.windowStart.getTime();
-  const windowEnd = form.windowEnd.getTime();
-  if (windowEnd <= windowStart)
-    return ElMessage.warning("结束时间必须晚于开始时间");
-  if (windowEnd - windowStart > 8 * 60 * 60_000)
-    return ElMessage.warning("单次执行时间窗不得超过 8 小时");
-  const authorizationStart = Date.parse(
-    project.value?.authorizationValidFrom || "",
-  );
-  const authorizationEnd = Date.parse(
-    project.value?.authorizationExpiresAt || "",
-  );
-  if (windowStart < authorizationStart || windowEnd > authorizationEnd)
-    return ElMessage.warning("执行时间窗必须完全位于项目授权有效期内");
-  if (!form.acknowledged)
-    return ElMessage.warning("请确认已理解授权边界和停止条件");
-
-  securityActionSaving.value = true;
-  try {
-    const { data } = await endpoints.createSecurityAction(id, {
-      targetId: form.targetId,
-      findingId: form.findingId,
-      category: preset.category,
-      title: preset.title,
-      purpose: form.purpose.trim(),
-      riskLevel: preset.riskLevel,
-      nonDestructive: true,
-      lateralMovement: false,
-      executionPlan: preset.executionPlan,
-      rollbackPlan: preset.rollbackPlan,
-      windowStart: form.windowStart.toISOString(),
-      windowEnd: form.windowEnd.toISOString(),
-    });
-    mergeSecurityAction(data);
-    securityActionDialog.value = false;
-    ElMessage.success(`安全行动 #${data.id} 已提交审批申请`);
-    await loadProjectAudits();
-  } catch (error: any) {
-    ElMessage.error(errorMessage(error, "安全行动申请失败"));
-  } finally {
-    securityActionSaving.value = false;
-  }
-}
-
-async function decideSecurityAction(
-  row: SecurityAction,
-  decision: "APPROVED" | "REJECTED",
-) {
-  if (!canManageSecurityActions.value)
-    return ElMessage.warning("只有管理员可以审批安全行动");
-  let result: { value?: string };
-  try {
-    result = (await ElMessageBox.prompt(
-      decision === "APPROVED"
-        ? "批准后仍需等待执行时间窗，并在开始时再次校验项目授权。单管理员模式需要管理员再次确认，多账号模式下申请人与审批人必须不同。"
-        : "拒绝后该行动不能启动，请填写拒绝依据。",
-      decision === "APPROVED" ? "批准高风险安全行动" : "拒绝高风险安全行动",
-      {
-        type: decision === "APPROVED" ? "warning" : "error",
-        confirmButtonText: decision === "APPROVED" ? "确认批准" : "确认拒绝",
-        cancelButtonText: "取消",
-        inputPlaceholder:
-          decision === "APPROVED" ? "审批备注（可选）" : "拒绝原因（必填）",
-        inputValidator: (value) =>
-          decision === "APPROVED" ||
-          Boolean(value?.trim()) ||
-          "拒绝时必须填写原因",
-      },
-    )) as { value?: string };
-  } catch {
-    return;
-  }
-
-  securityActionMutating.value = row.id;
-  try {
-    const { data } = await endpoints.decideSecurityAction(id, row.id, {
-      decision,
-      comment: result.value?.trim(),
-    });
-    mergeSecurityAction(data);
-    ElMessage.success(
-      decision === "APPROVED" ? "安全行动已批准" : "安全行动已拒绝",
-    );
-    await loadProjectAudits();
-  } catch (error: any) {
-    ElMessage.error(errorMessage(error, "审批操作失败"));
-  } finally {
-    securityActionMutating.value = undefined;
   }
 }
 
@@ -1682,7 +1495,7 @@ async function loadDiff() {
   try {
     diff.value = (await endpoints.scanDiff(baseline, current)).data;
   } catch (error: any) {
-    ElMessage.error(errorMessage(error, "扫描 Diff 获取失败"));
+    ElMessage.error(errorMessage(error, "扫描差异获取失败"));
   } finally {
     diffLoading.value = false;
   }
@@ -1720,52 +1533,46 @@ async function updateProjectFindingStatus(
   }
 }
 
-function openApprovalDialog() {
-  const hash =
-    projectTasks.value.find((task) => task.authorizationSnapshotHash)
-      ?.authorizationSnapshotHash || "";
-  approvalForm.value = {
-    action: "SCAN",
-    comment: "",
-    authorizationSnapshotHash: hash,
-  };
-  approvalDialog.value = true;
-}
-
-async function requestApproval() {
-  if (!approvalForm.value.action.trim())
-    return ElMessage.warning("请选择审批动作");
-  approvalSaving.value = true;
+async function reviewApproval(row: ProjectApproval, notificationRequest = false) {
+  if (approvalDecision.value) return;
+  approvalDecision.value = row.id;
   try {
-    const { data } = await endpoints.requestProjectApproval(
-      id,
-      approvalForm.value,
-    );
-    if (data) projectApprovals.value = [data, ...projectApprovals.value];
-    approvalDialog.value = false;
-    ElMessage.success("审批申请已提交");
-    await loadProjectAudits();
-  } catch (error: any) {
-    ElMessage.error(errorMessage(error, "审批申请提交失败"));
+    const { data } = await endpoints.projectAiApprovalPlan(id, row.id);
+    if (notificationRequest && Number(route.query.approvalId) !== row.id) return;
+    planReview.value = data;
+    row.status = data.status;
+    planReviewApproval.value = row;
+    planReviewVisible.value = true;
+  } catch (error) {
+    ElMessage.error(errorMessage(error, "无法读取已保存的行动方案"));
   } finally {
-    approvalSaving.value = false;
+    approvalDecision.value = undefined;
   }
 }
 
-async function decideApproval(
-  row: ProjectApproval,
-  status: "APPROVED" | "REJECTED",
-) {
+async function confirmPlanExecution(status: "APPROVED" | "REJECTED") {
+  const row = planReviewApproval.value;
+  if (!row || !planReview.value || !canManageSecurityActions.value || approvalDecision.value) return;
   approvalDecision.value = row.id;
   try {
-    const { data } = await endpoints.decideProjectApproval(id, row.id, {
-      status,
-    });
-    Object.assign(row, data);
-    ElMessage.success(status === "APPROVED" ? "审批已通过" : "审批已拒绝");
-    await loadProjectAudits();
-  } catch (error: any) {
-    ElMessage.error(errorMessage(error, "审批决定提交失败"));
+    if (row.status === "PENDING") {
+      const { data } = await endpoints.decideProjectApproval(id, row.id, { status });
+      Object.assign(row, data);
+    } else if (row.status !== "APPROVED" || status !== "APPROVED") {
+      return;
+    }
+    if (status === "APPROVED") {
+      const { data } = await endpoints.resumeProjectAiApproval(id, row.id);
+      ElMessage.success(`已按确认的原方案关联 ${data.taskIds.length} 个任务`);
+    } else {
+      ElMessage.success("已拒绝该方案，不会执行");
+    }
+    planReviewVisible.value = false;
+    await refreshProjectData();
+  } catch (error) {
+    ElMessage.error(errorMessage(error, "确认或执行失败，请刷新方案状态后重试"));
+    // Refresh persisted state so retry cannot create a new plan or duplicate a decision.
+    try { planReview.value = (await endpoints.projectAiApprovalPlan(id, row.id)).data; row.status = planReview.value.status; } catch { /* Keep the saved review visible. */ }
   } finally {
     approvalDecision.value = undefined;
   }
@@ -2409,7 +2216,7 @@ function memorySourceLabel(source?: string) {
   const labels: Record<string, string> = {
     conversation: '对话',
   };
-  return source ? labels[source] || source : '-';
+  return source ? labels[source] || '其他来源' : '-';
 }
 async function deleteMemory(docId: string) {
   try {
@@ -2660,7 +2467,7 @@ function pocVerificationLabel(status?: string) {
     VERIFIED: "已复核签名",
     UNVERIFIED: "待复核",
   };
-  return (status && labels[status]) || status || "待复核";
+  return (status && labels[status]) || "待复核";
 }
 
 function diffChangeLabel(type?: string) {
@@ -2670,7 +2477,7 @@ function diffChangeLabel(type?: string) {
     PERSISTENT: "持续存在",
     SEVERITY_CHANGED: "等级变化",
   };
-  return (type && labels[type]) || type || "未知";
+  return (type && labels[type]) || "未知变化";
 }
 
 function diffChangeTagType(type?: string): "success" | "danger" | "warning" | "info" {
@@ -2731,12 +2538,35 @@ function fingerprintCatalogSourceLabel(
     MANAGED: "本机更新",
     EXTERNAL: "外部配置",
   };
-  return source ? labels[source] || source : "当前来源";
+  return source ? labels[source] || "其他来源" : "当前来源";
 }
 
 function fingerprintCatalogFileSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   return `${(bytes / 1024).toFixed(bytes < 1024 * 100 ? 1 : 0)} KB`;
+}
+
+function fingerprintCategoryLabel(category?: string) {
+  const labels: Record<string, string> = {
+    API: "应用接口",
+    APPLICATION: "应用系统",
+    CDN_WAF: "内容分发与网页防护",
+    CMS: "内容管理系统",
+    DEVOPS: "开发运维",
+    EHOLE: "Ehole 指纹",
+    FRAMEWORK: "开发框架",
+    FRONTEND: "前端组件",
+    LANGUAGE: "编程语言",
+    MAIL: "邮件服务",
+    MIDDLEWARE: "中间件",
+    MONITOR: "监控系统",
+    OA: "办公自动化",
+    PANEL: "管理面板",
+    SECURITY_DEVICE: "安全设备",
+    WEB_SERVER: "网站服务器",
+  };
+  if (!category) return "未分类";
+  return labels[category] || category;
 }
 
 function openFingerprintCatalogFilePicker() {
@@ -2844,6 +2674,7 @@ const filteredFingerprintRules = computed(() => {
     (rule) =>
       rule.id.toLowerCase().includes(keyword) ||
       (rule.name || "").toLowerCase().includes(keyword) ||
+      fingerprintCategoryLabel(rule.category).toLowerCase().includes(keyword) ||
       (rule.category || "").toLowerCase().includes(keyword),
   );
 });
@@ -3779,7 +3610,7 @@ function projectWorkflowStatusLabel(status: string) {
     STOPPED: "已停止",
     FAILED: "执行失败",
   };
-  return labels[status] || status;
+  return labels[status] || "未知状态";
 }
 
 function projectWorkflowTaskStatus(status: string) {
@@ -3794,7 +3625,7 @@ function projectWorkflowTaskStatus(status: string) {
     CANCELLED: "已取消",
     SKIPPED: "已跳过",
   };
-  return labels[status] || status;
+  return labels[status] || "未知状态";
 }
 
 function workflowTaskSummary(task: ProjectTaskRecord) {
@@ -3955,7 +3786,6 @@ async function runWorkflow() {
           count: preflight.issues.length,
           labels: preflight.issues.map((issue) => issue.label || issue.toolCode),
         },
-        await loadNotificationPreferences(),
       );
     }
 
@@ -4180,9 +4010,29 @@ async function report() {
   await downloadProjectSummaryPdf();
 }
 
+let notificationApprovalReady = false;
+let notificationApprovalOpenedKey = "";
+async function openNotificationApproval() {
+  const approvalId = Number(route.query.approvalId);
+  if (!notificationApprovalReady || !Number.isSafeInteger(approvalId) || approvalId <= 0) return;
+  if (approvalDecision.value) return;
+  const requestKey = `${approvalId}:${route.query._notice || ""}`;
+  if (notificationApprovalOpenedKey === requestKey) return;
+  notificationApprovalOpenedKey = requestKey;
+  tab.value = "audits";
+  const index = projectApprovals.value.findIndex(row => row.id === approvalId);
+  if (index >= 0) approvalPage.value = Math.floor(index / approvalPageSize.value) + 1;
+  // The plan endpoint also resolves older records outside the bounded project list.
+  await reviewApproval(projectApprovals.value[index] || {
+    id: approvalId, projectId: id, action: "AI_PLAN_EXECUTION", status: "", createdAt: "",
+  }, true);
+}
+watch(() => [route.query.approvalId, route.query._notice], () => { void openNotificationApproval(); });
+watch(approvalDecision, value => { if (!value) void openNotificationApproval(); });
+
 onMounted(() => {
   stopTaskFeed = connectTaskEventFeed(applyProjectTaskEvent);
-  void load();
+  void load().then(() => { notificationApprovalReady = true; return openNotificationApproval(); });
   if (window.toolboxDesktop?.onIcpBrowserClosed) {
     stopIcpBrowserListener = window.toolboxDesktop.onIcpBrowserClosed(() => {
       icpBrowserRunning.value = false;
@@ -4333,7 +4183,9 @@ onUnmounted(() => {
           <el-table-column type="selection" width="44" />
           <el-table-column prop="name" label="名称" min-width="110" show-overflow-tooltip />
           <el-table-column prop="targetValue" label="地址" min-width="130" show-overflow-tooltip />
-          <el-table-column prop="targetType" label="类型" width="70" />
+          <el-table-column label="类型" width="90">
+            <template #default="scope">{{ targetTypeLabel(scope.row.targetType) }}</template>
+          </el-table-column>
           <el-table-column
             prop="allowedPorts"
             label="授权端口"
@@ -4369,6 +4221,8 @@ onUnmounted(() => {
             <el-segmented
               v-model="targetMode"
               class="target-mode-segmented"
+              block
+              aria-label="目标录入方式"
               :options="targetModeOptions"
             />
           </div>
@@ -4886,7 +4740,7 @@ onUnmounted(() => {
                             size="small"
                             effect="plain"
                             class="fingerprint-rule-category"
-                            >{{ rule.category }}</el-tag
+                            >{{ fingerprintCategoryLabel(rule.category) }}</el-tag
                           >
                         </div>
                         <div class="fingerprint-rule-name">{{ rule.name }}</div>
@@ -5095,7 +4949,7 @@ onUnmounted(() => {
                     discoveryRowKey(s.row)
                 "
                 @click="openPocRecommendations(s.row)"
-                >查看 SAFE PoC</el-button
+                >查看安全验证模板</el-button
               >
             </template></el-table-column
           >
@@ -5142,7 +4996,7 @@ onUnmounted(() => {
           </div>
           <el-alert
             class="poc-safety-alert"
-            title="服务端仅返回启用、可追溯且 scanSafety=SAFE 的官方或已复核模板；这里不会自动执行 PoC。需要检测时，请进入授权漏洞检测页人工确认。"
+            title="服务端仅返回启用、可追溯且扫描风险标记为低风险的官方或已复核模板；这里不会自动执行漏洞验证。需要检测时，请进入授权漏洞检测页人工确认。"
             type="info"
             :closable="false"
             show-icon
@@ -5157,7 +5011,7 @@ onUnmounted(() => {
           />
           <el-empty
             v-else-if="!pocRecommendations.length"
-            description="没有匹配的 SAFE 模板建议"
+            description="没有匹配的安全模板建议"
           />
           <el-table
             v-else
@@ -5524,10 +5378,16 @@ onUnmounted(() => {
                 </div>
               </div>
             </div>
-            <pre
+            <FluentCodeBlock
               v-if="captchaResult"
-              class="json-view icp-captcha-result"
-            >{{ JSON.stringify(captchaResult, null, 2) }}</pre>
+              class="icp-captcha-result"
+              title="查询结果"
+              :content="JSON.stringify(captchaResult, null, 2)"
+              :min-rows="3"
+              :max-rows="12"
+              :wrap="true"
+              aria-label="查询结果，只读"
+            />
           </div>
           <template #footer>
             <div class="app-dialog__footer-row">
@@ -5656,26 +5516,58 @@ onUnmounted(() => {
             </div>
           </template>
         </el-dialog>
-        <div v-if="workflowRunning || workflowLog.length" class="workflow-box">
+        <section
+          v-if="workflowRunning || workflowLog.length"
+          class="workflow-box"
+          aria-label="项目工作流运行"
+        >
           <div class="workflow-head">
-            <strong>项目任务流：按已保存红队工作流执行</strong
-            ><span
-              >{{ workflowRunId ? `运行 #${workflowRunId} · ` : ""
-              }}{{ workflowStatus }}</span
+            <div class="workflow-overview">
+              <strong class="workflow-run-title"><el-icon><List /></el-icon>工作流运行</strong>
+              <span class="workflow-run-context">
+                {{ workflowRunId ? `运行 #${workflowRunId} · ` : "" }}按已保存工作流执行
+              </span>
+              <span
+                class="workflow-run-status"
+                :class="workflowProgressStatus ? `is-${workflowProgressStatus}` : ''"
+                role="status"
+              >{{ workflowStatus }}</span>
+              <el-progress
+                class="workflow-run-progress"
+                :percentage="Math.round(workflowProgress)"
+                :status="workflowProgressStatus"
+                :indeterminate="workflowIndeterminate"
+                :stroke-width="4"
+                :duration="1.2"
+              />
+            </div>
+            <el-button
+              class="workflow-log-toggle"
+              :aria-expanded="workflowDetailsExpanded"
+              aria-controls="project-workflow-run-details"
+              :aria-label="workflowDetailsExpanded ? '收起运行日志' : '展开运行日志'"
+              @click="workflowDetailsExpanded = !workflowDetailsExpanded"
             >
+              {{ workflowDetailsExpanded ? "收起日志" : "展开日志" }}
+              <el-icon :class="{ 'is-expanded': workflowDetailsExpanded }"><ArrowDown /></el-icon>
+            </el-button>
           </div>
-          <el-progress
-            :percentage="Math.round(workflowProgress)"
-            :status="
-              ['执行失败', '部分任务失败'].includes(workflowStatus)
-                ? 'exception'
-                : undefined
-            "
-            :indeterminate="workflowIndeterminate"
-            :duration="1.2"
-          />
-          <pre class="workflow-log">{{ workflowLog.join("\n") }}</pre>
-        </div>
+          <div
+            v-show="workflowDetailsExpanded"
+            id="project-workflow-run-details"
+            class="workflow-run-details"
+          >
+            <FluentCodeBlock
+              title="执行日志"
+              :content="workflowLog.join('\n')"
+              empty-text="暂无运行日志"
+              :min-rows="3"
+              :max-rows="10"
+              :wrap="true"
+              aria-label="执行日志，只读"
+            />
+          </div>
+        </section>
         <p class="mode-hint">
           {{
             reconMode === "PASSIVE"
@@ -6131,7 +6023,7 @@ onUnmounted(() => {
               type="warning"
               plain
               @click="openDiffDialog"
-              >扫描 Diff</el-button
+              >扫描差异</el-button
             ><el-button
               size="small"
               type="primary"
@@ -6324,10 +6216,107 @@ onUnmounted(() => {
           :total="filteredProjectFindings.length"
         />
       </el-tab-pane>
-      <el-tab-pane label="安全行动" name="security-actions">
+      <el-tab-pane label="执行确认与审计" name="audits">
         <div class="project-tab-toolbar">
+          <el-tooltip
+            :content="`授权声明：${project?.authorizationStatement || '未填写'}`"
+            placement="bottom-start"
+            :show-after="250"
+            :popper-style="{
+              maxWidth: 'min(640px, calc(100vw - 32px))',
+              whiteSpace: 'pre-wrap',
+              overflowWrap: 'anywhere',
+            }"
+          >
+            <span tabindex="0"
+              >授权声明：{{ project?.authorizationStatement || "未填写" }}</span
+            >
+          </el-tooltip>
+          <div class="toolbar-inline">
+            <el-button size="small" @click="refreshProjectData"
+              >刷新记录</el-button
+            >
+          </div>
+        </div>
+        <el-alert
+          v-if="project?.authorizationExpiresAt"
+          :title="`授权有效期：${formatDateTime(project.authorizationValidFrom)} 至 ${formatDateTime(project.authorizationExpiresAt)}`"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+        <h4 class="project-subtitle">
+          行动方案与确认记录（{{ projectApprovals.length }}）
+        </h4>
+        <el-empty v-if="!projectApprovals.length" description="暂无待确认方案，请在 AI 安全助手中生成行动方案" />
+        <el-table
+          v-else
+          :data="pagedProjectApprovals"
+          stripe
+          size="small"
+          class="project-table"
+        >
+          <el-table-column prop="id" label="ID" width="55" /><el-table-column
+            label="动作"
+            width="90"
+            ><template #default="scope">{{
+              formatApprovalAction(scope.row.action)
+            }}</template></el-table-column
+          ><el-table-column label="状态" width="85"
+            ><template #default="scope"
+              ><el-tag
+                size="small"
+                :type="approvalStatusType(scope.row.status)"
+                >{{ approvalStatusLabel(scope.row.status) }}</el-tag
+              ></template
+            ></el-table-column
+          ><el-table-column
+            prop="requestedBy"
+            label="方案来源"
+            width="120"
+          ><template #default="scope">
+            <el-tag v-if="scope.row.requestedBy === 'ai-agent'" size="small" type="warning" effect="light">
+              AI 渗透助手
+            </el-tag>
+            <span v-else>{{ scope.row.requestedBy }}</span>
+          </template></el-table-column><el-table-column
+            prop="approvedBy"
+            label="确认人"
+            width="90"
+          /><el-table-column
+            prop="comment"
+            label="备注"
+            min-width="110"
+            show-overflow-tooltip
+          /><el-table-column
+            prop="authorizationSnapshotHash"
+            label="授权快照哈希"
+            min-width="110"
+            show-overflow-tooltip
+          /><el-table-column label="提交时间" min-width="140"
+            ><template #default="scope">{{
+              formatDateTime(scope.row.createdAt)
+            }}</template></el-table-column
+          ><el-table-column label="操作" width="210">
+            <template #default="scope">
+              <el-button v-if="scope.row.action === 'AI_PLAN_EXECUTION'" size="small" :loading="approvalDecision === scope.row.id" @click="reviewApproval(scope.row)">
+                {{ scope.row.status === 'PENDING' ? '查看并确认方案' : '查看方案与执行状态' }}
+              </el-button>
+              <span v-else class="muted-text">历史记录</span>
+            </template>
+          </el-table-column>
+        </el-table>
+        <AppPagination
+          v-model:page="approvalPage"
+          v-model:page-size="approvalPageSize"
+          class="project-table-pagination"
+          :total="projectApprovals.length"
+        />
+        <h4 class="project-subtitle">历史人工行动与证据</h4>
+        <el-alert title="保留旧版人工行动记录和证据。新行动请由 AI 生成方案，在上方确认后执行。" type="info" :closable="false" />
+        <div class="project-tab-toolbar history-action-toolbar">
           <span
-            >共 {{ securityActions.length }} 项 · 待审批
+            >历史人工行动 {{ securityActions.length }} 项 · 历史待处理
             {{ pendingSecurityActionCount }} 项 · 执行中
             {{ runningSecurityActionCount }} 项</span
           >
@@ -6337,16 +6326,6 @@ onUnmounted(() => {
               :loading="securityActionLoading"
               @click="loadSecurityActions(true)"
               >刷新状态</el-button
-            >
-            <el-button
-              class="security-action-request-button"
-              size="small"
-              type="danger"
-              :disabled="
-                !canManageSecurityActions || !projectAuthorizationGuard.active
-              "
-              @click="openSecurityActionDialog"
-              >申请高风险行动</el-button
             >
           </div>
         </div>
@@ -6365,7 +6344,7 @@ onUnmounted(() => {
           />
           <el-alert
             v-if="!canManageSecurityActions"
-            title="当前账号可查看审批状态，但只有管理员可以申请、审批、开始、完成或回滚安全行动。"
+            title="当前账号可查看历史记录；管理员可登记已批准行动的执行状态和证据。"
             type="info"
             :closable="false"
             show-icon
@@ -6373,7 +6352,7 @@ onUnmounted(() => {
         </div>
         <el-empty
           v-if="!securityActionLoading && !securityActions.length"
-          description="暂无高风险安全行动；单管理员模式需要二次确认，多账号模式需要不同账号审批后才能开始"
+          description="暂无历史人工行动记录"
         />
         <el-table
           v-else
@@ -6451,29 +6430,6 @@ onUnmounted(() => {
                     "
                   />
                 </el-tooltip>
-                <template
-                  v-if="
-                    canManageSecurityActions &&
-                    scope.row.status === 'PENDING_APPROVAL'
-                  "
-                >
-                  <el-button
-                    class="row-action"
-                    size="small"
-                    :icon="CircleCheck"
-                    :loading="securityActionMutating === scope.row.id"
-                    @click="decideSecurityAction(scope.row, 'APPROVED')"
-                    >批准</el-button
-                  >
-                  <el-button
-                    class="row-action row-action--danger"
-                    size="small"
-                    :icon="Dismiss"
-                    :loading="securityActionMutating === scope.row.id"
-                    @click="decideSecurityAction(scope.row, 'REJECTED')"
-                    >拒绝</el-button
-                  >
-                </template>
                 <el-button
                   v-if="
                     canManageSecurityActions && scope.row.status === 'APPROVED'
@@ -6530,109 +6486,7 @@ onUnmounted(() => {
           class="project-table-pagination"
           :total="securityActions.length"
         />
-      </el-tab-pane>
-      <el-tab-pane label="审批与审计" name="audits">
-        <div class="project-tab-toolbar">
-          <span
-            >授权声明：{{ project?.authorizationStatement || "未填写" }}</span
-          >
-          <div class="toolbar-inline">
-            <el-button size="small" @click="refreshProjectData"
-              >刷新记录</el-button
-            ><el-button size="small" type="primary" @click="openApprovalDialog"
-              >申请审批</el-button
-            >
-          </div>
-        </div>
-        <el-alert
-          v-if="project?.authorizationExpiresAt"
-          :title="`授权有效期：${formatDateTime(project.authorizationValidFrom)} 至 ${formatDateTime(project.authorizationExpiresAt)}`"
-          type="warning"
-          :closable="false"
-          show-icon
-        />
-        <h4 class="project-subtitle">
-          审批记录（{{ projectApprovals.length }}）
-        </h4>
-        <el-empty v-if="!projectApprovals.length" description="暂无审批记录" />
-        <el-table
-          v-else
-          :data="pagedProjectApprovals"
-          stripe
-          size="small"
-          class="project-table"
-        >
-          <el-table-column prop="id" label="ID" width="55" /><el-table-column
-            label="动作"
-            width="90"
-            ><template #default="scope">{{
-              formatApprovalAction(scope.row.action)
-            }}</template></el-table-column
-          ><el-table-column label="状态" width="85"
-            ><template #default="scope"
-              ><el-tag
-                size="small"
-                :type="approvalStatusType(scope.row.status)"
-                >{{ approvalStatusLabel(scope.row.status) }}</el-tag
-              ></template
-            ></el-table-column
-          ><el-table-column
-            prop="requestedBy"
-            label="申请人"
-            width="120"
-          ><template #default="scope">
-            <el-tag v-if="scope.row.requestedBy === 'ai-agent'" size="small" type="warning" effect="light">
-              AI 渗透助手
-            </el-tag>
-            <span v-else>{{ scope.row.requestedBy }}</span>
-          </template></el-table-column><el-table-column
-            prop="approvedBy"
-            label="决定人"
-            width="90"
-          /><el-table-column
-            prop="comment"
-            label="备注"
-            min-width="110"
-            show-overflow-tooltip
-          /><el-table-column
-            prop="authorizationSnapshotHash"
-            label="授权快照哈希"
-            min-width="110"
-            show-overflow-tooltip
-          /><el-table-column label="申请时间" min-width="140"
-            ><template #default="scope">{{
-              formatDateTime(scope.row.createdAt)
-            }}</template></el-table-column
-          ><el-table-column label="操作" width="210"
-            ><template #default="scope"
-              ><template v-if="scope.row.status === 'PENDING'"
-                ><div class="row-actions"
-                  ><el-button
-                    class="row-action"
-                    size="small"
-                    :icon="CircleCheck"
-                    :loading="approvalDecision === scope.row.id"
-                    @click="decideApproval(scope.row, 'APPROVED')"
-                    >通过</el-button
-                  ><el-button
-                    class="row-action row-action--danger"
-                    size="small"
-                    :icon="Dismiss"
-                    :loading="approvalDecision === scope.row.id"
-                    @click="decideApproval(scope.row, 'REJECTED')"
-                    >拒绝</el-button
-                  ></div
-                ></template
-              ><span v-else class="muted-text">已决定</span></template
-            ></el-table-column
-          >
-        </el-table>
-        <AppPagination
-          v-model:page="approvalPage"
-          v-model:page-size="approvalPageSize"
-          class="project-table-pagination"
-          :total="projectApprovals.length"
-        />
+
         <h4 class="project-subtitle">操作审计（{{ projectAuditTotal }}）</h4>
         <el-empty
           v-if="auditLoading || !projectAudits.length"
@@ -6772,15 +6626,15 @@ onUnmounted(() => {
             ><template #default="scope">{{
               formatDateTime(scope.row.createdAt)
             }}</template></el-table-column
-          ><el-table-column label="操作" width="90"
+          ><el-table-column label="操作" width="132"
             ><template #default="scope"
-              ><el-button
+              ><div class="row-actions"><el-button
                 class="row-action row-action--danger"
                 size="small"
                 :icon="Delete"
                 @click="deleteMemory(scope.row.id)"
                 >删除</el-button
-              ></template
+              ></div></template
             ></el-table-column
           ></el-table
         >
@@ -7267,7 +7121,7 @@ onUnmounted(() => {
             /><span>{{ taskProgressText(taskDetail) }}</span>
           </div></el-descriptions-item
         ><el-descriptions-item label="终止原因">{{
-          taskDetail.terminationReason || "未终止"
+          taskTerminationLabel(taskDetail.terminationReason)
         }}</el-descriptions-item>
         <el-descriptions-item label="失败原因" :span="2">{{
           displayTaskError(taskDetail.errorMessage)
@@ -7300,6 +7154,7 @@ onUnmounted(() => {
         <el-descriptions-item label="实时执行日志" :span="2">
           <FluentCodeBlock
             :content="taskLogText(taskDetail)"
+            :copyable="false"
             empty-text="等待任务开始执行…"
             icon="clipboard-task"
             wrap
@@ -7345,7 +7200,7 @@ onUnmounted(() => {
           </div>
         </el-descriptions-item>
         <el-descriptions-item label="说明">
-          {{ findingDetail.description || "未提供" }}
+          <MarkdownBody :content="findingDetail.description || '未提供'" />
         </el-descriptions-item>
         <el-descriptions-item label="证据">
           <FluentCodeBlock
@@ -7356,7 +7211,7 @@ onUnmounted(() => {
           />
         </el-descriptions-item>
         <el-descriptions-item label="修复建议">
-          {{ findingDetail.remediation || "未提供" }}
+          <MarkdownBody :content="findingDetail.remediation || '未提供'" />
         </el-descriptions-item>
       </el-descriptions>
       <template #footer>
@@ -7366,7 +7221,7 @@ onUnmounted(() => {
 
     <el-dialog
       v-model="diffVisible"
-      title="项目扫描 Diff"
+      title="项目扫描差异"
       class="app-dialog app-dialog--wide"
       align-center
       destroy-on-close
@@ -7453,180 +7308,55 @@ onUnmounted(() => {
       </template>
     </el-dialog>
 
-    <el-dialog
-      v-model="approvalDialog"
-      title="申请项目审批"
-      class="app-dialog app-dialog--md"
-      align-center
-      destroy-on-close
-    >
-      <el-form label-position="top"
-        ><el-form-item label="审批动作"
-          ><el-select v-model="approvalForm.action" style="width: 100%"
-            ><el-option label="主动扫描" value="SCAN" /><el-option
-              label="漏洞复测"
-              value="RETEST" /><el-option
-              label="后续验证"
-              value="POST_SCAN" /><el-option
-              label="其他安全操作"
-              value="OTHER" /></el-select></el-form-item
-        ><el-form-item label="说明"
-          ><el-input
-            v-model="approvalForm.comment"
-            type="textarea"
-            :rows="3"
-            placeholder="说明申请目的、范围和停止条件" /></el-form-item
-        ><el-form-item label="授权快照哈希"
-          ><el-input
-            v-model="approvalForm.authorizationSnapshotHash"
-            placeholder="可从任务快照自动带入"
-          /><small class="field-hint"
-            >审批记录会保留该哈希，便于审计时核对当时授权边界。</small
-          ></el-form-item
-        ></el-form
-      >
-      <template #footer
-        ><el-button @click="approvalDialog = false">取消</el-button
-        ><el-button
-          type="primary"
-          :loading="approvalSaving"
-          @click="requestApproval"
-          >提交申请</el-button
-        ></template
-      >
-    </el-dialog>
-
-    <el-dialog
-      v-model="securityActionDialog"
-      title="申请高风险安全行动"
-      class="app-dialog app-dialog--wide"
-      align-center
-      destroy-on-close
-    >
-      <el-alert
-        title="这是项目级受控行动申请，不是命令执行器。只能选择服务端已登记的安全行动类型；单管理员模式由管理员二次确认，多账号模式必须由不同账号审批。"
-        type="warning"
-        :closable="false"
-        show-icon
-        class="security-action-dialog-alert"
-      />
-      <el-form label-position="top" class="security-action-form">
-        <div class="project-form-row">
-          <el-form-item label="授权目标" required>
-            <el-select
-              v-model="securityActionForm.targetId"
-              filterable
-              style="width: 100%"
-              placeholder="选择项目内目标"
-            >
-              <el-option
-                v-for="target in linkedTargets"
-                :key="target.id"
-                :label="`${target.name} · ${target.targetValue}`"
-                :value="target.id"
-              />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="关联漏洞（可选）">
-            <el-select
-              v-model="securityActionForm.findingId"
-              clearable
-              filterable
-              style="width: 100%"
-              placeholder="仅显示该目标的项目漏洞"
-            >
-              <el-option
-                v-for="finding in securityActionFindings"
-                :key="finding.id"
-                :label="`#${finding.id} · ${finding.title}`"
-                :value="finding.id"
-              />
-            </el-select>
-          </el-form-item>
-        </div>
-        <el-form-item label="安全行动类型" required>
-          <el-select v-model="securityActionForm.category" style="width: 100%">
-            <el-option
-              v-for="preset in SECURITY_ACTION_PRESETS"
-              :key="preset.category"
-              :label="`${preset.label}（${actionRiskLabel(preset.riskLevel)}）`"
-              :value="preset.category"
-            />
-          </el-select>
-          <small class="field-hint">{{
-            selectedSecurityActionPreset.description
-          }}</small>
-        </el-form-item>
-        <el-form-item label="验证目的" required
-          ><el-input
-            v-model="securityActionForm.purpose"
-            maxlength="1000"
-            show-word-limit
-            type="textarea"
-            :rows="3"
-            placeholder="说明目标、预期证据和明确停止条件；不要填写口令、令牌或私钥"
-        /></el-form-item>
-        <div class="security-action-plan-grid">
-          <el-form-item label="风险等级"
-            ><el-tag
-              size="large"
-              :type="
-                securityActionRiskType(selectedSecurityActionPreset.riskLevel)
-              "
-              >{{ securityActionRiskLabel(selectedSecurityActionPreset.riskLevel) }}</el-tag
-            ></el-form-item
-          >
-          <el-form-item label="安全属性"
-            ><div class="security-action-flags">
-              <el-tag type="success" effect="plain">非破坏性</el-tag
-              ><el-tag type="success" effect="plain">禁止横向移动</el-tag>
-            </div></el-form-item
-          >
-        </div>
-        <el-form-item label="服务端执行计划（只读）"
-          ><el-input
-            :model-value="selectedSecurityActionPreset.executionPlan"
-            type="textarea"
-            :rows="3"
-            readonly
-        /></el-form-item>
-        <el-form-item label="服务端回滚计划（只读）"
-          ><el-input
-            :model-value="selectedSecurityActionPreset.rollbackPlan"
-            type="textarea"
-            :rows="3"
-            readonly
-        /></el-form-item>
-        <div class="project-form-row">
-          <el-form-item label="批准开始时间" required
-            ><el-date-picker
-              v-model="securityActionForm.windowStart"
-              type="datetime"
-              style="width: 100%"
-              placeholder="选择开始时间"
-          /></el-form-item>
-          <el-form-item label="批准结束时间" required
-            ><el-date-picker
-              v-model="securityActionForm.windowEnd"
-              type="datetime"
-              style="width: 100%"
-              placeholder="选择结束时间"
-          /></el-form-item>
-        </div>
-        <el-checkbox v-model="securityActionForm.acknowledged"
-          >我确认目标属于本项目授权范围，执行时间窗在授权有效期内，并已阅读停止与回滚条件。</el-checkbox
-        >
-      </el-form>
-      <template #footer
-        ><el-button @click="securityActionDialog = false">取消</el-button
-        ><el-button
-          type="danger"
-          :loading="securityActionSaving"
-          :disabled="!projectAuthorizationGuard.active"
-          @click="createSecurityAction"
-          >提交审批申请</el-button
-        ></template
-      >
+    <el-dialog v-model="planReviewVisible" title="AI 行动方案与执行确认" class="app-dialog app-dialog--lg" align-center :close-on-click-modal="false" :show-close="!approvalDecision" :close-on-press-escape="!approvalDecision">
+      <div v-if="planReview && planReviewApproval" class="plan-review">
+        <section class="plan-review-overview" aria-label="方案与授权目标">
+          <header class="plan-review-heading">
+            <h3>方案 #{{ planReviewApproval.id }}</h3>
+            <el-tag :type="approvalStatusType(planReviewApproval.status)" effect="light">{{ approvalStatusLabel(planReviewApproval.status) }}</el-tag>
+          </header>
+          <dl class="plan-review-metadata">
+            <div class="plan-review-target">
+              <dt>授权目标</dt>
+              <dd>{{ planReviewTarget?.name || planReview.targetId }}<span class="plan-review-address">{{ planReviewTarget?.targetValue || '目标详情暂不可用' }}</span></dd>
+            </div>
+            <div><dt>授权端口</dt><dd>{{ planReviewTarget?.allowedPorts || '以登记的授权范围为准' }}</dd></div>
+            <div v-if="planReviewApproval.initiatedBy"><dt>发起人</dt><dd>{{ planReviewApproval.initiatedBy }}</dd></div>
+          </dl>
+        </section>
+        <section class="plan-review-summary" aria-label="方案说明">
+          <h3>方案说明</h3>
+          <p>{{ planReview.plan.summary }}</p>
+        </section>
+        <section class="plan-review-execution" aria-label="执行步骤">
+          <h3>执行步骤 <span>{{ planReview.plan.steps.length }} 项</span></h3>
+          <ol class="plan-review-steps">
+            <li v-for="(step, index) in planReview.plan.steps" :key="index" class="plan-review-step">
+              <header class="plan-review-step-heading">
+                <span class="plan-review-step-number" aria-hidden="true">{{ index + 1 }}</span>
+                <h4>{{ aiToolLabel(step.toolCode) }}</h4>
+                <el-tag size="small" :type="step.risk === 'CAUTION' || step.requiresApproval ? 'warning' : 'info'">{{ step.risk === 'CAUTION' || step.requiresApproval ? '需谨慎确认' : '受控操作' }}</el-tag>
+              </header>
+              <div class="plan-review-step-body">
+                <p v-if="step.reason" class="plan-review-reason">{{ step.reason }}</p>
+                <p v-if="!Object.keys(step.parameters || {}).length" class="plan-review-defaults">使用该步骤已保存的默认配置。</p>
+                <dl v-else class="plan-review-parameters" aria-label="执行参数">
+                  <div v-for="parameter in approvalParameterRows(step.parameters)" :key="parameter.label"><dt>{{ parameter.label }}</dt><dd>{{ parameter.value }}</dd></div>
+                </dl>
+              </div>
+            </li>
+          </ol>
+        </section>
+        <FluentCodeBlock title="完整方案" :content="planReviewText" :min-rows="6" :max-rows="14" :wrap="true" aria-label="完整方案，只读" />
+        <el-alert :title="planReview.dispatch ? `该方案已关联 ${planReview.dispatch.taskIds.length} 个任务，请在检测任务中查看结果。` : '允许执行后将按以上保存的方案执行，执行前再次校验授权范围和有效期。'" type="info" :closable="false" show-icon />
+      </div>
+      <template #footer>
+        <el-button :disabled="Boolean(approvalDecision)" @click="planReviewVisible = false">关闭</el-button>
+        <template v-if="canManageSecurityActions && planReview && !planReview.dispatch && planReviewApproval && ['PENDING', 'APPROVED'].includes(planReviewApproval.status)">
+          <el-button v-if="planReviewApproval.status === 'PENDING'" :disabled="Boolean(approvalDecision)" @click="confirmPlanExecution('REJECTED')">拒绝执行</el-button>
+          <el-button type="primary" :loading="Boolean(approvalDecision)" :disabled="!projectAuthorizationGuard.active" @click="confirmPlanExecution('APPROVED')">{{ planReviewApproval.status === 'APPROVED' ? '继续执行已确认方案' : '允许执行' }}</el-button>
+        </template>
+      </template>
     </el-dialog>
 
     <el-dialog
@@ -7672,7 +7402,7 @@ onUnmounted(() => {
             ? `#${securityActionDetail.findingId}`
             : "无"
         }}</el-descriptions-item>
-        <el-descriptions-item label="申请人">{{
+        <el-descriptions-item label="方案来源">{{
           securityActionDetail.requestedBy
         }}</el-descriptions-item>
         <el-descriptions-item label="审批人">{{
@@ -7798,6 +7528,94 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.plan-review {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+  color: var(--app-text);
+  line-height: 1.6;
+}
+.plan-review h3, .plan-review h4, .plan-review p, .plan-review dl, .plan-review dd {
+  margin: 0;
+}
+.plan-review h3, .plan-review h4 {
+  color: var(--app-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+.plan-review-overview, .plan-review-step {
+  overflow: hidden;
+  min-width: 0;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface-strong);
+}
+.plan-review-overview {
+  padding: 16px;
+  background: var(--app-surface-soft);
+}
+.plan-review-heading, .plan-review-step-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.plan-review-heading {
+  margin-bottom: 16px;
+}
+.plan-review-heading > .el-tag { margin-left: auto; }
+.plan-review-metadata {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 24px;
+}
+.plan-review-target { grid-column: 1 / -1; }
+.plan-review-metadata dt, .plan-review-parameters dt {
+  color: var(--app-muted);
+  font-size: 12px;
+}
+.plan-review-metadata dd, .plan-review-summary p, .plan-review-reason, .plan-review-parameters dd {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.plan-review-metadata dd { margin-top: 4px; }
+.plan-review-address {
+  display: block;
+  margin-top: 2px;
+  color: var(--app-muted);
+}
+.plan-review-summary, .plan-review-execution { display: grid; gap: 10px; }
+.plan-review-execution > h3 { display: flex; align-items: baseline; gap: 8px; }
+.plan-review-execution > h3 > span { font-size: 12px; font-weight: 400; color: var(--app-muted); }
+.plan-review-steps { display: grid; gap: 12px; list-style: none; padding: 0; margin: 0; }
+.plan-review-step-heading { padding: 12px 16px; background: var(--app-surface-soft); border-bottom: 1px solid var(--app-border); }
+.plan-review-step-heading h4 { flex: 1; min-width: 100px; overflow-wrap: anywhere; }
+.plan-review-step-number {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--app-accent-soft);
+  color: var(--app-accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+.plan-review-step-body { display: grid; gap: 12px; padding: 16px; }
+.plan-review-defaults { color: var(--app-muted); }
+.plan-review-parameters > div { display: grid; grid-template-columns: minmax(80px, 120px) minmax(0, 1fr); gap: 16px; padding: 8px 0; }
+.plan-review-parameters > div + div { border-top: 1px solid var(--app-border); }
+.plan-review-parameters > div:first-child { padding-top: 0; }
+.plan-review-parameters > div:last-child { padding-bottom: 0; }
+.project-tabs .history-action-toolbar { margin-top: 16px; }
+@media (max-width: 520px) {
+  .plan-review { gap: 16px; }
+  .plan-review-metadata { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .plan-review-overview, .plan-review-step-heading, .plan-review-step-body { padding: 12px; }
+  .plan-review-parameters > div { grid-template-columns: minmax(64px, 88px) minmax(0, 1fr); gap: 12px; }
+}
+
 .project-form-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -7904,33 +7722,90 @@ onUnmounted(() => {
   margin-top: 4px;
 }
 .workflow-box {
+  min-width: 0;
   margin: 14px 0;
-  padding: 14px;
-  border: 1px solid var(--el-border-color);
-  border-radius: 8px;
-  background: var(--el-fill-color-light);
+  overflow: hidden;
+  border: 1px solid var(--app-border);
+  border-radius: var(--fluent-radius-card);
+  background: var(--app-surface);
 }
 .workflow-head {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 10px;
+  gap: 8px 16px;
+  padding: 10px 14px;
+  font-size: 12px;
 }
-.workflow-head span {
-  color: var(--el-color-primary);
+.workflow-overview {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
 }
-.workflow-log {
-  max-height: 240px;
-  overflow: auto;
-  margin: 10px 0 0;
-  padding: 10px;
-  border-radius: 6px;
-  background: #111827;
-  color: #d1fae5;
-  white-space: pre-wrap;
-  font:
-    12px/1.5 Consolas,
-    monospace;
+.workflow-run-title {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  color: var(--app-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.workflow-run-title > .el-icon {
+  color: var(--app-muted);
+  font-size: 17px;
+}
+.workflow-run-context {
+  color: var(--app-muted);
+}
+.workflow-run-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--app-muted);
+}
+.workflow-run-status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+}
+.workflow-run-status.is-success {
+  color: var(--el-color-success);
+}
+.workflow-run-status.is-exception {
+  color: var(--el-color-danger);
+}
+.workflow-run-progress {
+  width: 120px;
+  flex: none;
+}
+.workflow-run-progress :deep(.el-progress__text) {
+  min-width: 30px;
+  font-size: 11px !important;
+}
+.workflow-log-toggle {
+  flex: none;
+  height: 32px;
+  margin: 0 0 0 auto;
+}
+.workflow-log-toggle > .el-icon,
+.workflow-log-toggle :deep(.el-icon) {
+  margin-left: 6px;
+}
+.workflow-log-toggle .is-expanded {
+  transform: rotate(180deg);
+}
+.workflow-run-details {
+  padding: 16px;
+  border-top: 1px solid var(--app-border);
+  background: var(--app-surface-soft);
 }
 .recon-alert {
   margin: 0 0 16px;
@@ -9155,28 +9030,6 @@ onUnmounted(() => {
 }
 .target-mode-segmented {
   width: 100%;
-}
-.target-mode-segmented :deep(.el-segmented) {
-  width: 100%;
-}
-.target-mode-segmented :deep(.el-segmented__item) {
-  min-height: 32px;
-  font-weight: 600;
-}
-.target-mode-segmented :deep(.el-segmented__item-selected) {
-  box-sizing: border-box;
-  width: 50% !important;
-  transform: translateX(0) translateZ(0) !important;
-  will-change: transform;
-  backface-visibility: hidden;
-  transition: transform var(--fluent-duration-normal, 200ms)
-    var(--fluent-curve-standard, ease);
-}
-.target-mode-segmented :deep(.el-segmented__group):has(
-    .el-segmented__item.is-selected:last-child
-  )
-  .el-segmented__item-selected {
-  transform: translateX(100%) translateZ(0) !important;
 }
 .batch-preview-card {
   margin: -4px 0 16px;

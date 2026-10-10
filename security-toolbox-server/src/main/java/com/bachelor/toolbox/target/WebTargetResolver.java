@@ -4,18 +4,24 @@ import com.bachelor.toolbox.asset.DiscoveredPathService;
 import com.bachelor.toolbox.common.ApiException;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
@@ -40,32 +46,41 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class WebTargetResolver {
+  private static final Logger log = LoggerFactory.getLogger(WebTargetResolver.class);
   /** 任务参数中携带「预解析 Web 基址列表」的键；由工作流/主动检测解析后注入，工具优先采用。 */
   public static final String PARAM_RESOLVED_BASES = "__resolvedWebBases";
   private static final Set<Integer> DEFAULT_WEB_PORTS = Set.of(80, 443);
   private static final int MAX_RESOLVED_BASES = 8;
   private static final int CONNECT_TIMEOUT_MS = 3000;
   private static final int REQUEST_TIMEOUT_SECONDS = 5;
+  private static final int PROBE_BUDGET_SECONDS = REQUEST_TIMEOUT_SECONDS + 2;
 
   private final TargetPolicyService policyService;
   private final PortRangeParser portRangeParser;
   private final DiscoveredPathService discoveredPaths;
   private final HttpClient httpClient;
 
+  @Autowired
   public WebTargetResolver(
       TargetPolicyService policyService,
       PortRangeParser portRangeParser,
       DiscoveredPathService discoveredPaths) {
-    this.policyService = policyService;
-    this.portRangeParser = portRangeParser;
-    this.discoveredPaths = discoveredPaths;
-    this.httpClient =
+    this(policyService, portRangeParser, discoveredPaths,
         HttpClient.newBuilder()
             .connectTimeout(Duration.ofMillis(CONNECT_TIMEOUT_MS))
             .version(HttpClient.Version.HTTP_1_1)
             // 绝不跟随重定向，避免授权私有目标被引导到未授权的公网或元数据主机。
             .followRedirects(HttpClient.Redirect.NEVER)
-            .build();
+            .build());
+  }
+
+  WebTargetResolver(
+      TargetPolicyService policyService, PortRangeParser portRangeParser,
+      DiscoveredPathService discoveredPaths, HttpClient httpClient) {
+    this.policyService = policyService;
+    this.portRangeParser = portRangeParser;
+    this.discoveredPaths = discoveredPaths;
+    this.httpClient = httpClient;
   }
 
   /**
@@ -95,6 +110,7 @@ public class WebTargetResolver {
     try {
       return resolveBases(target, List.of());
     } catch (RuntimeException ex) {
+      log.warn("Web目标解析失败 targetId={} type={}", target.getId(), ex.getClass().getSimpleName());
       return List.of();
     }
   }
@@ -227,7 +243,7 @@ public class WebTargetResolver {
   }
 
   private List<URI> probeAll(AuthorizedTarget target, String host, Set<Integer> ports) {
-    List<URI> reachable = new ArrayList<>();
+    Set<URI> reachable = new LinkedHashSet<>();
     List<URI> candidates = new ArrayList<>();
     for (Integer port : ports) {
       if (candidates.size() >= MAX_RESOLVED_BASES * 2) break;
@@ -236,26 +252,56 @@ public class WebTargetResolver {
       URI https = webUri(target, host, port, "https");
       if (https != null) candidates.add(https);
     }
+    long started = System.nanoTime();
+    long deadline = started + TimeUnit.SECONDS.toNanos(PROBE_BUDGET_SECONDS);
+    Map<String, List<String>> diagnostics = new LinkedHashMap<>();
     ExecutorService pool = Executors.newFixedThreadPool(Math.min(8, Math.max(1, candidates.size())));
+    List<Future<ProbeResult>> futures = new ArrayList<>();
     try {
-      List<Future<URI>> futures = new ArrayList<>();
+      ExecutorCompletionService<ProbeResult> completions = new ExecutorCompletionService<>(pool);
       for (URI candidate : candidates) {
-        futures.add(pool.submit(() -> isReachable(candidate) ? candidate : null));
+        futures.add(completions.submit(() -> probe(candidate, 1, deadline)));
       }
-      long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(REQUEST_TIMEOUT_SECONDS + 2);
-      for (int index = 0; index < futures.size() && reachable.size() < MAX_RESOLVED_BASES; index++) {
-        long wait = Math.max(1, deadline - System.nanoTime());
+      int outstanding = futures.size();
+      while (outstanding > 0 && reachable.size() < MAX_RESOLVED_BASES) {
+        long remaining = deadline - System.nanoTime();
+        if (remaining <= 0) break;
         try {
-          URI resolved = futures.get(index).get(Math.max(1, wait / 1_000_000L), TimeUnit.MILLISECONDS);
-          if (resolved != null && reachable.size() < MAX_RESOLVED_BASES) reachable.add(resolved);
-        } catch (Exception ignored) {
-          // treat as unreachable
+          Future<ProbeResult> completed = completions.poll(remaining, TimeUnit.NANOSECONDS);
+          if (completed == null) break;
+          outstanding--;
+          ProbeResult result = completed.get();
+          diagnostics.computeIfAbsent(result.uri().toString(), ignored -> new ArrayList<>())
+              .add("attempt=" + result.attempt() + ",outcome=" + result.outcome()
+                  + ",elapsedMs=" + result.elapsedMs());
+          if (result.reachable()) reachable.add(result.uri());
+          // Enqueue retries behind the remaining first attempts. A cold connect
+          // timeout may recover immediately; never retry TLS/HTTP/protocol errors,
+          // and both attempts share the original seven-second analysis budget.
+          if (result.connectTimeout() && result.attempt() == 1 && System.nanoTime() < deadline) {
+            futures.add(completions.submit(() -> probe(result.uri(), 2, deadline)));
+            outstanding++;
+          }
+        } catch (InterruptedException ex) {
+          Thread.currentThread().interrupt();
+          break;
+        } catch (java.util.concurrent.ExecutionException ex) {
+          log.warn("Web目标探测线程失败 targetId={} type={}",
+              target.getId(), ex.getCause().getClass().getSimpleName());
         }
       }
     } finally {
+      for (Future<ProbeResult> future : futures) {
+        if (!future.isDone()) future.cancel(true);
+      }
       pool.shutdownNow();
     }
-    return reachable;
+    // Completion order is nondeterministic; preserve the authorized candidate order.
+    List<URI> resolved = candidates.stream().filter(reachable::contains).limit(MAX_RESOLVED_BASES).toList();
+    log.info("Web目标解析完成 targetId={} host={} elapsedMs={} resolved={} probes={}",
+        target.getId(), host, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started),
+        resolved, diagnostics);
+    return resolved;
   }
 
   private URI webUri(AuthorizedTarget target, String host, int port, String scheme) {
@@ -273,18 +319,30 @@ public class WebTargetResolver {
     }
   }
 
-  private boolean isReachable(URI uri) {
+  private record ProbeResult(
+      URI uri, int attempt, boolean reachable, boolean connectTimeout, String outcome, long elapsedMs) {}
+
+  private ProbeResult probe(URI uri, int attempt, long deadline) {
+    long started = System.nanoTime();
+    long remaining = deadline - started;
+    if (remaining <= 0) return new ProbeResult(uri, attempt, false, false, "BUDGET_EXHAUSTED", 0);
     try {
       HttpRequest request =
           HttpRequest.newBuilder(uri)
-              .timeout(Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS))
+              .timeout(Duration.ofNanos(Math.min(remaining, TimeUnit.SECONDS.toNanos(REQUEST_TIMEOUT_SECONDS))))
               .header("User-Agent", "Xiezhi-Authorized-Security/0.2")
               .GET()
               .build();
       HttpResponse<Void> response = httpClient.send(request, HttpResponse.BodyHandlers.discarding());
-      return response.statusCode() < 500;
+      return new ProbeResult(uri, attempt, response.statusCode() < 500, false,
+          "HTTP_" + response.statusCode(), TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
+    } catch (InterruptedException ex) {
+      Thread.currentThread().interrupt();
+      return new ProbeResult(uri, attempt, false, false, "INTERRUPTED",
+          TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
     } catch (Exception ex) {
-      return false;
+      return new ProbeResult(uri, attempt, false, ex instanceof HttpConnectTimeoutException,
+          ex.getClass().getSimpleName(), TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
     }
   }
 }

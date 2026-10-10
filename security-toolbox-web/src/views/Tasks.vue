@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   endpoints,
@@ -17,6 +17,8 @@ import {
 } from "../api";
 import { InfoCircle, Search, View, MagicStick, Document, Switch, Delete, Dismiss, Refresh } from "../components/fluentIcons";
 import AppPagination from "../components/AppPagination.vue";
+import TrafficScanRecords from "../components/TrafficScanRecords.vue";
+import { useAuthStore } from "../stores/auth";
 import FluentCodeBlock from "../components/FluentCodeBlock.vue";
 import FluentJsonView from "../components/FluentJsonView.vue";
 import OfflineState from "../components/OfflineState.vue";
@@ -25,12 +27,9 @@ import { formatDateTime, formatExecutionLog } from "../utils/dateTime";
 import { useCopilotStore } from "../stores/copilot";
 import { toErrorMessage } from "../utils/errorMessage";
 import { downloadBlob, EmptyDownloadError } from "../utils/download";
-import { findingTitleLabel, aiToolLabel, severityLabel } from "../utils/aiPresentation";
-import {
-  loadNotificationPreferences as loadNotificationPrefs,
-  notifyTaskCompletion as notifyTaskCompletionOnce,
-  type NotificationPreferences,
-} from "../utils/notifications";
+import { aiToolLabel, severityLabel } from "../utils/aiPresentation";
+import MarkdownBody from "../components/MarkdownBody.vue";
+import ProjectEvidenceResult from "../components/ProjectEvidenceResult.vue";
 import {
   taskProgressIndeterminate,
   taskProgressPercentage,
@@ -38,10 +37,19 @@ import {
   taskProgressText,
 } from "../utils/taskProgress";
 import { taskbarProgress } from "../utils/taskbarProgress";
-import { createTaskDetailLoader, isTerminalTaskStatus, mergeTaskDetailSnapshot, taskDetailEmptyResultText } from "../utils/taskDetail";
+import { createTaskDetailLoader, isTerminalTaskStatus, mergeTaskDetailSnapshot, taskDetailEmptyResultText, taskTerminationLabel } from "../utils/taskDetail";
 
 const copilot = useCopilotStore();
 const router = useRouter();
+const route = useRoute();
+const auth = useAuthStore();
+const canReadTraffic = computed(() => auth.user?.role === "ADMIN");
+const recordSource = computed({
+  get: () => canReadTraffic.value && route.query.source === "traffic" ? "traffic" : "project",
+  set: (source: string) => { void router.replace({ query: {
+    ...route.query, source: source === "traffic" ? "traffic" : undefined, scanId: undefined,
+  } }); },
+});
 
 interface TaskRow {
   id: number;
@@ -78,8 +86,6 @@ interface TaskRow {
 }
 
 const rows = ref<TaskRow[]>([]);
-const notifiedTasks = new Set<number>();
-let notificationPrefs: NotificationPreferences | null = null;
 const statusFilter = ref<string>("");
 const statusOptions = [
   { value: "PENDING", label: "待执行" },
@@ -217,6 +223,7 @@ const detailLoader = createTaskDetailLoader<TaskRow>({
 watch(detailVisible, visible => { if (!visible) detailLoader.invalidate(); });
 const downloading = ref<number>();
 const retrying = ref<number>();
+const pendingRetryKeys = new Map<number, string>();
 const cancelling = ref<number>();
 const scheduleVisible = ref(false);
 const scheduleSaving = ref(false);
@@ -306,28 +313,6 @@ const setLogOutput = (el: HTMLTextAreaElement | null) => {
   logOutput.value = el ?? undefined;
 };
 
-async function loadNotificationPreferences() {
-  notificationPrefs = await loadNotificationPrefs();
-}
-
-async function notifyTaskCompletion(row: TaskRow) {
-  if (!notificationPrefs) await loadNotificationPreferences();
-  const prefs = notificationPrefs ?? {
-    severities: ["CRITICAL", "HIGH", "MEDIUM"],
-    taskCompleteNotifications: true,
-    workflowSkipNotifications: true,
-  };
-  await notifyTaskCompletionOnce(
-    {
-      id: row.id,
-      status: row.status,
-      resultJson: row.resultJson,
-      errorMessage: row.errorMessage,
-    },
-    prefs,
-  );
-}
-
 function applyTaskEvent(event: TaskProgressEvent) {
   if (!Number(event.taskId)) return;
   const row = rows.value.find((item) => item.id === Number(event.taskId));
@@ -380,13 +365,10 @@ function applyTaskEvent(event: TaskProgressEvent) {
   taskbarProgress.syncTasks(rows.value);
   if (!wasTerminal && isTerminalTaskStatus(nextStatus) && detailVisible.value && detail.value?.id === row.id)
     void detailLoader.load(row.id, true);
-  void notifyTaskCompletion(row);
 }
 
 async function load() {
   const result = await safeGet<ProjectTaskRecord[]>(endpoints.tasks, []);
-  const previous = new Map<number, string>();
-  for (const row of rows.value) previous.set(row.id, row.status);
   const previousRows = new Map(rows.value.map(row => [row.id, row]));
   rows.value = Array.isArray(result.data)
     ? result.data.map((task) => mergeTaskDetailSnapshot(previousRows.get(task.id), {
@@ -395,16 +377,6 @@ async function load() {
       }))
     : [];
   taskbarProgress.syncTasks(rows.value);
-  const firstLoad = previous.size === 0;
-  for (const row of rows.value) {
-    if (isTerminalTaskStatus(row.status)) {
-      if (firstLoad) {
-        notifiedTasks.add(row.id);
-      } else if (!isTerminalTaskStatus(previous.get(row.id))) {
-        void notifyTaskCompletion(row);
-      }
-    }
-  }
   if (detail.value) {
     const refreshed = rows.value.find((row) => row.id === detail.value?.id);
     if (refreshed) {
@@ -975,7 +947,7 @@ async function openScheduleDialog() {
   }
 }
 
-const detailResultView = ref<"friendly" | "raw">("friendly");
+const detailResultExpanded = ref<string[]>([]);
 const detailRequestView = ref<"friendly" | "raw">("friendly");
 
 const parsedDetailResult = computed<Record<string, unknown> | undefined>(() => {
@@ -1014,50 +986,6 @@ const prettyDetailRequestJson = computed(() => {
 const detailResultSummary = computed(() => {
   const summary = parsedDetailResult.value?.summary;
   return typeof summary === "string" ? summary : "";
-});
-
-interface TaskResultMatch {
-  severity?: string;
-  name: string;
-  cwe?: string;
-  url?: string;
-}
-
-const detailResultMatches = computed<TaskResultMatch[]>(() => {
-  const result = parsedDetailResult.value;
-  if (!result) return [];
-  const data = result.data as Record<string, unknown> | undefined;
-  const candidates = [
-    result.matches,
-    data?.matches,
-    result.findings,
-    data?.findings,
-    data?.items,
-    data?.results,
-  ];
-  const list = candidates.find((value) => Array.isArray(value)) as
-    | Array<Record<string, unknown>>
-    | undefined;
-  if (!list) return [];
-  return list
-    .map((item) => {
-      const entry = item && typeof item === "object" ? item : {};
-      return {
-        severity:
-          typeof entry.severity === "string" ? entry.severity : undefined,
-        name:
-          (typeof entry.name === "string" && entry.name) ||
-          (typeof entry.title === "string" && entry.title) ||
-          "未命名条目",
-        cwe:
-          (typeof entry.cwe === "string" && entry.cwe) ||
-          (typeof entry.vulnerabilityCode === "string" &&
-            entry.vulnerabilityCode) ||
-          undefined,
-        url: typeof entry.url === "string" ? entry.url : undefined,
-      };
-    })
-    .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
 });
 
 const RESULT_STAT_LABELS: Readonly<Record<string, string>> = {
@@ -1104,34 +1032,9 @@ const prettyDetailResultJson = computed(() => {
   }
 });
 
-const SEVERITY_RANK: Readonly<Record<string, number>> = {
-  CRITICAL: 0,
-  HIGH: 1,
-  MEDIUM: 2,
-  LOW: 3,
-  INFO: 4,
-};
-
-function severityRank(severity?: string): number {
-  const key = (severity || "").trim().toUpperCase();
-  return SEVERITY_RANK[key] ?? 99;
-}
-
-function resultSeverityType(severity?: string) {
-  switch ((severity || "").toLowerCase()) {
-    case "critical":
-    case "high":
-      return "danger" as const;
-    case "medium":
-      return "warning" as const;
-    default:
-      return "info" as const;
-  }
-}
-
 function showDetail(row: TaskRow) {
   detail.value = { ...row };
-  detailResultView.value = "friendly";
+  detailResultExpanded.value = [];
   detailRequestView.value = "friendly";
   detailVisible.value = true;
   void detailLoader.load(row.id);
@@ -1158,9 +1061,20 @@ async function downloadReport(taskId: number) {
 async function retryTask(row: TaskRow) {
   if (retrying.value) return;
   retrying.value = row.id;
+  const storageKey = `toolbox:pending-task-retry:${row.id}`;
+  let key = pendingRetryKeys.get(row.id);
+  try { key ||= sessionStorage.getItem(storageKey) || undefined; } catch { /* Memory fallback. */ }
+  key ||= globalThis.crypto?.randomUUID?.()
+    || `retry-${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+  pendingRetryKeys.set(row.id, key);
+  try { sessionStorage.setItem(storageKey, key); } catch { /* Memory fallback. */ }
   try {
-    const { data } = await endpoints.retryTask(row.id);
-    ElMessage.success(`已创建重试任务 #${data.id}`);
+    const { data } = await endpoints.retryTask(row.id, key);
+    pendingRetryKeys.delete(row.id);
+    try { sessionStorage.removeItem(storageKey); } catch { /* Memory fallback. */ }
+    const message = `重试任务 #${data.id}：${data.progressMessage || data.status}`;
+    if (["REJECTED", "FAILED", "TIMEOUT", "CANCELLED"].includes(data.status)) ElMessage.error(message);
+    else ElMessage.success(message);
     await load();
   } catch (error) {
     ElMessage.error(toErrorMessage(error, "任务重试失败"));
@@ -1227,17 +1141,8 @@ function statusLabel(status?: string) {
   return (status && labels[status]) || "未知状态";
 }
 
-function terminationLabel(reason?: string) {
-  if (!reason) return "未终止";
-  const labels: Record<string, string> = {
-    TIMEOUT: "执行超时", FAILED: "执行失败", AUTHORIZATION_CHANGED: "授权发生变化",
-    USER_CANCELLED: "用户取消", USER_CANCELED: "用户取消", CANCELLED: "已取消",
-    ZOMBIE_REAPED: "执行进程失联", PREREQUISITE_FAILED: "前置任务失败",
-    UNAVAILABLE_TOOL: "工具不可用", WORKFLOW_STOPPED: "工作流已停止",
-    AUTH_CHANGED: "授权变更", REJECTED: "已拒绝",
-    MISSING_DEPENDENCY: "前置任务不存在", PREREQUISITE_NOT_COMPLETED: "前置任务未成功完成",
-  };
-  return labels[reason] || statusLabel(reason);
+function viewFindings(taskId: number) {
+  void router.push({ path: "/findings", query: { taskId: String(taskId) } });
 }
 
 function askCopilot(row: TaskRow) {
@@ -1254,16 +1159,37 @@ function askCopilot(row: TaskRow) {
     mode: "analyze",
     prompt:
       row.status === "SUCCESS"
-        ? "解读这个任务的执行结果、关键证据和风险优先级，并给出下一步安全验证建议。"
+        ? "检查这个任务的执行状态、完成量、耗时和日志，说明执行是否完整以及是否需要调整任务参数。"
         : "诊断这个任务当前状态或失败原因，给出安全、可执行的排查与重试建议。",
   });
   void router.push("/");
 }
 
+function notificationScheduleRowClass({ row }: { row: ScanSchedule }) {
+  return row.id === Number(route.query.scheduleId) ? "notification-schedule-row" : "";
+}
+function openNotificationTask() {
+  const taskId = Number(route.query.taskId);
+  if (Number.isSafeInteger(taskId) && taskId > 0) {
+    scheduleVisible.value = false;
+    const task = rows.value.find(row => row.id === taskId);
+    showDetail(task || { id: taskId, projectId: 0, targetId: 0, toolCode: "", status: "", progress: 0, createdAt: "" });
+  }
+  const scheduleId = Number(route.query.scheduleId);
+  if (Number.isSafeInteger(scheduleId) && scheduleId > 0) {
+    detailVisible.value = false;
+    void openScheduleDialog().then(() => {
+      if (Number(route.query.scheduleId) !== scheduleId) return;
+      const index = schedules.value.findIndex(row => row.id === scheduleId);
+      if (index >= 0) schedulePage.value = Math.floor(index / schedulePageSize.value) + 1;
+    });
+  }
+}
+watch(() => [route.query.taskId, route.query.scheduleId, route.query._notice], openNotificationTask);
+
 onMounted(() => {
-  load();
+  void load().then(openNotificationTask);
   void loadFilterContext();
-  void loadNotificationPreferences();
   stopTaskFeed = connectTaskEventFeed(applyTaskEvent);
   timer = window.setInterval(load, 10_000);
 });
@@ -1279,9 +1205,9 @@ onUnmounted(() => {
     <div class="section-head">
       <div>
         <h3>任务控制中心</h3>
-        <p>任务状态、真实完成量和执行日志通过实时事件持续更新。</p>
+        <p>跟踪执行进度、排查失败、管理重试与定时任务；风险确认与修复请前往安全发现。</p>
       </div>
-      <div class="section-head-actions">
+      <div v-if="recordSource === 'project'" class="section-head-actions">
         <el-button @click="load">刷新</el-button
         ><el-button class="schedule-trigger" @click="openScheduleDialog"
           >定时任务<span v-if="schedules.length" class="schedule-count">{{
@@ -1290,6 +1216,12 @@ onUnmounted(() => {
         >
       </div>
     </div>
+    <el-tabs v-if="canReadTraffic" v-model="recordSource" aria-label="任务来源">
+      <el-tab-pane label="项目任务" name="project" />
+      <el-tab-pane label="流量检测" name="traffic" />
+    </el-tabs>
+    <TrafficScanRecords v-if="recordSource === 'traffic'" mode="tasks" />
+    <template v-else>
     <div class="task-filter-bar" aria-label="任务筛选">
       <el-select
         v-model="statusFilter"
@@ -1455,11 +1387,17 @@ onUnmounted(() => {
               @click="showDetail(scope.row)"
               >详情</el-button
             ><el-button
+              class="row-action"
+              size="small"
+              :icon="Search"
+              @click="viewFindings(scope.row.id)"
+              >查看发现</el-button
+            ><el-button
               class="row-action row-action--ai"
               size="small"
               :icon="MagicStick"
               @click="askCopilot(scope.row)"
-              >AI 分析</el-button
+              >执行诊断</el-button
             ><el-button
               v-if="['PENDING', 'RUNNING'].includes(scope.row.status)"
               class="row-action row-action--danger"
@@ -1504,6 +1442,7 @@ onUnmounted(() => {
       class="tasks-pagination"
       :total="total"
     />
+    </template>
   </section>
 
   <el-dialog
@@ -1744,6 +1683,7 @@ onUnmounted(() => {
     <template v-if="schedules.length">
       <el-table
         :data="pagedSchedules"
+        :row-class-name="notificationScheduleRowClass"
         size="small"
         max-height="260"
         class="schedule-table"
@@ -1916,102 +1856,36 @@ onUnmounted(() => {
       <el-descriptions-item label="失败原因" :span="2">{{
         displayTaskError(detail.errorMessage)
       }}</el-descriptions-item>
-      <el-descriptions-item label="执行结果" :span="2">
+      <el-descriptions-item label="执行摘要" :span="2">
         <div class="task-result-panel">
-          <div class="task-result-toolbar">
-            <el-radio-group
-              v-model="detailResultView"
-              size="small"
-              class="task-result-switch"
-            >
-              <el-radio-button value="friendly">直观视图</el-radio-button>
-              <el-radio-button value="raw">原始数据</el-radio-button>
-            </el-radio-group>
-            <span v-if="detailResultMatches.length" class="task-result-count"
-              >共 {{ detailResultMatches.length }} 条</span
-            >
-          </div>
-
           <p v-if="detailLoading && !detail.resultJson" class="task-result-empty" role="status">正在读取最新执行结果…</p>
           <p v-else-if="!detail.resultJson" class="task-result-empty">{{ detailLoadError ? '尚未取得最新结果，请重试刷新详情。' : taskDetailEmptyResultText(detail) }}</p>
-
-          <template v-else-if="detailResultView === 'friendly'">
-            <template v-if="parsedDetailResult">
-              <p v-if="detailResultSummary" class="task-result-summary">
-                <el-icon class="task-result-summary-icon"><InfoCircle /></el-icon>
-                <span class="task-result-summary-text">{{
-                  detailResultSummary
-                }}</span>
-              </p>
-              <div v-if="detailResultStats.length" class="task-result-stats">
-                <div
-                  v-for="stat in detailResultStats"
-                  :key="stat.label"
-                  class="task-result-stat"
-                >
-                  <strong>{{ stat.value }}</strong
-                  ><span>{{ stat.label }}</span>
-                </div>
+          <template v-else>
+            <div v-if="detailResultSummary" class="task-result-summary">
+              <el-icon class="task-result-summary-icon"><InfoCircle /></el-icon>
+              <MarkdownBody class="task-result-summary-text" :content="detailResultSummary" />
+            </div>
+            <div v-if="detailResultStats.length" class="task-result-stats">
+              <div v-for="stat in detailResultStats" :key="stat.label" class="task-result-stat">
+                <strong>{{ stat.value }}</strong><span>{{ stat.label }}</span>
               </div>
-              <div
-                v-if="detailResultMatches.length"
-                class="task-result-matches"
-              >
-                <div
-                  v-for="(match, index) in detailResultMatches"
-                  :key="index"
-                  class="task-result-match"
-                >
-                  <el-tag
-                    size="small"
-                    effect="plain"
-                    class="task-result-match-sev"
-                    :type="resultSeverityType(match.severity)"
-                    >{{ severityLabel(match.severity) }}</el-tag
-                  >
-                  <div class="task-result-match-body">
-                    <strong>{{ findingTitleLabel(match.name, detail.toolCode) }}</strong>
-                    <span v-if="findingTitleLabel(match.name, detail.toolCode) !== match.name">原始名称：{{ match.name }}</span>
-                    <span v-if="match.cwe" class="task-result-match-cwe">{{
-                      match.cwe
-                    }}</span>
-                    <a
-                      v-if="match.url"
-                      class="task-result-match-url"
-                      :href="match.url"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      >{{ match.url }}</a
-                    >
-                  </div>
-                </div>
-              </div>
-              <p v-else class="task-result-empty">未产生可展示的结构化条目。</p>
-            </template>
-            <template v-else>
-              <p class="task-result-empty">
-                结果不是结构化数据，已展示原始内容。
-              </p>
-              <FluentCodeBlock
-                title="原始数据"
-                :content="prettyDetailResultJson"
-                icon="document"
-                :max-rows="16"
-              />
-            </template>
+            </div>
+            <ProjectEvidenceResult v-if="detail.toolCode === 'retrieve_project_context' && parsedDetailResult" :data="parsedDetailResult.data" />
+            <p v-if="!detailResultSummary && !detailResultStats.length && detail.toolCode !== 'retrieve_project_context'" class="task-result-empty">执行输出已记录，可展开原始输出排查执行情况。</p>
+            <el-collapse v-model="detailResultExpanded">
+              <el-collapse-item name="raw" title="原始输出（高级排查）">
+                <FluentCodeBlock title="原始输出" :content="prettyDetailResultJson" icon="document" :max-rows="16" />
+              </el-collapse-item>
+            </el-collapse>
           </template>
-
-          <FluentCodeBlock
-            v-else
-            title="原始数据"
-            :content="prettyDetailResultJson"
-            icon="document"
-            :max-rows="16"
-          />
+          <div class="task-result-toolbar">
+            <span class="task-result-count">风险详情、证据与修复进展统一在安全发现中查看。</span>
+            <el-button size="small" :icon="Search" @click="viewFindings(detail.id)">查看发现</el-button>
+          </div>
         </div>
       </el-descriptions-item>
       <el-descriptions-item label="终止原因">{{
-        terminationLabel(detail.terminationReason)
+        taskTerminationLabel(detail.terminationReason)
       }}</el-descriptions-item
       ><el-descriptions-item label="超时时间">{{
         detail.timeoutAt ? formatDateTime(detail.timeoutAt) : "无"
@@ -2416,16 +2290,6 @@ onUnmounted(() => {
 }
 .schedule-mode-picker :deep(.el-radio-button__inner) {
   min-width: 76px;
-  color: var(--app-text);
-  border-color: var(--app-border);
-  background: var(--app-surface);
-}
-.schedule-mode-picker
-  :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
-  color: var(--system-accent-foreground);
-  border-color: var(--app-accent);
-  background: var(--app-accent);
-  box-shadow: -1px 0 0 0 var(--app-accent);
 }
 .schedule-parameter-panel {
   margin: 0 0 18px;
@@ -2618,6 +2482,10 @@ onUnmounted(() => {
   font-size: 12px;
   line-height: 1.5;
 }
+.schedule-table :deep(.notification-schedule-row) {
+  --el-table-tr-bg-color: var(--el-color-primary-light-9);
+}
+
 .schedule-table {
   margin-top: 4px;
 }
@@ -2693,16 +2561,6 @@ onUnmounted(() => {
 }
 .task-result-switch :deep(.el-radio-button__inner) {
   min-width: 78px;
-  color: var(--app-text);
-  border-color: var(--app-border);
-  background: var(--app-surface);
-}
-.task-result-switch
-  :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
-  color: var(--system-accent-foreground);
-  border-color: var(--app-accent);
-  background: var(--app-accent);
-  box-shadow: -1px 0 0 0 var(--app-accent);
 }
 .task-result-count {
   color: var(--app-muted);
@@ -2761,51 +2619,6 @@ onUnmounted(() => {
 .task-result-stat span {
   color: var(--app-muted);
   font-size: 11px;
-}
-.task-result-matches {
-  display: flex;
-  max-height: 280px;
-  overflow: auto;
-  flex-direction: column;
-  border: 1px solid var(--app-border);
-  border-radius: var(--fluent-radius-card);
-}
-.task-result-match {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 9px 12px;
-  border-bottom: 1px solid var(--app-border);
-}
-.task-result-match:last-child {
-  border-bottom: none;
-}
-.task-result-match-sev {
-  flex: none;
-}
-.task-result-match-body {
-  display: flex;
-  min-width: 0;
-  flex: 1 1 auto;
-  flex-direction: column;
-  gap: 2px;
-}
-.task-result-match-body strong {
-  color: var(--app-text);
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.45;
-}
-.task-result-match-cwe {
-  color: var(--app-muted);
-  font-size: 11px;
-}
-.task-result-match-url {
-  overflow: hidden;
-  color: var(--app-accent);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .task-result-empty {
   margin: 0;

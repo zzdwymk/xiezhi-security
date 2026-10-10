@@ -7,7 +7,7 @@
  *    - Web靶点：http://192.168.136.132/Less-1/?id=1 (Web安全头、技术栈泄露、sqlmap注入探测等)
  *    - 主机资产：192.168.136.132 (Nmap服务识别、端口连通性、fscan主机漏洞扫描)
  * 3. 跟踪任务执行直至完成，捕获输出
- * 4. 深入结果中心提取每一条漏洞 Findings（标题、等级、工具、证据、修复建议）
+ * 4. 深入安全发现提取每一条漏洞 Findings（标题、等级、工具、证据、修复建议）
  * 5. 生成专业漏洞报告，保持桌面 EXE 窗口开启供用户人工检查
  */
 const path = require("node:path");
@@ -237,10 +237,10 @@ const EXE_PATH = path.join(
 
     H.record("V-03", "检测任务执行完成度", allFinished ? "PASS" : "WARN", `任务执行观察，最近任务状态样本:\n` + taskSummaryList.slice(0, 5).join("\n"));
 
-    // 6. 深入审查“结果中心”（Findings）中的漏洞详情
+    // 6. 深入审查“安全发现”（Findings）中的漏洞详情
     H.phase("漏洞审查与证据提取 (Findings Audit)");
     await dismissStrayModal(page);
-    await navigate(page, "结果中心");
+    await navigate(page, "安全发现");
     await sleep(3000);
 
     // 从页面会话中获取完整 Findings 数据
@@ -274,7 +274,7 @@ const EXE_PATH = path.join(
     });
 
     console.log("===============================================================");
-    console.log(` 漏洞提取完成！结果中心共汇总出 ${extractedFindings.length} 项具体漏洞/风险详情：`);
+    console.log(` 漏洞提取完成！安全发现共汇总出 ${extractedFindings.length} 项具体漏洞/风险详情：`);
     for (const f of extractedFindings) {
       console.log(`\n[漏洞 #${f.index}] ${f.title} (等级: ${f.severity}, 工具: ${f.sourceTool})`);
       console.log(`  - 目标ID: ${f.targetId}`);

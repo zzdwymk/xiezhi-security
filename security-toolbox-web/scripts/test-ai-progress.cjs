@@ -247,4 +247,15 @@ test('terminal tasks without finish times never borrow another live task clock',
   const p = buildAiProgress(message({ status: 'completed', modelStreamStatus: 'completed', progressFinishedAt: at(3), taskIds: [1] }), [task], origin + 90000);
   assert.equal(p.elapsed, undefined);
 });
+test('explicit approval dispatch refusal has a persistent failed execution state, not a model failure', () => {
+  const m = message({ status: 'completed', modelStreamStatus: 'completed', content: 'original plan', approvalId: 63, approvalStatus: 'APPROVED', approvalDispatchStatus: 'rejected', approvalDispatchError: '授权目标已停用', steps: [{ toolCode: 'nmap_service_scan' }] });
+  const p = buildAiProgress(m, [], origin + 10000); assert.equal(p.currentTitle, '执行已拒绝，未派发任务'); assert.equal(p.tone, 'failed'); assert(p.currentDetail.includes('授权目标已停用')); assert.equal(p.active, false); assert.equal(m.content, 'original plan');
+  const { normalizeConversations } = load(path.join(__dirname, '../src/stores/conversations.ts')); const restored = normalizeConversations([{ messages: [m] }])[0].messages[0];
+  assert.equal(restored.approvalDispatchStatus, 'rejected'); assert.equal(restored.approvalDispatchError, '授权目标已停用'); assert.equal(restored.approvalStatus, 'APPROVED'); assert.equal(restored.status, 'completed'); assert.equal(buildAiProgress(restored, [], origin + 90000).currentTitle, p.currentTitle);
+});
+test('interrupted approval dispatch becomes unknown after reload and never invents zero tasks', () => {
+  const { normalizeConversations } = load(path.join(__dirname, '../src/stores/conversations.ts'));
+  const restored = normalizeConversations([{ messages: [message({ status: 'completed', modelStreamStatus: 'completed', approvalId: 63, approvalStatus: 'APPROVED', approvalDispatchStatus: 'dispatching', steps: [{ toolCode: 'nmap_service_scan' }] })] }])[0].messages[0];
+  assert.equal(restored.approvalDispatchStatus, 'unknown'); const p = buildAiProgress(restored, [], origin + 90000); assert.equal(p.currentTitle, '派发结果待核实'); assert(!p.currentDetail.includes('未派发任务')); assert.equal(p.tone, 'warning');
+});
 console.log(`${passed} AI progress behavior checks passed.`);

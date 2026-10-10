@@ -27,12 +27,12 @@ async function check(name,run){await run();results.push({name,status:'PASS'});co
  await server.listen();browser=await chromium.launch({executablePath:'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',headless:true});
  const page=await browser.newPage({viewport:{width:720,height:850}});page.on('pageerror',e=>errors.push(e.message));
  await page.goto('http://127.0.0.1:'+server.httpServer.address().port+'/__approval');await page.getByRole('button',{name:'查看审批详情'}).waitFor();
- const dialog=page.getByRole('dialog',{name:'确认本次检测',exact:true});
+ const dialog=page.getByRole('dialog',{name:'确认 AI 行动方案',exact:true});
  await check('history restoration does not auto-open; newly delivered current approval opens with exact identity',async()=>{
   assert.equal(await dialog.isVisible(),false);await page.evaluate(()=>window.deliver('other'));assert.equal(await dialog.isVisible(),false);
   await page.evaluate(()=>window.deliver('current'));await dialog.waitFor();
   assert.equal(await dialog.locator('[data-approval-id]').getAttribute('data-approval-id'),'40');
-  const text=await dialog.innerText();assert.match(text,/审批单 #40/);assert.match(text,/192\.168\.136\.132/);assert.match(text,/默认安全模板/);assert.match(text,/需人工确认/);
+  const text=await dialog.innerText();assert.match(text,/行动方案 #40/);assert.match(text,/192\.168\.136\.132/);assert.match(text,/默认安全模板/);assert.match(text,/需人工确认/);
   assert.match(await page.locator('.ai-progress-panel').innerText(),/等待确认执行计划/);
   await page.screenshot({path:path.join(out,'approval-nuclei.png'),fullPage:true,animations:'disabled'});
  });
@@ -44,14 +44,14 @@ async function check(name,run){await run();results.push({name,status:'PASS'});co
  });
  await check('busy approval disables every decision and close control',async()=>{
   await page.evaluate(()=>window.fixture.busy=true);
-  for(const name of ['批准本次执行','拒绝','关闭，继续等待'])assert.equal(await dialog.getByRole('button',{name,exact:true}).isDisabled(),true);
+  for(const name of ['允许执行','拒绝执行','关闭，继续等待'])assert.equal(await dialog.getByRole('button',{name,exact:true}).isDisabled(),true);
   await page.keyboard.press('Escape');assert.equal(await dialog.isVisible(),true);assert.equal(await page.evaluate(()=>window.fixture.decisions.length),0);
   await page.evaluate(()=>window.fixture.busy=false);
  });
  await check('approval and rejection emit their existing handler decisions once',async()=>{
-  await dialog.getByRole('button',{name:'批准本次执行',exact:true}).click();await dialog.waitFor({state:'hidden'});
+  await dialog.getByRole('button',{name:'允许执行',exact:true}).click();await dialog.waitFor({state:'hidden'});
   assert.deepEqual(await page.evaluate(()=>window.fixture.decisions),['APPROVED']);
-  await page.getByRole('button',{name:'查看审批详情'}).click();await dialog.getByRole('button',{name:'拒绝',exact:true}).click();await dialog.waitFor({state:'hidden'});
+  await page.getByRole('button',{name:'查看审批详情'}).click();await dialog.getByRole('button',{name:'拒绝执行',exact:true}).click();await dialog.waitFor({state:'hidden'});
   assert.deepEqual(await page.evaluate(()=>window.fixture.decisions),['APPROVED','REJECTED']);
  });
  await check('actual plan parameters retain false/LOW and ports/SAFE as readable Chinese at 320px',async()=>{

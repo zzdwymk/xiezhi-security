@@ -53,28 +53,22 @@ public class AiAgentRuntimeClient {
     @Override void close();
   }
 
-  public record PublicProgress(String stage, String message, Integer evidenceCount, String evidenceDecision) {}
+  public record PublicProgress(String stage, String message, Integer evidenceCount, String evidenceDecision,
+      String modelDecision, List<String> reasonCodes, String assessmentSource, String guardReason) {
+    public PublicProgress(String stage, String message, Integer evidenceCount, String evidenceDecision) {
+      this(stage, message, evidenceCount, evidenceDecision, null, List.of(), null, null);
+    }
+  }
   static final int CONTRACT_VERSION = 3;
   private static final String RUNTIME_LEDGER_GENESIS_DIGEST = "sha256:" + "0".repeat(64);
   private static final int MAX_EVIDENCE_EVENT_BYTES = 64 * 1024;
   private static final int MAX_EVIDENCE_ITEMS = 10;
   private static final int MAX_TURN_EVIDENCE_IDS = 20;
+  private static final int RUNTIME_MAX_LLM_CALLS = 4;
   private static final String SHA256_PATTERN = "sha256:[0-9a-f]{64}";
   private static final String SAFE_ID_PATTERN = "[A-Za-z0-9][A-Za-z0-9_.:-]*";
   private static final List<String> ALLOWED_RUNTIME_TOOLS =
-      List.of(
-          "retrieve_project_context",
-          "nmap_service_scan",
-          "tcp_ports",
-          "http_headers",
-          "http_security_check",
-          "tls_config",
-          "nuclei_scan",
-          "afrog_scan",
-          "xray_scan",
-          "zap_scan",
-          "fscan_scan",
-          "msf_scan");
+      AiToolCatalog.RUNTIME_CODES;
   private static final Set<String> FORBIDDEN_MSF_OPTIONS =
       Set.of("RHOST", "RHOSTS", "RPORT", "LHOST", "LPORT", "PAYLOAD", "CMD", "COMMAND",
           "SHELL", "CHOST", "CPORT");
@@ -312,6 +306,137 @@ public class AiAgentRuntimeClient {
     }
   }
 
+  /** Retrieves project evidence without entering an agent turn or reading conversation memory. */
+  @SuppressWarnings("unchecked")
+  public Map<String, Object> retrieveProjectEvidence(Long projectId, Long targetId, String query) {
+    if (projectId == null || projectId <= 0 || targetId == null || targetId <= 0) {
+      throw new IllegalArgumentException("项目和目标编号必须是正整数");
+    }
+    if (query == null || query.isBlank() || query.codePointCount(0, query.length()) > 2000
+        || query.codePoints().anyMatch(Character::isISOControl)) {
+      throw new IllegalArgumentException("检索内容不能为空、超过 2000 字或包含控制字符");
+    }
+    String strippedQuery = stripProjectEvidenceText(query);
+    if (strippedQuery.isEmpty()) {
+      throw new IllegalArgumentException("检索内容不能为空");
+    }
+    if (!enabled) throw new RuntimeUnavailableException("智能服务未启用，无法检索项目依据");
+    try {
+      RestClient.RequestBodySpec spec = restClient.post()
+          .uri("/index/project/{projectId}/query", projectId)
+          .contentType(MediaType.APPLICATION_JSON)
+          .accept(MediaType.APPLICATION_JSON);
+      authorizeProject(spec, projectId, "index-read");
+      String response = spec.body(Map.of("targetId", targetId, "query", strippedQuery, "topK", 5))
+          .retrieve().body(String.class);
+      if (response == null || response.isBlank()) {
+        throw new RuntimeProtocolException("项目依据检索未返回完整结果");
+      }
+      JsonNode bundle;
+      try {
+        bundle = objectMapper.reader()
+            .with(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+            .with(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+            .readTree(response);
+      } catch (IOException ex) {
+        throw new RuntimeProtocolException("项目依据检索结果不是有效的 JSON", ex);
+      }
+      validateProjectEvidenceBundle(bundle, projectId, targetId, strippedQuery);
+      return objectMapper.convertValue(bundle, Map.class);
+    } catch (RuntimeProtocolException ex) {
+      throw ex;
+    } catch (Exception ex) {
+      throw new RuntimeUnavailableException("项目依据检索暂时不可用，请稍后重试", ex);
+    }
+  }
+
+  private void validateProjectEvidenceBundle(
+      JsonNode bundle, long projectId, long targetId, String query) {
+    Set<String> fields = Set.of("projectId", "targetId", "conversationId", "query", "round",
+        "retrievalMethod", "indexRevision", "items");
+    requireFields(bundle, fields, fields, "项目依据");
+    if (!matchesEvidenceScopeId(bundle.get("projectId"), projectId)
+        || !matchesEvidenceScopeId(bundle.get("targetId"), targetId)
+        || !bundle.get("conversationId").isNull()) {
+      throw new RuntimeProtocolException("项目依据超出本次项目或目标范围");
+    }
+    JsonNode round = bundle.get("round");
+    if (!round.isIntegralNumber() || !round.canConvertToInt() || round.intValue() != 0
+        || !query.equals(strictProjectEvidenceText(bundle, "query", 2000))) {
+      throw new RuntimeProtocolException("项目依据检索轮次或查询不匹配");
+    }
+    if (!Set.of("bm25", "real_embedding").contains(strictProjectEvidenceText(bundle, "retrievalMethod", 32))
+        || !strictProjectEvidenceText(bundle, "indexRevision", 71).matches(SHA256_PATTERN)) {
+      throw new RuntimeProtocolException("项目依据检索来源或索引版本无效");
+    }
+    JsonNode items = bundle.get("items");
+    if (!items.isArray() || items.size() > MAX_EVIDENCE_ITEMS) {
+      throw new RuntimeProtocolException("项目依据条目格式或数量无效");
+    }
+    Set<String> evidenceIds = new java.util.HashSet<>();
+    int snippetLength = 0;
+    Set<String> itemFields = Set.of("evidenceId", "documentId", "title", "source", "snippet",
+        "score", "targetId", "contentDigest");
+    for (JsonNode item : items) {
+      requireFields(item, itemFields, itemFields, "项目依据条目");
+      if (!evidenceIds.add(safeProtocolIdentifier(item, "evidenceId", 128))) {
+        throw new RuntimeProtocolException("项目依据包含重复证据编号");
+      }
+      strictProjectEvidenceText(item, "documentId", 128);
+      strictProjectEvidenceText(item, "title", 300);
+      String source = strictProjectEvidenceText(item, "source", 200);
+      String snippet = strictProjectEvidenceText(item, "snippet", 2000);
+      snippetLength += snippet.codePointCount(0, snippet.length());
+      JsonNode score = item.get("score");
+      if (!score.isNumber() || !Double.isFinite(score.doubleValue()) || score.doubleValue() < 0) {
+        throw new RuntimeProtocolException("项目依据相关性分数无效");
+      }
+      JsonNode itemTarget = item.get("targetId");
+      if ("conversation".equalsIgnoreCase(stripProjectEvidenceText(source))
+          || !(matchesEvidenceScopeId(itemTarget, targetId)
+              || ("project".equals(source) && itemTarget.isNull()))) {
+        throw new RuntimeProtocolException("项目依据条目包含会话记忆或超出本次目标范围");
+      }
+      if (!strictProjectEvidenceText(item, "contentDigest", 71).matches(SHA256_PATTERN)) {
+        throw new RuntimeProtocolException("项目依据内容摘要无效");
+      }
+    }
+    if (snippetLength > 12_000) {
+      throw new RuntimeProtocolException("项目依据片段超过总长度限制");
+    }
+  }
+
+  private boolean matchesEvidenceScopeId(JsonNode value, long expected) {
+    return value != null && value.isIntegralNumber() && value.canConvertToLong()
+        && value.longValue() > 0 && value.longValue() == expected;
+  }
+
+  private String strictProjectEvidenceText(JsonNode node, String field, int maxLength) {
+    JsonNode value = node.get(field);
+    if (value == null || !value.isTextual() || stripProjectEvidenceText(value.textValue()).isEmpty()
+        || containsForbiddenControl(value.textValue())
+        || value.textValue().codePointCount(0, value.textValue().length()) > maxLength) {
+      throw new RuntimeProtocolException("项目依据字段 " + field + " 格式无效");
+    }
+    return value.textValue();
+  }
+
+  private String stripProjectEvidenceText(String value) {
+    int start = 0;
+    int end = value.length();
+    while (start < end) {
+      int point = value.codePointAt(start);
+      if (!Character.isWhitespace(point) && !Character.isSpaceChar(point)) break;
+      start += Character.charCount(point);
+    }
+    while (end > start) {
+      int point = value.codePointBefore(end);
+      if (!Character.isWhitespace(point) && !Character.isSpaceChar(point)) break;
+      end -= Character.charCount(point);
+    }
+    return value.substring(start, end);
+  }
+
   /** Acknowledge a saved conversation summary; callers may choose best-effort delivery. */
   public void appendMemory(
       long projectId,
@@ -533,7 +658,7 @@ public class AiAgentRuntimeClient {
     body.put("nodeRunId", request.nodeRunId());
     body.put(
         "budget",
-        Map.of("maxRetrievalRounds", 2, "maxLlmCalls", 4, "timeoutSeconds", 90));
+        Map.of("maxRetrievalRounds", 2, "maxLlmCalls", RUNTIME_MAX_LLM_CALLS, "timeoutSeconds", 90));
 
     List<Map<String, Object>> workflowSteps = loadWorkflowSteps();
     if (!workflowSteps.isEmpty()) body.put("workflow", workflowSteps);
@@ -750,7 +875,7 @@ public class AiAgentRuntimeClient {
           "parameters",
           step.get("parameters") instanceof Map<?, ?> ? step.get("parameters") : Map.of());
       item.put("risk", Objects.toString(step.get("risk"), "SAFE"));
-      item.put("requiresApproval", Boolean.TRUE.equals(step.get("requiresApproval")));
+      item.put("requiresApproval", AiToolCatalog.requiresApproval(tool) || Boolean.TRUE.equals(step.get("requiresApproval")));
       Object rawGroup = step.get("group");
       int group = rawGroup instanceof Number number ? number.intValue() : 0;
       item.put("group", Math.max(0, Math.min(group, 32)));
@@ -772,7 +897,7 @@ public class AiAgentRuntimeClient {
     String line;
     while ((line = reader.readLine()) != null) {
       if (line.startsWith(": toolbox-progress ")) {
-        if (++publicProgressCount <= 32 && line.length() <= 256) {
+        if (++publicProgressCount <= 32 && line.length() <= 512) {
           PublicProgress progress = parsePublicProgress(line.substring(19));
           Consumer<PublicProgress> progressSink = publicProgressSink.get();
           if (progress != null && progressSink != null) progressSink.accept(progress);
@@ -806,11 +931,16 @@ public class AiAgentRuntimeClient {
           .with(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(text);
       if (data == null || !data.isObject() || !data.path("stage").isTextual()) return null;
       for (var fields = data.fieldNames(); fields.hasNext();) {
-        if (!Set.of("stage", "count", "decision").contains(fields.next())) return null;
+        if (!Set.of("stage", "count", "decision", "modelDecision", "reasonCodes", "assessmentSource", "guardReason")
+            .contains(fields.next())) return null;
       }
       String stage = data.path("stage").textValue();
       Integer count = null;
       String decision = null;
+      String modelDecision = null;
+      String assessmentSource = null;
+      String guardReason = null;
+      List<String> reasonCodes = new ArrayList<>();
       if (data.has("count")) {
         if (!"EVIDENCE_READY".equals(stage) || !data.path("count").isIntegralNumber()
             || !data.path("count").canConvertToInt() || data.path("count").intValue() < 0
@@ -822,26 +952,84 @@ public class AiAgentRuntimeClient {
         decision = data.path("decision").textValue();
         if (!Set.of("FINALIZE", "REWRITE_QUERY", "CLARIFY").contains(decision)) return null;
       }
+      boolean hasAssessment = data.has("modelDecision") || data.has("reasonCodes")
+          || data.has("assessmentSource") || data.has("guardReason");
+      if (hasAssessment) {
+        if (!"ASSESSED".equals(stage) || decision == null || !data.path("modelDecision").isTextual()
+            || !data.path("assessmentSource").isTextual() || !data.path("reasonCodes").isArray()) return null;
+        modelDecision = data.path("modelDecision").textValue();
+        assessmentSource = data.path("assessmentSource").textValue();
+        if (!Set.of("MODEL", "LOCAL_RULE").contains(assessmentSource)) return null;
+        Set<String> allowedReasons = switch (modelDecision) {
+          case "FINALIZE" -> Set.of("DIRECT_SUPPORT", "PARTIAL_SUPPORT");
+          case "REWRITE_QUERY" -> Set.of("PARTIAL_SUPPORT", "NO_RELEVANT_EVIDENCE", "QUERY_TOO_BROAD");
+          case "CLARIFY" -> Set.of("NO_RELEVANT_EVIDENCE", "CONFLICTING_EVIDENCE", "SCOPE_MISMATCH");
+          default -> Set.of();
+        };
+        if (data.path("reasonCodes").isEmpty() || data.path("reasonCodes").size() > 4) return null;
+        for (JsonNode reason : data.path("reasonCodes")) {
+          if (!reason.isTextual() || !allowedReasons.contains(reason.textValue())
+              || reasonCodes.contains(reason.textValue())) return null;
+          reasonCodes.add(reason.textValue());
+        }
+        if (data.has("guardReason")) {
+          if (!data.path("guardReason").isTextual()) return null;
+          guardReason = data.path("guardReason").textValue();
+          if (!Set.of("REWRITE_LIMIT_REACHED", "REWRITE_REJECTED").contains(guardReason)
+              || !"REWRITE_QUERY".equals(modelDecision) || !"CLARIFY".equals(decision)) return null;
+        } else if (!modelDecision.equals(decision)) return null;
+      }
       String message = switch (stage) {
         case "ROUTING" -> "正在等待模型理解当前请求";
         case "RETRIEVING" -> "正在检索当前项目和目标范围内的资料";
         case "EVIDENCE_READY" -> count == null ? null : "已找到 " + count + " 条项目依据，正在核对相关性";
         case "ASSESSING" -> "正在等待模型评估证据是否足以支持回答";
-        case "ASSESSED" -> decision == null ? null : switch (decision) {
-          case "FINALIZE" -> "已评估现有依据，将据此回答并说明证据边界";
-          case "REWRITE_QUERY" -> "现有依据不足，正在调整查询并补充检索";
-          default -> "现有依据不足，需要补充项目资料或缩小问题范围";
-        };
+        case "ASSESSED" -> decision == null ? null : assessmentMessage(
+            decision, modelDecision, reasonCodes, assessmentSource, guardReason);
         case "GENERATING" -> "正在等待模型整理回答或受控计划";
         case "CONTRACT_RETRY" -> "模型输出未通过格式校验，正在进行一次结构纠正重试，尚未执行工具";
         case "AUTHORIZING" -> "正在校验计划与授权范围，尚未创建检测任务";
         default -> null;
       };
-      return message == null ? null : new PublicProgress(stage, message, count, decision);
+      return message == null ? null : new PublicProgress(stage, message, count, decision,
+          modelDecision, List.copyOf(reasonCodes), assessmentSource, guardReason);
     } catch (IOException | RuntimeException ignored) {
       // Optional UI hints cannot invalidate an otherwise valid ledger stream.
       return null;
     }
+  }
+
+  private static String assessmentMessage(String decision, String modelDecision, List<String> reasonCodes,
+      String assessmentSource, String guardReason) {
+    if (modelDecision == null) {
+      return switch (decision) {
+        case "FINALIZE" -> "证据评估已结束，将据此生成回答或方案；此运行记录未提供具体评估原因";
+        case "REWRITE_QUERY" -> "证据评估已结束，将调整查询并补充检索；此运行记录未提供具体评估原因";
+        default -> "证据评估已结束，需要补充项目资料或缩小问题范围；此运行记录未提供具体评估原因";
+      };
+    }
+    List<String> reasons = reasonCodes.stream().map(reason -> switch (reason) {
+      case "DIRECT_SUPPORT" -> "现有证据提供直接支持";
+      case "PARTIAL_SUPPORT" -> "现有证据仅提供部分支持";
+      case "NO_RELEVANT_EVIDENCE" -> "未发现相关证据";
+      case "CONFLICTING_EVIDENCE" -> "现有证据存在冲突";
+      case "SCOPE_MISMATCH" -> "证据与请求范围不一致";
+      case "QUERY_TOO_BROAD" -> "查询范围过宽";
+      default -> throw new IllegalArgumentException("unvalidated assessment reason");
+    }).toList();
+    String disposition = switch (modelDecision) {
+      case "FINALIZE" -> "据此生成回答或方案";
+      case "REWRITE_QUERY" -> "调整查询并补充检索";
+      default -> "请求补充信息";
+    };
+    String message = ("MODEL".equals(assessmentSource) ? "模型评估：" : "本地规则评估：")
+        + String.join("、", reasons) + "；决定" + disposition + "。";
+    if (guardReason != null) {
+      message += "REWRITE_LIMIT_REACHED".equals(guardReason)
+          ? "系统已达到查询改写次数上限，最终改为请求补充信息。"
+          : "系统拒绝了重复或无效的查询改写，最终改为请求补充信息。";
+    }
+    return message;
   }
 
   private void flushEvent(StringBuilder data, Consumer<RuntimeEvent> sink) {
@@ -1075,6 +1263,9 @@ public class AiAgentRuntimeClient {
           || action.path("group").asInt() > 32) {
         throw new RuntimeProtocolException("AI Runtime action 风险或分组无效");
       }
+      if (AiToolCatalog.requiresApproval(toolCode) && !action.path("requiresApproval").booleanValue()) {
+        throw new RuntimeProtocolException("AI Runtime 高风险工具计划必须要求审批");
+      }
       JsonNode actionEvidenceNode = action.get("evidenceRefs");
       List<String> actionEvidence =
           ragDisabledLegacy && (actionEvidenceNode == null || actionEvidenceNode.isNull())
@@ -1097,7 +1288,7 @@ public class AiAgentRuntimeClient {
           new AiPlanResponse.PlanStep(
               toolCode,
               titleOf(toolCode),
-              "本地 AI Runtime 根据项目上下文提出",
+              "智能助手根据项目上下文提出",
               parameters,
               workflowNodeId,
               action.path("group").asInt(),
@@ -1170,11 +1361,13 @@ public class AiAgentRuntimeClient {
           case "tcp_ports" -> Set.of("ports");
           case "nmap_service_scan" -> Set.of("ports", "mode");
           case "http_security_check" -> Set.of("check");
-          case "afrog_scan", "xray_scan" -> Set.of("pocCodes", "allPocs");
+          case "afrog_scan", "xray_scan", "nuclei_scan" -> Set.of("pocCodes", "allPocs");
           case "zap_scan" -> Set.of("spider", "strength");
           case "fscan_scan" -> Set.of("ports", "vulnMode");
           case "msf_scan" -> Set.of("module", "modules", "options");
-          case "nuclei_scan", "http_headers", "tls_config" -> Set.of();
+          case "sqlmap_scan" -> Set.of("path", "level", "risk", "technique");
+          case "zap_fuzz" -> ZapFuzzAiParameters.KEYS;
+          case "http_headers", "tls_config" -> Set.of();
           default -> throw new RuntimeProtocolException("AI Runtime 工具不在白名单");
         };
     requireFields(raw, allowed, Set.of(), "parameters");
@@ -1199,6 +1392,9 @@ public class AiAgentRuntimeClient {
         result.put("check", check);
       }
       case "afrog_scan", "xray_scan" -> result.putAll(strictPocSelection(raw));
+      case "nuclei_scan" -> {
+        if (!raw.isEmpty()) result.putAll(strictPocSelection(raw));
+      }
       case "fscan_scan" -> {
         copyStrictText(raw, result, "ports", 200);
         if (raw.has("vulnMode")) {
@@ -1210,6 +1406,24 @@ public class AiAgentRuntimeClient {
         }
       }
       case "msf_scan" -> result.putAll(strictMsfParameters(raw));
+      case "zap_fuzz" -> {
+        Map<String, Object> values = objectMapper.convertValue(raw,
+            new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+        try {
+          result.putAll(ZapFuzzAiParameters.normalize(values, false));
+        } catch (com.bachelor.toolbox.common.ApiException invalid) {
+          throw new RuntimeProtocolException("AI Runtime ZAP 单次参数变异请求无效");
+        }
+      }
+      case "sqlmap_scan" -> {
+        Map<String, Object> values = objectMapper.convertValue(raw,
+            new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+        try {
+          result.putAll(SqlmapAiParameters.normalize(values, false));
+        } catch (com.bachelor.toolbox.common.ApiException invalid) {
+          throw new RuntimeProtocolException("AI Runtime SQLMap 参数无效");
+        }
+      }
       case "zap_scan" -> {
         if (raw.has("spider")) {
           if (!raw.path("spider").isBoolean()) {
@@ -1225,7 +1439,7 @@ public class AiAgentRuntimeClient {
           result.put("strength", strength);
         }
       }
-      case "nuclei_scan", "http_headers", "tls_config" -> {}
+      case "http_headers", "tls_config" -> {}
       default -> throw new RuntimeProtocolException("AI Runtime 工具不在白名单");
     }
     return Map.copyOf(result);
@@ -1369,20 +1583,7 @@ public class AiAgentRuntimeClient {
   }
 
   private String titleOf(String code) {
-    return switch (code) {
-      case "nmap_service_scan" -> "Nmap 服务识别";
-      case "nuclei_scan" -> "Nuclei 安全模板检测";
-      case "afrog_scan" -> "Afrog PoC 漏洞扫描";
-      case "xray_scan" -> "Xray PoC 漏洞扫描";
-      case "zap_scan" -> "OWASP ZAP 主动扫描";
-      case "fscan_scan" -> "fscan 主机扫描";
-      case "msf_scan" -> "Metasploit 授权模块检查";
-      case "tcp_ports" -> "授权端口探测";
-      case "http_headers" -> "HTTP 安全响应头检查";
-      case "http_security_check" -> "HTTP 常见安全检查";
-      case "tls_config" -> "TLS 基础配置检查";
-      default -> code;
-    };
+    return AiToolCatalog.displayName(code);
   }
 
   private String stripTrailingSlash(String value) {
@@ -1463,7 +1664,10 @@ public class AiAgentRuntimeClient {
     payload.put("previousLedgerEntryDigest", previousDigest);
     payload.put("event", publicEvent);
     try {
-      byte[] canonical = canonicalMapper.writeValueAsBytes(payload);
+      // Python's ensure_ascii=False hashes Unicode scalar values encoded as UTF-8.
+      // Jackson's byte generator escapes supplementary characters as surrogate
+      // pairs; use its character generator before UTF-8 encoding to match Python.
+      byte[] canonical = canonicalMapper.writeValueAsString(payload).getBytes(StandardCharsets.UTF_8);
       byte[] digest = MessageDigest.getInstance("SHA-256").digest(canonical);
       return "sha256:" + HexFormat.of().formatHex(digest);
     } catch (Exception ex) {
@@ -2532,7 +2736,8 @@ public class AiAgentRuntimeClient {
               "evidenceIds",
               "indexRevision",
               "plannerSource",
-              "terminationReason"),
+              "terminationReason",
+              "llmCallCount"),
           Set.of(
               "status",
               "answer",
@@ -2545,6 +2750,11 @@ public class AiAgentRuntimeClient {
               "plannerSource",
               "terminationReason"),
           "finish data");
+      // Older runtimes omit this metric. Current runtimes report the actual
+      // model calls, bounded by the same budget sent in the request.
+      if (data.has("llmCallCount")) {
+        strictBoundedInt(data, "llmCallCount", 0, RUNTIME_MAX_LLM_CALLS);
+      }
       finishStatus = strictText(data, "status", 32);
       if (!Set.of("COMPLETED", "DENIED", "APPROVAL_REQUIRED", "FAILED")
           .contains(finishStatus)) {

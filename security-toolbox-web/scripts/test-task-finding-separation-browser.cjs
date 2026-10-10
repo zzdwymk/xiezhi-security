@@ -1,0 +1,67 @@
+// Real Vue pages and API serialization; all HTTP responses remain isolated fixtures.
+const assert = require('node:assert/strict');
+const path = require('node:path');
+const fs = require('node:fs');
+const { chromium } = require('playwright-core');
+const root = path.resolve(__dirname, '..');
+const output = path.resolve(root, '../.run/task-finding-separation');
+fs.mkdirSync(output, {recursive:true});
+let server, browser;
+const errors = [];
+const html = `<!doctype html><html><head><meta charset="utf-8"></head><body><div id="app"></div><script type="module">
+import {createApp} from 'vue';import {createPinia} from 'pinia';import {createRouter,createMemoryHistory,RouterView} from 'vue-router';import ElementPlus from 'element-plus';import 'element-plus/dist/index.css';
+import Tasks from '/src/views/Tasks.vue';import Findings from '/src/views/Findings.vue';import {endpoints} from '/src/api';import {useAuthStore} from '/src/stores/auth';
+sessionStorage.setItem('security_toolbox_session_token','fixture');
+const realFindings=endpoints.findings;const realTask=endpoints.task;const realTasks=endpoints.tasks;const realReport=endpoints.downloadReport;
+for(const key of Object.keys(endpoints))endpoints[key]=async()=>({data:key==='taskControlStatus'?{runningTaskCount:0,pendingTaskCount:0,maxConcurrentTasks:3}:[]});
+Object.assign(endpoints,{findings:realFindings,task:realTask,tasks:realTasks,downloadReport:realReport});
+const router=createRouter({history:createMemoryHistory(),routes:[{path:'/',component:{template:'<p>Assistant fixture</p>'}},{path:'/tasks',component:Tasks},{path:'/findings',component:Findings}]});
+const app=createApp(RouterView);app.use(createPinia());app.use(router);app.use(ElementPlus);useAuthStore().user={username:'fixture',role:'USER'};
+window.fixtureNavigate=to=>router.push(to);window.fixtureLocation=()=>router.currentRoute.value.fullPath;await router.push('/tasks?taskId=71');await router.isReady();app.mount('#app');window.fixtureReady=true;
+</script></body></html>`;
+const finding = id => ({id,taskId:id===701?71:72,targetId:7,projectId:1,title:`Fixture vulnerability ${id}`,severity:'HIGH',status:'OPEN',sourceTool:'nuclei',description:'Fixture risk description',evidence:'Fixture finding evidence',remediation:'Fixture repair advice',createdAt:'2026-10-04T01:00:00Z'});
+const task = id => ({id,projectId:1,targetId:7,toolCode:'nuclei',status:'SUCCESS',progress:100,createdAt:'2026-10-04T01:00:00Z',resultJson:JSON.stringify({summary:'Fixture completed execution',findings:[{title:'Private vulnerability detail',severity:'HIGH',evidence:'Private risk evidence'}]})});
+(async()=>{
+  const {createServer}=await import('vite');const vue=(await import('@vitejs/plugin-vue')).default;
+  server=await createServer({configFile:false,root,cacheDir:path.join(root,'../.run/task-finding-separation/cache'),optimizeDeps:{entries:[],include:['vue','element-plus','pinia','vue-router'],noDiscovery:true},plugins:[vue(),{name:'task-finding-fixture',configureServer(s){s.middlewares.use(async(req,res,next)=>{if(req.url!=='/__separation')return next();res.setHeader('Content-Type','text/html; charset=utf-8');res.end(await s.transformIndexHtml(req.url,html));});}}],server:{host:'127.0.0.1',port:0,hmr:false,watch:null},logLevel:'error'});
+  console.log('Fixture server configured');await server.listen();console.log('Fixture server listening');browser=await chromium.launch({executablePath:process.env.TRAFFIC_TEST_BROWSER||'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',headless:true});console.log('Fixture browser launched');
+  const page=await browser.newPage({viewport:{width:1500,height:1100}});page.setDefaultTimeout(15000);page.on('pageerror',e=>errors.push(e.message));const calls=[];
+  await page.route('**/api/**',async route=>{
+    const req=route.request(),url=new URL(req.url()),api=url.pathname.replace(/^\/api/,'');calls.push({api,params:Object.fromEntries(url.searchParams)});
+    assert.equal(req.method(),'GET');
+    if(api==='/tasks')return route.fulfill({json:[task(71),task(72)]});
+    if(/^\/tasks\/\d+$/.test(api))return route.fulfill({json:task(Number(api.split('/').pop()))});
+    if(api==='/findings'){const id=Number(url.searchParams.get('taskId'));const data=[finding(701),finding(702)].filter(row=>!id||row.taskId===id);return route.fulfill({json:{content:data,totalElements:data.length}});}
+    if(api==='/reports/tasks/71/download')return route.fulfill({contentType:'text/html',body:'<html>Fixture report</html>'});
+    return route.fulfill({contentType:'text/event-stream',body:''});
+  });
+  await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__separation`);await page.waitForFunction(()=>window.fixtureReady);
+  const dialog=page.getByRole('dialog',{name:'任务详情',exact:true});await dialog.waitFor();await dialog.getByText('Fixture completed execution',{exact:true}).waitFor();
+  assert.ok(calls.some(c=>c.api==='/tasks/71'),'task deep link fetches requested task');
+  assert.equal(await dialog.getByText('Private vulnerability detail',{exact:true}).isVisible(),false,'risk cards are absent from task details');
+  assert.equal(await dialog.getByText('Private risk evidence',{exact:true}).isVisible(),false);
+  await page.screenshot({path:path.join(output,'task-execution-detail.png'),fullPage:true});
+  await dialog.getByRole('button',{name:'查看发现',exact:true}).click();
+  await page.getByRole('heading',{name:'安全发现',exact:true}).waitFor();await page.getByText('Fixture vulnerability 701',{exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>window.fixtureLocation()),'/findings?taskId=71');
+  assert.ok(calls.some(c=>c.api==='/findings'&&c.params.taskId==='71'),'actual HTTP query carries taskId');
+  assert.equal(await page.getByText('Fixture vulnerability 702',{exact:true}).count(),0);
+  assert.equal(await page.getByRole('button',{name:'报告',exact:true}).count(),0);
+  await page.screenshot({path:path.join(output,'security-findings.png'),fullPage:true});
+  await page.getByRole('button',{name:'来源任务',exact:true}).click();await dialog.waitFor();
+  assert.equal(await page.evaluate(()=>window.fixtureLocation()),'/tasks?taskId=71');
+  await dialog.getByRole('button',{name:'关闭',exact:true}).click();
+  const downloadPromise=page.waitForEvent('download');await page.getByRole('button',{name:'报告',exact:true}).first().click();const download=await downloadPromise;
+  assert.equal(download.suggestedFilename(),'security-report-task-71.html');assert.ok(calls.some(c=>c.api==='/reports/tasks/71/download'));
+  await page.getByRole('button',{name:'执行诊断',exact:true}).first().click();
+  const executionDraft=await page.evaluate(()=>JSON.parse(sessionStorage.getItem('security_toolbox_copilot_draft_v1')));
+  assert.equal(executionDraft.refs[0].type,'task');assert.match(executionDraft.prompt,/执行状态/);assert.doesNotMatch(executionDraft.prompt,/风险优先级/);
+  await page.evaluate(()=>window.fixtureNavigate('/findings?taskId=72'));await page.getByText('Fixture vulnerability 702',{exact:true}).waitFor();
+  await page.locator('.findings-filter-toolbar .el-tag__close').click();await page.getByText('Fixture vulnerability 701',{exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>window.fixtureLocation()),'/findings');assert.equal(calls.filter(c=>c.api==='/findings').at(-1).params.taskId,undefined);
+  await page.evaluate(()=>window.fixtureNavigate('/findings?taskId=71'));await page.getByText('来源任务 #71',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'重置筛选',exact:true}).click();await page.waitForFunction(()=>window.fixtureLocation()==='/findings');await page.getByText('Fixture vulnerability 702',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'AI 研判',exact:true}).first().click();const findingDraft=await page.evaluate(()=>JSON.parse(sessionStorage.getItem('security_toolbox_copilot_draft_v1')));
+  assert.equal(findingDraft.refs[0].type,'finding');assert.equal(findingDraft.mode,'remediate');assert.match(findingDraft.prompt,/修复方案/);
+  assert.deepEqual(errors,[]);console.log('PASS task/finding navigation, serialized task filter and clearing, separated details/report/AI responsibilities');
+})().catch(error=>{console.error(error);process.exitCode=1;}).finally(async()=>{await browser?.close();await server?.close();});

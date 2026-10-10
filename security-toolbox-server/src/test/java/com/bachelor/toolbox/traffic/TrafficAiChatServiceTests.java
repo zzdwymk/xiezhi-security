@@ -3,6 +3,7 @@ package com.bachelor.toolbox.traffic;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -10,6 +11,7 @@ import static org.mockito.Mockito.when;
 
 import com.bachelor.toolbox.ai.AiModelClient;
 import com.bachelor.toolbox.audit.AuditService;
+import com.bachelor.toolbox.common.ApiException;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
@@ -21,12 +23,13 @@ class TrafficAiChatServiceTests {
   private final TrafficAiChatService service = new TrafficAiChatService(packets, model, audit);
 
   @Test
-  void sendsRawPacketAndConversationHistoryToTheModel() throws Exception {
+  void sendsRedactedPacketAndConversationHistoryWithoutRequiringATarget() throws Exception {
     TrafficPacket packet = packet();
     when(packets.findById(7L)).thenReturn(Optional.of(packet));
     when(model.enabled()).thenReturn(true);
     when(model.model()).thenReturn("test-model");
-    when(model.complete(contains("流量分析助手"), contains("Authorization: Bearer raw-token")))
+    packet.setTargetId(0L);
+    when(model.complete(contains("流量分析助手"), contains("[REDACTED]")))
         .thenReturn("这是分析结果");
 
     TrafficAiChatService.ChatResponse response =
@@ -38,18 +41,18 @@ class TrafficAiChatServiceTests {
     assertEquals("这是分析结果", response.answer());
     assertEquals("openai-compatible", response.provider());
     verify(model).complete(contains("流量分析助手"), contains("先看认证信息"));
+    var prompt = org.mockito.ArgumentCaptor.forClass(String.class);
+    verify(model).complete(contains("流量分析助手"), prompt.capture());
+    assertFalse(prompt.getValue().contains("raw-token"));
   }
 
   @Test
-  void returnsPacketSummaryWhenModelIsDisabled() {
+  void rejectsTheQuestionWhenModelIsDisabled() {
     when(packets.findById(7L)).thenReturn(Optional.of(packet()));
     when(model.enabled()).thenReturn(false);
 
-    TrafficAiChatService.ChatResponse response =
-        service.chat(7L, new TrafficAiChatService.ChatRequest("总结", List.of()));
-
-    assertTrue(response.answer().contains("POST /login"));
-    assertEquals("local-summary", response.provider());
+    assertThatThrownBy(() -> service.chat(7L, new TrafficAiChatService.ChatRequest("总结", List.of())))
+        .isInstanceOf(ApiException.class).hasMessageContaining("尚未配置或启用 AI 模型");
   }
 
   @Test
@@ -59,12 +62,19 @@ class TrafficAiChatServiceTests {
     when(model.complete(contains("流量分析助手"), contains("当前问题：总结")))
         .thenThrow(new IllegalStateException("secret-provider-detail"));
 
-    TrafficAiChatService.ChatResponse response =
-        service.chat(7L, new TrafficAiChatService.ChatRequest("总结", List.of()));
+    assertThatThrownBy(() -> service.chat(7L, new TrafficAiChatService.ChatRequest("总结", List.of())))
+        .isInstanceOf(ApiException.class).hasMessageContaining("AI 模型暂时无法返回回答")
+        .hasMessageNotContaining("secret-provider-detail");
+    verify(audit).record("AI_CHAT_TRAFFIC", "TRAFFIC_PACKET", 7L, "model response unavailable", "FAILED");
+  }
 
-    assertTrue(response.answer().contains("AI 模型暂时无法返回回答"));
-    assertFalse(response.answer().contains("secret-provider-detail"));
-    assertEquals("local-summary", response.provider());
+  @Test
+  void rejectsAnEmptyModelAnswer() throws Exception {
+    when(packets.findById(7L)).thenReturn(Optional.of(packet()));
+    when(model.enabled()).thenReturn(true);
+    when(model.complete(contains("流量分析助手"), contains("当前问题：总结"))).thenReturn(" ");
+    assertThatThrownBy(() -> service.chat(7L, new TrafficAiChatService.ChatRequest("总结", List.of())))
+        .isInstanceOf(ApiException.class).hasMessageContaining("AI 模型暂时无法返回回答");
   }
 
   private TrafficPacket packet() {

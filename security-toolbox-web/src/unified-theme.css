@@ -66,7 +66,7 @@
   --fluent-radius-card: var(--fluent-radius-xlarge);
   --fluent-radius-overlay: var(--fluent-radius-xlarge);
   --fluent-workspace-radius: var(--fluent-radius-xlarge);
-  --desktop-workspace-gap: 3px;
+  --desktop-workspace-gap: 5px;
 
   /* Control metrics + stroke widths (heights unchanged to preserve layout) */
   --fluent-control-height: 32px;
@@ -154,6 +154,7 @@
   --app-text-muted: var(--app-muted);
   --app-shadow: var(--fluent-shadow-8);
   --app-success: var(--fluent-success-bg);
+  --app-success-foreground: var(--app-success);
   --app-warning: var(--fluent-warning-bg);
   --app-accent-soft: color-mix(in srgb, var(--system-theme-accent) 14%, Canvas);
   --app-accent-soft-strong: color-mix(
@@ -366,6 +367,7 @@ body,
   );
 
   /* Solid, high-contrast dark theme text tokens */
+  --app-success-foreground: #6ccb5f;
   --app-text: #f8fafc;
   --app-muted: #cbd5e1;
   --app-text-muted: #cbd5e1;
@@ -722,39 +724,39 @@ body,
 }
 
 /* Buttons in dark mode */
-:root[data-system-theme="dark"] .el-button:not(.el-button--primary):not(.is-link):not(.is-text) {
+:root[data-system-theme="dark"] .el-button:not(.el-button--primary):not(.is-link):not(.is-text):where(:not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled)) {
   background: rgba(255, 255, 255, 0.06);
   border-color: rgba(255, 255, 255, 0.18);
   color: #f8fafc !important;
   box-shadow: none;
 }
 
-:root[data-system-theme="dark"] .el-button:not(.el-button--primary):not(.is-link):not(.is-text):hover {
+:root[data-system-theme="dark"] .el-button:not(.el-button--primary):not(.is-link):not(.is-text):where(:not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled)):hover {
   background: rgba(255, 255, 255, 0.12) !important;
   border-color: rgba(255, 255, 255, 0.32) !important;
   color: #ffffff !important;
   box-shadow: none !important;
 }
 
-:root[data-system-theme="dark"] .el-button:not(.el-button--primary):not(.is-link):not(.is-text):active {
+:root[data-system-theme="dark"] .el-button:not(.el-button--primary):not(.is-link):not(.is-text):where(:not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled)):active {
   background: rgba(255, 255, 255, 0.16) !important;
   box-shadow: none !important;
 }
 
-:root[data-system-theme="dark"] .el-button--primary:not(.is-plain):not(.is-link):not(.is-text) {
+:root[data-system-theme="dark"] .el-button--primary:not(.is-plain):not(.is-link):not(.is-text):where(:not(.is-disabled):not(:disabled)) {
   background: var(--app-accent);
   border-color: var(--app-accent);
   color: #ffffff !important;
 }
 
-:root[data-system-theme="dark"] .el-button--primary:not(.is-plain):not(.is-link):not(.is-text):hover {
+:root[data-system-theme="dark"] .el-button--primary:not(.is-plain):not(.is-link):not(.is-text):where(:not(.is-disabled):not(:disabled)):hover {
   background: var(--app-accent-dark, #1d4ed8) !important;
   border-color: var(--app-accent-dark, #1d4ed8) !important;
   color: #ffffff !important;
   box-shadow: 0 2px 8px color-mix(in srgb, var(--app-accent) 35%, transparent) !important;
 }
 
-:root[data-system-theme="dark"] .el-button--primary:not(.is-plain):not(.is-link):not(.is-text):active {
+:root[data-system-theme="dark"] .el-button--primary:not(.is-plain):not(.is-link):not(.is-text):where(:not(.is-disabled):not(:disabled)):active {
   background: color-mix(in srgb, var(--app-accent-dark, #1d4ed8) 85%, #000000) !important;
   border-color: color-mix(in srgb, var(--app-accent-dark, #1d4ed8) 85%, #000000) !important;
   box-shadow: none !important;
@@ -992,41 +994,6 @@ body,
 }
 :root[data-system-theme="dark"] .el-alert--success .el-alert__icon {
   color: #34d399 !important;
-}
-
-/* =================================================================
-   Dark mode segmented controls (clean dark track, accent blue slider)
-   ================================================================= */
-:root[data-system-theme="dark"] .el-segmented {
-  --el-segmented-color: #cbd5e1;
-  --el-segmented-bg-color: rgba(255, 255, 255, 0.06);
-  --el-segmented-item-selected-color: #ffffff;
-  --el-segmented-item-selected-bg-color: var(--app-accent);
-  --el-segmented-item-hover-color: #ffffff;
-  --el-segmented-item-hover-bg-color: rgba(255, 255, 255, 0.08);
-  --el-segmented-item-active-bg-color: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.14) !important;
-  background: rgba(255, 255, 255, 0.06) !important;
-}
-
-:root[data-system-theme="dark"] .el-segmented__item-selected {
-  background: var(--app-accent) !important;
-  color: #ffffff !important;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4) !important;
-  border: none !important;
-}
-
-:root[data-system-theme="dark"] .el-segmented__item {
-  color: #cbd5e1 !important;
-}
-
-:root[data-system-theme="dark"] .el-segmented__item:hover {
-  color: #ffffff !important;
-  background: rgba(255, 255, 255, 0.08) !important;
-}
-
-:root[data-system-theme="dark"] .el-segmented__item.is-selected {
-  color: #ffffff !important;
 }
 
 /* Quiet icon buttons in dark mode (Traffic refresh, etc.) */
@@ -1581,54 +1548,102 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
   transform: scale(0.985);
 }
 
-.el-button:not(.el-button--primary):not(.is-link):not(.is-text) {
+.el-button:not(.el-button--primary):not(.is-link):not(.is-text):where(:not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled)) {
   border-color: var(--app-border-strong);
   background: var(--app-surface-strong);
   color: var(--app-text);
   box-shadow: 0 1px 1px color-mix(in srgb, CanvasText 5%, transparent);
 }
 
-.el-button:not(.el-button--primary):not(.is-link):not(.is-text):hover {
+.el-button:not(.el-button--primary):not(.is-link):not(.is-text):where(:not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled)):hover {
   background: color-mix(in srgb, CanvasText 5%, var(--app-surface-strong));
 }
 
-.el-segmented {
+/* Shared Fluent choice controls, including dialogs teleported to body.
+   The repeated root class outranks lazily loaded Element Plus defaults;
+   colors follow the same tokens in both system themes. */
+.el-segmented.el-segmented {
+  --fluent-choice-height: var(--fluent-control-height);
   --el-segmented-color: var(--app-muted);
   --el-segmented-bg-color: var(--app-surface-soft);
   --el-segmented-item-selected-color: var(--app-text);
   --el-segmented-item-selected-bg-color: var(--app-surface-strong);
+  --el-segmented-item-selected-disabled-bg-color: var(--app-surface-soft);
+  --el-segmented-item-disabled-color: var(--el-disabled-text-color);
   --el-segmented-item-hover-color: var(--app-text);
-  --el-segmented-item-hover-bg-color: transparent;
-  --el-segmented-item-active-bg-color: transparent;
-  --el-border-radius-base: var(--fluent-radius-circular);
+  --el-segmented-item-hover-bg-color: color-mix(in srgb, CanvasText 5%, transparent);
+  --el-segmented-item-active-bg-color: color-mix(in srgb, CanvasText 8%, transparent);
+  --el-border-radius-base: var(--fluent-radius-control);
+  min-height: var(--fluent-choice-height);
   padding: 2px;
   border: 1px solid var(--app-border);
-  border-radius: var(--fluent-radius-circular);
+  border-radius: var(--fluent-radius-control);
   background: var(--el-segmented-bg-color);
+  font-family: var(--fluent-font);
+  font-size: var(--fluent-body1-size);
 }
-
-.el-segmented .el-segmented__item {
-  border-radius: var(--fluent-radius-circular);
+.el-segmented.el-segmented--small {
+  --fluent-choice-height: 24px;
+  font-size: var(--fluent-caption1-size);
+}
+.el-segmented.el-segmented--large {
+  --fluent-choice-height: var(--fluent-control-height-large);
+}
+.el-segmented.el-segmented .el-segmented__item {
+  min-height: calc(var(--fluent-choice-height) - 6px);
+  border-radius: var(--fluent-radius-control);
   color: var(--app-muted);
+  font-weight: var(--fluent-weight-regular);
   transition: color var(--fluent-duration-fast, 150ms)
     var(--fluent-curve-standard, ease);
 }
-
-.el-segmented .el-segmented__item:hover {
+.el-segmented.el-segmented .el-segmented__item:not(.is-disabled):not(.is-selected):hover {
   color: var(--app-text);
+  background: var(--el-segmented-item-hover-bg-color);
 }
-
-.el-segmented .el-segmented__item.is-selected {
+.el-segmented.el-segmented .el-segmented__item:not(.is-disabled):active {
+  background: var(--el-segmented-item-active-bg-color);
+}
+.el-segmented.el-segmented .el-segmented__item.is-selected {
   color: var(--el-segmented-item-selected-color);
-  font-weight: 600;
+  font-weight: var(--fluent-weight-semibold);
 }
-
-.el-segmented .el-segmented__item-selected {
-  border: 1px solid var(--app-border);
-  border-radius: var(--fluent-radius-circular);
+.el-segmented.el-segmented .el-segmented__item-selected {
+  border: 1px solid var(--app-border-strong);
+  border-radius: var(--fluent-radius-control);
   background: var(--el-segmented-item-selected-bg-color);
-  box-shadow: var(--fluent-shadow-2);
+  box-shadow: none;
   box-sizing: border-box;
+  transition: transform var(--fluent-duration-fast, 150ms), width var(--fluent-duration-fast, 150ms);
+}
+.el-segmented.el-segmented .el-segmented__item.is-disabled {
+  color: var(--el-segmented-item-disabled-color);
+  cursor: not-allowed;
+}
+.el-segmented.el-segmented .el-segmented__item-selected.is-disabled {
+  border-color: var(--app-border);
+  background: var(--el-segmented-item-selected-disabled-bg-color);
+}
+.el-segmented.el-segmented .el-segmented__item-selected.is-focus-visible::before {
+  outline: 2px solid var(--app-text);
+  outline-offset: 1px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .el-segmented.el-segmented .el-segmented__item,
+  .el-segmented.el-segmented .el-segmented__item-selected {
+    transition: none;
+  }
+}
+@media (forced-colors: active) {
+  .el-segmented.el-segmented .el-segmented__item-selected {
+    border-color: Highlight;
+  }
+  .el-segmented.el-segmented .el-segmented__item.is-selected {
+    color: Highlight;
+  }
+  .el-segmented.el-segmented .el-segmented__item.is-disabled {
+    color: GrayText;
+  }
 }
 
 .el-input__wrapper,
@@ -2129,14 +2144,14 @@ html
   background: var(--app-accent-soft);
   color: var(--fluent-link-fg);
 }
-/* Fluent has no dedicated danger button appearance: the destructive intent is
-   carried by a red foreground over neutral chrome, not a red outline. */
-.row-action--danger.el-button {
+/* Keep destructive actions red above the shared row hover and adjacent-button
+   rules. Generic neutral/selected-row rules exclude this semantic variant. */
+.row-action.row-action--danger.el-button:not(.is-disabled):not(:disabled) {
   border-color: var(--app-border-strong);
   color: light-dark(var(--fluent-danger-bg), #ffb4ab);
 }
-.row-action--danger.el-button:hover,
-.row-action--danger.el-button:focus-visible {
+.row-action.row-action--danger.el-button:not(.is-disabled):not(:disabled):hover,
+.row-action.row-action--danger.el-button:not(.is-disabled):not(:disabled):focus-visible {
   border-color: var(--fluent-danger-bg);
   background: color-mix(in srgb, var(--fluent-danger-bg) 10%, var(--app-surface-strong));
   color: light-dark(var(--fluent-danger-hover-bg), #ffd2cc);

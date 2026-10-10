@@ -24,10 +24,9 @@ if (tableComponent?.props?.border !== undefined) {
 async function bootstrap() {
   await initializeSystemTheme();
   initializeMotion();
-  createApp(App)
-    .use(createPinia())
-    .use(router)
-    .mount("#app");
+  const app = createApp(App).use(createPinia()).use(router);
+  await router.isReady();
+  app.mount("#app");
 }
 
 void bootstrap();

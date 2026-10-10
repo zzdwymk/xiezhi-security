@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import type { CopilotReference } from "../types/copilot";
 import type { CopilotMode } from "../types/copilot";
-import { isPublicAiProgressEvent, publicAiProgressText } from "../utils/aiPresentation";
+import { isPublicAiProgressEvent, publicAiProgressText, publicProgressProvenance } from "../utils/aiPresentation";
 import { normalizeAiExecutionDecision, type AiExecutionDecision, type AiExecutionIntent } from "../utils/aiIntent";
 
 export interface ConversationStep {
@@ -113,6 +113,12 @@ export interface ConversationAgentEvent {
   ledgerDigest?: string;
   terminationReason?: string;
   evidenceCount?: number;
+  source?: string;
+  assessmentSource?: string;
+  modelDecision?: string;
+  evidenceDecision?: string;
+  reasonCodes?: string[];
+  guardReason?: string;
   actionCount?: number;
   taskIds?: number[];
   recoverable?: boolean;
@@ -180,6 +186,10 @@ export interface ConversationMessage {
   approvalId?: number | string;
   approvalStatus?: string;
   replyToId?: string;
+  /** Execution request state is separate from the model answer and approval decision. */
+  approvalDispatchStatus?: "dispatching" | "rejected" | "unknown" | "dispatched";
+  approvalDispatchError?: string;
+  approvalDispatchUpdatedAt?: string;
   quote?: {
     messageId: string;
     role: ConversationMessageRole;
@@ -192,6 +202,7 @@ export interface ConversationMessage {
 
 export interface ConversationThread {
   id: string;
+  branchSource?: { threadId: string; messageId: string };
   title: string;
   projectId?: number;
   targetId: number;
@@ -215,8 +226,16 @@ interface LegacyConversationRecord {
 
 const STORAGE_KEY = "security_toolbox_ai_conversations_v2";
 const LEGACY_STORAGE_KEY = "security_toolbox_ai_conversations_v1";
-const MAX_CONVERSATIONS = 30;
 const MAX_STORAGE_CHARS = 3_500_000;
+
+export class ConversationStorageError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConversationStorageError";
+  }
+}
+
+type NewConversationMessage = Omit<ConversationMessage, "id" | "createdAt" | "updatedAt">;
 
 function createId() {
   return (
@@ -309,6 +328,7 @@ function sanitizeStoredCitation(value: ConversationCitation & { snippet?: unknow
 
 function sanitizeStoredAgentEvent(event: ConversationAgentEvent) {
   return {
+    ...publicProgressProvenance({ ...event }),
     id: event.id,
     type: event.type,
     stage: event.stage,
@@ -368,6 +388,10 @@ export function normalizeConversations(
         ? "interrupted" : message.modelStreamStatus,
       executionIntent: message.executionIntent === "AUTO" ? "AUTO" : undefined,
       executionDecision: normalizeAiExecutionDecision(message.executionDecision),
+      approvalDispatchStatus: ["dispatching", "rejected", "unknown", "dispatched"].includes(message.approvalDispatchStatus || "")
+        ? message.approvalDispatchStatus === "dispatching" ? "unknown" : message.approvalDispatchStatus : undefined,
+      approvalDispatchError: typeof message.approvalDispatchError === "string" ? message.approvalDispatchError : undefined,
+      approvalDispatchUpdatedAt: typeof message.approvalDispatchUpdatedAt === "string" ? message.approvalDispatchUpdatedAt : undefined,
       taskIds: Array.isArray(message.taskIds) ? message.taskIds : [],
       steps: Array.isArray(message.steps) ? message.steps : [],
       agentEvents: Array.isArray(message.agentEvents)
@@ -383,26 +407,43 @@ export function normalizeConversations(
 export const useConversationStore = defineStore("conversations", () => {
   const items = ref<ConversationThread[]>(loadConversations());
   const recent = computed(() => items.value.slice(0, 8));
+  const persistenceError = ref<{
+    message: string;
+    operation: string;
+    reason: string;
+    at: string;
+  }>();
+  const hasUnsavedChanges = ref(false);
 
-  function persist() {
-    let serialized = JSON.stringify(items.value);
-    while (serialized.length > MAX_STORAGE_CHARS && items.value.length > 1) {
-      items.value = items.value.slice(0, -1);
-      serialized = JSON.stringify(items.value);
-    }
+  function persistCandidates(candidates: ConversationThread[], operation: string, keepInMemory = false) {
     try {
+      const serialized = JSON.stringify(candidates);
+      if (serialized.length > MAX_STORAGE_CHARS)
+        throw new Error(`本机对话达到保存大小限制（${serialized.length} / ${MAX_STORAGE_CHARS} 字符）`);
       localStorage.setItem(STORAGE_KEY, serialized);
-    } catch {
-      while (items.value.length > 1) {
-        items.value = items.value.slice(0, -1);
-        try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(items.value));
-          return;
-        } catch {
-          // Continue evicting the oldest local conversation.
-        }
-      }
+      persistenceError.value = undefined;
+      hasUnsavedChanges.value = false;
+      return true;
+    } catch (error) {
+      if (keepInMemory) hasUnsavedChanges.value = true;
+      const reason = error instanceof Error ? error.message : String(error);
+      persistenceError.value = {
+        operation, reason, at: new Date().toISOString(),
+        message: `${operation}未保存：${reason}。已有持久记录未删除。${keepInMemory
+          ? "本轮更新仍保留在当前窗口，请在关闭前重试保存。"
+          : "本次改动未提交，请保留输入后重试。"}`,
+      };
+      return false;
     }
+  }
+
+  function requirePersistence(candidates: ConversationThread[], operation: string) {
+    if (!persistCandidates(candidates, operation))
+      throw new ConversationStorageError(persistenceError.value!.message);
+  }
+
+  function retryPersist() {
+    return persistCandidates(items.value, "重试保存对话", true);
   }
 
   function createThread(
@@ -410,44 +451,88 @@ export const useConversationStore = defineStore("conversations", () => {
     targetName: string,
     firstPrompt: string,
     projectId?: number,
+    branchSource?: ConversationThread["branchSource"],
   ) {
     const now = new Date().toISOString();
     const thread: ConversationThread = {
       id: createId(),
       title: titleFromPrompt(firstPrompt),
       projectId,
+      branchSource,
       targetId,
       targetName,
       messages: [],
       createdAt: now,
       updatedAt: now,
     };
-    items.value = [thread, ...items.value].slice(0, MAX_CONVERSATIONS);
-    persist();
+    const candidates = [thread, ...items.value];
+    requirePersistence(candidates, "创建对话");
+    items.value = candidates;
     return thread;
   }
 
-  function appendMessage(
-    threadId: string,
-    message: Omit<ConversationMessage, "id" | "createdAt" | "updatedAt">,
-  ) {
-    const thread = items.value.find((item) => item.id === threadId);
-    if (!thread) return undefined;
+  /** Editing creates context-only history; old execution and approval state stays in its source. */
+  function forkBeforeMessage(threadId: string, messageId: string, firstPrompt: string) {
+    const source = items.value.find(thread => thread.id === threadId);
+    const index = source?.messages.findIndex(message => message.id === messageId && message.role === "user") ?? -1;
+    if (!source || index < 0) throw new Error("找不到要编辑的用户消息，原对话未改变");
     const now = new Date().toISOString();
-    const created: ConversationMessage = {
-      ...message,
-      id: createId(),
-      createdAt: now,
-      updatedAt: now,
+    const prefix = source.messages.slice(0, index);
+    const ids = new Map(prefix.map(message => [message.id, createId()]));
+    const clone = <T>(value: T): T => value === undefined ? value : JSON.parse(JSON.stringify(value));
+    const branch: ConversationThread = {
+      id: createId(), title: titleFromPrompt(firstPrompt), projectId: source.projectId,
+      targetId: source.targetId, targetName: source.targetName,
+      branchSource: { threadId, messageId }, createdAt: now, updatedAt: now,
+      messages: prefix.map(message => ({
+        id: ids.get(message.id)!, role: message.role, content: message.content,
+        status: "completed", taskIds: [], steps: [],
+        reference: clone(message.reference), references: clone(message.references),
+        copilotMode: message.copilotMode,
+        replyToId: message.replyToId ? ids.get(message.replyToId) : undefined,
+        quote: message.quote ? { ...clone(message.quote), messageId: ids.get(message.quote.messageId) || message.quote.messageId } : undefined,
+        createdAt: message.createdAt, updatedAt: now,
+      })),
     };
-    thread.messages.push(created);
-    thread.updatedAt = now;
-    items.value = [
-      thread,
-      ...items.value.filter((item) => item.id !== threadId),
-    ];
-    persist();
+    const candidates = [branch, ...items.value];
+    requirePersistence(candidates, "创建对话分支");
+    items.value = candidates;
+    return branch;
+  }
+
+  function newMessage(message: NewConversationMessage): ConversationMessage {
+    const now = new Date().toISOString();
+    return { ...message, id: createId(), createdAt: now, updatedAt: now };
+  }
+
+  function appendPrepared(thread: ConversationThread, created: ConversationMessage[], keepInMemory = false) {
+    const updatedAt = created[created.length - 1]!.updatedAt;
+    const others = items.value.filter(item => item.id !== thread.id);
+    const candidate = { ...thread, messages: [...thread.messages, ...created], updatedAt };
+    if (!persistCandidates([candidate, ...others], "保存对话消息", keepInMemory) && !keepInMemory)
+      throw new ConversationStorageError(persistenceError.value!.message);
+    // Keep captured thread references valid for buildContextPrompt and active stream callbacks.
+    thread.messages.push(...created);
+    thread.updatedAt = updatedAt;
+    items.value = [thread, ...others];
+  }
+
+  function appendMessage(threadId: string, message: NewConversationMessage, options: { keepInMemoryOnFailure?: boolean } = {}) {
+    const thread = items.value.find(item => item.id === threadId);
+    if (!thread) return undefined;
+    const created = newMessage(message);
+    appendPrepared(thread, [created], options.keepInMemoryOnFailure);
     return created;
+  }
+
+  function appendTurn(threadId: string, user: NewConversationMessage, assistant: NewConversationMessage) {
+    const thread = items.value.find(item => item.id === threadId);
+    if (!thread) return undefined;
+    const userMessage = newMessage(user);
+    const assistantMessage = newMessage({ ...assistant, replyToId: userMessage.id });
+    // One durable commit avoids saving a user message without its assistant placeholder.
+    appendPrepared(thread, [userMessage, assistantMessage]);
+    return { userMessage, assistantMessage };
   }
 
   function updateMessage(
@@ -460,7 +545,8 @@ export const useConversationStore = defineStore("conversations", () => {
     if (!thread || !message) return undefined;
     Object.assign(message, patch, { updatedAt: new Date().toISOString() });
     thread.updatedAt = message.updatedAt;
-    persist();
+    // Persistence failures must not throw into an already successful AI stream callback.
+    persistCandidates(items.value, "保存对话更新", true);
     return message;
   }
 
@@ -474,17 +560,18 @@ export const useConversationStore = defineStore("conversations", () => {
     thread.targetId = targetId;
     thread.targetName = targetName;
     thread.updatedAt = new Date().toISOString();
-    persist();
+    persistCandidates(items.value, "保存对话目标", true);
   }
 
   function remove(id: string) {
-    items.value = items.value.filter((item) => item.id !== id);
-    persist();
+    const candidates = items.value.filter((item) => item.id !== id);
+    requirePersistence(candidates, "删除本机对话");
+    items.value = candidates;
   }
 
   function clear() {
+    requirePersistence([], "清空本机对话");
     items.value = [];
-    persist();
   }
 
   function taskIds(thread: ConversationThread) {
@@ -494,8 +581,13 @@ export const useConversationStore = defineStore("conversations", () => {
   return {
     items,
     recent,
+    persistenceError,
+    hasUnsavedChanges,
+    retryPersist,
     createThread,
+    forkBeforeMessage,
     appendMessage,
+    appendTurn,
     updateMessage,
     updateThreadTarget,
     remove,

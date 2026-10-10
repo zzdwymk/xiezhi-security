@@ -115,6 +115,11 @@ public class SecurityTask {
 
   private Long sourceTaskId;
 
+  /** Nullable for existing tasks and manual callers that do not request idempotency. */
+  @com.fasterxml.jackson.annotation.JsonIgnore
+  @Column(length = 64, unique = true, updatable = false)
+  private String retryRequestKey;
+
   /** Finding that explicitly initiated this regression task, if any. */
   private Long sourceFindingId;
 

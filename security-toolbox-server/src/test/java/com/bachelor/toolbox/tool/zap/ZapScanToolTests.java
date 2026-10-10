@@ -8,6 +8,7 @@ import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.ArgumentMatchers.anyString;
 
 import com.bachelor.toolbox.common.ApiException;
@@ -81,6 +82,9 @@ class ZapScanToolTests {
       public List<ZapDaemon.ZapAlert> alerts() {
         return alerts;
       }
+
+      @Override
+      public long passiveScanRemaining() { return 0; }
 
       @Override
       public void kill() {}
@@ -169,6 +173,56 @@ class ZapScanToolTests {
     assertThatThrownBy(() -> tool(daemon).execute(target(), Map.of("spider", false, "strength", "LOW")))
         .isInstanceOf(ApiException.class).hasMessageContaining("扫描未启动");
     verify(daemon, never()).activeScanProgress(anyString());
+  }
+
+  @Test
+  void unavailableTargetStopsBeforeSpiderOrActiveScan() throws Exception {
+    ZapDaemon daemon = mock(ZapDaemon.class);
+    doThrow(new ApiException("未收到目标网站的有效响应")).when(daemon).accessUrl(TARGET);
+
+    assertThatThrownBy(() -> tool(daemon).execute(target(), Map.of()))
+        .hasMessageContaining("未收到目标网站的有效响应");
+    verify(daemon, never()).startSpider(any());
+    verify(daemon, never()).startActiveScan(any(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean());
+    verify(daemon, never()).alerts();
+  }
+
+  @Test
+  void spiderConnectionFailureCannotReturnAnEmptySuccessfulResult() throws Exception {
+    ZapDaemon daemon = mock(ZapDaemon.class);
+    when(daemon.startSpider(TARGET)).thenReturn("1");
+    when(daemon.spiderProgress("1")).thenThrow(new java.io.IOException("connection reset"));
+
+    assertThatThrownBy(() -> tool(daemon).execute(target(), Map.of("mode", "passive")))
+        .hasMessageContaining("执行失败");
+    verify(daemon, never()).alerts();
+  }
+
+  @Test
+  void waitsForPassiveChecksBeforeReadingEmptyAlerts() throws Exception {
+    ZapDaemon daemon = mock(ZapDaemon.class);
+    when(daemon.startActiveScan(TARGET, null, "MEDIUM", false)).thenReturn("1");
+    when(daemon.activeScanProgress("1")).thenReturn(100);
+    when(daemon.passiveScanRemaining()).thenReturn(1L, 0L);
+    when(daemon.alerts()).thenReturn(List.of());
+
+    tool(daemon).execute(target(), Map.of("spider", false));
+
+    var order = inOrder(daemon);
+    order.verify(daemon, org.mockito.Mockito.times(2)).passiveScanRemaining();
+    order.verify(daemon).alerts();
+  }
+
+  @Test
+  void unsupportedAjaxSpiderCannotBeReportedAsCompleted() throws Exception {
+    ZapDaemon daemon = mock(ZapDaemon.class);
+    when(daemon.startSpider(TARGET)).thenReturn("1");
+    when(daemon.spiderProgress("1")).thenReturn(100);
+    when(daemon.ajaxSpiderState()).thenReturn("notSupported");
+
+    assertThatThrownBy(() -> tool(daemon).execute(target(), Map.of("ajaxSpider", true)))
+        .hasMessageContaining("无法确认检测是否完成");
+    verify(daemon, never()).alerts();
   }
 
   @Test

@@ -7,6 +7,7 @@ import com.bachelor.toolbox.common.PageRequests;
 import com.bachelor.toolbox.dependency.DependencyDetectionService;
 import com.bachelor.toolbox.project.AssessmentProjectService;
 import com.bachelor.toolbox.target.AuthorizedTarget;
+import com.bachelor.toolbox.target.PortRangeParser;
 import com.bachelor.toolbox.target.TargetService;
 import com.bachelor.toolbox.target.WebTargetResolver;
 import com.bachelor.toolbox.tool.ScannerPocSelectionService;
@@ -34,6 +35,12 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class WorkflowRunService {
+  private com.bachelor.toolbox.notification.NotificationService notifications;
+
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  public void setNotifications(com.bachelor.toolbox.notification.NotificationService value) {
+    notifications = value;
+  }
   private static final int RUN_HISTORY_LIMIT = 100;
   private static final Set<String> TERMINAL_STATUSES =
       Set.of("SUCCESS", "FAILED", "TIMEOUT", "REJECTED", "CANCELLED", "SKIPPED");
@@ -47,7 +54,7 @@ public class WorkflowRunService {
           "nuclei_scan",
           "afrog_scan",
           "xray_scan",
-          "zap_scan",
+          "zap_scan", "zap_fuzz",
           "sqlmap_scan");
 
   private final WorkflowRunRepository runs;
@@ -62,6 +69,9 @@ public class WorkflowRunService {
   private final ObjectMapper objectMapper;
   private final WorkflowRunStopTransactionService stopTransactions;
   private final WebTargetResolver webTargetResolver;
+  private final PortRangeParser portRangeParser;
+  private final int maxPorts;
+  private final int maxNmapPorts;
 
   public WorkflowRunService(
       WorkflowRunRepository runs,
@@ -75,7 +85,10 @@ public class WorkflowRunService {
       AuditService audit,
       ObjectMapper objectMapper,
       WorkflowRunStopTransactionService stopTransactions,
-      WebTargetResolver webTargetResolver) {
+      WebTargetResolver webTargetResolver,
+      PortRangeParser portRangeParser,
+      @org.springframework.beans.factory.annotation.Value("${toolbox.execution.max-ports-per-task:65535}") int maxPorts,
+      @org.springframework.beans.factory.annotation.Value("${toolbox.execution.max-nmap-ports-per-task:65535}") int maxNmapPorts) {
     this.runs = runs;
     this.tasks = tasks;
     this.taskService = taskService;
@@ -88,6 +101,9 @@ public class WorkflowRunService {
     this.objectMapper = objectMapper;
     this.stopTransactions = stopTransactions;
     this.webTargetResolver = webTargetResolver;
+    this.portRangeParser = portRangeParser;
+    this.maxPorts = maxPorts;
+    this.maxNmapPorts = maxNmapPorts;
   }
 
   @Transactional(readOnly = true)
@@ -149,7 +165,11 @@ public class WorkflowRunService {
                     LinkedHashMap::new));
     Set<String> skipped = safeIds(request.skippedNodeIds());
     if (!issues.keySet().containsAll(skipped)) {
-      throw new ApiException("仅可跳过预检标记为不可用的工作流节点");
+      throw new WorkflowPreflightChangedException(
+          new WorkflowRunDtos.PreflightResponse(
+              snapshot.workflowId(), snapshot.revision(), snapshot.specDigest(),
+              preflight.issues(), preflight.resolvedTargets()),
+          skipped.stream().filter(nodeId -> !issues.containsKey(nodeId)).sorted().toList());
     }
     List<WorkflowRunDtos.NodeIssue> unresolved =
         issues.values().stream().filter(issue -> !skipped.contains(issue.nodeId())).toList();
@@ -206,13 +226,13 @@ public class WorkflowRunService {
     for (Map<String, Object> step : ordered) {
       String nodeId = requiredText(step, "nodeId");
       String toolCode = requiredText(step, "tool");
-      if ("retrieve_project_context".equals(toolCode)) continue;
       List<Long> dependencyTaskIds =
           resolveDependencyTaskIds(step, stepByNode, taskByNode, new LinkedHashSet<>());
       WorkflowTaskSchedule.Scheduled scheduled = schedule.schedule(
           integer(step.get("group")), text(step.get("risk"), "SAFE"),
           Boolean.TRUE.equals(step.get("requiresApproval")), dependencyTaskIds);
-      Map<String, Object> createParameters = executionParameters(step, allowedPorts);
+      Map<String, Object> createParameters = skipped.contains(nodeId)
+          ? new LinkedHashMap<>(parameters(step)) : executionParameters(step, allowedPorts);
       List<String> resolvedBases = preflight.resolvedTargets().get(nodeId);
       if (resolvedBases != null && !resolvedBases.isEmpty()) {
         createParameters.put(WebTargetResolver.PARAM_RESOLVED_BASES, resolvedBases);
@@ -358,9 +378,34 @@ public class WorkflowRunService {
                     LinkedHashMap::new));
     List<WorkflowRunDtos.NodeIssue> issues = new ArrayList<>();
     Map<String, List<String>> resolvedTargets = new LinkedHashMap<>();
+    List<URI> targetWebBases = null;
     for (Map<String, Object> step : workflowSpecs.executableSteps(snapshot)) {
       String toolCode = requiredText(step, "tool");
-      if ("retrieve_project_context".equals(toolCode)) continue;
+      // Use the execution defaults and the same parser as the port tools, so
+      // malformed or out-of-scope inputs are rejected before tasks are queued.
+      if ("tcp_ports".equals(toolCode) || "nmap_service_scan".equals(toolCode)) {
+        try {
+          String requestedText = Objects.toString(executionParameters(step, allowedPorts).get("ports"), "");
+          Set<Integer> requested = portRangeParser.parse(
+              requestedText, "nmap_service_scan".equals(toolCode) ? maxNmapPorts : maxPorts);
+          if (!portRangeParser.parse(allowedPorts).containsAll(requested)) {
+            throw new ApiException("请求端口超出授权目标的允许端口范围");
+          }
+        } catch (ApiException ex) {
+          issues.add(new WorkflowRunDtos.NodeIssue(
+              requiredText(step, "nodeId"), toolCode, label(step), ex.getMessage()));
+          continue;
+        }
+      }
+      if ("retrieve_project_context".equals(toolCode)) {
+        try {
+          com.bachelor.toolbox.tool.ProjectContextRetrievalTool.query(parameters(step));
+        } catch (ApiException ex) {
+          issues.add(new WorkflowRunDtos.NodeIssue(requiredText(step, "nodeId"), toolCode,
+              label(step), ex.getMessage()));
+        }
+        continue;
+      }
       String dependencyName = dependencyName(toolCode);
       if (dependencyName != null) {
         String status = dependencyStatus.get(dependencyName);
@@ -378,7 +423,11 @@ public class WorkflowRunService {
         }
       }
       if (WEB_TOOLS.contains(toolCode)) {
-        List<URI> bases = webTargetResolver.tryResolve(target);
+        // All nodes in this analysis must see the same target observation. A second
+        // probe here can otherwise make one node unavailable and another available
+        // simply because a cold connection timed out between adjacent nodes.
+        if (targetWebBases == null) targetWebBases = webTargetResolver.tryResolve(target);
+        List<URI> bases = targetWebBases;
         // TLS 检查要求 https 基址；过滤出 https 才算可用。
         if ("tls_config".equals(toolCode)) {
           List<URI> httpsBases =
@@ -446,6 +495,7 @@ public class WorkflowRunService {
       run.setMessage("工作流未创建任何任务");
       run.setFinishedAt(Instant.now());
       runs.save(run);
+      publishCompletion(run, runTasks);
       return;
     }
     int terminalCount =
@@ -482,6 +532,18 @@ public class WorkflowRunService {
       run.setMessage("工作流执行完成");
     }
     runs.save(run);
+    publishCompletion(run, runTasks);
+  }
+
+  private void publishCompletion(WorkflowRun run, List<SecurityTask> runTasks) {
+    if (notifications == null || !Set.of("COMPLETED", "PARTIAL_FAILED", "FAILED").contains(run.getStatus())) return;
+    List<String> severities = notifications.findingSeverities(
+        runTasks.stream().map(SecurityTask::getId).filter(Objects::nonNull).toList());
+    String outcome = "COMPLETED".equals(run.getStatus()) ? "success"
+        : "PARTIAL_FAILED".equals(run.getStatus()) ? "warning" : "error";
+    notifications.publish("workflow:" + run.getId() + ":" + run.getStatus(), run.getProjectId(),
+        false, "workflow", outcome, "工作流" + ("success".equals(outcome) ? "执行完成" : "执行异常"),
+        "运行 #" + run.getId() + "：" + run.getMessage(), "/workflow?runId=" + run.getId(), severities);
   }
 
   private List<Long> resolveDependencyTaskIds(
@@ -565,6 +627,9 @@ public class WorkflowRunService {
       Map<String, Object> step, String allowedPorts) {
     Map<String, Object> parameters = new LinkedHashMap<>(parameters(step));
     String toolCode = requiredText(step, "tool");
+    if ("retrieve_project_context".equals(toolCode)) {
+      parameters.put("query", com.bachelor.toolbox.tool.ProjectContextRetrievalTool.query(parameters));
+    }
     if (("tcp_ports".equals(toolCode) || "nmap_service_scan".equals(toolCode))
         && text(parameters.get("ports"), "").isBlank()) {
       parameters.put("ports", allowedPorts);
@@ -629,7 +694,7 @@ public class WorkflowRunService {
       case "nuclei_scan" -> "Nuclei";
       case "afrog_scan" -> "Afrog";
       case "xray_scan" -> "Xray";
-      case "zap_scan" -> "OWASP ZAP";
+      case "zap_scan", "zap_fuzz" -> "OWASP ZAP";
       case "fscan_scan" -> "fscan";
       case "sqlmap_scan" -> "sqlmap";
       case "msf_scan" -> "Metasploit";

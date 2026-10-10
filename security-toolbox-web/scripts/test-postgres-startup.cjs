@@ -23,6 +23,13 @@ async function verifyStartup(platform, dataDir) {
     process: { platform },
     app: { getPath: () => userData },
     fs: { mkdirSync: () => {} },
+    desktopRuntimeLogs: () => ({ directory: platformPath.join(userData, "..", "runtime-logs"), recordFault: () => { throw new Error("Unexpected log policy failure"); } }),
+    preparePostgresLogPolicy: ({ runtimeDirectory, dataDirectory }) => {
+      assert.equal(dataDirectory, dataDir);
+      return { bootstrapFile: platformPath.join(runtimeDirectory, "postgres-bootstrap-test.log"), options: "-c logging_collector=on -c log_rotation_size=20480kB" };
+    },
+    readPostgresStartupTail: () => { throw new Error("Ready database should not read failure tail"); },
+    diagnosticError: error => error.message,
     spawn: (executable, args, options) => {
       calls.push({ executable, args: Array.from(args), options });
       return { on: () => {}, unref: () => {} };
@@ -48,10 +55,10 @@ async function verifyStartup(platform, dataDir) {
   const postgresOptions = call.args[call.args.indexOf("-o") + 1];
   assert.match(postgresOptions, /^-p 15432 -h 127\.0\.0\.1 /);
   if (platform === "win32") {
-    assert.equal(postgresOptions, "-p 15432 -h 127.0.0.1 -c unix_socket_directories=");
+    assert.equal(postgresOptions, "-p 15432 -h 127.0.0.1 -c unix_socket_directories= -c logging_collector=on -c log_rotation_size=20480kB");
     assert.ok(!postgresOptions.includes(dataDir), "Windows must not create a socket in the profile path");
   } else {
-    assert.ok(postgresOptions.endsWith(`-k "${dataDir}"`));
+    assert.ok(postgresOptions.includes(`-k "${dataDir}" -c logging_collector=on`));
   }
 }
 

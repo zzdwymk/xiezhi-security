@@ -26,7 +26,9 @@ from .model import (
     HIGH_RISK_TOOLS,
     MODEL_PROVIDER_FAILURE_CODES,
     PlannerOutputError,
+    GroundedReferenceOutputError,
     contract_repair_budget,
+    model_call_budget,
     model_failure_code,
     safe_model_diagnostic,
 )
@@ -104,6 +106,8 @@ TOOL_STAGE = {
     "zap_scan": "validate",
     "fscan_scan": "map",
     "msf_scan": "validate",
+    "sqlmap_scan": "validate",
+    "zap_fuzz": "validate",
 }
 
 CONTRACT_VERSION = 3
@@ -573,33 +577,30 @@ class LedgerAgentRuntime:
     async def _bounded_planner_call(
         self, state: AgentState, method: Any, *args: Any
     ) -> tuple[Any, int]:
-        call_count = state.get("llmCallCount", 0) + 1
+        call_count = state.get("llmCallCount", 0)
         request_budget = state.get("request", {}).get("budget", {})
         max_llm_calls = min(
             settings.max_rag_llm_calls,
             int(request_budget.get("maxLlmCalls", settings.max_rag_llm_calls)),
         )
-        if call_count > max_llm_calls:
-            error = PlannerOutputError("LLM call budget exceeded")
-            error.llm_calls_used = 0
-            raise error
-        with diagnostic_scope(state.get("runId", "")), contract_repair_budget(max_llm_calls - call_count) as repair_budget:
+        remaining = max(0, max_llm_calls - call_count)
+        with diagnostic_scope(state.get("runId", "")), model_call_budget(remaining) as calls, contract_repair_budget(max(0, remaining - 1)):
             try:
                 result = await asyncio.wait_for(
                     method(*args), timeout=settings.llm_timeout_seconds
                 )
             except Exception as exc:
-                exc.llm_calls_used = 1 + repair_budget.used
+                exc.llm_calls_used = calls.used
                 stage = {"route": "ROUTE", "assess_evidence": "EVIDENCE", "grounded_plan": "GROUNDED",
                          "plan": "LEGACY"}.get(getattr(method, "__name__", ""), "UNKNOWN")
                 category, diagnostics = safe_model_diagnostic(exc)
                 record_diagnostic(stage, "REJECTED", category, diagnostics, attempt=exc.llm_calls_used)
                 raise
-            return result, call_count + repair_budget.used
+            return result, call_count + calls.used
 
     @staticmethod
     def _failed_llm_call_count(state: AgentState, error: Exception) -> int:
-        return state.get("llmCallCount", 0) + getattr(error, "llm_calls_used", 1)
+        return state.get("llmCallCount", 0) + getattr(error, "llm_calls_used", 0)
 
     async def _route_node(self, state: AgentState) -> AgentState:
         emit_progress("ROUTING")
@@ -610,6 +611,17 @@ class LedgerAgentRuntime:
                 plan, call_count = await self._bounded_planner_call(
                     state, self.planner.plan, state["request"]
                 )
+                if plan.get("source") == "langchain-rejected":
+                    return {
+                        "intentDecision": {"intent": "CLARIFY", "needsRetrieval": False,
+                                           "publicReasonCode": "AMBIGUOUS_REQUEST"},
+                        "plan": plan,
+                        "llmCallCount": call_count,
+                        "terminationReason": plan.get("failureCode", "MODEL_RESPONSE_INVALID"),
+                        "terminalStatus": "FAILED",
+                        "event": _event("route", "engage", "模型回复不可用，已停止本轮处理",
+                                        {"status": "FAILED", "failureCode": plan.get("failureCode", "MODEL_RESPONSE_INVALID")}),
+                    }
                 routed = {
                     "intent": "ACTION_PLAN"
                     if plan.get("actions")
@@ -658,7 +670,10 @@ class LedgerAgentRuntime:
                 if failure_code in MODEL_PROVIDER_FAILURE_CODES
                 else "ROUTE_FAILED"
             )
-            plan = self._clarify_plan("意图路由未通过严格契约，请调整请求后重试。", failed=True)
+            plan = self._clarify_plan(
+                "AI 模型尚未配置，请在设置中配置模型或本地代理后重试。"
+                if failure_code == "MODEL_NOT_CONFIGURED" else
+                "意图路由未通过严格契约，请调整请求后重试。", failed=True)
             routed = {
                 "intent": "CLARIFY",
                 "needsRetrieval": False,
@@ -959,7 +974,17 @@ class LedgerAgentRuntime:
                     ),
                 }
             )
-        emit_progress("ASSESSED", decision=update.get("evidenceDecision", {}).get("decision"))
+        # The model's validated assessment precedes rewrite limits/deduplication.
+        # Preserve both decisions so a system override cannot look like a model
+        # change of mind. No rewritten query, answer, or free-form reasoning is
+        # published through progress.
+        guard_reason = update.get("terminationReason")
+        emit_progress(
+            "ASSESSED", decision=update.get("evidenceDecision", {}).get("decision"),
+            model_decision=decision.get("decision"), reason_codes=decision.get("reasonCodes"),
+            assessment_source="MODEL" if getattr(self.planner, "_evidence_chain", None) is not None else "LOCAL_RULE",
+            guard_reason=guard_reason if guard_reason in {"REWRITE_LIMIT_REACHED", "REWRITE_REJECTED"} else None,
+        )
         return update
 
     def _route_after_assessment(self, state: AgentState) -> str:
@@ -1010,7 +1035,9 @@ class LedgerAgentRuntime:
         except Exception as exc:
             failure_code = model_failure_code(exc)
             termination_reason = (
-                failure_code
+                "GROUNDED_REFERENCE_INVALID"
+                if isinstance(exc, GroundedReferenceOutputError)
+                else failure_code
                 if failure_code in MODEL_PROVIDER_FAILURE_CODES
                 else "GROUNDED_GENERATION_FAILED"
             )
@@ -1063,6 +1090,7 @@ class LedgerAgentRuntime:
         )
         return {
             "plan": plan_update.get("plan", {}),
+            "llmCallCount": plan_update.get("llmCallCount", state.get("llmCallCount", 0)),
             "guardedActions": guard_update.get("guardedActions", []),
             "guardViolations": guard_update.get("guardViolations", []),
             "approvalActions": guard_update.get("approvalActions", []),
@@ -1071,8 +1099,8 @@ class LedgerAgentRuntime:
         }
 
     async def _planner_node(self, state: AgentState) -> AgentState:
-        plan = await self.planner.plan(state["request"])
-        return self._prepare_plan_update(state, plan)
+        plan, call_count = await self._bounded_planner_call(state, self.planner.plan, state["request"])
+        return {**self._prepare_plan_update(state, plan), "llmCallCount": call_count}
 
     def _prepare_plan_update(
         self, state: AgentState, plan: dict[str, Any]
@@ -1819,6 +1847,7 @@ class LedgerAgentRuntime:
             "evidenceIds": sorted(evidence_ids),
             "indexRevision": active_evidence.get("indexRevision"),
             "plannerSource": str(plan.get("source") or "unknown"),
+            "llmCallCount": state.get("llmCallCount", 0),
             "terminationReason": state.get("terminationReason"),
         }
         return {

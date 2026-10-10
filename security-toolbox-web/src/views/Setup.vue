@@ -14,8 +14,10 @@ import {
   Warning,
 } from "../components/fluentIcons";
 import { endpoints } from "../api";
+import { getApiUrl } from "../apiClient";
 import { toErrorMessage } from "../utils/errorMessage";
 import { taskbarProgress } from "../utils/taskbarProgress";
+import { SETUP_COMPLETE_KEY, workspaceRedirect } from "../utils/startupNavigation";
 
 interface Dependency {
   name: string;
@@ -53,6 +55,7 @@ const loading = ref(false);
 const error = ref("");
 const items = ref<Dependency[]>([]);
 const streaming = ref(false);
+const checkCompleted = ref(false);
 const activeDatabase = ref("");
 const developmentMode = ref(import.meta.env.DEV);
 const postgresMigration = ref<{ configured: boolean; enabled: boolean; available: boolean; port: number | null; database: string | null } | null>(null);
@@ -81,6 +84,8 @@ const desktopDirectorySelectionAvailable = Boolean(
 const desktopMode = Boolean(window.toolboxDesktop);
 let removeInstallProgressListener: (() => void) | undefined;
 let removePgMigrationListener: (() => void) | undefined;
+let checkGeneration = 0;
+let cancelDependencyStream: (() => void) | undefined;
 const manualUrls: Record<string, string> = {
   Java: "https://adoptium.net/temurin/releases/?version=17",
   Nmap: "https://nmap.org/download.html#windows",
@@ -101,19 +106,25 @@ const manualUrls: Record<string, string> = {
   "OWASP ZAP": "https://www.zaproxy.org/download/",
 };
 const missingRequired = computed(() =>
-  items.value.filter((item) => item.required !== false && !isReady(item)),
+  items.value.filter(
+    (item) => item.required !== false && !isChecking(item) && !isReady(item),
+  ),
+);
+const detectionReady = computed(
+  () => checkCompleted.value && !loading.value && !streaming.value && !error.value
+    && !items.value.some(isChecking),
+);
+const canProceed = computed(
+  () => detectionReady.value && (!missingRequired.value.length || developmentMode.value),
 );
 const grouped = computed(() => ({
   core: items.value.filter((item) => item.required !== false),
   optional: items.value.filter((item) => item.required === false),
 }));
 
-// 流式检测期间，Metasploit 的 Ruby 启动很慢，在结果到达前单独显示加载动画。
-const metasploitPending = computed(
-  () =>
-    streaming.value &&
-    !items.value.some((item) => item.name === "Metasploit"),
-);
+function isChecking(item: Dependency) {
+  return item.status === "checking";
+}
 
 function isReady(item: Dependency) {
   return (
@@ -125,6 +136,7 @@ function isReady(item: Dependency) {
 }
 
 function dependencyPathText(item: Dependency) {
+  if (isChecking(item)) return "正在检测本地环境，请稍候…";
   if (item.path) return item.path;
   if (isReady(item)) {
     return "已在系统环境中就绪";
@@ -133,6 +145,7 @@ function dependencyPathText(item: Dependency) {
 }
 
 function dependencyTooltipText(item: Dependency) {
+  if (isChecking(item)) return "";
   if (item.path) return item.path;
   if (isReady(item)) {
     return item.message || "已在系统环境中检测通过，登录后可查看详细安装路径";
@@ -141,31 +154,40 @@ function dependencyTooltipText(item: Dependency) {
 }
 
 async function check(forceRefresh = false) {
+  const generation = ++checkGeneration;
+  cancelDependencyStream?.();
   loading.value = true;
+  checkCompleted.value = false;
   error.value = "";
   items.value = [];
   taskbarProgress.startIndeterminate("setup-detect");
   try {
-    if (typeof EventSource !== "undefined") {
-      const streamed = await streamDependencies(forceRefresh);
-      if (streamed) {
-        await decorateItems();
-        developmentMode.value = import.meta.env.DEV;
-        maybeAutoContinue();
-        return true;
-      }
+    const streamed =
+      typeof EventSource !== "undefined" &&
+      (await streamDependencies(forceRefresh));
+    if (generation !== checkGeneration) return false;
+    if (streamed) {
+      developmentMode.value = import.meta.env.DEV;
+    } else {
+      const { data } = await loadDependencies(forceRefresh);
+      if (generation !== checkGeneration) return false;
+      items.value = Array.isArray(data)
+        ? data
+        : data.dependencies || data.items || [];
+      activeDatabase.value =
+        (data && typeof data === "object" ? data.database : "") || "";
+      developmentMode.value = data.developmentMode ?? import.meta.env.DEV;
     }
-    const { data } = await loadDependencies(forceRefresh);
-    items.value = Array.isArray(data)
-      ? data
-      : data.dependencies || data.items || [];
-    activeDatabase.value =
-      (data && typeof data === "object" ? data.database : "") || "";
+    if (!items.value.length) {
+      error.value = "依赖检查未返回有效结果，请重新检测。";
+      return false;
+    }
     await decorateItems();
-    developmentMode.value = data.developmentMode ?? import.meta.env.DEV;
-    maybeAutoContinue();
+    if (generation !== checkGeneration) return false;
+    checkCompleted.value = true;
     return true;
   } catch (checkError) {
+    if (generation !== checkGeneration) return false;
     items.value = [];
     const candidate = checkError as {
       response?: { status?: number };
@@ -179,9 +201,12 @@ async function check(forceRefresh = false) {
           : "无法连接后端依赖检查接口，请确认本地服务已经启动。";
     return false;
   } finally {
-    loading.value = false;
-    streaming.value = false;
-    taskbarProgress.stopIndeterminate("setup-detect");
+    if (generation === checkGeneration) {
+      loading.value = false;
+      streaming.value = false;
+      taskbarProgress.stopIndeterminate("setup-detect");
+      maybeAutoContinue();
+    }
   }
 }
 
@@ -189,6 +214,7 @@ function maybeAutoContinue() {
   if (
     startupCheck.value &&
     autoContinue.value &&
+    detectionReady.value &&
     !missingRequired.value.length
   ) {
     proceed();
@@ -313,35 +339,58 @@ function handleDownloadSourceModeChange(value: string | number | boolean) {
 
 function streamDependencies(forceRefresh: boolean): Promise<boolean> {
   return new Promise((resolve) => {
-    let received = 0;
+    let settled = false;
     let source: EventSource;
     let timer: ReturnType<typeof setTimeout>;
     try {
       source = new EventSource(
-        `/api/system/dependencies/stream?refresh=${forceRefresh}`,
+        getApiUrl(`/system/dependencies/stream?refresh=${forceRefresh}`),
       );
     } catch {
       resolve(false);
       return;
     }
     const close = (success: boolean) => {
+      if (settled) return;
+      settled = true;
+      cancelDependencyStream = undefined;
       clearTimeout(timer);
       source.close();
       streaming.value = false;
       resolve(success);
     };
+    cancelDependencyStream = () => close(false);
     // Metasploit 的 Ruby 冷启动可能远超 30 秒，需给足流式传输窗口。
-    timer = setTimeout(() => close(received > 0), 90_000);
+    timer = setTimeout(() => close(false), 90_000);
     streaming.value = true;
+    source.addEventListener("manifest", (event) => {
+      if (settled) return;
+      try {
+        const manifest = JSON.parse((event as MessageEvent).data) as Dependency[];
+        if (!Array.isArray(manifest) || manifest.some((item) => !item?.name)) {
+          close(false);
+          return;
+        }
+        // 先按完整清单铺出所有行，后续结果只覆盖对应位置，不按完成顺序追加。
+        const received = new Map(items.value.map((item) => [item.name, item]));
+        items.value = manifest.map((item) =>
+          received.get(item.name) || { ...item, status: "checking", installed: false },
+        );
+      } catch {
+        close(false);
+      }
+    });
     source.onmessage = (event) => {
-      received += 1;
+      if (settled) return;
       try {
         upsertDependency(JSON.parse(event.data) as Dependency);
       } catch {
-        // 忽略无法解析的事件。
+        // 无法读取的依赖结果不能用于判断是否完整，改用普通接口重新获取。
+        close(false);
       }
     };
     source.addEventListener("meta", (event) => {
+      if (settled) return;
       try {
         const meta = JSON.parse((event as MessageEvent).data);
         if (meta && typeof meta.database === "string") {
@@ -351,8 +400,9 @@ function streamDependencies(forceRefresh: boolean): Promise<boolean> {
         // 忽略无法解析的元数据。
       }
     });
-    source.addEventListener("complete", () => close(true));
-    source.onerror = () => close(received > 0);
+    // 完成事件不能把未收到结果的占位行当成检测成功。
+    source.addEventListener("complete", () => close(!items.value.some(isChecking)));
+    source.onerror = () => close(false);
   });
 }
 
@@ -668,7 +718,8 @@ function installStageLabel(stage?: string) {
     paused: "下载已暂停，断点文件已保留",
     canceled: "下载已取消，缓存文件已清除",
   };
-  return labels[(stage || "").toLowerCase()] || stage || "正在处理";
+  return labels[(stage || "").toLowerCase()]
+    || (stage && /[\u3400-\u9fff]/.test(stage) ? stage : "正在处理");
 }
 
 function formatElapsed(seconds?: number) {
@@ -831,12 +882,13 @@ async function resetToolsDirectory() {
 }
 
 function proceed() {
+  if (!detectionReady.value) return;
   if (missingRequired.value.length && !developmentMode.value) {
     ElMessage.warning("核心依赖尚未满足，暂时不能继续");
     return;
   }
-  localStorage.setItem("security_toolbox_setup_complete_v2", "true");
-  router.replace(String(route.query.redirect || "/login"));
+  localStorage.setItem(SETUP_COMPLETE_KEY, "true");
+  router.replace(workspaceRedirect(route.query.redirect));
 }
 
 function updateAutoContinue(value: string | number | boolean) {
@@ -855,6 +907,9 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  checkGeneration += 1;
+  cancelDependencyStream?.();
+  taskbarProgress.stopIndeterminate("setup-detect");
   removeInstallProgressListener?.();
   removeInstallProgressListener = undefined;
   removePgMigrationListener?.();
@@ -1025,9 +1080,9 @@ onUnmounted(() => {
               :key="item.name"
               class="dependency-row"
             >
-              <span class="dep-status" :class="{ ready: isReady(item) }"
-                ><el-icon
-                  ><Check v-if="isReady(item)" /><Warning v-else /></el-icon
+              <span class="dep-status" :class="{ ready: isReady(item), detecting: isChecking(item) }"
+                ><el-icon :class="{ 'is-loading': isChecking(item) }"
+                  ><Setting v-if="isChecking(item)" /><Check v-else-if="isReady(item)" /><Warning v-else /></el-icon
               ></span>
               <div class="dep-main">
                 <b>{{ item.name }}</b>
@@ -1103,13 +1158,14 @@ onUnmounted(() => {
                 <span class="dep-version">{{ item.version || "--" }}</span>
               </el-tooltip>
               <el-tag
-                :type="isReady(item) ? 'success' : 'danger'"
+                :type="isChecking(item) ? 'info' : isReady(item) ? 'success' : 'danger'"
                 size="small"
-                >{{ isReady(item) ? "可用" : "缺失" }}</el-tag
+                >{{ isChecking(item) ? "检测中" : isReady(item) ? "可用" : "缺失" }}</el-tag
               >
               <div class="dep-actions">
+                <span v-if="isChecking(item)" class="dep-action">等待完成</span>
                 <div
-                  v-if="
+                  v-else-if="
                     item.installSupported &&
                     !isReady(item) &&
                     (item.canPause || item.paused)
@@ -1216,9 +1272,9 @@ onUnmounted(() => {
               :key="item.name"
               class="dependency-row"
             >
-              <span class="dep-status" :class="{ ready: isReady(item) }"
-                ><el-icon
-                  ><Check v-if="isReady(item)" /><Warning v-else /></el-icon
+              <span class="dep-status" :class="{ ready: isReady(item), detecting: isChecking(item) }"
+                ><el-icon :class="{ 'is-loading': isChecking(item) }"
+                  ><Setting v-if="isChecking(item)" /><Check v-else-if="isReady(item)" /><Warning v-else /></el-icon
               ></span>
               <div class="dep-main">
                 <b>{{ item.name }}</b>
@@ -1305,11 +1361,12 @@ onUnmounted(() => {
                 <span class="dep-version">{{ item.version || "--" }}</span>
               </el-tooltip>
               <el-tag :type="isReady(item) ? 'success' : 'info'" size="small">{{
-                isReady(item) ? "可用" : "可选"
+                isChecking(item) ? "检测中" : isReady(item) ? "可用" : "可选"
               }}</el-tag>
               <div class="dep-actions">
+                <span v-if="isChecking(item)" class="dep-action">等待完成</span>
                 <div
-                  v-if="
+                  v-else-if="
                     item.installSupported &&
                     !isReady(item) &&
                     (item.canPause || item.paused)
@@ -1489,28 +1546,16 @@ onUnmounted(() => {
                 </div>
               </div>
             </div>
-            <div
-              v-if="metasploitPending"
-              key="msf-pending"
-              class="dependency-row"
-            >
-              <span class="dep-status msf-pending-status"
-                ><el-icon class="is-loading"><Setting /></el-icon
-              ></span>
-              <div class="dep-main">
-                <b>Metasploit 正在检测</b>
-                <small class="dep-path">启动版本检测中，请稍候…</small>
-              </div>
-              <span class="dep-version">…</span>
-              <el-tag type="info" size="small">检测中</el-tag>
-              <span class="dep-action">等待完成</span>
-            </div>
           </div>
         </div>
 
         <footer>
           <div class="setup-footer-copy">
-            <span v-if="developmentMode && missingRequired.length"
+            <span v-if="loading || streaming">正在检测依赖，请稍候。</span>
+            <span v-else-if="!checkCompleted || error"
+              >依赖检测尚未成功完成，请重新检测。</span
+            >
+            <span v-else-if="developmentMode && missingRequired.length"
               >开发模式允许依赖不完整时继续，部分检测任务可能无法执行。</span
             >
             <span v-else-if="missingRequired.length"
@@ -1526,11 +1571,7 @@ onUnmounted(() => {
           </div>
           <el-button
             type="primary"
-            :disabled="
-              loading ||
-              Boolean(error) ||
-              Boolean(missingRequired.length && !developmentMode)
-            "
+            :disabled="!canProceed"
             @click="proceed"
             >下一步，进入工具箱</el-button
           >

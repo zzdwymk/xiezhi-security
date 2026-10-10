@@ -1,6 +1,7 @@
 package com.bachelor.toolbox.ai;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -79,26 +80,22 @@ class AiPlanningModelNormalizationTests {
   }
 
   @Test
-  void chatModelFailureFallsBackWithoutLeakingExceptionDetails() {
+  void chatModelFailureIsExplicitWithoutLeakingExceptionDetails() {
     TargetService targets = targetsWith(target(22L, "127.0.0.1", "IP", "80,443"));
     AiModelClient client = chatClient();
     when(client.chat(anyMap()))
         .thenThrow(new IllegalStateException("upstream body contains sk-private"));
     AiPlanningService service = service(targets, client);
 
-    AiPlanResponse response = service.plan(new AiPlanRequest(22L, "扫描端口"));
-
-    assertThat(response.provider()).isEqualTo("local-rule-fallback");
-    assertThat(response.steps())
-        .extracting(AiPlanResponse.PlanStep::toolCode)
-        .containsExactly("tcp_ports");
-    assertThat(response.toString())
-        .doesNotContain("sk-private")
-        .doesNotContain("IllegalStateException");
+    assertThatThrownBy(() -> service.plan(new AiPlanRequest(22L, "扫描端口")))
+        .isInstanceOf(com.bachelor.toolbox.common.ApiException.class)
+        .hasMessageContaining("AI 模型未能生成有效回答或方案")
+        .hasMessageNotContaining("sk-private")
+        .hasMessageNotContaining("IllegalStateException");
   }
 
   @Test
-  void streamingModelFailureEmitsOnlyStableChineseFallbackStatus() throws Exception {
+  void streamingModelFailureDoesNotEmitLocalSuccess() throws Exception {
     TargetService targets = targetsWith(target(23L, "https://example.test", "URL", "443"));
     AiModelClient client = mock(AiModelClient.class);
     when(client.enabled()).thenReturn(true);
@@ -109,14 +106,14 @@ class AiPlanningModelNormalizationTests {
     AiPlanningService service = service(targets, client);
     List<AiModelClient.AiModelStreamEvent> events = new ArrayList<>();
 
-    AiPlanResponse response = service.planStreaming(new AiPlanRequest(23L, "执行漏洞扫描"), events::add);
-
-    assertThat(response.provider()).isEqualTo("local-rule-fallback");
+    assertThatThrownBy(() -> service.planStreaming(new AiPlanRequest(23L, "执行漏洞扫描"), events::add))
+        .isInstanceOf(com.bachelor.toolbox.common.ApiException.class)
+        .hasMessageContaining("AI 模型未能生成有效回答或方案")
+        .hasMessageNotContaining("sk-private");
     assertThat(events)
         .extracting(AiModelClient.AiModelStreamEvent::text)
-        .contains("AI 服务未完成计划，已切换本地安全规则")
+        .noneMatch(text -> text.contains("已切换本地安全规则"))
         .allMatch(text -> !text.contains("sk-private"));
-    assertThat(response.toString()).doesNotContain("sk-private");
   }
 
   @Test

@@ -10,6 +10,7 @@ from typing import AsyncIterator
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import ValidationError
 from .progress import with_public_progress
 from contextlib import aclosing
 
@@ -31,7 +32,9 @@ from .schemas import (
     AgentRequest,
     AgentResumeRequest,
     AppendDocumentsRequest,
+    EvidenceBundle,
     IndexProjectRequest,
+    QueryProjectEvidenceRequest,
 )
 from .security import require_project_authorization, require_runtime_token
 from .tools import LANGCHAIN_TOOLS_AVAILABLE
@@ -93,6 +96,19 @@ async def request_size_limit(request: Request, call_next):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 content={"detail": "请求长度标头格式无效"},
             )
+    # Content-Length is optional (and can understate the payload). Bound bytes
+    # as they arrive, then retain the body for Starlette's downstream request.
+    chunks: list[bytes] = []
+    received = 0
+    async for chunk in request.stream():
+        received += len(chunk)
+        if received > settings.max_request_bytes:
+            return JSONResponse(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                content={"detail": "请求体超过本地智能服务限制"},
+            )
+        chunks.append(chunk)
+    request._body = b"".join(chunks)
     return await call_next(request)
 
 
@@ -100,6 +116,7 @@ async def request_size_limit(request: Request, call_next):
 async def health() -> dict:
     index_stats = await asyncio.to_thread(index_store.stats)
     recovery_stats = await asyncio.to_thread(recovery_store.stats)
+    planner_status = agent_runtime.planner.status
     components = {
         "runtimeAuth": bool(settings.token),
         "langchain": agent_runtime.planner.status.get("langchainAvailable", False),
@@ -123,6 +140,10 @@ async def health() -> dict:
     )
     return {
         "status": "UP" if ready else "DEGRADED",
+        "runtimeReady": ready,
+        "modelConfigured": planner_status.get("llmConfigured", False),
+        "modelVerified": planner_status.get("llmVerified", False),
+        "modelStatus": planner_status.get("modelStatus", "NOT_CONFIGURED"),
         "version": VERSION,
         "time": datetime.now(timezone.utc).isoformat(),
         "bind": f"{settings.host}:{settings.port}",
@@ -273,6 +294,52 @@ async def project_index_status(project_id: int, request: Request) -> dict:
     if match is None:
         raise HTTPException(status_code=404, detail="项目尚未建立 AI 索引")
     return match
+
+
+@app.post(
+    "/index/project/{project_id}/query",
+    dependencies=[Depends(require_runtime_token)],
+    response_model=EvidenceBundle,
+)
+async def query_project_evidence(
+    project_id: int, request: QueryProjectEvidenceRequest, raw_request: Request
+) -> EvidenceBundle:
+    if project_id <= 0:
+        raise HTTPException(status_code=400, detail="项目编号必须为正整数")
+    require_project_authorization(raw_request, project_id, "index-read")
+    if not settings.rag_enabled:
+        raise HTTPException(status_code=503, detail="项目资料检索尚未启用")
+    try:
+        # Conversation context is deliberately unavailable to workflow reads.
+        # Query/ranking and target filtering happen in the existing bounded store.
+        raw_bundle = await asyncio.wait_for(
+            asyncio.to_thread(
+                index_store.evidence_bundle,
+                project_id,
+                request.query,
+                0,
+                None,
+                request.targetId,
+                top_k=request.topK,
+                max_chars=min(settings.max_evidence_chars, 12_000),
+            ),
+            timeout=settings.retrieval_timeout_seconds,
+        )
+        bundle = EvidenceBundle.model_validate(raw_bundle)
+        if (bundle.projectId != project_id or bundle.targetId != request.targetId
+                or bundle.conversationId is not None or bundle.round != 0
+                or bundle.query != request.query or len(bundle.items) > request.topK):
+            raise IndexValidationError("检索结果范围不一致")
+        for item in bundle.items:
+            if item.source.strip().lower() == "conversation" or (
+                item.targetId != request.targetId
+                and not (item.targetId is None and item.source == "project")
+            ):
+                raise IndexValidationError("检索结果来源或目标不一致")
+        return bundle
+    except (IndexValidationError, ValidationError, OSError, TimeoutError) as exc:
+        logger.warning("项目资料检索未完成或结果校验失败", exc_info=(type(exc), exc, exc.__traceback__))
+        raise HTTPException(status_code=503, detail="项目资料检索未完成，请稍后重试") from exc
 
 
 @app.post(

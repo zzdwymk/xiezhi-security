@@ -247,8 +247,24 @@ def test_invoke_returns_finite_result_for_project_qa(tmp_path: Any) -> None:
 
 
 def test_budget_tightens_max_llm_calls_and_fails_closed(tmp_path: Any) -> None:
+    from types import SimpleNamespace
+    from app.model import AgentPlanner
+
+    class Chain:
+        def __init__(self, result):
+            self.result = result
+            self.calls = 0
+
+        async def ainvoke(self, payload):
+            self.calls += 1
+            return SimpleNamespace(content=json.dumps(self.result))
+
     runtime = LedgerAgentRuntime(_seed_store(tmp_path))
-    runtime.planner = FakePlannerApi(_general_route())
+    planner = runtime.planner = AgentPlanner(runtime.index_store)
+    planner._llm_requested = True
+    planner._chain_load_attempted = True
+    planner._intent_chain = Chain({key: value for key, value in _general_route().items() if value is not None})
+    planner._grounded_chain = Chain({})
     context = _context(
         run_id="facade-budget-llm-0001",
         message="What is TLS?",
@@ -260,6 +276,8 @@ def test_budget_tightens_max_llm_calls_and_fails_closed(tmp_path: Any) -> None:
     assert result.status == "FAILED"
     assert result.terminationReason == "GROUNDED_GENERATION_FAILED"
     assert result.proposedActions == []
+    assert planner._intent_chain.calls == 1
+    assert planner._grounded_chain.calls == 0
 
 
 def test_budget_tightens_max_retrieval_rounds(tmp_path: Any) -> None:

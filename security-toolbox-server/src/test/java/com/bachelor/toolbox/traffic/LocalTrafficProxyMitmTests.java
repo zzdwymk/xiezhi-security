@@ -202,6 +202,19 @@ class LocalTrafficProxyMitmTests {
     }
   }
 
+  @Test
+  void stoppingProxyClosesConnectWhileWaitingForClientTlsHandshake() throws Exception {
+    try (Socket tunnel = openConnectTunnel()) {
+      proxy.close();
+      tunnel.setSoTimeout(2000);
+      try {
+        assertEquals(-1, tunnel.getInputStream().read());
+      } catch (java.net.SocketException reset) {
+        // A TCP reset is also a completed close; a timeout still fails this test.
+      }
+    }
+  }
+
   private String plainExchange(String request) throws Exception {
     try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), proxyPort)) {
       socket.setSoTimeout(5_000);

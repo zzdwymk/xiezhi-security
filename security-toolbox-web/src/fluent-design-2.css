@@ -514,8 +514,8 @@ body,
   background: var(--app-accent-soft) !important;
 }
 
-/* Tabs and segmented navigation */
-.desktop-v2-app-frame :where(.el-tabs__item) {
+/* Navigation tabs also occur in dialogs teleported outside the app frame. */
+.el-tabs .el-tabs__item {
   min-height: var(--fluent-control-height);
   color: color-mix(in srgb, var(--app-text) 78%, transparent);
   font-size: var(--fluent-body1-size);
@@ -525,14 +525,79 @@ body,
     background-color var(--fluent-fast);
 }
 
-.desktop-v2-app-frame :where(.el-tabs__item:hover, .el-tabs__item.is-active) {
-  color: var(--app-accent);
+.el-tabs .el-tabs__item:not(.is-disabled):hover,
+.el-tabs .el-tabs__item.is-active:not(.is-disabled) {
+  color: var(--fluent-link-fg);
 }
-
-.desktop-v2-app-frame :where(.el-tabs__active-bar) {
-  height: var(--fluent-stroke-thick);
+.el-tabs .el-tabs__item.is-active {
+  font-weight: var(--fluent-weight-semibold);
+}
+.el-tabs .el-tabs__item.is-disabled {
+  color: var(--el-disabled-text-color);
+}
+.el-tabs .el-tabs__item:focus-visible {
+  outline: 2px solid var(--app-text);
+  outline-offset: -2px;
+  border-radius: var(--fluent-radius-control);
+}
+.el-tabs .el-tabs__active-bar {
   border-radius: var(--fluent-radius-circular);
   background: var(--app-accent);
+  transition: width var(--fluent-fast), transform var(--fluent-fast);
+}
+.el-tabs--top > .el-tabs__header .el-tabs__active-bar,
+.el-tabs--bottom > .el-tabs__header .el-tabs__active-bar {
+  height: 3px;
+}
+
+/* Fluent toggle choices share neutral surfaces with segmented form controls. */
+.el-radio-button.el-radio-button {
+  --el-radio-button-checked-bg-color: var(--app-surface-soft);
+  --el-radio-button-checked-text-color: var(--app-text);
+  --el-radio-button-checked-border-color: var(--app-border-strong);
+  --el-radio-button-disabled-checked-fill: var(--app-surface-soft);
+  --el-border-radius-base: var(--fluent-radius-control);
+}
+.el-radio-group .el-radio-button .el-radio-button__inner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--fluent-control-height);
+  padding: 0 12px;
+  outline: 1px solid var(--app-border);
+  color: var(--app-text);
+  background: var(--app-surface-strong);
+  font-family: var(--fluent-font);
+  font-size: var(--fluent-body1-size);
+  font-weight: var(--fluent-weight-regular);
+}
+.el-radio-group .el-radio-button--small .el-radio-button__inner {
+  min-height: 24px;
+  padding: 0 8px;
+  font-size: var(--fluent-caption1-size);
+}
+.el-radio-group .el-radio-button--large .el-radio-button__inner {
+  min-height: var(--fluent-control-height-large);
+}
+.el-radio-group .el-radio-button:not(.is-disabled):not(.is-active) .el-radio-button__inner:hover {
+  color: var(--app-text);
+  background: color-mix(in srgb, CanvasText 5%, var(--app-surface-strong));
+}
+.el-radio-group .el-radio-button.is-active .el-radio-button__original-radio:not(:disabled) + .el-radio-button__inner {
+  color: var(--app-text);
+  background: var(--app-surface-soft);
+  font-weight: var(--fluent-weight-semibold);
+  box-shadow: none;
+}
+.el-radio-group .el-radio-button .el-radio-button__original-radio:focus-visible + .el-radio-button__inner {
+  outline: 2px solid var(--app-text);
+  outline-offset: 1px;
+}
+.el-radio-group .el-radio-button .el-radio-button__original-radio:disabled + .el-radio-button__inner {
+  color: var(--el-disabled-text-color);
+  background: var(--app-surface-soft);
+  box-shadow: none;
+  cursor: not-allowed;
 }
 
 /* Dialogs, popovers and messages */
@@ -810,7 +875,7 @@ body,
   color: var(--fluent-link-fg) !important;
 }
 
-:where(.el-button:not(.el-button--primary).is-plain:not(.is-disabled)) {
+:where(.el-button:not(.el-button--primary):not(.el-button--danger).is-plain:not(.is-disabled)) {
   --el-button-bg-color: var(--fluent-control-bg);
   --el-button-border-color: var(--app-border-strong);
   --el-button-hover-bg-color: var(--app-accent-soft);
@@ -819,8 +884,8 @@ body,
 }
 
 :where(
-  .el-button:not(.el-button--primary).is-text:not(.is-disabled),
-  .el-button:not(.el-button--primary).is-link:not(.is-disabled)
+  .el-button:not(.el-button--primary):not(.el-button--danger).is-text:not(.is-disabled),
+  .el-button:not(.el-button--primary):not(.el-button--danger).is-link:not(.is-disabled)
 ) {
   --el-button-text-color: var(--fluent-link-fg);
   --el-button-hover-text-color: var(--fluent-link-fg);
@@ -1188,9 +1253,7 @@ html
    accent as text on a light surface. */
 :where(
   .el-link.el-link--primary,
-  .el-link.el-link--primary:hover,
-  .el-tabs__item.is-active,
-  .el-tabs__item:hover
+  .el-link.el-link--primary:hover
 ) {
   color: var(--fluent-link-fg) !important;
 }
@@ -1212,7 +1275,6 @@ html
 }
 
 :where(
-  .el-radio-button__original:checked + .el-radio-button__inner,
   .el-pagination.is-background .el-pager li.is-active
 ) {
   color: var(--fluent-action-fg) !important;
@@ -1223,9 +1285,9 @@ html
 /* A selected table row is intentionally pale; non-primary row actions get an
    opaque control surface so their labels never disappear into the selection. */
 :where(
-  .el-table tr.current-row .el-button:not(.el-button--primary),
-  .el-table tr.is-selected .el-button:not(.el-button--primary),
-  .el-table .el-table__row.current-row .el-button:not(.el-button--primary)
+  .el-table tr.current-row .el-button:not(.el-button--primary):not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled),
+  .el-table tr.is-selected .el-button:not(.el-button--primary):not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled),
+  .el-table .el-table__row.current-row .el-button:not(.el-button--primary):not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled)
 ) {
   color: var(--fluent-control-fg) !important;
   background: var(--fluent-control-bg) !important;
@@ -1233,9 +1295,9 @@ html
 }
 
 :where(
-  .el-table tr.current-row .el-button:not(.el-button--primary):hover,
-  .el-table tr.is-selected .el-button:not(.el-button--primary):hover,
-  .el-table .el-table__row.current-row .el-button:not(.el-button--primary):hover
+  .el-table tr.current-row .el-button:not(.el-button--primary):not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled):hover,
+  .el-table tr.is-selected .el-button:not(.el-button--primary):not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled):hover,
+  .el-table .el-table__row.current-row .el-button:not(.el-button--primary):not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled):hover
 ) {
   background: var(--app-accent-soft) !important;
   border-color: var(--app-accent-dark) !important;
@@ -2185,7 +2247,8 @@ html
   max-height: 520px;
   flex: none;
   gap: 2px;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 3px 2px 2px 0;
 }
 
@@ -2196,11 +2259,35 @@ html
 
 .desktop-v2-app-frame .desktop-v2-recent-item {
   position: relative;
+  flex: none;
   display: grid;
   overflow: hidden;
   grid-template-columns: minmax(0, 1fr);
   border: 1px solid transparent;
   border-radius: var(--fluent-radius-control);
+}
+
+.desktop-v2-app-frame .desktop-v2-recents-pagination {
+  flex: none;
+  padding: 6px 8px 8px;
+  overflow-anchor: none;
+}
+
+.desktop-v2-app-frame .desktop-v2-recents-status {
+  margin: 0 0 6px;
+  color: var(--app-text-secondary);
+  font-size: 11px;
+}
+
+.desktop-v2-app-frame .desktop-v2-recents-sentinel {
+  height: 1px;
+  pointer-events: none;
+  overflow-anchor: none;
+}
+
+.desktop-v2-app-frame .desktop-v2-recents-list:focus-visible {
+  outline: 2px solid var(--app-accent);
+  outline-offset: -2px;
 }
 
 .desktop-v2-app-frame .desktop-v2-recent-item:hover,
@@ -2272,9 +2359,9 @@ html
   opacity: 1;
 }
 
-.desktop-v2-app-frame .desktop-v2-recent-delete:hover {
-  background: color-mix(in srgb, var(--app-danger, #c42b1c) 12%, transparent);
-  color: var(--app-danger, #c42b1c);
+.desktop-v2-app-frame .desktop-v2-recent-delete:is(:hover, :focus-visible):not(:disabled) {
+  background: color-mix(in srgb, var(--fluent-danger-bg) 10%, var(--app-surface-strong));
+  color: light-dark(var(--fluent-danger-hover-bg), #ffd2cc);
 }
 
 .desktop-v2-app-frame .desktop-v2-recent-empty {

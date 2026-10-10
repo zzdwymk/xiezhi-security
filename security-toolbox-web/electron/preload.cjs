@@ -140,6 +140,8 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.invoke("toolbox:close-capture-browser"),
     getCaptureBrowserStatus: () =>
       ipcRenderer.invoke("toolbox:get-capture-browser-status"),
+    setCaptureBrowserProxyState: (state) =>
+      ipcRenderer.invoke("toolbox:set-capture-browser-proxy-state", state),
     onCaptureBrowserClosed: (callback) => {
       const listener = () => callback();
       ipcRenderer.on("toolbox:capture-browser-closed", listener);
@@ -167,6 +169,16 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.invoke("toolbox:get-notification-settings"),
     saveNotificationSettings: (payload) =>
       ipcRenderer.invoke("toolbox:set-notification-settings", payload),
+    onNotificationClick: (callback) => {
+      const listener = (_event, route) => callback(route);
+      ipcRenderer.on("toolbox:notification-click", listener);
+      return () => ipcRenderer.removeListener("toolbox:notification-click", listener);
+    },
+    onNotificationSettingsChanged: (callback) => {
+      const listener = (_event, settings) => callback(settings);
+      ipcRenderer.on("toolbox:notification-settings-changed", listener);
+      return () => ipcRenderer.removeListener("toolbox:notification-settings-changed", listener);
+    },
     onDependencyInstallProgress: (callback) => {
       const listener = (_event, progress) => callback(progress);
       ipcRenderer.on("toolbox:dependency-install-progress", listener);

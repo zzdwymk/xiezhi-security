@@ -8,6 +8,7 @@ import static org.mockito.Mockito.when;
 import com.bachelor.toolbox.asset.DiscoveredPathService;
 import com.bachelor.toolbox.common.ApiException;
 import java.net.URI;
+import java.net.http.HttpClient;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -17,7 +18,7 @@ class WebTargetResolverTests {
   private final DiscoveredPathService discoveredPaths = mock(DiscoveredPathService.class);
   private final PortRangeParser portRangeParser = new PortRangeParser();
   private final WebTargetResolver resolver =
-      new WebTargetResolver(policy, portRangeParser, discoveredPaths);
+      new WebTargetResolver(policy, portRangeParser, discoveredPaths, mock(HttpClient.class));
 
   private AuthorizedTarget target(String value, String type, String allowedPorts) {
     AuthorizedTarget t = new AuthorizedTarget();

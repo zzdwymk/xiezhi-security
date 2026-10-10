@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from copy import deepcopy
 
 import pytest
 from pydantic import ValidationError
@@ -61,6 +62,52 @@ def test_nuclei_workflow_rejects_invalid_selection_without_widening(parameters):
         WorkflowStep.model_validate(_step("nuclei_scan", parameters))
 
 
+@pytest.mark.parametrize("tool,prefix", [("nuclei_scan", "NU"), ("afrog_scan", "AF"), ("xray_scan", "XR")])
+@pytest.mark.parametrize("case", ["all_to_concrete", "concrete_to_all", "replace_concrete", "keep_all", "keep_concrete",
+                                 "all_to_concrete_with_null", "concrete_to_all_with_null"])
+def test_poc_patch_replaces_only_the_explicitly_selected_mode(tool, prefix, case):
+    first, second = f"{prefix}-" + "A" * 24, f"{prefix}-" + "B" * 24
+    cases = {
+        "all_to_concrete": ({"allPocs": True}, {"pocCodes": [first]}, {"pocCodes": [first]}),
+        "concrete_to_all": ({"pocCodes": [first]}, {"allPocs": True}, {"allPocs": True}),
+        "replace_concrete": ({"pocCodes": [first]}, {"pocCodes": [second]}, {"pocCodes": [second]}),
+        "keep_all": ({"allPocs": True}, {}, {"allPocs": True}),
+        "keep_concrete": ({"pocCodes": [first]}, {}, {"pocCodes": [first]}),
+        "all_to_concrete_with_null": ({"allPocs": True}, {"pocCodes": [first], "allPocs": None}, {"pocCodes": [first]}),
+        "concrete_to_all_with_null": ({"pocCodes": [first]}, {"allPocs": True, "pocCodes": None}, {"allPocs": True}),
+    }
+    configured, patch, expected = cases[case]
+    step = _step(tool, configured)
+    proposal = {"workflowNodeId": step["nodeId"], "parameters": patch, "evidenceRefs": ["ev-1"]}
+    originals = deepcopy((step, proposal))
+    action = validate_workflow_action_closure([proposal], [step])[0]
+    assert action["parameters"] == expected
+    assert action["tool"] == tool and action["requiresApproval"] is True
+    assert action["risk"] == step["risk"] and action["group"] == step["group"]
+    assert action["evidenceRefs"] == ["ev-1"]
+    assert (step, proposal) == originals
+    guidance = build_workflow_capability_manifest({"workflow": [step]})["runtimeContract"]["pocSelectionPatch"]
+    assert "不能同时提供两个有效值" in guidance and "parameters={} 沿用原选择" in guidance
+
+
+@pytest.mark.parametrize("tool", ["nuclei_scan", "afrog_scan", "xray_scan"])
+@pytest.mark.parametrize("patch", [
+    {"allPocs": True, "pocCodes": ["NU-" + "A" * 24]},
+    {"allPocs": False}, {"allPocs": "true"}, {"allPocs": None}, {"pocCodes": None},
+    {"allPocs": None, "pocCodes": None}, {"pocCodes": []},
+    {"pocCodes": ["NU-" + "A" * 24] * 2}, {"pocCodes": ["unknown"]},
+    {"allPocs": True, "templates": "arbitrary"}, {"allPocs": True, "ports": "80"},
+])
+def test_poc_mode_switch_never_repairs_ambiguous_invalid_or_unknown_patch_fields(tool, patch):
+    step = _step(tool, {"allPocs": True})
+    original = deepcopy(patch)
+    with pytest.raises(PlannerOutputError):
+        validate_workflow_action_closure([
+            {"workflowNodeId": step["nodeId"], "parameters": patch, "evidenceRefs": ["ev-1"]},
+        ], [step])
+    assert step["parameters"] == {"allPocs": True} and patch == original
+
+
 @pytest.mark.parametrize("model,parameters", [
     (ZapParameters, {"spider": "false"}),
     (ZapParameters, {"strength": "low"}),
@@ -115,6 +162,9 @@ def test_empty_zap_defaults_accept_user_patch_without_url_or_approval_node():
     manifest = build_workflow_capability_manifest({"workflow": [step]})
     contract = manifest["runtimeContract"]
     assert "无需工作流审批节点" in contract["approval"]
+    assert "所有聊天工具执行方案均须由管理员" in contract["approval"]
+    assert "也不表示聊天执行无需人工审批" in contract["approval"]
+    assert "最终有效审批状态以服务端结果为准" in contract["approval"]
     assert "授权 targetId" in contract["targetBinding"]
     assert "不是参数值白名单" in contract["parameterPatch"]
     assert "没有 Metasploit 模块目录检索工具" in contract["moduleDiscovery"]

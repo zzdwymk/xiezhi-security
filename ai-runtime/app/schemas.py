@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
 from typing import Annotated, Any, ClassVar, Literal, Union
+from urllib.parse import unquote_plus, urlsplit
 
 from pydantic import (
     BaseModel,
@@ -10,6 +12,7 @@ from pydantic import (
     StrictBool,
     StrictInt,
     StrictStr,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -34,6 +37,25 @@ class IndexProjectRequest(BaseModel):
 class AppendDocumentsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     documents: list[ProjectDocument] = Field(min_length=1, max_length=200)
+
+
+class QueryProjectEvidenceRequest(BaseModel):
+    """A workflow read selects one target; project identity comes from the signed path."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    targetId: StrictInt = Field(gt=0)
+    query: StrictStr = Field(min_length=1, max_length=2000)
+    topK: StrictInt = Field(default=5, ge=1, le=10)
+
+    @field_validator("query")
+    @classmethod
+    def validate_query(cls, value: str) -> str:
+        if any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in value):
+            raise ValueError("query must not contain control characters")
+        value = value.strip()
+        if not value:
+            raise ValueError("query must not be blank")
+        return value
 
 
 class ChatMessage(BaseModel):
@@ -121,6 +143,108 @@ class ZapParameters(BaseModel):
     strength: Literal["LOW", "MEDIUM", "HIGH", "INSANE"] | None = None
 
 
+class WorkflowZapFuzzParameters(BaseModel):
+    """A saved node may defer fields; a final action must describe one concrete request."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    fuzzRequestUrl: StrictStr | None = Field(default=None, min_length=1, max_length=2000)
+    method: Literal["GET", "POST"] | None = None
+    fuzzPostBody: StrictStr | None = Field(default=None, max_length=4000)
+    fuzzPayload: StrictStr | None = Field(default=None, min_length=1, max_length=1000)
+    fuzzTargetField: StrictStr | None = Field(default=None, min_length=1, max_length=128)
+
+    @field_validator("fuzzRequestUrl", "fuzzPostBody", "fuzzPayload", "fuzzTargetField")
+    @classmethod
+    def no_control_characters(cls, value: str | None) -> str | None:
+        if value is not None and any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in value):
+            raise ValueError("ZAP request fields must not contain control characters")
+        return value
+
+    @field_validator("fuzzRequestUrl")
+    @classmethod
+    def absolute_http_url(cls, value: str | None) -> str | None:
+        if value is not None:
+            parsed = urlsplit(value)
+            if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                    or parsed.username is not None or "#" in value
+                    or any(c.isspace() for c in value) or parsed.port == 0):
+                raise ValueError("ZAP fuzzRequestUrl must be an absolute HTTP URL without credentials or fragment")
+        return value
+
+    @field_validator("fuzzTargetField")
+    @classmethod
+    def nonblank_field(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("ZAP fuzzTargetField cannot be blank")
+        return value
+
+    @model_validator(mode="after")
+    def get_has_no_body(self) -> "WorkflowZapFuzzParameters":
+        if self.method == "GET" and self.fuzzPostBody:
+            raise ValueError("ZAP GET request cannot carry a form body")
+        return self
+
+
+class ZapFuzzParameters(WorkflowZapFuzzParameters):
+    fuzzRequestUrl: StrictStr = Field(min_length=1, max_length=2000)
+    method: Literal["GET", "POST"] = "POST"
+    fuzzPayload: StrictStr = Field(min_length=1, max_length=1000)
+    fuzzTargetField: StrictStr = Field(min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def existing_unique_field(self) -> "ZapFuzzParameters":
+        form = urlsplit(self.fuzzRequestUrl).query if self.method == "GET" else self.fuzzPostBody
+        if not form or re.search(r"%(?![0-9A-Fa-f]{2})", form):
+            raise ValueError("ZAP needs an existing query or URL-encoded form")
+        names = [unquote_plus(field.split("=", 1)[0]) for field in form.split("&")]
+        if names.count(self.fuzzTargetField) != 1:
+            raise ValueError("ZAP fuzzTargetField must occur exactly once in the original request")
+        return self
+
+
+class WorkflowSqlmapParameters(BaseModel):
+    """Saved workflow defaults; action patches must still pass the tighter AI contract."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    path: StrictStr | None = Field(default=None, min_length=1, max_length=2000)
+    level: StrictInt | None = Field(default=None, ge=1, le=5)
+    risk: StrictInt | None = Field(default=None, ge=1, le=3)
+    technique: StrictStr | None = Field(default=None, pattern=r"^[BEUSTQ]{1,6}$")
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str | None) -> str | None:
+        if value is not None:
+            if value != value.strip() or any(char.isspace() or ord(char) == 127 for char in value):
+                raise ValueError("SQLMap path contains forbidden whitespace")
+            try:
+                parsed = urlsplit(value)
+                if (value.startswith("//") or parsed.username is not None or parsed.fragment
+                        or parsed.scheme not in {"", "http", "https"}):
+                    raise ValueError("SQLMap path must be an HTTP path without credentials or fragment")
+            except ValueError as error:
+                raise ValueError("SQLMap path is invalid") from error
+        return value
+
+    @field_validator("technique")
+    @classmethod
+    def validate_technique(cls, value: str | None) -> str | None:
+        if value is not None and len(set(value)) != len(value):
+            raise ValueError("SQLMap technique must not contain duplicates")
+        return value
+
+
+class SqlmapParameterPatch(WorkflowSqlmapParameters):
+    risk: StrictInt | None = Field(default=None, ge=1, le=1)
+    technique: StrictStr | None = Field(default=None, pattern=r"^[BEUT]{1,4}$")
+
+
+class SqlmapParameters(SqlmapParameterPatch):
+    level: StrictInt = Field(default=1, ge=1, le=5)
+    risk: StrictInt = Field(default=1, ge=1, le=1)
+    technique: StrictStr = Field(default="BEUT", pattern=r"^[BEUT]{1,4}$")
+
+
 MsfModule = Annotated[
     StrictStr,
     Field(max_length=256, pattern=r"^(auxiliary|exploit)/[a-z0-9_]+(?:/[a-z0-9_]+)*$"),
@@ -191,6 +315,8 @@ WorkflowToolParameters = Union[
     PocSelectionParameters,
     FscanParameters,
     ZapParameters,
+    WorkflowZapFuzzParameters,
+    WorkflowSqlmapParameters,
     WorkflowMsfParameters,
 ]
 
@@ -202,6 +328,8 @@ GroundedParameterPatch = Union[
     PocSelectionParameters,
     FscanParameters,
     ZapParameters,
+    WorkflowZapFuzzParameters,
+    SqlmapParameterPatch,
     WorkflowMsfParameters,
 ]
 
@@ -273,6 +401,18 @@ class MsfScanAction(_PlanAction):
     parameters: MsfParameters
 
 
+class SqlmapScanAction(_PlanAction):
+    tool: Literal["sqlmap_scan"]
+    parameters: SqlmapParameters
+    requiresApproval: Literal[True]
+
+
+class ZapFuzzAction(_PlanAction):
+    tool: Literal["zap_fuzz"]
+    parameters: ZapFuzzParameters
+    requiresApproval: Literal[True]
+
+
 PlanAction = Annotated[
     Union[
         RetrieveProjectContextAction,
@@ -287,6 +427,8 @@ PlanAction = Annotated[
         ZapScanAction,
         FscanScanAction,
         MsfScanAction,
+        SqlmapScanAction,
+        ZapFuzzAction,
     ],
     Field(discriminator="tool"),
 ]
@@ -486,7 +628,16 @@ class GroundedPlannerOutput(BaseModel):
     actions: list[GroundedPlanAction] = Field(max_length=8)
 
     @model_validator(mode="after")
-    def validate_grounding_contract(self) -> "GroundedPlannerOutput":
+    def validate_grounding_contract(self, info: ValidationInfo) -> "GroundedPlannerOutput":
+        # Only the model-input parser may defer duplicated top-level declarations.
+        # Every returned/runtime output is revalidated without this context after
+        # checking each selected reference against the current evidence bundle.
+        aggregate_selected_refs = (
+            isinstance(info.context, dict)
+            and info.context.get("aggregate_model_selected_references") is True
+            and self.intent == "plan"
+            and self.knowledgeMode == "PROJECT_EVIDENCE"
+        )
         if len(self.evidenceRefs) != len(set(self.evidenceRefs)):
             raise ValueError("evidenceRefs values must be unique")
         if self.intent == "plan" and not self.actions:
@@ -499,14 +650,14 @@ class GroundedPlannerOutput(BaseModel):
         elif self.knowledgeMode == "INSUFFICIENT_EVIDENCE":
             if self.intent != "clarify" or self.actions or self.evidenceRefs:
                 raise ValueError("INSUFFICIENT_EVIDENCE must produce only clarification")
-        elif not self.evidenceRefs:
+        elif not self.evidenceRefs and not aggregate_selected_refs:
             raise ValueError("PROJECT_EVIDENCE requires evidenceRefs")
         known_refs = set(self.evidenceRefs)
         action_nodes: set[str] = set()
         for action in self.actions:
             if self.knowledgeMode == "PROJECT_EVIDENCE" and not action.evidenceRefs:
                 raise ValueError("grounded actions require evidenceRefs")
-            if not set(action.evidenceRefs).issubset(known_refs):
+            if not aggregate_selected_refs and not set(action.evidenceRefs).issubset(known_refs):
                 raise ValueError("action evidenceRefs must be declared by the output")
             if action.workflowNodeId in action_nodes:
                 raise ValueError("plan cannot contain duplicate workflow nodes")
@@ -571,6 +722,8 @@ class WorkflowStep(BaseModel):
         "zap_scan",
         "fscan_scan",
         "msf_scan",
+        "sqlmap_scan",
+        "zap_fuzz",
     ]
     parameters: WorkflowToolParameters
     risk: Literal["SAFE", "CAUTION"] = "SAFE"
@@ -597,6 +750,8 @@ class WorkflowStep(BaseModel):
         "zap_scan": ZapParameters,
         "fscan_scan": FscanParameters,
         "msf_scan": WorkflowMsfParameters,
+        "sqlmap_scan": WorkflowSqlmapParameters,
+        "zap_fuzz": WorkflowZapFuzzParameters,
     }
 
     @model_validator(mode="before")
@@ -646,7 +801,7 @@ class LedgerAgentContext(BaseModel):
     currentUserRequest: StrictStr | None = Field(default=None, min_length=1, max_length=4000)
     maxRetries: int | None = Field(default=None, ge=0, le=3)
     workflow: list[WorkflowStep] = Field(default_factory=list, max_length=16)
-    runId: str | None = Field(default=None, pattern=r"[A-Za-z0-9_-]{8,80}")
+    runId: str | None = Field(default=None, min_length=8, max_length=80, pattern=r"^[A-Za-z0-9_-]{8,80}$")
     workflowId: StrictStr | None = Field(
         default=None,
         min_length=1,

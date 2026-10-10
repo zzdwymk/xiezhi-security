@@ -42,7 +42,7 @@ class SecurityActionAdministratorIntegrationTests {
   }
 
   @Test
-  void initializedServiceAccountAndNonReviewersDoNotDisableSingleAdministratorMode() {
+  void singleAdministratorCannotApproveLegacyActionAfterMerge() {
     assertThat(users.count()).isEqualTo(2);
     User agent = users.findByUsername("ai-agent").orElseThrow();
     assertThat(agent.isEnabled()).isFalse();
@@ -53,25 +53,28 @@ class SecurityActionAdministratorIntegrationTests {
     assertThat(users.countByRoleAndEnabledTrue("ADMIN")).isEqualTo(1);
 
     SecurityAction action = pendingAction();
-    service.decide(1L, action.getId(), new SecurityActionDtos.Decision("APPROVED", "人工确认"), admin("admin"));
+    assertThatThrownBy(() -> service.decide(1L, action.getId(),
+        new SecurityActionDtos.Decision("APPROVED", "人工确认"), admin("admin")))
+        .isInstanceOf(ApiException.class).hasMessageContaining("请由 AI 重新提交方案");
     actions.flush();
-    assertThat(actions.findById(action.getId()).orElseThrow().getStatus()).isEqualTo("APPROVED");
-    assertThat(action.getApprovedBy()).isEqualTo("admin");
+    assertThat(actions.findById(action.getId()).orElseThrow().getStatus()).isEqualTo("PENDING_APPROVAL");
+    assertThat(action.getApprovedBy()).isNull();
   }
 
   @Test
-  void secondEnabledAdministratorRequiresIndependentReviewerAfterRealInitialization() {
+  void additionalAdministratorCannotReviveRetiredApprovalFlow() {
     addUser("reviewer", "ADMIN", true);
     assertThat(users.countByRoleAndEnabledTrue("ADMIN")).isEqualTo(2);
     SecurityAction action = pendingAction();
 
     assertThatThrownBy(() -> service.decide(1L, action.getId(),
         new SecurityActionDtos.Decision("APPROVED", "本人确认"), admin("admin")))
-        .isInstanceOf(ApiException.class).hasMessage("申请人与审批人必须分离");
+        .isInstanceOf(ApiException.class).hasMessageContaining("请由 AI 重新提交方案");
     assertThat(action.getStatus()).isEqualTo("PENDING_APPROVAL");
-    service.decide(1L, action.getId(), new SecurityActionDtos.Decision("APPROVED", "独立复核"), admin("reviewer"));
-    assertThat(action.getStatus()).isEqualTo("APPROVED");
-    assertThat(action.getApprovedBy()).isEqualTo("reviewer");
+    assertThatThrownBy(() -> service.decide(1L, action.getId(),
+        new SecurityActionDtos.Decision("APPROVED", "独立复核"), admin("reviewer")))
+        .isInstanceOf(ApiException.class).hasMessageContaining("请由 AI 重新提交方案");
+    assertThat(action.getStatus()).isEqualTo("PENDING_APPROVAL");
   }
 
   private void addUser(String name, String role, boolean enabled) {

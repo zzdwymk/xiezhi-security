@@ -16,7 +16,7 @@ class AiWorkflowSuggestServiceTests {
   private final ObjectMapper objectMapper = new ObjectMapper();
 
   @Test
-  void returnsLocalStructuralSuggestionsWhenModelIsDisabled() {
+  void marksAiReviewFailedWhenModelIsDisabledWhileRetainingLabeledStructuralReference() {
     AiModelClient client = mock(AiModelClient.class);
     when(client.enabled()).thenReturn(false);
     AiWorkflowSuggestService service = new AiWorkflowSuggestService(client, objectMapper);
@@ -24,11 +24,13 @@ class AiWorkflowSuggestServiceTests {
     Map<String, Object> result = service.suggest(null);
 
     assertThat(result).containsEntry("source", "本地规则").containsEntry("model", "本地规则");
-    assertThat(result).containsEntry("modelOutcome", "FALLBACK").containsEntry("modelAttempted", false);
+    assertThat(result).containsEntry("modelOutcome", "FAILED").containsEntry("modelAttempted", false)
+        .containsEntry("status", "FAILED");
     assertThat(result.get("note").toString()).contains("未启用大模型");
     assertThat(suggestions(result))
         .extracting(suggestion -> suggestion.get("kind"))
         .containsExactly("gap", "empty");
+    assertThat(suggestions(result)).allSatisfy(item -> assertThat(item).containsEntry("origin", "local"));
   }
 
   @Test
@@ -85,7 +87,7 @@ class AiWorkflowSuggestServiceTests {
   }
 
   @Test
-  void modelFailureUsesChineseFallbackWithoutLeakingExceptionDetails() throws Exception {
+  void modelFailureDoesNotReportCompletedAiReviewOrLeakExceptionDetails() throws Exception {
     AiModelClient client = mock(AiModelClient.class);
     when(client.enabled()).thenReturn(true);
     when(client.model()).thenReturn("test-model");
@@ -98,11 +100,12 @@ class AiWorkflowSuggestServiceTests {
     assertThat(result)
         .containsEntry("source", "本地规则")
         .containsEntry("model", "本地规则")
-        .containsEntry("note", "大模型暂时不可用，已提供结构建议");
+        .containsEntry("note", "大模型暂时不可用，AI 审阅未完成；当前仅有本地结构参考，请检查模型连接后重试")
+        .containsEntry("status", "FAILED");
     assertThat(result.toString())
         .doesNotContain("sk-private")
         .doesNotContain("IllegalStateException");
-    assertThat(result).containsEntry("modelOutcome", "FALLBACK").containsEntry("modelAttempted", true);
+    assertThat(result).containsEntry("modelOutcome", "FAILED").containsEntry("modelAttempted", true);
   }
 
   @Test
@@ -134,7 +137,7 @@ class AiWorkflowSuggestServiceTests {
       "[{\"title\":\"  \",\"detail\":\"PRIVATE_MODEL_OUTPUT\"}]",
       "[{\"title\":\"valid\",\"detail\":\"PRIVATE_MODEL_OUTPUT\"},null]"
   })
-  void invalidShapeIsAContractFallbackWithoutPartialModelSuggestions(String raw) throws Exception {
+  void invalidShapeFailsWithoutPartialModelSuggestionsOrDoneEvent(String raw) throws Exception {
     AiModelClient client = mock(AiModelClient.class);
     when(client.enabled()).thenReturn(true);
     when(client.complete(anyString(), anyString())).thenReturn(raw);
@@ -142,10 +145,38 @@ class AiWorkflowSuggestServiceTests {
     var events = new java.util.ArrayList<Map<String, Object>>();
     service.stream(connectedContextWorkflow(), events::add);
     assertThat(events).noneMatch(event -> "suggestion".equals(event.get("type")));
-    assertThat(events.get(events.size() - 1)).containsEntry("type", "done")
-        .containsEntry("modelOutcome", "FALLBACK").containsEntry("modelAttempted", true)
-        .containsEntry("note", "大模型建议格式未通过校验，已保留结构建议");
+    assertThat(events).noneMatch(event -> "done".equals(event.get("type")));
+    assertThat(events.get(events.size() - 1)).containsEntry("type", "error")
+        .containsEntry("status", "FAILED")
+        .containsEntry("modelOutcome", "FAILED").containsEntry("modelAttempted", true)
+        .containsEntry("note", "大模型建议格式未通过校验，AI 审阅未完成；当前仅有本地结构参考，请重试");
     assertThat(events.toString()).doesNotContain("PRIVATE_MODEL_OUTPUT", "Exception", "suggestions\\\"");
+  }
+
+  @Test
+  void fullStructuralAdviceStillCallsModelAndKeepsAllFiveModelSuggestions() throws Exception {
+    AiModelClient client = mock(AiModelClient.class);
+    when(client.enabled()).thenReturn(true);
+    when(client.model()).thenReturn("test-model");
+    when(client.complete(anyString(), anyString())).thenReturn(objectMapper.writeValueAsString(
+        java.util.stream.IntStream.range(0, 5).mapToObj(index ->
+            Map.of("kind", "orchestration", "title", "模型审阅 " + index, "detail", "核对已有节点的依赖路径。"))
+            .toList()));
+    var service = new AiWorkflowSuggestService(client, objectMapper);
+    var body = Map.<String, Object>of("preset", "quick-web", "selectedNodeId", "scan", "graph", Map.of(
+        "nodes", List.of(Map.of("id", "scan", "type", "tool", "tool", "nuclei_scan"),
+            Map.of("id", "headers", "type", "tool", "tool", "http_headers")), "edges", List.of()));
+
+    var result = service.suggest(body);
+
+    ArgumentCaptor<String> user = ArgumentCaptor.forClass(String.class);
+    verify(client).complete(anyString(), user.capture());
+    assertThat(objectMapper.readTree(user.getValue()).path("localSuggestions").size()).isEqualTo(8);
+    assertThat(result).containsEntry("status", "COMPLETED").containsEntry("modelAttempted", true);
+    assertThat(suggestions(result)).hasSize(8);
+    assertThat(suggestions(result).stream().filter(item -> "llm".equals(item.get("origin")))).hasSize(5);
+    assertThat(result.get("modelCounts")).isEqualTo(Map.of(
+        "returned", 5, "accepted", 5, "added", 5, "notAdded", 0, "discardedActions", 0));
   }
 
   @Test

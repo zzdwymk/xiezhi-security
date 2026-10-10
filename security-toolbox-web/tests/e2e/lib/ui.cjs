@@ -11,7 +11,7 @@ const SIDEBAR = {
   // 分组 → 该组下的菜单项
   "AI 工作区": ["AI 安全助手", "红队工作流"],
   "项目与资产": ["评估项目", "授权目标", "资产拓扑"],
-  "检测与分析": ["主动检测", "检测任务", "结果中心", "流量分析"],
+  "检测与分析": ["主动检测", "流量分析", "检测任务", "安全发现"],
   "系统与审计": ["审计日志", "离线工具集"],
 };
 
@@ -144,7 +144,11 @@ async function fillByLabel(scope, page, label, value) {
   const input = item.locator("input.el-input__inner, textarea.el-textarea__inner").first();
   await input.click();
   await input.fill("");
-  await input.type(String(value), { delay: 12 });
+  const text = String(value);
+  // Explicit typing budget includes deliberate per-character input and desktop tracing.
+  // This does not change locator, server-response, or page default timeouts.
+  const timeout = Math.min(60000, Math.max(9000, 5000 + Array.from(text).length * 150));
+  await input.type(text, { delay: 12, timeout });
   return input;
 }
 

@@ -27,8 +27,8 @@ public class AiWorkflowSuggestService {
   private static final Set<String> DISCOVERY_TOOLS =
       Set.of("tcp_ports", "nmap_service_scan", "http_headers", "fscan_scan");
   private static final Set<String> SCANNER_TOOLS =
-      Set.of("nuclei_scan", "afrog_scan", "xray_scan", "zap_scan", "sqlmap_scan", "msf_scan");
-  private enum ModelOutcome { EMPTY, NO_NEW, ADDED, FALLBACK }
+      Set.of("nuclei_scan", "afrog_scan", "xray_scan", "zap_scan", "zap_fuzz", "sqlmap_scan", "msf_scan");
+  private enum ModelOutcome { EMPTY, NO_NEW, ADDED, FAILED }
 
   private final AiModelClient modelClient;
   private final ObjectMapper objectMapper;
@@ -53,16 +53,17 @@ public class AiWorkflowSuggestService {
 
     SuggestionEmitter suggestions = new SuggestionEmitter(emit);
     List<Map<String, Object>> localSuggestions = structuralSuggestions(input);
-    suggestions.emitAll(localSuggestions, "local");
+    // Reserve room for the model even when structural rules find eight issues.
+    suggestions.emitAll(localSuggestions.stream().limit(MAX_SUGGESTIONS - MAX_MODEL_SUGGESTIONS).toList(), "local");
 
     String source = LOCAL_SOURCE;
-    String note = modelClient.enabled() ? "" : "未启用大模型，仅提供结构建议；在设置中配置 API 后可获得实时编排建议";
+    String note = modelClient.enabled() ? "" : "未启用大模型，AI 审阅未完成；当前仅有本地结构参考，请配置模型后重试";
     String modelName = LOCAL_SOURCE;
-    ModelOutcome modelOutcome = modelClient.enabled() ? ModelOutcome.NO_NEW : ModelOutcome.FALLBACK;
+    ModelOutcome modelOutcome = ModelOutcome.FAILED;
     boolean modelAttempted = false;
     Map<String, Integer> modelCounts = modelCounts(0, 0, 0, 0);
 
-    if (modelClient.enabled() && suggestions.hasCapacity()) {
+    if (modelClient.enabled()) {
       emit.accept(statusEvent("llm", "大模型正在审阅拓扑并生成编排建议"));
       modelAttempted = true;
       try {
@@ -71,7 +72,7 @@ public class AiWorkflowSuggestService {
         modelCounts = modelCounts(batch.returnedCount(), batch.suggestions().size(), modelCount, batch.discardedActions());
         modelOutcome = batch.returnedCount() == 0 ? ModelOutcome.EMPTY
             : modelCount > 0 ? ModelOutcome.ADDED : ModelOutcome.NO_NEW;
-        source = modelCount > 0 ? "大模型+本地规则" : LOCAL_SOURCE;
+        source = "大模型+本地规则";
         modelName = modelClient.model();
         if (modelOutcome == ModelOutcome.EMPTY) {
           note = "大模型已完成审阅，未提出额外建议，已保留结构建议";
@@ -79,18 +80,17 @@ public class AiWorkflowSuggestService {
           note = "大模型建议与已有建议重复，未新增建议，已保留结构建议";
         }
       } catch (ModelSuggestionContractException ignored) {
-        modelOutcome = ModelOutcome.FALLBACK;
-        note = "大模型建议格式未通过校验，已保留结构建议";
+        modelOutcome = ModelOutcome.FAILED;
+        note = "大模型建议格式未通过校验，AI 审阅未完成；当前仅有本地结构参考，请重试";
         source = LOCAL_SOURCE;
-        emit.accept(statusEvent("llm_fallback", note));
       } catch (Exception ignored) {
-        modelOutcome = ModelOutcome.FALLBACK;
-        note = "大模型暂时不可用，已提供结构建议";
+        modelOutcome = ModelOutcome.FAILED;
+        note = "大模型暂时不可用，AI 审阅未完成；当前仅有本地结构参考，请检查模型连接后重试";
         source = LOCAL_SOURCE;
-        emit.accept(statusEvent("llm_fallback", note));
       }
     }
 
+    suggestions.emitAll(localSuggestions, "local");
     emit.accept(doneEvent(source, modelName, note, suggestions.count(), modelOutcome, modelAttempted, modelCounts));
   }
 
@@ -104,7 +104,8 @@ public class AiWorkflowSuggestService {
     String source = LOCAL_SOURCE;
     String note = "";
     String model = modelClient.enabled() ? modelClient.model() : LOCAL_SOURCE;
-    String modelOutcome = ModelOutcome.FALLBACK.name();
+    String modelOutcome = ModelOutcome.FAILED.name();
+    String status = "FAILED";
     boolean modelAttempted = false;
     Object modelCounts = modelCounts(0, 0, 0, 0);
 
@@ -112,7 +113,8 @@ public class AiWorkflowSuggestService {
       String type = Objects.toString(event.get("type"), "");
       if ("suggestion".equals(type)) {
         addAggregatedSuggestion(event, suggestions);
-      } else if ("done".equals(type)) {
+      } else if ("done".equals(type) || "error".equals(type)) {
+        status = "done".equals(type) ? "COMPLETED" : "FAILED";
         source = Objects.toString(event.get("source"), source);
         note = Objects.toString(event.get("note"), note);
         model = Objects.toString(event.get("model"), model);
@@ -124,6 +126,7 @@ public class AiWorkflowSuggestService {
 
     Map<String, Object> result = new LinkedHashMap<>();
     result.put("source", source);
+    result.put("status", status);
     result.put("model", model);
     result.put("note", note);
     result.put("modelOutcome", modelOutcome);
@@ -172,7 +175,10 @@ public class AiWorkflowSuggestService {
   private Map<String, Object> doneEvent(String source, String model, String note, int count,
       ModelOutcome modelOutcome, boolean modelAttempted, Map<String, Integer> modelCounts) {
     Map<String, Object> event = new LinkedHashMap<>();
-    event.put("type", "done");
+    boolean failed = modelOutcome == ModelOutcome.FAILED;
+    event.put("type", failed ? "error" : "done");
+    event.put("status", failed ? "FAILED" : "COMPLETED");
+    if (failed) event.put("message", note);
     event.put("source", source);
     event.put("model", model);
     event.put("note", note);
@@ -416,7 +422,7 @@ public class AiWorkflowSuggestService {
         1. 先检查断路、环路、无法从开始到达或无法到达结束的节点，以及扫描前置采集是否在上游路径。
         2. 再检查依赖被错误并行、汇合不完整、重复采集和复测/交付缺口。仅在有具体依据时提出优化。
         3. Nmap 已包含端口探测，不要强制在它前面添加 tcp_ports，也不要默认建议全量 1-65535 扫描。
-        4. fscan_scan、sqlmap_scan、msf_scan 都是平台支持的能力；不能仅凭工具名称断言越权或不可用。
+        4. 输入能力目录中的工具都是平台支持的能力；不能仅凭工具名称断言越权或不可用。zap_fuzz 只支持单次参数变异验证，不是完整字典模糊测试。
            未知参数或授权只能建议执行前核验，不得声称已发现漏洞、已获授权或必定执行失败。
         5. 不重复 localSuggestions，不凑条数，不机械堆叠扫描器。不提出漏洞利用、爆破、横向移动
            或扩大目标范围的执行方案；只审阅依赖、配置完整性与授权检查。
@@ -640,7 +646,9 @@ public class AiWorkflowSuggestService {
         }
         Map<String, Object> event = new LinkedHashMap<>();
         event.put("type", "suggestion");
-        event.put("suggestion", suggestion);
+        Map<String, Object> attributed = new LinkedHashMap<>(suggestion);
+        attributed.put("origin", origin);
+        event.put("suggestion", attributed);
         event.put("index", count);
         event.put("origin", origin);
         sink.accept(event);

@@ -68,15 +68,15 @@ const EXE_PATH = path.join(
     await nav.waitFor({ state: "visible", timeout: 15000 });
 
     // -------------------------------------------------------------
-    // 1. 验证“结果中心”的多维筛选栏
+    // 1. 验证“安全发现”的多维筛选栏
     // -------------------------------------------------------------
-    console.log("1. 测试结果中心多维筛选栏...");
-    const findingsNavBtn = nav.locator("button.desktop-v2-nav-item", { hasText: "结果中心" }).first();
+    console.log("1. 测试安全发现多维筛选栏...");
+    const findingsNavBtn = nav.locator("button.desktop-v2-nav-item", { hasText: "安全发现" }).first();
     await findingsNavBtn.click();
     await new Promise((r) => setTimeout(r, 2500));
 
     const toolbarVisible = await page.locator(".findings-filter-toolbar").isVisible();
-    console.log("结果中心多维筛选栏是否可见:", toolbarVisible);
+    console.log("安全发现多维筛选栏是否可见:", toolbarVisible);
 
     // 测试选择分类：漏洞发现
     const catSelect = page.locator(".findings-filter-toolbar .el-select").nth(0);
@@ -97,7 +97,7 @@ const EXE_PATH = path.join(
     await new Promise((r) => setTimeout(r, 1500));
 
     await page.screenshot({ path: path.join(ROOT, "docs", "findings-toolbar-verified.png") });
-    console.log("结果中心筛选栏截图已保存至: docs/findings-toolbar-verified.png");
+    console.log("安全发现筛选栏截图已保存至: docs/findings-toolbar-verified.png");
 
     // -------------------------------------------------------------
     // 2. 验证“扫描 Diff”弹窗表单间距与结构

@@ -2,7 +2,6 @@ package com.bachelor.toolbox.traffic;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -18,7 +17,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
-import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.PlatformTransactionManager;
 
 @ExtendWith(MockitoExtension.class)
@@ -36,6 +34,31 @@ class TrafficProxyQueryTests {
   @Mock private PlatformTransactionManager transactionManager;
 
   @Test
+  void startsCaptureWithoutLoadingOrValidatingALegacyTarget() throws Exception {
+    when(sessions.save(any(TrafficSession.class))).thenAnswer(invocation -> {
+      TrafficSession session = invocation.getArgument(0);
+      session.setId(90L);
+      return session;
+    });
+    int port = 0;
+    for (int candidate = 19080; candidate <= 19120; candidate++) {
+      try (java.net.ServerSocket socket = new java.net.ServerSocket(candidate, 1, java.net.InetAddress.getLoopbackAddress())) {
+        port = candidate;
+        break;
+      } catch (java.io.IOException occupied) { }
+    }
+    assertThat(port).isGreaterThan(0);
+    TrafficProxyService proxy = service();
+    try {
+      var status = proxy.start(new TrafficDtos.StartRequest(999999L, port, "AUTO_SAFE"));
+      assertThat(status.running()).isTrue();
+      assertThat(status.targetId()).isNull();
+      assertThat(status.handlingMode()).isEqualTo("ASK");
+      org.mockito.Mockito.verifyNoInteractions(targets, policy, analysis);
+    } finally { proxy.stop(); }
+  }
+
+  @Test
   void queriesOnlyTheMostRecentTwoHundredStoredPackets() {
     TrafficPacket packet = packet(1L);
     when(packets.findAll(any(Pageable.class))).thenReturn(new PageImpl<>(List.of(packet)));
@@ -51,21 +74,39 @@ class TrafficProxyQueryTests {
   }
 
   @Test
-  void appliesTheDatabaseLimitToTheCurrentSessionQuery() {
-    TrafficSession session = new TrafficSession();
-    session.setId(9L);
-    TrafficPacket packet = packet(session.getId());
-    when(packets.findAllBySessionIdOrderByCreatedAtDescIdDesc(eq(9L), any(Pageable.class)))
-        .thenReturn(List.of(packet));
+  void preservesHistoryAcrossProxyStartRecordingPauseResumeAndStop() throws Exception {
+    TrafficPacket history = packet(1L);
+    when(packets.findAll(any(Pageable.class))).thenReturn(new PageImpl<>(List.of(history)));
+    when(sessions.save(any(TrafficSession.class))).thenAnswer(invocation -> {
+      TrafficSession session = invocation.getArgument(0);
+      session.setId(9L);
+      return session;
+    });
+    int port = 0;
+    for (int candidate = 19080; candidate <= 19120; candidate++) {
+      try (java.net.ServerSocket socket = new java.net.ServerSocket(candidate, 1, java.net.InetAddress.getLoopbackAddress())) {
+        port = candidate;
+        break;
+      } catch (java.io.IOException occupied) { }
+    }
+    assertThat(port).isGreaterThan(0);
     TrafficProxyService service = service();
-    ReflectionTestUtils.setField(service, "current", session);
-
-    assertThat(service.packets()).containsExactly(packet);
-
-    ArgumentCaptor<Pageable> pageable = ArgumentCaptor.forClass(Pageable.class);
-    verify(packets).findAllBySessionIdOrderByCreatedAtDescIdDesc(eq(9L), pageable.capture());
-    assertThat(pageable.getValue().getPageNumber()).isZero();
-    assertThat(pageable.getValue().getPageSize()).isEqualTo(200);
+    assertThat(service.packets()).containsExactly(history);
+    try {
+      assertThat(service.start(new TrafficDtos.StartRequest(null, port, "ASK")).running()).isTrue();
+      assertThat(service.packets()).containsExactly(history);
+      assertThat(service.setCapturing(true).capturing()).isTrue();
+      assertThat(service.packets()).containsExactly(history);
+      assertThat(service.setCapturing(false).capturing()).isFalse();
+      assertThat(service.packets()).containsExactly(history);
+      assertThat(service.setCapturing(true).capturing()).isTrue();
+      assertThat(service.packets()).containsExactly(history);
+    } finally {
+      service.stop();
+    }
+    assertThat(service.packets()).containsExactly(history);
+    verify(packets, org.mockito.Mockito.times(6)).findAll(any(Pageable.class));
+    org.mockito.Mockito.verifyNoMoreInteractions(packets);
   }
 
   private TrafficPacket packet(Long sessionId) {

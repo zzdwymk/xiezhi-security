@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { ElMessage } from "element-plus";
+import FluentCodeBlock from "../FluentCodeBlock.vue";
 import {
   parseHttpMessage,
   type HttpMessageInfo,
@@ -103,7 +104,7 @@ Referrer-Policy: strict-origin-when-cross-origin
       </div>
       <section v-if="result.body" class="http-body-preview">
         <h3>正文预览</h3>
-        <pre>{{ result.body }}</pre>
+        <FluentCodeBlock :content="result.body" :min-rows="4" :max-rows="14" wrap aria-label="HTTP 报文正文，只读" />
       </section>
     </template>
   </div>

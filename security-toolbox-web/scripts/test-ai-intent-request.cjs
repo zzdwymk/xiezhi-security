@@ -4,19 +4,19 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
 const root = path.resolve(__dirname, '..');
-function createClient({ fetch, post }) {
+function createClient({ fetch, post, timers = { setTimeout, clearTimeout } }) {
   const cache = new Map();
   function load(file) {
     if (cache.has(file)) return cache.get(file).exports;
     const module = { exports: {} }; cache.set(file, module);
     const code = ts.transpileModule(fs.readFileSync(file, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
     const localRequire = name => {
-      if (name === './apiClient') return { api: { post }, apiUrl: value => value };
+      if (name === './apiClient') return { api: { post }, apiFetch: fetch, apiUrl: value => value };
       if (name === './authToken') return { readAuthToken: () => '' };
       if (name === './utils/taskbarProgress') return { taskbarProgress: new Proxy({}, { get: () => () => undefined }) };
       return name.startsWith('.') ? load(path.resolve(path.dirname(file), name + '.ts')) : require(name);
     };
-    vm.runInNewContext(`(function(require,module,exports){${code}\n})`, { fetch, AbortController, TextDecoder, setTimeout, clearTimeout, console }, { filename: file })(localRequire, module, module.exports);
+    vm.runInNewContext(`(function(require,module,exports){${code}\n})`, { fetch, AbortController, TextDecoder, ...timers, console }, { filename: file })(localRequire, module, module.exports);
     return module.exports;
   }
   return load(path.join(root, 'src/api.ts'));
