@@ -62,18 +62,49 @@ async function summaryRuleCount(launcher) {
 async function confirmScan(page, box, ctx, targetId, ruleCodes) {
   const expectedCodes = [...ruleCodes].sort();
   const startedAt = Date.now();
-  const responsePromise = page.waitForResponse(response => {
-    const request = response.request();
-    if (request.method() !== "POST" || !/\/api\/active-scans$/.test(response.url())) return false;
-    try {
-      const body = request.postDataJSON();
-      return Number(body.projectId) === Number(ctx.projectId) && Number(body.targetId) === Number(targetId)
-        && JSON.stringify([...(body.ruleCodes || [])].sort()) === JSON.stringify(expectedCodes);
-    } catch { return false; }
-  }, { timeout: 120000 }).then(response => ({ response }), error => ({ error }));
+  // 响应可能在 100ms 级别就返回；谓词里任何抛错都会让 Playwright 永久跳过该响应，
+  // 因此这里先做便宜的 URL/方法过滤，再在最内层 try 里解析请求体，
+  // 并把"解析失败"当作不匹配而不是异常。同时额外记录一次原始响应，
+  // 便于在谓词未命中时给出可诊断的错误。
+  let lastSeen = null;
+  const responsePromise = page
+    .waitForResponse(
+      (response) => {
+        try {
+          const request = response.request();
+          if (request.method() !== "POST" || !/\/api\/active-scans$/.test(response.url()))
+            return false;
+          lastSeen = { url: response.url(), status: response.status() };
+          let body;
+          try {
+            body = request.postDataJSON();
+          } catch {
+            return false;
+          }
+          if (!body) return false;
+          return (
+            Number(body.projectId) === Number(ctx.projectId) &&
+            Number(body.targetId) === Number(targetId) &&
+            JSON.stringify([...(body.ruleCodes || [])].sort()) ===
+              JSON.stringify(expectedCodes)
+          );
+        } catch {
+          return false;
+        }
+      },
+      { timeout: 120000 },
+    )
+    .then(
+      (response) => ({ response }),
+      (error) => ({ error }),
+    );
   await box.locator("button", { hasText: "开始检测" }).last().click();
   const observed = await responsePromise;
-  if (observed.error) throw new Error(`本次目标 ${targetId} 的主动检测响应未在120秒内返回: ${observed.error.message}`);
+  if (observed.error)
+    throw new Error(
+      `本次目标 ${targetId} 的主动检测响应未在120秒内返回: ${observed.error.message}` +
+        (lastSeen ? `（期间观察到 ${lastSeen.status} ${lastSeen.url}）` : "（期间未观察到任何 /api/active-scans 响应）"),
+    );
   const response = observed.response;
   const body = await response.json();
   const evidence = { input: response.request().postDataJSON(), status: response.status(), body, elapsedMs: Date.now() - startedAt };

@@ -1377,9 +1377,9 @@ onUnmounted(() => {
           formatDateTime(scope.row.createdAt)
         }}</template></el-table-column
       >
-      <el-table-column label="操作" min-width="250"
+      <el-table-column label="操作" min-width="288"
         ><template #default="scope"
-          ><div class="row-actions row-actions--pair">
+          ><div class="task-row-actions">
             <el-button
               class="row-action"
               size="small"
@@ -2636,6 +2636,66 @@ onUnmounted(() => {
   float: right;
   color: var(--el-text-color-secondary);
   font-size: 12px;
+}
+.task-row-actions {
+  display: grid;
+  width: 100%;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+}
+.task-row-actions > .el-button,
+.task-row-actions > .row-action {
+  width: 100% !important;
+  padding: 0 4px !important;
+}
+.task-row-actions .row-action.el-button {
+  margin: 0 !important;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  border: var(--fluent-stroke-thin) solid var(--app-border-strong);
+  background: var(--app-surface-strong);
+  color: var(--app-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.task-row-actions .row-action.el-button > span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+.task-row-actions .row-action.el-button:hover,
+.task-row-actions .row-action.el-button:focus-visible {
+  border-color: var(--app-accent);
+  background: var(--app-accent-soft);
+  color: var(--app-text);
+}
+.task-row-actions .row-action--ai.el-button {
+  border-color: var(--app-accent);
+  background: var(--app-surface-strong);
+  color: var(--fluent-link-fg);
+}
+.task-row-actions .row-action--ai.el-button:hover,
+.task-row-actions .row-action--ai.el-button:focus-visible {
+  border-color: var(--app-accent-dark);
+  background: var(--app-accent-soft);
+  color: var(--fluent-link-fg);
+}
+.task-row-actions .row-action.row-action--danger.el-button:not(.is-disabled):not(:disabled) {
+  border-color: var(--app-border-strong);
+  color: light-dark(var(--fluent-danger-bg), #ffb4ab);
+}
+.task-row-actions .row-action.row-action--danger.el-button:not(.is-disabled):not(:disabled):hover,
+.task-row-actions .row-action.row-action--danger.el-button:not(.is-disabled):not(:disabled):focus-visible {
+  border-color: light-dark(var(--fluent-danger-bg), #ffb4ab);
+  background: var(--fluent-danger-soft);
+  color: light-dark(var(--fluent-danger-bg), #ffb4ab);
 }
 @media (max-width: 640px) {
   .schedule-rule-row {

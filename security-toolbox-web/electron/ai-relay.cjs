@@ -191,9 +191,14 @@ function decodeResponse(raw, contentType, mode) {
   return { answer, usage: completion?.usage }
 }
 
-// Keep the relay deadline below the runtime's 45-second model timeout, while
-// allowing structured plans to finish before trying the next provider.
-function createAiRelay({providers = [], fetchImpl = globalThis.fetch, attemptTimeoutMs = 30000, totalTimeoutMs = 40000, cooldownMs = 30000} = {}) {
+// 单次上游尝试必须给推理型模型留足时间：运行时侧的模型超时为 45 秒
+// （AI_RUNTIME_LLM_TIMEOUT_SECONDS，可上调到 120 秒），中转站若在 30 秒就放弃，
+// 会把"模型仍在正常生成"误判为上游故障，并触发 30 秒冷却，
+// 使后续请求在 0.2 秒内连续失败（表现为"模型服务暂时不可用"）。
+// 因此这里让尝试超时与总超时都高于运行时模型超时，并缩短冷却时间。
+// Keep the relay deadline above the runtime's 45-second model timeout, so a slow
+// but healthy model response is not mistaken for an upstream outage.
+function createAiRelay({providers = [], fetchImpl = globalThis.fetch, attemptTimeoutMs = 120000, totalTimeoutMs = 150000, cooldownMs = 5000} = {}) {
   let entries = normalize(providers), cursor = 0, server = null, baseUrl = null
   const apiKey = randomBytes(32).toString('hex')
   const controllers = new Set()
