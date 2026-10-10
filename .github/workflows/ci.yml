@@ -43,6 +43,8 @@ jobs:
                 ;;
               scripts/package-desktop-release.ps1|scripts/start-all.ps1|scripts/start-desktop.ps1|scripts/status-all.ps1|scripts/stop-all.ps1|scripts/generate_test_report_from_run.py)
                 ;;
+              scripts/count_code.py|scripts/code_line_metrics.py|scripts/requirements-code-count.txt|scripts/test_count_code.py|scripts/test_code_line_metrics.py)
+                ;;
               .gitignore|README.md|compose.yaml|package-desktop-release.cmd|start-all.cmd|start-desktop.cmd|stop-all.cmd|LICENSE|LICENSE.*|CONTRIBUTING.md|SECURITY.md|CODE_OF_CONDUCT.md|.editorconfig)
                 ;;
               *)
@@ -295,6 +297,10 @@ jobs:
       - name: Test offline tools
         working-directory: security-toolbox-web
         run: npm run test:offline
+
+      - name: Test stream authentication
+        working-directory: security-toolbox-web
+        run: npm run test:stream-auth
 
       - name: Build Vue renderer
         working-directory: security-toolbox-web

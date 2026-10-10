@@ -36,7 +36,7 @@ public class TaskProgressEventService {
         });
     Runnable cleanup = () -> remove(task.getId(), emitter);
     emitter.onCompletion(cleanup);
-    emitter.onTimeout(cleanup);
+    emitter.onTimeout(() -> timeout(task.getId(), emitter));
     emitter.onError(ignored -> cleanup.run());
     boolean sent = send(task.getId(), emitter, "snapshot", payload(task, null));
     if (sent && isTerminal(task.getStatus())) safeComplete(task.getId(), emitter);
@@ -48,7 +48,7 @@ public class TaskProgressEventService {
     allTaskSubscribers.add(emitter);
     Runnable cleanup = () -> allTaskSubscribers.remove(emitter);
     emitter.onCompletion(cleanup);
-    emitter.onTimeout(cleanup);
+    emitter.onTimeout(() -> timeout(null, emitter));
     emitter.onError(ignored -> cleanup.run());
     send(null, emitter, "ready", Map.of("connected", true, "emittedAt", Instant.now().toString()));
     return emitter;
@@ -132,6 +132,14 @@ public class TaskProgressEventService {
     } catch (RuntimeException ex) {
       retire(taskId, emitter);
     }
+  }
+
+  private void timeout(Long taskId, SseEmitter emitter) {
+    retire(taskId, emitter);
+    // In Spring 6.2.19, complete() still resolves the DeferredResult after the
+    // emitter's timeout callback has marked it complete. Resolve it here so a
+    // normal stream expiry does not enter MVC's error response conversion.
+    safeComplete(taskId, emitter);
   }
 
   private void remove(Long taskId, SseEmitter emitter) {

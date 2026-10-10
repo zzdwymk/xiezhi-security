@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // @ts-nocheck
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
+import FluentCodeBlock from "../components/FluentCodeBlock.vue";
 import {
   ArrowDown,
   CircleCheck,
@@ -20,6 +21,7 @@ import {
   Search,
   Star,
   StarFilled,
+  Tickets,
   VideoPause,
   VideoPlay,
   Warning,
@@ -29,12 +31,17 @@ import AppPagination from "../components/AppPagination.vue";
 import { useClientPagination } from "../composables/useClientPagination";
 import { useCopilotStore } from "../stores/copilot";
 import { toErrorMessage } from "../utils/errorMessage";
+import { scanErrorDetail, targetedScanPresentation } from "../utils/targetedScanPresentation";
 import { severityLabel } from "../utils/aiPresentation";
-import { renderMarkdown } from "../utils/markdown";
+import { aiAnswerSource, isLocalAiAnswer, requireAiAnswer } from "../utils/aiAnswer";
+import MarkdownBody from "../components/MarkdownBody.vue";
 import { useSelectionIndicator } from "../composables/useSelectionIndicator";
+import { FUZZ_REPLAY_UNAVAILABLE, normalizeFuzzDictionary, readFuzzReplayRequest, resolveFuzzAddress, validateFuzzDictionaries, type FuzzReplayRequest } from "../utils/trafficFuzzDraft";
 
 const copilot = useCopilotStore();
 const router = useRouter();
+const route = useRoute();
+const notificationPacket = ref<TrafficSession>();
 
 interface TrafficStatus {
   running: boolean;
@@ -140,6 +147,8 @@ interface TrafficChatMessage {
   role: "USER" | "ASSISTANT";
   content: string;
   createdAt: string;
+  provider?: string;
+  status?: "completed" | "failed";
 }
 
 const status = ref<TrafficStatus>({ running: false, capturedCount: 0 });
@@ -149,34 +158,29 @@ const packetTabsElement = ref<HTMLElement | null>(null);
 const replayDocumentTabsElement = ref<HTMLElement | null>(null);
 const filter = ref("");
 const loading = ref(false);
-const changingProxy = ref(false);
-const captureTargets = ref<Target[]>([]);
-const captureTargetsLoading = ref(false);
-const captureTargetId = ref<number>();
-const captureTargetSelection = computed({
-  get: () => status.value.running ? status.value.targetId || undefined : captureTargetId.value,
-  set: (value: number | undefined) => {
-    if (!status.value.running && !changingProxy.value && !changingCapture.value) {
-      captureTargetId.value = value || undefined;
-    }
-  },
-});
-const missingCaptureTarget = computed(() =>
-  captureTargetSelection.value &&
-  !captureTargets.value.some((target) => target.id === captureTargetSelection.value),
-);
-watch(
-  () => [status.value.running, status.value.targetId] as const,
-  ([running, targetId]) => {
-    if (running) captureTargetId.value = targetId || undefined;
-  },
-);
+type TrafficOperation = "open-browser" | "close-browser" | "capture" | "stop-proxy";
+const trafficOperation = ref<TrafficOperation>();
+const trafficOperationBusy = computed(() => trafficOperation.value !== undefined);
+const proxyStateKnown = ref(false);
+const browserStateKnown = ref(false);
+const aiDialogVisible = ref(false);
+const targetDialogVisible = ref(false);
+const operationTargetId = ref<number>();
+const operationZapOptionsVisible = ref(false);
+const zapScanStrength = ref<"LOW" | "MEDIUM" | "HIGH">("MEDIUM");
+const zapStrengthOptions = [
+  { value: "LOW", label: "低强度", description: "发送的测试请求较少，通常更快，但尝试的输入变化较少，可能漏掉需要更多验证的漏洞。" },
+  { value: "MEDIUM", label: "标准", description: "默认选项。兼顾测试数量与覆盖范围；部分检查需要等待目标响应，可能耗时较长。" },
+  { value: "HIGH", label: "深入", description: "尝试更多输入变化，检查更充分，通常耗时更长，也会增加目标网站的负载。" },
+] as const;
+const zapStrengthDescription = computed(() => zapStrengthOptions.find(option => option.value === zapScanStrength.value)?.description);
+const operationUrl = ref("");
+let resolveOperationTarget: ((id?: number) => void) | undefined;
 const deletingId = ref<number | string>();
 const markingId = ref<number | string>();
 const clearingSessions = ref(false);
 const analyzing = ref(false);
 const autoHandle = ref(false);
-const changingCapture = ref(false);
 const browserRunning = ref(false);
 const suggestion = ref<AiSuggestion>();
 const serviceUnavailable = ref(false);
@@ -193,6 +197,7 @@ let replayTabSequence = 0;
 
 interface FuzzHit {
   payload: string;
+  request?: FuzzReplayRequest | null;
   statusCode?: number;
   reason?: string;
   durationMs?: number;
@@ -207,6 +212,19 @@ interface FuzzResult {
   url?: string;
   results?: FuzzHit[];
   engine?: "ZAP" | "LOOP";
+  status?: "COMPLETED" | "FAILED" | "TIMEOUT" | "CANCELLED";
+  message?: string;
+  completedRequests?: number;
+}
+
+function scanStatusLabel(status?: string) {
+  return ({ COMPLETED: "已完成", FAILED: "失败", TIMEOUT: "超时", CANCELLED: "已取消" } as Record<string, string>)[status || ""] || "状态待核实";
+}
+function fuzzResultStatus(result: FuzzResult) {
+  return scanStatusLabel(result.status);
+}
+function fuzzRequestCount(result: FuzzResult) {
+  return result.completedRequests ?? (result.engine === "LOOP" ? result.results?.length : undefined);
 }
 
 const fuzzForm = ref<ReplayForm>({
@@ -236,7 +254,7 @@ const FUZZ_ATTACK_TYPES = [
     value: "BATTERING_RAM",
     label: "攻城槌 (Battering ram)",
     shortDesc: "单字典，所有位置同时替换",
-    desc: "单字典：所有占位符在单次请求中同时替换为同一个 payload",
+    desc: "单字典：所有占位符在单次请求中同时替换为同一个载荷",
   },
   {
     value: "PITCHFORK",
@@ -396,16 +414,8 @@ const estimatedFuzzRequests = computed(() => {
     // SNIPER:
     return vars.length * count;
   } else {
-    const counts = vars.map((name) => {
-      const text = getFuzzPayload(name);
-      return text
-        .split(/\r?\n/)
-        .map((s) => s.trim())
-        .filter(Boolean).length;
-    });
-    if (counts.some((c) => c === 0)) {
-      if (fuzzCombination.value === "PITCHFORK" || fuzzCombination.value === "SHORTEST") return 0;
-    }
+    const counts = vars.map(name => normalizeFuzzDictionary(fuzzPayloadGroups.value[name]).length);
+    if (counts.some(c => c === 0)) return 0;
     if (fuzzCombination.value === "PITCHFORK" || fuzzCombination.value === "SHORTEST") {
       return Math.min(...counts);
     }
@@ -449,6 +459,7 @@ const fuzzHeadersInput = ref();
 const fuzzBodyInput = ref();
 const fuzzRawInput = ref();
 const fuzzRawPacket = ref("");
+const fuzzAddressEdited = ref<"url" | "raw">("raw");
 const fuzzBackdropRef = ref<HTMLElement>();
 const fuzzUrlBackdropRef = ref<HTMLElement>();
 
@@ -506,7 +517,7 @@ const fuzzRunning = ref(false);
 const fuzzEngine = ref<"auto" | "zap" | "loop">("auto");
 const fuzzResult = ref<FuzzResult>();
 const fuzzError = ref("");
-const fuzzPlaceholderHint = "\u00a7name\u00a7（在 URL、请求头或请求体中标记模糊点，每个 payload 会替换该占位符逐一重放）";
+const fuzzPlaceholderHint = "\u00a7name\u00a7（在 URL、请求头或请求体中标记模糊点，每个载荷会替换该占位符逐一重放）";
 
 const sessionSelection = ref<Set<number | string>>(new Set());
 const selectedSessionCount = computed(() => sessionSelection.value.size);
@@ -544,6 +555,12 @@ const pendingTrafficChats = ref<Record<string, boolean>>({});
 const trafficChatPrompt = ref("");
 const chatMessagesElement = ref<HTMLElement>();
 let refreshTimer: number | undefined;
+let trafficAlive = true;
+let trafficEpoch = 0;
+let browserStateVersion = 0;
+let sessionMarkVersion = 0;
+let activeTrafficRefresh: { epoch: number; controller: AbortController; showError: boolean; promise?: Promise<void> } | undefined;
+let browserProxySync = Promise.resolve();
 let removeCaptureBrowserListener: (() => void) | undefined;
 const sessionDropdownRefs = new Map<
   string,
@@ -672,11 +689,11 @@ const captureFilterPlaceholder = computed(() =>
       : "例如：analytics、favicon、content-type",
 );
 
-async function openCaptureBrowser() {
+async function openCaptureBrowser(epoch: number) {
   if (!status.value.running || !window.toolboxDesktop?.launchCaptureBrowser)
-    return false;
-  try {
-    const browserStatus = await window.toolboxDesktop.launchCaptureBrowser({
+    throw new Error("抓包浏览器暂不可用");
+  const version = browserStateVersion;
+  const browserStatus = await window.toolboxDesktop.launchCaptureBrowser({
       proxyHost: status.value.listenHost || "127.0.0.1",
       proxyPort: status.value.listenPort || 19080,
       targetUrl: "about:blank",
@@ -684,13 +701,9 @@ async function openCaptureBrowser() {
         ? status.value.caFingerprint
         : undefined,
     });
-    browserRunning.value = browserStatus.running;
-    return browserStatus.running;
-  } catch (error) {
-    browserRunning.value = false;
-    ElMessage.warning(`浏览器启动失败：${readableError(error)}`);
-    return false;
-  }
+  if (!isCurrentTrafficEpoch(epoch)) return;
+  acceptBrowserState(browserStatus, epoch, version);
+  if (!browserStateKnown.value || !browserRunning.value) throw new Error("抓包浏览器未保持打开，窗口可能已关闭");
 }
 
 function readableError(error: unknown) {
@@ -699,7 +712,7 @@ function readableError(error: unknown) {
     message?: string;
     code?: string;
   };
-  if (value.response?.status === 404) return "当前本地引擎尚未启用流量代理模块";
+  if (value.response?.status === 404) return toErrorMessage(error, "记录已不存在，请刷新列表");
   if (
     value.code === "ECONNABORTED" ||
     value.message?.toLowerCase().includes("timeout")
@@ -741,6 +754,7 @@ function appendTrafficChat(
   packetId: string,
   role: "USER" | "ASSISTANT",
   content: string,
+  metadata: Pick<TrafficChatMessage, "provider" | "status"> = {},
 ) {
   const message: TrafficChatMessage = {
     id:
@@ -749,6 +763,7 @@ function appendTrafficChat(
     role,
     content,
     createdAt: new Date().toISOString(),
+    ...metadata,
   };
   trafficChats.value = {
     ...trafficChats.value,
@@ -774,6 +789,7 @@ async function sendTrafficChat() {
   const packetId = String(packet.id);
   if (pendingTrafficChats.value[packetId]) return;
   const history = (trafficChats.value[packetId] || [])
+    .filter(message => message.status !== "failed" && !isLocalAiAnswer(message.provider))
     .slice(-12)
     .map((message) => ({
       role: message.role,
@@ -791,12 +807,15 @@ async function sendTrafficChat() {
       { prompt, history },
       { timeout: 210_000 },
     );
-    appendTrafficChat(packetId, "ASSISTANT", data.answer || "AI 未返回回答。");
+    appendTrafficChat(packetId, "ASSISTANT", requireAiAnswer(data.answer), {
+      provider: data.provider, status: "completed",
+    });
   } catch (error) {
     appendTrafficChat(
       packetId,
       "ASSISTANT",
       `分析失败：${readableError(error)}`,
+      { status: "failed" },
     );
   } finally {
     pendingTrafficChats.value = {
@@ -817,7 +836,8 @@ function openTrafficCopilot() {
   const packet = selected.value;
   if (!packet) return;
   if (!packet.targetId || packet.targetId <= 0) {
-    ElMessage.warning("这条流量尚未绑定授权目标。请先停止代理，在顶部“采集授权目标”中选择目标，再开始拦截并重新访问目标页面。");
+    aiDialogVisible.value = true;
+    if (!trafficChatPrompt.value) trafficChatPrompt.value = "分析这条流量的认证、会话、输入处理和数据暴露风险，列出证据及误报边界。";
     return;
   }
   const safeLabel = `${(packet.method || "GET").toUpperCase()} ${packet.host || "流量会话"}${packet.path || ""}`;
@@ -1040,42 +1060,97 @@ async function deleteCaptureFilter(rule: CaptureFilterRule) {
   }
 }
 
+function isCurrentTrafficEpoch(epoch: number) {
+  return trafficAlive && epoch === trafficEpoch;
+}
+function syncCaptureBrowserProxyState(epoch: number) {
+  const state = { running: proxyStateKnown.value ? status.value.running : null, capturing: proxyStateKnown.value && Boolean(status.value.capturing) };
+  browserProxySync = browserProxySync.catch(() => undefined).then(async () => {
+    if (isCurrentTrafficEpoch(epoch)) await window.toolboxDesktop?.setCaptureBrowserProxyState?.(state);
+  }).catch(() => undefined);
+}
+function acceptTrafficStatus(value: TrafficStatus, epoch: number) {
+  if (!isCurrentTrafficEpoch(epoch)) return false;
+  status.value = { ...status.value, ...value };
+  proxyStateKnown.value = true;
+  serviceUnavailable.value = false;
+  syncCaptureBrowserProxyState(epoch);
+  return true;
+}
+function acceptBrowserState(value: { running: boolean } | undefined, epoch: number, version?: number) {
+  if (!isCurrentTrafficEpoch(epoch) || (version !== undefined && version !== browserStateVersion)) return;
+  if (!value || typeof value.running !== "boolean") { browserStateKnown.value = false; return; }
+  browserStateVersion++;
+  browserRunning.value = value.running;
+  browserStateKnown.value = true;
+}
+function markProxyStateUnknown(epoch: number) {
+  if (!isCurrentTrafficEpoch(epoch)) return;
+  proxyStateKnown.value = false;
+  serviceUnavailable.value = true;
+  syncCaptureBrowserProxyState(epoch);
+}
+function invalidateTrafficRefresh() {
+  trafficEpoch++;
+  activeTrafficRefresh?.controller.abort();
+  activeTrafficRefresh = undefined;
+  loading.value = false;
+}
+async function reconcileTrafficState(epoch: number) {
+  const version = browserStateVersion;
+  const [proxy, browser] = await Promise.allSettled([
+    api.get<TrafficStatus>("/traffic/status"),
+    window.toolboxDesktop?.getCaptureBrowserStatus?.(),
+  ]);
+  if (!isCurrentTrafficEpoch(epoch)) return;
+  if (proxy.status === "fulfilled") acceptTrafficStatus(proxy.value.data, epoch);
+  else markProxyStateUnknown(epoch);
+  if (browser.status === "fulfilled") acceptBrowserState(browser.value, epoch, version);
+  else if (version === browserStateVersion) browserStateKnown.value = false;
+}
 async function load(showError = false, silent = false) {
-  if (!silent) loading.value = true;
-  try {
-    const [statusResult, sessionsResult] = await Promise.all([
-      api.get<TrafficStatus>("/traffic/status"),
-      api.get<TrafficSession[]>("/traffic/sessions"),
-    ]);
-    status.value = { ...status.value, ...statusResult.data };
-    sessions.value = Array.isArray(sessionsResult.data)
-      ? sessionsResult.data
-      : [];
-    if (
-      selectedId.value &&
-      !sessions.value.some((item) => item.id === selectedId.value)
-    ) {
-      selectedId.value = sessions.value[0]?.id;
-      suggestion.value = undefined;
-    }
-    if (!selectedId.value && sessions.value.length)
-      selectedId.value = sessions.value[0].id;
-    serviceUnavailable.value = false;
-    if (window.toolboxDesktop?.getCaptureBrowserStatus) {
-      const browserStatus = await window.toolboxDesktop
-        .getCaptureBrowserStatus()
-        .catch(() => undefined);
-      if (browserStatus) browserRunning.value = browserStatus.running;
-    }
-  } catch (error) {
-    serviceUnavailable.value = true;
-    if (showError) ElMessage.warning(readableError(error));
-  } finally {
-    if (!silent) loading.value = false;
+  if (!trafficAlive || trafficOperationBusy.value) return;
+  if (activeTrafficRefresh) {
+    activeTrafficRefresh.showError ||= showError;
+    if (!silent) loading.value = true;
+    return activeTrafficRefresh.promise;
   }
+  const refresh = { epoch: trafficEpoch, controller: new AbortController(), showError, promise: undefined as Promise<void> | undefined };
+  activeTrafficRefresh = refresh;
+  if (!silent) loading.value = true;
+  const version = browserStateVersion;
+  const markVersion = sessionMarkVersion;
+  refresh.promise = (async () => {
+    try {
+      const [proxy, packets, browser] = await Promise.allSettled([
+        api.get<TrafficStatus>("/traffic/status", { signal: refresh.controller.signal }),
+        api.get<TrafficSession[]>("/traffic/sessions", { signal: refresh.controller.signal }),
+        window.toolboxDesktop?.getCaptureBrowserStatus?.(),
+      ]);
+      if (!isCurrentTrafficEpoch(refresh.epoch) || activeTrafficRefresh !== refresh) return;
+      if (proxy.status === "fulfilled") acceptTrafficStatus(proxy.value.data, refresh.epoch);
+      else { markProxyStateUnknown(refresh.epoch); if (refresh.showError) ElMessage.warning(trafficOperationError(proxy.reason)); }
+      if (packets.status === "fulfilled" && markVersion === sessionMarkVersion && markingId.value === undefined) {
+        sessions.value = Array.isArray(packets.value.data) ? packets.value.data : [];
+        if (notificationPacket.value && !sessions.value.some(item => item.id === notificationPacket.value?.id)) {
+          sessions.value.unshift(notificationPacket.value);
+        }
+        if (selectedId.value && !sessions.value.some(item => item.id === selectedId.value)) {
+          selectedId.value = sessions.value[0]?.id;
+          suggestion.value = undefined;
+        }
+        if (!selectedId.value && sessions.value.length) selectedId.value = sessions.value[0].id;
+      } else if (packets.status === "rejected" && refresh.showError) ElMessage.warning(trafficOperationError(packets.reason));
+      if (browser.status === "fulfilled") acceptBrowserState(browser.value, refresh.epoch, version);
+      else if (version === browserStateVersion) browserStateKnown.value = false;
+    } finally {
+      if (activeTrafficRefresh === refresh) { activeTrafficRefresh = undefined; if (trafficAlive) loading.value = false; }
+    }
+  })();
+  return refresh.promise;
 }
 
-function captureTargetDisabledReason(target: Target) {
+function targetDisabledReason(target: Target) {
   if (!target.enabled) return "已停用";
   const now = Date.now();
   const start = Date.parse(target.authorizationValidFrom || "");
@@ -1085,121 +1160,134 @@ function captureTargetDisabledReason(target: Target) {
   return "";
 }
 
-function captureTargetLabel(target: Target) {
-  return `${target.name} · ${target.targetValue} (#${target.id})`;
-}
-
-async function loadCaptureTargets(showError = false) {
-  captureTargetsLoading.value = true;
+async function chooseOperationTarget(url: string, preferredId?: number, showZapOptions = false): Promise<number | undefined> {
   try {
-    const { data } = await api.get<Target[]>("/targets");
-    captureTargets.value = Array.isArray(data) ? data : [];
-    return true;
-  } catch (error) {
-    if (showError) ElMessage.error(toErrorMessage(error, "无法加载授权目标"));
-    return false;
-  } finally {
-    captureTargetsLoading.value = false;
-  }
+    replayTargets.value = (await api.get<Target[]>("/targets")).data || [];
+    operationTargetId.value = replayTargets.value.some(t => t.id === preferredId && !targetDisabledReason(t)) ? preferredId : undefined;
+    if (!operationTargetId.value) {
+      let hostname = "";
+      try { hostname = new URL(url).hostname; } catch { /* Backend validates edited URLs. */ }
+      const matches = replayTargets.value.filter(t => {
+        if (targetDisabledReason(t)) return false;
+        let value = t.targetValue;
+        try { value = new URL(value.includes("://") ? value : `http://${value}`).hostname; } catch { return false; }
+        return value.toLowerCase() === hostname.toLowerCase();
+      });
+      if (matches.length === 1) operationTargetId.value = matches[0].id;
+    }
+    operationUrl.value = url;
+    operationZapOptionsVisible.value = showZapOptions;
+    targetDialogVisible.value = true;
+    return await new Promise(resolve => { resolveOperationTarget = resolve; });
+  } catch (e) { ElMessage.error(readableError(e)); return undefined; }
 }
-
-async function ensureProxyRunning() {
-  if (status.value.running) return true;
-  const targetId = captureTargetId.value;
-  if (targetId) {
-    if (!(await loadCaptureTargets(true))) return false;
-    const target = captureTargets.value.find((item) => item.id === targetId);
-    if (!target) {
-      ElMessage.warning("所选授权目标已不可用，请重新选择采集目标。");
-      return false;
-    }
-    const unavailable = captureTargetDisabledReason(target);
-    if (unavailable) {
-      ElMessage.warning(`${target.name}：${unavailable}，请选择有效的授权目标。`);
-      return false;
-    }
+function finishOperationTarget(confirm: boolean) {
+  const resolve = resolveOperationTarget;
+  resolveOperationTarget = undefined;
+  targetDialogVisible.value = false;
+  resolve?.(confirm ? operationTargetId.value : undefined);
+}
+async function ensureProxyStateKnown(epoch: number) {
+  if (!proxyStateKnown.value) {
+    const { data } = await api.get<TrafficStatus>("/traffic/status");
+    return acceptTrafficStatus(data, epoch);
   }
+  return isCurrentTrafficEpoch(epoch);
+}
+async function ensureProxyRunning(epoch: number) {
+  if (!(await ensureProxyStateKnown(epoch))) return false;
+  if (status.value.running) return true;
   const result = await api.post<TrafficStatus>("/traffic/proxy/start", {
-    targetId,
     handlingMode: "ASK",
   });
-  status.value = { ...status.value, ...result.data };
-  serviceUnavailable.value = false;
-  if (!status.value.running) ElMessage.error("代理启动失败");
+  if (!acceptTrafficStatus(result.data, epoch)) return false;
+  if (!status.value.running) throw new Error("代理启动失败");
   return status.value.running;
 }
 
-// Launch the isolated capture browser WITHOUT starting interception. The proxy
-// is brought up only so the browser has a route; nothing is recorded until the
-// user explicitly starts capture.
+async function ensureRecording(epoch: number) {
+  if (!(await ensureProxyRunning(epoch))) return false;
+  if (!status.value.capturing) {
+    const { data } = await api.post<TrafficStatus>("/traffic/proxy/capture", { enabled: true });
+    if (!acceptTrafficStatus(data, epoch)) return false;
+  }
+  if (!status.value.capturing) throw new Error("流量记录未能启动");
+  return Boolean(status.value.capturing);
+}
+function proxyOutcomeLabel() {
+  if (!proxyStateKnown.value) return "代理状态暂时无法确认";
+  if (!status.value.running) return "代理未运行";
+  return status.value.capturing ? "代理仍在记录流量" : "代理运行中，记录已暂停";
+}
+function trafficOperationError(error: unknown) {
+  const value = error as { code?: string; message?: string };
+  if (value?.code === "ECONNABORTED" || value?.code === "ETIMEDOUT" || /timeout/i.test(value?.message || "")) {
+    return "操作等待超时，请根据当前状态重试";
+  }
+  return readableError(error);
+}
+async function runTrafficOperation(operation: TrafficOperation, action: (epoch: number) => Promise<void>) {
+  if (!trafficAlive || trafficOperationBusy.value) return;
+  invalidateTrafficRefresh();
+  const epoch = trafficEpoch;
+  trafficOperation.value = operation;
+  try {
+    await action(epoch);
+  } catch (error) {
+    if (!isCurrentTrafficEpoch(epoch)) return;
+    await reconcileTrafficState(epoch);
+    if (!isCurrentTrafficEpoch(epoch)) return;
+    const prefix = operation === "open-browser" ? `打开浏览器失败，${proxyOutcomeLabel()}`
+      : operation === "close-browser" ? `关闭浏览器失败，${browserStateKnown.value ? (browserRunning.value ? "浏览器仍已打开" : "浏览器已关闭") : "窗口状态暂时无法确认"}`
+      : `操作未完成，${proxyOutcomeLabel()}`;
+    ElMessage.error(`${prefix}：${trafficOperationError(error)}`);
+  } finally {
+    if (isCurrentTrafficEpoch(epoch)) trafficOperation.value = undefined;
+  }
+}
 async function startCaptureBrowser() {
-  changingProxy.value = true;
-  try {
-    if (!(await ensureProxyRunning())) return;
-    if (await openCaptureBrowser()) {
-      ElMessage.success(
-        `抓包浏览器已启动：${proxyAddress.value}（未拦截，点击“开始拦截”才记录流量）`,
-      );
-    } else {
-      ElMessage.info("抓包浏览器未启动");
-    }
-  } catch (error) {
-    ElMessage.error(readableError(error));
-  } finally {
-    changingProxy.value = false;
-  }
+  await runTrafficOperation("open-browser", async epoch => {
+    if (!(await ensureProxyStateKnown(epoch))) return;
+    // Starting a new proxy begins recording; opening an existing proxy preserves its pause state.
+    if (!status.value.running && !(await ensureRecording(epoch))) return;
+    if (!isCurrentTrafficEpoch(epoch)) return;
+    await openCaptureBrowser(epoch);
+    if (!isCurrentTrafficEpoch(epoch)) return;
+    syncCaptureBrowserProxyState(epoch);
+    ElMessage.success(status.value.capturing ? "浏览器已打开，正在记录流量" : "浏览器已打开，记录保持暂停");
+  });
 }
-
 async function stopCaptureBrowser() {
-  if (window.toolboxDesktop?.closeCaptureBrowser) {
-    await window.toolboxDesktop.closeCaptureBrowser().catch(() => undefined);
-  }
-  browserRunning.value = false;
+  await runTrafficOperation("close-browser", async epoch => {
+    if (!window.toolboxDesktop?.closeCaptureBrowser) throw new Error("当前客户端不支持关闭抓包浏览器");
+    const result = await window.toolboxDesktop.closeCaptureBrowser();
+    if (!isCurrentTrafficEpoch(epoch)) return;
+    if (!result || typeof result.running !== "boolean") throw new Error("未收到浏览器关闭结果");
+    acceptBrowserState(result, epoch);
+    if (result.running) throw new Error("浏览器未关闭，页面可能取消了关闭操作");
+    ElMessage.success(`浏览器已关闭，${proxyOutcomeLabel()}`);
+  });
 }
-
-// Start/stop packet interception independently of the browser. Turning it off
-// leaves the proxy and browser running so browsing can continue un-recorded.
 async function toggleCapture() {
-  changingCapture.value = true;
-  try {
-    if (!(await ensureProxyRunning())) return;
+  await runTrafficOperation("capture", async epoch => {
+    if (!(await ensureProxyStateKnown(epoch))) return;
     const enabled = !status.value.capturing;
-    const result = await api.post<TrafficStatus>("/traffic/proxy/capture", {
-      enabled,
-    });
-    status.value = { ...status.value, ...result.data };
-    ElMessage.success(
-      enabled ? "已开始拦截流量" : "已停止拦截（浏览器仍可继续使用）",
-    );
-  } catch (error) {
-    ElMessage.error(readableError(error));
-  } finally {
-    changingCapture.value = false;
-  }
-}
-
-async function toggleProxy() {
-  changingProxy.value = true;
-  try {
-    if (status.value.running) {
-      if (window.toolboxDesktop?.closeCaptureBrowser) {
-        await window.toolboxDesktop.closeCaptureBrowser().catch(() => undefined);
-        browserRunning.value = false;
-      }
-      const result = await api.post<TrafficStatus>("/traffic/proxy/stop", {});
-      status.value = { ...status.value, ...result.data };
-    } else if (!(await ensureProxyRunning())) {
-      return;
+    if (enabled) { if (!(await ensureRecording(epoch))) return; }
+    else {
+      const { data } = await api.post<TrafficStatus>("/traffic/proxy/capture", { enabled: false });
+      if (!acceptTrafficStatus(data, epoch)) return;
+      if (status.value.capturing) throw new Error("记录未能暂停");
     }
-    serviceUnavailable.value = false;
-    ElMessage.success(
-      status.value.running ? `代理已启动：${proxyAddress.value}` : "代理已停止",
-    );
-  } catch (error) {
-    ElMessage.error(readableError(error));
-  } finally {
-    changingProxy.value = false;
-  }
+    if (isCurrentTrafficEpoch(epoch)) ElMessage.success(enabled ? "已开始记录流量" : "已暂停记录，代理继续转发");
+  });
+}
+async function toggleProxy() {
+  await runTrafficOperation("stop-proxy", async epoch => {
+    const { data } = await api.post<TrafficStatus>("/traffic/proxy/stop", {});
+    if (!acceptTrafficStatus(data, epoch)) return;
+    if (status.value.running) throw new Error("代理未能关闭");
+    ElMessage.success(browserRunning.value ? "代理已关闭，浏览器保持打开" : "代理已关闭");
+  });
 }
 
 async function executeSuggestion() {
@@ -1234,7 +1322,7 @@ async function analyzeSelected() {
     );
     suggestion.value = result.data;
     const answer = [
-      result.data.summary || "分析完成。",
+      requireAiAnswer(result.data.summary),
       result.data.reasons?.length
         ? `判断依据：\n${result.data.reasons.map((item) => `- ${item}`).join("\n")}`
         : "",
@@ -1244,10 +1332,10 @@ async function analyzeSelected() {
     ]
       .filter(Boolean)
       .join("\n\n");
-    appendTrafficChat(packetId, "ASSISTANT", answer);
+    appendTrafficChat(packetId, "ASSISTANT", answer, { provider: result.data.provider, status: "completed" });
   } catch (error) {
     const message = readableError(error);
-    appendTrafficChat(packetId, "ASSISTANT", `分析失败：${message}`);
+    appendTrafficChat(packetId, "ASSISTANT", `分析失败：${message}`, { status: "failed" });
     ElMessage.error(message);
   } finally {
     analyzing.value = false;
@@ -1269,16 +1357,22 @@ async function toggleSessionMarked(item: TrafficSession) {
   if (markingId.value !== undefined || clearingSessions.value) return;
   const marked = !item.marked;
   markingId.value = item.id;
+  sessionMarkVersion++;
   try {
     const { data } = await api.put<TrafficSession>(
       `/traffic/sessions/${encodeURIComponent(String(item.id))}/marked`,
       { marked },
     );
+    if (!trafficAlive) return;
     Object.assign(item, data);
+    const currentItem = sessions.value.find(session => session.id === item.id);
+    if (currentItem && currentItem !== item) Object.assign(currentItem, data);
+    if (notificationPacket.value?.id === item.id) Object.assign(notificationPacket.value, data);
     ElMessage.success(marked ? "会话已标记，清空时将保留" : "已取消标记");
   } catch (error) {
     ElMessage.error(readableError(error));
   } finally {
+    sessionMarkVersion++;
     markingId.value = undefined;
   }
 }
@@ -1314,6 +1408,7 @@ async function deleteSession(item: TrafficSession) {
       suggestion.value = undefined;
     }
     sessions.value = sessions.value.filter((session) => session.id !== item.id);
+    if (notificationPacket.value?.id === item.id) notificationPacket.value = undefined;
     const nextChats = { ...trafficChats.value };
     delete nextChats[String(item.id)];
     trafficChats.value = nextChats;
@@ -1365,6 +1460,7 @@ async function deleteSelectedSessions(targets: TrafficSession[]) {
       await api.delete(`/traffic/sessions/${encodeURIComponent(String(id))}`);
     }
     const idSet = new Set(ids);
+    if (notificationPacket.value && idSet.has(notificationPacket.value.id)) notificationPacket.value = undefined;
     sessions.value = sessions.value.filter((session) => !idSet.has(session.id));
     if (selectedId.value !== undefined && idSet.has(selectedId.value)) {
       selectedId.value = sessions.value[0]?.id;
@@ -1399,7 +1495,7 @@ async function clearSessions() {
     return;
   try {
     await ElMessageBox.confirm(
-      `确定清空 ${unmarkedSessionCount.value} 条未标记流量吗？${markedSessionCount.value ? `已标记的 ${markedSessionCount.value} 条会话会保留。` : ""}代理不会停止。`,
+      "确定清空全部历史中的未标记流量吗？包括当前列表未显示的记录。已标记流量会保留，代理不会停止。此操作无法撤销。",
       "清空未标记流量",
       {
         type: "warning",
@@ -1418,6 +1514,7 @@ async function clearSessions() {
       retainedSessions.map((item) => String(item.id)),
     );
     sessions.value = retainedSessions;
+    if (notificationPacket.value && !retainedIds.has(String(notificationPacket.value.id))) notificationPacket.value = undefined;
     if (
       selectedId.value !== undefined &&
       !retainedIds.has(String(selectedId.value))
@@ -1582,6 +1679,7 @@ function openFuzz() {
     body: editablePacketValue(focus.requestBody, "body"),
   };
   fuzzRawPacket.value = formatRequestPacket(focus);
+  fuzzAddressEdited.value = "raw";
   fuzzResult.value = fuzzBatchResults.value[String(focus.id)];
   fuzzError.value = "";
   packetTab.value = "fuzz";
@@ -1785,7 +1883,14 @@ async function sendReplay() {
       "该请求没有关联原始流量，请先从流量会话点击“发包”创建重放请求。";
     return;
   }
-  const packetParts = splitReplayPacket(replayPacket.value);
+  const targetId = await chooseOperationTarget(form.url.trim(), form.targetId);
+  if (!targetId) return;
+  form.targetId = targetId;
+  // The editor normalizes line endings for display. An unchanged packet still uses
+  // the complete captured headers/body, including literal CRLF and trailing bytes.
+  const packetParts = replayPacket.value === composeReplayPacket(form.headers, form.body)
+    ? { headers: form.headers, body: form.body }
+    : splitReplayPacket(replayPacket.value);
   form.headers = packetParts.headers;
   form.body = packetParts.body;
   replaying.value = true;
@@ -1796,6 +1901,7 @@ async function sendReplay() {
     const { data } = await api.post<ReplayResult>(
       `/traffic/packets/${encodeURIComponent(String(tab.sourcePacketId))}/replay`,
       {
+        targetId,
         method: form.method.trim().toUpperCase(),
         url: form.url.trim(),
         headers: form.headers,
@@ -1890,17 +1996,17 @@ function clearFuzzGroups(clearAll = false) {
     for (const name of fuzzVariables.value) {
       fuzzPayloadGroups.value[name] = "";
     }
-    ElMessage.success("已清空所有 Payload 字典");
+    ElMessage.success("已清空所有载荷字典");
   } else {
     const name = currentFuzzGroupName();
     if (name) {
       fuzzPayloadGroups.value[name] = "";
-      ElMessage.success(`已清空 §${name}§ 的 Payload 字典`);
+      ElMessage.success(`已清空 §${name}§ 的载荷字典`);
     } else {
       for (const v of fuzzVariables.value) {
         fuzzPayloadGroups.value[v] = "";
       }
-      ElMessage.success("已清空所有 Payload 字典");
+      ElMessage.success("已清空所有载荷字典");
     }
   }
 }
@@ -1909,7 +2015,7 @@ function applyFuzzPreset(payloads: readonly string[]) {
   const text = payloads.join("\n");
   if (isSinglePayloadMode.value) {
     fuzzSharedPayload.value = text;
-    ElMessage.success(`已载入 ${payloads.length} 行预设 Payload 到通用字典`);
+    ElMessage.success(`已载入 ${payloads.length} 行预设载荷到通用字典`);
   } else {
     const name = currentFuzzGroupName();
     if (!name) {
@@ -1917,7 +2023,7 @@ function applyFuzzPreset(payloads: readonly string[]) {
       return;
     }
     fuzzPayloadGroups.value[name] = text;
-    ElMessage.success(`已向 §${name}§ 载入 ${payloads.length} 行预设 Payload`);
+    ElMessage.success(`已向 §${name}§ 载入 ${payloads.length} 行预设载荷`);
   }
 }
 
@@ -1939,7 +2045,7 @@ function applyNumbersGenerator() {
     }
   }
   numbersGenDialogVisible.value = false;
-  ElMessage.success(`已生成 ${list.length} 个数字 Payload (范围 ${from}..${to})`);
+  ElMessage.success(`已生成 ${list.length} 个数字载荷（范围 ${from}..${to}）`);
 }
 
 function importFuzzFromClipboard() {
@@ -1954,10 +2060,10 @@ function importFuzzFromClipboard() {
       if (ok) {
         const count = text.trim().split(/\r?\n/).length;
         if (isSinglePayloadMode.value) {
-          ElMessage.success(`已向通用 Payload 字典导入 ${count} 行`);
+          ElMessage.success(`已向通用载荷字典导入 ${count} 行`);
         } else {
           const name = currentFuzzGroupName();
-          ElMessage.success(`已向 §${name}§ 导入 ${count} 行 payload`);
+          ElMessage.success(`已向 §${name}§ 导入 ${count} 行载荷`);
         }
       }
     })
@@ -1982,7 +2088,7 @@ function onFuzzFileSelected(event: Event) {
   reader.onload = () => {
     const text = String(reader.result || "");
     if (!text.trim()) {
-      ElMessage.warning("文件内容为空，没有可导入的 payload");
+      ElMessage.warning("文件内容为空，没有可导入的载荷");
       return;
     }
     const ok = appendToFuzzGroup(text);
@@ -1990,10 +2096,10 @@ function onFuzzFileSelected(event: Event) {
       const lines = text.trim().split(/\r?\n/).length;
       const bytes = new Blob([text]).size;
       if (isSinglePayloadMode.value) {
-        ElMessage.success(`已从 ${file.name} 导入 ${lines} 行 payload（${bytes} 字节）到通用字典`);
+        ElMessage.success(`已从 ${file.name} 导入 ${lines} 行载荷（${bytes} 字节）到通用字典`);
       } else {
         const name = currentFuzzGroupName();
-        ElMessage.success(`已向 §${name}§ 从 ${file.name} 导入 ${lines} 行 payload（${bytes} 字节）`);
+        ElMessage.success(`已向 §${name}§ 从 ${file.name} 导入 ${lines} 行载荷（${bytes} 字节）`);
       }
     }
   };
@@ -2001,6 +2107,7 @@ function onFuzzFileSelected(event: Event) {
 }
 
 function insertFuzzPlaceholder(target: "url" | "headers" | "body") {
+  if (target === "url") fuzzAddressEdited.value = "url";
   const inputRef = target === "url" ? fuzzUrlInput : target === "headers" ? fuzzHeadersInput : fuzzBodyInput;
   const inputEl = inputRef.value?.$el?.querySelector?.("textarea") || inputRef.value?.$el?.querySelector?.("input");
   const value = fuzzForm.value[target];
@@ -2035,6 +2142,7 @@ function insertFuzzPlaceholder(target: "url" | "headers" | "body") {
 }
 
 function insertRawPlaceholder() {
+  fuzzAddressEdited.value = "raw";
   const inputEl = fuzzRawInput.value?.$el?.querySelector?.("textarea") || fuzzRawInput.value?.$el?.querySelector?.("input");
   const value = fuzzRawPacket.value;
   if (!inputEl) {
@@ -2067,16 +2175,26 @@ function insertRawPlaceholder() {
   nextTick(syncRawEditorScroll);
 }
 
+function onFuzzUrlInput() {
+  fuzzAddressEdited.value = "url";
+  syncUrlEditorScroll();
+}
+
+function onFuzzRawInput() {
+  fuzzAddressEdited.value = "raw";
+  syncRawEditorScroll();
+}
+
 async function runFuzz() {
   const targets = actionSessions();
   const form = fuzzForm.value;
   if (!targets.length || fuzzRunning.value) return;
   if (fuzzRawPacket.value.trim()) {
+    const draft = resolveFuzzAddress(form.url, fuzzRawPacket.value, fuzzAddressEdited.value);
+    form.url = draft.url;
+    fuzzRawPacket.value = draft.raw;
     const parsed = parseRawFuzzPacket(fuzzRawPacket.value);
     if (parsed.method) form.method = parsed.method;
-    if (parsed.requestTarget && /^https?:\/\//.test(parsed.requestTarget)) {
-      form.url = parsed.requestTarget;
-    }
     form.headers = parsed.headers;
     form.body = parsed.body;
   }
@@ -2086,8 +2204,7 @@ async function runFuzz() {
     ElMessage.warning(`请在 URL 或请求数据包中标记 “§name§” 占位符`);
     return;
   }
-  ensureFuzzGroups();
-  const multiPayloads: Record<string, string[]> = {};
+  const multiPayloads: Record<string, string[]> = Object.create(null);
   let singleList: string[] = [];
   if (isSinglePayloadMode.value) {
     singleList = (fuzzSharedPayload.value || "")
@@ -2099,56 +2216,66 @@ async function runFuzz() {
     }
   } else {
     for (const name of fuzzVariables.value) {
-      const text = getFuzzPayload(name);
-      const items = text
-        .split(/\r?\n/)
-        .map((item) => item.trim())
-        .filter(Boolean);
-      if (items.length) multiPayloads[name] = items;
+      multiPayloads[name] = normalizeFuzzDictionary(fuzzPayloadGroups.value[name]);
+    }
+    const validationError = validateFuzzDictionaries(fuzzVariables.value, multiPayloads);
+    if (validationError) {
+      ElMessage.warning(validationError);
+      return;
     }
   }
   const hasAnyPayload = isSinglePayloadMode.value
     ? singleList.length > 0
     : Object.values(multiPayloads).some((list) => list.length > 0);
-  if (!hasAnyPayload && fuzzEngine.value !== "zap") {
-    ElMessage.warning("至少需要一行 fuzz payload");
+  if (!hasAnyPayload) {
+    ElMessage.warning("至少需要一行模糊测试载荷");
     return;
   }
+  const targetId = await chooseOperationTarget(form.url.trim(), form.targetId);
+  if (!targetId) return;
+  form.targetId = targetId;
   fuzzRunning.value = true;
   fuzzError.value = "";
   const results: Record<string, FuzzResult> = {};
   let total = 0;
   try {
-    for (const packet of targets) {
-      const { data } = await api.post<FuzzResult>(
-        `/traffic/packets/${encodeURIComponent(String(packet.id))}/fuzz`,
-        {
-          method: form.method.trim().toUpperCase(),
-          url: form.url.trim(),
-          headers: form.headers,
-          body: form.body,
-          multiPayloads,
-          payloads: isSinglePayloadMode.value ? singleList : null,
-          combination: fuzzCombination.value,
-          engine: fuzzEngine.value === "auto" ? undefined : fuzzEngine.value.toUpperCase(),
-        },
-        { timeout: 120_000 },
-      );
-      results[String(packet.id)] = data;
-      total += data.results?.length || 0;
-    }
+    const { data: batch } = await api.post<{
+      batchId: string; status: string; message: string; results: Record<string, FuzzResult>;
+    }>("/traffic/fuzz-batches", {
+      packetIds: targets.map(packet => Number(packet.id)),
+      request: {
+        targetId,
+        method: form.method.trim().toUpperCase(),
+        url: form.url.trim(),
+        headers: form.headers,
+        body: form.body,
+        multiPayloads,
+        payloads: isSinglePayloadMode.value ? singleList : null,
+        combination: fuzzCombination.value,
+        engine: fuzzEngine.value === "auto" ? undefined : fuzzEngine.value.toUpperCase(),
+      },
+    }, { timeout: 600_000 });
+    Object.assign(results, batch.results || {});
+    total = Object.values(results).reduce((sum, result) => sum + (fuzzRequestCount(result) || 0), 0);
+    if (!trafficAlive) return;
     fuzzBatchResults.value = results;
-    fuzzFocusPacketId.value = selectedId.value ?? targets[0].id;
+    fuzzFocusPacketId.value = results[String(selectedId.value)]
+      ? selectedId.value : Number(Object.keys(results)[0] || targets[0].id);
     fuzzResult.value = results[String(fuzzFocusPacketId.value)];
     const changed = Object.values(results).reduce(
       (sum, r) => sum + (r.results?.filter((h) => h.changed).length || 0),
       0,
     );
-    ElMessage.success(
-      `模糊测试完成：${targets.length} 个会话，${total} 次响应，${changed} 个变更命中`,
-    );
+    const incomplete = Object.values(results).filter(result => result.status !== "COMPLETED");
+    if (batch.status !== "COMPLETED" || incomplete.length) {
+      fuzzError.value = batch.message;
+      ElMessage.warning(batch.message || `测试未全部完成：${total} 次请求已完成。`);
+    }
+    else ElMessage.success(`测试已返回：${targets.length} 个会话，${total} 次请求已完成${Object.values(results).every(result => result.engine === "LOOP") ? `，${changed} 个变更命中` : "；告警和执行范围见结果"}`);
   } catch (error) {
-    fuzzError.value = readableError(error);
+    if (!trafficAlive) return;
+    // A response timeout is not a server terminal state; the persisted result arrives via the global feed.
+    fuzzError.value = `结果连接中断：${readableError(error)}。服务端可能仍在运行，请等待系统通知或查看扫描记录。`;
     ElMessage.error(fuzzError.value);
   } finally {
     fuzzRunning.value = false;
@@ -2167,19 +2294,18 @@ const fuzzChangedHits = computed(() => {
 });
 
 async function fuzzHitToReplay(hit: FuzzHit) {
+  const form = readFuzzReplayRequest(hit.request);
+  if (!form) {
+    ElMessage.warning(FUZZ_REPLAY_UNAVAILABLE);
+    return;
+  }
   const focus = fuzzFocusPacketId.value ?? selectedId.value;
   if (focus == null) return;
   const packet = sessions.value.find((item) => item.id === focus);
   if (!packet) return;
-  const form = {
-    method: fuzzForm.value.method.toUpperCase(),
-    url: fuzzForm.value.url.replace("\u00a7name\u00a7", hit.payload),
-    headers: fuzzForm.value.headers.replace("\u00a7name\u00a7", hit.payload),
-    body: fuzzForm.value.body.replace("\u00a7name\u00a7", hit.payload),
-  };
   createReplayTab(form, composeReplayPacket(form.headers, form.body), packet.id);
   packetTab.value = "replay";
-  ElMessage.info("已带入该 hit 到重放器，可核对响应");
+  ElMessage.info("已将该结果带入重放器，可核对响应");
 }
 
 function fuzzHitStatus(hit: FuzzHit) {
@@ -2208,6 +2334,7 @@ interface TargetedScanProbe {
 }
 
 interface TargetedScanResult {
+  scanId?: number;
   packetId: number;
   engine: string;
   status: string;
@@ -2220,6 +2347,62 @@ const targetedScanVisible = ref(false);
 const targetedScanLoading = ref(false);
 const targetedScanResult = ref<TargetedScanResult | null>(null);
 const targetedScanEngine = ref<"ZAP" | "XRAY" | "SQLMAP">("ZAP");
+const targetedScanLogs = ref<string[]>([]);
+const targetedScanNotice = computed(() => targetedScanPresentation(targetedScanResult.value || {}));
+const targetedScanAlertType = computed(() => {
+  if (targetedScanLoading.value) return "info";
+  const result = targetedScanResult.value;
+  if (result?.status === "FAILED") return "error";
+  if (result?.status !== "COMPLETED") return "warning";
+  return result.hits?.length ? "warning" : "success";
+});
+
+function isCurrentTargetedScan(live: TargetedScanResult) {
+  return trafficAlive && targetedScanResult.value === live;
+}
+
+function completeTargetedScan(live: TargetedScanResult, result: TargetedScanResult, completedMessage: string) {
+  live.scanId = result.scanId || live.scanId;
+  live.status = ["COMPLETED", "FAILED", "TIMEOUT", "CANCELLED"].includes(result.status) ? result.status : "UNKNOWN";
+  // Successful final results are authoritative; interrupted results must retain
+  // findings already received even if their error response carries an empty list.
+  if (result.hits?.length || live.status === "COMPLETED") live.hits = result.hits || live.hits;
+  if (result.probes?.length) live.probes = result.probes;
+  live.message = result.message || (live.status === "COMPLETED"
+    ? completedMessage
+    : `检测未完成：${scanStatusLabel(live.status)}`);
+  if (!isCurrentTargetedScan(live)) return;
+  const notice = targetedScanPresentation(live);
+  if (live.status === "FAILED") ElMessage.error(notice.title);
+  else if (live.status !== "COMPLETED" || live.hits.length) ElMessage.warning(notice.title);
+  else ElMessage.success(notice.title);
+}
+
+function failTargetedScan(live: TargetedScanResult, error: unknown) {
+  live.status = "FAILED";
+  live.message = scanErrorDetail(error) || `${live.engine} 检测未完成`;
+  if (isCurrentTargetedScan(live)) ElMessage.error(targetedScanPresentation(live).title);
+}
+
+function openTargetedScanRecords(path: "/tasks" | "/findings") {
+  const scanId = targetedScanResult.value?.scanId;
+  void router.push({ path, query: { source: "traffic", ...(scanId ? { scanId: String(scanId) } : {}) } });
+}
+
+function recordScanStatus(live: TargetedScanResult, message?: string) {
+  if (!message) return;
+  if (isCurrentTargetedScan(live)) targetedScanLogs.value.push(message);
+  // Tool stdout and commands are diagnostics, not evidence that a probe ran.
+  if (/^(?:(?:ZAP|Xray|sqlmap)\s*)?[\u3400-\u9fff]/i.test(message) && !/^执行命令[:：]/.test(message)) {
+    live.message = message;
+  }
+}
+
+function probeResultLabel(probe: TargetedScanProbe) {
+  if (probe.triggered) return "命中";
+  if (probe.statusCode == null || probe.statusCode < 100) return "响应未确认";
+  return "未命中";
+}
 
 interface ScanLedgerEntry {
   id: number;
@@ -2355,7 +2538,7 @@ function applySelectedFuzzPreset(presetId?: string) {
 
 // 让命中/探针结果“逐个”出现在界面上：即便后端最后一次性返回多条，
 // 也会以恒定节奏逐条刷出，而不是整批同时出现。
-function createScanRevealer() {
+function createScanRevealer(res: TargetedScanResult) {
   const queue: Array<{ kind: "hit" | "probe"; value: any }> = [];
   let timer: ReturnType<typeof setInterval> | undefined;
   function tick() {
@@ -2364,16 +2547,14 @@ function createScanRevealer() {
       stop();
       return;
     }
-    const res = targetedScanResult.value;
-    if (!res) return;
     if (item.kind === "hit") {
       res.hits.push(item.value);
       res.message =
-        res.probes.length
+        res.probes?.length
           ? `探测进行中：已完成 ${res.probes.length} 项，命中 ${res.hits.length} 项`
           : `探测进行中：已命中 ${res.hits.length} 项漏洞`;
     } else {
-      res.probes.push(item.value);
+      (res.probes ||= []).push(item.value);
       res.message = `探测进行中：已完成 ${res.probes.length} 项，命中 ${res.hits.length} 项`;
     }
     if (!queue.length) stop();
@@ -2393,11 +2574,10 @@ function createScanRevealer() {
   }
   function drain() {
     stop();
-    const res = targetedScanResult.value;
-    while (queue.length && res) {
+    while (queue.length) {
       const item = queue.shift()!;
       if (item.kind === "hit") res.hits.push(item.value);
-      else res.probes.push(item.value);
+      else (res.probes ||= []).push(item.value);
     }
     queue.length = 0;
   }
@@ -2426,7 +2606,12 @@ function createScanRevealer() {
 async function runZapScan(item?: TrafficSession | null) {
   const targetItem = item || selected.value;
   if (!targetItem?.id) return ElMessage.warning("请先选择一条流量记录");
+  const targetId = await chooseOperationTarget(packetRequestUrl(targetItem), targetItem.targetId, true);
+  if (!targetId || !trafficAlive) return;
+  const strength = zapScanStrength.value;
+  ++notificationLocationVersion;
   targetedScanEngine.value = "ZAP";
+  targetedScanLogs.value = [];
   targetedScanLoading.value = true;
   targetedScanVisible.value = true;
   targetedScanResult.value = {
@@ -2438,16 +2623,18 @@ async function runZapScan(item?: TrafficSession | null) {
     message: "正在初始化 ZAP 定向探测...",
   };
   const live = targetedScanResult.value;
-  const revealer = createScanRevealer();
+  const revealer = createScanRevealer(live);
   try {
     const result = await streamZapScan(
       targetItem.id,
-      { strength: "MEDIUM", policy: "Default Policy" },
+      { targetId, strength, policy: "Default Policy" },
       (event) => {
         if (event.type === "start") {
           live.message = `正在对 ${event.targetUrl || targetItem.url || "目标"} 执行 ZAP 定向探测...`;
+        } else if (event.type === "record") {
+          live.scanId = event.scanId;
         } else if (event.type === "status") {
-          live.message = event.message || live.message;
+          recordScanStatus(live, event.message);
         } else if (event.type === "probe") {
           revealer.enqueue("probe", event.probe);
         } else if (event.type === "hit") {
@@ -2456,31 +2643,25 @@ async function runZapScan(item?: TrafficSession | null) {
       },
     );
     await revealer.waitIdle(6000);
-    live.status = result.status;
-    live.message =
-      result.hits && result.hits.length > 0
-        ? `ZAP 定向检测完成，发现 ${result.hits.length} 项潜在风险`
-        : "ZAP 定向检测完成，未发现高危注入漏洞";
-    if (result.hits && result.hits.length > 0) {
-      ElMessage.warning(`ZAP 扫描完成，发现 ${result.hits.length} 项风险`);
-    } else {
-      ElMessage.success("ZAP 定向检测完成，未发现高危注入漏洞");
-    }
+    completeTargetedScan(live, result,
+      `ZAP 检测完成，返回 ${result.hits?.length || 0} 项告警；结论仅适用于本次检查范围`);
   } catch (err: any) {
     revealer.drain();
-    const message = toErrorMessage(err, "ZAP 定向扫描失败");
-    ElMessage.error(message);
-    live.message = `探测失败：${message}`;
+    failTargetedScan(live, err);
   } finally {
     revealer.stop();
-    targetedScanLoading.value = false;
+    if (isCurrentTargetedScan(live)) targetedScanLoading.value = false;
   }
 }
 
 async function runXrayScan(item?: TrafficSession | null) {
   const targetItem = item || selected.value;
   if (!targetItem?.id) return ElMessage.warning("请先选择一条流量记录");
+  const targetId = await chooseOperationTarget(packetRequestUrl(targetItem), targetItem.targetId);
+  if (!targetId || !trafficAlive) return;
+  ++notificationLocationVersion;
   targetedScanEngine.value = "XRAY";
+  targetedScanLogs.value = [];
   targetedScanLoading.value = true;
   targetedScanVisible.value = true;
   targetedScanResult.value = {
@@ -2492,40 +2673,34 @@ async function runXrayScan(item?: TrafficSession | null) {
     message: "正在初始化 Xray 靶向 PoC 探测...",
   };
   const live = targetedScanResult.value;
-  const revealer = createScanRevealer();
+  const revealer = createScanRevealer(live);
   try {
     const result = await streamXrayScan(
       targetItem.id,
-      { allPocs: true },
+      { targetId, allPocs: true },
       (event) => {
         if (event.type === "start") {
           live.message = `正在对 ${event.targetUrl || targetItem.url || "目标"} 执行 Xray 靶向 PoC 探测...`;
+        } else if (event.type === "record") {
+          live.scanId = event.scanId;
         } else if (event.type === "status") {
-          live.message = event.message || live.message;
+          recordScanStatus(live, event.message);
         } else if (event.type === "hit") {
           revealer.enqueue("hit", event.hit);
         }
       },
     );
     await revealer.waitIdle(6000);
-    live.status = result.status;
-    live.message =
+    completeTargetedScan(live, result,
       result.hits && result.hits.length > 0
         ? `Xray 靶向探测完成，命中 ${result.hits.length} 项漏洞`
-        : "Xray 靶向探测完成，未命中已知组件漏洞";
-    if (result.hits && result.hits.length > 0) {
-      ElMessage.warning(`Xray 靶向探测完成，命中 ${result.hits.length} 项漏洞`);
-    } else {
-      ElMessage.success("Xray 靶向探测完成，未命中已知组件漏洞");
-    }
+        : "Xray 靶向探测完成，本次检查未命中已知组件漏洞");
   } catch (err: any) {
     revealer.drain();
-    const message = toErrorMessage(err, "Xray 靶向探测失败");
-    ElMessage.error(message);
-    live.message = `探测失败：${message}`;
+    failTargetedScan(live, err);
   } finally {
     revealer.stop();
-    targetedScanLoading.value = false;
+    if (isCurrentTargetedScan(live)) targetedScanLoading.value = false;
   }
 }
 
@@ -2542,7 +2717,11 @@ function handleSecurityProbeCommand(cmd: string | number | object) {
 async function runSqlmapScan(item?: TrafficSession | null) {
   const targetItem = item || selected.value;
   if (!targetItem?.id) return ElMessage.warning("请先选择一条流量记录");
+  const targetId = await chooseOperationTarget(packetRequestUrl(targetItem), targetItem.targetId);
+  if (!targetId || !trafficAlive) return;
+  ++notificationLocationVersion;
   targetedScanEngine.value = "SQLMAP";
+  targetedScanLogs.value = [];
   targetedScanLoading.value = true;
   targetedScanVisible.value = true;
   targetedScanResult.value = {
@@ -2554,11 +2733,12 @@ async function runSqlmapScan(item?: TrafficSession | null) {
     message: "正在初始化 sqlmap SQL 注入复核...",
   };
   const live = targetedScanResult.value;
-  const revealer = createScanRevealer();
+  const revealer = createScanRevealer(live);
   try {
     const result = await streamSqlmapScan(
       targetItem.id,
       {
+        targetId,
         level: 1,
         risk: 1,
         ...(targetItem.requestBody
@@ -2568,63 +2748,115 @@ async function runSqlmapScan(item?: TrafficSession | null) {
       (event) => {
         if (event.type === "start") {
           live.message = `正在对 ${event.targetUrl || targetItem.url || "目标"} 执行 sqlmap 复核...`;
+        } else if (event.type === "record") {
+          live.scanId = event.scanId;
         } else if (event.type === "status") {
-          const message = event.message || "";
-          live.message = message || live.message;
-          if (message && message.startsWith("执行命令:")) {
-            live.probes.push({
-              name: "sqlmap 命令",
-              method: "查看",
-              target: message.replace(/^执行命令:\s*/, ""),
-              triggered: false,
-            } as any);
-          }
+          recordScanStatus(live, event.message);
         } else if (event.type === "hit") {
           revealer.enqueue("hit", event.hit);
         }
       },
     );
     await revealer.waitIdle(6000);
-    live.status = result.status;
-    live.message =
+    completeTargetedScan(live, result,
       result.hits && result.hits.length > 0
         ? `sqlmap 复核完成，确认 ${result.hits.length} 处 SQL 注入`
-        : "sqlmap 复核完成，未在该目标确认 SQL 注入";
-    if (result.hits && result.hits.length > 0) {
-      ElMessage.warning(`sqlmap 复核完成，确认 ${result.hits.length} 处注入`);
-    } else {
-      ElMessage.success("sqlmap 复核完成，未确认 SQL 注入");
-    }
+        : "sqlmap 复核完成，本次检查未确认 SQL 注入");
   } catch (err: any) {
     revealer.drain();
-    const message = toErrorMessage(err, "sqlmap 复核失败");
-    ElMessage.error(message);
-    live.message = `探测失败：${message}`;
+    failTargetedScan(live, err);
   } finally {
     revealer.stop();
-    targetedScanLoading.value = false;
+    if (isCurrentTargetedScan(live)) targetedScanLoading.value = false;
   }
 }
 
+let notificationLocationVersion = 0;
+function queryId(value: unknown): number | undefined {
+  const text = Array.isArray(value) ? value[0] : value;
+  if (typeof text !== "string" || !/^[1-9]\d*$/.test(text)) return undefined;
+  const id = Number(text);
+  return Number.isSafeInteger(id) ? id : undefined;
+}
+
+async function openNotificationLocation() {
+  const packetId = queryId(route.query.packetId);
+  const sessionId = queryId(route.query.sessionId);
+  const scanId = queryId(route.query.scanId);
+  if (!packetId && !sessionId && !scanId) return;
+  const version = ++notificationLocationVersion;
+  try {
+    let detail: { entry: ScanLedgerEntry; result?: any } | undefined;
+    if (scanId) detail = (await api.get(`/traffic/scans/${scanId}`)).data;
+    if (!trafficAlive || version !== notificationLocationVersion) return;
+    const resolvedPacketId = detail?.entry.packetId || packetId;
+    let packet = sessions.value.find(item => resolvedPacketId
+      ? Number(item.id) === resolvedPacketId : Number(item.sessionId) === sessionId);
+    if (!packet && resolvedPacketId) {
+      try { packet = (await api.get<TrafficSession>(`/traffic/packets/${resolvedPacketId}`)).data; }
+      catch { /* A deleted packet does not invalidate its persisted scan result. */ }
+    }
+    if (!trafficAlive || version !== notificationLocationVersion) return;
+    if (packet) {
+      notificationPacket.value = packet;
+      if (!sessions.value.some(item => item.id === packet!.id)) sessions.value.unshift(packet);
+      filter.value = "";
+      selectSession(packet);
+    }
+    if (detail?.entry.engine === "FUZZ" && detail.result) {
+      fuzzBatchResults.value = detail.result.results || {};
+      fuzzBatchWithSelection.value = Object.keys(fuzzBatchResults.value).length > 1;
+      fuzzFocusPacketId.value = fuzzBatchResults.value[String(resolvedPacketId)]
+        ? resolvedPacketId : Number(Object.keys(fuzzBatchResults.value)[0] || resolvedPacketId);
+      fuzzResult.value = fuzzBatchResults.value[String(fuzzFocusPacketId.value)];
+      fuzzError.value = detail.result.status === "COMPLETED" ? "" : detail.result.message;
+      if (packet) packetTab.value = "fuzz";
+      else {
+        scanLedgerEntries.value = [detail.entry];
+        scanLedgerVisible.value = true;
+      }
+    } else if (detail?.result) {
+      targetedScanEngine.value = detail.entry.engine;
+      targetedScanLoading.value = false;
+      targetedScanLogs.value = [];
+      targetedScanResult.value = { ...detail.result, scanId: detail.entry.id };
+      targetedScanVisible.value = true;
+    } else if (detail) {
+      scanLedgerEntries.value = [detail.entry];
+      scanLedgerVisible.value = true;
+    } else if (!packet) {
+      ElMessage.warning("通知对应的流量记录已不存在或不在当前会话中");
+    }
+  } catch (error) {
+    if (trafficAlive && version === notificationLocationVersion) ElMessage.warning(readableError(error));
+  }
+}
+watch(() => route.fullPath, () => { void openNotificationLocation(); });
+
 onMounted(() => {
-  void load();
-  void loadCaptureTargets();
+  void load().then(openNotificationLocation);
   void loadCaptureFilters();
   void loadFuzzPresets();
   window.addEventListener("pointerdown", onWindowPointerDown);
   if (window.toolboxDesktop?.onCaptureBrowserClosed) {
     removeCaptureBrowserListener = window.toolboxDesktop.onCaptureBrowserClosed(
       () => {
+        if (!trafficAlive) return;
+        browserStateVersion++;
         browserRunning.value = false;
+        browserStateKnown.value = true;
       },
     );
   }
   refreshTimer = window.setInterval(() => {
-    if (!loading.value) void load(false, true);
+    if (!trafficOperationBusy.value) void load(false, true);
   }, 2500);
 });
 onUnmounted(() => {
+  trafficAlive = false;
+  invalidateTrafficRefresh();
   if (refreshTimer) window.clearInterval(refreshTimer);
+  finishOperationTarget(false);
   window.removeEventListener("pointerdown", onWindowPointerDown);
   removeCaptureBrowserListener?.();
 });
@@ -2637,21 +2869,24 @@ onUnmounted(() => {
         <strong>流量工作区</strong>
         <span
           class="proxy-state"
-          :class="{ running: status.running, capturing: status.capturing }"
-          ><i></i
+          role="status"
+          :class="{ running: proxyStateKnown && status.running, capturing: proxyStateKnown && status.running && status.capturing }"
+          ><i aria-hidden="true"></i
           >{{
-            !status.running
+            !proxyStateKnown
+              ? "代理状态未知"
+              : !status.running
               ? "未启动"
               : status.capturing
-                ? "正在拦截"
-                : "已连接·未拦截"
+                ? "正在记录"
+                : "代理运行·记录暂停"
           }}</span
         >
         <code>{{ proxyAddress }}</code>
       </div>
       <div class="traffic-toolbar-actions codex-toolbar-actions">
         <el-tooltip
-          v-if="captureBrowserAvailable && !browserRunning"
+          v-if="captureBrowserAvailable"
           :content="captureBrowserTooltip"
           placement="bottom"
           :show-arrow="false"
@@ -2660,26 +2895,32 @@ onUnmounted(() => {
         >
           <el-button
             class="capture-browser-reopen"
-            :loading="changingProxy"
-            :disabled="loading || changingCapture"
+            :loading="trafficOperation === 'open-browser'"
+            :disabled="trafficOperationBusy"
             @click="startCaptureBrowser"
-            ><el-icon><Connection /></el-icon>启动抓包浏览器</el-button
+            ><el-icon><Connection /></el-icon>打开抓包浏览器</el-button
           >
         </el-tooltip>
-        <template v-else-if="browserRunning">
-          <span class="capture-browser-state"><i />浏览器已连接</span>
-          <el-button class="capture-browser-reopen" @click="stopCaptureBrowser"
+        <template v-if="browserRunning">
+          <span class="capture-browser-state"><i />{{ browserStateKnown ? '浏览器已打开' : '浏览器状态未知' }}</span>
+          <el-button class="capture-browser-reopen" :loading="trafficOperation === 'close-browser'" :disabled="trafficOperationBusy" @click="stopCaptureBrowser"
             >关闭浏览器</el-button
           >
         </template>
         <el-button
           class="capture-filter-button"
           @click="openCaptureFilterDialog"
-          ><el-icon><Filter /></el-icon>黑白名单<span
+          ><el-icon><Filter /></el-icon>采集规则<span
             v-if="activeCaptureFilterCount"
             class="capture-filter-count"
             >{{ activeCaptureFilterCount }}</span
           ></el-button
+        >
+        <el-button
+          class="scan-ledger-button"
+          :loading="scanLedgerLoading"
+          @click="openScanLedger"
+          ><el-icon><Tickets /></el-icon>扫描记录</el-button
         >
         <el-tooltip
           content="刷新流量"
@@ -2692,7 +2933,7 @@ onUnmounted(() => {
             type="button"
             class="quiet-icon-button traffic-refresh"
             aria-label="刷新流量"
-            :disabled="loading"
+            :disabled="loading || trafficOperationBusy"
             @click="load(true)"
           >
             <el-icon :class="{ rotating: loading }"><Refresh /></el-icon>
@@ -2700,68 +2941,26 @@ onUnmounted(() => {
         </el-tooltip>
         <el-button
           :type="status.capturing ? 'default' : 'primary'"
-          :loading="changingCapture"
-          :disabled="loading || changingProxy"
+          :loading="trafficOperation === 'capture'"
+          :disabled="trafficOperationBusy"
           class="capture-toggle"
           @click="toggleCapture"
         >
           <el-icon
             ><VideoPause v-if="status.capturing" /><VideoPlay v-else
           /></el-icon>
-          {{ status.capturing ? "停止拦截" : "开始拦截" }}
+          {{ status.capturing ? "暂停记录" : "开始记录" }}
         </el-button>
         <el-button
           v-if="status.running"
           class="proxy-toggle"
-          :loading="changingProxy"
-          :disabled="changingCapture"
+          :loading="trafficOperation === 'stop-proxy'"
+          :disabled="trafficOperationBusy"
           @click="toggleProxy"
-          >停止代理</el-button
+          >关闭代理</el-button
         >
       </div>
     </header>
-
-    <div class="capture-target-row">
-      <label for="capture-authorized-target">采集授权目标</label>
-      <el-select
-        id="capture-authorized-target"
-        v-model="captureTargetSelection"
-        class="capture-target-select"
-        aria-label="采集授权目标"
-        placeholder="未选择，仅抓包"
-        clearable
-        filterable
-        :loading="captureTargetsLoading"
-        :disabled="status.running || loading || changingProxy || changingCapture"
-        @visible-change="(visible) => visible && loadCaptureTargets(true)"
-      >
-        <el-option
-          v-if="missingCaptureTarget"
-          :label="`目标 #${captureTargetSelection}（当前列表不可用）`"
-          :value="captureTargetSelection"
-          disabled
-        />
-        <el-option
-          v-for="target in captureTargets"
-          :key="target.id"
-          :label="captureTargetLabel(target)"
-          :value="target.id"
-          :disabled="Boolean(captureTargetDisabledReason(target))"
-        >
-          <span>{{ captureTargetLabel(target) }}</span>
-          <small v-if="captureTargetDisabledReason(target)">
-            · {{ captureTargetDisabledReason(target) }}
-          </small>
-        </el-option>
-      </el-select>
-      <small v-if="status.running">
-        {{ status.targetId ? "当前会话已绑定授权目标。" : "当前会话仅抓包，流量未绑定授权目标，无法转交 AI 智能体。" }}
-        更换目标需先停止代理；停止拦截不会解除绑定。
-      </small>
-      <small v-else>
-        选择后，新流量仅允许所选目标及授权端口；转交 AI 智能体需要绑定目标。未选择可仅抓包，旧记录不受影响。
-      </small>
-    </div>
 
     <div class="traffic-workbench codex-traffic-workbench">
       <section
@@ -2775,22 +2974,17 @@ onUnmounted(() => {
               ><small v-if="markedSessionCount"
                 >已标记 {{ markedSessionCount }}</small
               ></span
-            ><el-button
+            >
+            <el-button
               text
               type="danger"
               size="small"
               class="clear-unmarked-btn"
-              :disabled="!unmarkedSessionCount || deletingId !== undefined"
+              :icon="Delete"
+              :disabled="!unmarkedSessionCount || deletingId !== undefined || clearingSessions"
               :loading="clearingSessions"
               @click="clearSessions"
               >清空未标记</el-button
-            >
-            <el-button
-              text
-              size="small"
-              :loading="scanLedgerLoading"
-              @click="openScanLedger"
-              >扫描台账</el-button
             >
           </div>
           <el-input
@@ -2803,7 +2997,7 @@ onUnmounted(() => {
         </header>
         <div v-if="!filteredSessions.length" class="traffic-empty">
           <el-icon><Connection /></el-icon><strong>等待流量</strong>
-          <p>启动代理，让浏览器或其他客户端流量经过本机。</p>
+          <p>打开抓包浏览器并开始记录，也可让其他客户端经过本机代理。</p>
         </div>
         <el-dropdown
           v-for="item in pagedSessions"
@@ -2876,9 +3070,7 @@ onUnmounted(() => {
                   class="packet-protocol h2"
                   >HTTP/2</span
                 ><code>{{ item.statusCode || "-" }}</code
-                ><i :class="(item.riskLevel || 'NONE').toLowerCase()">{{
-                  item.riskLevel || "—"
-                }}</i></span
+                ></span
               >
             </button>
           </div>
@@ -2994,7 +3186,7 @@ onUnmounted(() => {
                 </template>
               </el-dropdown>
               <el-tooltip
-                :content="selected?.targetId ? '把这条流量转交给 AI 智能体：可跨工具规划并派发授权检测任务' : '这条流量未绑定授权目标；停止代理后，在顶部选择采集授权目标并重新采集'"
+                content="分析已有报文无需关联目标；主动检测时再选择并校验授权目标"
                 placement="bottom"
                 :show-after="350"
                 ><el-button
@@ -3002,7 +3194,7 @@ onUnmounted(() => {
                   type="primary"
                   class="packet-copilot-button"
                   @click="openTrafficCopilot"
-                  ><el-icon><MagicStick /></el-icon>转交 AI 智能体</el-button
+                  ><el-icon><MagicStick /></el-icon>AI 分析</el-button
                 ></el-tooltip
               >
             </div>
@@ -3208,10 +3400,7 @@ onUnmounted(() => {
                       activeReplayTab.result.bodyEncoding
                     }}</small>
                   </h3>
-                  <pre>{{
-                    formatReplayResponsePacket(activeReplayTab.result) ||
-                    "服务器已响应，但响应内容为空。"
-                  }}</pre>
+                  <FluentCodeBlock :content="formatReplayResponsePacket(activeReplayTab.result)" empty-text="服务器已响应，但响应内容为空。" :min-rows="6" :max-rows="20" wrap aria-label="重放响应报文，只读" />
                 </div>
               </section>
             </template>
@@ -3220,14 +3409,28 @@ onUnmounted(() => {
               ><span>点击“新建请求”，或从流量会话点击“发包”创建标签。</span>
             </div>
           </section>
-          <section v-else-if="packetTab === 'fuzz'" class="inline-replay-editor">
-            <header>
-              <strong>模糊测试</strong>
+          <section v-else-if="packetTab === 'fuzz'" class="inline-replay-editor fuzz-workspace">
+            <header class="fuzz-toolbar">
+              <h3>模糊测试</h3>
+                <el-button
+                  type="primary"
+                  class="fuzz-run-button"
+                  :loading="fuzzRunning"
+                  :disabled="
+                    !fuzzForm.method.trim() ||
+                    !fuzzForm.url.trim() ||
+                    !fuzzVariables.length
+                  "
+                  @click="runFuzz"
+                  >{{
+                    fuzzEngine === "zap" ? "运行 ZAP 参数变异" : "运行模糊测试"
+                  }}</el-button
+                >
               <div class="fuzz-head-actions">
                 <el-radio-group
                   v-model="fuzzEngine"
-                  size="small"
                   class="fuzz-engine-switch"
+                  aria-label="模糊测试引擎"
                 >
                   <el-radio-button value="auto">自动</el-radio-button>
                   <el-radio-button value="zap">ZAP</el-radio-button>
@@ -3235,9 +3438,8 @@ onUnmounted(() => {
                 </el-radio-group>
                 <el-select
                   v-model="selectedFuzzPreset"
-                  size="small"
                   placeholder="载荷预设 (FuzzDB)"
-                  style="width: 190px"
+                  class="fuzz-preset-select"
                   @change="applySelectedFuzzPreset"
                   clearable
                 >
@@ -3251,8 +3453,7 @@ onUnmounted(() => {
                 <el-select
                   v-if="fuzzBatchWithSelection && Object.keys(fuzzBatchResults).length"
                   v-model="fuzzFocusPacketId"
-                  size="small"
-                  style="width: 200px"
+                  class="fuzz-result-select"
                   @change="focusFuzzResult"
                   placeholder="选择查看结果的会话"
                 >
@@ -3266,20 +3467,6 @@ onUnmounted(() => {
                     ><small>{{ item.host || `#${item.id}` }}{{ item.path || "" }}</small>
                   </el-option>
                 </el-select>
-                <el-button
-                  type="primary"
-                  size="small"
-                  :loading="fuzzRunning"
-                  :disabled="
-                    !fuzzForm.method.trim() ||
-                    !fuzzForm.url.trim() ||
-                    (fuzzEngine !== 'zap' && !fuzzVariables.length)
-                  "
-                  @click="runFuzz"
-                  >{{
-                    fuzzEngine === "zap" ? "运行 ZAP 模糊测试" : "运行模糊测试"
-                  }}</el-button
-                >
               </div>
             </header>
             <div class="replay-request-line">
@@ -3311,7 +3498,7 @@ onUnmounted(() => {
                     v-model="fuzzForm.url"
                     :disabled="fuzzRunning"
                     placeholder="https://example.com/path（可用 §name§ 标记模糊点）"
-                    @input="syncUrlEditorScroll"
+                    @input="onFuzzUrlInput"
                     @keyup="syncUrlEditorScroll"
                   />
                 </div>
@@ -3357,18 +3544,17 @@ onUnmounted(() => {
                   :disabled="fuzzRunning"
                   spellcheck="false"
                   placeholder="POST /submit HTTP/1.1&#10;Host: example.com&#10;Content-Type: application/x-www-form-urlencoded&#10;&#10;q=&#167;name&#167;"
-                  @input="syncRawEditorScroll"
+                  @input="onFuzzRawInput"
                 />
               </div>
             </div>
             <section
-              v-if="fuzzEngine !== 'zap'"
               class="fuzz-payload-panel"
             >
               <!-- 头部：标题、攻击模式下拉与统计胶囊 -->
               <div class="fuzz-panel-header">
                 <div class="fuzz-header-title-group">
-                  <span class="fuzz-panel-title">Payload 设置</span>
+                  <span class="fuzz-panel-title">载荷设置</span>
                   <el-select
                     v-model="fuzzCombination"
                     size="small"
@@ -3485,8 +3671,8 @@ onUnmounted(() => {
                     </el-button>
                     <template #dropdown>
                       <el-dropdown-menu>
-                        <el-dropdown-item command="current">清空当前 Set (§{{ currentFuzzGroupName() || '选中' }}§)</el-dropdown-item>
-                        <el-dropdown-item command="all" divided>清空全部 Set</el-dropdown-item>
+                        <el-dropdown-item command="current">清空当前字典组（§{{ currentFuzzGroupName() || '选中' }}§）</el-dropdown-item>
+                        <el-dropdown-item command="all" divided>清空全部字典组</el-dropdown-item>
                       </el-dropdown-menu>
                     </template>
                   </el-dropdown>
@@ -3511,7 +3697,7 @@ onUnmounted(() => {
                     :rows="5"
                     :disabled="fuzzRunning"
                     spellcheck="false"
-                    placeholder="每行一个 payload&#10;admin&#10;test&#10;debug&#10;1' OR '1'='1"
+                    placeholder="每行一个载荷&#10;admin&#10;test&#10;debug&#10;1' OR '1'='1"
                   />
                 </div>
 
@@ -3524,10 +3710,10 @@ onUnmounted(() => {
                     @click="activeFuzzGroup = name"
                   >
                     <div class="fuzz-multi-head">
-                      <span class="fuzz-set-badge">Set {{ index + 1 }}</span>
+                      <span class="fuzz-set-badge">字典组 {{ index + 1 }}</span>
                       <span class="fuzz-set-name">§{{ name }}§</span>
                       <span class="fuzz-set-count">
-                        {{ ((getFuzzPayload(name) || '').split(/\r?\n/).filter(Boolean)).length }} 行
+                        {{ normalizeFuzzDictionary(getFuzzPayload(name)).length }} 行
                       </span>
                     </div>
                     <el-input
@@ -3536,7 +3722,7 @@ onUnmounted(() => {
                       :rows="3"
                       :disabled="fuzzRunning"
                       spellcheck="false"
-                      placeholder="每行一个 payload"
+                      placeholder="每行一个载荷"
                       @focus="activeFuzzGroup = name"
                       @update:model-value="(v) => (fuzzPayloadGroups[name] = v)"
                     />
@@ -3552,20 +3738,21 @@ onUnmounted(() => {
                 <div>
                   <strong>{{
                     fuzzResult
-                      ? `完成 · ${fuzzResult.results?.length || 0} 次响应`
+                      ? `${fuzzResultStatus(fuzzResult)}${fuzzRequestCount(fuzzResult) !== undefined ? ` · ${fuzzRequestCount(fuzzResult)} 次请求已完成` : ''}`
                       : "模糊结果"
                   }}</strong>
                 </div>
               </header>
+              <p v-if="fuzzError && fuzzResult" role="status">{{ fuzzError }}</p>
               <div
                 v-if="fuzzRunning"
                 class="replay-response-state"
               >
                 <el-icon class="is-loading"><Refresh /></el-icon
                 ><strong>正在逐个重放请求</strong
-                ><span>每个 payload 会替换占位符后按顺序发送并对比基线。</span>
+                ><span>每个指定值替换占位符后按顺序发送；ZAP 收集被动告警，循环重放对比基线。</span>
               </div>
-              <div v-else-if="fuzzError" class="replay-response-state error">
+              <div v-else-if="fuzzError && !fuzzResult" class="replay-response-state error">
                 <strong>模糊测试失败</strong><span>{{ fuzzError }}</span>
               </div>
               <div
@@ -3574,12 +3761,12 @@ onUnmounted(() => {
               >
                 <strong>尚未运行</strong
                 ><span
-                  >在 URL / 请求头 / 请求体标记占位符，添加 payload
+                  >在 URL / 请求头 / 请求体标记占位符，添加载荷
                   后点击“运行模糊测试”。</span
                 >
               </div>
               <div
-                v-else-if="fuzzResult.results && fuzzResult.results.length"
+                v-else-if="fuzzResult"
                 class="fuzz-results"
               >
                 <div class="fuzz-result-summary">
@@ -3589,23 +3776,27 @@ onUnmounted(() => {
                     effect="plain"
                     >{{
                       fuzzResult.engine === "ZAP"
-                        ? "引擎：ZAP FuzzDB"
+                        ? "引擎：ZAP 参数变异验证"
                         : "引擎：自研循环重放"
                     }}</el-tag
-                  ><span>响应 {{ fuzzResult.results.length }} 次</span
-                  ><span v-if="fuzzChangedHits" class="fuzz-summary-changed"
+                  ><span v-if="fuzzRequestCount(fuzzResult) !== undefined">已完成 {{ fuzzRequestCount(fuzzResult) }} 次请求</span
+                  ><span v-if="fuzzResult.engine === 'ZAP'">{{ fuzzResult.results?.length || 0 }} 项被动告警，未对比基线</span
+                  ><span v-else-if="fuzzChangedHits" class="fuzz-summary-changed"
                     >{{ fuzzChangedHits }} 个变更命中</span
-                  ><span v-else>全部同基线</span>
+                  ><span v-else-if="fuzzResult.status !== 'COMPLETED'">检测未完成，尚无完整对比结论</span
+                  ><span v-else-if="fuzzResult.results?.length">本次返回结果均同基线</span
+                  ><span v-else>未返回可对比结果</span>
                 </div>
-                <table class="fuzz-result-table">
+                <p v-if="fuzzResult.message">{{ fuzzResult.message }}</p>
+                <table v-if="fuzzResult.results?.length" class="fuzz-result-table">
                   <thead>
                     <tr>
                       <th>状态</th>
                       <th>响应体</th>
                       <th>耗时</th>
                       <th>字节</th>
-                      <th>Hash</th>
-                      <th>payload</th>
+                      <th>哈希</th>
+                      <th>载荷</th>
                       <th>操作</th>
                     </tr>
                   </thead>
@@ -3620,7 +3811,7 @@ onUnmounted(() => {
                         >{{ fuzzHitStatus(hit) }}</td
                       >
                       <td class="fuzz-hit-diff">{{
-                        hit.changed ? "变更" : "同基线"
+                        fuzzResult.engine === 'ZAP' ? '被动告警' : hit.changed ? "变更" : "同基线"
                       }}</td>
                       <td>{{
                         hit.durationMs !== undefined
@@ -3638,13 +3829,14 @@ onUnmounted(() => {
                       </td>
                       <td>
                         <el-button
-                          v-if="hit.changed"
+                          v-if="hit.changed && readFuzzReplayRequest(hit.request)"
                           class="row-action"
                           size="small"
                           :icon="Promotion"
                           @click="fuzzHitToReplay(hit)"
                           >重放</el-button
                         >
+                        <small v-else-if="hit.changed" class="fuzz-replay-unavailable">{{ FUZZ_REPLAY_UNAVAILABLE }}</small>
                       </td>
                     </tr>
                   </tbody>
@@ -3736,15 +3928,42 @@ onUnmounted(() => {
         </div>
         <footer class="traffic-points-foot">
           <small
-            >需要 AI 深入分析或据此派发检测，请点击上方“转交 AI 智能体”。</small
+            >需要 AI 深入分析，请点击上方“AI 分析”。主动操作执行时再校验授权目标。</small
           >
         </footer>
       </aside>
     </div>
 
+    <el-dialog v-model="targetDialogVisible" title="选择本次主动操作的授权目标" width="570px" class="app-dialog" align-center @closed="finishOperationTarget(false)">
+      <p class="operation-url">{{ operationUrl }}</p>
+      <el-alert title="发送前会校验实际地址、端口及授权有效期。选择目标不改变抓包范围或会话归属。" type="info" :closable="false" />
+      <el-select v-model="operationTargetId" placeholder="请选择授权目标" filterable style="width:100%; margin-top:16px">
+        <el-option v-for="target in replayTargets" :key="target.id" :value="target.id" :disabled="Boolean(targetDisabledReason(target))" :label="`${target.name} · ${target.targetValue}${targetDisabledReason(target) ? ' · ' + targetDisabledReason(target) : ''}`" />
+      </el-select>
+      <p v-if="!replayTargets.length" class="manager-hint">暂无授权目标。可先在“授权目标”页面创建，再回到此处继续，已抓取的报文会保留。</p>
+      <fieldset v-if="operationZapOptionsVisible" class="zap-strength-options">
+        <legend>ZAP 检测强度</legend>
+        <el-radio-group v-model="zapScanStrength" aria-label="ZAP 检测强度">
+          <el-radio-button v-for="option in zapStrengthOptions" :key="option.value" :value="option.value">{{ option.label }}</el-radio-button>
+        </el-radio-group>
+        <p class="zap-strength-description">{{ zapStrengthDescription }}</p>
+        <p class="manager-hint">三档均使用默认检测策略，强度主要影响各项检查的测试次数和输入变化。实际耗时取决于目标响应和检查项目。</p>
+      </fieldset>
+      <template #footer><el-button @click="finishOperationTarget(false)">取消</el-button><el-button type="primary" :disabled="!operationTargetId" @click="finishOperationTarget(true)">校验并执行</el-button></template>
+    </el-dialog>
+    <el-dialog v-model="aiDialogVisible" title="AI 报文分析" width="min(800px, 92vw)" class="app-dialog" align-center>
+      <el-alert title="基于已保存报文分析，无需关联项目。进行主动检测时再选择授权目标。" type="info" :closable="false" />
+      <div ref="chatMessagesElement" class="traffic-analysis-messages">
+        <p v-if="!currentTrafficChat.length" class="manager-hint">描述关注的问题，或直接使用下方默认问题开始分析。</p>
+        <article v-for="message in currentTrafficChat" :key="message.id" class="traffic-chat-message" :class="{ user: message.role === 'USER' }"><strong>{{ message.role === 'USER' ? '你' : 'AI' }}</strong><small v-if="message.role === 'ASSISTANT'" class="traffic-answer-source">{{ aiAnswerSource(message.provider, message.status === 'failed') }}</small><MarkdownBody :content="message.content" :localize="false" /></article>
+        <p v-if="currentTrafficChatSending">正在分析已有报文…</p>
+      </div>
+      <el-input v-model="trafficChatPrompt" type="textarea" :rows="3" placeholder="询问这条报文的风险、证据或验证建议" @keydown="handleTrafficChatKeydown" />
+      <template #footer><el-button @click="aiDialogVisible = false">关闭</el-button><el-button type="primary" :loading="currentTrafficChatSending" :disabled="!trafficChatPrompt.trim()" @click="sendTrafficChat">发送分析问题</el-button></template>
+    </el-dialog>
     <el-dialog
       v-model="scanLedgerVisible"
-      title="流量定向扫描台账"
+      title="扫描记录"
       width="820px"
       append-to-body
       class="app-dialog app-dialog--lg"
@@ -3752,7 +3971,7 @@ onUnmounted(() => {
     >
       <div v-if="scanLedgerLoading" class="targeted-loading">
         <el-icon class="is-loading" :size="24"><Refresh /></el-icon>
-        <span>正在加载扫描执行台账...</span>
+        <span>正在加载扫描记录...</span>
       </div>
       <el-table
         v-else
@@ -3782,7 +4001,7 @@ onUnmounted(() => {
         <el-table-column prop="status" label="状态" width="100" align="center">
           <template #default="{ row }">
             <el-tag :type="row.status === 'COMPLETED' ? 'success' : 'danger'" size="small">{{
-              row.status
+              scanStatusLabel(row.status)
             }}</el-tag>
           </template>
         </el-table-column>
@@ -3813,7 +4032,7 @@ onUnmounted(() => {
       <div style="min-height: 160px">
         <div v-if="targetedScanResult" class="targeted-scan-result">
           <el-alert
-            :type="targetedScanLoading ? 'info' : (targetedScanResult.hits && targetedScanResult.hits.length ? 'warning' : 'success')"
+            :type="targetedScanAlertType"
             :closable="false"
             show-icon
             style="margin-bottom: 14px"
@@ -3821,12 +4040,22 @@ onUnmounted(() => {
             <template #title>
               <span class="targeted-scan-status">
                 <el-icon v-if="targetedScanLoading" class="is-loading"><Refresh /></el-icon>
-                <strong>{{ targetedScanResult.message }}</strong>
+                <strong>{{ targetedScanNotice.title }}</strong>
               </span>
             </template>
           </el-alert>
+          <p v-if="targetedScanNotice.guidance" class="targeted-scan-guidance">
+            {{ targetedScanNotice.guidance }}
+          </p>
+          <details v-if="targetedScanNotice.detail" class="targeted-scan-diagnostics">
+            <summary>查看技术详情</summary>
+            <pre>{{ targetedScanNotice.detail }}</pre>
+          </details>
 
           <div v-if="targetedScanResult.hits && targetedScanResult.hits.length" class="targeted-hits-list">
+            <p v-if="!targetedScanLoading && targetedScanResult.status !== 'COMPLETED'" class="targeted-scan-guidance">
+              以下是检测中断前收到的结果，本次检查尚未全部完成。
+            </p>
             <el-collapse accordion>
               <el-collapse-item
                 v-for="(hit, idx) in targetedScanResult.hits"
@@ -3861,10 +4090,13 @@ onUnmounted(() => {
           </div>
           <div v-else class="targeted-empty">
             <template v-if="targetedScanLoading">
-              正在逐项发送测试探针，命中结果会实时显示...
+              检测进行中，请稍候。收到结果后会在这里显示。
+            </template>
+            <template v-else-if="targetedScanResult.status === 'COMPLETED'">
+              本次检查已完成，未返回命中结果；该结论仅适用于本次检测范围。
             </template>
             <template v-else>
-              未发现明确的注入点或匹配漏洞，建议结合业务逻辑继续使用 Fuzz 模块进行变异测试。
+              本次检测未完成，不能据此判断目标是否存在漏洞。
             </template>
           </div>
 
@@ -3878,19 +4110,19 @@ onUnmounted(() => {
               <el-icon v-if="targetedScanLoading" class="is-loading" style="color: var(--app-muted)"><Refresh /></el-icon>
             </div>
             <el-table :data="targetedScanResult.probes" size="small" border max-height="260">
-              <el-table-column label="结果" width="80" align="center">
+              <el-table-column label="结果" width="110" align="center">
                 <template #default="{ row }">
                   <el-tag :type="row.triggered ? 'danger' : 'info'" size="small" effect="light">
-                    {{ row.triggered ? "命中" : "未命中" }}
+                    {{ probeResultLabel(row) }}
                   </el-tag>
                 </template>
               </el-table-column>
               <el-table-column prop="name" label="探测项" width="150" show-overflow-tooltip />
               <el-table-column label="方法" width="66" align="center">
-                <template #default="{ row }">{{ row.method || "GET" }}</template>
+                <template #default="{ row }">{{ row.method || "—" }}</template>
               </el-table-column>
               <el-table-column prop="target" label="请求 URL" min-width="220" show-overflow-tooltip />
-              <el-table-column label="Payload" width="150" show-overflow-tooltip>
+              <el-table-column label="载荷" width="150" show-overflow-tooltip>
                 <template #default="{ row }">
                   <code v-if="row.payload">{{ row.payload }}</code>
                   <span v-else style="color: var(--app-muted)">—</span>
@@ -3908,6 +4140,10 @@ onUnmounted(() => {
               </el-table-column>
             </el-table>
           </div>
+          <details v-if="targetedScanLogs.length" class="targeted-scan-diagnostics">
+            <summary>查看执行日志</summary>
+            <pre>{{ targetedScanLogs.join("\n") }}</pre>
+          </details>
         </div>
         <div v-else-if="targetedScanLoading" class="targeted-loading">
           <el-icon class="is-loading" :size="24"><Refresh /></el-icon>
@@ -3923,7 +4159,10 @@ onUnmounted(() => {
         </div>
       </div>
       <template #footer>
+        <span v-if="targetedScanResult?.scanId" class="targeted-record-location">记录 #{{ targetedScanResult.scanId }}，执行状态见检测任务，命中风险见安全发现</span>
         <el-button size="small" @click="targetedScanVisible = false">关闭</el-button>
+        <el-button size="small" @click="openTargetedScanRecords('/tasks')">检测任务</el-button>
+        <el-button size="small" @click="openTargetedScanRecords('/findings')">安全发现</el-button>
         <el-button
           size="small"
           type="primary"
@@ -3937,7 +4176,7 @@ onUnmounted(() => {
 
     <el-dialog
       v-model="numbersGenDialogVisible"
-      title="数字序列发生器 (Numbers Payload)"
+      title="数字序列发生器"
       width="380px"
       append-to-body
       class="app-dialog"
@@ -3965,12 +4204,12 @@ onUnmounted(() => {
 
     <el-dialog
       v-model="captureFilterDialogVisible"
-      title="抓包黑白名单"
+      title="采集规则"
       class="app-dialog app-dialog--wide"
       align-center
     >
       <el-alert
-        title="黑名单命中后不保存；启用任意白名单后，仅保存命中白名单且未命中黑名单的流量。规则修改后立即生效。"
+        title="黑名单命中后不保存；启用任意白名单后，仅保存命中白名单且未命中黑名单的流量。规则仅影响新报文保存，不阻断请求；列表搜索仅影响显示。修改后立即生效。"
         type="info"
         show-icon
         :closable="false"
@@ -4014,7 +4253,7 @@ onUnmounted(() => {
         :data="pagedCaptureFilters"
         size="small"
         class="capture-filter-table"
-        empty-text="暂无抓包黑白名单规则"
+        empty-text="暂无采集规则"
       >
         <el-table-column label="名单" width="75"
           ><template #default="scope"
@@ -4183,7 +4422,7 @@ onUnmounted(() => {
                 replayResult.bodyEncoding
               }}</small>
             </h3>
-            <pre>{{ formatReplayResponsePacket(replayResult) }}</pre>
+            <FluentCodeBlock :content="formatReplayResponsePacket(replayResult)" :min-rows="6" :max-rows="20" wrap aria-label="重放响应报文，只读" />
           </div>
         </section>
       </div>
@@ -4204,6 +4443,10 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.traffic-analysis-messages { min-height:100px; max-height:50vh; overflow:auto; margin:16px 0; }
+.traffic-analysis-messages .traffic-chat-message { box-sizing:border-box; min-width:0; max-width:100%; margin:12px 0; padding:12px; border:1px solid var(--app-border); border-radius:8px; background:var(--app-surface-soft); }
+.traffic-analysis-messages .traffic-chat-message.user { background:var(--app-accent-soft); }
+.operation-url { overflow-wrap:anywhere; font-family:monospace; }.manager-hint { font-size:12px; color:var(--app-muted); line-height:1.6; }
 .codex-traffic-page {
   display: flex;
   flex-direction: column;
@@ -4243,28 +4486,6 @@ onUnmounted(() => {
 .codex-toolbar-actions {
   gap: 8px;
 }
-.capture-target-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  flex-shrink: 0;
-  gap: 8px 12px;
-  padding: 10px 0;
-  color: var(--app-muted);
-  font-size: 12px;
-}
-.capture-target-row > label {
-  color: var(--app-text);
-  white-space: nowrap;
-}
-.capture-target-select {
-  width: min(360px, 100%);
-}
-.capture-target-row > small {
-  flex: 1 1 320px;
-  font-size: 11px;
-  line-height: 1.5;
-}
 .capture-browser-option {
   margin: 0 3px 0 6px;
   color: var(--app-muted);
@@ -4290,19 +4511,10 @@ onUnmounted(() => {
   background: #37a272;
   box-shadow: 0 0 0 3px #e0f0e8;
 }
-.capture-browser-reopen {
-  min-height: 32px;
-  height: 32px;
-  padding: 0 10px;
-  border-radius: 7px;
-  font-size: 11px;
-}
+.capture-browser-reopen,
 .capture-filter-button {
-  min-height: 32px;
-  height: 32px;
-  padding: 0 10px;
-  border-radius: 7px;
-  font-size: 11px;
+  min-height: var(--traffic-control-height, 32px);
+  height: var(--traffic-control-height, 32px);
 }
 .capture-filter-count {
   display: inline-grid;
@@ -4606,18 +4818,6 @@ onUnmounted(() => {
   color: var(--app-muted);
   font-size: 11px;
 }
-.session-row-meta i {
-  color: var(--app-muted);
-  font-size: 11px;
-  font-style: normal;
-}
-.session-row-meta i.high,
-.session-row-meta i.critical {
-  color: #bd3e3e;
-}
-.session-row-meta i.medium {
-  color: #966920;
-}
 .packet-editor-pane {
   display: flex;
   flex-direction: column;
@@ -4911,8 +5111,8 @@ onUnmounted(() => {
   white-space: pre-wrap !important;
   word-break: break-all !important;
   box-sizing: border-box !important;
-  height: clamp(220px, 35vh, 420px) !important;
-  min-height: 220px !important;
+  height: clamp(180px, 22vh, 260px) !important;
+  min-height: 180px !important;
   resize: none !important;
 }
 .fuzz-placeholder-mark {
@@ -5028,6 +5228,12 @@ onUnmounted(() => {
 .fuzz-hit-diff {
   color: var(--app-muted);
 }
+.fuzz-replay-unavailable {
+  display: inline-block;
+  max-width: 200px;
+  white-space: normal;
+  color: var(--app-muted);
+}
 .fuzz-hit-payload {
   max-width: 260px;
   overflow: hidden;
@@ -5036,18 +5242,58 @@ onUnmounted(() => {
   font: var(--type-micro) ui-monospace, SFMono-Regular, Consolas, monospace;
   white-space: nowrap;
 }
+.inline-replay-editor > header.fuzz-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.fuzz-toolbar > h3 {
+  margin: 0;
+  color: var(--app-text);
+  font-size: var(--type-section-title, 16px);
+  font-weight: var(--fluent-weight-semibold, 600);
+  line-height: 24px;
+  white-space: nowrap;
+}
+.fuzz-toolbar > .fuzz-run-button {
+  height: var(--traffic-control-height, 32px);
+  margin: 0;
+  font-size: var(--type-body, 14px);
+}
 .fuzz-head-actions {
+  grid-column: 1 / -1;
+  min-width: 0;
+  width: 100%;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
 }
+.fuzz-head-actions > .el-select {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.fuzz-head-actions > .fuzz-result-select {
+  flex-basis: 100%;
+}
 .fuzz-engine-switch {
   flex: none;
 }
 .fuzz-engine-switch :deep(.el-radio-button__inner) {
-  font-size: 11px;
-  padding: 6px 10px;
+  display: inline-flex;
+  height: var(--traffic-control-height, 32px);
+  align-items: center;
+  box-sizing: border-box;
+  font-size: var(--type-body, 14px);
+  padding: 0 12px;
+}
+.fuzz-head-actions :deep(.el-select__wrapper) {
+  height: var(--traffic-control-height, 32px);
+  font-size: var(--type-body, 14px);
+}
+.fuzz-workspace .replay-packet-editor {
+  margin-top: 12px !important;
 }
 .fuzz-payload-panel {
   display: flex;
@@ -5646,6 +5892,11 @@ onUnmounted(() => {
   color: var(--app-muted);
   font-size: 11px;
 }
+.traffic-answer-source {
+  margin: 0 4px 6px;
+  color: var(--app-muted);
+  font-size: 11px;
+}
 .traffic-chat-message > p {
   max-width: 94%;
   margin: 0;
@@ -6133,13 +6384,16 @@ onUnmounted(() => {
   min-height: var(--traffic-control-height);
   padding: 0 12px;
   border-radius: var(--traffic-control-radius);
-  border-color: var(--app-border-strong);
-  background: var(--app-surface-strong);
-  color: var(--app-text);
   box-shadow: 0 1px 1px color-mix(in srgb, var(--app-text) 5%, transparent);
   font-weight: 500;
 }
-.codex-traffic-page :deep(.el-button:hover) {
+/* Destructive controls keep the shared danger palette in dialogs and tables. */
+.codex-traffic-page :deep(.el-button:where(:not(.row-action--danger):not(.el-button--danger))) {
+  border-color: var(--app-border-strong);
+  background: var(--app-surface-strong);
+  color: var(--app-text);
+}
+.codex-traffic-page :deep(.el-button:where(:not(.row-action--danger):not(.el-button--danger)):hover) {
   border-color: var(--app-border-strong);
   background: var(--app-surface-soft);
   color: var(--app-text);
@@ -6224,14 +6478,12 @@ onUnmounted(() => {
   background: var(--app-bg);
   box-shadow: none;
 }
-.codex-traffic-page :deep(.el-button--danger),
-.codex-traffic-page :deep(.el-button--danger.is-link) {
+.codex-traffic-page :deep(.el-button--danger:where(:not(.is-plain):not(.is-text):not(.is-link):not(.is-disabled))) {
   border-color: var(--fluent-danger-bg, #c50f1f);
   background: var(--fluent-danger-bg, #c50f1f);
   color: #fff;
 }
-.codex-traffic-page :deep(.el-button--danger:hover),
-.codex-traffic-page :deep(.el-button--danger.is-link:hover) {
+.codex-traffic-page :deep(.el-button--danger:where(:not(.is-plain):not(.is-text):not(.is-link):not(.is-disabled)):hover) {
   border-color: var(--fluent-danger-hover-bg, #a80000);
   background: var(--fluent-danger-hover-bg, #a80000);
   color: #fff;
@@ -6483,8 +6735,29 @@ onUnmounted(() => {
 :global(.traffic-tooltip .el-popper__arrow) {
   display: none !important;
 }
+.targeted-record-location {
+  display: block;
+  margin-bottom: 12px;
+  color: var(--app-muted);
+  font-size: 12px;
+  text-align: left;
+}
 .targeted-scan-result {
   padding: 2px 2px 4px;
+}
+.zap-strength-options {
+  margin: 18px 0 0;
+  padding: 14px;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+}
+.zap-strength-options legend {
+  padding: 0 6px;
+  font-weight: 600;
+}
+.zap-strength-description {
+  margin: 12px 0 8px;
+  line-height: 1.7;
 }
 .targeted-loading {
   display: flex;
@@ -6505,6 +6778,30 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+.targeted-scan-guidance {
+  margin: 0 0 14px;
+  color: var(--app-text);
+  line-height: 1.7;
+}
+.targeted-scan-diagnostics {
+  margin: 10px 0;
+  color: var(--app-muted);
+}
+.targeted-scan-diagnostics summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.targeted-scan-diagnostics pre {
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 10px;
+  border-radius: 6px;
+  background: var(--app-surface-alt);
+  font-size: 12px;
+  line-height: 1.6;
 }
 .targeted-hits-list {
   margin-bottom: 4px;

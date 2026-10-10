@@ -210,7 +210,7 @@ class AiContextServiceTests {
 
     String answer =
         service
-            .answerAuditQuestion(
+            .auditAnalysisTemplate(
                 null,
                 7L,
                 null,
@@ -238,7 +238,7 @@ class AiContextServiceTests {
 
     assertThatThrownBy(
             () ->
-                service.answerAuditQuestion(
+                service.auditAnalysisTemplate(
                     5L,
                     7L,
                     null,
@@ -262,7 +262,7 @@ class AiContextServiceTests {
 
     String answer =
         service
-            .answerAuditQuestion(
+            .auditAnalysisTemplate(
                 5L,
                 7L,
                 null,
@@ -296,7 +296,7 @@ class AiContextServiceTests {
 
     String answer =
         service
-            .answerAuditQuestion(
+            .auditAnalysisTemplate(
                 null,
                 7L,
                 null,
@@ -330,7 +330,7 @@ class AiContextServiceTests {
 
     assertThatThrownBy(
             () ->
-                service.answerAuditQuestion(
+                service.auditAnalysisTemplate(
                     null,
                     7L,
                     null,

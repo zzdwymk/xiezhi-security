@@ -567,6 +567,8 @@ class ScanScheduleServiceTests {
 
   @Test
   void dispatchFailureLeavesRunMetadataUntouchedAndAdvancesSchedule() throws Exception {
+    var notifications = mock(com.bachelor.toolbox.notification.NotificationService.class);
+    service.setNotifications(notifications);
     ScanSchedule schedule = intervalSchedule(11L);
     when(repository.findByEnabledTrueAndNextRunAtLessThanEqual(
             any(Instant.class), any(Pageable.class)))
@@ -584,10 +586,16 @@ class ScanScheduleServiceTests {
     assertFalse(schedule.getNextRunAt().isBefore(before.plusSeconds(3600)));
     assertFalse(schedule.getNextRunAt().isAfter(after.plusSeconds(3600)));
     verify(repository).save(schedule);
+    service.dispatch();
+    verify(notifications, times(1)).publish(org.mockito.ArgumentMatchers.startsWith("schedule:11:error:"),
+        eq(schedule.getProjectId()), eq(false), eq("schedule"), eq("error"), eq("定时扫描调度失败"),
+        org.mockito.ArgumentMatchers.anyString(), eq("/tasks?scheduleId=11"), eq(List.of()));
   }
 
   @Test
   void dispatchContinuesAfterMalformedParameters() throws Exception {
+    var notifications = mock(com.bachelor.toolbox.notification.NotificationService.class);
+    service.setNotifications(notifications);
     ScanSchedule malformed = intervalSchedule(11L);
     malformed.setParametersJson("not-json");
     ScanSchedule valid = intervalSchedule(12L);
@@ -604,6 +612,10 @@ class ScanScheduleServiceTests {
     assertNull(malformed.getNextRunAt());
     assertFalse(malformed.isEnabled());
     assertEquals("扫描参数无效", malformed.getLastError());
+    verify(notifications).publish(org.mockito.ArgumentMatchers.startsWith("schedule:11:disabled:"),
+        eq(malformed.getProjectId()), eq(false), eq("schedule"), eq("warning"),
+        eq("定时扫描已自动停用"), org.mockito.ArgumentMatchers.anyString(),
+        eq("/tasks?scheduleId=11"), eq(List.of()));
     assertNotNull(valid.getLastRunAt());
     assertEquals(92L, valid.getLastTaskId());
     verify(tasks).create(any(CreateTaskRequest.class));

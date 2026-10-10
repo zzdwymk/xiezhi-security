@@ -60,7 +60,7 @@ function statusLabel(status: string) {
     COMPLETED: "已完成",
     ARCHIVED: "已归档",
   };
-  return labels[status] || status || "未知";
+  return labels[status] || "未知状态";
 }
 
 function statusType(status: string) {

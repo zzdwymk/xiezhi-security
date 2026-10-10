@@ -65,6 +65,12 @@ public class AgentOrchestrator {
   private final AuditService audit;
   private final BusinessDataOperationGate operationGate;
   private final com.bachelor.toolbox.project.ProjectApprovalService approvalService;
+  private AiPlanContinuityService planContinuity;
+
+  @Autowired
+  public void setPlanContinuity(AiPlanContinuityService value) {
+    planContinuity = value;
+  }
 
   @Autowired
   public AgentOrchestrator(
@@ -182,6 +188,8 @@ public class AgentOrchestrator {
 
     synchronized (session.monitor()) {
       try {
+        AiPlanContinuityService.Baseline planBaseline = planContinuity == null ? null
+            : planContinuity.open(request, session.id());
         emit(
             sink,
             sequence,
@@ -199,37 +207,29 @@ public class AgentOrchestrator {
 
         String history = memory.transcript(session.id());
         memory.addUser(session.id(), request.prompt());
-        Optional<String> directAuditAnswer =
+        Optional<String> auditTemplate =
             contextService == null
                 ? Optional.empty()
-                : contextService.answerAuditQuestion(
+                : contextService.auditAnalysisTemplate(
                     request.projectId(),
                     request.targetId(),
                     request.contextRefs(),
                     request.refs(),
                     request.prompt(),
                     request.mode());
-        if (directAuditAnswer.isPresent()) {
-          String answer = directAuditAnswer.get();
+        if (auditTemplate.isPresent()) {
+          emit(sink, sequence, "planner_progress", AgentPhase.ENGAGEMENT, "RUNNING",
+              "正在由模型结合审计记录和当前问题生成回答", Map.of());
+          AiPlanResponse auditAnswer =
+              planner.answerFromAuditTemplate(request.prompt(), history, auditTemplate.get());
+          provenance.plannerSource = "JAVA_MODEL_AUDIT";
           return completeInformationalTurn(
               request,
               session,
               sink,
               sequence,
-              new AiPlanResponse("audit-analysis", "", answer, false, List.of()),
-              answer,
-              provenance);
-        }
-
-        if (isSimpleGreeting(request.prompt())) {
-          String answer = "你好，我可以帮你分析授权目标、流量、检测任务和安全结果。";
-          return completeInformationalTurn(
-              request,
-              session,
-              sink,
-              sequence,
-              new AiPlanResponse("local-greeting", "", answer, false, List.of()),
-              answer,
+              auditAnswer,
+              auditAnswer.summary(),
               provenance);
         }
 
@@ -284,6 +284,7 @@ public class AgentOrchestrator {
                 : "以下是同一项目和目标内最近的对话记忆：\n" + history + "\n\n当前请求：" + request.prompt();
         planningPrompt += referencedContext;
         planningPrompt += "\n\n服务端授权上下文：" + scope;
+        if (planContinuity != null) planningPrompt += planContinuity.plannerContext(planBaseline);
 
         emit(
             sink,
@@ -309,7 +310,7 @@ public class AgentOrchestrator {
           provenance.markFallback("RUNTIME_DISABLED");
           if (request.executionRequested()) {
             throw new ApiException(
-                "AI Runtime 未启用，无法建立受信任的 v3 Ledger 证据链，本轮执行已安全停止");
+                "智能服务未启用，无法验证本轮执行依据，本轮执行已安全停止");
           }
           proposed =
               planner.planStreaming(
@@ -374,6 +375,9 @@ public class AgentOrchestrator {
             proposed = runtimeResult.plan();
             runtimeAnswer = runtimeResult.answer();
             provenance.apply(runtimeResult.provenance());
+            if ("PYTHON_MODEL_FALLBACK".equals(provenance.fallbackReason)) {
+              throw new ApiException("智能服务未返回模型生成的回答，请检查模型配置后重试");
+            }
             provenance.setRuntimeRunId(runtimeResult.runId());
             if (request.automaticExecutionIntent()) {
               automaticExplicitRequest = AiExecutionIntentPolicy.hasExplicitRequest(request, runtimeResult);
@@ -396,7 +400,7 @@ public class AgentOrchestrator {
                             || "CLARIFY".equals(runtimeResult.executionDecision())
                         ? "本地智能体需要补充信息，尚未生成可执行方案"
                         : "本地智能体已生成回答，本轮尚未创建检测任务")
-                    : "本地智能体运行时已生成行动方案；具体任务仍由受控执行边界派发",
+                    : "智能助手已生成检测方案，具体任务将在授权核验后创建",
                 provenance.eventData(Map.of("runtimeStatus", runtimeResult.status())));
           } catch (AiAgentRuntimeClient.RuntimeProtocolException ex) {
             provenance.markProtocolRejected();
@@ -407,7 +411,7 @@ public class AgentOrchestrator {
             provenance.markFallback("RUNTIME_UNAVAILABLE");
             if (request.executionRequested()) {
               throw new ApiException(
-                  "AI Runtime 当前不可用，无法建立受信任的 v3 Ledger 证据链，本轮执行已安全停止");
+                  "智能服务当前不可用，无法验证本轮执行依据，本轮执行已安全停止");
             }
             emit(
                 sink,
@@ -415,7 +419,7 @@ public class AgentOrchestrator {
                 "planner_progress",
                 AgentPhase.ENGAGEMENT,
                 "LOCAL_FALLBACK",
-                "本地 AI Runtime 不可用，改由 Java 规划器理解意图",
+                "智能服务暂时不可用，正在使用备用方式整理方案",
                 provenance.eventData(Map.of()));
             proposed =
                 planner.planStreaming(
@@ -459,15 +463,14 @@ public class AgentOrchestrator {
         }
         if (request.executionRequested()
             && hasSteps(proposed)
-            && provenance.fallback
-            && !"PYTHON_MODEL_FALLBACK".equals(provenance.fallbackReason)) {
+            && provenance.fallback) {
           throw new ApiException(
-              "AI Runtime 未完成受信任的 v3 Ledger 证据链，本轮执行已安全停止；恢复 Runtime 后请使用同一 Turn 重试");
+              "本轮执行依据未通过完整性校验，本轮执行已安全停止；服务恢复后请重试当前请求");
         }
         if (!hasSteps(proposed)) {
           String answer =
               runtimeAnswer == null || runtimeAnswer.isBlank()
-                  ? safe(proposed == null ? "我已理解你的问题，但本轮不需要执行检测工具。" : proposed.summary(), 4000)
+                  ? safe(proposed == null ? "" : proposed.summary(), 4000)
                   : safe(runtimeAnswer, 4000);
           return completeInformationalTurn(
               request,
@@ -514,15 +517,32 @@ public class AgentOrchestrator {
               "本轮只提供分析或方案，尚未请求执行检测", decision.normalizedPlan(),
               decision.activeProjectTasks(), decision.activeTargetTasks());
         }
+        // A chat execution request expresses intent, not confirmation of a plan the
+        // administrator has not seen yet. Only the saved-plan confirmation endpoint
+        // may dispatch it, after rechecking the original plan and authorization.
+        if (hasSteps(decision.normalizedPlan())
+            && (decision.mayExecute() || "REQUIRED".equals(decision.approvalStatus()))) {
+          decision = new AiAuthorizationGuard.GuardDecision(
+              "AWAITING_APPROVAL", "REQUIRED",
+              "行动方案须由管理员在执行确认与审计中确认；尚未创建任务",
+              decision.normalizedPlan(), decision.activeProjectTasks(), decision.activeTargetTasks());
+        }
+        AiPlanContinuityService.Snapshot deliveredCandidate = planContinuity == null || !hasSteps(decision.normalizedPlan()) ? null
+            : planContinuity.prepare(executionRequest, session.id(), decision.normalizedPlan(), planBaseline);
+        if (deliveredCandidate != null) planContinuity.stage(deliveredCandidate);
         Long autoApprovalId = null;
-        if ("REQUIRED".equals(decision.approvalStatus()) && approvalService != null) {
+        if ("REQUIRED".equals(decision.approvalStatus())) {
+          if (approvalService == null) {
+            throw new ApiException("执行确认服务不可用，未保存方案，未派发任务");
+          }
           try {
             var approvalRecord = approvalService.requestAiPlan(executionRequest, decision.normalizedPlan(), recoveryAnchor(request, session.id(), provenance));
-            if (approvalRecord != null) {
-              autoApprovalId = approvalRecord.getId();
+            if (approvalRecord == null || approvalRecord.getId() == null) {
+              throw new ApiException("执行确认记录未保存");
             }
+            autoApprovalId = approvalRecord.getId();
           } catch (Exception ex) {
-            throw new ApiException("无法保存待审批原计划，未派发任务，请重试申请");
+            throw new ApiException("无法保存待确认原计划，未派发任务，请重试");
           }
         }
 
@@ -558,56 +578,15 @@ public class AgentOrchestrator {
 
         List<Long> taskIds = List.of();
         boolean executed = false;
-        if (decision.mayExecute() && !decision.normalizedPlan().steps().isEmpty()) {
-          emit(sink, sequence, "state", executionPhase, "RUNNING", "当前红队阶段正在派发受控检测与验证任务", Map.of());
-          AiDispatchResponse dispatch;
-          try {
-            // Tool implementation re-enters AuthorizationGuard immediately before
-            // task creation to protect against authorization/quotas changing in flight.
-            CrossTurnRecoveryService.RecoveryAnchor recoveryAnchor =
-                recoveryAnchor(request, session.id(), provenance);
-            dispatch =
-                recoveryAnchor == null
-                    ? tools.executeAuthorizedPlan(executionRequest, decision.normalizedPlan())
-                    : tools.executeAuthorizedPlan(
-                        executionRequest, decision.normalizedPlan(), recoveryAnchor);
-          } catch (ApiException ex) {
-            throw ex;
-          } catch (Exception ex) {
-            throw new ApiException("AI 工作流调用受控任务服务失败");
-          }
-          taskIds = dispatch.taskIds();
-          executed = true;
-          executionState.markDispatched(taskIds);
-          for (Long taskId : taskIds) {
-            emit(
-                sink,
-                sequence,
-                "tool_call",
-                executionPhase,
-                "ACCEPTED",
-                "受控检测任务已进入执行队列",
-                Map.of("taskId", taskId));
-          }
-          emit(
-              sink,
-              sequence,
-              "state",
-              executionPhase,
-              "DISPATCHED",
-              "已派发 " + taskIds.size() + " 个受控任务，等待实际任务执行结果",
-              Map.of("taskIds", taskIds));
-        } else {
-          emit(
-              sink,
-              sequence,
-              "state",
-              executionPhase,
-              "SKIPPED",
-              decision.normalizedPlan().steps().isEmpty() ? "当前行动方案不需要调用检测工具"
-                  : "PLAN_ONLY".equals(decision.status()) ? "本轮仅提供方案，尚未创建任务" : "等待执行确认，尚未创建任务",
-              Map.of());
-        }
+        emit(
+            sink,
+            sequence,
+            "state",
+            executionPhase,
+            "SKIPPED",
+            decision.normalizedPlan().steps().isEmpty() ? "当前行动方案不需要调用检测工具"
+                : "PLAN_ONLY".equals(decision.status()) ? "本轮仅提供方案，尚未创建任务" : "等待执行确认，尚未创建任务",
+            Map.of());
 
         if (!taskIds.isEmpty()) {
           emit(sink, sequence, "state", AgentPhase.REPORTING, "RUNNING", "正在核对任务归属和当前执行状态", Map.of());
@@ -653,6 +632,12 @@ public class AgentOrchestrator {
                 review,
                 memory.messageCount(session.id()),
                 Instant.now());
+        audit.recordStructured(
+            "AI_AGENT_TURN",
+            "PROJECT",
+            request.projectId(),
+            auditDetail(request, session.id(), executed, taskIds, provenance),
+            "SUCCESS");
         emit(
             sink,
             sequence,
@@ -661,15 +646,29 @@ public class AgentOrchestrator {
             "COMPLETED",
             message,
             provenance.eventData(Map.of("response", response)));
-        audit.recordStructured(
-            "AI_AGENT_TURN",
-            "PROJECT",
-            request.projectId(),
-            auditDetail(request, session.id(), executed, taskIds, provenance),
-            "SUCCESS");
+        if (deliveredCandidate != null) {
+          try {
+            planContinuity.delivered(deliveredCandidate);
+          } catch (RuntimeException persistenceFailure) {
+            // done has already been delivered: never send a contradictory second terminal event.
+            // The durable pending candidate remains, so future execution requires a fresh plan.
+            log.error("AI_PLAN_DELIVERY_PERSISTENCE_FAILED session={} turn={} project={} target={}; pending snapshot blocks execution",
+                session.id(), request.turnId(), request.projectId(), request.targetId(), persistenceFailure);
+          }
+        }
         return response;
       } catch (RuntimeException ex) {
         try {
+          Map<String, Object> failureData = new LinkedHashMap<>();
+          failureData.put("retry", executionState.executed ? "DO_NOT_RETRY_CHECK_TASK_CENTER" : "MANUAL_AFTER_CORRECTION");
+          failureData.put("executed", executionState.executed);
+          failureData.put("taskIds", executionState.taskIds);
+          if (ex instanceof AiPlanContinuityService.PlanChangedException change) {
+            failureData.put("code", "PLAN_CONTINUITY_MISMATCH");
+            failureData.put("changes", change.changes());
+          } else if (ex instanceof AiPlanContinuityService.PlanDeliveryPendingException) {
+            failureData.put("code", "PLAN_DELIVERY_UNCONFIRMED");
+          }
           emit(
               sink,
               sequence,
@@ -677,17 +676,9 @@ public class AgentOrchestrator {
               AgentPhase.ERROR,
               "FAILED",
               executionState.executed
-                  ? "受控任务已经创建，但后续处理失败；请先在任务中心核对，不要创建新 Turn 重试"
+                  ? "受控任务已经创建，但后续处理失败；请先在任务中心核对已有任务，避免重复提交"
                   : safeError(ex),
-              Map.of(
-                  "retry",
-                  executionState.executed
-                      ? "DO_NOT_RETRY_CHECK_TASK_CENTER"
-                      : "MANUAL_AFTER_CORRECTION",
-                  "executed",
-                  executionState.executed,
-                  "taskIds",
-                  executionState.taskIds));
+              failureData);
         } catch (RuntimeException sinkFailure) {
           if (sinkFailure != ex) ex.addSuppressed(sinkFailure);
         }
@@ -710,7 +701,7 @@ public class AgentOrchestrator {
         if (executionState.executed) {
           ApiException postDispatchFailure =
               new ApiException(
-                  "受控任务已经创建，但后续处理失败；请先在任务中心核对，不要创建新 Turn 重试");
+                  "受控任务已经创建，但后续处理失败；请先在任务中心核对已有任务，避免重复提交");
           postDispatchFailure.addSuppressed(ex);
           throw postDispatchFailure;
         }
@@ -732,7 +723,10 @@ public class AgentOrchestrator {
       AiPlanResponse plan,
       String answer,
       TurnProvenance provenance) {
-    String message = answer == null || answer.isBlank() ? "我已理解你的问题，本轮不需要执行检测工具。" : answer;
+    if (answer == null || answer.isBlank()) {
+      throw new ApiException("AI 模型未返回有效回答，请重试");
+    }
+    String message = answer;
     memory.addAssistant(session.id(), message);
     AiAgentResponse.AgentReview review =
         new AiAgentResponse.AgentReview("NOT_REQUIRED", "本轮为说明或问答，没有执行安全检测工具", false, List.of());
@@ -750,6 +744,12 @@ public class AgentOrchestrator {
             review,
             memory.messageCount(session.id()),
             Instant.now());
+    audit.recordStructured(
+        "AI_AGENT_TURN",
+        "PROJECT",
+        request.projectId(),
+        auditDetail(request, session.id(), false, List.of(), provenance),
+        "SUCCESS");
     emit(
         sink,
         sequence,
@@ -759,12 +759,6 @@ public class AgentOrchestrator {
         message,
         provenance.eventData(
             Map.of("response", response, "intent", "ANSWER", "executed", false)));
-    audit.recordStructured(
-        "AI_AGENT_TURN",
-        "PROJECT",
-        request.projectId(),
-        auditDetail(request, session.id(), false, List.of(), provenance),
-        "SUCCESS");
     return response;
   }
 
@@ -823,7 +817,7 @@ public class AgentOrchestrator {
 
   private String approvalMessage(String status) {
     return switch (status) {
-      case "REQUIRED" -> "行动方案仅供预览；请明确确认后再进入执行阶段";
+      case "REQUIRED" -> "行动方案已保存；请在执行确认与审计中确认并执行，无需重复发送执行指令";
       case "CONFIRMED_BY_REQUEST" -> "本次请求已明确确认执行低风险受控任务";
       default -> "本轮不包含需要确认的工具调用";
     };
@@ -840,20 +834,38 @@ public class AgentOrchestrator {
       return summary + "\n\n已创建 " + taskIds.size() + " 个受控任务，可在任务中心查看实时进度。";
     }
     if (approvalId != null) {
-      return "本轮实际状态：已保存审批申请 #" + approvalId
-          + "，等待审批，尚未创建检测任务。\n\n" + summary;
+      return "本轮实际状态：已保存执行确认申请 #" + approvalId
+          + "，等待管理员确认，尚未创建检测任务。"
+          + "请在项目的执行确认与审计中查看原计划并选择确认并执行或拒绝执行，无需重复发送执行指令。\n\n"
+          + reviewedPlanDetails(decision.normalizedPlan());
     }
     if ("PLAN_ONLY".equals(decision.status()) && hasSteps(decision.normalizedPlan())) {
       // The model produced this prose before the guard and approval persistence ran.
       // Keep the structured plan on the response, without repeating unverified claims
       // about side effects in the message, event stream, or conversation memory.
       return "本轮实际状态：仅生成方案，尚未提交审批申请，未创建检测任务。"
-          + "请查看本轮方案；确认执行后，系统才会按授权规则提交审批或创建任务。";
+          + "申请执行时会核对本轮方案；如需改变参数，请新建会话重新规划。所有聊天检测方案执行前均须管理员确认。\n\n"
+          + reviewedPlanDetails(decision.normalizedPlan());
     }
     if ("REQUIRED".equals(decision.approvalStatus())) {
       return summary + "\n\n计划已经授权守卫复核，确认执行后才会创建任务。";
     }
     return summary;
+  }
+
+  private String reviewedPlanDetails(AiPlanResponse plan) {
+    StringBuilder details = new StringBuilder("本轮已核对的方案参数：\n");
+    var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+    for (int index = 0; index < plan.steps().size(); index++) {
+      var step = plan.steps().get(index);
+      try {
+        details.append(index + 1).append(". ").append(step.toolCode()).append("\n```json\n")
+            .append(mapper.writeValueAsString(step.parameters())).append("\n```\n");
+      } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
+        throw new ApiException("方案参数无法展示，请重新规划");
+      }
+    }
+    return details.toString().strip();
   }
 
   private void emitRuntimeEvent(
@@ -891,8 +903,15 @@ public class AgentOrchestrator {
     data.put("summary", progress.message());
     data.put("progressStage", progress.stage());
     data.put("source", "runtime-public-progress");
+    data.put("eventTiming", "LIVE");
     if (progress.evidenceCount() != null) data.put("evidenceCount", progress.evidenceCount());
     if (progress.evidenceDecision() != null) data.put("evidenceDecision", progress.evidenceDecision());
+    if (progress.modelDecision() != null) {
+      data.put("modelDecision", progress.modelDecision());
+      data.put("reasonCodes", progress.reasonCodes());
+      data.put("assessmentSource", progress.assessmentSource());
+    }
+    if (progress.guardReason() != null) data.put("guardReason", progress.guardReason());
     AgentPhase phase = switch (progress.stage()) {
       case "RETRIEVING", "EVIDENCE_READY", "ASSESSING", "ASSESSED" -> AgentPhase.RECONNAISSANCE;
       case "AUTHORIZING" -> AgentPhase.VALIDATION;
@@ -1162,7 +1181,7 @@ public class AgentOrchestrator {
         plan.steps().stream()
             .anyMatch(
                 step ->
-                    Set.of("nuclei_scan", "afrog_scan", "xray_scan", "zap_scan")
+                    Set.of("nuclei_scan", "afrog_scan", "xray_scan", "zap_scan", "sqlmap_scan", "msf_scan", "zap_fuzz")
                         .contains(step.toolCode()));
     if (validation) return AgentPhase.VALIDATION;
     boolean discovery =
@@ -1187,15 +1206,6 @@ public class AgentOrchestrator {
       return safe(ex.getMessage(), 1000);
     }
     return "AI 智能体处理失败，请检查模型服务和授权状态后重试";
-  }
-
-  private boolean isSimpleGreeting(String value) {
-    String compact =
-        Objects.toString(value, "")
-            .replaceAll("[\\s，。！？、,.!?]+", "")
-            .toLowerCase(java.util.Locale.ROOT);
-    return Set.of("你好", "您好", "嗨", "hi", "hello", "hey", "谢谢", "谢谢你")
-        .contains(compact);
   }
 
   private String safe(String value, int max) {

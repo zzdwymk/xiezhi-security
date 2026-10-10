@@ -34,7 +34,11 @@ import { useAuthStore } from "./stores/auth";
 import { useConversationStore } from "./stores/conversations";
 import { useEngineStore } from "./stores/engine";
 import { AUTH_EXPIRED_EVENT } from "./authToken";
-import { endpoints, connectTaskEventFeed, type TaskProgressEvent } from "./api";
+import { endpoints } from "./api";
+import { apiFetch, apiUrl, apiBaseUrl } from "./apiClient";
+import { startNotificationFeed, type NotificationPage } from "./utils/notificationFeed";
+import { createNotificationDelivery } from "./utils/notificationDelivery";
+import { notificationRoute, setNotificationDispatcher } from "./utils/notifications";
 import { aiToolLabel, displayKnownTestName, displayConversationTitle } from "./utils/aiPresentation";
 import { toErrorMessage } from "./utils/errorMessage";
 import { useSelectionIndicator } from "./composables/useSelectionIndicator";
@@ -44,6 +48,18 @@ const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
 const conversations = useConversationStore();
+// This limits mounted sidebar rows; the existing store still reads full history.
+const CONVERSATION_PAGE_SIZE = 8;
+const CONVERSATION_PREFETCH_MARGIN = 280;
+const visibleConversationLimit = ref(CONVERSATION_PAGE_SIZE);
+const loadingMoreConversations = ref(false);
+const visibleConversations = computed(() =>
+  conversations.items.slice(0, visibleConversationLimit.value),
+);
+const conversationCount = computed(() => conversations.items.length);
+const hasMoreConversations = computed(() =>
+  visibleConversations.value.length < conversationCount.value,
+);
 const engine = useEngineStore();
 const sidebarWidth = ref(
   Number(localStorage.getItem("security_toolbox_sidebar_width_v1")) || 260,
@@ -230,9 +246,9 @@ const navigationGroups = [
     label: "检测与分析",
     items: [
       { path: "/vulnerabilities", label: "主动检测", icon: markRaw(Aim) },
-      { path: "/tasks", label: "检测任务", icon: markRaw(List) },
-      { path: "/findings", label: "结果中心", icon: markRaw(Warning) },
       { path: "/traffic", label: "流量分析", icon: markRaw(Connection) },
+      { path: "/tasks", label: "检测任务", icon: markRaw(List) },
+      { path: "/findings", label: "安全发现", icon: markRaw(Warning) },
     ],
   },
   {
@@ -250,7 +266,7 @@ const activeNavigation = computed(() => {
     const conversationId = route.query.conversation;
     const conversationOpen =
       typeof conversationId === "string" &&
-      conversations.recent.some((item) => item.id === conversationId);
+      conversations.items.some((item) => item.id === conversationId);
     return conversationOpen ? "" : "/";
   }
   if (route.path.startsWith("/workflow")) return "/workflow";
@@ -298,11 +314,73 @@ useSelectionIndicator({
   activeSelector: ".desktop-v2-recent-item.active",
   dependencies: [
     () => route.query.conversation,
-    () => conversations.recent.map((item) => item.id).join(","),
+    () => visibleConversations.value.map((item) => item.id).join(","),
     collapsedNavigationGroups,
   ],
   indicatorSelector: ".desktop-v2-recent-indicator",
+  scrollContainers: [sidebarNavigationScroll, recentNavigation],
   hidden: () => navigationGroupCollapsed("recent-work"),
+});
+
+const conversationLoadSentinel = ref<HTMLElement | null>(null);
+let conversationPreloadFrame = 0;
+let conversationPreloadMounted = false;
+let conversationIntersectionObserver: IntersectionObserver | undefined;
+let conversationResizeObserver: ResizeObserver | undefined;
+
+function queueConversationPreload() {
+  if (!conversationPreloadMounted || conversationPreloadFrame || loadingMoreConversations.value
+    || !hasMoreConversations.value || navigationGroupCollapsed("recent-work")) return;
+  conversationPreloadFrame = window.requestAnimationFrame(() => {
+    conversationPreloadFrame = 0;
+    void preloadConversations();
+  });
+}
+
+async function preloadConversations() {
+  const container = recentNavigation.value;
+  const sentinel = conversationLoadSentinel.value;
+  if (!conversationPreloadMounted || loadingMoreConversations.value || !hasMoreConversations.value
+    || navigationGroupCollapsed("recent-work") || !container || !sentinel || container.clientHeight <= 0) return;
+  const remaining = sentinel.getBoundingClientRect().top - container.getBoundingClientRect().bottom;
+  if (remaining > CONVERSATION_PREFETCH_MARGIN) return;
+  loadingMoreConversations.value = true;
+  try {
+    visibleConversationLimit.value += CONVERSATION_PAGE_SIZE;
+    await nextTick();
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+  } finally {
+    loadingMoreConversations.value = false;
+  }
+  // Recheck the new geometry: fill a short first screen plus the preload margin,
+  // then stop until the user scrolls closer. Appending never moves focus/scroll.
+  queueConversationPreload();
+}
+
+function observeConversationPreload() {
+  conversationIntersectionObserver?.disconnect();
+  conversationResizeObserver?.disconnect();
+  const container = recentNavigation.value;
+  const sentinel = conversationLoadSentinel.value;
+  if (!conversationPreloadMounted || !container || !sentinel) return;
+  conversationIntersectionObserver = new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting)) queueConversationPreload();
+  }, { root: container, rootMargin: `0px 0px ${CONVERSATION_PREFETCH_MARGIN}px 0px`, threshold: 0 });
+  conversationIntersectionObserver.observe(sentinel);
+  conversationResizeObserver = new ResizeObserver(queueConversationPreload);
+  conversationResizeObserver.observe(container);
+  queueConversationPreload();
+}
+
+watch([recentNavigation, conversationLoadSentinel], observeConversationPreload, { flush: "post" });
+watch(() => navigationGroupCollapsed("recent-work"), queueConversationPreload, { flush: "post" });
+watch(conversationCount, queueConversationPreload, { flush: "post" });
+onMounted(() => { conversationPreloadMounted = true; observeConversationPreload(); });
+onBeforeUnmount(() => {
+  conversationPreloadMounted = false;
+  window.cancelAnimationFrame(conversationPreloadFrame);
+  conversationIntersectionObserver?.disconnect();
+  conversationResizeObserver?.disconnect();
 });
 
 watch(
@@ -332,8 +410,7 @@ function logout() {
 }
 
 function rerunSetup() {
-  localStorage.removeItem("security_toolbox_setup_complete_v2");
-  router.push("/setup");
+  router.push({ path: "/setup", query: { redirect: route.fullPath } });
 }
 
 function openConversation(id: string) {
@@ -531,56 +608,68 @@ function onTooltipLeave(e: Event) {
   hideFluentTooltip();
 }
 
-const TERMINAL_TASK_STATUSES: Record<string, string> = {
-  SUCCESS: "执行成功",
-  FAILED: "执行失败",
-  TIMEOUT: "已超时",
-  REJECTED: "已拒绝",
-  CANCELLED: "已取消",
-};
-let stopGlobalTaskFeed: (() => void) | undefined;
-const notifiedTaskIds = new Set<number>();
+let stopNotifications: (() => void) | undefined;
+let stopNotificationClick: (() => void) | undefined;
+let notificationSession = 0;
 
-function handleGlobalTaskEvent(event: TaskProgressEvent) {
-  if (!event || !event.taskId || !event.status) return;
-  const status = String(event.status).toUpperCase();
-  if (TERMINAL_TASK_STATUSES[status] && !notifiedTaskIds.has(event.taskId)) {
-    notifiedTaskIds.add(event.taskId);
-    const toolName = aiToolLabel(event.toolCode) || event.toolCode || "安全检测工具";
-    const statusText = TERMINAL_TASK_STATUSES[status];
-    const isSuccess = status === "SUCCESS";
-
-    ElNotification({
-      title: isSuccess ? "安全检测任务完成" : "检测任务状态更新",
-      message: `任务 #${event.taskId}（${toolName}）已${statusText}${event.errorMessage ? '：' + event.errorMessage : ''}`,
-      type: isSuccess ? "success" : status === "FAILED" ? "error" : "warning",
-      position: "bottom-right",
-      duration: 5000,
-      onClick: () => {
-        if (router.currentRoute.value.path !== "/tasks") {
-          router.push("/tasks");
-        }
-      },
-    });
-
-    // 系统级桌面通知（窗口隐藏或最小化时）
-    if (
-      typeof window !== "undefined" &&
-      "Notification" in window &&
-      Notification.permission === "granted" &&
-      document.hidden
-    ) {
-      try {
-        new Notification("獬豸安全测试平台", {
-          body: `任务 #${event.taskId}（${toolName}）已${statusText}`,
-          silent: false,
-        });
-      } catch {
-        // ignore
-      }
-    }
-  }
+function openNotificationDestination(value: string) {
+  const destination = notificationRoute(value);
+  if (!destination) return;
+  if (router.currentRoute.value.fullPath === destination) {
+    const resolved = router.resolve(destination);
+    void router.push({ path: resolved.path, query: { ...resolved.query, _notice: String(Date.now()) } });
+  } else void router.push(destination);
 }
+
+watch(
+  [() => auth.token, () => auth.user?.username, () => route.matched.length > 0 && !route.meta.public],
+  ([token, username, inWorkspace]) => {
+    stopNotifications?.();
+    stopNotifications = undefined;
+    const session = ++notificationSession;
+    ElNotification.closeAll();
+    if (!token || !username || !inWorkspace) return;
+    const cursorKey = `security_toolbox_notification_cursor_v1:${apiBaseUrl}:${username}`;
+    const deliver = createNotificationDelivery({
+      isCurrent: () => session === notificationSession,
+      navigate: openNotificationDestination,
+      present: (notice, open) => ElNotification({
+        title: notice.title, message: notice.body,
+        type: notice.outcome, position: "bottom-right", duration: 6000, onClick: open,
+      }),
+    });
+    const unregister = setNotificationDispatcher(notice => deliver([notice]));
+    const feed = startNotificationFeed({
+      readCursor: () => {
+        try {
+          const stored = localStorage.getItem(cursorKey);
+          const value = stored === null ? NaN : Number(stored);
+          return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+        } catch { return undefined; }
+      },
+      saveCursor: cursor => { try { localStorage.setItem(cursorKey, String(cursor)); } catch { /* session cursor still advances */ } },
+      fetchPage: async (after, signal) => {
+        const query = new URLSearchParams({ limit: "100" });
+        if (after !== undefined) query.set("after", String(after));
+        const response = await apiFetch(apiUrl(`/notifications?${query}`), {
+          signal, headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+        });
+        if (!response.ok) throw new Error(`通知读取失败：${response.status}`);
+        return await response.json() as NotificationPage;
+      },
+      deliver,
+    });
+    const resume = () => { void feed.poll(); };
+    window.addEventListener("online", resume);
+    window.addEventListener("focus", resume);
+    stopNotifications = () => {
+      feed.stop(); unregister();
+      window.removeEventListener("online", resume);
+      window.removeEventListener("focus", resume);
+    };
+  },
+  { immediate: true },
+);
 
 let mouseMoveRaf = 0;
 let lastRevealTarget: HTMLElement | null = null;
@@ -622,14 +711,7 @@ function onGlobalCursorMove(e: PointerEvent) {
 
 onMounted(() => {
   window.addEventListener("pointermove", onGlobalCursorMove, { passive: true });
-  stopGlobalTaskFeed = connectTaskEventFeed(handleGlobalTaskEvent);
-  if (
-    typeof window !== "undefined" &&
-    "Notification" in window &&
-    Notification.permission === "default"
-  ) {
-    Notification.requestPermission().catch(() => {});
-  }
+  stopNotificationClick = window.toolboxDesktop?.onNotificationClick?.(openNotificationDestination);
   window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
   engine.startPolling();
   migrateNativeTooltips(document);
@@ -668,7 +750,9 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("pointermove", onGlobalCursorMove);
   if (mouseMoveRaf) window.cancelAnimationFrame(mouseMoveRaf);
-  stopGlobalTaskFeed?.();
+  notificationSession += 1;
+  stopNotifications?.();
+  stopNotificationClick?.();
   window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
   window.clearTimeout(workspaceRouteAnimationTimer);
   engine.stopPolling();
@@ -782,7 +866,7 @@ onBeforeUnmount(() => {
             class="desktop-v2-recents"
             :class="{
               collapsed: navigationGroupCollapsed('recent-work'),
-              empty: !conversations.recent.length,
+              empty: !conversationCount,
             }"
             aria-label="最近对话区"
           >
@@ -796,10 +880,10 @@ onBeforeUnmount(() => {
               >
                 <span class="desktop-v2-recents-title">最近对话</span>
                 <span
-                  v-if="conversations.recent.length"
+                  v-if="conversationCount"
                   class="desktop-v2-recents-count"
                 >
-                  {{ conversations.recent.length }}
+                  {{ conversationCount }}
                 </span>
                 <el-icon
                   :class="{ collapsed: navigationGroupCollapsed('recent-work') }"
@@ -807,7 +891,7 @@ onBeforeUnmount(() => {
                 /></el-icon>
               </button>
               <button
-                v-if="conversations.recent.length"
+                v-if="conversationCount"
                 type="button"
                 class="desktop-v2-recents-clear is-danger"
                 aria-label="清空最近对话"
@@ -821,6 +905,13 @@ onBeforeUnmount(() => {
               id="desktop-v2-recents-list"
               ref="recentNavigation"
               class="desktop-v2-recents-list"
+              role="region"
+              aria-label="对话历史，可滚动自动加载"
+              tabindex="0"
+              :aria-busy="loadingMoreConversations"
+              :data-prefetch-margin="CONVERSATION_PREFETCH_MARGIN"
+              :data-page-size="CONVERSATION_PAGE_SIZE"
+              @scroll.passive="queueConversationPreload"
               :aria-hidden="navigationGroupCollapsed('recent-work')"
               :inert="navigationGroupCollapsed('recent-work')"
             >
@@ -829,7 +920,7 @@ onBeforeUnmount(() => {
                 aria-hidden="true"
               />
               <div
-                v-if="!conversations.recent.length"
+                v-if="!conversationCount"
                 class="desktop-v2-recent-empty"
               >
                 <span class="desktop-v2-recent-empty-icon"
@@ -841,7 +932,7 @@ onBeforeUnmount(() => {
                 </span>
               </div>
               <div
-                v-for="conversation in conversations.recent"
+                v-for="conversation in visibleConversations"
                 :key="conversation.id"
                 class="desktop-v2-recent-item"
                 :class="{
@@ -851,6 +942,8 @@ onBeforeUnmount(() => {
                 <button
                   type="button"
                   class="desktop-v2-recent-open"
+                  :data-conversation-id="conversation.id"
+                  :aria-current="route.query.conversation === conversation.id ? 'page' : undefined"
                   @click="openConversation(conversation.id)"
                 >
                   <el-icon><ChatDotRound /></el-icon>
@@ -879,6 +972,19 @@ onBeforeUnmount(() => {
                     <el-icon><Delete /></el-icon>
                   </button>
                 </el-tooltip>
+              </div>
+              <div v-if="conversationCount" class="desktop-v2-recents-pagination">
+                <p class="desktop-v2-recents-status" role="status" aria-live="polite" aria-atomic="true">
+                  <template v-if="loadingMoreConversations">正在加载更多对话…</template>
+                  <template v-else-if="hasMoreConversations">已显示 {{ visibleConversations.length }} / {{ conversationCount }} 条对话，继续向下滚动</template>
+                  <template v-else>已显示全部 {{ conversationCount }} 条对话</template>
+                </p>
+                <div
+                  v-if="hasMoreConversations"
+                  ref="conversationLoadSentinel"
+                  class="desktop-v2-recents-sentinel"
+                  aria-hidden="true"
+                />
               </div>
             </div>
           </section>

@@ -469,12 +469,12 @@ const TARGETS = {
     // -------------------------------------------------------------
     H.phase("阶段 7 — 漏洞台账核查、报告预览与测试数据常驻留存");
 
-    await H.run("T-DATA-01", "结果中心（Findings）台账核查", async () => {
+    await H.run("T-DATA-01", "安全发现（Findings）台账核查", async () => {
       await dismissStrayModal(page);
-      await navigate(page, "结果中心");
+      await navigate(page, "安全发现");
       await sleep(2500);
       const n = await rowCount(page);
-      return `结果中心正常加载，当前展示 Findings 记录条数: ${n}`;
+      return `安全发现正常加载，当前展示 Findings 记录条数: ${n}`;
     }, { page, shotOnPass: true });
 
     await H.run("T-DATA-02", "项目报告预览与数据留存确认", async () => {

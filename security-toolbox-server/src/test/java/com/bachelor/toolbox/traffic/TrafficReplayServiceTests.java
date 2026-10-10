@@ -45,7 +45,7 @@ class TrafficReplayServiceTests {
   private final TargetService targets = mock(TargetService.class);
   private final AuditService audit = mock(AuditService.class);
   private final TargetPolicyService policy = new TargetPolicyService(false, new PortRangeParser());
-  private final TrafficReplayService service = new TrafficReplayService(packets, audit);
+  private final TrafficReplayService service = new TrafficReplayService(packets, audit, targets, policy);
 
   private LocalHttpServer server;
 
@@ -92,6 +92,19 @@ class TrafficReplayServiceTests {
   }
 
   @Test
+  void refusesMissingOrExpiredAuthorizationBeforeConnecting() {
+    arrangeSourceAndTarget(0L, TARGET_ID, 8080);
+    assertTrue(assertThrows(ApiException.class, () -> service.replay(PACKET_ID,
+        request(null, "GET", "http://127.0.0.1:8080/", "", null))).getMessage().contains("请选择授权目标"));
+    AuthorizedTarget expired = target(TARGET_ID, "127.0.0.1", 8080);
+    expired.setAuthorizationExpiresAt(java.time.Instant.now().minusSeconds(60));
+    when(targets.get(TARGET_ID)).thenReturn(expired);
+    assertTrue(assertThrows(ApiException.class, () -> service.replay(PACKET_ID,
+        request(TARGET_ID, "GET", "http://127.0.0.1:8080/", "", null))).getMessage().contains("已过期"));
+
+  }
+
+  @Test
   void replaysPostBodyAndReadsChunkedResponseWhileRegeneratingFramingHeaders() throws Exception {
     server = LocalHttpServer.chunked("chunk-ed");
     arrangeSourceAndTarget(TARGET_ID, TARGET_ID, server.port());
@@ -130,18 +143,13 @@ class TrafficReplayServiceTests {
   }
 
   @Test
-  void rejectsSwitchingAnAlreadyBoundPacketToAnotherTarget() {
-    TrafficPacket source = sourcePacket(22L, "127.0.0.1", 8080);
-    when(packets.findById(PACKET_ID)).thenReturn(Optional.of(source));
-
-    ApiException error =
-        assertThrows(
-            ApiException.class,
-            () ->
-                service.replay(PACKET_ID, request(23L, "GET", "http://127.0.0.1:8080/", "", null)));
-
-    assertTrue(error.getMessage().contains("不允许切换"));
-    verifyNoInteractions(targets);
+  void historicalAssociationDoesNotOverrideSelectedAuthorization() throws Exception {
+    server = LocalHttpServer.fixed("new-authorization");
+    arrangeSourceAndTarget(22L, TARGET_ID, server.port());
+    var response = service.replay(PACKET_ID,
+        request(TARGET_ID, "GET", url(server.port(), "/"), "", null));
+    assertEquals("new-authorization", response.responseBody());
+    verify(targets).get(TARGET_ID);
   }
 
   @Test
@@ -160,16 +168,13 @@ class TrafficReplayServiceTests {
   }
 
   @Test
-  void allowsReplayToAnotherPortOnTheSameCapturedHost() throws Exception {
+  void rejectsReplayToAnUnauthorizedPortOnTheSameCapturedHost() throws Exception {
     server = LocalHttpServer.fixed("port-ok");
     arrangeSourceAndTarget(0L, TARGET_ID, 8080);
 
-    TrafficReplayService.ReplayResponse response =
-        service.replay(
-            PACKET_ID, request(TARGET_ID, "GET", url(server.port(), "/another-port"), "", null));
-
-    assertEquals(200, response.statusCode());
-    assertEquals("port-ok", response.responseBody());
+    ApiException error = assertThrows(ApiException.class, () -> service.replay(
+        PACKET_ID, request(TARGET_ID, "GET", url(server.port(), "/another-port"), "", null)));
+    assertTrue(error.getMessage().contains("授权端口"));
   }
 
   @Test
@@ -222,7 +227,8 @@ class TrafficReplayServiceTests {
 
   @Test
   void hidesNetworkFailureDetailsFromTheResponse() {
-    String unavailableHost = "unavailable.invalid";
+    String unavailableHost = "127.0.0.1";
+    when(targets.get(TARGET_ID)).thenReturn(target(TARGET_ID, unavailableHost, 1));
     when(packets.findById(PACKET_ID))
         .thenReturn(Optional.of(sourcePacket(0L, unavailableHost, 80)));
 
@@ -232,7 +238,7 @@ class TrafficReplayServiceTests {
             () ->
                 service.replay(
                     PACKET_ID,
-                    request(TARGET_ID, "GET", "http://" + unavailableHost + "/", "", null)));
+                    request(TARGET_ID, "GET", "http://" + unavailableHost + ":1/", "", null)));
 
     assertEquals("发包失败，请检查目标连接与服务日志", error.getMessage());
     assertFalse(error.getMessage().contains(unavailableHost));

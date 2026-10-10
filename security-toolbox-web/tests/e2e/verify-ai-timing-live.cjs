@@ -87,7 +87,7 @@ function parseSSE(text) {
   const replayCount = eventSummary.filter(event => event.recorded || event.eventTiming === 'VERIFIED_RECORD').length;
   if (replayCount) check('actual verified replay is visibly labelled', rows.some(text => text.includes('补发记录')), { wireReplayCount: replayCount, labelledRows: rows.filter(text => text.includes('补发记录')).length });
   else result.checks.push({ name: 'actual verified replay is visibly labelled', status: 'NOT_OBSERVED', detail: '本次服务端未返回补发事件，不能据此验证补发标签' });
-  check('timing explanation does not equate events with actions', (await panel.locator('.progress-note').innerText()).includes('流程记录数量不等于模型调用或实际检测次数'), await panel.locator('.progress-note').innerText());
+  check('timing explanation does not equate events with actions', (await panel.locator('.progress-note').innerText()).includes('记录数量不等于模型调用或检测次数'), await panel.locator('.progress-note').innerText());
   await panel.scrollIntoViewIfNeeded();
   await page.screenshot({ path: path.join(OUT, 'expanded-conversation.png'), fullPage: true });
   await article.screenshot({ path: path.join(OUT, 'assistant-avatar-and-progress.png') });

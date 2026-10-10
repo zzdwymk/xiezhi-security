@@ -11,6 +11,8 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
 public interface SecurityTaskRepository extends JpaRepository<SecurityTask, Long> {
+  java.util.Optional<SecurityTask> findByRetryRequestKey(String retryRequestKey);
+
   @Modifying(clearAutomatically = true, flushAutomatically = true)
   @Transactional
   @Query("""

@@ -1,0 +1,242 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
+import { api, type TargetedScanHit, type TargetedScanProbe } from "../api";
+import { useAuthStore } from "../stores/auth";
+import { formatDateTime } from "../utils/dateTime";
+import { severityLabel } from "../utils/aiPresentation";
+import { targetedScanPresentation } from "../utils/targetedScanPresentation";
+import { toErrorMessage } from "../utils/errorMessage";
+import AppPagination from "./AppPagination.vue";
+
+interface ScanRecord {
+  id: number; engine: string; packetId: number; targetId: number;
+  host: string; url?: string; hitCount: number; status: string;
+  message?: string; createdAt?: string;
+}
+interface FuzzPacketResult {
+  url?: string; status?: string; message?: string; completedRequests?: number;
+  results?: Array<{ payload: string; statusCode?: number; reason?: string; durationMs?: number }>;
+}
+interface ScanDetail {
+  entry: ScanRecord;
+  result?: {
+    status?: string; message?: string; engine?: string;
+    hits?: TargetedScanHit[]; probes?: TargetedScanProbe[];
+    results?: Record<string, FuzzPacketResult>;
+  } | null;
+}
+
+const props = withDefaults(defineProps<{ mode?: "tasks" | "findings" }>(), { mode: "tasks" });
+const isFindings = computed(() => props.mode === "findings");
+const engines = computed(() => isFindings.value ? ['ZAP', 'XRAY', 'SQLMAP'] : ['ZAP', 'XRAY', 'SQLMAP', 'FUZZ']);
+const auth = useAuthStore();
+const route = useRoute();
+const router = useRouter();
+const canRead = computed(() => auth.user?.role === "ADMIN");
+const rows = ref<ScanRecord[]>([]);
+const page = ref(1);
+const pageSize = ref(10);
+const total = ref(0);
+const engine = ref("");
+const loading = ref(false);
+const error = ref("");
+const detail = ref<ScanDetail>();
+const detailVisible = ref(false);
+const detailLoading = ref(false);
+const detailError = ref("");
+const statusLabels: Record<string, string> = {
+  RUNNING: "执行中", COMPLETED: "已完成", FAILED: "失败", TIMEOUT: "超时", CANCELLED: "已取消",
+};
+const statusLabel = (status?: string) => statusLabels[status || ""] || "状态待核实";
+const tagType = (status: string) => status === "COMPLETED" ? "success" : status === "RUNNING" ? "primary" : status === "FAILED" ? "danger" : "warning";
+const notice = computed(() => targetedScanPresentation({ ...detail.value?.entry, ...detail.value?.result }));
+const detailAlertType = computed(() => {
+  const entry = detail.value?.entry;
+  if (entry?.status === "RUNNING") return "info";
+  if (entry?.status === "FAILED") return "error";
+  if (entry?.status === "COMPLETED" && !entry.hitCount && !detail.value?.result?.hits?.length) return "success";
+  return "warning";
+});
+const busy = computed(() => rows.value.some(row => row.status === "RUNNING") ||
+  (detailVisible.value && detail.value?.entry.status === "RUNNING"));
+let alive = true;
+let listVersion = 0;
+let detailVersion = 0;
+let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+
+async function load(quiet = false) {
+  if (!canRead.value || !alive) return;
+  const version = ++listVersion;
+  if (!quiet) loading.value = true;
+  try {
+    const { data } = await api.get<{ content: ScanRecord[]; totalElements: number }>("/traffic/scans", {
+      params: { page: page.value - 1, size: pageSize.value, engine: engine.value || undefined, findingsOnly: isFindings.value || undefined },
+    });
+    if (!alive || !canRead.value || version !== listVersion) return;
+    rows.value = Array.isArray(data.content) ? data.content : [];
+    total.value = Number(data.totalElements || 0);
+    error.value = "";
+  } catch (err) {
+    if (alive && version === listVersion) error.value = toErrorMessage(err, "无法加载流量检测记录");
+  } finally {
+    if (version === listVersion) loading.value = false;
+  }
+}
+
+async function loadDetail(id: number, quiet = false) {
+  if (!canRead.value || !alive) return;
+  const version = ++detailVersion;
+  if (!quiet) {
+    detail.value = undefined;
+    detailLoading.value = true;
+    detailVisible.value = true;
+  }
+  detailError.value = "";
+  try {
+    const { data } = await api.get<ScanDetail>(`/traffic/scans/${id}`);
+    if (alive && canRead.value && version === detailVersion) detail.value = data;
+  } catch (err) {
+    if (alive && version === detailVersion) detailError.value = toErrorMessage(err, "无法加载流量检测详情");
+  } finally {
+    if (version === detailVersion) detailLoading.value = false;
+  }
+}
+
+function openDetail(id: number) {
+  if (String(route.query.scanId) === String(id)) void loadDetail(id);
+  else void router.replace({ query: { ...route.query, source: "traffic", scanId: String(id) } });
+}
+function openRelated(id: number) {
+  void router.push({ path: isFindings.value ? '/tasks' : '/findings', query: { source: 'traffic', scanId: String(id) } });
+}
+function closeDetail() {
+  ++detailVersion;
+  detailLoading.value = false;
+  if (route.query.scanId) void router.replace({ query: { ...route.query, scanId: undefined } });
+}
+async function refresh() {
+  await load();
+  if (detailVisible.value && detail.value) await loadDetail(detail.value.entry.id, true);
+}
+function scheduleRefresh() {
+  if (refreshTimer) clearTimeout(refreshTimer);
+  if (!alive || !canRead.value || !busy.value) return;
+  refreshTimer = setTimeout(async () => {
+    await load(true);
+    if (detailVisible.value && detail.value?.entry.status === "RUNNING") {
+      await loadDetail(detail.value.entry.id, true);
+    }
+    scheduleRefresh();
+  }, 3000);
+}
+watch(busy, scheduleRefresh);
+watch([page, pageSize, engine], () => { void load(); });
+watch(engine, () => { page.value = 1; });
+watch(canRead, allowed => {
+  if (allowed) void load();
+  else {
+    ++listVersion; ++detailVersion;
+    rows.value = []; detail.value = undefined; detailVisible.value = false;
+    if (refreshTimer) clearTimeout(refreshTimer);
+  }
+}, { immediate: true });
+watch(() => [route.query.scanId, canRead.value], () => {
+  const id = Number(route.query.scanId);
+  if (canRead.value && Number.isSafeInteger(id) && id > 0) void loadDetail(id);
+}, { immediate: true });
+onBeforeUnmount(() => {
+  alive = false; ++listVersion; ++detailVersion;
+  if (refreshTimer) clearTimeout(refreshTimer);
+});
+</script>
+
+<template>
+  <div v-if="canRead" class="traffic-scan-records">
+    <div class="traffic-record-toolbar">
+      <p>{{ isFindings ? '按来源检测查看已保存的告警、风险证据和修复建议。模糊测试响应异常不作为漏洞发现。' : '跟踪流量定向检测与模糊测试的执行状态，查看探针和请求执行证据。' }}</p>
+      <el-select v-model="engine" clearable placeholder="全部引擎" aria-label="流量检测引擎" style="width: 150px">
+        <el-option v-for="item in engines" :key="item" :label="item === 'FUZZ' ? '模糊测试' : item" :value="item" />
+      </el-select>
+      <el-button :loading="loading" @click="refresh">刷新记录</el-button>
+    </div>
+    <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
+    <el-table v-loading="loading" :data="rows" row-key="id" :empty-text="isFindings ? '暂无包含告警的流量检测' : '暂无流量检测记录'" border>
+      <el-table-column prop="id" :label="isFindings ? '来源记录' : '记录 ID'" width="95" />
+      <el-table-column label="引擎" width="105"><template #default="{ row }">{{ row.engine === 'FUZZ' ? '模糊测试' : row.engine }}</template></el-table-column>
+      <el-table-column v-if="!isFindings" label="状态" width="105"><template #default="{ row }"><el-tag :type="tagType(row.status)">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
+      <el-table-column label="目标 URL" min-width="230" show-overflow-tooltip><template #default="{ row }">{{ row.url || row.host }}</template></el-table-column>
+      <el-table-column prop="hitCount" :label="isFindings ? '告警数' : '命中数'" width="90" />
+      <el-table-column v-if="!isFindings" label="开始时间" width="175"><template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template></el-table-column>
+      <el-table-column label="操作" width="205"><template #default="{ row }"><el-button link type="primary" @click="openDetail(row.id)">{{ isFindings ? '查看发现' : '执行详情' }}</el-button><el-button v-if="isFindings || (row.hitCount > 0 && row.engine !== 'FUZZ')" link @click="openRelated(row.id)">{{ isFindings ? '来源记录' : '查看发现' }}</el-button></template></el-table-column>
+    </el-table>
+    <p v-if="busy" class="traffic-record-muted">执行中的记录每 3 秒自动更新。</p>
+    <AppPagination v-model:page="page" v-model:page-size="pageSize" :total="total" :page-sizes="[10, 20, 50]" @size-change="page = 1" />
+
+    <el-dialog v-model="detailVisible" :title="isFindings ? '流量安全发现' : '流量检测执行详情'" class="app-dialog app-dialog--wide traffic-record-dialog" align-center destroy-on-close @closed="closeDetail">
+      <div v-loading="detailLoading" style="min-height: 100px">
+        <el-alert v-if="detailError" :title="detailError" type="error" :closable="false" show-icon />
+        <template v-if="detail">
+          <el-descriptions v-if="!isFindings" :column="2" border>
+            <el-descriptions-item label="记录 ID">{{ detail.entry.id }}</el-descriptions-item>
+            <el-descriptions-item label="引擎">{{ detail.entry.engine }}</el-descriptions-item>
+            <el-descriptions-item label="状态">{{ statusLabel(detail.entry.status) }}</el-descriptions-item>
+            <el-descriptions-item label="命中数">{{ detail.entry.hitCount }}</el-descriptions-item>
+            <el-descriptions-item label="目标 URL" :span="2">{{ detail.entry.url || detail.entry.host }}</el-descriptions-item>
+            <el-descriptions-item label="开始时间" :span="2">{{ formatDateTime(detail.entry.createdAt) }}</el-descriptions-item>
+          </el-descriptions>
+          <p v-else>来源记录 #{{ detail.entry.id }} · {{ detail.entry.engine }} · {{ detail.entry.url || detail.entry.host }}</p>
+          <el-alert v-if="!isFindings" :title="notice.title || statusLabel(detail.entry.status)" :type="detailAlertType" :closable="false" show-icon />
+          <p v-if="!isFindings && notice.guidance">{{ notice.guidance }}</p>
+          <details v-if="!isFindings && notice.detail"><summary>技术详情</summary><pre>{{ notice.detail }}</pre></details>
+          <p v-if="!detail.result" class="traffic-record-muted">{{ detail.entry.status === 'RUNNING' ? '检测进行中，结果会在完成后自动更新。' : '这条历史记录仅保存了执行摘要，没有完整结果快照。' }}</p>
+          <template v-else>
+            <p v-if="isFindings && detail.entry.status !== 'COMPLETED' && detail.result.hits?.length">以下是目前已保存的告警，本次检测未完整完成。</p>
+            <article v-for="(hit, index) in isFindings ? detail.result.hits || [] : []" :key="index" class="traffic-record-hit">
+              <h4>{{ hit.title }} <el-tag>{{ severityLabel(hit.severity) }}</el-tag></h4>
+              <p>{{ hit.description }}</p>
+              <p v-if="hit.parameter">参数：{{ hit.parameter }}</p>
+              <pre v-if="hit.evidence">{{ hit.evidence }}</pre>
+              <p v-if="hit.solution">修复建议：{{ hit.solution }}</p>
+            </article>
+            <p v-if="detail.entry.status === 'COMPLETED' && !detail.result.hits?.length && !detail.entry.hitCount && detail.entry.engine !== 'FUZZ'">本次检查未命中告警；结论仅适用于本次检查范围。</p>
+            <p v-if="isFindings && !detail.result.hits?.length && detail.entry.hitCount > 0 && detail.entry.engine !== 'FUZZ'">此记录仅保存了告警数量，没有可展示的告警详情。</p>
+            <p v-if="isFindings && detail.entry.engine === 'FUZZ'">模糊测试记录的是请求响应差异，不能直接确认为漏洞；请在来源记录查看执行证据。</p>
+            <el-table v-if="!isFindings && detail.result.probes?.length" :data="detail.result.probes" border max-height="320">
+              <el-table-column prop="name" label="探针" min-width="150" />
+              <el-table-column prop="target" label="目标" min-width="180" show-overflow-tooltip />
+              <el-table-column prop="payload" label="测试输入" min-width="150" show-overflow-tooltip />
+              <el-table-column label="结果" width="120"><template #default="{ row }">{{ row.triggered ? '命中' : row.statusCode >= 100 ? '未命中' : '响应未确认' }}</template></el-table-column>
+              <el-table-column prop="statusCode" label="HTTP 状态" width="110" />
+              <el-table-column prop="note" label="说明" min-width="150" show-overflow-tooltip />
+              <el-table-column prop="responseSnippet" label="响应证据" min-width="180" show-overflow-tooltip />
+            </el-table>
+            <article v-for="(packet, packetId) in isFindings ? {} : detail.result.results || {}" :key="packetId" class="traffic-record-hit">
+              <h4>报文 #{{ packetId }} · {{ statusLabel(packet.status) }}</h4>
+              <p>{{ packet.url }} · 已完成 {{ packet.completedRequests ?? packet.results?.length ?? 0 }} 次请求</p>
+              <p v-if="packet.message">{{ packet.message }}</p>
+              <el-table :data="packet.results || []" border max-height="320">
+                <el-table-column prop="payload" label="测试输入" min-width="180" show-overflow-tooltip />
+                <el-table-column prop="statusCode" label="HTTP 状态" width="110" />
+                <el-table-column prop="reason" label="结果说明" min-width="180" show-overflow-tooltip />
+                <el-table-column prop="durationMs" label="耗时 (ms)" width="115" />
+              </el-table>
+            </article>
+          </template>
+        </template>
+      </div>
+      <template #footer><el-button v-if="detail && (isFindings || (detail.entry.hitCount > 0 && detail.entry.engine !== 'FUZZ'))" type="primary" @click="openRelated(detail.entry.id)">{{ isFindings ? '来源记录' : '查看发现' }}</el-button><el-button @click="detailVisible = false">关闭</el-button></template>
+    </el-dialog>
+  </div>
+</template>
+
+<style scoped>
+.traffic-record-toolbar { display: flex; gap: 12px; align-items: center; margin: 0 0 16px; flex-wrap: wrap; }
+.traffic-record-toolbar p { flex: 1; margin: 0; min-width: 220px; color: var(--app-muted); }
+.traffic-record-muted { color: var(--app-muted); margin: 16px 0; }
+.traffic-record-hit { padding: 14px 0; border-bottom: 1px solid var(--app-border); }
+.traffic-record-hit h4 { display: flex; gap: 10px; align-items: center; margin: 0 0 12px; }
+.traffic-record-dialog .el-alert { margin: 16px 0; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 300px; overflow: auto; }
+.traffic-scan-records > :last-child { margin-top: 16px; }
+</style>

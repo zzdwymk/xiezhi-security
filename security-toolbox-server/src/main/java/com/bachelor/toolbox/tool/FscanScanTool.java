@@ -25,6 +25,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Value;
@@ -53,6 +55,8 @@ public class FscanScanTool implements SecurityTool {
           "UNAUTHORIZED", "未授权", "WEAK", "弱口令", "BRUTE", "爆破", "RCE",
           "SQLINJECTION", "SQL注入", "EXPLOIT", "VULN", "INFO");
   private static final Pattern FLAG_MARKER = Pattern.compile("(?i)\\[\\s*(?:vuln|weak|login|netinfo|info)[^]]*\\]");
+  private static final Pattern SCAN_COMPLETION = Pattern.compile(
+      "(?m)^\\[\\*]\\s*扫描任务完成，耗时[^\\r\\n]+，已扫描\\s+(\\d+)\\s+个目标\\s*$");
 
   private final TargetPolicyService policy;
   private final PortRangeParser portRangeParser;
@@ -121,14 +125,10 @@ public class FscanScanTool implements SecurityTool {
       Process process = builder.start();
       try {
         String stdout = waitForProcess(process, observer, timeoutSeconds);
-        StringBuilder combined = new StringBuilder(abbreviate(stdout, 2000));
-        try {
-          String fileText = readFileLimited(outputFile);
-          if (!fileText.isBlank()) {
-            combined.append(System.lineSeparator()).append(fileText);
-          }
-        } catch (Exception ignored) {
-          // 极端情况下 fscan 可能不写目标文件，保留控制台输出即可。
+        StringBuilder combined = new StringBuilder(stdout);
+        String fileText = readFileLimited(outputFile);
+        if (!fileText.isBlank()) {
+          combined.append(System.lineSeparator()).append(fileText);
         }
         if (process.exitValue() != 0) {
           throw new ApiException(
@@ -137,13 +137,36 @@ public class FscanScanTool implements SecurityTool {
                   + "："
                   + abbreviate(combined.toString(), 300));
         }
-        observer.progressPercent(100d, "fscan 完成，正在解析识别结果");
-        return parseOutput(host, canonicalPorts, combined.toString());
+        validateExecutionOutput(stdout);
+        ToolExecutionResult result = parseOutput(host, canonicalPorts, combined.toString(), fileText);
+        if (Integer.valueOf(0).equals(result.data().get("openPortCount")) && result.findings().isEmpty()) {
+          throw new ApiException("未发现可访问的目标服务，无法判断是否存在漏洞。请确认目标已开机、服务已启动，并检查授权端口和网络连接。");
+        }
+        observer.progressPercent(100d, "fscan 已完成检测，正在整理结果");
+        return result;
       } finally {
         if (process.isAlive()) process.destroyForcibly();
       }
     } finally {
       Files.deleteIfExists(outputFile);
+    }
+  }
+
+  void validateExecutionOutput(String stdout) {
+    if (stdout != null && stdout.lines().anyMatch(this::isConnectionFailure)) {
+      throw new ApiException("部分目标服务连接失败，本次检测不完整。请检查目标服务、授权端口和网络连接后重试。");
+    }
+    Matcher completion = SCAN_COMPLETION.matcher(stdout == null ? "" : stdout);
+    Long scanned = null;
+    while (completion.find()) {
+      try { scanned = Long.parseLong(completion.group(1)); }
+      catch (NumberFormatException ex) { throw new ApiException("fscan 返回了无效的检测统计，本次检测未完成"); }
+    }
+    if (scanned == null) {
+      throw new ApiException("fscan 未返回完整的检测统计，无法确认检测已完成。请检查扫描引擎后重试。");
+    }
+    if (scanned == 0) {
+      throw new ApiException("未发现可访问的目标服务，无法判断是否存在漏洞。请确认目标已开机、服务已启动，并检查授权端口和网络连接。");
     }
   }
 
@@ -218,13 +241,16 @@ public class FscanScanTool implements SecurityTool {
         if (observer.isCancellationRequested()) {
           process.destroyForcibly();
           process.waitFor(5, TimeUnit.SECONDS);
-          throw new ApiException("任务已取消");
+          throw new CancellationException("任务已取消");
         }
         if (System.nanoTime() >= deadline) {
           process.destroyForcibly();
           process.waitFor(5, TimeUnit.SECONDS);
-          throw new ApiException("fscan 扫描超过 " + timeout + " 秒，已强制终止");
+          throw new TimeoutException("fscan 扫描超过 " + timeout + " 秒，已强制终止");
         }
+      }
+      if (Thread.currentThread().isInterrupted() || observer.isCancellationRequested()) {
+        throw new CancellationException("任务已取消");
       }
       return output.get(10, TimeUnit.SECONDS);
     } finally {
@@ -248,20 +274,43 @@ public class FscanScanTool implements SecurityTool {
   }
 
   ToolExecutionResult parseOutput(String host, String canonicalPorts, String outputText) {
+    return parseOutput(host, canonicalPorts, outputText, "");
+  }
+
+  ToolExecutionResult parseOutput(String host, String canonicalPorts, String outputText, String resultFile) {
     List<FindingDraft> findings = new ArrayList<>();
     List<Map<String, Object>> openPorts = new ArrayList<>();
     List<Map<String, Object>> matches = new ArrayList<>();
     List<String> lines = outputText == null ? List.of() : List.of(outputText.split("\\R"));
+    Set<Integer> scopedPorts = portRangeParser.parse(canonicalPorts, maxPorts);
 
     // 第一遍：抽取授权主机上的开放端口。
     Set<String> uniquePorts = new LinkedHashSet<>();
+    // fscan 2.2 writes bare host:port rows to this file section. Its console URL
+    // omits default ports, so requiring a console [+]/[*] prefix loses port 80.
+    // Only parse the dedicated result file, not arbitrary console/banner text.
+    boolean openPortSection = false;
+    for (String rawLine : resultFile == null ? List.<String>of() : resultFile.lines().toList()) {
+      String line = rawLine.strip();
+      if (line.startsWith("#")) {
+        openPortSection = line.equals("# ===== 开放端口 =====");
+        continue;
+      }
+      if (!openPortSection) continue;
+      Matcher address = PORT_LINE.matcher(line);
+      if (uniquePorts.size() < MAX_DATA_PORTS && address.matches() && address.group(1).equalsIgnoreCase(host)
+          && scopedPorts.contains(Integer.parseInt(address.group(2)))) {
+        uniquePorts.add(Integer.toString(Integer.parseInt(address.group(2))));
+      }
+    }
     for (String line : lines) {
-      collectOpenPorts(host, line, uniquePorts);
+      if (isScopedObservation(host, scopedPorts, line)) collectOpenPorts(host, scopedPorts, line, uniquePorts);
     }
 
     // 第二遍：识别风险标记并生成 FindingDraft。
     int total = 0;
     for (String line : lines) {
+      if (!isScopedObservation(host, scopedPorts, line)) continue;
       Map<String, Object> finding = interpretFindingLine(host, line);
       if (finding == null) {
         continue;
@@ -289,9 +338,9 @@ public class FscanScanTool implements SecurityTool {
     // 被通用解析器归为 LOW，这里将其明确升格为一条中危“资产暴露面”结果（是否可被具体利用需另行确认）。
     String smbEvidence = null;
     for (String line : lines) {
-      if (line == null) continue;
+      if (!isScopedObservation(host, scopedPorts, line)) continue;
       boolean smbV1 = line.contains("SMBv1") || line.toUpperCase(Locale.ROOT).contains("SMBGHOST");
-      if (smbV1 && line.toLowerCase(Locale.ROOT).contains(host.toLowerCase(Locale.ROOT))) {
+      if (smbV1) {
         // fscan 输出常被合并为一整块，这里截取 SMBInfo/SMBv1 附近的片段作为“明确”的证据，
         // 避免把整幅 banner 作为证据。
         int idx = line.indexOf("SMBInfo");
@@ -348,13 +397,36 @@ public class FscanScanTool implements SecurityTool {
         findings);
   }
 
-  private void collectOpenPorts(String expectedHost, String line, Set<String> output) {
+  private boolean isScopedObservation(String host, Set<Integer> scopedPorts, String line) {
+    if (line == null || !line.stripLeading().matches("^\\[(?:\\+|\\*)].*")) return false;
+    if (isConnectionFailure(line)) return false;
+    Matcher address = PORT_LINE.matcher(line);
+    return address.find() && address.group(1).equalsIgnoreCase(host)
+        && scopedPorts.contains(Integer.parseInt(address.group(2)));
+  }
+
+  private boolean isConnectionFailure(String line) {
+    String lower = line.toLowerCase(Locale.ROOT);
+    // Native HTTP metadata contains target-controlled text, not scanner errors.
+    int metadataStart = lower.length();
+    for (String field : List.of("title:", "banner:", "[product:", "server:")) {
+      int index = lower.indexOf(field);
+      if (index >= 0) metadataStart = Math.min(metadataStart, index);
+    }
+    lower = lower.substring(0, metadataStart);
+    return lower.contains("connection refused") || lower.contains("connectex")
+        || lower.contains("i/o timeout") || lower.contains("no route to host")
+        || lower.contains("network is unreachable") || lower.contains("dial tcp")
+        || lower.contains("连接失败") || lower.contains("连接超时");
+  }
+
+  private void collectOpenPorts(String expectedHost, Set<Integer> scopedPorts, String line, Set<String> output) {
     if (line == null) return;
     Matcher matcher = PORT_LINE.matcher(line);
-    while (matcher.find() && output.size() < MAX_DATA_PORTS) {
+    if (matcher.find() && output.size() < MAX_DATA_PORTS) {
       String hostToken = matcher.group(1);
       String port = matcher.group(2);
-      if (hostToken.equalsIgnoreCase(expectedHost)) {
+      if (hostToken.equalsIgnoreCase(expectedHost) && scopedPorts.contains(Integer.parseInt(port))) {
         output.add(port);
       }
     }
@@ -375,8 +447,7 @@ public class FscanScanTool implements SecurityTool {
     if (scopedHost == null) {
       return null;
     }
-    if (!expectedHost.equalsIgnoreCase(scopedHost)
-        && !line.toLowerCase(Locale.ROOT).contains(expectedHost.toLowerCase(Locale.ROOT))) {
+    if (!expectedHost.equalsIgnoreCase(scopedHost)) {
       return null;
     }
 

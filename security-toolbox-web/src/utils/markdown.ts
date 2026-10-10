@@ -1,6 +1,6 @@
 import DOMPurify from "dompurify";
 import { Marked, Tokenizer } from "marked";
-import { localizeAiToolCodes } from "./aiPresentation";
+import { localizeAiDisplayText, localizeAiInlineIdentifier, type AiDisplayTextOptions } from "./aiPresentation";
 
 const cache = new Map<string, string>();
 const MAX_CACHE_ENTRIES = 200;
@@ -30,9 +30,13 @@ const markdown = new Marked({
   },
 });
 
-export function renderMarkdown(value: string, options: { localizeToolCodes?: boolean } = {}) {
+export function renderMarkdown(value: string, options: AiDisplayTextOptions & {
+  localizeToolCodes?: boolean;
+  localizeDisplayText?: boolean;
+} = {}) {
   const source = value || "";
-  const cacheKey = `${options.localizeToolCodes ? "tools" : "raw"}\0${source}`;
+  const localize = options.localizeDisplayText ?? options.localizeToolCodes ?? false;
+  const cacheKey = `${localize ? JSON.stringify([options.nodeLabels || {}, options.termLabels || {}]) : "raw"}\0${source}`;
   const cached = cache.get(cacheKey);
   if (cached !== undefined) return cached;
 
@@ -67,13 +71,23 @@ export function renderMarkdown(value: string, options: { localizeToolCodes?: boo
       anchor.removeAttribute("href");
     }
   });
-  if (options.localizeToolCodes) {
+  if (localize) {
+    template.content.querySelectorAll("[title]").forEach((element) => {
+      element.setAttribute("title", localizeAiDisplayText(element.getAttribute("title") || "", options));
+    });
     const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
     let node: Node | null;
     while ((node = walker.nextNode())) {
-      // Tool identifiers in commands, code examples, and URLs are executable evidence.
-      if (!node.parentElement?.closest("pre, code, kbd, samp, a")) {
-        node.textContent = localizeAiToolCodes(node.textContent || "");
+      const parent = node.parentElement;
+      if (parent?.closest("pre, kbd, samp")) continue;
+      // The displayed URL and its destination stay byte-for-byte intact. A prose link label
+      // may be localized, but auto-linked URLs and addresses in labels remain protected.
+      const code = parent?.closest("code");
+      if (code) {
+        if (code.childNodes.length === 1)
+          node.textContent = localizeAiInlineIdentifier(node.textContent || "", options);
+      } else {
+        node.textContent = localizeAiDisplayText(node.textContent || "", options);
       }
     }
   }
@@ -82,4 +96,48 @@ export function renderMarkdown(value: string, options: { localizeToolCodes?: boo
   if (cache.size > MAX_CACHE_ENTRIES)
     cache.delete(cache.keys().next().value as string);
   return html;
+}
+
+/** Copy readable text while retaining paragraph, list, table, and code boundaries. */
+export function markdownToPlainText(value: string) {
+  const template = document.createElement("template");
+  template.innerHTML = renderMarkdown(value);
+  const blockTags = new Set(["P", "DIV", "SECTION", "ARTICLE", "H1", "H2", "H3", "H4", "H5", "H6", "BLOCKQUOTE", "PRE", "UL", "OL", "TABLE", "HR"]);
+
+  function childrenText(node: Node): string {
+    let result = "";
+    let previousBlock = false;
+    for (const child of node.childNodes) {
+      const block = child instanceof Element && blockTags.has(child.tagName);
+      const text = nodeText(child);
+      if (!text || (!text.trim() && (!result || previousBlock))) continue;
+      if (result && (block || previousBlock)) result = (previousBlock ? result : result.trimEnd()) + "\n\n";
+      result += text;
+      previousBlock = block;
+    }
+    return result;
+  }
+
+  function nodeText(node: Node): string {
+    if (node.nodeType === Node.TEXT_NODE) return (node.textContent || "").replace(/\s+/g, " ");
+    if (!(node instanceof Element)) return "";
+    if (node.tagName === "BR") return "\n";
+    if (node.tagName === "PRE") return (node.textContent || "").replace(/\n$/, "");
+    if (node.tagName === "CODE") return node.textContent || "";
+    if (node.tagName === "UL" || node.tagName === "OL") {
+      const start = Number(node.getAttribute("start")) || 1;
+      return Array.from(node.children).map((item, index) => {
+        const prefix = node.tagName === "OL" ? `${start + index}. ` : "• ";
+        return prefix + childrenText(item).trim().replace(/\n/g, "\n  ");
+      }).join("\n");
+    }
+    if (node.tagName === "TABLE") {
+      return Array.from(node.querySelectorAll("tr")).map(row =>
+        Array.from(row.children).map(cell => childrenText(cell).trim()).join("\t"),
+      ).join("\n");
+    }
+    return childrenText(node);
+  }
+
+  return childrenText(template.content).replace(/^\n+|\n+$/g, "");
 }

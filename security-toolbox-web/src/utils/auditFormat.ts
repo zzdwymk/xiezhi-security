@@ -40,6 +40,7 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   DELETE_FINDING: "删除漏洞记录",
   CLEAR_FINDINGS: "清空漏洞结果",
   RETEST_FINDING: "漏洞复测",
+  RETEST_VERDICT: "记录复测结论",
   CREATE_POST_SCAN_PATH: "生成验证路径",
   CONFIRM_POST_SCAN_PATH: "确认执行验证路径",
   COMPARE_SCAN_DIFF: "扫描比对",
@@ -48,6 +49,9 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   SYNC_VULNERABILITY_CATALOG: "同步漏洞特征库",
   CLEAR_VULNERABILITY_CATALOG: "清空漏洞特征库",
   UPDATE_FINGERPRINT_CATALOG: "更新指纹规则库",
+  ADD_FINGERPRINT_RULE: "新增指纹规则",
+  UPDATE_FINGERPRINT_RULE: "更新指纹规则",
+  DELETE_FINGERPRINT_RULE: "删除指纹规则",
 
   // 流量捕获与分析
   START_TRAFFIC_PROXY: "启动流量代理",
@@ -68,6 +72,7 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   DELETE_TRAFFIC_CAPTURE_FILTER: "删除抓包过滤",
   TRAFFIC_XRAY_SCAN: "流量联动 Xray 扫描",
   TRAFFIC_ZAP_SCAN: "流量联动 ZAP 扫描",
+  TRAFFIC_SQLMAP_SCAN: "流量联动 SQL 注入检测",
 
   // 安全管控与审批
   REQUEST_SECURITY_ACTION: "申请受控动作",
@@ -75,8 +80,8 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   START_SECURITY_ACTION: "执行受控动作",
   COMPLETE_SECURITY_ACTION: "完成受控动作",
   ROLLBACK_SECURITY_ACTION: "回滚受控动作",
-  PROJECT_APPROVAL_REQUEST: "发起高危审批",
-  PROJECT_APPROVAL_DECIDE: "审批高危任务",
+  PROJECT_APPROVAL_REQUEST: "AI 提交行动方案",
+  PROJECT_APPROVAL_DECIDE: "管理员确认行动方案",
 
   // AI 智能问答与调度
   AI_CREATE_PLAN: "AI 生成检测计划",
@@ -105,6 +110,7 @@ export const AUDIT_RESOURCE_LABELS: Record<string, string> = {
   FINDING: "风险漏洞",
   VULNERABILITY: "漏洞特征库",
   FINGERPRINT_CATALOG: "指纹规则库",
+  FINGERPRINT_RULE: "指纹规则",
   TRAFFIC_PACKET: "流量报文",
   TRAFFIC_SESSION: "流量代理会话",
   TRAFFIC_SUGGESTION: "流量处置建议",
@@ -122,6 +128,8 @@ export const AUDIT_RESULT_META: Record<
   CONTINUED: { label: "自动续接", tagType: "success" },
   ACCEPTED: { label: "已受理", tagType: "primary" },
   FAILED: { label: "失败", tagType: "danger" },
+  FAILURE: { label: "失败", tagType: "danger" },
+  PENDING: { label: "待处理", tagType: "info" },
   BLOCKED: { label: "已拦截", tagType: "danger" },
   REJECTED: { label: "已拒绝", tagType: "warning" },
   TIMEOUT: { label: "超时", tagType: "warning" },
@@ -178,7 +186,7 @@ export const TASK_STATUS_LABELS: Record<string, string> = {
 export function formatApprovalAction(action?: string): string {
   if (!action) return "未知动作";
   const key = String(action).trim().toUpperCase();
-  return APPROVAL_ACTION_LABELS[key] || action;
+  return APPROVAL_ACTION_LABELS[key] || "未知动作";
 }
 
 export function formatAuditOperator(operator?: string): string {
@@ -186,7 +194,7 @@ export function formatAuditOperator(operator?: string): string {
   const op = String(operator).trim();
   if (op === "anonymousUser" || op === "anonymous") return "未认证用户";
   if (op === "system" || op === "SYSTEM") return "系统进程";
-  if (op === "ai-agent") return "AI Agent (助手)";
+  if (op === "ai-agent") return "AI 助手";
   return op;
 }
 
@@ -194,6 +202,20 @@ export function formatAuditDetail(detail?: string): string {
   if (!detail) return "-";
   let text = String(detail).trim();
   if (!text) return "-";
+
+  // 常见操作用完整短句展示，同时兼容已有审计记录。
+  text = text.replace(
+    /^status\s*=\s*([A-Z_]+)\s*[,;]\s*hits\s*=\s*(\d+)$/i,
+    "$1，检出 $2 个漏洞",
+  );
+  text = text.replace(
+    /^targetId\s*=\s*(NONE|null)\s*[,;]\s*port\s*=\s*(\d+)$/i,
+    "未关联目标，监听端口：$2",
+  );
+  text = text.replace(
+    /^targetId\s*=\s*(\d+)\s*[,;]\s*port\s*=\s*(\d+)$/i,
+    "目标 #$1，监听端口：$2",
+  );
 
   // 结构化前缀处理
   text = text.replace(/approvalId\s*=\s*(\d+)/gi, "审批单#$1");
@@ -210,41 +232,41 @@ export function formatAuditDetail(detail?: string): string {
   text = text.replace(/workflowNodeId\s*=\s*([a-zA-Z0-9_-]+)/gi, "工作流节点#$1");
 
   // 指标统计与字段键名
-  text = text.replace(/\bhits\s*=\s*(\d+)/gi, "检出漏洞=$1");
-  text = text.replace(/\bdeletedCount\s*=\s*(\d+)/gi, "已删除=$1");
-  text = text.replace(/\bretainedCount\s*=\s*(\d+)/gi, "已保留=$1");
-  text = text.replace(/\bdiscovered\s*=\s*(\d+)/gi, "已发现=$1");
-  text = text.replace(/\bimported\s*=\s*(\d+)/gi, "已导入=$1");
-  text = text.replace(/\bupdated\s*=\s*(\d+)/gi, "已更新=$1");
-  text = text.replace(/\bremoved\s*=\s*(\d+)/gi, "已移除=$1");
-  text = text.replace(/\bdeletedPaths\s*=\s*(\d+)/gi, "已删除路径=$1");
-  text = text.replace(/\bmissingPaths\s*=\s*(\d+)/gi, "缺失路径=$1");
-  text = text.replace(/\bautomatedSteps\s*=\s*(\d+)/gi, "自动化步骤=$1");
+  text = text.replace(/\bhits\s*=\s*(\d+)/gi, "检出 $1 个漏洞");
+  text = text.replace(/\bdeletedCount\s*=\s*(\d+)/gi, "已删除 $1 条");
+  text = text.replace(/\bretainedCount\s*=\s*(\d+)/gi, "已保留 $1 条");
+  text = text.replace(/\bdiscovered\s*=\s*(\d+)/gi, "已发现 $1 项");
+  text = text.replace(/\bimported\s*=\s*(\d+)/gi, "已导入 $1 项");
+  text = text.replace(/\bupdated\s*=\s*(\d+)/gi, "已更新 $1 项");
+  text = text.replace(/\bremoved\s*=\s*(\d+)/gi, "已移除 $1 项");
+  text = text.replace(/\bdeletedPaths\s*=\s*(\d+)/gi, "已删除 $1 条路径");
+  text = text.replace(/\bmissingPaths\s*=\s*(\d+)/gi, "缺失 $1 条路径");
+  text = text.replace(/\bautomatedSteps\s*=\s*(\d+)/gi, "自动化步骤：$1 步");
 
-  text = text.replace(/\btaskIds\s*=/gi, "关联任务=");
-  text = text.replace(/\bfindingIds\s*=/gi, "关联漏洞=");
-  text = text.replace(/\bprovider\s*=\s*local-rule-fallback/gi, "服务源=本地规则兜底");
-  text = text.replace(/\bprovider\s*=\s*local-rule/gi, "服务源=本地规则引擎");
-  text = text.replace(/\bprovider\s*=\s*local-model/gi, "服务源=本地大模型");
-  text = text.replace(/\bprovider\s*=\s*remote-api/gi, "服务源=远程接口");
-  text = text.replace(/\bprovider\s*=/gi, "服务源=");
-  text = text.replace(/\bprompt\s*=/gi, "提示词=");
-  text = text.replace(/\berror\s*=/gi, "错误=");
-  text = text.replace(/\breason\s*=/gi, "原因=");
-  text = text.replace(/\bport\s*=/gi, "端口=");
-  text = text.replace(/\bsource\s*=\s*nuclei/gi, "数据源=Nuclei");
-  text = text.replace(/\bsource\s*=\s*afrog/gi, "数据源=Afrog");
-  text = text.replace(/\bsource\s*=\s*xray/gi, "数据源=Xray");
-  text = text.replace(/\bsource\s*=\s*msf/gi, "数据源=Metasploit");
-  text = text.replace(/\bsource\s*=/gi, "数据源=");
-  text = text.replace(/\bmode\s*=/gi, "模式=");
+  text = text.replace(/\btaskIds\s*=/gi, "关联任务：");
+  text = text.replace(/\bfindingIds\s*=/gi, "关联漏洞：");
+  text = text.replace(/\bprovider\s*=\s*local-rule-fallback/gi, "服务源：本地规则兜底");
+  text = text.replace(/\bprovider\s*=\s*local-rule/gi, "服务源：本地规则引擎");
+  text = text.replace(/\bprovider\s*=\s*local-model/gi, "服务源：本地大模型");
+  text = text.replace(/\bprovider\s*=\s*remote-api/gi, "服务源：远程接口");
+  text = text.replace(/\bprovider\s*=/gi, "服务源：");
+  text = text.replace(/\bprompt\s*=/gi, "提示词：");
+  text = text.replace(/\berror\s*=/gi, "错误：");
+  text = text.replace(/\breason\s*=/gi, "原因：");
+  text = text.replace(/\bport\s*=/gi, "端口：");
+  text = text.replace(/\bsource\s*=\s*nuclei/gi, "数据源：Nuclei");
+  text = text.replace(/\bsource\s*=\s*afrog/gi, "数据源：Afrog");
+  text = text.replace(/\bsource\s*=\s*xray/gi, "数据源：Xray");
+  text = text.replace(/\bsource\s*=\s*msf/gi, "数据源：Metasploit");
+  text = text.replace(/\bsource\s*=/gi, "数据源：");
+  text = text.replace(/\bmode\s*=/gi, "模式：");
 
   text = text.replace(/\bcapturing\s*=\s*true/gi, "拦截开启");
   text = text.replace(/\bcapturing\s*=\s*false/gi, "拦截停止");
-  text = text.replace(/\bmarked\s*=\s*true/gi, "重点标记=是");
-  text = text.replace(/\bmarked\s*=\s*false/gi, "重点标记=否");
-  text = text.replace(/\benabled\s*=\s*true/gi, "启用=是");
-  text = text.replace(/\benabled\s*=\s*false/gi, "启用=否");
+  text = text.replace(/\bmarked\s*=\s*true/gi, "已标记为重点流量");
+  text = text.replace(/\bmarked\s*=\s*false/gi, "已取消重点标记");
+  text = text.replace(/\benabled\s*=\s*true/gi, "已启用");
+  text = text.replace(/\benabled\s*=\s*false/gi, "已停用");
   text = text.replace(/\bcleared\s*=\s*true/gi, "已清空");
   text = text.replace(/\bcleared\s*=\s*false/gi, "未清空");
 
@@ -279,9 +301,9 @@ export function formatAuditDetail(detail?: string): string {
 
   // key=value 形式残留的英文 key 也中文化
   text = text
-    .replace(/\bstatus\s*=/gi, "状态=")
-    .replace(/\baction\s*=/gi, "动作=")
-    .replace(/\bdecision\s*=/gi, "决定=");
+    .replace(/\bstatus\s*=/gi, "状态：")
+    .replace(/\baction\s*=/gi, "动作：")
+    .replace(/\bdecision\s*=/gi, "决定：");
 
   return text;
 }
@@ -289,19 +311,19 @@ export function formatAuditDetail(detail?: string): string {
 export function formatAuditAction(action?: string): string {
   if (!action) return "未知操作";
   const key = String(action).trim().toUpperCase();
-  return AUDIT_ACTION_LABELS[key] || action;
+  return AUDIT_ACTION_LABELS[key] || "未知操作";
 }
 
 export function formatAuditResource(resource?: string): string {
   if (!resource) return "未指定";
   const key = String(resource).trim().toUpperCase();
-  return AUDIT_RESOURCE_LABELS[key] || resource;
+  return AUDIT_RESOURCE_LABELS[key] || "未知资源";
 }
 
 export function formatAuditResult(result?: string): string {
   if (!result) return "未知";
   const key = String(result).trim().toUpperCase();
-  return AUDIT_RESULT_META[key]?.label || result;
+  return AUDIT_RESULT_META[key]?.label || "未知结果";
 }
 
 export function auditResultTagType(

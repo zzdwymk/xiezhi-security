@@ -3,6 +3,7 @@ import { computed, markRaw, ref, onBeforeUnmount } from "vue";
 import "../offline-tools.css";
 import "../network-offline-tools.css";
 import { ElMessage } from "element-plus";
+import FluentCodeBlock from "../components/FluentCodeBlock.vue";
 import { formatDateTime } from "../utils/dateTime";
 import {
   Check,
@@ -51,6 +52,7 @@ import {
   randomBytes,
 } from "../utils/offlineCrypto";
 import { taskbarProgress } from "../utils/taskbarProgress";
+import { createRegexRunner } from "../utils/offlineRegexRunner";
 import {
   buildQueryString,
   buildUrl,
@@ -63,7 +65,6 @@ import {
   type PayloadStep,
   radixToText,
   runPayloadChain,
-  testRegex,
   textToRadix,
   xorCrypt,
   xorDecryptHex,
@@ -186,7 +187,7 @@ const groups: ToolGroup[] = [
       {
         id: "hexfile",
         name: "文件十六进制查看",
-        description: "Offset、Hex 与 ASCII 分块对照",
+        description: "偏移量、十六进制与 ASCII 分块对照",
         icon: markRaw(Document),
         tags: "file hex viewer offset ascii binary 文件 十六进制 偏移",
       },
@@ -198,7 +199,7 @@ const groups: ToolGroup[] = [
       {
         id: "jwt",
         name: "JWT 解析",
-        description: "离线查看 Header 与 Payload",
+        description: "离线查看令牌头部与载荷",
         icon: markRaw(Document),
         tags: "jwt token payload header 解析",
       },
@@ -256,7 +257,7 @@ const groups: ToolGroup[] = [
       },
       {
         id: "payload",
-        name: "Payload 编码链",
+        name: "载荷编码链",
         description: "URL/HTML/Unicode/Base64 串联编码，便于授权绕过实验",
         icon: markRaw(MagicStick),
         tags: "payload xss sqli ssti waf encode 编码链 绕过",
@@ -413,6 +414,15 @@ const regexPattern = ref("https?:\\/\\/\\S+");
 const regexFlags = ref("gi");
 const regexInput = ref("");
 const regexOutput = ref("");
+const regexWorking = ref(false);
+const regexRunner = createRegexRunner(() => new Worker(
+  new URL("../workers/offlineRegex.worker.ts", import.meta.url), { type: "module" },
+));
+let regexGeneration = 0;
+onBeforeUnmount(() => {
+  regexGeneration += 1;
+  regexRunner.cancel();
+});
 
 const radixInput = ref("Xiezhi");
 const radixMode = ref<"ascii" | "hex" | "bin" | "oct" | "codePoints">("hex");
@@ -496,13 +506,17 @@ function applyPayloadPreset(value: string) {
   runPayload();
 }
 
-function runRegex() {
+async function runRegex() {
+  const generation = ++regexGeneration;
+  regexWorking.value = true;
+  regexOutput.value = "";
   try {
-    const result = testRegex(
+    const result = await regexRunner.run(
       regexPattern.value,
       regexFlags.value,
       regexInput.value,
     );
+    if (generation !== regexGeneration) return;
     regexOutput.value = result.matches.length
       ? result.matches
           .map(
@@ -511,9 +525,17 @@ function runRegex() {
           )
           .join("\n\n")
       : "无匹配";
-    ElMessage.success(`匹配 ${result.count} 处`);
+    if (result.truncated) {
+      const notice = `匹配结果超过 ${result.maxMatches} 处，仅显示前 ${result.count} 处，结果已截断。`;
+      regexOutput.value = `${notice}\n\n${regexOutput.value}`;
+      ElMessage.warning(notice);
+    } else {
+      ElMessage.success(`匹配 ${result.count} 处`);
+    }
   } catch (error: any) {
-    errorMessage(error, "正则执行失败");
+    if (generation === regexGeneration) errorMessage(error, "正则执行失败");
+  } finally {
+    if (generation === regexGeneration) regexWorking.value = false;
   }
 }
 
@@ -714,7 +736,7 @@ function parseJwt() {
   try {
     const parts = jwtInput.value.trim().split(".");
     if (parts.length < 2)
-      throw new Error("JWT 至少应包含 Header 和 Payload 两部分");
+      throw new Error("JWT 至少应包含头部和载荷两部分");
     jwtHeader.value = JSON.stringify(
       JSON.parse(decodeBase64(parts[0])),
       null,
@@ -888,7 +910,7 @@ function runText() {
   <div class="offline-tools-page">
     <header class="offline-tools-heading">
       <div>
-        <span>LOCAL UTILITIES</span>
+        <span>本地实用工具</span>
         <h1>离线工具集</h1>
         <p>编码、摘要、加解密与常用数据处理均在当前设备内完成。</p>
       </div>
@@ -970,8 +992,8 @@ function runText() {
               >编码类型
               <el-select v-model="codecType" style="width: 180px">
                 <el-option label="Base64" value="base64" />
-                <el-option label="Base64 URL Safe" value="base64url" />
-                <el-option label="Hex 十六进制" value="hex" />
+                <el-option label="Base64（URL 安全）" value="base64url" />
+                <el-option label="十六进制" value="hex" />
                 <el-option label="URL 百分号编码" value="url" />
                 <el-option label="HTML 实体" value="html" />
               </el-select>
@@ -1175,9 +1197,9 @@ function runText() {
                 >构造结果<el-input v-model="urlBuilt" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" readonly />
               </label>
             </el-tab-pane>
-            <el-tab-pane label="Query 参数" name="query">
+            <el-tab-pane label="查询参数" name="query">
               <label class="offline-field"
-                >Query 字符串<el-input v-model="queryInput" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" />
+                >查询字符串<el-input v-model="queryInput" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" />
               </label>
               <div class="offline-actions">
                 <el-button type="primary" @click="runQueryParse"
@@ -1186,7 +1208,7 @@ function runText() {
                 <el-button @click="addQueryRow">新增参数行</el-button>
                 <el-button @click="runQueryBuild">重新拼接</el-button>
                 <el-button :icon="CopyDocument" @click="copyText(queryBuilt)"
-                  >复制 Query</el-button
+                  >复制查询字符串</el-button
                 >
               </div>
               <div class="query-parameter-list">
@@ -1250,7 +1272,7 @@ function runText() {
             >
           </div>
           <label class="offline-field payload-input-field"
-            >原始 Payload<el-input v-model="payloadInput" type="textarea" :autosize="{ minRows: 4 }" />
+            >原始载荷<el-input v-model="payloadInput" type="textarea" :autosize="{ minRows: 4 }" />
           </label>
           <label class="offline-field payload-chain-field">
             编码链（可多选，按顺序执行）
@@ -1264,9 +1286,9 @@ function runText() {
               <el-option label="双重 URL" value="url2" />
               <el-option label="HTML 实体" value="html" />
               <el-option label="Base64" value="base64" />
-              <el-option label="Hex" value="hex" />
+              <el-option label="十六进制" value="hex" />
               <el-option label="\\u Unicode" value="unicode" />
-              <el-option label="&amp;#x HTML hex" value="unicode-hex" />
+              <el-option label="&amp;#x HTML 十六进制实体" value="unicode-hex" />
               <el-option label="JS \\x/\\u 转义" value="escape-js" />
             </el-select>
           </label>
@@ -1288,7 +1310,7 @@ function runText() {
               <header>
                 <strong>步骤 {{ index + 1 }} · {{ item.step }}</strong>
               </header>
-              <pre>{{ item.output }}</pre>
+              <FluentCodeBlock :content="item.output" :min-rows="2" :max-rows="10" wrap :aria-label="`步骤 ${index + 1} 输出，只读`" />
             </article>
           </div>
         </div>
@@ -1311,7 +1333,7 @@ function runText() {
             <label>匹配结果<el-input v-model="regexOutput" type="textarea" :autosize="{ minRows: 3 }" readonly /></label>
           </div>
           <div class="offline-actions">
-            <el-button type="primary" @click="runRegex">提取匹配</el-button>
+            <el-button type="primary" :loading="regexWorking" @click="runRegex">提取匹配</el-button>
             <el-button :icon="CopyDocument" @click="copyText(regexOutput)"
               >复制结果</el-button
             >
@@ -1324,9 +1346,9 @@ function runText() {
               >编码方式
               <el-select v-model="radixMode" style="width: 160px">
                 <el-option label="ASCII 码" value="ascii" />
-                <el-option label="Hex" value="hex" />
-                <el-option label="Binary" value="bin" />
-                <el-option label="Octal" value="oct" />
+                <el-option label="十六进制" value="hex" />
+                <el-option label="二进制" value="bin" />
+                <el-option label="八进制" value="oct" />
                 <el-option label="Unicode 码点" value="codePoints" />
               </el-select>
             </label>
@@ -1334,9 +1356,9 @@ function runText() {
               >解码方式
               <el-select v-model="radixDecodeMode" style="width: 140px">
                 <el-option label="ASCII" value="ascii" />
-                <el-option label="Hex" value="hex" />
-                <el-option label="Binary" value="bin" />
-                <el-option label="Octal" value="oct" />
+                <el-option label="十六进制" value="hex" />
+                <el-option label="二进制" value="bin" />
+                <el-option label="八进制" value="oct" />
               </el-select>
             </label>
           </div>
@@ -1443,8 +1465,8 @@ function runText() {
             <el-button type="primary" @click="parseJwt">解析</el-button>
           </div>
           <div class="offline-editor-grid">
-            <label>Header<el-input v-model="jwtHeader" type="textarea" :autosize="{ minRows: 3 }" readonly /></label
-            ><label>Payload<el-input v-model="jwtPayload" type="textarea" :autosize="{ minRows: 3 }" readonly /></label>
+            <label>头部<el-input v-model="jwtHeader" type="textarea" :autosize="{ minRows: 3 }" readonly /></label
+            ><label>载荷<el-input v-model="jwtPayload" type="textarea" :autosize="{ minRows: 3 }" readonly /></label>
           </div>
         </div>
 
@@ -1484,14 +1506,14 @@ function runText() {
               placeholder="例如 1783956600000"
             />
             <el-button type="primary" @click="timestampToDate">转换</el-button>
-            <pre>{{ dateResult || "等待转换" }}</pre>
+            <FluentCodeBlock :content="dateResult" empty-text="等待转换" :min-rows="2" :max-rows="4" wrap aria-label="日期转换结果，只读" />
           </article>
           <article>
             <h3>日期 → 时间戳</h3>
             <p>按当前设备时区解析输入日期。</p>
             <el-input v-model="dateInput" placeholder="2026-07-13 23:30:00" />
             <el-button type="primary" @click="dateToTimestamp">转换</el-button>
-            <pre>{{ timestampResult || "等待转换" }}</pre>
+            <FluentCodeBlock :content="timestampResult" empty-text="等待转换" :min-rows="2" :max-rows="4" wrap aria-label="时间戳转换结果，只读" />
           </article>
         </div>
 
@@ -1547,11 +1569,11 @@ function runText() {
                   value="lower" /><el-option
                   label="反转文本"
                   value="reverse" /><el-option
-                  label="snake_case"
+                  label="下划线命名（snake_case）"
                   value="snake" /><el-option
-                  label="kebab-case"
+                  label="短横线命名（kebab-case）"
                   value="kebab" /><el-option
-                  label="camelCase"
+                  label="驼峰命名（camelCase）"
                   value="camel" /></el-select
             ></label>
           </div>

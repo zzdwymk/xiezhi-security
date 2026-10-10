@@ -3,6 +3,7 @@ package com.bachelor.toolbox.tool.zap;
 import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.TargetPolicyService;
+import com.bachelor.toolbox.target.WebTargetResolver;
 import com.bachelor.toolbox.tool.FindingDraft;
 import com.bachelor.toolbox.tool.SecurityTool;
 import com.bachelor.toolbox.tool.ToolExecutionObserver;
@@ -13,23 +14,16 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.Semaphore;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * OWASP ZAP adapter that runs the ZAP fuzzer against a single authorized HTTP request. It drives
- * ZAP's {@code fuzzer} REST API end to end and folds the resulting alerts into the project's
- * {@link FindingDraft} pipeline.
- *
- * <p>ZAP's fuzzer field names vary between releases; every fuzz call is best-effort, so a
- * version mismatch or an unavailable payload degrades to an empty match set instead of crashing.
+ * Sends one literal query/form field mutation through ZAP and collects its passive alerts.
+ * The bundled GUI fuzzer has no REST API; no dictionary, file, script, or generator is executed.
  */
 @Component
 public class ZapFuzzTool implements SecurityTool {
-  private static final Logger LOGGER = LoggerFactory.getLogger(ZapFuzzTool.class);
   private static final Semaphore DAEMON_LOCK = new Semaphore(1);
   private static final int MAX_FINDINGS = 200;
 
@@ -48,12 +42,12 @@ public class ZapFuzzTool implements SecurityTool {
 
   @Override
   public String displayName() {
-    return "ZAP 参数模糊测试";
+    return "ZAP 单次参数变异验证";
   }
 
   @Override
   public String description() {
-    return "对授权 Web 目标的指定请求/参数运行 OWASP ZAP 模糊压测（Fuzz）";
+    return "将一个字面值替换授权请求的指定字段，发送一次请求并收集 ZAP 被动告警";
   }
 
   @Override
@@ -66,69 +60,78 @@ public class ZapFuzzTool implements SecurityTool {
   public ToolExecutionResult execute(
       AuthorizedTarget target, Map<String, Object> parameters, ToolExecutionObserver observer)
       throws Exception {
-    URI targetUri = policy.validatedHttpUri(target);
+    ZapDaemon.FuzzSpec spec = buildFuzzSpec(target, parameters);
+    URI targetUri = URI.create(spec.requestUrl());
+    if (observer.isCancellationRequested()) throw new ApiException("任务已取消");
     if (!DAEMON_LOCK.tryAcquire()) {
-      throw new ApiException("已有 ZAP 模糊测试正在进行，请稍后再试");
+      throw new ApiException("已有 ZAP 参数变异验证正在进行，请稍后再试");
     }
     try {
-      int acquired = 1;
       try (ZapDaemon daemon = daemonSupplier.create()) {
-        daemon.start();
-        daemon.includeInScope(targetUri);
-        observer.operation("ZAP daemon 已就绪，正在启动参数模糊压测");
-
-        ZapDaemon.FuzzSpec spec = buildFuzzSpec(targetUri, parameters);
-        if (spec == null) {
-          return emptyResult("缺少可执行的 fuzz 参数（需指定 requestUrl 和 payload）");
-        }
-
-        String fuzzId = daemon.startFuzz(spec);
-        if (fuzzId == null || fuzzId.isBlank()) {
-          return emptyResult("ZAP fuzz 未能启动（可能不支持当前 payload 或版本差异）");
-        }
-
-        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MINUTES.toNanos(10);
-        while (System.nanoTime() < deadline) {
-          if (observer.isCancellationRequested()) {
-            throw new ApiException("任务已取消");
+        try {
+          daemon.start();
+          daemon.includeInScope(targetUri);
+          if (observer.isCancellationRequested()) throw new ApiException("任务已取消");
+          observer.operation("ZAP 已就绪，正在发送单次参数变异请求");
+          String fuzzId = daemon.startFuzz(spec);
+          if (fuzzId == null || fuzzId.isBlank()) {
+            throw new ApiException("ZAP 未确认参数变异请求响应，检测未完成");
           }
-          String state = daemon.fuzzStatus(fuzzId);
-          if (state.contains("stopped") && !state.contains("stopped=false")) {
-            break;
-          }
-          observer.progressPercent(60d, "ZAP 模糊压测进行中");
-          Thread.sleep(1200);
+          awaitCompletion(daemon, fuzzId, observer,
+              System.nanoTime() + java.util.concurrent.TimeUnit.MINUTES.toNanos(2));
+          List<ZapDaemon.ZapAlert> alerts = daemon.alerts();
+          if (alerts == null) throw new ApiException("ZAP 未返回有效告警结果，检测未完成");
+          if (observer.isCancellationRequested()) throw new ApiException("任务已取消");
+          observer.progressPercent(100d, "单次参数变异验证与被动检查完成");
+          return toResult(targetUri, alerts);
+        } catch (Exception ex) {
+          try { daemon.kill(); } catch (Exception cleanup) { ex.addSuppressed(cleanup); }
+          throw ex;
         }
-        observer.progressPercent(100d, "模糊压测完成，正在解析结果");
-
-        List<ZapDaemon.ZapAlert> alerts = daemon.alerts();
-        return toResult(targetUri, alerts);
       }
     } finally {
       DAEMON_LOCK.release();
     }
   }
 
-  private ZapDaemon.FuzzSpec buildFuzzSpec(URI target, Map<String, Object> parameters) {
-    if (parameters == null) {
-      return null;
+  void awaitCompletion(ZapDaemon daemon, String fuzzId, ToolExecutionObserver observer, long deadline)
+      throws Exception {
+    while (true) {
+      if (observer.isCancellationRequested()) throw new ApiException("任务已取消");
+      if (System.nanoTime() >= deadline) throw new ApiException("ZAP 被动检查超时，检测未完成");
+      String state = daemon.fuzzStatus(fuzzId);
+      String phase = state == null ? "" : state.split(";", 2)[0];
+      if ("stopped".equals(phase)) return;
+      if (!"running".equals(phase)) throw new ApiException("ZAP 返回未知执行状态，检测未完成");
+      observer.heartbeat("参数变异请求已响应，正在等待 ZAP 被动检查");
+      Thread.sleep(250);
     }
-    String requestUrl = Objects.toString(parameters.get("fuzzRequestUrl"), "").trim();
-    if (requestUrl.isBlank()) {
-      requestUrl = target.toString();
-    }
-    String method = Objects.toString(parameters.get("method"), "POST").trim().toUpperCase(Locale.ROOT);
-    String postBody = Objects.toString(parameters.get("fuzzPostBody"), "");
-    String payload = Objects.toString(parameters.get("fuzzPayload"), "").trim();
-    String field = Objects.toString(parameters.get("fuzzTargetField"), "").trim();
-    if (payload.isBlank() && field.isBlank()) {
-      return null;
-    }
-    return new ZapDaemon.FuzzSpec(target, requestUrl, method, postBody, payload, field);
   }
 
-  private ToolExecutionResult emptyResult(String message) {
-    return new ToolExecutionResult(message, Map.of("matchCount", 0, "matches", List.of()), List.of());
+  private ZapDaemon.FuzzSpec buildFuzzSpec(AuthorizedTarget target, Map<String, Object> parameters) {
+    Map<String, Object> values = WebTargetResolver.scanParameters(parameters);
+    if (values == null || !Set.of("fuzzRequestUrl", "method", "fuzzPostBody", "fuzzPayload", "fuzzTargetField")
+        .containsAll(values.keySet())) throw new ApiException("参数变异请求包含未知或缺失参数");
+    String requestUrl = stringValue(values, "fuzzRequestUrl", null);
+    URI uri;
+    try { uri = URI.create(requestUrl == null ? "" : requestUrl); }
+    catch (IllegalArgumentException ex) { throw new ApiException("fuzzRequestUrl 格式不正确"); }
+    String host = policy.validatedHost(target);
+    if (uri.getHost() == null || !uri.getHost().equalsIgnoreCase(host)) {
+      throw new ApiException("参数变异请求主机与授权目标不一致");
+    }
+    policy.validateAuthorizedPort(target, port(uri));
+    ZapDaemon.FuzzSpec spec = new ZapDaemon.FuzzSpec(uri, requestUrl,
+        stringValue(values, "method", "POST"), stringValue(values, "fuzzPostBody", ""),
+        stringValue(values, "fuzzPayload", null), stringValue(values, "fuzzTargetField", null));
+    spec.requestMessage(); // Check field existence/uniqueness before starting a daemon or sending traffic.
+    return spec;
+  }
+
+  private String stringValue(Map<String, Object> values, String key, String fallback) {
+    if (!values.containsKey(key)) return fallback;
+    if (!(values.get(key) instanceof String value)) throw new ApiException(key + " 必须是字符串");
+    return value;
   }
 
   private ToolExecutionResult toResult(URI target, List<ZapDaemon.ZapAlert> alerts) {
@@ -151,11 +154,13 @@ public class ZapFuzzTool implements SecurityTool {
               "url", alert.url()));
     }
     Map<String, Object> data = new LinkedHashMap<>();
+    data.put("requestCount", 1);
+    data.put("mode", "SINGLE_PARAMETER_MUTATION");
     data.put("matchCount", findings.size());
     data.put("inScopeAlertCount", inScope);
     data.put("matches", matches);
     return new ToolExecutionResult(
-        "ZAP 模糊压测完成，命中 " + findings.size() + " 项在授权范围内的潜在问题", data, findings);
+        "单次参数变异验证完成，ZAP 被动告警 " + findings.size() + " 项", data, findings);
   }
 
   private FindingDraft toFinding(ZapDaemon.ZapAlert alert) {
@@ -168,7 +173,7 @@ public class ZapFuzzTool implements SecurityTool {
         normalizeSeverity(alert.risk()),
         alert.description(),
         evidence,
-        "结合 ZAP 模糊测试告警评估业务影响，确认后修复并复测。",
+        "结合单次参数变异请求的 ZAP 被动告警评估业务影响，确认后修复并复测。",
         alert.cweId());
   }
 
@@ -202,7 +207,7 @@ public class ZapFuzzTool implements SecurityTool {
   }
 
   private int port(URI uri) {
-    if (uri.getPort() > 0) return uri.getPort();
+    if (uri.getPort() >= 0) return uri.getPort();
     return "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
   }
 }

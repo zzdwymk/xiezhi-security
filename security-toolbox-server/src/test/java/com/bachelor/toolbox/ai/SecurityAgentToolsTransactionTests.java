@@ -80,6 +80,7 @@ class SecurityAgentToolsTransactionTests {
   @Autowired private com.bachelor.toolbox.project.ProjectApprovalService approvalService;
   @Autowired private com.bachelor.toolbox.project.ProjectApprovalRepository approvals;
   @Autowired private AiPlanApprovalService approvedPlans;
+  @Autowired private com.bachelor.toolbox.tool.SecurityToolRegistry toolRegistry;
 
   @MockBean private TaskExecutionService taskExecutionService;
   @SpyBean private TaskSnapshotService taskSnapshotService;
@@ -408,6 +409,98 @@ class SecurityAgentToolsTransactionTests {
   }
 
   @Test
+  void sqlmapRequiresApprovalAndApprovedResumeDispatchesTheOriginalPlanOnlyOnce() throws Exception {
+    target.setTargetValue("http://127.0.0.1/Less-1/?id=1");
+    targets.saveAndFlush(target);
+    // This verifies the real approval/dispatch transaction with an inert executor;
+    // dependency/process probing is outside this test's scope.
+    org.mockito.Mockito.doNothing().when(taskSnapshotService).capture(any(), any(), any());
+    AiPlanResponse sqlmap = new AiPlanResponse("fixture", "model", "SQL注入检测方案", false, List.of(
+        new AiPlanResponse.PlanStep("sqlmap_scan", "SQLMap", "Requested detection", Map.of("level", 2))));
+    Invocation invocation = new Invocation(request("sqlmap-approved-original"), sqlmap);
+    var preview = authorization.callWithSystemAccess(() -> authorizationGuard.evaluate(invocation.request(), sqlmap));
+    assertThat(preview.approvalStatus()).isEqualTo("REQUIRED");
+    assertThat(preview.normalizedPlan().steps().get(0).requiresApproval()).isTrue();
+    assertThatThrownBy(() -> execute(invocation.request(), sqlmap)).isInstanceOf(ApiException.class);
+    Long id = requestApproval(invocation, null);
+    assertThat(tasks.count()).isZero();
+    verifyNoInteractions(taskExecutionService);
+    authorization.callWithSystemAccess(() -> approvalService.decide(project.getId(), id, "APPROVED", "Approve detection only"));
+    AiDispatchResponse first = authorization.callWithSystemAccess(() -> approvedPlans.resume(project.getId(), id));
+    AiDispatchResponse second = authorization.callWithSystemAccess(() -> approvedPlans.resume(project.getId(), id));
+    assertThat(second.taskIds()).isEqualTo(first.taskIds());
+    assertThat(tasks.findAll()).singleElement().satisfies(task -> {
+      assertThat(task.getToolCode()).isEqualTo("sqlmap_scan");
+      assertThat(task.getRequestJson()).contains("\"level\":2", "\"risk\":1", "\"technique\":\"BEUT\"")
+          .doesNotContain("dump", "data", "os-shell", "file-read");
+    });
+    verify(taskExecutionService, times(1)).executeAsync(first.taskIds().get(0));
+  }
+
+  @Test
+  void rejectedSqlmapApprovalCreatesNoTasks() throws Exception {
+    target.setTargetValue("http://127.0.0.1/Less-1/?id=1");
+    targets.saveAndFlush(target);
+    AiPlanResponse sqlmap = new AiPlanResponse("fixture", "model", "SQL检测", false, List.of(
+        new AiPlanResponse.PlanStep("sqlmap_scan", "SQLMap", "requested", Map.of())));
+    Long id = requestApproval(new Invocation(request("sqlmap-rejected"), sqlmap), null);
+    authorization.callWithSystemAccess(() -> approvalService.decide(project.getId(), id, "REJECTED", "Reject"));
+    assertThatThrownBy(() -> authorization.callWithSystemAccess(() -> approvedPlans.resume(project.getId(), id)))
+        .isInstanceOf(ApiException.class);
+    assertThat(tasks.count()).isZero();
+    verifyNoInteractions(taskExecutionService);
+  }
+
+  @Test
+  void aiCatalogAndProductGuideCoverEveryRegisteredExecutableTool() {
+    assertThat(toolRegistry.all()).extracting(com.bachelor.toolbox.tool.SecurityTool::code)
+        .containsExactlyInAnyOrderElementsOf(AiToolCatalog.RUNTIME_CODES);
+    assertThat(ToolboxProgramGuide.context()).contains("白名单工具有 13 类")
+        .contains(AiToolCatalog.EXECUTABLE_CODES.toArray(String[]::new));
+  }
+
+  @Test
+  void zapSingleMutationRequiresApprovalAndResumesOriginalRequestExactlyOnce() throws Exception {
+    org.mockito.Mockito.doNothing().when(taskSnapshotService).capture(any(), any(), any());
+    AiPlanResponse plan = zapSingleMutationPlan();
+    Invocation invocation = new Invocation(request("zap-approved-original"), plan);
+    var preview = authorization.callWithSystemAccess(() -> authorizationGuard.evaluate(invocation.request(), plan));
+    assertThat(preview.approvalStatus()).isEqualTo("REQUIRED");
+    assertThat(preview.normalizedPlan().steps().get(0).requiresApproval()).isTrue();
+    assertThatThrownBy(() -> execute(invocation.request(), plan)).isInstanceOf(ApiException.class);
+    Long id = requestApproval(invocation, null);
+    assertThat(tasks.count()).isZero();
+    verifyNoInteractions(taskExecutionService);
+    authorization.callWithSystemAccess(() -> approvalService.decide(project.getId(), id, "APPROVED", "One request"));
+    AiDispatchResponse first = authorization.callWithSystemAccess(() -> approvedPlans.resume(project.getId(), id));
+    AiDispatchResponse second = authorization.callWithSystemAccess(() -> approvedPlans.resume(project.getId(), id));
+    assertThat(second.taskIds()).isEqualTo(first.taskIds());
+    assertThat(tasks.findAll()).singleElement().satisfies(task -> {
+      assertThat(task.getToolCode()).isEqualTo("zap_fuzz");
+      assertThat(task.getRequestJson()).contains("\"fuzzRequestUrl\":\"http://127.0.0.1/?id=1\"",
+          "\"method\":\"GET\"", "\"fuzzTargetField\":\"id\"", "\"fuzzPayload\":\" literal \"");
+    });
+    verify(taskExecutionService, times(1)).executeAsync(first.taskIds().get(0));
+  }
+
+  @Test
+  void rejectedZapSingleMutationCreatesNoTasks() throws Exception {
+    Long id = requestApproval(new Invocation(request("zap-rejected"), zapSingleMutationPlan()), null);
+    authorization.callWithSystemAccess(() -> approvalService.decide(project.getId(), id, "REJECTED", "Reject"));
+    assertThatThrownBy(() -> authorization.callWithSystemAccess(() -> approvedPlans.resume(project.getId(), id)))
+        .isInstanceOf(ApiException.class);
+    assertThat(tasks.count()).isZero();
+    verifyNoInteractions(taskExecutionService);
+  }
+
+  private AiPlanResponse zapSingleMutationPlan() {
+    return new AiPlanResponse("fixture", "model", "单次参数变异验证", false, List.of(
+        new AiPlanResponse.PlanStep("zap_fuzz", "ZAP single mutation", "requested", Map.of(
+            "fuzzRequestUrl", "http://127.0.0.1/?id=1", "method", "GET",
+            "fuzzTargetField", "id", "fuzzPayload", " literal "))));
+  }
+
+  @Test
   void pendingAndRejectedTicketsCreateNoTaskAndCannotBeFlippedToApproved() throws Exception {
     Long id = requestApproval(new Invocation(request("rejected-approval"), singleStepPlan()), null);
     assertThatThrownBy(() -> authorization.callWithSystemAccess(() -> approvedPlans.resume(project.getId(), id)))
@@ -595,11 +688,10 @@ class SecurityAgentToolsTransactionTests {
 
   @Test
   void clientCreatedApprovalWithMatchingActionCannotInventAServerSavedPlan() throws Exception {
-    Long id = authorization.callWithSystemAccess(() -> approvalService.request(project.getId(),
-        "AI_PLAN_EXECUTION", "Client supplied action name and hash", "fake-hash").getId());
-    authorization.callWithSystemAccess(() -> approvalService.decide(project.getId(), id, "APPROVED", "Approve"));
-    assertThatThrownBy(() -> authorization.callWithSystemAccess(() -> approvedPlans.resume(project.getId(), id)))
-        .isInstanceOf(ApiException.class).hasMessageContaining("未保存完整原计划");
+    assertThatThrownBy(() -> authorization.callWithSystemAccess(() -> approvalService.request(project.getId(),
+        "AI_PLAN_EXECUTION", "Client supplied action name and hash", "fake-hash")))
+        .isInstanceOf(ApiException.class).hasMessageContaining("请由 AI 提交方案");
+    assertThat(approvals.count()).isZero();
     assertThat(tasks.count()).isZero();
     verifyNoInteractions(taskExecutionService);
   }
@@ -622,6 +714,19 @@ class SecurityAgentToolsTransactionTests {
     authorization.callWithSystemAccess(() -> approvalService.decide(project.getId(), id, "APPROVED", "Approve"));
     assertThatThrownBy(() -> approvedPlans.resume(project.getId(), id))
         .isInstanceOf(ApiException.class).hasMessageContaining("仅管理员");
+    assertThat(tasks.count()).isZero();
+    verifyNoInteractions(taskExecutionService);
+  }
+
+  @Test
+  void approvedLegacyManualSourceCannotResumeEvenWithSavedPlan() throws Exception {
+    Long id = requestApproval(new Invocation(request("manual-source"), singleStepPlan()), null);
+    authorization.callWithSystemAccess(() -> approvalService.decide(project.getId(), id, "APPROVED", "Allow"));
+    var saved = approvals.findById(id).orElseThrow();
+    saved.setRequestedBy("admin");
+    approvals.saveAndFlush(saved);
+    assertThatThrownBy(() -> authorization.callWithSystemAccess(() -> approvedPlans.resume(project.getId(), id)))
+        .isInstanceOf(ApiException.class).hasMessageContaining("尚未获得管理员批准");
     assertThat(tasks.count()).isZero();
     verifyNoInteractions(taskExecutionService);
   }
@@ -669,25 +774,34 @@ class SecurityAgentToolsTransactionTests {
   }
 
   @Test
-  void autoExplicitSafeScanTraversesRealGuardAndCreatesExactlyOneScopedTask() throws Exception {
+  void autoExplicitSafeScanWaitsForConfirmationThenCreatesExactlyOneScopedTask() throws Exception {
     AiAgentResponse response = runAutoTurn("检查HTTP响应头，不执行其他扫描器", "EXECUTE", "langchain-grounded", true);
-    assertThat(response.executed()).isTrue();
-    assertThat(response.taskIds()).hasSize(1);
+    assertThat(response.executed()).isFalse();
+    assertThat(response.taskIds()).isEmpty();
+    assertThat(response.approvalId()).isNotNull();
+    assertThat(response.approvalStatus()).isEqualTo("REQUIRED");
+    assertThat(tasks.count()).isZero();
+    verifyNoInteractions(taskExecutionService);
+    assertThatThrownBy(() -> authorization.callWithSystemAccess(
+        () -> approvedPlans.resume(project.getId(), response.approvalId())))
+        .isInstanceOf(ApiException.class).hasMessageContaining("尚未获得管理员批准");
+    authorization.callWithSystemAccess(() -> approvalService.decide(
+        project.getId(), response.approvalId(), "APPROVED", "确认原方案"));
+    AiDispatchResponse dispatch = authorization.callWithSystemAccess(
+        () -> approvedPlans.resume(project.getId(), response.approvalId()));
+    assertThat(dispatch.taskIds()).hasSize(1);
     assertThat(tasks.findAll()).singleElement().satisfies(task -> {
-      assertThat(task.getId()).isEqualTo(response.taskIds().get(0));
+      assertThat(task.getId()).isEqualTo(dispatch.taskIds().get(0));
       assertThat(task.getToolCode()).isEqualTo("http_headers");
       assertThat(task.getProjectId()).isEqualTo(project.getId());
       assertThat(task.getTargetId()).isEqualTo(target.getId());
       assertThat(task.getWorkflowNodeId()).isEqualTo("headers");
     });
-    AiAgentResponse replay = runAutoTurn("检查HTTP响应头，不执行其他扫描器", "EXECUTE", "langchain-grounded", true);
-    assertThat(replay.taskIds()).isEqualTo(response.taskIds());
-    Invocation legacy = defaultInvocation("auto-real-guard", "headers");
-    AiPlanResponse normalizedLegacyPlan = authorization.callWithSystemAccess(
-        () -> authorizationGuard.evaluate(legacy.request(), legacy.plan()).normalizedPlan());
-    assertThat(execute(legacy.request(), normalizedLegacyPlan).taskIds()).isEqualTo(response.taskIds());
+    AiDispatchResponse replay = authorization.callWithSystemAccess(
+        () -> approvedPlans.resume(project.getId(), response.approvalId()));
+    assertThat(replay.taskIds()).isEqualTo(dispatch.taskIds());
     assertThat(tasks.count()).isEqualTo(1);
-    verify(taskExecutionService, times(1)).executeAsync(response.taskIds().get(0));
+    verify(taskExecutionService, times(1)).executeAsync(dispatch.taskIds().get(0));
   }
 
   @Test
@@ -770,8 +884,9 @@ class SecurityAgentToolsTransactionTests {
     when(reviewer.review(any(), any(), any())).thenAnswer(call ->
         new AiAgentResponse.AgentReview("VERIFIED", "verified", false, call.getArgument(2)));
     AgentOrchestrator orchestrator = new AgentOrchestrator(new AiConversationMemoryService(20, 20, 120), tools,
-        runtime, mock(AiProjectIndexService.class), planner, authorizationGuard, reviewer,
-        mock(com.bachelor.toolbox.audit.AuditService.class));
+        runtime, mock(AiProjectIndexService.class), planner, authorizationGuard, reviewer, null,
+        mock(com.bachelor.toolbox.audit.AuditService.class),
+        new com.bachelor.toolbox.settings.BusinessDataOperationGate(), approvalService);
     return authorization.callWithSystemAccess(() -> orchestrator.run(request));
   }
 

@@ -17,25 +17,23 @@ import com.bachelor.toolbox.tool.XrayScanTool;
 import com.bachelor.toolbox.tool.zap.ZapDaemon;
 import com.bachelor.toolbox.tool.zap.ZapDaemonSupplier;
 import java.net.URI;
-import java.net.URLEncoder;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 @Service
 public class TrafficScanService {
   private static final Logger LOGGER = LoggerFactory.getLogger(TrafficScanService.class);
-  private static final Duration PROBE_TIMEOUT = Duration.ofSeconds(8);
 
   public record TargetedScanHit(
       String title,
@@ -61,15 +59,31 @@ public class TrafficScanService {
       String status,
       List<TargetedScanHit> hits,
       List<TargetedScanProbe> probes,
-      String message) {}
+      String message,
+      Long scanId) {
+    public TargetedScanResult(Long packetId, String engine, String status,
+        List<TargetedScanHit> hits, List<TargetedScanProbe> probes, String message) {
+      this(packetId, engine, status, hits, probes, message, null);
+    }
+  }
 
-  public record ZapScanRequest(String strength, String policy) {}
-  public record XrayScanRequest(List<String> pocCodes, boolean allPocs) {}
+  public record ZapScanRequest(String strength, String policy, Long targetId) {
+    public ZapScanRequest(String strength, String policy) { this(strength, policy, null); }
+  }
+  public record XrayScanRequest(List<String> pocCodes, boolean allPocs, Long targetId) {
+    public XrayScanRequest(List<String> pocCodes, boolean allPocs) { this(pocCodes, allPocs, null); }
+  }
 
-  public record SqlmapScanRequest(Integer level, Integer risk, String technique, String data) {}
+  public record SqlmapScanRequest(Integer level, Integer risk, String technique, String data, Long targetId) {
+    public SqlmapScanRequest(Integer level, Integer risk, String technique, String data) {
+      this(level, risk, technique, data, null);
+    }
+  }
 
   /** 实时回调：扫描过程中逐条推送探针与命中，便于前端流式展示测试数据。 */
   public interface ZapScanListener {
+    default void onRecord(Long scanId) {}
+
     default void onStart(String targetUrl) {}
 
     default void onStatus(String message) {}
@@ -94,9 +108,15 @@ public class TrafficScanService {
   private final AuditService audit;
   private final TrafficScanLedgerService scanLedger;
   private final PortRangeParser portRangeParser;
-  private final HttpClient httpClient;
+  private final Duration zapScanTimeout;
+  private final com.fasterxml.jackson.databind.ObjectMapper resultMapper = new com.fasterxml.jackson.databind.ObjectMapper();
+  private TrafficNotificationService notifications;
 
-  @Autowired
+  @Autowired(required = false)
+  public void setNotifications(TrafficNotificationService notifications) {
+    this.notifications = notifications;
+  }
+
   public TrafficScanService(
       TrafficPacketRepository packets,
       TargetService targets,
@@ -109,6 +129,25 @@ public class TrafficScanService {
       AuditService audit,
       TrafficScanLedgerService scanLedger,
       PortRangeParser portRangeParser) {
+    this(packets, targets, policy, targetRepository, zapDaemonSupplier, dependencies, xrayTool,
+        sqlmapTool, audit, scanLedger, portRangeParser, Duration.ofMinutes(30));
+  }
+
+  @Autowired
+  public TrafficScanService(TrafficPacketRepository packets, TargetService targets, TargetPolicyService policy,
+      AuthorizedTargetRepository targetRepository, @Autowired(required = false) ZapDaemonSupplier zapDaemonSupplier,
+      DependencyDetectionService dependencies, XrayScanTool xrayTool, SqlmapScanTool sqlmapTool,
+      AuditService audit, TrafficScanLedgerService scanLedger, PortRangeParser portRangeParser,
+      @Value("${toolbox.execution.zap-scan-timeout-seconds:1800}") long zapScanTimeoutSeconds) {
+    this(packets, targets, policy, targetRepository, zapDaemonSupplier, dependencies, xrayTool,
+        sqlmapTool, audit, scanLedger, portRangeParser, Duration.ofSeconds(zapScanTimeoutSeconds));
+  }
+
+  TrafficScanService(TrafficPacketRepository packets, TargetService targets, TargetPolicyService policy,
+      AuthorizedTargetRepository targetRepository, ZapDaemonSupplier zapDaemonSupplier,
+      DependencyDetectionService dependencies, XrayScanTool xrayTool, SqlmapScanTool sqlmapTool,
+      AuditService audit, TrafficScanLedgerService scanLedger, PortRangeParser portRangeParser,
+      Duration zapScanTimeout) {
     this.packets = packets;
     this.targets = targets;
     this.policy = policy;
@@ -120,11 +159,15 @@ public class TrafficScanService {
     this.audit = audit;
     this.scanLedger = scanLedger;
     this.portRangeParser = portRangeParser;
-    this.httpClient =
-        HttpClient.newBuilder()
-            .connectTimeout(PROBE_TIMEOUT)
-            .followRedirects(HttpClient.Redirect.NEVER)
-            .build();
+    if (zapScanTimeout == null || zapScanTimeout.isZero() || zapScanTimeout.isNegative()) {
+      throw new IllegalArgumentException("ZAP 检测超时时间必须大于零");
+    }
+    this.zapScanTimeout = zapScanTimeout;
+  }
+
+  public long zapScanStreamTimeoutMillis() {
+    // Include daemon startup, API setup and cleanup in the transport budget.
+    return zapScanTimeout.plusMinutes(5).toMillis();
   }
 
   public TargetedScanResult zapScan(Long packetId, ZapScanRequest request) {
@@ -133,49 +176,100 @@ public class TrafficScanService {
 
   public TargetedScanResult zapScan(
       Long packetId, ZapScanRequest request, ZapScanListener listener) {
-    TrafficPacket packet =
-        packets.findById(packetId).orElseThrow(() -> new ApiException("流量记录不存在"));
-    AuthorizedTarget target = resolveTarget(packet);
-    policy.validatedHttpUri(target);
+    return runNotifiedScan(packetId, request == null ? null : request.targetId(), "ZAP",
+        listener, (packet, target, safeListener) -> zapScanInternal(packet, target, request, safeListener));
+  }
 
-    String targetUrl = buildUrl(packet);
+  private TargetedScanResult zapScanInternal(TrafficPacket packet, AuthorizedTarget target,
+      ZapScanRequest request, ZapScanListener listener) {
+    Long packetId = packet.getId();
+    URI uri = validatedPacketUri(packet, target);
+    String targetUrl = uri.toString();
+    String strength = request == null || request.strength() == null ? "MEDIUM"
+        : request.strength().trim().toUpperCase(Locale.ROOT);
+    if (!Set.of("LOW", "MEDIUM", "HIGH", "INSANE").contains(strength)) {
+      throw new ApiException("ZAP 扫描强度仅支持 LOW、MEDIUM、HIGH 或 INSANE");
+    }
+    String policyName = request == null || request.policy() == null || request.policy().isBlank()
+        ? "Default Policy" : request.policy().trim();
+    if (policyName.length() > 100 || policyName.chars().anyMatch(Character::isISOControl)) {
+      throw new ApiException("ZAP 扫描策略名称不正确");
+    }
     List<TargetedScanHit> hits = new ArrayList<>();
     List<TargetedScanProbe> probes = new ArrayList<>();
-    String engine = "ZAP_ACTIVE";
+    String status = "COMPLETED";
+    String message;
+    int lastProgress = 0;
     listener.onStart(targetUrl);
-
-    if (zapDaemonSupplier != null && zapAvailable()) {
+    try {
+      if (zapDaemonSupplier == null || !zapAvailable()) throw new ApiException("OWASP ZAP 引擎不可用，检测未执行");
       try (ZapDaemon daemon = zapDaemonSupplier.create()) {
-        listener.onStatus("正在启动 OWASP ZAP 引擎并纳入扫描范围...");
-        daemon.start();
-        URI uri = URI.create(targetUrl);
-        daemon.includeInScope(uri);
-        String policyName = request != null && request.policy() != null ? request.policy() : "Default Policy";
-        listener.onStatus("正在对目标执行主动漏洞扫描（策略 " + policyName + "）...");
-        String ascanId = daemon.startActiveScan(uri, policyName);
-        if (ascanId != null && !ascanId.isBlank()) {
-          long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(45);
-          while (System.nanoTime() < deadline) {
-            int prog = daemon.activeScanProgress(ascanId);
-            if (prog >= 100) break;
-            Thread.sleep(600);
+        String ascanId = null;
+        try {
+          listener.onStatus("正在启动 OWASP ZAP 引擎并纳入扫描范围...");
+          daemon.start();
+          daemon.includeInScope(uri);
+          daemon.accessUrl(uri); // The daemon contract explicitly forbids redirect following here.
+          listener.onStatus("正在对选定地址执行 ZAP 主动扫描（强度 " + strength + "，不递归）...");
+          ascanId = daemon.startActiveScan(uri, policyName, strength, false);
+          if (ascanId == null || ascanId.isBlank()) throw new ApiException("ZAP 未返回扫描编号，检测未启动");
+          long started = System.nanoTime();
+          long deadline = started + zapScanTimeout.toNanos();
+          int previousProgress = -1;
+          long nextActivityRead = started;
+          ZapDaemon.ScanActivity activity = null;
+          while (true) {
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedException("ZAP 检测已取消");
+            if (System.nanoTime() >= deadline) throw new TimeoutException("ZAP 定向检测超时，检测未完成");
+            int progress = daemon.activeScanProgress(ascanId);
+            lastProgress = progress;
+            if (progress < 0 || progress > 100) throw new ApiException("ZAP 返回非法扫描进度，检测未完成");
+            if (System.nanoTime() >= deadline) throw new TimeoutException("ZAP 定向检测超时，检测未完成");
+            if (progress == 100) break;
+            if (System.nanoTime() >= nextActivityRead) {
+              activity = daemon.activeScanActivity(ascanId);
+              nextActivityRead = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            }
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedException("ZAP 检测已取消");
+            if (System.nanoTime() >= deadline) throw new TimeoutException("ZAP 定向检测超时，检测未完成");
+            long elapsed = TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - started);
+            listener.onStatus("ZAP 主动扫描进度 " + progress + "% · 已用 " + elapsed
+                + " 秒，本次最多等待 " + zapScanTimeout.toSeconds() + " 秒"
+                + zapActivityDescription(activity)
+                + (progress == previousProgress ? "。当前检查尚未结束，进度可能暂时不变。" : ""));
+            previousProgress = progress;
+            long remainingMillis = Math.max(1, TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()));
+            Thread.sleep(Math.min(600, remainingMillis));
           }
-          for (ZapDaemon.ZapAlert alert : daemon.alerts()) {
-            if (alert != null) {
+          while (true) {
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedException("ZAP 检测已取消");
+            if (System.nanoTime() >= deadline) throw new TimeoutException("ZAP 定向检测超时，检测未完成");
+            long remaining = daemon.passiveScanRemaining();
+            if (remaining < 0) throw new ApiException("ZAP 返回了无效的响应检查进度，检测未完成");
+            if (System.nanoTime() >= deadline) throw new TimeoutException("ZAP 定向检测超时，检测未完成");
+            if (remaining == 0) break;
+            listener.onStatus("ZAP 正在检查网站响应，剩余 " + remaining + " 条");
+            long remainingMillis = Math.max(1, TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()));
+            Thread.sleep(Math.min(600, remainingMillis));
+          }
+          List<ZapDaemon.ZapAlert> alerts = daemon.alerts();
+          if (alerts == null) throw new ApiException("ZAP 未返回有效告警结果，检测未完成");
+          for (ZapDaemon.ZapAlert alert : alerts) {
+            if (alert != null && alertMatchesTarget(alert.url(), uri)) {
               TargetedScanHit hit =
                   new TargetedScanHit(
                       alert.name(),
                       alert.risk(),
                       alert.description(),
                       alert.url(),
-                      "CWE-" + alert.cweId() + "; Confidence=" + alert.confidence(),
+                      "CWE: " + alert.cweId() + "; Confidence=" + alert.confidence(),
                       "请依据 OWASP 风险指南并结合业务上下文进行针对性修复与复测。");
               hits.add(hit);
               listener.onHit(hit);
               TargetedScanProbe probe =
                   new TargetedScanProbe(
                       alert.name(),
-                      "GET",
+                      "", // Alert API does not supply the actual request method.
                       alert.url(),
                       "",
                       null,
@@ -191,39 +285,48 @@ public class TrafficScanService {
               listener.onProbe(probe);
             }
           }
+        } catch (Exception ex) {
+          if (ascanId != null && !ascanId.isBlank()) {
+            try { daemon.stopActiveScan(ascanId); } catch (Exception cleanup) { ex.addSuppressed(cleanup); }
+          }
+          try { daemon.kill(); } catch (Exception cleanup) { ex.addSuppressed(cleanup); }
+          throw ex;
         }
-      } catch (Exception ex) {
-        LOGGER.warn("ZAP 守护进程执行失败，降级为定向启发式探针: {}", ex.getMessage());
       }
+      message = "ZAP 定向检测完成，返回 " + hits.size() + " 项授权范围内告警";
+    } catch (TimeoutException | java.net.http.HttpTimeoutException ex) {
+      status = "TIMEOUT";
+      message = ex instanceof java.net.http.HttpTimeoutException
+          ? "等待 ZAP 引擎响应超时，检测未完成。请检查引擎运行状态后重试。"
+          : lastProgress == 100
+          ? "ZAP 主动扫描已结束，但响应分析超过等待上限（" + zapScanTimeout.toSeconds()
+              + " 秒），检测未完整完成。请检查引擎负载或调整等待时长后重试。"
+          : "ZAP 检测达到等待上限（" + zapScanTimeout.toSeconds() + " 秒），最后进度 "
+              + lastProgress + "%，检测未完成。可降低检测强度或调整等待时长后重试。";
+    } catch (InterruptedException ex) {
+      Thread.currentThread().interrupt();
+      status = "CANCELLED";
+      message = "ZAP 定向检测已取消，检测未完成";
+    } catch (Exception ex) {
+      status = "FAILED";
+      message = ex instanceof ApiException ? ex.getMessage() : "ZAP 引擎执行失败，检测未完成";
+      LOGGER.warn("ZAP 定向检测未完成，流量 ID={}，异常类型={}", packetId, ex.getClass().getSimpleName());
     }
-
-    if (hits.isEmpty()) {
-      engine = "ZAP_HEURISTIC";
-      HeuristicOutcome outcome = runHeuristicProbes(packet, targetUrl, listener);
-      hits.addAll(outcome.hits());
-      probes.addAll(outcome.probes());
-    }
-
-    audit.record("TRAFFIC_ZAP_SCAN", "TRAFFIC_PACKET", packetId, "hits=" + hits.size(), "SUCCESS");
-    recordScan(
-        packet,
-        "ZAP",
-        targetUrl,
-        hits.size(),
-        "COMPLETED",
-        hits.isEmpty() ? "ZAP 定向检测完成，未发现高危注入漏洞" : "ZAP 定向检测完成，发现 " + hits.size() + " 项潜在风险");
-    TargetedScanResult result =
-        new TargetedScanResult(
-            packetId,
-            engine,
-            "COMPLETED",
-            hits,
-            probes,
-            hits.isEmpty()
-                ? "ZAP 定向检测完成，未发现高危注入漏洞"
-                : "ZAP 定向检测完成，发现 " + hits.size() + " 项潜在风险");
-    listener.onComplete(result);
+    audit.record("TRAFFIC_ZAP_SCAN", "TRAFFIC_PACKET", packetId,
+        "status=" + status + ",hits=" + hits.size(), "COMPLETED".equals(status) ? "SUCCESS" : "FAILURE");
+    TargetedScanResult result = new TargetedScanResult(packetId, "ZAP_ACTIVE", status, hits, probes, message);
     return result;
+  }
+
+  private String zapActivityDescription(ZapDaemon.ScanActivity activity) {
+    if (activity == null) return "";
+    StringBuilder text = new StringBuilder();
+    if (activity.requestCount() != null) text.append(" · 已发送 ").append(activity.requestCount()).append(" 次请求");
+    if (activity.runningRules() != null && !activity.runningRules().isEmpty()) {
+      text.append(" · 当前检查：").append(String.join("、", activity.runningRules().stream().limit(3).toList()));
+    }
+    if ("PAUSED".equalsIgnoreCase(activity.state())) text.append(" · 引擎报告扫描已暂停");
+    return text.toString();
   }
 
   public TargetedScanResult xrayScan(Long packetId, XrayScanRequest request) {
@@ -232,12 +335,18 @@ public class TrafficScanService {
 
   public TargetedScanResult xrayScan(
       Long packetId, XrayScanRequest request, ZapScanListener listener) {
-    TrafficPacket packet =
-        packets.findById(packetId).orElseThrow(() -> new ApiException("流量记录不存在"));
-    AuthorizedTarget target = resolveTarget(packet);
-    policy.validatedHttpUri(target);
+    return runNotifiedScan(packetId, request == null ? null : request.targetId(), "XRAY",
+        listener, (packet, target, safeListener) -> xrayScanInternal(packet, target, request, safeListener));
+  }
+
+  private TargetedScanResult xrayScanInternal(TrafficPacket packet, AuthorizedTarget target,
+      XrayScanRequest request, ZapScanListener listener) {
+    Long packetId = packet.getId();
+    validatedPacketUri(packet, target);
 
     List<TargetedScanHit> hits = java.util.Collections.synchronizedList(new ArrayList<>());
+    String status = "COMPLETED";
+    String message;
     listener.onStart(buildUrl(packet));
     listener.onStatus("正在执行 Xray 靶向 PoC 探测...");
     try {
@@ -254,7 +363,7 @@ public class TrafficScanService {
         params.put("allPocs", true);
       }
 
-      xrayTool.execute(
+      ToolExecutionResult toolResult = xrayTool.execute(
           target,
           params,
           observerFor(listener),
@@ -270,30 +379,34 @@ public class TrafficScanService {
             hits.add(hit);
             listener.onHit(hit);
           });
+      assertCompleteResult(toolResult, "Xray");
+      // The final result is authoritative even if a live callback was not delivered.
+      for (var draft : toolResult.findings()) {
+        TargetedScanHit hit = new TargetedScanHit(draft.title(), draft.severity(), draft.description(),
+            draft.vulnerabilityCode(), draft.evidence(), draft.remediation());
+        if (!hits.contains(hit)) {
+          hits.add(hit);
+          listener.onHit(hit);
+        }
+      }
+      message = hits.isEmpty() ? "Xray 检测完成，本次未发现所检查的漏洞"
+          : "Xray 检测完成，发现 " + hits.size() + " 项潜在漏洞";
     } catch (Exception ex) {
-      LOGGER.error("Xray 靶向测试失败，流量 ID={}", packetId, ex);
-      throw new ApiException("Xray 靶向测试执行失败: " + ex.getMessage());
+      LOGGER.warn("Xray 靶向测试未完成，流量 ID={}", packetId, ex);
+      status = failureStatus(ex);
+      message = failureMessage("Xray", status, ex);
     }
 
-    audit.record("TRAFFIC_XRAY_SCAN", "TRAFFIC_PACKET", packetId, "hits=" + hits.size(), "SUCCESS");
-    recordScan(
-        packet,
-        "XRAY",
-        buildUrl(packet),
-        hits.size(),
-        "COMPLETED",
-        hits.isEmpty() ? "Xray 靶向 PoC 探测完成，未命中已选组件漏洞" : "Xray 靶向探测完成，命中 " + hits.size() + " 项漏洞");
+    audit.record("TRAFFIC_XRAY_SCAN", "TRAFFIC_PACKET", packetId,
+        "status=" + status + ",hits=" + hits.size(), "COMPLETED".equals(status) ? "SUCCESS" : "FAILURE");
     TargetedScanResult result =
         new TargetedScanResult(
             packetId,
             "XRAY_POC",
-            "COMPLETED",
-            hits,
+            status,
+            List.copyOf(hits),
             List.of(),
-            hits.isEmpty()
-                ? "Xray 靶向 PoC 探测完成，未命中已选组件漏洞"
-                : "Xray 靶向探测完成，命中 " + hits.size() + " 项漏洞");
-    listener.onComplete(result);
+            message);
     return result;
   }
 
@@ -309,10 +422,14 @@ public class TrafficScanService {
    */
   public TargetedScanResult sqlmapScan(
       Long packetId, SqlmapScanRequest request, ZapScanListener listener) {
-    TrafficPacket packet =
-        packets.findById(packetId).orElseThrow(() -> new ApiException("流量记录不存在"));
-    AuthorizedTarget target = resolveTarget(packet);
-    policy.validatedHttpUri(target);
+    return runNotifiedScan(packetId, request == null ? null : request.targetId(), "SQLMAP",
+        listener, (packet, target, safeListener) -> sqlmapScanInternal(packet, target, request, safeListener));
+  }
+
+  private TargetedScanResult sqlmapScanInternal(TrafficPacket packet, AuthorizedTarget target,
+      SqlmapScanRequest request, ZapScanListener listener) {
+    Long packetId = packet.getId();
+    validatedPacketUri(packet, target);
 
     String url = buildUrl(packet);
     List<TargetedScanHit> hits = new ArrayList<>();
@@ -333,6 +450,8 @@ public class TrafficScanService {
     }
 
     ToolExecutionObserver observer = observerFor(listener);
+    String status = "COMPLETED";
+    String message;
     try {
       ToolExecutionResult toolResult =
           sqlmapTool.execute(
@@ -340,6 +459,7 @@ public class TrafficScanService {
               params,
               observer,
               line -> listener.onStatus(line));
+      assertCompleteResult(toolResult, "sqlmap");
       for (com.bachelor.toolbox.tool.FindingDraft finding : toolResult.findings()) {
         TargetedScanHit hit =
             new TargetedScanHit(
@@ -352,236 +472,174 @@ public class TrafficScanService {
         hits.add(hit);
         listener.onHit(hit);
       }
-    } catch (ApiException ex) {
-      throw ex;
+      message = hits.isEmpty() ? "sqlmap 检测完成，本次未确认 SQL 注入"
+          : "sqlmap 检测完成，确认 " + hits.size() + " 处 SQL 注入";
     } catch (Exception ex) {
-      LOGGER.error("sqlmap 复核失败，流量 ID={}", packetId, ex);
-      throw new ApiException("sqlmap 复核执行失败: " + ex.getMessage());
+      LOGGER.warn("sqlmap 复核未完成，流量 ID={}", packetId, ex);
+      status = failureStatus(ex);
+      message = failureMessage("sqlmap", status, ex);
     }
 
-    audit.record("TRAFFIC_SQLMAP_SCAN", "TRAFFIC_PACKET", packetId, "url=" + url + ",hits=" + hits.size(), "SUCCESS");
-    recordScan(
-        packet,
-        "SQLMAP",
-        url,
-        hits.size(),
-        "COMPLETED",
-        hits.isEmpty() ? "sqlmap 复核完成，未确认 SQL 注入" : "sqlmap 复核完成，确认 " + hits.size() + " 处 SQL 注入");
+    audit.record("TRAFFIC_SQLMAP_SCAN", "TRAFFIC_PACKET", packetId,
+        "status=" + status + ",hits=" + hits.size(), "COMPLETED".equals(status) ? "SUCCESS" : "FAILURE");
     TargetedScanResult result =
         new TargetedScanResult(
             packetId,
             "SQLMAP",
-            "COMPLETED",
+            status,
             hits,
             probes,
-            hits.isEmpty()
-                ? "sqlmap 复核完成，未确认 SQL 注入 (url=" + url + ")"
-                : "sqlmap 复核完成，确认 " + hits.size() + " 处注入 (url=" + url + ")");
-    listener.onComplete(result);
+            message);
     return result;
   }
 
-  private record HeuristicOutcome(List<TargetedScanHit> hits, List<TargetedScanProbe> probes) {}
-
-  private HeuristicOutcome runHeuristicProbes(
-      TrafficPacket packet, String targetUrl, ZapScanListener listener) {
-    List<TargetedScanHit> hits = new ArrayList<>();
-    List<TargetedScanProbe> probes = new ArrayList<>();
-    if (targetUrl == null || !targetUrl.startsWith("http")) {
-      return new HeuristicOutcome(hits, probes);
+  private void assertCompleteResult(ToolExecutionResult result, String engine) {
+    if (result == null || result.data() == null || result.findings() == null
+        || Boolean.TRUE.equals(result.data().get("partial"))
+        || Boolean.FALSE.equals(result.data().get("scanCompleted"))
+        || ("Xray".equals(engine) && !Boolean.TRUE.equals(result.data().get("executionVerified")))
+        || ("sqlmap".equals(engine) && !(result.data().get("vulnerable") instanceof Boolean))) {
+      throw new ApiException(engine + " 未返回完整的检测结果，无法判断是否存在漏洞");
     }
+  }
 
-    // 1. 测试 SQL 注入字符报错与回显
-    if (targetUrl.contains("=")) {
-      String sqlProbeUrl = targetUrl + "'";
-      listener.onStatus("正在发送 SQL 注入（语法报错）探针...");
-      try {
-        HttpRequest probeReq =
-            HttpRequest.newBuilder(URI.create(sqlProbeUrl)).timeout(PROBE_TIMEOUT).GET().build();
-        HttpResponse<String> resp = httpClient.send(probeReq, HttpResponse.BodyHandlers.ofString());
-        String body = resp.body() == null ? "" : resp.body();
-        String lower = body.toLowerCase();
-        boolean triggered =
-            lower.contains("sql syntax")
-                || lower.contains("ora-")
-                || lower.contains("sqlite3::")
-                || lower.contains("syntax error in string");
-        emitProbe(
-            probes,
-            listener,
-            new TargetedScanProbe(
-                "SQL 注入（语法报错）",
-                "GET",
-                sqlProbeUrl,
-                "'",
-                resp.statusCode(),
-                snippet(body),
-                triggered,
-                triggered ? "响应体命中数据库语法报错特征" : "响应体未出现数据库报错特征"));
-        if (triggered) {
-          emitHit(
-              hits,
-              listener,
-              new TargetedScanHit(
-                  "SQL 注入（语法报错特征）",
-                  "HIGH",
-                  "向 URL 参数注入单引号后，服务端返回明确的数据库语法报错信息，表明参数未正确参数化。",
-                  "URL Query",
-                  "URL: " + sqlProbeUrl + " 触发 SQL 报错",
-                  "使用预编译语句（PreparedStatement）或 ORM 框架参数化查询。"));
-        }
-      } catch (Exception ex) {
-        emitProbe(
-            probes,
-            listener,
-            new TargetedScanProbe(
-                "SQL 注入（语法报错）",
-                "GET",
-                sqlProbeUrl,
-                "'",
-                null,
-                "",
-                false,
-                "请求失败: " + ex.getMessage()));
-      }
-
-      // 2. 测试 XSS 反射回显探针
-      String xssProbe = "stb_zap_probe_xss<script>alert(1)</script>";
-      String xssProbeUrl =
-          targetUrl
-              + (targetUrl.contains("?") ? "&" : "?")
-              + "stb_test="
-              + URLEncoder.encode(xssProbe, StandardCharsets.UTF_8);
-      listener.onStatus("正在发送反射型 XSS 探针...");
-      try {
-        HttpRequest probeReq =
-            HttpRequest.newBuilder(URI.create(xssProbeUrl)).timeout(PROBE_TIMEOUT).GET().build();
-        HttpResponse<String> resp = httpClient.send(probeReq, HttpResponse.BodyHandlers.ofString());
-        String body = resp.body() == null ? "" : resp.body();
-        boolean triggered = body.contains(xssProbe);
-        emitProbe(
-            probes,
-            listener,
-            new TargetedScanProbe(
-                "反射型 XSS 回显探测",
-                "GET",
-                xssProbeUrl,
-                xssProbe,
-                resp.statusCode(),
-                snippet(body),
-                triggered,
-                triggered ? "响应体原样反射了未转义的 Payload" : "响应体未原样反射 Payload"));
-        if (triggered) {
-          emitHit(
-              hits,
-              listener,
-              new TargetedScanHit(
-                  "反射型跨站脚本 (Reflected XSS)",
-                  "MEDIUM",
-                  "输入探针未经 HTML 实体编码或过滤直接反射在响应报文体中。",
-                  "stb_test",
-                  "响应体包含未经转义的 Payload: " + xssProbe,
-                  "对用户输入在输出到 HTML 页面前做上下文相关的转义过滤（如 HtmlUtils.htmlEscape）。"));
-        }
-      } catch (Exception ex) {
-        emitProbe(
-            probes,
-            listener,
-            new TargetedScanProbe(
-                "反射型 XSS 回显探测",
-                "GET",
-                xssProbeUrl,
-                xssProbe,
-                null,
-                "",
-                false,
-                "请求失败: " + ex.getMessage()));
-      }
+  private String failureStatus(Exception ex) {
+    if (ex instanceof InterruptedException || ex instanceof java.util.concurrent.CancellationException) {
+      if (ex instanceof InterruptedException) Thread.currentThread().interrupt();
+      return "CANCELLED";
     }
+    return ex instanceof TimeoutException || ex instanceof java.net.SocketTimeoutException
+        || ex instanceof java.net.http.HttpTimeoutException ? "TIMEOUT" : "FAILED";
+  }
 
-    // 3. 检查敏感路径穿越与泄露
-    String base = targetUrl.split("\\?")[0];
-    if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
-    String traversalUrl = base + "/../../../../etc/passwd";
-    listener.onStatus("正在发送路径遍历与任意文件读取探针...");
+  private String failureMessage(String engine, String status, Exception ex) {
+    if ("CANCELLED".equals(status)) return engine + " 检测已取消，本次检测未完成";
+    if ("TIMEOUT".equals(status)) return engine + " 检测超时，本次检测未完成";
+    return ex instanceof ApiException && ex.getMessage() != null && !ex.getMessage().isBlank()
+        ? ex.getMessage() : engine + " 执行失败，本次检测未完成，请检查目标和检测引擎后重试";
+  }
+
+  @FunctionalInterface
+  private interface ScanAction {
+    TargetedScanResult run(TrafficPacket packet, AuthorizedTarget target, ZapScanListener listener);
+  }
+
+  private TargetedScanResult runNotifiedScan(Long packetId, Long requestedTargetId, String engine,
+      ZapScanListener listener, ScanAction action) {
+    String operationId = TrafficNotificationService.operationId();
+    TrafficPacket packet = null;
+    AuthorizedTarget target = null;
+    TargetedScanResult result;
+    RuntimeException failure = null;
+    ZapScanListener safeListener = disconnectSafeListener(listener);
+    TrafficScanLedger entry = null;
     try {
-      HttpRequest probeReq =
-          HttpRequest.newBuilder(URI.create(traversalUrl)).timeout(PROBE_TIMEOUT).GET().build();
-      HttpResponse<String> resp = httpClient.send(probeReq, HttpResponse.BodyHandlers.ofString());
-      String body = resp.body() == null ? "" : resp.body();
-      boolean triggered = resp.statusCode() == 200 && body.contains("root:x:0:0:");
-      emitProbe(
-          probes,
-          listener,
-          new TargetedScanProbe(
-              "路径遍历与任意文件读取",
-              "GET",
-              traversalUrl,
-              "../../../../etc/passwd",
-              resp.statusCode(),
-              snippet(body),
-              triggered,
-              triggered ? "响应状态码 200 且包含 /etc/passwd 特征行" : "未读取到目标敏感文件"));
-      if (triggered) {
-        emitHit(
-            hits,
-            listener,
-            new TargetedScanHit(
-                "路径遍历与任意文件读取",
-                "HIGH",
-                "利用 ../ 相对路径成功读取操作系统敏感文件 (/etc/passwd)。",
-                "PATH",
-                "响应状态码 200 且包含 root 用户行",
-                "对路径参数使用白名单校验，过滤 ..、/、\\ 等字符。"));
+      packet = packets.findById(packetId).orElseThrow(() -> new ApiException("流量记录不存在"));
+      entry = scanEntry(packet, engine);
+      entry.setStatus("RUNNING");
+      entry.setMessage("正在校验授权目标并准备检测");
+      try { scanLedger.begin(entry); }
+      catch (RuntimeException persistenceFailure) {
+        entry = null;
+        throw new ApiException("无法创建流量检测记录，本次检测未启动，请检查本地数据库后重试");
       }
-    } catch (Exception ex) {
-      emitProbe(
-          probes,
-          listener,
-          new TargetedScanProbe(
-              "路径遍历与任意文件读取",
-              "GET",
-              traversalUrl,
-              "../../../../etc/passwd",
-              null,
-              "",
-              false,
-              "请求失败: " + ex.getMessage()));
+      safeListener.onRecord(entry.getId());
+      target = resolveTarget(packet, requestedTargetId);
+      entry.setTargetId(target.getId());
+      result = action.run(packet, target, recordingListener(entry, safeListener));
+    } catch (RuntimeException exception) {
+      failure = exception;
+      String status = failureStatus(exception);
+      result = new TargetedScanResult(packetId, engine, status, List.of(), List.of(),
+          failureMessage(engine, status, exception));
     }
-
-    return new HeuristicOutcome(hits, probes);
+    Long ledgerId = recordScan(entry, target, result);
+    result = new TargetedScanResult(result.packetId(), result.engine(), result.status(),
+        result.hits(), result.probes(), result.message(), ledgerId);
+    if (notifications != null) notifications.publish(operationId, packetId,
+        target == null ? null : target.getId(), ledgerId, engine, result.status(),
+        result.message(), result.hits().stream().map(TargetedScanHit::severity).toList());
+    if (failure != null) throw failure;
+    safeListener.onComplete(result);
+    return result;
   }
 
-  private static void emitProbe(
-      List<TargetedScanProbe> probes, ZapScanListener listener, TargetedScanProbe probe) {
-    probes.add(probe);
-    listener.onProbe(probe);
+  /** The client may leave this page; losing its stream must not abort the server operation. */
+  private static ZapScanListener disconnectSafeListener(ZapScanListener delegate) {
+    return new ZapScanListener() {
+      private boolean connected = true;
+      private void send(Runnable action) {
+        if (!connected) return;
+        try { action.run(); } catch (RuntimeException disconnected) { connected = false; }
+      }
+      public void onRecord(Long scanId) { if (scanId != null) send(() -> delegate.onRecord(scanId)); }
+      public void onStart(String url) { send(() -> delegate.onStart(url)); }
+      public void onStatus(String message) { send(() -> delegate.onStatus(message)); }
+      public void onProbe(TargetedScanProbe probe) { send(() -> delegate.onProbe(probe)); }
+      public void onHit(TargetedScanHit hit) { send(() -> delegate.onHit(hit)); }
+      public void onComplete(TargetedScanResult result) { send(() -> delegate.onComplete(result)); }
+    };
   }
 
-  private static void emitHit(
-      List<TargetedScanHit> hits, ZapScanListener listener, TargetedScanHit hit) {
-    hits.add(hit);
-    listener.onHit(hit);
-  }
-
-  /** 写入运行期扫描执行台账（与审计日志并列的另一类可审计记录）。 */
-  private void recordScan(
-      TrafficPacket packet, String engine, String url, int hits, String status, String message) {
-    try {
-      TrafficScanLedger entry = new TrafficScanLedger();
-      entry.setEngine(engine);
-      entry.setPacketId(packet.getId());
-      entry.setTargetId(packet.getTargetId() == null ? 0L : packet.getTargetId());
-      entry.setHost(packet.getHost());
-      entry.setPort(packet.getPort());
-      entry.setUrl(url);
-      entry.setHitCount(hits);
-      entry.setStatus(status);
-      entry.setMessage(message);
-      scanLedger.record(entry);
-    } catch (Exception ex) {
-      LOGGER.warn("写入流量扫描执行台账失败，流量 ID={}", packet.getId(), ex);
+  /** Persist the authoritative final result before publishing the link to it. */
+  private Long recordScan(TrafficScanLedger entry, AuthorizedTarget target, TargetedScanResult result) {
+    if (entry == null) return null;
+    synchronized (entry) {
+      try {
+      entry.setTargetId(target == null ? 0L : target.getId());
+      entry.setHitCount(result.hits().size());
+      entry.setStatus(result.status());
+      entry.setMessage(result.message());
+      entry.setResultJson(resultMapper.writeValueAsString(new TargetedScanResult(result.packetId(),
+          result.engine(), result.status(), result.hits(), result.probes(), result.message(), entry.getId())));
+      TrafficScanLedger saved = scanLedger.record(entry);
+      return saved == null ? null : saved.getId();
+      } catch (Exception ex) {
+        LOGGER.error("保存流量检测结果失败，记录 ID={}", entry.getId(), ex);
+        throw new ApiException("流量检测结果保存失败，请检查本地数据库；不能将本次操作视为已成功归档");
+      }
     }
+  }
+
+  private TrafficScanLedger scanEntry(TrafficPacket packet, String engine) {
+    TrafficScanLedger entry = new TrafficScanLedger();
+    entry.setEngine(engine);
+    entry.setPacketId(packet.getId());
+    entry.setTargetId(0L);
+    entry.setHost(packet.getHost() == null ? "" : packet.getHost());
+    entry.setPort(packet.getPort());
+    try { entry.setUrl(buildUrl(packet)); } catch (ApiException invalidUrl) { /* Keep rejected attempts too. */ }
+    return entry;
+  }
+
+  /** Persist progress independently of the browser connection, including partial evidence. */
+  private ZapScanListener recordingListener(TrafficScanLedger entry, ZapScanListener delegate) {
+    return new ZapScanListener() {
+      private final List<TargetedScanHit> hits = new ArrayList<>();
+      private final List<TargetedScanProbe> probes = new ArrayList<>();
+      private void update(String message, TargetedScanHit hit, TargetedScanProbe probe, Runnable delivery) {
+        // Scanner output and heartbeat workers may call concurrently, or arrive after completion.
+        synchronized (entry) {
+          if (!"RUNNING".equals(entry.getStatus())) return;
+          if (hit != null) hits.add(hit);
+          if (probe != null) probes.add(probe);
+          if (message != null) entry.setMessage(message);
+          entry.setHitCount(hits.size());
+          try {
+            entry.setResultJson(resultMapper.writeValueAsString(new TargetedScanResult(entry.getPacketId(),
+                entry.getEngine(), "RUNNING", hits, probes, entry.getMessage(), entry.getId())));
+            scanLedger.progress(entry);
+          } catch (Exception exception) {
+            throw new ApiException("流量检测进度保存失败，请检查本地数据库");
+          }
+          delivery.run();
+        }
+      }
+      public void onStart(String url) { update("正在对 " + url + " 执行检测", null, null, () -> delegate.onStart(url)); }
+      public void onStatus(String message) { update(message, null, null, () -> delegate.onStatus(message)); }
+      public void onHit(TargetedScanHit hit) { update(null, hit, null, () -> delegate.onHit(hit)); }
+      public void onProbe(TargetedScanProbe probe) { update(null, null, probe, () -> delegate.onProbe(probe)); }
+    };
   }
 
   /** 把底层工具的可观察过程（命令/操作/心跳/进度）桥接为面向用户的实时状态推送，实现执行过程透明。 */
@@ -615,38 +673,68 @@ public class TrafficScanService {
     };
   }
 
-  private static String snippet(String body) {
-    if (body == null || body.isBlank()) {
-      return "";
-    }
-    String normalized = body.replaceAll("\\s+", " ").trim();
-    return normalized.length() > 400 ? normalized.substring(0, 400) + "..." : normalized;
-  }
-
   private String buildUrl(TrafficPacket packet) {
-    StringBuilder sb = new StringBuilder();
-    sb.append(packet.getScheme() == null ? "http" : packet.getScheme()).append("://").append(packet.getHost());
-    if (packet.getPort() > 0 && packet.getPort() != 80 && packet.getPort() != 443) {
-      sb.append(":").append(packet.getPort());
+    String scheme = packet.getScheme() == null ? "http" : packet.getScheme().toLowerCase(Locale.ROOT);
+    if (!Set.of("http", "https").contains(scheme) || packet.getHost() == null
+        || packet.getHost().isBlank() || packet.getPort() < 0 || packet.getPort() > 65535) {
+      throw new ApiException("流量记录不是有效的 HTTP 目标");
     }
-    if (packet.getPath() != null) {
-      sb.append(packet.getPath());
-    }
-    return sb.toString();
+    int defaultPort = "https".equals(scheme) ? 443 : 80;
+    int port = packet.getPort() > 0 ? packet.getPort() : defaultPort;
+    String path = packet.getPath() == null || packet.getPath().isEmpty() ? "/" : packet.getPath();
+    if (!path.startsWith("/")) path = "/" + path;
+    try {
+      URI relative = URI.create(path);
+      if (relative.getRawAuthority() != null || relative.getRawFragment() != null) {
+        throw new ApiException("流量路径不能覆盖目标主机或包含片段");
+      }
+      URI origin = new URI(scheme, null, packet.getHost(), port == defaultPort ? -1 : port, null, null, null);
+      if (origin.getHost() == null) throw new ApiException("无法识别流量目标主机");
+      return URI.create(origin.toASCIIString() + path).toASCIIString();
+    } catch (ApiException ex) { throw ex; }
+    catch (Exception ex) { throw new ApiException("流量目标 URL 格式不正确"); }
   }
 
-  private AuthorizedTarget resolveTarget(TrafficPacket packet) {
-    int packetPort =
-        packet.getPort() > 0
-            ? packet.getPort()
-            : ("https".equalsIgnoreCase(packet.getScheme()) ? 443 : 80);
+  private URI validatedPacketUri(TrafficPacket packet, AuthorizedTarget target) {
+    TrafficRequestSafety.validateAuthorization(target);
+    URI uri = URI.create(buildUrl(packet));
+    String host = policy.validatedHost(target);
+    if (!uri.getHost().equalsIgnoreCase(host)) throw new ApiException("流量主机与授权目标不一致");
+    policy.validateAuthorizedPort(target, effectivePort(uri));
+    return uri;
+  }
+
+  private int effectivePort(URI uri) {
+    return uri.getPort() >= 0 ? uri.getPort() : ("https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80);
+  }
+
+  private boolean alertMatchesTarget(String url, URI target) {
+    try {
+      URI candidate = URI.create(url);
+      return candidate.getHost() != null && candidate.getRawUserInfo() == null
+          && Set.of("http", "https").contains(candidate.getScheme())
+          && candidate.getHost().equalsIgnoreCase(target.getHost())
+          && effectivePort(candidate) == effectivePort(target);
+    } catch (Exception ex) { return false; }
+  }
+
+  private AuthorizedTarget resolveTarget(TrafficPacket packet, Long requestedTargetId) {
+    URI packetUri = URI.create(buildUrl(packet));
+    int packetPort = effectivePort(packetUri);
+    if (requestedTargetId != null && requestedTargetId > 0) {
+      AuthorizedTarget selected = targets.get(requestedTargetId);
+      validatedPacketUri(packet, selected);
+      return selected;
+    }
     if (packet.getTargetId() != null && packet.getTargetId() > 0) {
       AuthorizedTarget direct = targets.get(packet.getTargetId());
-      if (direct != null && direct.isEnabled() && isPortAuthorized(direct, packetPort)) {
+      if (direct != null && direct.isEnabled() && isPortAuthorized(direct, packetPort)
+          && isHostMatch(direct.getTargetValue(), packetUri.getHost())) {
         return direct;
       }
+      throw new ApiException("流量记录绑定的目标已停用或主机、端口不在该目标授权范围内");
     }
-    String host = packet.getHost();
+    String host = packetUri.getHost();
     List<AuthorizedTarget> matches =
         targetRepository.findAll().stream()
             .filter(AuthorizedTarget::isEnabled)
@@ -657,12 +745,12 @@ public class TrafficScanService {
       throw new ApiException("该流量记录所属主机 [" + host + "] 未绑定授权目标，无法执行主动安全测试");
     }
 
-    // 优先匹配包含该流量端口的目标，并按 id 倒序优先匹配最新配置
-    return matches.stream()
-        .sorted(java.util.Comparator.comparing(AuthorizedTarget::getId).reversed())
+    List<AuthorizedTarget> candidates = matches.stream()
         .filter(t -> isPortAuthorized(t, packetPort))
-        .findFirst()
-        .orElseGet(() -> matches.stream().max(java.util.Comparator.comparing(AuthorizedTarget::getId)).orElse(matches.get(0)));
+        .toList();
+    if (candidates.isEmpty()) throw new ApiException("流量目标端口不在已启用目标的授权范围内");
+    if (candidates.size() > 1) throw new ApiException("这条流量匹配多个授权目标，请在执行前选择目标");
+    return targets.get(candidates.get(0).getId());
   }
 
   private boolean isPortAuthorized(AuthorizedTarget target, int port) {
@@ -678,13 +766,9 @@ public class TrafficScanService {
 
   private boolean isHostMatch(String targetValue, String host) {
     if (targetValue == null || host == null) return false;
-    if (targetValue.equalsIgnoreCase(host) || host.contains(targetValue) || targetValue.contains(host)) {
-      return true;
-    }
     try {
-      String cleanTarget = targetValue.replaceFirst("^https?://", "").split("/")[0].split(":")[0];
-      String cleanHost = host.replaceFirst("^https?://", "").split("/")[0].split(":")[0];
-      return cleanTarget.equalsIgnoreCase(cleanHost);
+      URI uri = URI.create(targetValue.contains("://") ? targetValue : "http://" + targetValue);
+      return uri.getHost() != null && uri.getRawUserInfo() == null && uri.getHost().equalsIgnoreCase(host);
     } catch (Exception ex) {
       return false;
     }

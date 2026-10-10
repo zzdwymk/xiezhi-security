@@ -13,16 +13,21 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
+import java.net.SocketException;
 import java.net.URI;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.security.cert.CertificateException;
 import java.time.Duration;
 import java.util.Locale;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -45,12 +50,13 @@ final class LocalTrafficProxy implements AutoCloseable {
   private static final int MAX_PREVIEW = 64 * 1024;
   private static final Set<String> SUPPORTED_VERSIONS = Set.of("HTTP/1.0", "HTTP/1.1");
 
-  private final AuthorizedTarget target;
-  private final TargetPolicyService policy;
   private final MitmCertificateAuthority certificateAuthority;
   private final Consumer<Capture> capture;
   private final ExecutorService workers = Executors.newCachedThreadPool();
+  private final Object lifecycle = new Object();
+  private final Set<ConnectionScope> connections = new HashSet<>();
   private volatile boolean running;
+  private boolean closed;
   private ServerSocket server;
   private int listenPort;
 
@@ -59,32 +65,47 @@ final class LocalTrafficProxy implements AutoCloseable {
       TargetPolicyService policy,
       MitmCertificateAuthority certificateAuthority,
       Consumer<Capture> capture) {
-    this.target = target;
-    this.policy = policy;
     this.certificateAuthority = certificateAuthority;
     this.capture = capture;
   }
 
   void start(int port) throws IOException {
-    listenPort = port;
-    server = new ServerSocket();
-    server.setReuseAddress(true);
-    server.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), port));
-    running = true;
-    workers.submit(
-        () -> {
-          while (running) {
-            try {
-              Socket client = server.accept();
-              workers.submit(() -> handle(client));
-            } catch (IOException ignored) {
-              // Closing the listening socket is how stop() wakes accept().
-            }
-          }
-        });
+    synchronized (lifecycle) {
+      if (closed || running) throw new IllegalStateException("流量代理实例已启动或已关闭");
+      ServerSocket listener = new ServerSocket();
+      try {
+        listener.setReuseAddress(true);
+        listener.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), port));
+        listenPort = listener.getLocalPort();
+        server = listener;
+        running = true;
+        workers.execute(() -> acceptClients(listener));
+      } catch (IOException | RuntimeException failure) {
+        running = false;
+        closed = true;
+        server = null;
+        closeQuietly(listener);
+        workers.shutdownNow();
+        throw failure;
+      }
+    }
   }
 
-  private void handle(Socket client) {
+  private void acceptClients(ServerSocket listener) {
+    while (running) {
+      ConnectionScope connection = new ConnectionScope();
+      try {
+        Socket client = connection.track(listener.accept());
+        workers.execute(() -> handle(client, connection));
+      } catch (IOException | RejectedExecutionException failure) {
+        connection.close();
+        if (!running) return;
+        LOGGER.debug("流量代理接收连接失败", failure);
+      }
+    }
+  }
+
+  private void handle(Socket client, ConnectionScope connection) {
     long started = System.nanoTime();
     boolean responseBecameTls = false;
     try {
@@ -98,23 +119,20 @@ final class LocalTrafficProxy implements AutoCloseable {
       String[] requestLine = parseRequestLine(lines);
       String method = requestLine[0].toUpperCase(Locale.ROOT);
       if ("CONNECT".equals(method)) {
-        responseBecameTls = handleConnect(client, in, out, requestLine[1], rawHeader, started);
+        responseBecameTls = handleConnect(client, in, out, requestLine[1], rawHeader, started, connection);
       } else {
-        handleHttp(in, out, method, requestLine[1], requestLine[2], lines, rawHeader, started);
+        handleHttp(in, out, method, requestLine[1], requestLine[2], lines, rawHeader, started, connection);
       }
     } catch (Exception ex) {
-      LOGGER.warn("本地流量代理处理请求失败", ex);
-      if (!responseBecameTls) {
+      if (running) LOGGER.warn("本地流量代理处理请求失败", ex);
+      if (running && !responseBecameTls) {
         try {
           writeError(client.getOutputStream(), statusFor(ex));
         } catch (Exception ignored) {
         }
       }
     } finally {
-      try {
-        client.close();
-      } catch (IOException ignored) {
-      }
+      connection.close();
     }
   }
 
@@ -128,18 +146,19 @@ final class LocalTrafficProxy implements AutoCloseable {
       OutputStream clientOut,
       String authority,
       String rawHeader,
-      long started)
+      long started,
+      ConnectionScope connection)
       throws Exception {
     HostPort hp = parseAuthority(authority, 443);
     InetAddress address = authorize(hp.host(), hp.port());
     if (!certificateAuthority.enabled()) {
-      tunnelConnect(clientIn, clientOut, hp, address, rawHeader, started);
+      tunnelConnect(clientIn, clientOut, hp, address, rawHeader, started, connection);
       return true;
     }
 
     SSLSocket upstreamTls;
     try {
-      upstreamTls = openUpstreamTls(address, hp.host(), hp.port());
+      upstreamTls = openUpstreamTls(address, hp.host(), hp.port(), connection);
     } catch (Exception ex) {
       capture.accept(
           new Capture(
@@ -173,7 +192,7 @@ final class LocalTrafficProxy implements AutoCloseable {
 
       SSLSocket clientTls;
       try {
-        clientTls = openClientTls(client, hp.host(), hp.port());
+        clientTls = openClientTls(client, hp.host(), hp.port(), connection);
         clientTls.startHandshake();
       } catch (Exception ex) {
         LOGGER.warn("客户端 TLS 握手失败，目标={}:{}", hp.host(), hp.port(), ex);
@@ -209,7 +228,7 @@ final class LocalTrafficProxy implements AutoCloseable {
                   () ->
                       firstUpstreamAvailable.compareAndSet(true, false)
                           ? upstreamTls
-                          : openUpstreamTls(address, hp.host(), hp.port()),
+                          : openUpstreamTls(address, hp.host(), hp.port(), connection),
                   capture)
               .run();
         } else {
@@ -348,13 +367,13 @@ final class LocalTrafficProxy implements AutoCloseable {
         responseBytes > MAX_PREVIEW);
   }
 
-  private SSLSocket openUpstreamTls(InetAddress address, String host, int port) throws Exception {
-    Socket tcp = new Socket();
+  private SSLSocket openUpstreamTls(InetAddress address, String host, int port, ConnectionScope connection) throws Exception {
+    Socket tcp = connection.track(new Socket());
     try {
       tcp.connect(new InetSocketAddress(address, port), 5_000);
       tcp.setSoTimeout(30_000);
       SSLSocketFactory factory = SSLContext.getDefault().getSocketFactory();
-      SSLSocket tls = (SSLSocket) factory.createSocket(tcp, host, port, true);
+      SSLSocket tls = connection.track((SSLSocket) factory.createSocket(tcp, host, port, true));
       SSLParameters parameters = tls.getSSLParameters();
       parameters.setEndpointIdentificationAlgorithm("HTTPS");
       parameters.setApplicationProtocols(new String[] {"http/1.1"});
@@ -375,9 +394,9 @@ final class LocalTrafficProxy implements AutoCloseable {
     }
   }
 
-  private SSLSocket openClientTls(Socket client, String host, int port) throws Exception {
+  private SSLSocket openClientTls(Socket client, String host, int port, ConnectionScope connection) throws Exception {
     SSLContext context = certificateAuthority.serverContext(host);
-    SSLSocket tls = (SSLSocket) context.getSocketFactory().createSocket(client, host, port, false);
+    SSLSocket tls = connection.track((SSLSocket) context.getSocketFactory().createSocket(client, host, port, false));
     tls.setUseClientMode(false);
     tls.setNeedClientAuth(false);
     tls.setSoTimeout(60_000);
@@ -393,11 +412,12 @@ final class LocalTrafficProxy implements AutoCloseable {
       HostPort hp,
       InetAddress address,
       String rawHeader,
-      long started)
+      long started,
+      ConnectionScope connection)
       throws Exception {
     AtomicLong up = new AtomicLong();
     AtomicLong down = new AtomicLong();
-    try (Socket upstream = new Socket()) {
+    try (Socket upstream = connection.track(new Socket())) {
       upstream.connect(new InetSocketAddress(address, hp.port()), 5_000);
       upstream.setSoTimeout(60_000);
       clientOut.write(
@@ -456,7 +476,8 @@ final class LocalTrafficProxy implements AutoCloseable {
       String version,
       String[] lines,
       String rawHeader,
-      long started)
+      long started,
+      ConnectionScope connection)
       throws Exception {
     if (!SUPPORTED_VERSIONS.contains(version))
       throw new ProxyHttpException(505, "仅支持 HTTP/1.0 和 HTTP/1.1");
@@ -483,7 +504,7 @@ final class LocalTrafficProxy implements AutoCloseable {
     String responseHeader;
     String responsePreview;
     String contentType;
-    try (Socket upstream = new Socket()) {
+    try (Socket upstream = connection.track(new Socket())) {
       upstream.connect(new InetSocketAddress(address, port), 5_000);
       upstream.setSoTimeout(30_000);
       OutputStream upstreamOut = upstream.getOutputStream();
@@ -535,13 +556,6 @@ final class LocalTrafficProxy implements AutoCloseable {
       throw new ApiException("代理目标地址或端口无效");
     }
     String normalized = normalizeHost(requestHost);
-    if (target != null) {
-      String expected = targetHost();
-      if (!normalized.equals(normalizeHost(expected))) throw new ApiException("代理仅允许访问当前授权目标");
-      policy.validatedHost(target);
-      policy.validateAuthorizedPort(target, port);
-      return InetAddress.getAllByName(expected)[0];
-    }
     InetAddress address = InetAddress.getAllByName(normalized)[0];
     if (address.isLoopbackAddress() && port == listenPort)
       throw new ApiException("不允许将代理请求转发回代理自身");
@@ -571,16 +585,6 @@ final class LocalTrafficProxy implements AutoCloseable {
         || headerTokens(lines, "Connection").contains("upgrade")) {
       throw new ProxyHttpException(501, "抓包代理暂不支持 WebSocket/Upgrade");
     }
-  }
-
-  private String targetHost() {
-    URI uri =
-        URI.create(
-            target.getTargetValue().contains("://")
-                ? target.getTargetValue()
-                : "//" + target.getTargetValue());
-    if (uri.getHost() == null) throw new ApiException("授权目标地址无效");
-    return uri.getHost();
   }
 
   private byte[] readHeader(InputStream in) throws IOException {
@@ -861,12 +865,56 @@ final class LocalTrafficProxy implements AutoCloseable {
 
   @Override
   public void close() {
-    running = false;
-    try {
-      if (server != null) server.close();
-    } catch (Exception ignored) {
+    ServerSocket listener;
+    List<ConnectionScope> active;
+    synchronized (lifecycle) {
+      running = false;
+      closed = true;
+      listener = server;
+      server = null;
+      active = new ArrayList<>(connections);
     }
+    closeQuietly(listener);
+    for (ConnectionScope connection : active) connection.close();
     workers.shutdownNow();
+  }
+
+  private static void closeQuietly(AutoCloseable resource) {
+    try { if (resource != null) resource.close(); }
+    catch (Exception ignored) { }
+  }
+
+  private final class ConnectionScope implements AutoCloseable {
+    private final List<Socket> sockets = new ArrayList<>();
+    private boolean disposed;
+
+    <T extends Socket> T track(T socket) throws IOException {
+      synchronized (lifecycle) {
+        if (running && !disposed) {
+          // HTTP/2 may open many sequential upstream sockets within one browser connection.
+          sockets.removeIf(Socket::isClosed);
+          sockets.add(socket);
+          connections.add(this);
+          return socket;
+        }
+      }
+      closeQuietly(socket);
+      throw new SocketException("流量代理已关闭");
+    }
+
+    @Override public void close() {
+      List<Socket> active;
+      synchronized (lifecycle) {
+        if (disposed) return;
+        disposed = true;
+        active = new ArrayList<>(sockets);
+        sockets.clear();
+        connections.remove(this);
+      }
+      // Raw TCP sockets are registered before their TLS wrappers. Closing the transports first
+      // unblocks pending I/O and prevents TLS close_notify from waiting on a live connection.
+      for (Socket socket : active) closeQuietly(socket);
+    }
   }
 
   record HostPort(String host, int port) {}

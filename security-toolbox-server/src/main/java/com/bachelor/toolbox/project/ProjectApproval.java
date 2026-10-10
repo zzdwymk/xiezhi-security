@@ -38,6 +38,16 @@ public class ProjectApproval {
   private String requestedBy;
 
   @Column(length = 100)
+  private String initiatedBy;
+
+  /** Null on legacy tickets; new AI requests are unique per project, applicant and turn. */
+  @com.fasterxml.jackson.annotation.JsonIgnore
+  @Column(length = 64, unique = true, updatable = false)
+  private String aiRequestKey;
+
+  public boolean isDispatched() { return aiDispatchJson != null; }
+
+  @Column(length = 100)
   private String approvedBy;
 
   @Column(length = 2000)

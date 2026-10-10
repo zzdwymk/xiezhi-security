@@ -138,7 +138,8 @@ public class SecurityAgentTools {
     return value == null ? "" : value.replaceAll("[\\r\\n]", " ").strip();
   }
 
-  @Tool("执行已经过规划的低风险授权检测；再次校验项目、目标、端口、工具、有效期和资源配额")
+  // Internal compatibility entry point, deliberately not exposed as a model tool.
+  // New AI requests must persist a plan and use the administrator confirmation path.
   @Transactional
   public AiDispatchResponse executeAuthorizedPlan(
       AiAgentRequest request, AiPlanResponse proposedPlan) throws Exception {

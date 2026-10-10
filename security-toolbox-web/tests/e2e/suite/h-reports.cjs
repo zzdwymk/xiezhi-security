@@ -8,15 +8,11 @@
  *
  * 报告是本系统的最终交付物，本阶段校验其可生成、可下载且内容与实际扫描一致。
  *
- * 注意：报告接口返回 Content-Disposition: attachment，该响应会被 Chromium 下载管理器
- * 拦截，使发起请求的 XHR 只收到空的合成响应（204、无 content-type）。这是浏览器行为，
- * 不是应用缺陷。因此下载类断言一律基于「应用实际收到的 XHR 响应」（状态码 / 内容类型 /
- * 字节数），而不依赖 Playwright 的 download 事件，避免把环境现象误判为产品缺陷。
+ * 下载断言监听真实浏览器响应并保存原始字节；响应成功与操作系统落盘分别记录。
  */
 const {
   sleep, settle, navigate, pageTitle, dialog, selectOn,
   lastMessage, clearMessages, waitRow,
-  clearDownloadRecords, waitDownloadRecord,
 } = require("../lib/ui.cjs");
 
 async function openReportTab(page, ctx) {
@@ -33,14 +29,8 @@ async function openReportTab(page, ctx) {
   return page.locator(".el-tab-pane:visible").last();
 }
 
-/** 点击按钮并捕获下载（PDF 生成较慢，给足超时） */
-async function clickAndDownload(page, locator, timeout = 45000) {
-  const [download] = await Promise.all([
-    page.waitForEvent("download", { timeout }).catch(() => null),
-    locator.click(),
-  ]);
-  return download;
-}
+const fs = require("node:fs");
+const { captureReport } = require("../lib/report-response.cjs");
 
 async function run(page, H, ctx) {
   H.phase("阶段 H — 报告输出");
@@ -139,7 +129,7 @@ async function run(page, H, ctx) {
       await sleep(1000);
     }
     if (!body) {
-      return "沙箱 iframe 内容不可跨源读取（符合严格沙箱预期），已通过对话框存在性验证";
+      return { status: "PARTIAL", detail: "iframe 正文未读取，项目/靶机内容断言未验证" };
     }
     const hits = [ctx.targetIp, ctx.projectName].filter((k) => k && body.includes(k));
     if (hits.length === 0) {
@@ -161,16 +151,9 @@ async function run(page, H, ctx) {
   // ---------- 项目 PDF ----------
   await H.run("H-10", "点击「项目 PDF」，应用取得有效的 PDF 响应", async () => {
     await clearMessages(page);
-    await clearDownloadRecords(page);
     const btn = pane.locator("button", { hasText: "项目 PDF" }).first();
     if (!(await btn.count())) throw new Error("未渲染项目 PDF 按钮");
-    await btn.click();
-
-    const rec = await waitDownloadRecord(page, /\/reports\/projects\/\d+\.pdf/, 60000);
-    if (!rec) {
-      const msg = await lastMessage(page, { timeout: 5000 });
-      throw new Error(`未观察到 PDF 响应${msg ? `，提示="${msg.text}"` : ""}`);
-    }
+    const rec = await captureReport(page, H, btn, `/api/reports/projects/${ctx.projectId}.pdf`, "project");
     ctx.projectPdfRecord = rec;
     if (rec.status !== 200) throw new Error(`PDF 接口返回 ${rec.status}（期望 200）`);
     return `HTTP ${rec.status}，${rec.contentType}，${rec.size} 字节`;
@@ -178,7 +161,8 @@ async function run(page, H, ctx) {
 
   await H.run("H-11", "项目 PDF 内容类型与体积正确（非空文件）", async () => {
     const rec = ctx.projectPdfRecord;
-    if (!rec) return "H-10 未取得 PDF 响应，跳过";
+    if (!rec) return { status: "PARTIAL", detail: "H-10 未取得 PDF 响应，未验证" };
+    if (!rec.signature.startsWith("%PDF-")) throw new Error("响应缺少 PDF 文件签名");
     if (!/application\/pdf/i.test(rec.contentType || "")) {
       throw new Error(`内容类型异常: ${rec.contentType}`);
     }
@@ -237,16 +221,9 @@ async function run(page, H, ctx) {
 
   await H.run("H-16", "点击「目标 PDF」，应用取得有效的 PDF 响应", async () => {
     await clearMessages(page);
-    await clearDownloadRecords(page);
     const btn = pane.locator("button", { hasText: "目标 PDF" }).first();
     if (!(await btn.count())) throw new Error("未渲染目标 PDF 按钮");
-    await btn.click();
-
-    const rec = await waitDownloadRecord(page, /\/reports\/projects\/targets\/\d+\.pdf/, 60000);
-    if (!rec) {
-      const msg = await lastMessage(page, { timeout: 5000 });
-      throw new Error(`未观察到目标 PDF 响应${msg ? `，提示="${msg.text}"` : ""}`);
-    }
+    const rec = await captureReport(page, H, btn, `/api/reports/projects/targets/${ctx.ipTargetId || ctx.targetId}.pdf`, "target");
     ctx.targetPdfRecord = rec;
     if (rec.status !== 200) throw new Error(`目标 PDF 接口返回 ${rec.status}（期望 200）`);
     return `HTTP ${rec.status}，${rec.contentType}，${rec.size} 字节`;
@@ -254,7 +231,8 @@ async function run(page, H, ctx) {
 
   await H.run("H-17", "单目标 PDF 内容类型与体积正确（非空文件）", async () => {
     const rec = ctx.targetPdfRecord;
-    if (!rec) return "H-16 未取得 PDF 响应，跳过";
+    if (!rec) return { status: "PARTIAL", detail: "H-16 未取得 PDF 响应，未验证" };
+    if (!rec.signature.startsWith("%PDF-")) throw new Error("响应缺少 PDF 文件签名");
     if (!/application\/pdf/i.test(rec.contentType || "")) {
       throw new Error(`内容类型异常: ${rec.contentType}`);
     }
@@ -291,18 +269,22 @@ async function run(page, H, ctx) {
     await navigate(page, "检测任务");
     await sleep(2500);
     await clearMessages(page);
-    await clearDownloadRecords(page);
-    const row = page.locator(".el-table__row").filter({ hasText: /成功|SUCCESS/ }).first();
-    if (!(await row.count())) throw new Error("无成功任务可下载报告");
+    const own = new Set([...(ctx.taskPairs || []).map(t => String(t.taskId)), ...(ctx.createdTaskIds || []).map(String)]);
+    let row = null;
+    const rows = page.locator(".el-table__row");
+    for (let i = 0; i < await rows.count(); i++) {
+      const candidate = rows.nth(i);
+      const id = ((await candidate.locator("td").nth(0).textContent()) || "").trim();
+      const targetId = ((await candidate.locator("td").nth(2).textContent()) || "").trim();
+      const status = ((await candidate.locator("td").nth(3).textContent()) || "").trim();
+      if (/成功|SUCCESS/.test(status) && (own.has(id) || [ctx.ipTargetId, ctx.targetId].filter(Boolean).map(String).includes(targetId))) {
+        row = candidate; ctx.taskReportTaskId = id; break;
+      }
+    }
+    if (!row) throw new Error("当前页无本轮目标的成功任务，不能以历史任务替代");
     const btn = row.locator("button", { hasText: "报告" }).first();
     if (!(await btn.count())) throw new Error("未渲染报告按钮");
-    await btn.click();
-
-    const rec = await waitDownloadRecord(page, /\/reports\/tasks\/\d+/, 40000);
-    if (!rec) {
-      const msg = await lastMessage(page, { timeout: 5000 });
-      throw new Error(`未观察到任务报告响应${msg ? `，提示="${msg.text}"` : ""}`);
-    }
+    const rec = await captureReport(page, H, btn, `/api/reports/tasks/${ctx.taskReportTaskId}/download`, "task", 40000);
     ctx.taskReportRecord = rec;
     if (rec.status !== 200) throw new Error(`任务报告接口返回 ${rec.status}`);
     if (rec.size < 200) throw new Error(`报告体积异常，仅 ${rec.size} 字节`);
@@ -313,17 +295,14 @@ async function run(page, H, ctx) {
   }, { page, shotOnPass: true });
 
   await H.run("H-20", "任务级报告内容包含靶机地址与执行结论", async () => {
-    // 用浏览器打开刚下载的报告内容不便，改为通过 UI 的报告预览路径验证
-    const row = page.locator(".el-table__row").filter({ hasText: /成功|SUCCESS/ }).first();
-    await row.locator("button", { hasText: "详情" }).first().click();
-    const dlg = await dialog(page, "任务详情");
-    const text = ((await dlg.textContent()) || "").replace(/\s+/g, " ");
-    const hasTarget = text.includes(ctx.targetIp);
-    const close = dlg.locator("button", { hasText: "关闭" }).last();
-    if (await close.isVisible().catch(() => false)) await close.click();
-    await sleep(1200);
-    if (!hasTarget) throw new Error("任务详情未包含靶机地址，报告数据来源存疑");
-    return `任务执行记录含靶机 ${ctx.targetIp}，报告数据来源可核对`;
+    const rec = ctx.taskReportRecord;
+    if (!rec) return { status: "PARTIAL", detail: "H-19 未取得报告，内容未验证" };
+    const html = fs.readFileSync(rec.artifact, "utf8");
+    if (!html.includes(ctx.targetIp)) throw new Error("下载 HTML 未包含本轮靶机地址");
+    if (!/成功|SUCCESS|完成|结论|结果/.test(html)) throw new Error("下载 HTML 未包含执行结论/结果");
+    return { taskId: ctx.taskReportTaskId, target: ctx.targetIp, artifact: rec.artifact, sha256: rec.sha256,
+      detail: "已检查本次任务响应的实际HTML内容；操作系统下载落盘另行验证" };
+
   }, { page });
 
   return true;

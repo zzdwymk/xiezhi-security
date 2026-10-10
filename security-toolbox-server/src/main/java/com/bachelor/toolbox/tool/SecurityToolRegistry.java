@@ -12,7 +12,14 @@ public class SecurityToolRegistry {
   private final Map<String, SecurityTool> tools = new LinkedHashMap<>();
 
   public SecurityToolRegistry(List<SecurityTool> toolList) {
-    toolList.forEach(tool -> tools.put(tool.code(), tool));
+    for (SecurityTool tool : toolList) {
+      if (tool.code() == null || tool.code().isBlank()) {
+        throw new IllegalStateException("安全工具注册 code 不能为空");
+      }
+      if (tools.putIfAbsent(tool.code(), tool) != null) {
+        throw new IllegalStateException("安全工具 code 重复注册: " + tool.code());
+      }
+    }
   }
 
   public SecurityTool require(String code) {

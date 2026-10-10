@@ -207,12 +207,12 @@ public class AiContextService {
   }
 
   /**
-   * Produces a narrow, human-readable answer for an explicitly referenced audit record.
+   * Produces a validated reference template for model-assisted analysis of one audit record.
    *
    * <p>This path intentionally avoids broad project retrieval. A question about one audit row must
    * not be answered from unrelated fingerprints, findings or previous conversations.
    */
-  public Optional<String> answerAuditQuestion(
+  public Optional<String> auditAnalysisTemplate(
       Long projectId,
       Long targetId,
       AiPlanRequest.ContextRefs groupedRefs,
@@ -486,7 +486,7 @@ public class AiContextService {
     if (!Objects.equals(expected, actual)) throw new ApiException(label + "不属于当前评估项目");
   }
   /** Shared by direct references and project indexing; redact before truncating evidence. */
-  static String redact(String value, int max) {
+  public static String redact(String value, int max) {
     if (value == null) return "";
     String sanitized = redactContent(value, 0);
     return sanitized.length() <= max ? sanitized : sanitized.substring(0, max) + "…";

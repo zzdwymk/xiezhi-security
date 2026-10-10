@@ -12,7 +12,7 @@ import { createApp, h, reactive } from 'vue';
 import Panel from '/src/components/AiProgressPanel.vue';
 import '/src/unified-theme.css';
 const start = new Date(Date.now()-8000).toISOString();
-const state = reactive({message:{id:'fixture',role:'assistant',content:'',status:'running',taskIds:[],steps:[],createdAt:start,updatedAt:start,agentEvents:[{type:'session',summary:'已载入授权目标',createdAt:start},{type:'evidence',stage:'retrieving',evidenceCount:5,summary:'检索到与当前请求有关的资料',createdAt:start},{type:'plan',stage:'generating',summary:'正在根据证据整理回答',createdAt:start}]},tasks:[]});
+const state = reactive({message:{id:'fixture',role:'assistant',content:'',status:'running',taskIds:[],steps:[],createdAt:start,updatedAt:start,agentEvents:[{type:'session',summary:'已载入授权目标',createdAt:start},{type:'evidence',stage:'retrieving',evidenceCount:5,summary:'检索到与当前请求有关的资料',createdAt:start},{type:'progress',stage:'ASSESSED',source:'runtime-public-progress',eventTiming:'LIVE',assessmentSource:'MODEL',modelDecision:'FINALIZE',evidenceDecision:'FINALIZE',reasonCodes:['DIRECT_SUPPORT'],summary:'证据充分，可以回答当前问题。',createdAt:start},{type:'plan',stage:'generating',summary:'正在根据证据整理回答',createdAt:start}]},tasks:[]});
 window.progressFixture = state;
 window.progressFixtureTaskClicks=0;
 createApp({setup:()=>()=>h(Panel,{...state,onOpenTasks:()=>{window.progressFixtureTaskClicks++;}})}).mount('#fixture');
@@ -45,14 +45,14 @@ function ratio(foreground, background) {
   page.on('pageerror', error => consoleErrors.push(error.message));
   await page.goto(`http://127.0.0.1:${port}/__ai-progress-fixture`);
   await page.locator('.progress-spinner').waitFor();
-  await check('default status is lightweight and a completed question occupies one 44px line', async () => {
+  await check('default status is lightweight and a completed question uses a quiet 28px line', async () => {
     assert.equal(await page.locator('.progress-facts').isVisible(),false);
     assert.equal(await page.locator('.progress-milestones').isVisible(),false);
     const style=await page.locator('.ai-progress-panel').evaluate(element=>({background:getComputedStyle(element).backgroundColor,border:getComputedStyle(element).borderTopWidth,titleFont:getComputedStyle(element.querySelector('.progress-heading strong')).fontSize,activityFont:getComputedStyle(element.querySelector('.progress-activity')).fontSize}));
-    assert.equal(style.background,'rgba(0, 0, 0, 0)'); assert.equal(style.border,'0px'); assert.equal(style.titleFont,'14px'); assert.equal(style.activityFont,'14px');
+    assert.equal(style.background,'rgba(0, 0, 0, 0)'); assert.equal(style.border,'0px'); assert.equal(style.titleFont,'16px'); assert.equal(style.activityFont,'14px');
     await page.evaluate(()=>{window.progressFixture.message.status='completed';});
     assert.equal(await page.locator('.progress-activity').count(),0);
-    const bounds=await page.locator('.ai-progress-panel').boundingBox(); assert.ok(bounds.height>=44&&bounds.height<=48,JSON.stringify(bounds));
+    const bounds=await page.locator('.ai-progress-panel').boundingBox(); assert.ok(bounds.height>=28&&bounds.height<=32,JSON.stringify(bounds));
     await page.screenshot({path:path.join(output,'completed-no-tools.png'),fullPage:true});
     await page.evaluate(()=>{window.progressFixture.message.status='running';}); return {...style,completedHeight:bounds.height};
   });
@@ -81,12 +81,13 @@ function ratio(foreground, background) {
     state.tasks=['RUNNING','FAILED','SUCCESS'].map((status,index)=>({id:11+index,toolCode:index===0?'authorized_long_tool_name_without_spaces_for_reflow':'http_security_check',status,createdAt:state.message.createdAt,progressMessage:'正在验证授权目标的响应证据：https://example.test/very/long/path/with/parameters?evidence=abcdefghijklmnopqrstuv'}));
   });
   await check('320px viewport reflows actual task and progress content without horizontal clipping', async () => {
-    await page.getByRole('button',{name:'查看详细过程'}).click();
+    await page.locator('.progress-execution-toggle').click();
+    await page.getByRole('button',{name:'查看模型决策摘要'}).click();
     const result=await layout(); assert.ok(result.documentWidth<=320,JSON.stringify(result)); assert.deepEqual(result.overflow,[]);
     await page.screenshot({path:path.join(output,'light-320-expanded.png'),fullPage:true}); return result;
   });
   await check('completed actual tool calls remain as compact rows with expandable results and task navigation', async () => {
-    await page.getByRole('button',{name:'收起详细过程'}).click();
+    await page.getByRole('button',{name:'收起模型决策摘要'}).click();
     await page.evaluate(()=>{window.progressFixture.message.status='completed';window.progressFixture.tasks.forEach(task=>{task.status='SUCCESS';});});
     assert.equal(await page.locator('.progress-tool-call').count(),3);
     assert.equal(await page.locator('.progress-activity').count(),0);
@@ -98,15 +99,15 @@ function ratio(foreground, background) {
     await first.locator('summary').click();
     await page.screenshot({path:path.join(output,'completed-tool-calls.png'),fullPage:true});
     await page.evaluate(()=>{window.progressFixture.message.status='running';window.progressFixture.tasks.forEach((task,index)=>{task.status=['RUNNING','FAILED','SUCCESS'][index];});});
-    await page.getByRole('button',{name:'查看详细过程'}).click(); return {calls:3,taskNavigationEmitted:true};
+    await page.getByRole('button',{name:'查看模型决策摘要'}).click(); return {calls:3,taskNavigationEmitted:true};
   });
   await check('200 percent component text size remains readable at 320px', async () => {
     await page.locator('.ai-progress-panel').evaluate(element=>{
-      for (const [token,value] of Object.entries({'--fontSizeBase200':'24px','--lineHeightBase200':'32px','--fontSizeBase300':'28px','--lineHeightBase300':'40px'})) element.style.setProperty(token,value);
+      for (const [token,value] of Object.entries({'--fontSizeBase200':'24px','--lineHeightBase200':'32px','--fontSizeBase300':'28px','--lineHeightBase300':'40px','--fontSizeBase400':'32px','--lineHeightBase400':'44px'})) element.style.setProperty(token,value);
     });
     const result=await layout(); assert.ok(result.documentWidth<=320,JSON.stringify(result)); assert.deepEqual(result.overflow,[]);
     const font=await page.locator('.progress-heading strong').evaluate(element=>getComputedStyle(element).fontSize);
-    assert.equal(font,'28px');
+    assert.equal(font,'32px');
     await page.locator('.progress-toggle').scrollIntoViewIfNeeded();
     const button=await page.locator('.progress-toggle').boundingBox(); assert.ok(button.y>=0&&button.y+button.height<=900);
     await page.screenshot({path:path.join(output,'light-320-text-200.png'),fullPage:true}); return {...result,font,detailControlReachable:true,method:'2x component typography tokens; not browser-toolbar zoom'};
@@ -136,7 +137,7 @@ function ratio(foreground, background) {
   await check('forced colors retain icons and keyboard focus while reduced motion stops spinning', async () => {
     await page.emulateMedia({forcedColors:'active',reducedMotion:'reduce'});
     await page.evaluate(()=>{window.progressFixture.message.status='running';});
-    await page.getByRole('button',{name:'收起详细过程'}).focus();
+    await page.getByRole('button',{name:'收起模型决策摘要'}).focus();
     const state=await page.evaluate(()=>{
       const spinner=getComputedStyle(document.querySelector('.progress-spinner'));
       const icon=getComputedStyle(document.querySelector('.progress-milestones .fluent-system-icon')||document.querySelector('.progress-tool-call .fluent-system-icon'));

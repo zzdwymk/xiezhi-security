@@ -399,7 +399,7 @@ async function verifyModule(id, spec) {
   } else if (['report', 'recon', 'fingerprint'].includes(spec.verify)) {
     locator = await enterProjectTab({ report: '项目报告', recon: '信息收集', fingerprint: '探测服务' }[spec.verify]);
   } else {
-    const nav = { findings: '结果中心', topology: '资产拓扑', workflow: '红队工作流', traffic: '流量分析', offline: '离线工具集', audit: '审计日志' }[spec.verify];
+    const nav = { findings: '安全发现', topology: '资产拓扑', workflow: '红队工作流', traffic: '流量分析', offline: '离线工具集', audit: '审计日志' }[spec.verify];
     await navigate(page, nav);
     locator = spec.verify === 'workflow' ? page.locator('[aria-label="当前工作流配置"]')
       : spec.verify === 'traffic' ? page.locator('.traffic-row:visible')

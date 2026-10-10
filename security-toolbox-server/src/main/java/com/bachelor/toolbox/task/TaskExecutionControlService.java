@@ -10,7 +10,7 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class TaskExecutionControlService {
-  private final Semaphore global;
+  private final AdjustableSemaphore global;
   private final int perTargetLimit;
   private final ConcurrentHashMap<Long, Semaphore> targets = new ConcurrentHashMap<>();
   private final Set<Long> cancellations = ConcurrentHashMap.newKeySet();
@@ -22,7 +22,7 @@ public class TaskExecutionControlService {
       @Value("${toolbox.execution.max-concurrent-tasks-per-target:1}") int perTargetLimit) {
     int initial = Math.max(TaskExecutionSetting.MAX_CONCURRENT_LOWER_BOUND, globalLimit);
     this.maxConcurrentTasks = new AtomicInteger(initial);
-    this.global = new Semaphore(initial, true);
+    this.global = new AdjustableSemaphore(initial);
     this.perTargetLimit = Math.max(1, perTargetLimit);
   }
 
@@ -89,9 +89,8 @@ public class TaskExecutionControlService {
   }
 
   /**
-   * Dynamically changes the global concurrency cap. Increasing adds permits immediately; decreasing
-   * drains only the currently free permits so in-flight tasks are never interrupted. Because of
-   * that, after a shrink the effective cap may settle to the new value as busy tasks finish.
+   * Dynamically changes the global concurrency cap without interrupting active tasks. A reduction
+   * may leave a permit debt: releases repay that debt before another task can start.
    */
   public synchronized void resizeMaxConcurrentTasks(int newLimit) {
     int bounded = Math.max(
@@ -102,10 +101,7 @@ public class TaskExecutionControlService {
     if (delta > 0) {
       global.release(delta);
     } else if (delta < 0) {
-      int toRemove = -delta;
-      for (int i = 0; i < toRemove; i++) {
-        if (!global.tryAcquire()) break;
-      }
+      global.reduce(-delta);
     }
   }
 
@@ -114,11 +110,21 @@ public class TaskExecutionControlService {
   }
 
   public int availableConcurrentSlots() {
-    return global.availablePermits();
+    return Math.max(0, global.availablePermits());
   }
 
   public int maxConcurrentTasksPerTarget() {
     return perTargetLimit;
+  }
+
+  private static final class AdjustableSemaphore extends Semaphore {
+    private AdjustableSemaphore(int permits) {
+      super(permits, true);
+    }
+
+    private void reduce(int permits) {
+      super.reducePermits(permits);
+    }
   }
 
   public static final class Permit implements AutoCloseable {
@@ -132,7 +138,7 @@ public class TaskExecutionControlService {
     }
 
     @Override
-    public void close() {
+    public synchronized void close() {
       if (!closed) {
         closed = true;
         target.release();

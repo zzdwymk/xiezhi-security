@@ -5,6 +5,7 @@ import { ElMessage } from "element-plus";
 import { ArrowLeft } from "../components/fluentIcons";
 import { useAuthStore } from "../stores/auth";
 import { toErrorMessage } from "../utils/errorMessage";
+import { workspaceRedirect } from "../utils/startupNavigation";
 
 const auth = useAuthStore();
 const router = useRouter();
@@ -29,7 +30,14 @@ const quickLoginAllowed = computed(
 );
 
 async function enterWorkspace() {
-  await router.replace(String(route.query.redirect || "/"));
+  await router.replace(workspaceRedirect(route.query.redirect));
+}
+
+function rerunSetup() {
+  void router.push({
+    path: "/setup",
+    query: { redirect: workspaceRedirect(route.query.redirect) },
+  });
 }
 
 const initialCreds = ref<{ username: string; password: string } | null>(null);
@@ -364,7 +372,7 @@ onMounted(async () => {
         <span>{{
           desktopMode ? "" : "环境检查已完成"
         }}</span
-        ><el-button link type="primary" @click="$router.push('/setup')"
+        ><el-button link type="primary" @click="rerunSetup"
           >重新检测</el-button
         >
       </footer>

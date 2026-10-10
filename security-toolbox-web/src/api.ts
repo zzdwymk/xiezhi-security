@@ -1,6 +1,7 @@
 import { readAuthToken } from "./authToken";
-import { api, apiUrl } from "./apiClient";
+import { api, apiFetch, apiUrl } from "./apiClient";
 import { taskbarProgress } from "./utils/taskbarProgress";
+import { publicProgressProvenance } from "./utils/aiPresentation";
 import { assertAiLegacyFallbackAllowed, normalizeAiExecutionDecision, type AiExecutionIntent } from "./utils/aiIntent";
 import type { CopilotMode, CopilotReference } from "./types/copilot";
 import type {
@@ -27,6 +28,8 @@ export interface Target {
 }
 
 export interface PlanStep {
+  risk?: string;
+  requiresApproval?: boolean;
   workflowNodeId?: string;
   nodeRunId?: string;
   group?: number;
@@ -796,12 +799,21 @@ export interface ProjectFindingRecord {
   createdAt: string;
 }
 
+export interface AiApprovalPlanDetail {
+  targetId: number;
+  plan: Omit<AiPlan, "targetId" | "objective">;
+  status: string;
+  dispatch: AiDispatch | null;
+}
+
 export interface ProjectApproval {
   id: number;
   projectId: number;
   action: string;
   status: string;
   requestedBy?: string;
+  initiatedBy?: string;
+  dispatched?: boolean;
   approvedBy?: string;
   comment?: string;
   authorizationSnapshotHash?: string;
@@ -1036,7 +1048,8 @@ export const endpoints = {
     toolCode: string;
     parameters?: Record<string, unknown>;
   }) => api.post("/tasks", payload),
-  retryTask: (id: number) => api.post(`/tasks/${id}/retry`),
+  retryTask: (id: number, idempotencyKey?: string) => api.post(`/tasks/${id}/retry`, undefined,
+    idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : undefined),
   cancelTask: (id: number) => api.post(`/tasks/${id}/cancel`),
   workflowRuns: (projectId: number) =>
     api.get<WorkflowRunSummary[]>("/workflow-runs", { params: { projectId } }),
@@ -1136,6 +1149,7 @@ export const endpoints = {
     id: number,
     payload: { acknowledged: boolean; selectedStepIds: string[] },
   ) => api.post<PostScanPath>(`/post-scan-paths/${id}/confirm`, payload),
+  postScanPath: (id: number) => api.get<PostScanPath>(`/post-scan-paths/${id}`),
   detectionRules: () => api.get<DetectionRule[]>("/vulnerabilities/rules"),
   startActiveScan: (payload: {
     projectId: number;
@@ -1167,6 +1181,7 @@ export const endpoints = {
     status?: string,
     category?: string,
     sort?: string,
+    taskId?: number,
   ) =>
     api.get<PageResponse<ProjectFindingRecord>>("/findings", {
       params: {
@@ -1178,6 +1193,7 @@ export const endpoints = {
         status: status || undefined,
         category: category || undefined,
         sort: sort || undefined,
+        taskId: taskId || undefined,
       },
     }),
   updateFindingStatus: (id: number, status: string) =>
@@ -1283,6 +1299,8 @@ export const endpoints = {
       `/projects/${projectId}/approvals/${approvalId}/decision`,
       payload,
     ),
+  projectAiApprovalPlan: (projectId: number, approvalId: number) =>
+    api.get<AiApprovalPlanDetail>(`/projects/${projectId}/approvals/${approvalId}/plan`),
   resumeProjectAiApproval: (projectId: number, approvalId: number) =>
     api.post<AiDispatch>(`/projects/${projectId}/approvals/${approvalId}/execute`, undefined, { timeout: 210_000 }),
   securityActions: (projectId: number) =>
@@ -1527,7 +1545,7 @@ async function streamTaskEventPath(
   signal: AbortSignal,
 ) {
   const token = readAuthToken();
-  const response = await fetch(apiUrl(path), {
+  const response = await apiFetch(apiUrl(path), {
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       Accept: "text/event-stream",
@@ -1591,14 +1609,15 @@ export function connectTaskEventFeed(
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
   const connect = async () => {
-    if (stopped) return;
+    if (stopped || !readAuthToken()) return;
     activeController = new AbortController();
     try {
       await streamAllTaskEvents(onEvent, activeController.signal);
     } catch {
       // Polling in the consuming views remains the fallback while SSE reconnects.
     }
-    if (!stopped) retryTimer = setTimeout(() => void connect(), 1_000);
+    if (!stopped && readAuthToken())
+      retryTimer = setTimeout(() => void connect(), 1_000);
   };
 
   void connect();
@@ -1637,7 +1656,7 @@ export async function streamWorkflowSuggestions(
   signal?: AbortSignal,
 ) {
   const token = readAuthToken();
-  const response = await fetch(apiUrl("/ai/workflow/suggest"), {
+  const response = await apiFetch(apiUrl("/ai/workflow/suggest"), {
     method: "POST",
     headers: {
       Accept: "text/event-stream",
@@ -1926,6 +1945,7 @@ export function normalizeAgentEvent(
     : [];
   return {
     id: boundedString(raw.id || raw.eventId, 128),
+    ...publicProgressProvenance(raw),
     type,
     stage:
       raw.progressStage ||
@@ -2057,20 +2077,17 @@ function dispatchFromEvent(
   event: AiDispatchStreamEvent,
 ): AiDispatch | undefined {
   const normalized = normalizeAgentEvent(event) || (event as AgentStreamEvent);
+  // Intermediate plans and replayed ledger entries are useful for display, but
+  // only this turn's terminal receipt can complete the active request.
+  if (normalized.type !== "done" || normalized.recorded ||
+      normalized.eventTiming === "VERIFIED_RECORD" || normalized.status === "RECORDED")
+    return undefined;
   const candidate = (normalized.dispatch ||
     normalized) as Partial<AiDispatch>;
   const plan =
     candidate.plan || (normalized.plan as AiDispatch["plan"] | undefined);
   const ids = Array.isArray(candidate.taskIds) ? candidate.taskIds : [];
-  // A graph may finish with an answer/citations only. Return a valid empty
-  // dispatch so the UI can render the answer and close the stream gracefully.
-  if (
-    !plan &&
-    !candidate.answer &&
-    !normalized.answer &&
-    normalized.type !== "done"
-  )
-    return undefined;
+  // A terminal receipt may contain only an answer/citations and no scan tasks.
   return {
     targetId: Number(candidate.targetId ?? normalized.targetId ?? 0),
     plan: (plan || {
@@ -2141,24 +2158,21 @@ export async function dispatchAiStreaming(
   taskbarProgress.startIndeterminate("ai-agent-stream");
   const controller = new AbortController();
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
-  let streamStarted = false;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   const markStreamActivity = () => {
-    if (!streamStarted) {
-      streamStarted = true;
-      if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = undefined;
-    }
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(
+      () => controller.abort("AI stream idle timeout"),
+      STREAM_IDLE_TIMEOUT_MS,
+    );
   };
-  idleTimer = setTimeout(
-    () => controller.abort("AI stream start timeout"),
-    STREAM_IDLE_TIMEOUT_MS,
-  );
+  markStreamActivity();
 
   try {
     const token = readAuthToken();
     const agentMode = Number(payload.projectId) > 0;
     if (!agentMode) assertAiLegacyFallbackAllowed(payload);
-    const response = await fetch(
+    const response = await apiFetch(
       apiUrl(agentMode ? "/ai/agent/stream" : "/ai/dispatches/stream"),
       {
         method: "POST",
@@ -2172,7 +2186,7 @@ export async function dispatchAiStreaming(
       },
     );
 
-    if ([404, 405, 406, 415, 501].includes(response.status) || !response.body) {
+    if ([404, 405, 406, 415, 501].includes(response.status) || (response.ok && !response.body)) {
       if (idleTimer) clearTimeout(idleTimer);
       if (agentMode) {
         try {
@@ -2226,7 +2240,8 @@ export async function dispatchAiStreaming(
         : (json as AiDispatch);
     }
 
-    const reader = response.body.getReader();
+    if (!response.body) throw new Error("AI 流式响应缺少响应体");
+    reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     let sseData: string[] = [];
@@ -2234,6 +2249,7 @@ export async function dispatchAiStreaming(
     let completed: AiDispatch | undefined;
 
     const emitText = (raw: string) => {
+      if (completed) return;
       const text = raw.trim();
       if (!text || text === "[DONE]") return;
       let parsed: unknown;
@@ -2273,10 +2289,14 @@ export async function dispatchAiStreaming(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      // Receiving bytes (including a split frame or SSE keepalive) proves the
+      // transport is active; it does not manufacture a visible progress event.
+      if (value.byteLength) markStreamActivity();
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() || "";
       lines.forEach(processLine);
+      if (completed) return completed;
     }
     buffer += decoder.decode();
     if (buffer) processLine(buffer);
@@ -2296,6 +2316,12 @@ export async function dispatchAiStreaming(
   } finally {
     taskbarProgress.stopIndeterminate("ai-agent-stream");
     if (idleTimer) clearTimeout(idleTimer);
+    if (reader) {
+      // A terminal receipt/error need not be followed by a timely socket EOF.
+      // Release the transport without waiting for the remote close handshake.
+      void reader.cancel().catch(() => {});
+      reader.releaseLock();
+    }
   }
 }
 
@@ -2320,6 +2346,7 @@ export interface TargetedScanHit {
 }
 
 export interface TargetedScanResult {
+  scanId?: number;
   packetId: number;
   engine: string;
   status: string;
@@ -2330,6 +2357,7 @@ export interface TargetedScanResult {
 
 export type ZapScanStreamEvent =
   | { type: "start"; targetUrl?: string }
+  | { type: "record"; scanId: number }
   | { type: "status"; message?: string }
   | { type: "probe"; probe: TargetedScanProbe }
   | { type: "hit"; hit: TargetedScanHit }
@@ -2346,7 +2374,7 @@ async function streamTargetedScan(
   onEvent: (event: ZapScanStreamEvent) => void,
 ): Promise<TargetedScanResult> {
   const token = readAuthToken();
-  const response = await fetch(apiUrl(path), {
+  const response = await apiFetch(apiUrl(path), {
     method: "POST",
     headers: {
       Accept: "text/event-stream, application/json",
@@ -2382,28 +2410,41 @@ async function streamTargetedScan(
       return;
     }
     onEvent(event);
-    if (event.type === "complete") result = event.result;
+    if (event.type === "complete") {
+      if (!event.result || typeof event.result !== "object") {
+        throw new Error("检测连接已结束，但没有收到有效的检测结果");
+      }
+      result = event.result;
+    }
     if (event.type === "error") throw new Error(event.message || "定向扫描失败");
   };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split(/\r?\n/);
-    buffer = lines.pop() || "";
-    for (const line of lines) handleLine(line);
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        handleLine(line);
+        // A confirmed terminal result does not require the server to close its socket.
+        if (result) return result;
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) handleLine(buffer);
+    if (!result) throw new Error("流式响应已结束，但没有返回扫描结果");
+    return result;
+  } finally {
+    void reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
-  buffer += decoder.decode();
-  if (buffer.trim()) handleLine(buffer);
-
-  if (!result) throw new Error("流式响应已结束，但没有返回扫描结果");
-  return result;
 }
 
 export function streamZapScan(
   packetId: number | string,
-  payload: { strength?: string; policy?: string },
+  payload: { targetId?: number; strength?: string; policy?: string },
   onEvent: (event: ZapScanStreamEvent) => void,
 ): Promise<TargetedScanResult> {
   return streamTargetedScan(
@@ -2415,7 +2456,7 @@ export function streamZapScan(
 
 export function streamXrayScan(
   packetId: number | string,
-  payload: { allPocs?: boolean; pocCodes?: string[] },
+  payload: { targetId?: number; allPocs?: boolean; pocCodes?: string[] },
   onEvent: (event: ZapScanStreamEvent) => void,
 ): Promise<TargetedScanResult> {
   return streamTargetedScan(
@@ -2427,7 +2468,7 @@ export function streamXrayScan(
 
 export function streamSqlmapScan(
   packetId: number | string,
-  payload: { level?: number; risk?: number; technique?: string; data?: string },
+  payload: { targetId?: number; level?: number; risk?: number; technique?: string; data?: string },
   onEvent: (event: ZapScanStreamEvent) => void,
 ): Promise<TargetedScanResult> {
   return streamTargetedScan(

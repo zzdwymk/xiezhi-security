@@ -130,6 +130,7 @@ toolbox:
     zap-host: ${ZAP_HOST:127.0.0.1}
     zap-port: ${ZAP_PORT:8090}
     zap-startup-seconds: ${ZAP_STARTUP_SECONDS:120}
+    # Shared by task scans and targeted traffic scans; this is a limit, not an expected duration.
     zap-scan-timeout-seconds: ${ZAP_SCAN_TIMEOUT_SECONDS:1800}
     zap-max-alerts: ${ZAP_MAX_ALERTS:500}
   vulnerability-catalog:

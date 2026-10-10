@@ -25,6 +25,8 @@ public class BusinessDataResetService {
   private static final List<String> ACTIVE_TRAFFIC_STATUSES = List.of("STARTING", "RUNNING");
   private static final List<String> BUSINESS_TABLES_IN_DELETE_ORDER =
      List.of(
+         "system_notifications",
+         "traffic_scan_ledger",
          "agent_ledger_records",
          "ai_agent_dispatches",
           "ai_conversation_sessions",

@@ -50,20 +50,7 @@ public class AgentWorkflowSpecService {
       Set.of("workflowId", "scopeId", "revision", "specDigest", "updatedBy", "updatedAt");
   private static final ThreadLocal<WorkflowSnapshot> RUN_SNAPSHOT = new ThreadLocal<>();
   private static final Set<String> RUNTIME_TOOLS =
-      Set.of(
-          "retrieve_project_context",
-          "nmap_service_scan",
-          "tcp_ports",
-          "http_headers",
-          "http_security_check",
-          "tls_config",
-          "nuclei_scan",
-          "afrog_scan",
-          "xray_scan",
-          "zap_scan",
-          "fscan_scan",
-          "sqlmap_scan",
-          "msf_scan");
+      AiToolCatalog.RUNTIME_TOOLS;
   private static final Set<String> PHASES =
       Set.of(
           "engagement",
@@ -409,7 +396,7 @@ public class AgentWorkflowSpecService {
       boolean userApproval = Boolean.TRUE.equals(raw.get("requiresApproval"));
       normalized.put(
           "requiresApproval",
-          "sqlmap_scan".equals(tool) ? true : userApproval);
+          AiToolCatalog.requiresApproval(tool) ? true : userApproval);
       result.add(normalized);
     }
     return result;
@@ -432,6 +419,7 @@ public class AgentWorkflowSpecService {
       }
       normalized.put("nodeId", nodeId);
       normalized.put("group", integer(step.get("group"), 0, 0, 32, "工作流并行组无效"));
+      if (AiToolCatalog.requiresApproval(tool)) normalized.put("requiresApproval", true);
       normalized.put(
           "parameters",
           step.get("parameters") instanceof Map<?, ?> ? step.get("parameters") : Map.of());

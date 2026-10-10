@@ -87,6 +87,20 @@ public class ReportService {
     .severity-badge.severity-low { color: #0f6cbd; background: #eff6ff; border-color: #bfdbfe; }
     .severity-badge.severity-info { color: #475569; background: #f8fafc; border-color: #e2e8f0; }
     pre { margin: 8px 0 0; padding: 12px; background: #0f172a; color: #e2e8f0; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 6px; }
+    .markdown-body { overflow-wrap: anywhere; }
+    .markdown-body > :first-child { margin-top: 0; }
+    .markdown-body > :last-child { margin-bottom: 0; }
+    .markdown-body h1 { margin: 20px 0 8px; font-size: 24px; }
+    .markdown-body h2 { margin: 18px 0 8px; font-size: 20px; border: 0; padding: 0; }
+    .markdown-body h3, .markdown-body h4, .markdown-body h5, .markdown-body h6 { margin: 16px 0 6px; }
+    .markdown-body ul, .markdown-body ol { padding-left: 24px; }
+    .markdown-body blockquote { margin: 12px 0; padding-left: 14px; border-left: 3px solid #8bafd9; color: #526078; }
+    .markdown-body table { width: 100%; margin: 12px 0; border-collapse: collapse; background: #fff; }
+    .markdown-body th, .markdown-body td { padding: 7px 10px; border: 1px solid #c7d5e7; text-align: left; }
+    .markdown-body th { background: #e5eef9; }
+    .markdown-body code { font-family: Consolas, monospace; }
+    .markdown-body :not(pre) > code { padding: 2px 4px; border-radius: 3px; background: #e1eaf6; }
+    .markdown-body a { color: #0f6cbd; }
     .empty { padding: 18px; color: #526078; background: #f8fafc; border: 1px dashed #b8c4d4; }
     footer { margin-top: 38px; padding-top: 14px; border-top: 1px solid #dce3ed; color: #65738a; font-size: 13px; }
     @media print { body { background: #fff; } main { margin: 0; max-width: none; box-shadow: none; } }
@@ -139,8 +153,8 @@ public class ReportService {
     html.append("<h2>AI 综合研判</h2>")
         .append("<div class=\"notice\">")
         .append(FLUENT_INFO_ICON)
-        .append("<div class=\"notice-body\">")
-        .append(multiline(aiSummary))
+        .append("<div class=\"notice-body markdown-body\">")
+        .append(ReportMarkdown.render(aiSummary))
         .append("</div></div>")
         .append("<h2>漏洞与风险发现</h2>");
 
@@ -205,7 +219,9 @@ public class ReportService {
                   task.getProjectId(),
                   task.getTargetId(),
                   "请为授权安全测试报告生成综合摘要，说明执行状态、关键风险、证据局限和整改优先级。",
-                  List.of(task.getId())));      if (response.answer() != null && !response.answer().isBlank()) {
+                  List.of(task.getId())));
+      if (response != null && "openai-compatible".equals(response.provider())
+          && response.answer() != null && !response.answer().isBlank()) {
         return response.answer();
       }
     } catch (RuntimeException exception) {

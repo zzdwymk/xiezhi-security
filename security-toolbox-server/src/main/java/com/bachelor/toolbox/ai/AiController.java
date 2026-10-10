@@ -1,6 +1,7 @@
 package com.bachelor.toolbox.ai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.bachelor.toolbox.audit.AuditRequestContext;
 import com.bachelor.toolbox.project.AssessmentProjectService;
 import com.bachelor.toolbox.project.ProjectAuthorizationService;
 import jakarta.validation.Valid;
@@ -112,7 +113,7 @@ public class AiController {
         .contentType(MediaType.TEXT_EVENT_STREAM)
         .cacheControl(CacheControl.noCache())
         .header("X-Accel-Buffering", "no")
-        .body(stream);
+        .body(AuditRequestContext.wrapStream(stream));
   }
 
   /** Save a conversation summary as retrievable project memory (LlamaIndex). */
@@ -230,7 +231,7 @@ public class AiController {
         .contentType(new MediaType("application", "x-ndjson", StandardCharsets.UTF_8))
         .cacheControl(CacheControl.noCache())
         .header("X-Accel-Buffering", "no")
-        .body(body);
+        .body(AuditRequestContext.wrapStream(body));
   }
 
   private AgentWorkflowSpecService.WorkflowSnapshot freezeWorkflow(AiAgentRequest request) {

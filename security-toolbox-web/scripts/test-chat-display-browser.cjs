@@ -6,8 +6,9 @@ const {chromium}=require('playwright-core');const root=path.resolve(__dirname,'.
 const out=path.resolve(root,'../.run/chat-display',new Date().toISOString().replace(/[:.]/g,'-'));fs.mkdirSync(out,{recursive:true});
 const fixtureId=path.join(root,'__chat-display.vue').replace(/\\/g,'/');
 function read(name){return parse(fs.readFileSync(path.join(root,'src',name),'utf8')).descriptor;}
-function fragment(descriptor,className){
-  const walk=node=>{if(node.type===1&&node.props.some(p=>p.type===6&&p.name==='class'&&p.value?.content===className))return node.loc.source;for(const child of node.children||[]){const found=walk(child);if(found)return found;}};
+function fragment(descriptor,className,occurrence=0){
+  let matched=0;
+  const walk=node=>{if(node.type===1&&node.props.some(p=>p.type===6&&p.name==='class'&&p.value?.content===className)&&matched++===occurrence)return node.loc.source;for(const child of node.children||[]){const found=walk(child);if(found)return found;}};
   const result=walk(baseParse(descriptor.template.content));assert.ok(result,'Missing actual template '+className);return result;
 }
 const app=read('App.vue'),dashboard=read('views/Dashboard.vue');
@@ -24,7 +25,7 @@ const message=reactive({id:'message',role:'assistant',status:'completed',content
 const genericReferences=message=>message.refs;window.chatFixture=message;
 ${displayCode}
 </script><template><main><section class="desktop-v2-app-frame" style="display:block;position:relative;width:280px;min-height:0;height:auto"><section class="desktop-v2-recents" style="display:block">${fragment(app,'desktop-v2-recent-item')}</section></section>
-<section class="test-message">${fragment(dashboard,'message-bubble markdown-body')}${fragment(dashboard,'message-bubble')}${fragment(dashboard,'copilot-reference-card')}</section></main></template>`;
+<section class="test-message">${fragment(dashboard,'message-bubble markdown-body')}${fragment(dashboard,'message-bubble markdown-body',1)}${fragment(dashboard,'copilot-reference-card')}</section></main></template>`;
 const html=`<!doctype html><html lang="zh-CN" data-system-theme="light" data-window-material="none"><head><meta charset="utf-8"><style>html,body{height:auto!important;overflow:auto!important}body{margin:24px!important}.test-message{max-width:700px;margin-top:32px}.copilot-reference-card{padding:12px;border:1px solid #ddd}.copilot-reference-card code{margin-left:12px}</style></head><body><div id="fixture"></div><script type="module">
 import {createApp} from 'vue';import ElementPlus from 'element-plus';import 'element-plus/dist/index.css';
 import '/src/desktop-v2.css';import '/src/unified-theme.css';import '/src/fluent-design-2.css';import '/src/fluent-design-3.css';import '/src/motion.css';import Fixture from '/__chat-display.vue';createApp(Fixture).use(ElementPlus).mount('#fixture');
@@ -69,8 +70,15 @@ await check('actual assistant message translates prose while code and URL eviden
  assert.equal(await bubble.locator('p code').innerText(),'fscan_scan --ports 18888');assert.equal(await bubble.locator('a').getAttribute('href'),'https://example.test/fscan_scan');
  assert.equal(await page.evaluate(()=>window.chatFixture.content),content);
 });
-await check('actual user bubble preserves original input and cache modes cannot bleed',async()=>{
- await page.evaluate(()=>window.chatFixture.role='user');assert.equal(await page.locator('.message-bubble').textContent(),content);
+await check('actual user bubble renders Markdown while preserving input and tool codes',async()=>{
+ await page.evaluate(()=>window.chatFixture.role='user');
+ const bubble=page.locator('.message-bubble');
+ assert.equal(await bubble.locator('strong').innerText(),'nmap_service_scan');
+ assert.match(await bubble.innerText(),/fscan_scan/);
+ assert.equal((await bubble.locator('pre code').innerText()).trim(),'{"tool":"fscan_scan","vulnMode":"SAFE"}');
+ assert.equal(await bubble.locator('p code').innerText(),'fscan_scan --ports 18888');
+ assert.equal(await bubble.locator('a').getAttribute('href'),'https://example.test/fscan_scan');
+ assert.equal(await page.evaluate(()=>window.chatFixture.content),content);
  const modes=await page.evaluate(async()=>{const {renderMarkdown}=await import('/src/utils/markdown.ts');return[renderMarkdown('fscan_scan'),renderMarkdown('fscan_scan',{localizeToolCodes:true}),renderMarkdown('fscan_scan')];});
  assert.match(modes[0],/fscan_scan/);assert.match(modes[1],/fscan 主机扫描/);assert.equal(modes[0],modes[2]);
  await page.screenshot({path:path.join(out,'references-and-original-input.png'),fullPage:true});

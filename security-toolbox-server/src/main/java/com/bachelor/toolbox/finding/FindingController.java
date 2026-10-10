@@ -60,20 +60,23 @@ public class FindingController {
       @RequestParam(required = false) String severity,
       @RequestParam(required = false) String status,
       @RequestParam(required = false) String category,
-      @RequestParam(required = false) String sort) {
+      @RequestParam(required = false) String sort,
+      @RequestParam(required = false) Long taskId) {
     String keyword = query == null ? "" : query.trim();
     Specification<Finding> scope = accessibleScope();
     Specification<Finding> filterSpec =
         buildFilterSpecification(targetId, severity, status, category);
     Specification<Finding> searchSpec = keyword.isEmpty() ? null : buildSpecification(keyword);
-    Specification<Finding> spec = Specification.allOf(scope, filterSpec, searchSpec);
+    Specification<Finding> taskSpec = taskId == null ? null
+        : (root, criteriaQuery, builder) -> builder.equal(root.get("taskId"), taskId);
+    Specification<Finding> spec = Specification.allOf(scope, filterSpec, searchSpec, taskSpec);
     SortMode mode = SortMode.from(sort);
     if (mode == null) {
       Page<Finding> result =
           repository.findAll(
               spec,
               PageRequests.bounded(
-                  page, size, 10, 100, Sort.by(Sort.Direction.DESC, "createdAt")));
+                  page, size, 10, 100, Sort.by(Sort.Direction.DESC, "createdAt", "id")));
       populateProjectId(result.getContent());
       return result;
     }
@@ -140,6 +143,10 @@ public class FindingController {
         case TITLE_ASC -> {
           orders.add(builder.asc(root.get("title")));
         }
+      }
+      // Equal timestamps, severities or titles must not move between pages.
+      if (mode != SortMode.ID_ASC && mode != SortMode.ID_DESC) {
+        orders.add(builder.desc(root.get("id")));
       }
       query.orderBy(orders);
       return builder.conjunction();

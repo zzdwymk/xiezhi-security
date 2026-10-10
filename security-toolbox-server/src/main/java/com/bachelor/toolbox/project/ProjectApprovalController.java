@@ -26,6 +26,11 @@ public class ProjectApprovalController {
     return service.list(projectId);
   }
 
+  @GetMapping("/{approvalId}/plan")
+  public ProjectApprovalService.PlanDetail plan(@PathVariable Long projectId, @PathVariable Long approvalId) {
+    return service.planDetail(projectId, approvalId);
+  }
+
   @PostMapping
   public ProjectApproval request(
       @PathVariable Long projectId, @RequestBody Map<String, String> body) {

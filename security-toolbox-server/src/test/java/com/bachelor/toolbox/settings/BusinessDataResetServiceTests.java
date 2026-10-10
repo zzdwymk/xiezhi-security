@@ -55,6 +55,8 @@ class BusinessDataResetServiceTests {
   @Autowired private TrafficCaptureFilterRepository trafficFilters;
   @Autowired private TrafficSessionRepository trafficSessions;
   @Autowired private AuditLogRepository audits;
+  @Autowired private com.bachelor.toolbox.notification.NotificationRepository notifications;
+  @Autowired private com.bachelor.toolbox.traffic.TrafficScanLedgerRepository scanLedger;
 
   private TrafficProxyService trafficProxy;
   private AiAgentRuntimeClient runtime;
@@ -104,7 +106,24 @@ class BusinessDataResetServiceTests {
     trafficFilters.save(filter);
 
     AssessmentProject project = projects.save(project());
+    var notification = new com.bachelor.toolbox.notification.SystemNotification();
+    notification.setEventKey("task:1:SUCCESS");
+    notification.setProjectId(project.getId());
+    notification.setCategory("task");
+    notification.setOutcome("success");
+    notification.setTitle("完成");
+    notification.setBody("已保存");
+    notification.setRoute("/tasks?taskId=1");
+    notification.setSeverities("");
+    notifications.save(notification);
     AuthorizedTarget target = targets.save(target());
+    var trafficResult = new com.bachelor.toolbox.traffic.TrafficScanLedger();
+    trafficResult.setEngine("FUZZ");
+    trafficResult.setPacketId(1L);
+    trafficResult.setTargetId(target.getId());
+    trafficResult.setHost("example.test");
+    trafficResult.setResultJson("{\"results\":{\"1\":{\"body\":\"private result\"}}}");
+    scanLedger.save(trafficResult);
     tasks.save(task(project.getId(), target.getId(), "SUCCESS"));
     audits.save(audit("OLD_EVENT"));
     when(runtime.clearProjectIndex(project.getId())).thenReturn(3);
@@ -112,7 +131,9 @@ class BusinessDataResetServiceTests {
 
     BusinessDataResetService.ResetResult result = service.clear("CLEAR");
 
-    assertThat(result.deletedRecords()).isEqualTo(4);
+    assertThat(result.deletedRecords()).isEqualTo(6);
+    assertThat(notifications.count()).isZero();
+    assertThat(scanLedger.count()).isZero();
     assertThat(result.clearedProjects()).isEqualTo(1);
     assertThat(result.runtimeDocumentsDeleted()).isEqualTo(3);
     assertThat(result.auditLogRetained()).isTrue();

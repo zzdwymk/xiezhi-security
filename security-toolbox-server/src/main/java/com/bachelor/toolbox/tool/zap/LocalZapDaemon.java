@@ -20,6 +20,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -45,6 +48,7 @@ final class LocalZapDaemon implements ZapDaemon {
   private final ObjectMapper objectMapper;
   private final String apiKey;
   private volatile Process process;
+  private final Set<String> fuzzReceipts = ConcurrentHashMap.newKeySet();
 
   LocalZapDaemon(String executable, String host, int port, Duration startupTimeout) {
     this.executable = executable;
@@ -299,7 +303,10 @@ final class LocalZapDaemon implements ZapDaemon {
     params.put("maxChildren", "0");
     JsonNode json = getJsonRequired("spider/action/scan", params);
     JsonNode scan = json.get("scan");
-    return scan == null || !scan.isTextual() || scan.asText().isBlank() ? "" : scan.asText();
+    if (scan == null || !scan.isTextual() || scan.asText().isBlank()) {
+      throw new ApiException("ZAP 未能启动页面探测，本次检测未完成，请重试");
+    }
+    return scan.asText();
   }
 
   @Override
@@ -314,67 +321,60 @@ final class LocalZapDaemon implements ZapDaemon {
 
   @Override
   public String ajaxSpiderState() throws Exception {
-    JsonNode status = getJson("ajaxSpider/view/status", Map.of());
-    JsonNode results = getJson("ajaxSpider/view/numberOfResults", Map.of());
-    String text = status == null ? "" : status.path("status").asText("");
-    int count = results == null ? 0 : results.path("count").asInt(0);
-    return text + ";number=" + count + ";running=" + (!text.endsWith("stopped"));
+    String state = getJsonRequired("ajaxSpider/view/status", Map.of()).path("status").asText("");
+    if (!List.of("running", "stopped").contains(state)) {
+      throw new ApiException("ZAP 未返回有效的动态页面探测进度，无法确认检测是否完成");
+    }
+    return state;
   }
 
   @Override
   public String startFuzz(FuzzSpec spec) throws Exception {
-    if (spec == null || spec.target() == null || spec.requestUrl() == null) {
-      return "";
+    if (spec == null) throw new ApiException("缺少单次参数变异请求参数");
+    // Bundled ZAP 2.17.0 / fuzz 13.16.0 has no fuzzer REST implementor. CoreAPI really
+    // registers sendRequest(request, followRedirects), returning one HTTP message per response.
+    JsonNode json = postJsonRequired("core/action/sendRequest",
+        Map.of("request", spec.requestMessage(), "followRedirects", "false"));
+    JsonNode messages = json.path("sendRequest");
+    if (!messages.isArray() || messages.size() != 1
+        || !messages.get(0).path("requestHeader").asText("").startsWith(spec.method() + " ")
+        || !messages.get(0).path("responseHeader").asText("")
+            .matches("(?s)^HTTP/[0-9.]+ [1-5][0-9]{2}(?:[ \\r\\n].*)?$")) {
+      throw new ApiException("ZAP 未返回完整的单次参数变异响应，不能确认检测完成");
     }
-    // ZAP fuzzer 需要先 newFuzzer 注册目标消息，再按 payload 触发 scan。这里的字段在不同
-    // ZAP 版本间有差异，全部包在该 try 内：失败时返回空 id，由调用方按“无可执行 fuzz”降级。
-    try {
-      String newFuzzerParams = "url=" + spec.requestUrl();
-      String id = postJsonText("fuzzer/action/newFuzzer", newFuzzerParams);
-      if (id == null || id.isBlank()) {
-        return "";
-      }
-      Map<String, String> params = new LinkedHashMap<>();
-      params.put("fuzzers", "1");
-      params.put("message", spec.postBody() == null ? "" : spec.postBody());
-      params.put("method", "POST");
-      params.put("postMessage", spec.targetField() == null ? "" : spec.targetField());
-      JsonNode json = postJson("fuzzer/action/scan", params);
-      if (json == null) {
-        return "";
-      }
-      return json.path("scanId").asText("");
-    } catch (Exception ex) {
-      throw new ApiException("ZAP fuzz 启动失败（可能版本差异或不支持的 payload）: " + ex.getMessage());
-    }
+    String receipt = "request-" + UUID.randomUUID();
+    fuzzReceipts.add(receipt);
+    return receipt;
   }
 
   @Override
   public String fuzzStatus(String fuzzId) throws Exception {
-    Map<String, String> params = new LinkedHashMap<>();
-    params.put("scanId", fuzzId);
-    try {
-      JsonNode status = getJson("fuzzer/view/status", params);
-      String text = status == null ? "" : status.path("status").asText("");
-      if (text.isBlank()) {
-        text = "stopped";
-      }
-      return text + ";id=" + fuzzId;
-    } catch (Exception ex) {
-      return "stopped;id=" + fuzzId;
+    if (fuzzId == null || !fuzzReceipts.contains(fuzzId)) {
+      throw new ApiException("不存在已确认响应的参数变异请求记录");
     }
+    // PassiveScanApi in bundled pscan 0.6.0 registers this view; errors are not completion.
+    long remaining = passiveScanRemaining();
+    return (remaining == 0 ? "stopped" : "running") + ";id=" + fuzzId + ";requests=1";
+  }
+
+  @Override
+  public long passiveScanRemaining() throws Exception {
+    String remaining = getJsonRequired("pscan/view/recordsToScan", Map.of()).path("recordsToScan").asText("");
+    if (!remaining.matches("0|[1-9][0-9]{0,9}")) {
+      throw new ApiException("ZAP 被动检查状态无效，不能确认检测完成");
+    }
+    return Long.parseLong(remaining);
   }
 
   private double status(String path, String taskId) throws Exception {
     Map<String, String> params = new LinkedHashMap<>();
     params.put("scanId", taskId);
     JsonNode json = getJsonRequired(path, params);
-    String text = json.path("status").asText("0");
-    try {
-      return Double.parseDouble(text.isBlank() ? "0" : text);
-    } catch (NumberFormatException ex) {
-      return 0;
+    String text = json.path("status").asText("");
+    if (!text.matches("(?:[0-9]|[1-9][0-9]|100)")) {
+      throw new ApiException("ZAP 未返回有效的检测进度，无法确认检测是否完成，请重试");
     }
+    return Integer.parseInt(text);
   }
 
   @Override
@@ -394,7 +394,13 @@ final class LocalZapDaemon implements ZapDaemon {
 
   @Override
   public void accessUrl(URI target) throws Exception {
-    getJsonRequired("core/action/accessUrl", Map.of("url", target.toString(), "followRedirects", "false"));
+    JsonNode messages = getJsonRequired("core/action/accessUrl",
+        Map.of("url", target.toString(), "followRedirects", "false")).path("accessUrl");
+    if (!messages.isArray() || messages.size() != 1
+        || !messages.get(0).path("responseHeader").asText("")
+            .matches("(?s)^HTTP/[0-9.]+ [1-5][0-9]{2}(?:[ \\r\\n].*)?$")) {
+      throw new ApiException("未收到目标网站的有效响应，本次检测未完成。请确认目标已开机、网站已启动且地址可访问后重试");
+    }
   }
 
   @Override
@@ -441,18 +447,76 @@ final class LocalZapDaemon implements ZapDaemon {
   }
 
   @Override
+  public ScanActivity activeScanActivity(String scanId) {
+    if (scanId == null || scanId.isBlank()) return null;
+    Long requestCount = null;
+    String state = null;
+    List<String> runningRules = new ArrayList<>();
+    try {
+      JsonNode scans = requiredJson("ascan/view/scans",
+          httpGetJson("ascan/view/scans", Map.of(), Duration.ofSeconds(2))).path("scans");
+      if (scans.isArray()) {
+        for (JsonNode scan : scans) {
+          if (!scanId.equals(scan.path("id").asText(""))) continue;
+          String count = scan.path("reqCount").asText("");
+          if (count.matches("0|[1-9][0-9]{0,17}")) requestCount = Long.parseLong(count);
+          String observedState = scan.path("state").asText("");
+          if (observedState.matches("[A-Z_]{1,40}")) state = observedState;
+          break;
+        }
+      }
+    } catch (InterruptedException ex) {
+      Thread.currentThread().interrupt();
+      return null;
+    } catch (Exception ignored) {
+      // Optional activity must not replace the authoritative status query.
+    }
+    try {
+      JsonNode progress = requiredJson("ascan/view/scanProgress",
+          httpGetJson("ascan/view/scanProgress", Map.of("scanId", scanId), Duration.ofSeconds(2)))
+          .path("scanProgress");
+      if (progress.isArray()) {
+        for (JsonNode host : progress) {
+          JsonNode plugins = host.path("HostProcess");
+          if (!plugins.isArray()) continue;
+          for (JsonNode plugin : plugins) {
+            // ZAP 2.17 ApiResponseList serializes these as positional values:
+            // name, id, quality, status, timeInMs, reqCount, alertCount.
+            JsonNode values = plugin.path("Plugin");
+            if (!values.isArray() || values.size() < 7) continue;
+            if (!values.get(3).asText("").matches("(?:[0-9]|[1-9][0-9])%")) continue;
+            String name = values.get(0).asText("").replaceAll("[\\p{Cntrl}]", " ").trim();
+            if (!name.isBlank() && runningRules.size() < 8) {
+              runningRules.add(name.length() > 160 ? name.substring(0, 160) : name);
+            }
+          }
+        }
+      }
+    } catch (InterruptedException ex) {
+      Thread.currentThread().interrupt();
+      return null;
+    } catch (Exception ignored) {
+      // Keep any request count obtained even if detailed plugin progress is unavailable.
+    }
+    return requestCount == null && state == null && runningRules.isEmpty()
+        ? null : new ScanActivity(requestCount, List.copyOf(runningRules), state);
+  }
+
+  @Override
   public void stopActiveScan(String scanId) throws Exception {
     getJsonRequired("ascan/action/stop", Map.of("scanId", String.valueOf(scanId)));
   }
 
   @Override
   public List<ZapAlert> alerts() throws Exception {
-    JsonNode root = getJson("core/view/alerts", Map.of());
-    if (root == null || !root.path("alerts").isArray()) {
-      return List.of();
-    }
+    JsonNode root = getJsonRequired("core/view/alerts", Map.of());
+    if (!root.path("alerts").isArray()) throw new ApiException("ZAP 告警响应不完整，无法确认检查结果");
     List<ZapAlert> result = new ArrayList<>();
     for (JsonNode node : root.path("alerts")) {
+      if (!node.isObject() || !node.path("url").isTextual() || node.path("url").asText().isBlank()
+          || (node.path("alert").asText("").isBlank() && node.path("name").asText("").isBlank())) {
+        throw new ApiException("ZAP 告警记录不完整，无法确认检查结果");
+      }
       result.add(toAlert(node));
     }
     return result;
@@ -629,7 +693,10 @@ final class LocalZapDaemon implements ZapDaemon {
   }
 
   private JsonNode getJsonRequired(String path, Map<String, String> params) throws Exception {
-    HttpResponse<String> response = httpGetJson(path, params);
+    return requiredJson(path, httpGetJson(path, params));
+  }
+
+  private JsonNode requiredJson(String path, HttpResponse<String> response) throws Exception {
     JsonNode json = null;
     try { json = objectMapper.readTree(response.body()); } catch (Exception ignored) {}
     if (response.statusCode() != 200) {
@@ -655,15 +722,12 @@ final class LocalZapDaemon implements ZapDaemon {
     }
   }
 
-  private String postJsonText(String path, String rawParams) {
-    try {
-      String body = postBodyRaw(path, rawParams);
-      JsonNode root = objectMapper.readTree(body);
-      return root.path("fuzzerId").asText(
-          root.path("scanId").asText(""));
-    } catch (Exception ex) {
-      return "";
+  private JsonNode postJsonRequired(String path, Map<String, String> params) throws Exception {
+    StringBuilder form = new StringBuilder("apikey=").append(apiKey);
+    for (Map.Entry<String, String> entry : params.entrySet()) {
+      form.append('&').append(entry.getKey()).append('=').append(enc(entry.getValue()));
     }
+    return requiredJson(path, httpPostJson(path, form.toString()));
   }
 
   private String postBody(String path, Map<String, String> params) throws Exception {
@@ -677,6 +741,10 @@ final class LocalZapDaemon implements ZapDaemon {
   }
 
   private String postBodyRaw(String path, String rawBody) throws Exception {
+    return httpPostJson(path, rawBody).body();
+  }
+
+  private HttpResponse<String> httpPostJson(String path, String rawBody) throws Exception {
     URI uri = URI.create(
         "http://" + host + ":" + port + "/json/" + stripLeadingSlash(path));
     HttpRequest request =
@@ -685,10 +753,14 @@ final class LocalZapDaemon implements ZapDaemon {
             .header("Content-Type", "application/x-www-form-urlencoded")
             .POST(HttpRequest.BodyPublishers.ofString(rawBody, StandardCharsets.UTF_8))
             .build();
-    return httpClient.send(request, HttpResponse.BodyHandlers.ofString()).body();
+    return httpClient.send(request, HttpResponse.BodyHandlers.ofString());
   }
 
   private HttpResponse<String> httpGetJson(String path, Map<String, String> params) throws Exception {
+    return httpGetJson(path, params, Duration.ofSeconds(30));
+  }
+
+  private HttpResponse<String> httpGetJson(String path, Map<String, String> params, Duration timeout) throws Exception {
     StringBuilder query = new StringBuilder("apikey=").append(apiKey);
     if (params != null) {
       for (Map.Entry<String, String> entry : params.entrySet()) {
@@ -696,7 +768,7 @@ final class LocalZapDaemon implements ZapDaemon {
       }
     }
     URI uri = URI.create("http://" + host + ":" + port + "/json/" + stripLeadingSlash(path) + "?" + query);
-    HttpRequest request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(30)).GET().build();
+    HttpRequest request = HttpRequest.newBuilder(uri).timeout(timeout).GET().build();
     return httpClient.send(request, HttpResponse.BodyHandlers.ofString());
   }
 

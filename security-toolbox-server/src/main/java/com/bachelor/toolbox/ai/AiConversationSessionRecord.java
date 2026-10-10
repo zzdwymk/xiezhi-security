@@ -29,6 +29,10 @@ public class AiConversationSessionRecord {
   @Column(nullable = false, columnDefinition = "TEXT")
   private String turnsJson;
 
+  // Nullable for existing profiles. Only server-validated, successfully delivered plans belong here.
+  @Column(columnDefinition = "TEXT")
+  private String lastPlanJson;
+
   @Column(nullable = false)
   private Instant lastAccess;
 }

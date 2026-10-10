@@ -4,6 +4,7 @@ import {
   createWebHistory,
 } from "vue-router";
 import { useAuthStore } from "./stores/auth";
+import { SETUP_COMPLETE_KEY, workspaceRedirect } from "./utils/startupNavigation";
 
 const Dashboard = () => import("./views/Dashboard.vue");
 const Targets = () => import("./views/Targets.vue");
@@ -22,7 +23,6 @@ const Recon = () => import("./views/Recon.vue");
 const Workflow = () => import("./views/Workflow.vue");
 const AssetsTopology = () => import("./views/AssetsTopology.vue");
 
-const SETUP_KEY = "security_toolbox_setup_complete_v2";
 const desktopMode =
   window.toolboxDesktop?.isDesktop ||
   new URLSearchParams(window.location.search).get("desktop") === "1";
@@ -60,7 +60,7 @@ const router = createRouter({
       meta: { title: "漏洞库与主动检测" },
     },
     { path: "/tasks", component: Tasks, meta: { title: "检测任务" } },
-    { path: "/findings", component: Findings, meta: { title: "漏洞结果" } },
+    { path: "/findings", component: Findings, meta: { title: "安全发现" } },
     {
       path: "/audits",
       component: DataPage,
@@ -84,12 +84,25 @@ router.beforeEach(async (to) => {
   if (desktopMode && desktopInitialNavigation) {
     desktopInitialNavigation = false;
     auth.clear();
+    localStorage.removeItem(SETUP_COMPLETE_KEY);
   }
-  if (to.path !== "/setup" && localStorage.getItem(SETUP_KEY) !== "true") {
-    return { path: "/setup", query: { redirect: to.fullPath } };
+  if (to.path === "/setup") {
+    // Every entry starts a new check, including the explicit recheck links.
+    localStorage.removeItem(SETUP_COMPLETE_KEY);
+    return true;
+  }
+  if (localStorage.getItem(SETUP_COMPLETE_KEY) !== "true") {
+    return {
+      path: "/setup",
+      query: {
+        ...(desktopMode ? { startup: "1" } : {}),
+        redirect: workspaceRedirect(to.fullPath),
+      },
+    };
   }
   if (to.meta.public) {
-    if (to.path === "/login" && auth.isAuthenticated) return "/";
+    if (to.path === "/login" && auth.isAuthenticated)
+      return workspaceRedirect(to.query.redirect);
     return true;
   }
   if (!auth.isAuthenticated)

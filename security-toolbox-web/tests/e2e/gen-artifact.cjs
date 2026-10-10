@@ -15,7 +15,7 @@ const PHASE_MODULE = {
   E: "漏洞知识库与主动检测",
   F: "任务控制中心与定时扫描",
   D: "项目详情工作区",
-  G: "漏洞结果中心与复测",
+  G: "漏洞安全发现与复测",
   H: "报告输出",
   I: "流量分析（MITM 代理）",
   K: "AI 安全助手与红队工作流",
@@ -478,7 +478,7 @@ ${stageSections}
   <div class="defect">
     <div class="defect-head"><span class="defect-id">DEF-01 · 中</span><span class="defect-title">状态变更后前端丢失项目上下文</span></div>
     <h4>现象</h4>
-    <p>在结果中心将漏洞状态改为「已确认」后，不刷新页面直接点击同一行「后续路径」，提示<strong>"该发现缺少项目信息，无法生成后续验证路径"</strong>；刷新后功能恢复。</p>
+    <p>在安全发现将漏洞状态改为「已确认」后，不刷新页面直接点击同一行「后续路径」，提示<strong>"该发现缺少项目信息，无法生成后续验证路径"</strong>；刷新后功能恢复。</p>
     <h4>根因</h4>
     <p><code>Finding.projectId</code> 是 <code>@Transient</code> 瞬态字段，列表接口经 <code>populateProjectId()</code> 反查填充，而 <code>PUT /api/findings/{id}/status</code> 未做此填充，响应中该字段为 <code>null</code>；前端 <code>Object.assign(row, data)</code> 用响应覆盖当前行，将已有的 <code>projectId</code> 置空。</p>
     <h4>修复建议</h4>

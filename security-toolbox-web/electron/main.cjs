@@ -20,7 +20,11 @@ const path = require("path");
 const { fileURLToPath } = require("url");
 const { Worker } = require("worker_threads");
 const { readJsonFile, writeJsonFileAtomic } = require("./json-file.cjs");
+const { createRuntimeLogManager } = require("./runtime-log-manager.cjs");
+const { preparePostgresLogPolicy, readPostgresStartupTail } = require("./postgres-log-policy.cjs");
+const { observeMigrationProgress } = require("./migration-progress-stream.cjs");
 const { createInvalidatableCache } = require("./invalidatable-cache.cjs");
+const { createNotificationCenter, createServiceExitReporter, notificationSettingsFromStorage, updateNotificationStorage } = require("./notification-center.cjs");
 const { evaluateInstalledRelease } = require("./dependency-version.cjs");
 const { selectEmbeddingTestConnection, runtimeModelEnvironment } = require("./ai-settings.cjs");
 const { createAiRelay, listProviderModels } = require("./ai-relay.cjs");
@@ -51,6 +55,8 @@ let captureBrowserWindow;
 let captureBrowserSession;
 let captureBrowserPartition;
 let captureBrowserConfig;
+let captureProxyState = { running: null, capturing: false };
+let captureBrowserOperation = Promise.resolve();
 let icpBrowserWindow;
 let icpBrowserState = {
   opening: false,
@@ -61,6 +67,17 @@ let icpBrowserState = {
 };
 let desktopCredentials;
 let desktopLoginCredentialsIssued = false;
+let runtimeLogManager;
+const shownRuntimeLogFaultSeverities = new Set();
+const notificationCenter = createNotificationCenter({
+  Notification,
+  getSettings: () => publicNotificationSettings(),
+  getWindow: () => mainWindow || startupWindow,
+});
+const serviceExitReporter = createServiceExitReporter({
+  isQuitting: () => quitting,
+  notify: payload => notificationCenter.show(payload),
+});
 
 function readRegistryDword(key, name, fallback = 0) {
   if (process.platform !== "win32") return fallback;
@@ -4241,48 +4258,21 @@ function reportPgMigrationProgress(step, message) {
   });
 }
 
-// 实时 tail 后端写出的迁移进度文件，把每一行转发给前端“迁移进度”面板。
-// 这样数据导入（跑在 jar 进程里）的过程对用户完全可见。
-let migrateTailFile = null;
-let migrateTailPos = 0;
-let migrateTailTimer = null;
-
-function startMigrateProgressTail(file) {
+// Reuse the backend's required stdout log: MIGRATE messages are emitted there
+// already, so UI forwarding needs no second ever-appending progress file.
+let migrateProgressObserver = null;
+function startMigrateProgressTail(stream) {
   stopMigrateProgressTail();
-  migrateTailFile = file;
-  migrateTailPos = 0;
-  migrateTailTimer = setInterval(() => {
-    if (!migrateTailFile) return;
-    try {
-      const size = fs.statSync(migrateTailFile).size;
-      if (size < migrateTailPos) migrateTailPos = 0; // 文件被截断/轮转
-      if (size > migrateTailPos) {
-        const fd = fs.openSync(migrateTailFile, "r");
-        const buf = Buffer.alloc(size - migrateTailPos);
-        try {
-          fs.readSync(fd, buf, 0, buf.length, migrateTailPos);
-        } finally {
-          fs.closeSync(fd);
-        }
-        migrateTailPos = size;
-        for (const line of buf.toString("utf8").split("\n")) {
-          const cleaned = String(line).trim();
-          if (!cleaned) continue;
-          // 进度文件每行形如 “HH:mm:ss | 描述”，去掉时间前缀后展示给用户。
-          reportPgMigrationProgress("copy", cleaned.replace(/^\s*\d{2}:\d{2}:\d{2}\s*\|\s*/, ""));
-        }
-      }
-    } catch {}
-  }, 300);
+  migrateProgressObserver = observeMigrationProgress(stream, {
+    onProgress: message => reportPgMigrationProgress("copy", message),
+    onFault: error => desktopRuntimeLogs().recordFault("migration-progress", { code: "MIGRATION_PROGRESS_STREAM_FAILED",
+      message: diagnosticError(error), at: new Date().toISOString(), fatal: true }),
+  });
 }
 
 function stopMigrateProgressTail() {
-  if (migrateTailTimer) {
-    clearInterval(migrateTailTimer);
-    migrateTailTimer = null;
-  }
-  migrateTailFile = null;
-  migrateTailPos = 0;
+  migrateProgressObserver?.stop();
+  migrateProgressObserver = null;
 }
 
 function desktopPostgresBinDir() {
@@ -4526,15 +4516,20 @@ async function removeDesktopPostgresDir(dataDir) {
 }
 
 async function startDesktopPostgres(binDir, dataDir, config) {
-  const logFile = path.join(app.getPath("userData"), "logs", "postgres.log");
-  fs.mkdirSync(path.dirname(logFile), { recursive: true });
+  let logPolicy;
+  try { logPolicy = preparePostgresLogPolicy({ runtimeDirectory: desktopRuntimeLogs().directory, dataDirectory: dataDir }); }
+  catch (error) {
+    desktopRuntimeLogs().recordFault("postgres", { code: "POSTGRES_LOG_POLICY_FAILED", message: diagnosticError(error), at: new Date().toISOString(), fatal: true });
+    throw new UserFacingError(`无法准备 PostgreSQL 运行日志：${diagnosticError(error)}`);
+  }
+  const logFile = logPolicy.bootstrapFile;
   // Windows clients use the loopback TCP listener. Forcing a Unix socket into the
   // user-data path can fail with EINVAL (for example, on a long profile path).
   // Override even a persisted socket directory without changing the data cluster.
   const socketOptions = process.platform === "win32"
     ? "-c unix_socket_directories="
     : `-k "${dataDir}"`;
-  const options = `-p ${config.port} -h ${config.host} ${socketOptions}`;
+  const options = `-p ${config.port} -h ${config.host} ${socketOptions} ${logPolicy.options}`;
   // 用 stdio:"ignore" 启动 pg_ctl，避免 postgres 服务进程继承其管道句柄：
   // 即便 pg_ctl 已退出，postgres 仍可能占着管道导致 Electron 收不到 close 而误报超时。
   const ctl = spawn(
@@ -4554,16 +4549,7 @@ async function startDesktopPostgres(binDir, dataDir, config) {
     if (await pgSqlReady(config)) return;
     await pgSleep(400);
   }
-  let tail = "";
-  try {
-    if (fs.existsSync(logFile)) {
-      tail = fs
-        .readFileSync(logFile, "utf8")
-        .split(/\r?\n/)
-        .slice(-12)
-        .join("\n");
-    }
-  } catch {}
+  const tail = readPostgresStartupTail(logPolicy);
   throw new UserFacingError(
     ctlError
       ? `无法启动本地 PostgreSQL：${ctlError}`
@@ -5286,7 +5272,10 @@ function rootCertificateFingerprint(certificate) {
 }
 
 function configureCaptureCertificateTrust(captureSession, caFingerprint) {
-  if (!caFingerprint) return;
+  if (!caFingerprint) {
+    captureSession.setCertificateVerifyProc(null);
+    return;
+  }
   captureSession.setCertificateVerifyProc((request, callback) => {
     // This is a dedicated, isolated capture-browser session. The proxy's
     // locally generated leaf certificates must be accepted so Chromium can
@@ -5308,6 +5297,32 @@ function captureBrowserStatus() {
   };
 }
 
+async function publishCaptureProxyState() {
+  const captureWindow = captureBrowserWindow;
+  if (!captureWindow || captureWindow.isDestroyed()) return;
+  // The receiver is the trusted local browser shell, never the visited webview.
+  await captureWindow.webContents.executeJavaScript(
+    `window.setCaptureProxyState?.(${JSON.stringify({
+      ...captureProxyState,
+      proxy: captureBrowserConfig ? `${captureBrowserConfig.proxyHost}:${captureBrowserConfig.proxyPort}` : "",
+    })})`,
+  ).catch(() => {});
+}
+
+function serializeCaptureBrowserOperation(operation) {
+  const next = captureBrowserOperation.then(operation, operation);
+  captureBrowserOperation = next.catch(() => {});
+  return next;
+}
+
+async function setCaptureBrowserProxyState(payload) {
+  captureProxyState = {
+    running: typeof payload?.running === "boolean" ? payload.running : null,
+    capturing: payload?.running === true && payload?.capturing === true,
+  };
+  await publishCaptureProxyState();
+}
+
 async function disposeCaptureBrowserSession(sessionToDispose) {
   if (!sessionToDispose) return;
   sessionToDispose.setCertificateVerifyProc(null);
@@ -5317,15 +5332,30 @@ async function disposeCaptureBrowserSession(sessionToDispose) {
   await sessionToDispose.clearCache().catch(() => {});
 }
 
-function closeCaptureBrowser() {
+async function closeCaptureBrowser() {
   const windowToClose = captureBrowserWindow;
-  const sessionToDispose = captureBrowserSession;
-  captureBrowserWindow = undefined;
-  captureBrowserSession = undefined;
-  captureBrowserPartition = undefined;
-  captureBrowserConfig = undefined;
-  if (windowToClose && !windowToClose.isDestroyed()) windowToClose.close();
-  void disposeCaptureBrowserSession(sessionToDispose);
+  // Only the actual closed event releases the session. A rejected/cancelled
+  // close must keep both the window state and its browsing data intact.
+  if (windowToClose && !windowToClose.isDestroyed()) {
+    await new Promise((resolve, reject) => {
+      const finish = () => {
+        clearTimeout(timer);
+        windowToClose.removeListener("closed", finish);
+        resolve();
+      };
+      // A page may cancel closing; report the still-open window in that case.
+      const timer = setTimeout(finish, 1500);
+      windowToClose.once("closed", finish);
+      try {
+        windowToClose.close();
+        if (windowToClose.isDestroyed()) finish();
+      } catch (error) {
+        clearTimeout(timer);
+        windowToClose.removeListener("closed", finish);
+        reject(error);
+      }
+    });
+  }
   return captureBrowserStatus();
 }
 
@@ -5340,8 +5370,33 @@ function isHttpNavigation(url) {
 
 async function launchCaptureBrowser(payload) {
   const options = normalizeCaptureBrowserOptions(payload);
-  if (captureBrowserWindow && !captureBrowserWindow.isDestroyed())
-    closeCaptureBrowser();
+  if (captureBrowserWindow && !captureBrowserWindow.isDestroyed()) {
+    const captureWindow = captureBrowserWindow;
+    const captureSession = captureBrowserSession;
+    const previousConfig = captureBrowserConfig;
+    const changed = captureBrowserConfig?.proxyHost !== options.proxyHost
+      || captureBrowserConfig?.proxyPort !== options.proxyPort
+      || captureBrowserConfig?.caFingerprint !== options.caFingerprint;
+    if (changed) {
+      const endpoint = `${options.proxyHost}:${options.proxyPort}`;
+      await captureSession.setProxy({
+        mode: "fixed_servers",
+        proxyRules: `http=${endpoint};https=${endpoint}`,
+        proxyBypassRules: "<-loopback>",
+      });
+      if (captureWindow.isDestroyed()) throw new UserFacingError("抓包浏览器已关闭，请重新打开");
+      configureCaptureCertificateTrust(captureSession, options.caFingerprint);
+      await captureSession.closeAllConnections();
+      if (captureWindow.isDestroyed()) throw new UserFacingError("抓包浏览器已关闭，请重新打开");
+      captureBrowserConfig = { ...options, targetUrl: previousConfig.targetUrl };
+    }
+    if (captureWindow.isDestroyed()) throw new UserFacingError("抓包浏览器已关闭，请重新打开");
+    if (captureWindow.isMinimized()) captureWindow.restore();
+    captureWindow.show();
+    captureWindow.focus();
+    await publishCaptureProxyState();
+    return captureBrowserStatus();
+  }
 
   const partition = `capture:security-toolbox-${crypto.randomUUID()}`;
   const captureSession = electronSession.fromPartition(partition, {
@@ -5439,8 +5494,10 @@ async function launchCaptureBrowser(payload) {
     await captureWindow.loadFile(captureShell, {
       query: { target: options.targetUrl, partition, proxy: proxyEndpoint },
     });
+    await publishCaptureProxyState();
   } catch (error) {
-    closeCaptureBrowser();
+    // A newly created shell that failed to load has no page to preserve.
+    if (!captureWindow.isDestroyed()) captureWindow.destroy();
     throw error;
   }
   return captureBrowserStatus();
@@ -6065,68 +6122,11 @@ handleRendererIpc("toolbox:set-progress-bar", (event, progress, options) => {
 
 handleRendererIpc("toolbox:show-task-notification", (event, payload) => {
   assertMainRenderer(event);
-  const { title, body, type } = payload || {};
-  const textTitle =
-    typeof title === "string" && title?.trim()
-      ? title
-      : type === "error"
-        ? "任务执行失败"
-        : "任务已完成";
-  const textBody =
-    typeof body === "string" && body?.trim()
-      ? body
-      : "任务已完成，可在「任务控制中心」查看详情。";
-  const win = mainWindow || startupWindow;
-  if (win && !win.isDestroyed() && !win.isFocused()) {
-    void win.show();
-    void win.focus();
-  }
-  if (Notification.isSupported()) {
-    const notification = new Notification({
-      title: textTitle,
-      body: textBody,
-      silent: false,
-    });
-    notification.on("click", () => {
-      const target = mainWindow || startupWindow;
-      if (target && !target.isDestroyed()) {
-        void target.show();
-        void target.focus();
-      }
-    });
-    notification.show();
-    return;
-  }
-  void dialog.showMessageBox(mainWindow || startupWindow, {
-    type: type === "error" ? "error" : "info",
-    title: textTitle,
-    message: textTitle,
-    detail: textBody,
-    buttons: ["知道了"],
-  });
+  return notificationCenter.show(payload);
 });
 
-const SUPPORTED_NOTIFICATION_SEVERITIES = new Set([
-  "CRITICAL",
-  "HIGH",
-  "MEDIUM",
-  "LOW",
-]);
-const DEFAULT_NOTIFICATION_SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM"];
 function publicNotificationSettings(settings = readDesktopSettings()) {
-  const stored = Array.isArray(settings.notificationSeverities)
-    ? settings.notificationSeverities.filter((value) =>
-        SUPPORTED_NOTIFICATION_SEVERITIES.has(value),
-      )
-    : [];
-  return {
-    severities:
-      stored.length > 0 ? stored : DEFAULT_NOTIFICATION_SEVERITIES,
-    taskCompleteNotifications:
-      settings.taskCompleteNotifications !== false,
-    workflowSkipNotifications:
-      settings.workflowSkipNotifications !== false,
-  };
+  return notificationSettingsFromStorage(settings);
 }
 handleRendererIpc("toolbox:get-notification-settings", (event) => {
   assertMainRenderer(event);
@@ -6134,31 +6134,14 @@ handleRendererIpc("toolbox:get-notification-settings", (event) => {
 });
 handleRendererIpc("toolbox:set-notification-settings", (event, payload) => {
   assertMainRenderer(event);
-  const next = payload || {};
-  let severities = Array.isArray(next.severities)
-    ? Array.from(
-        new Set(
-          next.severities.filter((value) =>
-            SUPPORTED_NOTIFICATION_SEVERITIES.has(value),
-          ),
-        ),
-      )
-    : [];
-  const all = [...SUPPORTED_NOTIFICATION_SEVERITIES];
-  if (severities.length === 0) severities = all;
-  writeDesktopSettings({
-    ...readDesktopSettings(),
-    notificationSeverities: severities,
-    taskCompleteNotifications:
-      next.taskCompleteNotifications === undefined
-        ? true
-        : Boolean(next.taskCompleteNotifications),
-    workflowSkipNotifications:
-      next.workflowSkipNotifications === undefined
-        ? true
-        : Boolean(next.workflowSkipNotifications),
-  });
-  return publicNotificationSettings();
+  writeDesktopSettings(updateNotificationStorage(readDesktopSettings(), payload || {}));
+  const settings = publicNotificationSettings();
+  for (const win of [mainWindow, startupWindow]) {
+    if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
+      win.webContents.send("toolbox:notification-settings-changed", settings);
+    }
+  }
+  return settings;
 });
 
 handleRendererIpc("toolbox:choose-tools-directory", async (event) => {
@@ -6881,15 +6864,19 @@ handleRendererIpc("toolbox:clear-icp-settings", (event) => {
 });
 handleRendererIpc("toolbox:launch-capture-browser", (event, payload) => {
   assertMainRenderer(event);
-  return launchCaptureBrowser(payload);
+  return serializeCaptureBrowserOperation(() => launchCaptureBrowser(payload));
 });
 handleRendererIpc("toolbox:close-capture-browser", (event) => {
   assertMainRenderer(event);
-  return closeCaptureBrowser();
+  return serializeCaptureBrowserOperation(() => closeCaptureBrowser());
 });
 handleRendererIpc("toolbox:get-capture-browser-status", (event) => {
   assertMainRenderer(event);
   return captureBrowserStatus();
+});
+handleRendererIpc("toolbox:set-capture-browser-proxy-state", (event, payload) => {
+  assertMainRenderer(event);
+  return setCaptureBrowserProxyState(payload);
 });
 handleRendererIpc("toolbox:open-icp-browser", (event, payload) => {
   assertMainRenderer(event);
@@ -7184,63 +7171,57 @@ function aiRuntimeBaseUrl(baseUrl) {
   return `${String(baseUrl || "").replace(/\/+$/, "")}/v1`;
 }
 
-function writeAiRuntimeDiagnostic(error) {
+function reportRuntimeLogFault(fault) {
+  const severity = fault.fatal ? "fatal" : "degraded";
+  const detail = `${fault.component || "desktop"}: ${fault.code}\n${fault.message}\n${fault.healthFile || fault.directory || ""}`;
   try {
-    const logDir = path.join(app.getPath("userData"), "logs");
-    fs.mkdirSync(logDir, { recursive: true });
-    const message = diagnosticError(error);
-    fs.appendFileSync(
-      path.join(logDir, "ai-runtime-startup.log"),
-      `${new Date().toISOString()} ${message.replace(/[\r\n]+/g, " ").slice(0, 2000)}\n`,
-      "utf8",
-    );
-  } catch {
-    // Diagnostics must never prevent the desktop application from starting.
+    notificationCenter.show({ eventKey: `runtime-logging:${severity}`, category: "service", outcome: "error", type: "error",
+      title: "运行日志保存异常", body: "日志保存已降级，请检查日志目录和可用空间。当前请求不会由日志记录器终止。" });
+  } catch {}
+  // The system notification can be disabled. A native warning provides a
+  // visible failure without editing renderer business state or cancelling AI.
+  if (shownRuntimeLogFaultSeverities.has(severity)) return;
+  shownRuntimeLogFaultSeverities.add(severity);
+  void app.whenReady().then(async () => {
+    const owner = mainWindow || startupWindow;
+    const options = { type: "warning", title: "运行日志保存异常", message: fault.fatal ? "部分运行日志无法确认完整保存。" : "运行日志已启用应急磁盘保存。",
+      detail, buttons: ["知道了"], noLink: true };
+    if (owner && !owner.isDestroyed()) await dialog.showMessageBox(owner, options);
+    else await dialog.showMessageBox(options);
+  }).catch(error => { console.error("Runtime logging warning could not be shown", diagnosticError(error)); });
+}
+function desktopRuntimeLogs() {
+  if (!runtimeLogManager) {
+    const options = { profilePath: app.getPath("userData"), baseDirectory: process.env.TOOLBOX_RUNTIME_LOG_ROOT,
+      onFault: reportRuntimeLogFault };
+    try { runtimeLogManager = createRuntimeLogManager(options); }
+    catch (error) {
+      runtimeLogManager = createRuntimeLogManager({ ...options, baseDirectory: undefined });
+      runtimeLogManager.recordFault("logging", { code: "RUNTIME_LOG_DIRECTORY_INVALID", message: diagnosticError(error), at: new Date().toISOString(), fatal: true });
+    }
+  }
+  return runtimeLogManager;
+}
+function writeRuntimeDiagnostic(component, record) {
+  try { return desktopRuntimeLogs().write(component, `${JSON.stringify(record)}\n`); }
+  catch (error) {
+    desktopRuntimeLogs().recordFault(component, { code: "RUNTIME_DIAGNOSTIC_WRITE_FAILED", message: diagnosticError(error), at: new Date().toISOString(), fatal: true });
+    return false;
   }
 }
 
-// 轻量诊断日志：stage + message 追加写入 desktop-startup.log，供迁移排错。
+function writeAiRuntimeDiagnostic(error) {
+  writeRuntimeDiagnostic("ai-runtime-startup", { timestamp: new Date().toISOString(), message: diagnosticError(error), stack: error?.stack });
+}
+
+// Profile-external diagnostics retain full error text/stack and rotate centrally.
 function writeDesktopStartupLog(stage, message) {
-  try {
-    const logDir = path.join(app.getPath("userData"), "logs");
-    fs.mkdirSync(logDir, { recursive: true });
-    const record = {
-      timestamp: new Date().toISOString(),
-      stage,
-      message:
-        typeof message === "string"
-          ? message
-          : JSON.stringify(message || "").slice(0, 2000),
-    };
-    fs.appendFileSync(
-      path.join(logDir, "desktop-startup.log"),
-      `${JSON.stringify(record)}\n`,
-      "utf8",
-    );
-  } catch {
-    // 诊断日志写入失败不能阻断迁移。
-  }
+  writeRuntimeDiagnostic("desktop-startup", { timestamp: new Date().toISOString(), stage, message });
 }
 
 function writeDesktopStartupDiagnostic(stage, error, context = {}) {
-  try {
-    const logDir = path.join(app.getPath("userData"), "logs");
-    fs.mkdirSync(logDir, { recursive: true });
-    const message = diagnosticError(error);
-    const record = {
-      timestamp: new Date().toISOString(),
-      stage,
-      message: message.replace(/[\r\n]+/g, " ").slice(0, 2000),
-      ...context,
-    };
-    fs.appendFileSync(
-      path.join(logDir, "desktop-startup.log"),
-      `${JSON.stringify(record)}\n`,
-      "utf8",
-    );
-  } catch {
-    // 诊断日志写入失败不能阻断桌面应用启动。
-  }
+  writeRuntimeDiagnostic("desktop-startup", { timestamp: new Date().toISOString(), stage,
+    message: diagnosticError(error), stack: error?.stack, ...context });
 }
 
 function waitForAiRuntime(port, timeoutMs = 90000) {
@@ -7364,8 +7345,6 @@ function launchAiRuntimeProcess(slot) {
   fs.mkdirSync(logDir, { recursive: true });
 
   const aiSettings = effectiveAiSettings();
-  const stdout = fs.openSync(path.join(logDir, "ai-runtime.out.log"), "a");
-  const stderr = fs.openSync(path.join(logDir, "ai-runtime.err.log"), "a");
   const child = spawn(
     launch.command,
     [
@@ -7397,13 +7376,18 @@ function launchAiRuntimeProcess(slot) {
         AI_RUNTIME_EMBEDDING_API_KEY: aiSettings.effectiveEmbeddingApiKey,
         AI_RUNTIME_EMBEDDING_MODEL: aiSettings.embeddingModel,
       },
-      stdio: ["ignore", stdout, stderr],
+      stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     },
   );
-  fs.closeSync(stdout);
-  fs.closeSync(stderr);
+  desktopRuntimeLogs().attachChild(child, "ai-runtime");
   aiRuntimeProcess = child;
+  serviceExitReporter.watch(child, {
+    service: "ai-runtime", lifecycleId: crypto.randomUUID(), label: "AI 服务",
+    onUnexpectedExit: code => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("ai-runtime-exited", code);
+    },
+  });
   child.once("error", (error) => {
     aiRuntimeStartError = new Error(`无法启动 AI Runtime：${error.message}`);
   });
@@ -7416,9 +7400,6 @@ function launchAiRuntimeProcess(slot) {
       }
       aiRuntimeProcess = undefined;
       aiRuntimeConfig = undefined;
-    }
-    if (!quitting && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send("ai-runtime-exited", code);
     }
   });
 
@@ -7439,6 +7420,7 @@ async function waitForAiRuntimeReady(port) {
 
 function stopAiRuntime() {
   const child = aiRuntimeProcess;
+  serviceExitReporter.markStopped(child);
   aiRuntimeProcess = undefined;
   aiRuntimeSpawn = undefined;
   aiRuntimeConfig = undefined;
@@ -7499,8 +7481,6 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
     // The application can still start from a read-only install directory;
     // portable installation will report the write-permission error on demand.
   }
-  const stdout = fs.openSync(path.join(logDir, "server.out.log"), "a");
-  const stderr = fs.openSync(path.join(logDir, "server.err.log"), "a");
   const databasePath = path
     .join(dataDir, "security-toolbox")
     .replace(/\\/g, "/");
@@ -7588,6 +7568,7 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
   // 迁移到 PostgreSQL 后，以后端 postgres profile 启动：注入连接信息；若本次内存标志
   // 置有旧 H2 迁移 URL，则一并注入让后端把历史数据拷贝进 PostgreSQL。
   const desktopPostgres = activeDesktopPostgresConfig();
+  let migrationProgressFromStdout = false;
   if (desktopPostgres) {
     if (pgPortOpenSync(desktopPostgres)) {
       backendEnv.SPRING_PROFILES_ACTIVE = "postgres";
@@ -7597,18 +7578,10 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
       const migrateUrl = takeDesktopPgMigrateH2Url();
       if (migrateUrl) {
         backendEnv.LEGACY_H2_MIGRATE_URL = migrateUrl;
-        // 让后端把导入进度写入独立文件，主进程 live-tail 后转发给前端迁移进度面板。
-        const progressFile = path.join(
-          app.getPath("userData"),
-          "logs",
-          "migration-progress.log",
-        );
-        try {
-          fs.mkdirSync(path.dirname(progressFile), { recursive: true });
-          fs.writeFileSync(progressFile, "", { encoding: "utf8" });
-        } catch {}
-        backendEnv.LEGACY_H2_MIGRATE_PROGRESS_FILE = progressFile;
-        startMigrateProgressTail(progressFile);
+        // Each Java progress message already goes through the logger. Use its
+        // required stdout capture and disable the duplicate legacy file sink.
+        delete backendEnv.LEGACY_H2_MIGRATE_PROGRESS_FILE;
+        migrationProgressFromStdout = true;
       }
     } else {
       // 本地 PG 不可达：回退 H2 并清除启用标记，避免下次启动再次尝试失败。
@@ -7634,6 +7607,7 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
       "-Dsun.stdout.encoding=UTF-8",
       "-Dsun.stderr.encoding=UTF-8",
       "-XX:TieredStopAtLevel=1",
+      ...(migrationProgressFromStdout ? ["-Dtoolbox.migration.legacy-h2-progress-file="] : []),
       "-jar",
       jar,
       "--spring.main.lazy-initialization=true",
@@ -7644,23 +7618,21 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
     {
       cwd: userDataDir,
       env: backendEnv,
-      stdio: ["ignore", stdout, stderr],
+      stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     },
   );
   backendProcess = child;
-  fs.closeSync(stdout);
-  fs.closeSync(stderr);
+  serviceExitReporter.watch(child, {
+    service: "backend", lifecycleId: crypto.randomUUID(), label: "本地 Java 服务",
+    onUnexpectedExit: code => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("backend-exited", code);
+    },
+  });
+  desktopRuntimeLogs().attachChild(child, "server");
+  if (migrationProgressFromStdout) startMigrateProgressTail(child.stdout);
   child.once("exit", (code) => {
     if (backendProcess === child) backendProcess = undefined;
-    if (
-      !quitting &&
-      !restartingBackend &&
-      mainWindow &&
-      !mainWindow.isDestroyed()
-    ) {
-      mainWindow.webContents.send("backend-exited", code);
-    }
   });
   child.once("error", (error) => {
     backendStartError = new Error(`无法启动本地 Java 服务：${error.message}`);
@@ -7775,6 +7747,7 @@ async function stopBackend() {
     return;
   }
   const pid = backendProcess.pid;
+  serviceExitReporter.markStopped(backendProcess);
   const port = backendPort;
   const token = shutdownToken;
   backendProcess = undefined;
@@ -8010,7 +7983,7 @@ function createMainWindow(port) {
   });
   mainWindow.on("closed", () => {
     mainWindow = undefined;
-    closeCaptureBrowser();
+    void closeCaptureBrowser().catch(() => {});
     closeIcpBrowser();
   });
   // Keep the native title bar fully owned by DWM. Setting an overlay/caption
@@ -8090,10 +8063,21 @@ async function boot() {
     writeDesktopStartupDiagnostic("boot", error);
     if (recoveryError)
       writeDesktopStartupDiagnostic("mitm-ca-recovery", recoveryError);
+    // The relay settings validator deliberately hides the original crypto error
+    // behind this fixed message. Restore only that known, safe attribution;
+    // arbitrary Error.message values may contain credentials or provider URLs.
+    const startupError = error?.message === "无法读取线路密钥，请重新保存密钥"
+      ? new UserFacingError(
+          "已保存的 AI 中转线路密钥无法读取。请使用保存密钥时的 Windows 用户，或恢复可用的桌面配置备份后重新启动。",
+        )
+      : error;
     updateStartup(
       "启动失败",
       "无法进入工具工作区。",
-      "本地服务启动失败，请检查 Java 17 运行环境并查看桌面日志。",
+      publicErrorMessage(
+        startupError,
+        "本地服务启动失败，请查看桌面日志确认原因，排除问题后重新启动桌面程序。",
+      ),
     );
   }
 }
@@ -8127,13 +8111,14 @@ app.on("before-quit", (event) => {
   systemPreferences.off("accent-color-changed", handleSystemThemeChanged);
   systemPreferences.off("color-changed", handleSystemThemeChanged);
   nativeTheme.off("updated", handleSystemThemeChanged);
-  closeCaptureBrowser();
+  void closeCaptureBrowser().catch(() => {});
   closeIcpBrowser();
   stopAiRuntime();
   event.preventDefault();
   Promise.allSettled([stopBackend(), aiRelay?.close()])
     .catch(() => {})
-    .finally(() => {
+    .finally(async () => {
+      await runtimeLogManager?.close();
       quitting = true;
       app.exit(0);
     });

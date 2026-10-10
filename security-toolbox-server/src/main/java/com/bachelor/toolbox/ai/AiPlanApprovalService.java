@@ -49,10 +49,13 @@ public class AiPlanApprovalService {
   @Transactional(rollbackFor = Exception.class)
   public AiDispatchResponse resume(Long projectId, Long approvalId) throws Exception {
     authorization.requireAdmin();
+    var actor = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+    if (actor != null && "ai-agent".equals(actor.getName())) throw new ApiException("AI 不能确认执行自己的方案");
     authorization.requireAccess(projectId);
     ProjectApproval approval = approvals.findForUpdate(approvalId, projectId)
         .orElseThrow(() -> new ApiException("项目审批记录不存在"));
-    if (!"AI_PLAN_EXECUTION".equals(approval.getAction()) || !"APPROVED".equals(approval.getStatus())) {
+    if (!"AI_PLAN_EXECUTION".equals(approval.getAction()) || !"ai-agent".equals(approval.getRequestedBy())
+        || !"APPROVED".equals(approval.getStatus())) {
       throw new ApiException("本方案尚未获得管理员批准，未派发任务");
     }
     if (approval.getAiDispatchJson() != null) {

@@ -23,18 +23,7 @@ import org.springframework.stereotype.Service;
 public class AiTaskDispatchService {
   private static final int MAX_TASKS_PER_DISPATCH = 8;
   private static final Set<String> SAFE_AI_TOOLS =
-      Set.of(
-          "http_headers",
-          "http_security_check",
-          "tls_config",
-          "tcp_ports",
-          "nmap_service_scan",
-          "nuclei_scan",
-          "afrog_scan",
-          "xray_scan",
-          "zap_scan",
-          "fscan_scan",
-          "msf_scan");
+      AiToolCatalog.EXECUTABLE_TOOLS;
 
   private final TargetService targetService;
   private final TargetPolicyService targetPolicyService;
@@ -89,7 +78,7 @@ public class AiTaskDispatchService {
     if (!target.isEnabled()) {
       throw new ApiException("授权目标未启用");
     }
-    List<AiPlanResponse.PlanStep> safeSteps = validateAndNormalize(generatedPlan, target);
+    List<AiPlanResponse.PlanStep> safeSteps = validateAndNormalize(generatedPlan, target, false);
     return new AiPlanResponse(
         generatedPlan.provider(), generatedPlan.model(), generatedPlan.summary(), false, safeSteps);
   }
@@ -103,17 +92,19 @@ public class AiTaskDispatchService {
             request.workflowId(),
             request.workflowRevision(),
             request.workflowDigest());
-    AiPlanResponse normalized =
-        prepare(
-            new AiPlanRequest(
-                request.projectId(),
-                request.targetId(),
-                request.prompt(),
-                request.contextRefs(),
-                request.refs(),
-                request.mode()),
-            generatedPlan);
-    return closeAgainstSnapshot(normalized, snapshot);
+    AuthorizedTarget target = targetService.get(request.targetId());
+    if (!target.isEnabled()) throw new ApiException("授权目标未启用");
+    if (generatedPlan == null || generatedPlan.steps() == null) {
+      throw new ApiException("AI 返回的计划格式不完整");
+    }
+    if (generatedPlan.steps().stream().anyMatch(Objects::isNull)) {
+      throw new ApiException("AI 计划包含未知或未授权的工具");
+    }
+    // User-authored workflow nodes are distinct work, even when their tools
+    // overlap. Trust their identities only after closing against the snapshot.
+    AiPlanResponse closed = closeAgainstSnapshot(generatedPlan, snapshot);
+    List<AiPlanResponse.PlanStep> safeSteps = validateAndNormalize(closed, target, true);
+    return new AiPlanResponse(closed.provider(), closed.model(), closed.summary(), false, safeSteps);
   }
 
   private AiPlanResponse closeAgainstSnapshot(
@@ -165,7 +156,7 @@ public class AiTaskDispatchService {
               integer(authoritative.get("group"), 0),
               dependencies,
               Objects.toString(authoritative.get("risk"), "SAFE"),
-              Boolean.TRUE.equals(authoritative.get("requiresApproval")),
+              AiToolCatalog.requiresApproval(tool) || Boolean.TRUE.equals(authoritative.get("requiresApproval")),
               proposed.evidenceRefs()));
     }
     return new AiPlanResponse(
@@ -187,7 +178,7 @@ public class AiTaskDispatchService {
   }
 
   private List<AiPlanResponse.PlanStep> validateAndNormalize(
-      AiPlanResponse plan, AuthorizedTarget target) {
+      AiPlanResponse plan, AuthorizedTarget target, boolean workflowBound) {
     if (plan == null || plan.steps() == null) {
       throw new ApiException("AI 返回的计划格式不完整");
     }
@@ -207,7 +198,7 @@ public class AiTaskDispatchService {
       }
       toolCodes.add(step.toolCode());
       String stepKey =
-          step.workflowNodeId() != null && !step.workflowNodeId().isBlank()
+          workflowBound && step.workflowNodeId() != null && !step.workflowNodeId().isBlank()
               ? "node:" + step.workflowNodeId()
               : "http_security_check".equals(step.toolCode())
               ? step.toolCode()
@@ -231,10 +222,10 @@ public class AiTaskDispatchService {
               step.group(),
               step.dependsOnNodeIds(),
               step.risk(),
-              step.requiresApproval(),
+              AiToolCatalog.requiresApproval(step.toolCode()) || step.requiresApproval(),
               step.evidenceRefs()));
     }
-    if (toolCodes.contains("nmap_service_scan") && toolCodes.contains("tcp_ports")) {
+    if (!workflowBound && toolCodes.contains("nmap_service_scan") && toolCodes.contains("tcp_ports")) {
       throw new ApiException("Nmap 服务识别与 TCP 端口探测不能在同一计划中重复扫描");
     }
     return List.copyOf(safeSteps);
@@ -252,6 +243,8 @@ public class AiTaskDispatchService {
           case "afrog_scan", "xray_scan" -> Set.of("pocCodes", "allPocs");
           case "zap_scan" -> Set.of("spider", "strength");
           case "msf_scan" -> Set.of("module", "modules", "options");
+          case "sqlmap_scan" -> Set.of("path", "level", "risk", "technique");
+          case "zap_fuzz" -> ZapFuzzAiParameters.KEYS;
           case "nuclei_scan" -> Set.of("pocCodes", "allPocs");
           case "http_security_check" -> Set.of("check");
           case "http_headers", "tls_config" -> Set.of();
@@ -262,6 +255,17 @@ public class AiTaskDispatchService {
     }
 
     switch (toolCode) {
+      case "zap_fuzz" -> {
+        parameters = ZapFuzzAiParameters.normalize(parameters, true);
+        targetPolicyService.validatedHttpUri(target, (String) parameters.get("fuzzRequestUrl"));
+      }
+      case "sqlmap_scan" -> {
+        parameters = SqlmapAiParameters.normalize(parameters, true);
+        URI uri = targetPolicyService.validatedHttpUri(target, (String) parameters.get("path"));
+        if (uri.getRawQuery() == null || uri.getRawQuery().isBlank()) {
+          throw new ApiException("SQL 注入检测需要带查询参数的授权 URL，请补充目标路径和参数");
+        }
+      }
       case "http_headers" -> targetPolicyService.validatedHttpUri(target);
       case "http_security_check" -> {
         targetPolicyService.validatedHttpUri(target);

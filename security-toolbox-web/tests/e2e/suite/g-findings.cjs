@@ -1,9 +1,9 @@
 /*
- * 阶段 G：漏洞结果中心
+ * 阶段 G：漏洞安全发现
  *
- * 业务顺序：进入结果中心 → 校验列表与搜索 → 查看证据详情
+ * 业务顺序：进入安全发现 → 校验列表与搜索 → 查看证据详情
  *          → 生成后续验证路径 → 复测 → 变更处置状态
- *          → 缺陷复现（状态变更后项目信息丢失）→ 扫描 Diff → 分页 → 删除
+ *          → 缺陷复现（状态变更后项目信息丢失）→ 扫描差异 → 分页 → 删除
  *
  * 用例顺序有意为之：「后续路径」必须在任何状态变更之前验证，
  * 因为状态变更会清空前端持有的 projectId（见 G-18 缺陷复现）。
@@ -17,26 +17,77 @@ const {
 } = require("../lib/ui.cjs");
 
 async function run(page, H, ctx) {
-  H.phase("阶段 G — 漏洞结果中心");
+  H.phase("阶段 G — 漏洞安全发现");
 
-  await H.run("G-01", "通过侧边栏进入「结果中心」页面", async () => {
-    await navigate(page, "结果中心");
+  const scopedEntry = await H.run("G-01", "进入安全发现并限定本轮项目的132 Web目标", async () => {
+    if (ctx.targetIp !== "192.168.136.132" || !ctx.projectId || !ctx.webTargetId || !ctx.webTargetName) {
+      throw new Error("缺少本轮项目/Web目标ID，禁止对原数据库任意首行操作");
+    }
+    await navigate(page, "安全发现");
+    const projectTab = page.getByRole('tab', { name: '项目发现', exact: true });
+    if (await projectTab.isVisible().catch(() => false)) await projectTab.click();
     const t = await pageTitle(page);
     if (!page.url().includes("/findings")) throw new Error(`URL 异常: ${page.url()}`);
-    return `标题="${t}"`;
+    const toolbar = page.locator('.findings-filter-toolbar');
+    await toolbar.waitFor();
+    // Findings has a target filter, not a project select. Its uniquely created
+    // target belongs to the dedicated project; verify that in the UI response.
+    const targetSelect = toolbar.locator('.el-select').nth(1);
+    const response = page.waitForResponse(r => {
+      const url = new URL(r.url());
+      return r.request().method() === 'GET' && /\/api\/findings$/.test(url.pathname) && url.searchParams.get('targetId') === String(ctx.webTargetId);
+    }, { timeout: 20000 });
+    response.catch(() => {});
+    await selectOn(page, targetSelect, `${ctx.webTargetName} (#${ctx.webTargetId})`);
+    const r = await response;
+    if (!r.ok()) throw new Error(`本轮目标过滤失败 HTTP ${r.status()}: ${await r.text()}`);
+    const result = await r.json();
+    if (!Array.isArray(result.content)) throw new Error('筛选响应缺少content，停止后续复测');
+    const foreign = result.content.filter(row => Number(row.targetId) !== Number(ctx.webTargetId) || Number(row.projectId) !== Number(ctx.projectId));
+    if (foreign.length) throw new Error('筛选仍含其他项目/目标发现，停止后续复测: ' + JSON.stringify(foreign.map(x => ({ id: x.id, projectId: x.projectId, targetId: x.targetId }))));
+    const selected = await targetSelect.innerText();
+    if (!selected.includes(ctx.webTargetName)) throw new Error('筛选控件未显示本轮目标');
+    ctx.findingsScope = { projectId: ctx.projectId, projectName: ctx.projectName, targetId: ctx.webTargetId, targetName: ctx.webTargetName };
+    ctx.scopedFindingResponse = { totalElements: result.totalElements, findingIds: result.content.map(x => x.id) };
+    return { input: ctx.findingsScope, expected: '仅本轮项目/132 Web目标发现', actual: { title: t, selected, ...ctx.scopedFindingResponse } };
   }, { page });
+  if (!scopedEntry?.ok) throw new Error('G-01目标隔离门禁未通过，安全发现阶段停止，未对任意首行操作');
 
   await sleep(2500);
-  await H.shot(page, "G-结果中心");
+  await H.shot(page, "G-安全发现");
 
   let total = 0;
-  await H.run("G-02", "结果列表加载并包含扫描产生的漏洞记录", async () => {
+  await H.run("G-02", "本轮目标结果列表加载并记录真实结果数量（允许零发现）", async () => {
     await page.locator(".el-table, .empty-state").first().waitFor({ state: "visible", timeout: 15000 });
     total = await rowCount(page);
-    if (total === 0) throw new Error("结果中心为空，但前序阶段已完成 HTTP 安全检查扫描");
+    if (total === 0 && Number(ctx.scopedFindingResponse?.totalElements) !== 0) {
+      throw new Error('筛选响应并非零结果但DOM无行，保留列表渲染失败，停止详情操作');
+    }
     ctx.findingTotal = total;
-    return `当前页 ${total} 条漏洞记录`;
+    return { input: ctx.findingsScope, expected: '真实过滤结果可正常加载；成功扫描不保证存在漏洞', actual: { visibleRows: total, response: ctx.scopedFindingResponse } };
   }, { page });
+  if (total === 0) {
+    if (Number(ctx.scopedFindingResponse?.totalElements) !== 0) throw new Error('G列表尚未证实为空，停止后续写操作');
+    // Zero findings is a valid product result, not a reason to create fake
+    // vulnerabilities or operate on a different target in the original DB.
+    for (let n = 3; n <= 25; n++) {
+      H.record(`G-${String(n).padStart(2, '0')}`, '本轮发现详情/后续操作缺少数据前置', 'BLOCKED',
+        '本轮132 Web目标过滤列表为零；保留零结果证据，不构造finding、不改用其他目标首行。',
+        { scope: ctx.findingsScope, zeroResult: ctx.scopedFindingResponse });
+    }
+    await H.run('G-EMPTY-FILTER', '零结果时搜索和刷新仍保持本轮目标隔离', async () => {
+      const search = page.getByPlaceholder('搜索名称、等级、工具、规则...');
+      await search.fill('不存在的QA发现');
+      await sleep(500);
+      await search.fill('');
+      await page.locator('.finding-head-actions').getByRole('button', { name: '刷新', exact: true }).click();
+      await sleep(800);
+      const selected = await page.locator('.findings-filter-toolbar .el-select').nth(1).innerText();
+      if (!selected.includes(ctx.webTargetName)) throw new Error('搜索/刷新丢失本轮目标过滤');
+      return { input: ctx.findingsScope, expected: '仍只显示本轮目标，保留真实数量', actual: { selected, rows: await rowCount(page) } };
+    }, { page });
+    return;
+  }
 
   await H.run("G-03", "漏洞记录展示等级、来源工具与目标信息", async () => {
     const row = page.locator(".el-table__row").first();
@@ -96,19 +147,13 @@ async function run(page, H, ctx) {
 
   await H.run("G-08", "漏洞证据为非空的真实探测输出", async () => {
     const dlg = await dialog(page, "风险详情");
-    let text = "";
-    const ev = dlg.locator("pre.finding-evidence").first();
-    if (await ev.count()) text = ((await ev.textContent()) || "").trim();
-    if (!text) {
-      const pres = dlg.locator("pre");
-      for (let i = 0; i < (await pres.count()); i++) {
-        const t = ((await pres.nth(i).textContent()) || "").trim();
-        if (t.length > text.length) text = t;
-      }
-    }
-    if (!text) throw new Error("证据区为空");
-    ctx.findingEvidence = text.slice(0, 400);
-    return `证据 ${text.length} 字符: ${text.replace(/\s+/g, " ").slice(0, 150)}`;
+    const evidence = dlg.locator(".finding-evidence textarea, textarea.finding-evidence").first();
+    await evidence.waitFor({ state: "visible", timeout: 15000 });
+    const text = (await evidence.inputValue()).trim();
+    if (!text || text === "未提供") throw new Error("风险详情证据为空或仅有未提供占位符");
+    ctx.findingEvidence = text;
+    return { input: "打开风险详情→读取只读证据文本框", expected: "非空真实证据（非占位符）", actual: { evidence: text, length: text.length } };
+
   }, { page });
 
   await H.run("G-09", "关闭漏洞详情对话框", async () => {
@@ -333,8 +378,8 @@ async function run(page, H, ctx) {
     return "刷新后功能正常";
   }, { page });
 
-  // ---------- 扫描 Diff ----------
-  await H.run("G-20", "扫描 Diff 拒绝比较不同授权目标的任务", async () => {
+  // ---------- 扫描差异 ----------
+  await H.run("G-20", "扫描差异 拒绝比较不同授权目标的任务", async () => {
     const pairs = ctx.taskPairs || [];
     const byTarget = {};
     for (const p of pairs) (byTarget[p.targetId] = byTarget[p.targetId] || []).push(p.taskId);
@@ -342,8 +387,8 @@ async function run(page, H, ctx) {
     if (targets.length < 2) return "本次任务集中只有一个目标，无法构造跨目标比较，跳过";
 
     await clearMessages(page);
-    await page.locator("button", { hasText: "扫描 Diff" }).first().click();
-    const dlg = await dialog(page, "扫描 Diff");
+    await page.locator("button", { hasText: "扫描差异" }).first().click();
+    const dlg = await dialog(page, "扫描差异");
     const selects = dlg.locator(".el-select");
     await selectOn(page, selects.nth(0), `#${byTarget[targets[0]][0]}`);
     await selectOn(page, selects.nth(1), `#${byTarget[targets[1]][0]}`);
@@ -356,7 +401,7 @@ async function run(page, H, ctx) {
     return `已正确拒绝：提示="${msg.text}"`;
   }, { page, shotOnPass: true });
 
-  await H.run("G-21", "扫描 Diff 可比较同一授权目标的两个成功任务", async () => {
+  await H.run("G-21", "扫描差异 可比较同一授权目标的两个成功任务", async () => {
     const pairs = ctx.taskPairs || [];
     const tcpPairs = pairs.filter((p) => p.tool === "tcp_ports");
     const byTarget = {};
@@ -366,10 +411,10 @@ async function run(page, H, ctx) {
     const same = Object.values(byTarget).find((arr) => arr.length >= 2);
     if (!same) return "本次任务集中没有同一目标的两个相同工具（tcp_ports）成功任务，跳过";
 
-    let dlg = page.locator(".el-dialog:visible", { hasText: "扫描 Diff" }).last();
+    let dlg = page.locator(".el-dialog:visible", { hasText: "扫描差异" }).last();
     if (!(await dlg.isVisible().catch(() => false))) {
-      await page.locator("button", { hasText: "扫描 Diff" }).first().click();
-      dlg = await dialog(page, "扫描 Diff");
+      await page.locator("button", { hasText: "扫描差异" }).first().click();
+      dlg = await dialog(page, "扫描差异");
     }
     await clearMessages(page);
     const selects = dlg.locator(".el-select");
@@ -387,8 +432,8 @@ async function run(page, H, ctx) {
     return `比较任务 #${same[same.length - 1]} → #${same[0]}，差异摘要: ${(text.match(/新增[^关]{0,90}/) || [""])[0]}`;
   }, { page, shotOnPass: true });
 
-  await H.run("G-22", "关闭扫描 Diff 对话框", async () => {
-    const dlg = page.locator(".el-dialog:visible", { hasText: "扫描 Diff" }).last();
+  await H.run("G-22", "关闭扫描差异 对话框", async () => {
+    const dlg = page.locator(".el-dialog:visible", { hasText: "扫描差异" }).last();
     if (!(await dlg.isVisible().catch(() => false))) return "对话框已关闭";
     const close = dlg.locator("button", { hasText: "关闭" }).last();
     if (await close.isVisible().catch(() => false)) await close.click();

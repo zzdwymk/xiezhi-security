@@ -34,9 +34,11 @@ class RuntimeProtocolDiagnosticsTests {
     return Stream.of(
         Arguments.of("AI Runtime 本轮未完成：ROUTE_FAILED", "RUNTIME_TERMINAL", "ROUTE_FAILED"),
         Arguments.of("AI Runtime 本轮未完成：GROUNDED_GENERATION_FAILED", "RUNTIME_TERMINAL", "GROUNDED_GENERATION_FAILED"),
+        Arguments.of("AI Runtime 本轮未完成：GROUNDED_REFERENCE_INVALID", "RUNTIME_TERMINAL", "GROUNDED_REFERENCE_INVALID"),
         Arguments.of("AI Runtime 本轮未完成：EVIDENCE_ASSESSMENT_FAILED", "RUNTIME_TERMINAL", "EVIDENCE_ASSESSMENT_FAILED"),
         Arguments.of("AI Runtime 返回失败终态：TURN_TIMEOUT", "RUNTIME_TERMINAL", "TURN_TIMEOUT"),
         Arguments.of("AI Runtime 本轮未完成：MODEL_ACCESS_DENIED", "RUNTIME_TERMINAL", "MODEL_ACCESS_DENIED"),
+        Arguments.of("AI Runtime SQLMap 计划必须要求审批", "JAVA_SEMANTIC", "AUTHORIZATION_MISMATCH"),
         Arguments.of("AI Runtime 候选 Ledger 摘要链无效", "JAVA_LEDGER", "LEDGER_DIGEST_INVALID"),
         Arguments.of("Java Ledger 未完整持久化 Runtime 事件流", "JAVA_LEDGER", "LEDGER_PERSISTENCE_INVALID"),
         Arguments.of("AI Runtime route intent 与最终计划语义不一致", "JAVA_SEMANTIC", "ROUTE_PLAN_MISMATCH"),
@@ -56,6 +58,32 @@ class RuntimeProtocolDiagnosticsTests {
     assertThat(RuntimeProtocolDiagnostics.classify(
         new AiAgentRuntimeClient.RuntimeProtocolException(null)).code())
         .isEqualTo(RuntimeProtocolDiagnostics.Code.UNKNOWN_PROTOCOL_FAILURE);
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "AI Runtime 本轮未完成：GROUNDED_REFERENCE_INVALID",
+      "AI Runtime 返回失败终态：GROUNDED_REFERENCE_INVALID"
+  })
+  void invalidGroundingReferenceReportsTheActualCauseWithoutWeakeningStop(String message) {
+    var failure = RuntimeProtocolDiagnostics.classify(
+        new AiAgentRuntimeClient.RuntimeProtocolException(message));
+    assertThat(RuntimeProtocolDiagnostics.userMessage(failure))
+        .contains("本轮证据中不存在的编号", "尚未提交审批申请", "未创建检测任务", "未执行任何检测")
+        .doesNotContain("检查模型连接", "完整性与一致性检查", "Harness 协议校验");
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "AI Runtime 本轮未完成：GROUNDED_GENERATION_FAILED",
+      "AI Runtime 返回失败终态：GROUNDED_GENERATION_FAILED"
+  })
+  void groundedOutputFailureDoesNotMisdiagnoseTheModelConnection(String message) {
+    var failure = RuntimeProtocolDiagnostics.classify(
+        new AiAgentRuntimeClient.RuntimeProtocolException(message));
+    assertThat(RuntimeProtocolDiagnostics.userMessage(failure))
+        .contains("回答或检测方案", "完整性与一致性检查", "尚未提交审批申请", "未创建检测任务", "未执行任何检测")
+        .doesNotContain("检查模型连接", "Harness 协议校验");
   }
 
   @ParameterizedTest
@@ -101,8 +129,22 @@ class RuntimeProtocolDiagnosticsTests {
     var failure = RuntimeProtocolDiagnostics.classify(
         new AiAgentRuntimeClient.RuntimeProtocolException(message));
     assertThat(RuntimeProtocolDiagnostics.userMessage(failure))
-        .contains("Harness 协议校验", "尚未提交审批申请", "未创建检测任务")
+        .contains("返回内容未通过完整性校验", "尚未提交审批申请", "未创建检测任务")
         .doesNotContain("未能完成证据评估", "模型服务连接超时");
+  }
+
+  @Test
+  void everyPublicFailureUsesChineseLabelsWhileClassificationKeepsItsCodes() {
+    for (var stage : RuntimeProtocolDiagnostics.Stage.values()) {
+      for (var code : RuntimeProtocolDiagnostics.Code.values()) {
+        var failure = new RuntimeProtocolDiagnostics.Failure(stage, code);
+        assertThat(RuntimeProtocolDiagnostics.userMessage(failure))
+            .contains("本轮已安全停止")
+            .doesNotContain("Runtime", "Harness", "Ledger", "Turn", stage.name(), code.name());
+        assertThat(failure.stage()).isSameAs(stage);
+        assertThat(failure.code()).isSameAs(code);
+      }
+    }
   }
 
   @ParameterizedTest

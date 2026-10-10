@@ -49,7 +49,7 @@ let server, browser;
   await page.screenshot({path:path.join(output,'markdown-320.png'),fullPage:true});
   console.log('PASS real headings, emphasis, lists, table, fenced code, links and narrow layout');
   const linkCases=[
-    {name:'real assistant response without a space before Chinese prose',content:'历史证据显示该工具已成功获取http://192.168.136.132的响应头。建议改用http_headers节点执行。',hrefs:['http://192.168.136.132'],labels:['http://192.168.136.132'],plain:'的响应头。建议改用http_headers节点执行。'},
+    {name:'real assistant response without a space before Chinese prose',content:'历史证据显示该工具已成功获取http://192.168.136.132的响应头。建议改用http_headers节点执行。',hrefs:['http://192.168.136.132'],labels:['http://192.168.136.132'],plain:'的响应头。建议改用HTTP 安全响应头检查节点执行。'},
     {name:'Chinese comma and full stop',content:'目标为http://192.168.136.132，扫描尚未完成。',hrefs:['http://192.168.136.132'],labels:['http://192.168.136.132'],plain:'，扫描尚未完成。'},
     {name:'fullwidth parentheses',content:'http://192.168.136.132（仅授权目标）',hrefs:['http://192.168.136.132'],labels:['http://192.168.136.132'],plain:'（仅授权目标）'},
     {name:'bare www and adjacent Chinese',content:'普通文本：www.example.com后面的文字。',hrefs:['http://www.example.com'],labels:['www.example.com'],plain:'后面的文字。'},

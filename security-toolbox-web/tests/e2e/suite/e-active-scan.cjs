@@ -26,7 +26,9 @@ async function readRules(launcher) {
     const b = boxes.nth(i);
     const text = ((await b.textContent()) || "").replace(/\s+/g, " ").trim();
     const cls = (await b.getAttribute("class")) || "";
-    out.push({ i, text, disabled: cls.includes("is-disabled"), checked: cls.includes("is-checked") });
+    const input = b.locator('input[type="checkbox"]');
+    const code = await input.inputValue().catch(() => "");
+    out.push({ i, text, code, disabled: await input.isDisabled().catch(() => cls.includes("is-disabled")), checked: await input.isChecked().catch(() => cls.includes("is-checked")) });
   }
   return out;
 }
@@ -55,8 +57,41 @@ async function summaryRuleCount(launcher) {
   return m ? Number(m[1]) : null;
 }
 
+/** Observe the response to this exact DOM submission; a late toast from another
+ * target is not evidence for this case. Never create data through the observer. */
+async function confirmScan(page, box, ctx, targetId, ruleCodes) {
+  const expectedCodes = [...ruleCodes].sort();
+  const startedAt = Date.now();
+  const responsePromise = page.waitForResponse(response => {
+    const request = response.request();
+    if (request.method() !== "POST" || !/\/api\/active-scans$/.test(response.url())) return false;
+    try {
+      const body = request.postDataJSON();
+      return Number(body.projectId) === Number(ctx.projectId) && Number(body.targetId) === Number(targetId)
+        && JSON.stringify([...(body.ruleCodes || [])].sort()) === JSON.stringify(expectedCodes);
+    } catch { return false; }
+  }, { timeout: 120000 }).then(response => ({ response }), error => ({ error }));
+  await box.locator("button", { hasText: "开始检测" }).last().click();
+  const observed = await responsePromise;
+  if (observed.error) throw new Error(`本次目标 ${targetId} 的主动检测响应未在120秒内返回: ${observed.error.message}`);
+  const response = observed.response;
+  const body = await response.json();
+  const evidence = { input: response.request().postDataJSON(), status: response.status(), body, elapsedMs: Date.now() - startedAt };
+  ctx.activeScanEvidence ??= [];
+  ctx.activeScanEvidence.push(evidence);
+  if (response.status() !== 202) throw new Error(`主动检测提交失败: ${JSON.stringify(evidence)}`);
+  if (Number(body.targetId) !== Number(targetId) || body.taskCount !== ruleCodes.length || body.taskIds?.length !== ruleCodes.length)
+    throw new Error(`主动检测响应任务数量或目标不符: ${JSON.stringify(evidence)}`);
+  ctx.createdTaskIds ??= [];
+  for (const id of body.taskIds) if (!ctx.createdTaskIds.includes(id)) ctx.createdTaskIds.push(id);
+  const expectedText = `已创建 ${body.taskCount} 个检测任务`;
+  const toast = page.locator('.el-message--success').filter({ hasText: expectedText }).last();
+  await toast.waitFor({ state: 'visible', timeout: 5000 });
+  return { text: (await toast.textContent()).trim(), type: 'success', evidence };
+}
+
 /** 发起检测：点击按钮 → 二次确认 → 读取结果提示 */
-async function launchScan(page, launcher) {
+async function launchScan(page, launcher, ctx) {
   await clearMessages(page);
   await closeDropdown(page);
   const btn = launcher.locator(".scan-button").first();
@@ -69,11 +104,10 @@ async function launchScan(page, launcher) {
   let confirmText = null;
   if (await box.isVisible({ timeout: 6000 }).catch(() => false)) {
     confirmText = ((await box.textContent()) || "").replace(/\s+/g, " ").trim();
-    await box.locator("button", { hasText: "开始检测" }).last().click();
-    await sleep(1000);
+    const msg = await confirmScan(page, box, ctx, ctx.webTargetId, ctx.pickedWebRules);
+    return { confirmText, msg };
   }
-  const msg = await lastMessage(page, { timeout: 20000 });
-  return { confirmText, msg };
+  return { confirmText, msg: null };
 }
 
 async function run(page, H, ctx) {
@@ -282,7 +316,7 @@ async function run(page, H, ctx) {
     const msg = await lastMessage(page, { timeout: 8000 });
     if (!msg) throw new Error("未出现任何提示");
     if (!/目标/.test(msg.text)) throw new Error(`提示与目标无关: ${msg.text}`);
-    return `提示="${msg.text}"`;
+    return { input: "未选目标点击开始主动检测", expected: "拒绝提交并明确提示选择目标", actual: msg };
   }, { page });
 
   // ================================================================
@@ -331,7 +365,7 @@ async function run(page, H, ctx) {
     if (disabled.length === 0) return "本轮无禁用规则";
     // 「正在检测/检测中」是依赖探测进行中的合法瞬态原因（如 Metasploit 探版本较慢），
     // 也计入"已说明原因"。
-    const bad = disabled.filter((r) => !/未安装|不可用|依赖|不是 Web|不是 HTTPS|不适用|仅.*适用|检测中|正在检测/.test(r.text));
+    const bad = disabled.filter((r) => !/未安装|不可用|依赖|不是 Web|不是网页地址|不是 HTTPS|不适用|仅.*适用|检测中|正在检测/.test(r.text));
     if (bad.length) throw new Error(`以下规则被禁用但未说明原因: ${bad.map((b) => b.text.slice(0, 50)).join(" | ")}`);
     return `${disabled.length} 条禁用规则均已说明原因`;
   }, { page });
@@ -390,15 +424,13 @@ async function run(page, H, ctx) {
       throw new Error("E-21 的二次确认框未保留");
     }
     await clearMessages(page);
-    await box.locator("button", { hasText: "开始检测" }).last().click();
-    // 不预先 sleep，立即开始等待提示，避免 3s 自动消失的成功 toast 被错过
-    const msg = await lastMessage(page, { timeout: 20000 });
+    const msg = await confirmScan(page, box, ctx, ctx.ipTargetId, ["RULE-TCP-EXPOSURE"]);
     if (!msg) throw new Error("未出现任何反馈提示");
     if (msg.type !== "success") throw new Error(`检测未成功创建（${msg.type}）: ${msg.text}`);
     const m = msg.text.match(/已创建\s*(\d+)\s*个检测任务/);
     if (!m) throw new Error(`成功提示格式异常: ${msg.text}`);
     ctx.ipScanTaskCount = Number(m[1]);
-    return `提示="${msg.text}"`;
+    return { input: msg.evidence.input, expected: "本轮目标及所选规则对应任务已创建，且显示成功提示", actual: msg.evidence, message: msg.text };
   }, { page, shotOnPass: true });
 
   await sleep(3000);
@@ -428,17 +460,23 @@ async function run(page, H, ctx) {
   }, { page });
 
   await H.run("E-25", "勾选全部可用的 Web 安全检查规则", async () => {
-    await clearRules(launcher);
+    if (!await clearRules(launcher)) throw new Error("未能清空旧规则选择，停止创建任务");
     const rules = await readRules(launcher);
+    const webCodes = new Set(["RULE-WEB-HEADERS", "RULE-WEB-COOKIES", "RULE-WEB-CORS", "RULE-WEB-METHODS", "RULE-WEB-DISCLOSURE"]);
     const picked = [];
     for (const r of rules) {
       if (r.disabled) continue;
-      if (!/响应头|Cookie|CORS|HTTP 方法|信息泄露/.test(r.text)) continue;
-      await launcher.locator(".rule-list .el-checkbox").nth(r.i).click();
+      // Titles are localized by the product; the native checkbox value is the
+      // stable rule code bound by Vulnerabilities.vue, not its display label.
+      if (!webCodes.has(r.code)) continue;
+      const input = launcher.locator(`.rule-list input[type="checkbox"][value="${r.code}"]`);
+      const label = input.locator('xpath=ancestor::label[1]');
+      if (!await input.isChecked()) await label.click();
+      if (!await input.isChecked()) throw new Error(`规则勾选未生效: ${r.code}`);
       await sleep(350);
-      picked.push(r.text.slice(0, 16));
+      picked.push(r.code);
     }
-    if (picked.length === 0) throw new Error("没有可勾选的 Web 规则");
+    if (picked.length === 0) throw new Error("没有可勾选的内置Web规则，实际DOM: " + JSON.stringify(rules));
     ctx.pickedWebRules = picked;
     return `已勾选 ${picked.length} 条：${picked.join("、")}`;
   }, { page });
@@ -454,7 +492,7 @@ async function run(page, H, ctx) {
   }, { page });
 
   await H.run("E-27", "对 URL 型目标成功创建 HTTP 安全检查任务", async () => {
-    const { confirmText, msg } = await launchScan(page, launcher);
+    const { confirmText, msg } = await launchScan(page, launcher, ctx);
     if (!confirmText) throw new Error("未弹出二次确认框");
     if (!msg) throw new Error("未出现任何反馈提示");
     if (msg.type !== "success") throw new Error(`检测未成功创建（${msg.type}）: ${msg.text}`);
@@ -464,7 +502,7 @@ async function run(page, H, ctx) {
     if (ctx.webScanTaskCount !== ctx.pickedWebRules.length) {
       throw new Error(`创建任务数 ${ctx.webScanTaskCount} 与勾选规则数 ${ctx.pickedWebRules.length} 不一致`);
     }
-    return `提示="${msg.text}"`;
+    return { input: msg.evidence.input, expected: "本轮目标及所选规则对应任务已创建，且显示成功提示", actual: msg.evidence, message: msg.text };
   }, { page, shotOnPass: true });
 
   await sleep(3000);

@@ -3,7 +3,7 @@
  *
  * 业务顺序：进入项目详情 → 概览 → 授权目标关联 → 探测服务（指纹/WAF）
  *          → 信息收集（被动/主动）→ 检测任务 → 漏洞与复测
- *          → 安全行动（高风险审批）→ 审批与审计 → AI 记忆
+ *          → 执行确认与审计 → AI 记忆
  *
  * 「项目报告」页签由阶段 H 覆盖，本阶段不重复。
  */
@@ -51,7 +51,7 @@ async function run(page, H, ctx) {
     const tabs = page.locator(".project-tabs").first();
     await tabs.waitFor({ state: "visible", timeout: 15000 });
     const labels = (await tabs.locator(".el-tabs__item").allTextContents()).map((s) => s.trim());
-    const expect = ["概览", "授权目标", "探测服务", "信息收集", "检测任务", "漏洞与复测", "安全行动", "审批与审计", "项目报告", "AI 记忆"];
+    const expect = ["概览", "授权目标", "探测服务", "信息收集", "检测任务", "漏洞与复测", "执行确认与审计", "项目报告", "AI 记忆"];
     const missing = expect.filter((e) => !labels.some((l) => l.includes(e)));
     if (missing.length) throw new Error(`缺少页签: ${missing.join("、")}（实际: ${labels.join("/")}）`);
     return `${labels.length} 个页签齐全: ${labels.join(" / ")}`;
@@ -323,114 +323,68 @@ async function run(page, H, ctx) {
     return msg ? `提示="${msg.text}"` : "状态已切换为已确认";
   }, { page });
 
-  // ================= 安全行动 =================
-  await H.run("D-24", "「安全行动」页签对管理员展示高风险行动申请入口", async () => {
-    await openTab(page, "安全行动");
-    const pane = page.locator(".el-tab-pane:visible").last();
-    const btn = pane.locator("button.security-action-request-button").first();
-    const text = ((await pane.textContent()) || "").replace(/\s+/g, " ");
-    if (!(await btn.count())) {
-      return `未渲染申请按钮（可能因授权状态限制）。页面提示: ${text.slice(0, 180)}`;
+  // ================= 执行确认与审计 =================
+  await H.run("D-24", "项目只有统一的执行确认入口", async () => {
+    await openTab(page, "执行确认与审计");
+    const labels = await page.locator(".project-tabs .el-tabs__item").allTextContents();
+    if (labels.some(label => ["安全行动", "审批与审计"].includes(label.trim()))) {
+      throw new Error("仍存在旧的独立行动或审批页签");
     }
-    return `申请高风险行动入口存在。说明: ${text.slice(0, 150)}`;
+    return "行动方案与审计已合并为一个页签";
   }, { page });
 
-  await H.shot(page, "D-安全行动页签");
-
-  await H.run("D-25", "高风险安全行动申请对话框包含风险与授权约束说明", async () => {
+  await H.run("D-25", "不再提供管理员给自己提交申请的入口", async () => {
     const pane = page.locator(".el-tab-pane:visible").last();
-    const btn = pane.locator("button.security-action-request-button").first();
-    if (!(await btn.count())) return "无申请入口，跳过";
-    await btn.click();
-    await sleep(1500);
-    const dlg = page.locator(".el-dialog:visible").last();
-    if (!(await dlg.isVisible().catch(() => false))) return "对话框未打开，跳过";
-    const text = ((await dlg.textContent()) || "").replace(/\s+/g, " ");
-    const has = ["授权目标", "安全行动类型", "验证目的", "非破坏性", "禁止横向移动"].filter((k) => text.includes(k));
-    const cancel = dlg.locator("button", { hasText: "取消" }).last();
-    if (await cancel.isVisible().catch(() => false)) await cancel.click();
-    await sleep(1200);
-    if (has.length < 3) throw new Error(`对话框关键约束说明不足，仅有: ${has.join("、")}`);
-    return `对话框含: ${has.join("、")}`;
+    if (await pane.getByRole("button", { name: /申请审批|申请高风险行动/ }).count()) {
+      throw new Error("旧的人工申请入口仍可见");
+    }
+    return "人工申请入口已移除";
   }, { page });
 
-  // ================= 审批与审计 =================
-  await H.run("D-26", "「审批与审计」页签展示审批记录与操作审计", async () => {
-    await openTab(page, "审批与审计");
+  await H.run("D-26", "统一页面保留方案、历史行动与操作审计", async () => {
     const pane = page.locator(".el-tab-pane:visible").last();
-    const text = ((await pane.textContent()) || "").replace(/\s+/g, " ");
-    const missing = ["审批记录", "操作审计"].filter((k) => !text.includes(k));
+    const text = await pane.innerText();
+    const missing = ["行动方案与确认记录", "历史人工行动与证据", "操作审计"].filter(value => !text.includes(value));
     if (missing.length) throw new Error(`缺少区块: ${missing.join("、")}`);
-    const rows = await pane.locator(".el-table__row").count();
-    return `两个区块齐全，共 ${rows} 行记录`;
+    return "三个区块齐全";
   }, { page });
-
-  await H.shot(page, "D-审批与审计页签");
+  await H.shot(page, "D-执行确认与审计页签");
 
   await H.run("D-27", "操作审计记录了前序阶段的真实操作", async () => {
-    const pane = page.locator(".el-tab-pane:visible").last();
-    const text = ((await pane.textContent()) || "").replace(/\s+/g, " ");
+    const text = await page.locator(".el-tab-pane:visible").last().innerText();
     if (!/TASK|SCAN|TARGET|PROJECT|任务|扫描|目标|项目/i.test(text)) {
-      throw new Error(`审计记录中未见业务操作痕迹: ${text.slice(0, 250)}`);
+      throw new Error("审计记录中未见业务操作痕迹");
     }
-    return "审计记录中可见任务/扫描/目标/项目相关操作";
+    return "审计记录中可见业务操作";
   }, { page });
 
-  await H.run("D-28", "可提交项目审批申请", async () => {
-    const pane = page.locator(".el-tab-pane:visible").last();
-    const btn = pane.locator("button", { hasText: "申请审批" }).first();
-    if (!(await btn.count())) throw new Error("未渲染申请审批入口");
-    await btn.click();
-    const dlg = await dialog(page, "申请项目审批");
-    await clearMessages(page);
-    await selectOption(dlg, page, "审批动作", "主动扫描").catch(() => {});
-    const ta = dlg.locator("textarea").first();
-    if (await ta.count()) {
-      await ta.click();
-      await ta.fill(`全链路测试提交的扫描审批申请（AUTH-${ctx.stamp}）。`);
-    }
-    await dialogButton(dlg, "提交申请");
-    await sleep(2000);
-    const msg = await lastMessage(page, { timeout: 10000 });
-    if (msg && msg.type === "error") throw new Error(`提交审批失败: ${msg.text}`);
-    ctx.approvalRequested = true;
-    return msg ? `提示="${msg.text}"` : "审批申请已提交";
-  }, { page, shotOnPass: true });
-
-  await H.run("D-29", "新提交的审批记录出现在列表且状态为待审批", async () => {
-    if (!ctx.approvalRequested) return "未提交审批，跳过";
-    const pane = page.locator(".el-tab-pane:visible").last();
-    const refresh = pane.locator("button", { hasText: "刷新记录" }).first();
-    if (await refresh.count()) { await refresh.click(); await sleep(2000); }
-    const text = ((await pane.textContent()) || "").replace(/\s+/g, " ");
-    if (!/PENDING|待审批|待决定/.test(text)) {
-      throw new Error(`未见待审批记录: ${text.slice(0, 250)}`);
-    }
-    return "审批记录中存在待审批条目";
+  await H.run("D-28", "页面明确由 AI 生成方案并由管理员确认", async () => {
+    const text = await page.locator(".el-tab-pane:visible").last().innerText();
+    if (!/AI.*生成方案/.test(text)) throw new Error("缺少 AI 提交方案的说明");
+    return "AI 方案入口说明可见";
   }, { page });
 
-  await H.run("D-30", "管理员可对待审批记录执行「通过」决策", async () => {
-    if (!ctx.approvalRequested) return "未提交审批，跳过";
+  await H.run("D-29", "刷新统一记录不提交申请或执行任务", async () => {
+    const writes = [];
+    const observe = request => {
+      if (request.method() === "POST" && /\/(approvals|security-actions)(\/|\?|$)/.test(request.url())) writes.push(request.url());
+    };
+    page.on("request", observe);
+    try {
+      await page.locator(".el-tab-pane:visible").last().getByRole("button", { name: "刷新记录", exact: true }).click();
+      await settle(page, 1500);
+      if (writes.length) throw new Error(`刷新触发写入: ${writes.join(", ")}`);
+    } finally { page.off("request", observe); }
+    return "刷新只读取记录";
+  }, { page });
+
+  await H.run("D-30", "确认操作须先查看方案，列表不直接裁决", async () => {
     const pane = page.locator(".el-tab-pane:visible").last();
-    const row = pane.locator(".el-table__row").filter({ hasText: /PENDING|待审批/ }).first();
-    if (!(await row.count())) return "无待审批记录，跳过";
-    const btn = row.locator("button", { hasText: "通过" }).first();
-    if (!(await btn.count())) throw new Error("未渲染通过按钮");
-    await clearMessages(page);
-    await btn.click();
-    await sleep(1500);
-    // 审批需填写备注（ElMessageBox.prompt）
-    const box = page.locator(".el-message-box").last();
-    if (await box.isVisible().catch(() => false)) {
-      const inp = box.locator("input").first();
-      if (await inp.count()) { await inp.fill("全链路测试自动审批通过"); }
-      await box.locator("button", { hasText: /确定|确认|通过/ }).last().click();
-      await sleep(1500);
+    if (await pane.getByRole("button", { name: /^(通过|批准|拒绝|允许执行|确认并执行)$/ }).count()) {
+      throw new Error("列表仍存在绕过方案详情的直接裁决按钮");
     }
-    const msg = await lastMessage(page, { timeout: 10000 });
-    if (msg && msg.type === "error") throw new Error(`审批失败: ${msg.text}`);
-    return msg ? `提示="${msg.text}"` : "审批决策已提交";
-  }, { page, shotOnPass: true });
+    return "仅允许从方案详情进行确认；此检查不执行既有方案";
+  }, { page });
 
   // ================= AI 记忆 =================
   await H.run("D-31", "「AI 记忆」页签展示项目级记忆列表", async () => {

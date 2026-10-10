@@ -104,6 +104,8 @@ public class ZapScanTool implements SecurityTool {
       observer.operation("ZAP daemon 已就绪，正在将目标纳入扫描范围");
       daemon.includeInScope(targetUri);
       configureAuthIfPresent(daemon, parameters);
+      observer.operation("正在确认目标网站可以访问（不跟随重定向）");
+      daemon.accessUrl(targetUri);
 
       boolean openApiImported = false;
       if (openApiUrl != null && !openApiUrl.isBlank()) {
@@ -115,16 +117,13 @@ public class ZapScanTool implements SecurityTool {
           runAjaxSpider(daemon, targetUri, observer);
         }
       }
-      if (!withSpider && !openApiImported) {
-        observer.operation("正在读取选定地址以建立 ZAP 站点记录（不爬取、不跟随重定向）");
-        daemon.accessUrl(targetUri);
-      }
       List<String> crawledUrls = new ArrayList<>(daemon.crawlResults(targetUri));
       List<String> technologies = new ArrayList<>(daemon.technologies(targetUri));
       if (crawledUrls.isEmpty() && openApiImported) {
         crawledUrls.add(targetUri.toString());
       }
       if (passiveOnly) {
+        awaitPassiveScan(daemon, observer);
         observer.progressPercent(100d, "爬虫完成，正在采集被动扫描结果");
         List<ZapDaemon.ZapAlert> alerts = daemon.alerts();
         return toResult(targetUri, alerts, crawledUrls, technologies, openApiImported);
@@ -145,25 +144,28 @@ public class ZapScanTool implements SecurityTool {
 
   private void runSpider(ZapDaemon daemon, URI target, ToolExecutionObserver observer)
       throws Exception {
-    String spiderId;
-    try {
-      observer.operation("正在对 " + target + " 进行爬虫");
-      spiderId = daemon.startSpider(target);
-      while (true) {
-        int progress = daemon.spiderProgress(spiderId);
-        if (progress >= 100) break;
-        observer.progressPercent(progress, "ZAP 爬虫");
-        if (observer.isCancellationRequested()) {
-          daemon.stopSpider(spiderId);
-          throw new ApiException("任务已取消");
-        }
-        Thread.sleep(600);
-      }
-      observer.progressPercent(100d, "爬虫完成");
-    } catch (Exception ex) {
-      if (ex instanceof ApiException) throw ex;
-      LOGGER.warn("ZAP 爬虫阶段失败，将继续尝试主动扫描", ex);
+    observer.operation("正在对 " + target + " 进行爬虫");
+    String spiderId = daemon.startSpider(target);
+    if (spiderId == null || spiderId.isBlank()) {
+      throw new ApiException("ZAP 未能启动页面探测，本次检测未完成，请重试");
     }
+    long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(scanTimeoutSeconds);
+    while (true) {
+      if (observer.isCancellationRequested()) {
+        daemon.stopSpider(spiderId);
+        throw new ApiException("任务已取消");
+      }
+      int progress = daemon.spiderProgress(spiderId);
+      validateProgress(progress);
+      if (progress == 100) break;
+      observer.progressPercent(progress, "ZAP 爬虫");
+      if (System.nanoTime() >= deadline) {
+        daemon.stopSpider(spiderId);
+        throw new ApiException("ZAP 页面探测超时，本次检测未完成，请检查目标服务和网络后重试");
+      }
+      Thread.sleep(600);
+    }
+    observer.progressPercent(100d, "爬虫完成");
   }
 
   private ToolExecutionResult runActiveScan(
@@ -193,9 +195,10 @@ public class ZapScanTool implements SecurityTool {
       throw new ApiException("ZAP 未返回主动扫描编号，扫描未启动");
     }
     while (true) {
-      Integer progress = daemon.activeScanProgress(scanId);
-      if (progress == null || progress >= 100) break;
-      observer.progressPercent(progress.doubleValue(), "ZAP 主动扫描");
+      int progress = daemon.activeScanProgress(scanId);
+      validateProgress(progress);
+      if (progress == 100) break;
+      observer.progressPercent(progress, "ZAP 主动扫描");
       if (observer.isCancellationRequested()) {
         daemon.stopActiveScan(scanId);
         throw new ApiException("任务已取消");
@@ -206,10 +209,32 @@ public class ZapScanTool implements SecurityTool {
       }
       Thread.sleep(1000);
     }
+    awaitPassiveScan(daemon, observer);
     observer.progressPercent(100d, "主动扫描完成，正在解析结果");
 
     List<ZapDaemon.ZapAlert> alerts = daemon.alerts();
     return toResult(target, alerts, crawledUrls, technologies, openApiImported);
+  }
+
+  private void validateProgress(int progress) {
+    if (progress < 0 || progress > 100) {
+      throw new ApiException("ZAP 未返回有效的检测进度，无法确认检测是否完成，请重试");
+    }
+  }
+
+  private void awaitPassiveScan(ZapDaemon daemon, ToolExecutionObserver observer) throws Exception {
+    long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(scanTimeoutSeconds);
+    while (true) {
+      if (observer.isCancellationRequested()) throw new ApiException("任务已取消");
+      long remaining = daemon.passiveScanRemaining();
+      if (remaining < 0) throw new ApiException("ZAP 检测进度无效，不能确认检测是否完成");
+      if (remaining == 0) return;
+      if (System.nanoTime() >= deadline) {
+        throw new ApiException("ZAP 仍有响应未检查完，本次检测超时，请重试");
+      }
+      observer.heartbeat("ZAP 正在检查网站响应，剩余 " + remaining + " 条");
+      Thread.sleep(600);
+    }
   }
 
   private ToolExecutionResult toResult(
@@ -389,27 +414,22 @@ public class ZapScanTool implements SecurityTool {
   // AJAX 爬虫无固定完成点，采用有界轮询：直到 ZAP 报告 stopped 或到达时长上限。
   private void runAjaxSpider(ZapDaemon daemon, URI target, ToolExecutionObserver observer)
       throws Exception {
-    try {
-      observer.operation("正在对 " + target + " 执行 AJAX 深段爬虫（SPA）");
-      daemon.startAjaxSpider(target);
-      long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MINUTES.toNanos(5);
-      while (System.nanoTime() < deadline) {
-        if (observer.isCancellationRequested()) {
-          throw new ApiException("任务已取消");
-        }
-        String state = daemon.ajaxSpiderState();
-        if (state.contains("stopped")) {
-          observer.progressPercent(100d, "AJAX 爬虫完成");
-          return;
-        }
-        observer.progressPercent(50d, "AJAX 爬虫进行中");
-        Thread.sleep(1500);
+    observer.operation("正在对 " + target + " 探测动态页面");
+    daemon.startAjaxSpider(target);
+    long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(Math.min(300, scanTimeoutSeconds));
+    while (System.nanoTime() < deadline) {
+      if (observer.isCancellationRequested()) throw new ApiException("任务已取消");
+      String state = daemon.ajaxSpiderState();
+      if ("stopped".equals(state)) {
+        observer.progressPercent(100d, "动态页面探测完成");
+        return;
       }
-      observer.progressPercent(100d, "AJAX 爬虫到达时长上限，结束");
-    } catch (ApiException ex) {
-      throw ex;
-    } catch (Exception ex) {
-      LOGGER.warn("ZAP AJAX 爬虫失败，将继续后续扫描", ex);
+      if (!"running".equals(state)) {
+        throw new ApiException("ZAP 未返回有效的动态页面探测进度，无法确认检测是否完成");
+      }
+      observer.heartbeat("ZAP 正在探测动态页面");
+      Thread.sleep(1500);
     }
+    throw new ApiException("ZAP 动态页面探测超时，本次检测未完成，请重试");
   }
 }

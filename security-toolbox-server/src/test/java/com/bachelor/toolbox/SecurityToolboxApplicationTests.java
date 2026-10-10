@@ -25,6 +25,7 @@ import org.springframework.test.web.servlet.MockMvc;
       "spring.datasource.url=jdbc:h2:mem:toolbox-test;MODE=PostgreSQL;DB_CLOSE_DELAY=-1",
       "spring.jpa.hibernate.ddl-auto=create-drop",
       "toolbox.ai.api-key=",
+      "toolbox.ai.enabled=false",
       "toolbox.auth.admin-password=test-admin-password-7bbbe095d8724fcb",
       "toolbox.auth.jwt-secret=test-jwt-secret-cdc24d415ad843aa9ef313028ae9be30",
       "toolbox.traffic.mitm-ca-password=test-mitm-ca-password-1d6ad9b95b76490e",
@@ -87,9 +88,9 @@ class SecurityToolboxApplicationTests {
   }
 
   @Test
-  void createsAuthorizedTargetAndFallbackAiPlan() throws Exception {
+  void createsAuthorizedTargetAndRejectsAiPlanWhenModelIsDisabled() throws Exception {
     String token = login();
-    long projectId = createProject(token, "AI fallback project");
+    long projectId = createProject(token, "AI disabled project");
     String targetJson =
         """
         {
@@ -130,9 +131,10 @@ class SecurityToolboxApplicationTests {
                         + ",\"targetId\":"
                         + targetId
                         + ",\"prompt\":\"scan ports and http headers\"}"))
-        .andExpect(status().isOk())
-        .andExpect(jsonPath("$.provider").value("local-rule-fallback"))
-        .andExpect(jsonPath("$.steps[0].toolCode").exists());
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.message").value("AI 模型未启用，请在系统设置中配置并启用模型后重试"))
+        .andExpect(jsonPath("$.provider").doesNotExist())
+        .andExpect(jsonPath("$.steps").doesNotExist());
 
     mockMvc
         .perform(
@@ -145,9 +147,9 @@ class SecurityToolboxApplicationTests {
                         + ",\"targetId\":"
                         + targetId
                         + ",\"prompt\":\"use nmap service scan and identify versions\"}"))
-        .andExpect(status().isOk())
-        .andExpect(jsonPath("$.steps[0].toolCode").value("nmap_service_scan"))
-        .andExpect(jsonPath("$.steps[0].parameters.mode").value("service"));
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.message").value("AI 模型未启用，请在系统设置中配置并启用模型后重试"))
+        .andExpect(jsonPath("$.steps").doesNotExist());
 
     mockMvc
         .perform(
@@ -298,7 +300,7 @@ class SecurityToolboxApplicationTests {
   }
 
   @Test
-  void capturesAuthorizedHttpTrafficAndCreatesSuggestion() throws Exception {
+  void capturesAuthorizedHttpTrafficAndRejectsAnalysisWhenModelIsDisabled() throws Exception {
     HttpServer targetServer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
     targetServer.createContext(
         "/demo",
@@ -390,8 +392,9 @@ class SecurityToolboxApplicationTests {
                   .header("Authorization", "Bearer " + token)
                   .contentType(MediaType.APPLICATION_JSON)
                   .content("{}"))
-          .andExpect(status().isOk())
-          .andExpect(jsonPath("$.suggestionId").isNumber());
+          .andExpect(status().isBadRequest())
+          .andExpect(jsonPath("$.message").value("尚未配置或启用 AI 模型，无法生成流量分析。"))
+          .andExpect(jsonPath("$.suggestionId").doesNotExist());
     } finally {
       mockMvc
           .perform(post("/api/traffic/proxy/stop").header("Authorization", "Bearer " + token))
@@ -468,8 +471,9 @@ class SecurityToolboxApplicationTests {
                   .header("Authorization", "Bearer " + token)
                   .contentType(MediaType.APPLICATION_JSON)
                   .content("{}"))
-          .andExpect(status().isOk())
-          .andExpect(jsonPath("$.canAutoHandle").value(false));
+          .andExpect(status().isBadRequest())
+          .andExpect(jsonPath("$.message").value("尚未配置或启用 AI 模型，无法生成流量分析。"))
+          .andExpect(jsonPath("$.suggestionId").doesNotExist());
     } finally {
       mockMvc
           .perform(post("/api/traffic/proxy/stop").header("Authorization", "Bearer " + token))

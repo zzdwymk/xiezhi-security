@@ -80,7 +80,10 @@ class WorkflowRunServiceTests {
             audit,
             objectMapper,
             stopTransactions,
-            webTargetResolver);
+            webTargetResolver,
+            new com.bachelor.toolbox.target.PortRangeParser(),
+            65535,
+            65535);
     AuthorizedTarget target = new AuthorizedTarget();
     target.setId(TARGET_ID);
     target.setTargetValue("http://127.0.0.1:8000");
@@ -142,6 +145,95 @@ class WorkflowRunServiceTests {
         .containsEntry("ports", "80,443,8000-8002")
         .containsEntry("mode", "quick");
     assertThat(createdRequests.get(1).parameters()).containsEntry("check", "cookies");
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"0", "65536", "eighty", "80<script>", "81"})
+  void invalidTcpPortsAreReportedBeforeAnyWorkflowTaskCanBeCreated(String ports) {
+    stubSnapshot(List.of(step("ports", "tcp_ports", 0, false, List.of(), Map.of("ports", ports))));
+
+    WorkflowRunDtos.PreflightResponse result = service.preflight(
+        new WorkflowRunDtos.SnapshotRequest(PROJECT_ID, TARGET_ID, "workflow-1", 3L, DIGEST));
+
+    assertThat(result.issues()).singleElement().satisfies(issue -> {
+      assertThat(issue.nodeId()).isEqualTo("ports");
+      assertThat(issue.toolCode()).isEqualTo("tcp_ports");
+      assertThat(issue.reason()).contains("端口");
+    });
+    assertThatThrownBy(() -> service.start(startRequest(List.of(), List.of())))
+        .isInstanceOf(ApiException.class).hasMessageContaining("端口");
+    verify(runs, never()).save(any());
+    assertThat(createdRequests).isEmpty();
+  }
+
+  @Test
+  void validTcpPortPassesPreflightAndIsPreservedInTheCreatedTask() throws Exception {
+    stubSnapshot(List.of(step("ports", "tcp_ports", 0, false, List.of(), Map.of("ports", "80"))));
+    assertThat(service.preflight(new WorkflowRunDtos.SnapshotRequest(
+        PROJECT_ID, TARGET_ID, "workflow-1", 3L, DIGEST)).issues()).isEmpty();
+    service.start(startRequest(List.of(), List.of()));
+    assertThat(createdRequests).singleElement()
+        .satisfies(request -> assertThat(request.parameters()).containsEntry("ports", "80"));
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"0", "65536", "eighty", "80<script>", "81"})
+  void nmapUsesTheSamePreflightPortValidation(String ports) {
+    stubSnapshot(List.of(step("nmap", "nmap_service_scan", 0, false, List.of(), Map.of("ports", ports))));
+    assertThat(service.preflight(new WorkflowRunDtos.SnapshotRequest(
+        PROJECT_ID, TARGET_ID, "workflow-1", 3L, DIGEST)).issues()).singleElement()
+        .satisfies(issue -> assertThat(issue.reason()).contains("端口"));
+    assertThatThrownBy(() -> service.start(startRequest(List.of(), List.of())))
+        .isInstanceOf(ApiException.class).hasMessageContaining("端口");
+    verify(runs, never()).save(any());
+    assertThat(createdRequests).isEmpty();
+  }
+
+  @Test
+  void retrievalCreatesAPersistedTaskAndRetainsItsSuccessDependency() throws Exception {
+    stubSnapshot(List.of(
+        step("context", "retrieve_project_context", 0, false, List.of(), Map.of("query", "响应头")),
+        step("headers", "http_headers", 1, false, List.of("context"), Map.of())));
+    WorkflowRunDtos.Detail result = service.start(startRequest(List.of(), List.of()));
+    assertThat(result.tasks()).hasSize(2);
+    assertThat(createdTasks.get(0).getToolCode()).isEqualTo("retrieve_project_context");
+    assertThat(createdRequests.get(0).parameters()).containsExactlyEntriesOf(Map.of("query", "响应头"));
+    assertThat(createdDependencies.get("headers")).containsExactly(createdTasks.get(0).getId());
+    assertThat(createdTasks.get(1).getSuccessDependencyTaskIds()).isEqualTo("[11]");
+  }
+
+  @Test
+  void retrievalOnlyWorkflowNoLongerCreatesZeroTasks() throws Exception {
+    stubSnapshot(List.of(step("context", "retrieve_project_context", 0, false, List.of(), Map.of())));
+    assertThat(service.start(startRequest(List.of(), List.of())).tasks()).hasSize(1);
+    assertThat(createdRequests.get(0).parameters()).containsEntry("query",
+        com.bachelor.toolbox.tool.ProjectContextRetrievalTool.DEFAULT_QUERY);
+  }
+
+  @Test
+  void retrievalCannotOverrideItsProjectOrTargetThroughParameters() {
+    stubSnapshot(List.of(step("context", "retrieve_project_context", 0, false, List.of(),
+        Map.of("query", "证据", "projectId", 999))));
+    assertThatThrownBy(() -> service.start(startRequest(List.of(), List.of())))
+        .isInstanceOf(ApiException.class).hasMessageContaining("仅支持查询内容");
+    verify(runs, never()).save(any());
+  }
+
+  @Test
+  void explicitlySkippedInvalidRetrievalStillHasAPersistedDependency() throws Exception {
+    stubSnapshot(List.of(
+        step("context", "retrieve_project_context", 0, false, List.of(), Map.of("query", 5)),
+        step("headers", "http_headers", 1, false, List.of("context"), Map.of())));
+    SecurityTask skipped = workflowTask(11L, "context", "retrieve_project_context");
+    skipped.setStatus("SKIPPED");
+    when(taskService.createSkippedWorkflowTask(any(), anyString(), eq("context"), anyString(),
+        anyInt(), anyString(), anyBoolean(), anyList(), eq(42L), anyString()))
+        .thenAnswer(invocation -> { createdTasks.add(skipped); return skipped; });
+    service.start(startRequest(List.of(), List.of("context")));
+    assertThat(createdTasks).hasSize(2);
+    assertThat(createdTasks.get(1).getSuccessDependencyTaskIds()).isEqualTo("[11]");
+    verify(taskService, never()).createWorkflowTask(any(), anyString(), eq("context"), anyString(),
+        anyInt(), anyString(), anyBoolean(), anyList(), eq(42L));
   }
 
   @Test
@@ -341,6 +433,78 @@ class WorkflowRunServiceTests {
   }
 
   @Test
+  void everyWebNodeInOnePreflightUsesTheSameTargetObservation() {
+    stubSnapshot(List.of(
+        step("headers", "http_headers", 0, false, List.of(), Map.of()),
+        step("tls", "tls_config", 0, false, List.of(), Map.of())));
+    when(webTargetResolver.tryResolve(any())).thenReturn(
+        List.of(), List.of(URI.create("https://192.168.136.132/")));
+
+    WorkflowRunDtos.PreflightResponse result = service.preflight(
+        new WorkflowRunDtos.SnapshotRequest(PROJECT_ID, TARGET_ID, "workflow-1", 3L, DIGEST));
+
+    assertThat(result.issues()).extracting(WorkflowRunDtos.NodeIssue::nodeId)
+        .containsExactly("headers", "tls");
+    assertThat(result.resolvedTargets()).isEmpty();
+    verify(webTargetResolver, times(1)).tryResolve(any());
+  }
+
+  @Test
+  void everyWebTaskInOneStartReceivesTheSameResolvedTarget() throws Exception {
+    stubSnapshot(List.of(
+        step("headers-a", "http_headers", 0, false, List.of(), Map.of()),
+        step("headers-b", "http_headers", 0, false, List.of(), Map.of())));
+    when(webTargetResolver.tryResolve(any())).thenReturn(
+        List.of(URI.create("http://192.168.136.132/")), List.of());
+
+    service.start(startRequest(List.of(), List.of()));
+
+    assertThat(createdRequests).hasSize(2).allSatisfy(request ->
+        assertThat(request.parameters()).containsEntry(
+            WebTargetResolver.PARAM_RESOLVED_BASES, List.of("http://192.168.136.132/")));
+    verify(webTargetResolver, times(1)).tryResolve(any());
+  }
+
+  @Test
+  void changedAvailabilityRejectsReviewedSkipSetWithCurrentPreflightBeforeCreatingTasks() {
+    stubSnapshot(List.of(
+        step("headers", "http_headers", 0, false, List.of(), Map.of()),
+        step("tls", "tls_config", 0, false, List.of(), Map.of())));
+    when(webTargetResolver.tryResolve(any())).thenReturn(
+        List.of(), List.of(URI.create("http://192.168.136.132/")));
+    WorkflowRunDtos.PreflightResponse first = service.preflight(
+        new WorkflowRunDtos.SnapshotRequest(PROJECT_ID, TARGET_ID, "workflow-1", 3L, DIGEST));
+    assertThat(first.issues()).hasSize(2);
+
+    assertThatThrownBy(() -> service.start(startRequest(List.of(),
+        first.issues().stream().map(WorkflowRunDtos.NodeIssue::nodeId).toList())))
+        .isInstanceOfSatisfying(WorkflowPreflightChangedException.class, ex -> {
+          assertThat(ex.getMessage()).contains("重新预检并确认", "拒绝创建工作流");
+          assertThat(ex.rejectedSkippedNodeIds()).containsExactly("headers");
+          assertThat(ex.currentPreflight().issues()).extracting(WorkflowRunDtos.NodeIssue::nodeId)
+              .containsExactly("tls");
+          assertThat(ex.currentPreflight().workflowDigest()).isEqualTo(DIGEST);
+          assertThat(ex.currentPreflight().resolvedTargets())
+              .containsEntry("headers", List.of("http://192.168.136.132/"));
+        });
+    verify(runs, never()).save(any());
+    assertThat(createdTasks).isEmpty();
+    verify(webTargetResolver, times(2)).tryResolve(any());
+  }
+
+  @Test
+  void unknownAndAvailableSkipIdsStillCannotCreateAWorkflow() {
+    stubSnapshot(List.of(step("headers", "http_headers", 0, false, List.of(), Map.of())));
+    assertThatThrownBy(() -> service.start(startRequest(List.of(), List.of("headers", "unknown"))))
+        .isInstanceOfSatisfying(WorkflowPreflightChangedException.class, ex -> {
+          assertThat(ex.rejectedSkippedNodeIds()).containsExactly("headers", "unknown");
+          assertThat(ex.currentPreflight().issues()).isEmpty();
+        });
+    verify(runs, never()).save(any());
+    assertThat(createdTasks).isEmpty();
+  }
+
+  @Test
   void stopCancelsEveryNonTerminalTaskAndMarksRunStopped() {
     WorkflowRun run = persistedRun("RUNNING");
     SecurityTask pending = workflowTask(11L, "root", "http_headers");
@@ -383,9 +547,13 @@ class WorkflowRunServiceTests {
 
   @Test
   void terminalEventCompletesRunAndClearOnlyHidesIt() throws Exception {
+    var notifications = mock(com.bachelor.toolbox.notification.NotificationService.class);
+    when(notifications.findingSeverities(List.of(11L))).thenReturn(List.of("HIGH"));
+    service.setNotifications(notifications);
     WorkflowRun run = persistedRun("RUNNING");
     SecurityTask task = workflowTask(11L, "root", "http_headers");
     task.setStatus("SUCCESS");
+    task.setResultJson("{\"findings\":[{\"severity\":\"CRITICAL\"}]}");
     task.setWorkflowRunId(42L);
     createdTasks.add(task);
     when(tasks.findById(11L)).thenReturn(Optional.of(task));
@@ -400,6 +568,11 @@ class WorkflowRunServiceTests {
             .getAnnotation(Transactional.class);
 
     assertThat(run.getStatus()).isEqualTo("COMPLETED");
+    verify(notifications).publish(eq("workflow:42:COMPLETED"), eq(PROJECT_ID), eq(false),
+        eq("workflow"), eq("success"), anyString(), anyString(), eq("/workflow?runId=42"), eq(List.of("HIGH")));
+    service.onTaskTerminal(new TaskTerminalEvent(11L));
+    verify(notifications).findingSeverities(List.of(11L));
+    org.mockito.Mockito.verifyNoMoreInteractions(notifications);
     assertThat(run.getFinishedAt()).isNotNull();
     assertThat(transaction.propagation()).isEqualTo(Propagation.REQUIRES_NEW);
     assertThat(
@@ -417,6 +590,8 @@ class WorkflowRunServiceTests {
 
   @Test
   void lateTerminalEventCannotRewriteStoppedRun() {
+    var notifications = mock(com.bachelor.toolbox.notification.NotificationService.class);
+    service.setNotifications(notifications);
     WorkflowRun run = persistedRun("STOPPED");
     SecurityTask task = workflowTask(11L, "root", "http_headers");
     task.setStatus("FAILED");
@@ -427,7 +602,31 @@ class WorkflowRunServiceTests {
     service.onTaskTerminal(new TaskTerminalEvent(11L));
 
     assertThat(run.getStatus()).isEqualTo("STOPPED");
+    org.mockito.Mockito.verifyNoInteractions(notifications);
     verify(runs, never()).save(run);
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"FAILED", "TIMEOUT", "SKIPPED"})
+  void unsuccessfulWorkflowNotifiesOnceAfterAllChildrenFinish(String childStatus) {
+    var notifications = mock(com.bachelor.toolbox.notification.NotificationService.class);
+    when(notifications.findingSeverities(List.of(11L))).thenReturn(List.of("HIGH"));
+    service.setNotifications(notifications);
+    WorkflowRun run = persistedRun("RUNNING");
+    SecurityTask task = workflowTask(11L, "root", "http_headers");
+    task.setWorkflowRunId(42L);
+    task.setStatus(childStatus);
+    createdTasks.add(task);
+    when(tasks.findById(11L)).thenReturn(Optional.of(task));
+    when(runs.findByIdForUpdate(42L)).thenReturn(Optional.of(run));
+
+    service.onTaskTerminal(new TaskTerminalEvent(11L));
+    service.onTaskTerminal(new TaskTerminalEvent(11L));
+
+    verify(notifications).publish(eq("workflow:42:PARTIAL_FAILED"), eq(PROJECT_ID), eq(false),
+        eq("workflow"), eq("warning"), anyString(), anyString(), eq("/workflow?runId=42"), eq(List.of("HIGH")));
+    verify(notifications).findingSeverities(List.of(11L));
+    org.mockito.Mockito.verifyNoMoreInteractions(notifications);
   }
 
   private void stubSnapshot(List<Map<String, Object>> steps) {

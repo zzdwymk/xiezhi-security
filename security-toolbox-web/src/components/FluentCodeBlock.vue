@@ -27,7 +27,7 @@ const props = withDefaults(
     wrap: false,
     minRows: 6,
     maxRows: 12,
-    copyable: true,
+    copyable: false,
     live: false,
     ariaLabel: "",
     textareaRef: undefined,

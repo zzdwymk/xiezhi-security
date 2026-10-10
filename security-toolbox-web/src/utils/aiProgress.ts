@@ -1,6 +1,6 @@
 import type { ConversationAgentEvent, ConversationMessage } from "../stores/conversations";
 import { aiToolLabel, aiProgressFailureText, isPublicAiProgressEvent, publicAiProgressText } from "./aiPresentation";
-import { isAwaitingAiDispatch } from "./aiApproval";
+import { isAwaitingAiDispatch, isAiDispatchRejected } from "./aiApproval";
 
 export interface AiProgressTask {
   id: number;
@@ -55,6 +55,36 @@ const terminalTasks = new Set(["SUCCESS", "FAILED", "TIMEOUT", "REJECTED", "CANC
 
 export function isRecordedAiEvent(event: ConversationAgentEvent): boolean {
   return event.recorded === true || event.eventTiming === "VERIFIED_RECORD";
+}
+
+export function aiProgressSourceLabel(event: ConversationAgentEvent): string {
+  if (event.source === "runtime-public-progress" && event.modelDecision && event.reasonCodes?.length) {
+    if (event.assessmentSource === "MODEL") return "模型决策摘要";
+    if (event.assessmentSource === "LOCAL_RULE") return "本地规则判断";
+  }
+  return isRecordedAiEvent(event) ? "已核验流程记录" : "运行状态";
+}
+
+/** Only a validated model assessment belongs in the model-summary disclosure.
+ * System stages, local rules, old replay records and prose claiming to be
+ * reasoning remain outside it, even if they carry a convincing-looking label. */
+export function isModelAssessment(event: ConversationAgentEvent): boolean {
+  if (event.source !== "runtime-public-progress" || event.assessmentSource !== "MODEL"
+      || event.eventTiming !== "LIVE" || isRecordedAiEvent(event)
+      || String(event.stage).toUpperCase() !== "ASSESSED") return false;
+  const reasons: Record<string, string[]> = {
+    FINALIZE: ["DIRECT_SUPPORT", "PARTIAL_SUPPORT"],
+    REWRITE_QUERY: ["PARTIAL_SUPPORT", "NO_RELEVANT_EVIDENCE", "QUERY_TOO_BROAD"],
+    CLARIFY: ["NO_RELEVANT_EVIDENCE", "CONFLICTING_EVIDENCE", "SCOPE_MISMATCH"],
+  };
+  const allowed = reasons[event.modelDecision || ""];
+  if (!allowed || !event.reasonCodes?.length || event.reasonCodes.length > 4
+      || new Set(event.reasonCodes).size !== event.reasonCodes.length
+      || event.reasonCodes.some(reason => !allowed.includes(reason))) return false;
+  return event.guardReason
+    ? ["REWRITE_LIMIT_REACHED", "REWRITE_REJECTED"].includes(event.guardReason)
+      && event.modelDecision === "REWRITE_QUERY" && event.evidenceDecision === "CLARIFY"
+    : event.modelDecision === event.evidenceDecision;
 }
 
 export function aiTaskElapsed(task: AiProgressTask, now: number): number | undefined {
@@ -171,6 +201,7 @@ export function buildAiProgress(message: ConversationMessage, tasks: AiProgressT
   const failed = message.status === "failed" || message.modelStreamStatus === "failed";
   const waitingApproval = message.approvalStatus === "REQUIRED" || message.approvalStatus === "PENDING";
   const awaitingDispatch = isAwaitingAiDispatch(message);
+  const rejectedDispatch = isAiDispatchRejected(message);
   const rejectedApproval = message.approvalStatus === "REJECTED";
   const lastUpdate = latest?.at ?? start;
   const completionTimes = [
@@ -195,24 +226,28 @@ export function buildAiProgress(message: ConversationMessage, tasks: AiProgressT
   const summaryEntries = summarizeAiProgress(entries, active && !failed && !waitingApproval);
   const latestUseful = [...entries].reverse().find(entry => !isRoutineProgress(entry));
   const latestIsRecord = latestUseful?.event.recorded || latestUseful?.event.eventTiming === "VERIFIED_RECORD";
-  const currentTitle = interrupted && !activeTasks.length ? "连接已结束，结果待确认" : failed ? message.taskIds.length ? "回答中断，请查看检测任务状态" : "本轮处理未完成" : rejectedApproval ? "执行方案已驳回" : waitingApproval ? "等待确认执行计划" : awaitingDispatch ? "审批已通过，等待派发确认"
+  const currentTitle = interrupted && !activeTasks.length ? "连接已结束，结果待确认" : failed ? message.taskIds.length ? "回答中断，请查看检测任务状态" : "本轮处理未完成" : rejectedDispatch ? "执行已拒绝，未派发任务" : rejectedApproval ? "执行方案已驳回" : waitingApproval ? "等待确认执行计划" : awaitingDispatch ? message.approvalDispatchStatus === "unknown" ? "派发结果待核实" : "审批已通过，等待派发确认"
     : message.status === "answering" && modelActive ? "等待模型回答"
     : activeTasks.length && active ? `${activeTasks.length} 个任务正在推进`
     : unresolvedTasks ? "正在同步检测任务状态"
     : !active ? unsuccessfulTasks.length ? "任务已结束，部分步骤未成功" : "本轮处理完成" : latestIsRecord ? "等待模型回答" : latestUseful?.title || "等待处理反馈";
   const currentDetail = interrupted ? "页面重载后无法恢复此前的模型连接；该轮是否完成尚未确认，请查看回答及关联任务。" : failed ? aiProgressFailureText(message.content, message.taskIds.length > 0)
+    : rejectedDispatch ? `${message.approvalDispatchError || "执行请求未通过校验"}。原方案及批准记录已保留，请核对授权后再决定下一步。`
     : rejectedApproval ? "该方案未获批准；如需调整，请在对话中说明新的要求。"
     : waitingApproval ? "计划已生成，确认后才会继续受控操作。"
-    : awaitingDispatch ? "尚未确认任务派发结果。若一直没有任务，可在执行计划中点击“恢复原计划执行”。"
+    : awaitingDispatch ? message.approvalDispatchStatus === "unknown" ? `${message.approvalDispatchError || "未收到完整派发回执"}。结果尚未确认，请查看任务记录，或使用原审批恢复确认。` : "尚未确认任务派发结果。若一直没有任务，可在执行计划中点击“恢复原计划执行”。"
     : message.status === "answering" && modelActive ? "模型请求尚未完成。"
     : activeTasks.length && active ? activeTasks.map(task => `${aiToolLabel(task.toolCode)}：${task.status === "PENDING" ? "排队中" : task.status === "BLOCKED" ? "等待前置任务" : publicAiProgressText(task.progressMessage) || "执行中"}`).join("；")
     : unresolvedTasks ? `${unresolvedTasks} 个关联任务的状态尚未载入，可在任务中心查看。`
     : active ? latestIsRecord ? "已收到处理记录，模型请求尚未完成。" : latestUseful?.detail || "尚未收到阶段反馈。"
     : `${message.steps.length ? `${message.steps.length} 项计划` : "回答已生成"}${related.length ? `，${related.filter(task => task.status === "SUCCESS").length}/${related.length} 个任务成功` : ""}。可展开回看处理进展。`;
-  return { active, modelActive, interrupted, failed, waitingApproval, entries, summaryEntries, currentTitle, currentDetail, startedAt: start,
+  const modelEntries = entries.filter(entry => isModelAssessment(entry.event)
+    && publicAiProgressText(entry.event.summary || entry.event.message));
+  return { active, modelActive, interrupted, failed, waitingApproval, entries, modelEntries, summaryEntries, currentTitle, currentDetail, startedAt: start,
     elapsed: Number.isFinite(start) && end !== undefined && Number.isFinite(end) && end >= start ? end - start : undefined, quietFor: active && Number.isFinite(lastUpdate) ? Math.max(0, now - lastUpdate) : 0,
-    showQuietHint: active && !failed && !waitingApproval && !rejectedApproval && Number.isFinite(lastUpdate) && now - lastUpdate >= 15000,
+    showQuietHint: active && !failed && !waitingApproval && !rejectedApproval && !rejectedDispatch && Number.isFinite(lastUpdate) && now - lastUpdate >= 15000,
     evidenceCount, decision: decision ? publicAiProgressText(decision.event.summary || decision.event.message) : "",
+    decisionLabel: decision ? aiProgressSourceLabel(decision.event) : "运行状态",
     related, unresolvedTasks, completeTasks: related.filter(task => terminalTasks.has(task.status)).length,
-    tone: failed ? "failed" : interrupted ? "neutral" : waitingApproval || rejectedApproval || awaitingDispatch ? "warning" : active ? "active" : unresolvedTasks ? "neutral" : unsuccessfulTasks.length ? "warning" : "success" };
+    tone: failed || rejectedDispatch ? "failed" : interrupted ? "neutral" : waitingApproval || rejectedApproval || awaitingDispatch ? "warning" : active ? "active" : unresolvedTasks ? "neutral" : unsuccessfulTasks.length ? "warning" : "success" };
 }

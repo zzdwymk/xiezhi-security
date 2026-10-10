@@ -191,15 +191,15 @@
   right: -4px;
   bottom: 0;
   width: 8px;
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cpath d='M2 14 L7 9.5 L7 18.5 Z M26 14 L21 9.5 L21 18.5 Z' fill='%23000'/%3E%3C/svg%3E") 14 14, col-resize;
+  cursor: col-resize;
   -webkit-app-region: no-drag;
 }
 body.sidebar-resizing {
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cpath d='M2 14 L7 9.5 L7 18.5 Z M26 14 L21 9.5 L21 18.5 Z' fill='%23000'/%3E%3C/svg%3E") 14 14, col-resize !important;
+  cursor: col-resize !important;
   user-select: none;
 }
 body.sidebar-resizing * {
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cpath d='M2 14 L7 9.5 L7 18.5 Z M26 14 L21 9.5 L21 18.5 Z' fill='%23000'/%3E%3C/svg%3E") 14 14, col-resize !important;
+  cursor: col-resize !important;
 }
 .desktop-v2-native-frame > .desktop-v2-shell .desktop-v2-sidebar {
   background: transparent;
@@ -422,7 +422,7 @@ body.sidebar-resizing * {
 .desktop-v2-recent-item:hover .desktop-v2-recent-delete {
   opacity: 1;
 }
-.desktop-v2-recent-delete:hover {
+.desktop-v2-recent-delete:hover:not(:disabled) {
   background: #e1dbe2;
   color: #b44b4b;
 }
@@ -951,21 +951,20 @@ body.sidebar-resizing * {
   display: flex;
   align-items: center;
   gap: 7px;
-  color: #7b878e;
+  color: var(--app-muted);
   font-size: 13px;
 }
 .proxy-state i {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #a7b0b5;
+  background: currentColor;
 }
-.proxy-state.running {
-  color: #27815a;
+.proxy-state.capturing {
+  color: var(--app-success-foreground);
 }
-.proxy-state.running i {
-  background: #38a66c;
-  box-shadow: 0 0 0 3px #e4f4eb;
+.proxy-state.capturing i {
+  background: var(--app-success-foreground);
 }
 .traffic-status-copy > strong {
   font-family: Consolas, monospace;

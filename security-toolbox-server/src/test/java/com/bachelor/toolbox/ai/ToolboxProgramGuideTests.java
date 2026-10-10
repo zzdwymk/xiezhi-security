@@ -31,10 +31,10 @@ class ToolboxProgramGuideTests {
   }
 
   @Test
-  void distinguishesAutomaticPlanApplicationsFromManualSecurityActionRecords() {
+  void describesUnifiedConfirmationAndHistoricalManualRecords() {
     assertThat(ToolboxProgramGuide.context())
-        .contains("可自动提交 AI_PLAN_EXECUTION 申请", "管理员在界面批准后可恢复该原计划", "驳回不创建检测任务")
-        .contains("申请高风险行动", "尚未接入 AI 提交", "只登记状态与人工证据")
+        .contains("包括低风险计划，均先保存为 AI_PLAN_EXECUTION", "执行确认与审计", "拒绝执行不创建检测任务")
+        .contains("无需重复在聊天中发送执行指令", "历史安全行动保留为人工记录", "只登记状态与人工证据")
         .contains("不是已注册的自动执行模板");
   }
 }

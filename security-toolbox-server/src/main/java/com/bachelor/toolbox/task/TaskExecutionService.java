@@ -30,6 +30,12 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class TaskExecutionService {
+  private com.bachelor.toolbox.notification.TaskNotificationPublisher taskNotifications;
+
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  public void setTaskNotifications(com.bachelor.toolbox.notification.TaskNotificationPublisher value) {
+    taskNotifications = value;
+  }
   private static final Logger log = LoggerFactory.getLogger(TaskExecutionService.class);
   private static final int PREPARED_PROGRESS = 15;
   private static final int TOOL_PROGRESS_END = 85;
@@ -215,6 +221,7 @@ public class TaskExecutionService {
     appendLog(task, "任务进程已退出，长时间无进度，系统已自动终止（僵尸任务回收）");
 
     SecurityTask saved = taskRepository.save(task);
+    if (taskNotifications != null) taskNotifications.publish(saved);
     executionControl.clear(task.getId());
     progressEvents.publish(saved, null);
     eventPublisher.publishEvent(new TaskTerminalEvent(saved.getId()));
@@ -283,6 +290,7 @@ public class TaskExecutionService {
         }
         terminalTask.setFinishedAt(Instant.now());
         taskRepository.save(terminalTask);
+        if (taskNotifications != null) taskNotifications.publish(terminalTask);
         progressEvents.publish(terminalTask, null);
         eventPublisher.publishEvent(new TaskTerminalEvent(terminalTask.getId()));
       }
@@ -324,7 +332,27 @@ public class TaskExecutionService {
     progressEvents.publish(task, "参数已校验，准备执行工具…");
 
     ToolExecutionObserver observer = createObserver(taskId, task);
-    ToolExecutionResult result = tool.execute(target, parameters, observer);
+    ToolExecutionResult result;
+    try {
+      result = tool instanceof com.bachelor.toolbox.tool.ProjectContextRetrievalTool retrieval
+          ? retrieval.executeScoped(task.getProjectId(), target, parameters, observer)
+          : tool.execute(target, parameters, observer);
+    } catch (ToolExecutionTimeoutException timeout) {
+      if (observer.isCancellationRequested()) {
+        throw new TaskCancelledException();
+      }
+      // Only the already-authorized tool invocation can supply partial observations. A timeout
+      // never completes the scan or provides a negative retest verdict, even with no findings.
+      ToolExecutionResult partial = timeout.partialResult();
+      try {
+        task.setResultJson(objectMapper.writeValueAsString(partial));
+        saveFindings(task, target, tool, partial);
+        appendLog(task, "工具执行超时，已保存部分检测结果；扫描未完成，不能据此判断未发现风险");
+      } catch (Exception persistenceFailure) {
+        timeout.addSuppressed(persistenceFailure);
+      }
+      throw timeout;
+    }
     if (observer.isCancellationRequested()) {
       throw new TaskCancelledException();
     }

@@ -2,8 +2,17 @@
 import { computed } from "vue";
 import { renderMarkdown } from "../utils/markdown";
 
-const props = defineProps<{ content: string }>();
-const html = computed(() => renderMarkdown(props.content));
+const props = withDefaults(defineProps<{
+  content: string;
+  localize?: boolean;
+  nodeLabels?: Readonly<Record<string, string>>;
+  termLabels?: Readonly<Record<string, string>>;
+}>(), { localize: true });
+const html = computed(() => renderMarkdown(props.content, {
+  localizeDisplayText: props.localize,
+  nodeLabels: props.nodeLabels,
+  termLabels: props.termLabels,
+}));
 </script>
 
 <template>
@@ -64,6 +73,8 @@ const html = computed(() => renderMarkdown(props.content));
   display: block;
   max-width: 100%;
   overflow-x: auto;
+  overflow-wrap: normal;
+  word-break: normal;
   margin: 10px 0;
   border-collapse: collapse;
 }

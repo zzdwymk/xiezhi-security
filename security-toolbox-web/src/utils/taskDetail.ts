@@ -14,6 +14,21 @@ export function isTerminalTaskStatus(status?: string) {
   return TERMINAL_TASK_STATUSES.has(String(status || ""));
 }
 
+const TASK_TERMINATION_LABELS: Record<string, string> = {
+  TIMEOUT: "执行超时", FAILED: "执行失败", AUTHORIZATION_CHANGED: "授权发生变化",
+  USER_CANCELLED: "用户取消", USER_CANCELED: "用户取消", CANCELLED: "已取消",
+  ZOMBIE_REAPED: "执行进程失联", PREREQUISITE_FAILED: "前置任务失败",
+  UNAVAILABLE_TOOL: "工具不可用", WORKFLOW_STOPPED: "工作流已停止",
+  AUTH_CHANGED: "授权变更", REJECTED: "已拒绝",
+  MISSING_DEPENDENCY: "前置任务不存在", PREREQUISITE_NOT_COMPLETED: "前置任务未成功完成",
+};
+
+export function taskTerminationLabel(reason?: string) {
+  const code = reason?.trim().toUpperCase();
+  if (!code) return "未终止";
+  return TASK_TERMINATION_LABELS[code] || "未知终止原因";
+}
+
 /** A delayed list response must not undo a newer SSE terminal state or erase results. */
 export function mergeTaskDetailSnapshot<T extends TaskDetailSnapshot>(current: T | undefined, incoming: T): T {
   if (!current || current.id !== incoming.id) return incoming;

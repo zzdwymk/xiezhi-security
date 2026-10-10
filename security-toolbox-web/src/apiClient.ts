@@ -1,6 +1,7 @@
 import axios from "axios";
 import { clearAuthToken, notifyAuthExpired, readAuthToken } from "./authToken";
 import { taskbarProgress } from "./utils/taskbarProgress";
+import { isEntryPage, workspaceRedirect } from "./utils/startupNavigation";
 
 let requestIdCounter = 0;
 
@@ -51,7 +52,8 @@ api.interceptors.response.use(
   (error) => {
     const reqId = (error?.config as unknown as Record<string, unknown>)?.__reqId;
     if (typeof reqId === "string") taskbarProgress.stopIndeterminate(reqId);
-    if (error?.response?.status === 401) redirectToLogin();
+    if (error?.response?.status === 401)
+      redirectToLogin(requestAuthToken(error?.config?.headers));
     return Promise.reject(error);
   },
 );
@@ -62,16 +64,37 @@ export function apiUrl(path: string): string {
   return new URL(`${base}${suffix}`, window.location.origin).toString();
 }
 
-function redirectToLogin() {
+/** Give fetch-based event streams the same expired-session handling as Axios. */
+export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const requestHeaders = new Headers(
+    init?.headers ?? (typeof Request !== "undefined" && input instanceof Request ? input.headers : undefined),
+  );
+  const requestToken = requestAuthToken(requestHeaders);
+  const response = await fetch(input, init);
+  if (response.status === 401) {
+    redirectToLogin(requestToken);
+    throw new Error("登录已失效，请重新登录后继续操作");
+  }
+  return response;
+}
+
+function requestAuthToken(headers: { get?: (name: string) => unknown; Authorization?: unknown; authorization?: unknown } | undefined) {
+  const authorization = headers?.get?.("Authorization") ?? headers?.Authorization ?? headers?.authorization;
+  return typeof authorization === "string" ? /^Bearer\s+(.+)$/i.exec(authorization)?.[1] || "" : "";
+}
+
+function redirectToLogin(requestToken: string) {
+  // Anonymous requests and late responses from a previous login must not expire the current session.
+  if (!requestToken || requestToken !== readAuthToken()) return;
   clearAuthToken();
   notifyAuthExpired();
 
   const current = desktopMode
     ? location.hash.replace(/^#/, "") || "/"
-    : location.pathname;
-  if (current.startsWith("/login")) return;
+    : `${location.pathname}${location.search || ""}${location.hash || ""}`;
+  if (isEntryPage(current)) return;
 
-  const login = `/login?redirect=${encodeURIComponent(current)}`;
+  const login = `/login?redirect=${encodeURIComponent(workspaceRedirect(current))}`;
   if (desktopMode) location.hash = `#${login}`;
   else location.assign(login);
 }

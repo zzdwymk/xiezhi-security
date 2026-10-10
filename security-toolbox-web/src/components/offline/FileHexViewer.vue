@@ -170,7 +170,7 @@ function jumpToOffset() {
         <table class="hex-viewer-table">
           <thead>
             <tr>
-              <th>Offset</th>
+              <th>偏移量</th>
               <th class="hex-viewer-hex-heading">
                 <span v-for="column in 16" :key="column">{{ (column - 1).toString(16).toUpperCase().padStart(2, "0") }}</span>
               </th>

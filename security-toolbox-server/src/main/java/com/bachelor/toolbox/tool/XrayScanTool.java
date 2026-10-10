@@ -7,6 +7,7 @@ import com.bachelor.toolbox.target.TargetPolicyService;
 import com.bachelor.toolbox.target.WebTargetResolver;
 import com.bachelor.toolbox.vulnerability.ScannerPocCatalogService;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -22,11 +23,15 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -35,6 +40,15 @@ public class XrayScanTool implements SecurityTool {
   private static final int MAX_FINDINGS = 500;
   private static final int MAX_OUTPUT_CHARS = 2 * 1024 * 1024;
   private static final int MAX_JSON_BYTES = 16 * 1024 * 1024;
+  private static final Pattern LOADED_POC_COUNT =
+      Pattern.compile("(\\d+) pocs? have been loaded", Pattern.CASE_INSENSITIVE);
+  private static final Pattern SCAN_STATISTICS =
+      Pattern.compile(
+          "scanned:\\s*(\\d+),\\s*pending:\\s*(\\d+),\\s*requestSent:\\s*(\\d+),"
+              + "[^\\r\\n]*?failedRatio:\\s*([\\d.]+)%",
+          Pattern.CASE_INSENSITIVE);
+  private static final Pattern SCAN_DIAGNOSTIC =
+      Pattern.compile("\\[(?:WARN|WARNING|ERRO|ERROR|FATAL|PANI|PANIC)\\]", Pattern.CASE_INSENSITIVE);
 
   private final TargetPolicyService policy;
   private final ObjectMapper objectMapper;
@@ -122,11 +136,14 @@ public class XrayScanTool implements SecurityTool {
         throw new ApiException("Xray 执行失败，退出码 " + process.exitValue() + "：" + abbreviate(stdout, 500));
       }
       if (tailer != null) {
-        tailer.interrupt();
+        if (!stopTailer(tailer)) {
+          throw new ApiException("Xray 结果同步尚未结束，无法确认检测完成。请稍后重试。");
+        }
         tailer = null;
       }
-      observer.progressPercent(100d, "Xray 扫描完成，正在解析结果");
-      ToolExecutionResult result = parseOutput(targetUri, selected, readJson(output));
+      ToolExecutionResult result = parseCompletedOutput(targetUri, selected, output, stdout, allPocs);
+      assertNotCancelled(observer);
+      observer.progressPercent(100d, "Xray 扫描完成，已核验执行结果");
       if (onFinding != null) {
         for (FindingDraft finding : result.findings()) {
           if (emitted.add(findingKey(finding))) {
@@ -136,10 +153,9 @@ public class XrayScanTool implements SecurityTool {
       }
       return result;
     } finally {
-      if (tailer != null) {
-        tailer.interrupt();
-      }
-      deleteTree(work);
+      // Do not delete a file while the tailer is reading it. A blocked callback must
+      // never race a successful completion; leave its temporary directory intact.
+      if (tailer == null || stopTailer(tailer)) deleteTree(work);
     }
   }
 
@@ -153,6 +169,7 @@ public class XrayScanTool implements SecurityTool {
     while (!Thread.currentThread().isInterrupted()) {
       try {
         if (Files.isRegularFile(file)) {
+          if (Files.size(file) > MAX_JSON_BYTES) return;
           String content = Files.readString(file, StandardCharsets.UTF_8);
           scanJsonObjects(
               content,
@@ -160,7 +177,7 @@ public class XrayScanTool implements SecurityTool {
                 try {
                   for (JsonNode item : resultItems(node)) {
                     FindingDraft draft = toFindingDraft(item, selected, expectedTarget);
-                    if (emitted.add(findingKey(draft))) {
+                    if (!Thread.currentThread().isInterrupted() && emitted.add(findingKey(draft))) {
                       sink.accept(draft);
                     }
                   }
@@ -225,6 +242,24 @@ public class XrayScanTool implements SecurityTool {
     return finding.title() + "|" + finding.evidence();
   }
 
+  boolean stopTailer(Thread tailer) {
+    tailer.interrupt();
+    boolean interrupted = Thread.interrupted();
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+    try {
+      while (tailer.isAlive() && System.nanoTime() < deadline) {
+        try {
+          tailer.join(50);
+        } catch (InterruptedException ex) {
+          interrupted = true;
+        }
+      }
+      return !tailer.isAlive();
+    } finally {
+      if (interrupted) Thread.currentThread().interrupt();
+    }
+  }
+
   /** 优先采用预解析基址，否则回退到授权目标默认 http(s) 基址。 */
   private URI resolveBase(AuthorizedTarget target, Map<String, Object> parameters) {
     List<URI> bases = WebTargetResolver.basesFromParameters(parameters);
@@ -254,7 +289,8 @@ public class XrayScanTool implements SecurityTool {
     List<String> command = new ArrayList<>();
     command.add(exe);
     command.add("--log-level");
-    command.add("warn");
+    // Xray can exit 0 without making a successful request. Keep its execution counters.
+    command.add("info");
     command.add("webscan");
     command.add("--plugins");
     command.add("phantasm");
@@ -278,7 +314,14 @@ public class XrayScanTool implements SecurityTool {
     List<FindingDraft> findings = new ArrayList<>();
     List<Map<String, Object>> matches = new ArrayList<>();
     try {
-      JsonNode root = json == null || json.isBlank() ? objectMapper.createArrayNode() : objectMapper.readTree(json);
+      if (json == null || json.isBlank()) {
+        throw new ApiException("Xray 检测结果为空，无法确认检测是否完成。请重试。");
+      }
+      JsonNode root =
+          objectMapper.reader()
+              .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+              .with(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+              .readTree(json);
       List<JsonNode> items = resultItems(root);
       for (JsonNode item : items) {
         ScannerPocSelectionService.SelectedPoc poc = resolvePoc(item, selected);
@@ -308,6 +351,66 @@ public class XrayScanTool implements SecurityTool {
     data.put("matchCount", matches.size());
     data.put("matches", matches);
     return new ToolExecutionResult("Xray 扫描完成，匹配 " + matches.size() + " 项潜在问题", data, findings);
+  }
+
+  ToolExecutionResult parseCompletedOutput(
+      URI expectedTarget,
+      List<ScannerPocSelectionService.SelectedPoc> selected,
+      Path output,
+      String stdout,
+      boolean allPocs) throws Exception {
+    Map<String, Object> execution = verifyExecution(stdout, selected.size(), allPocs);
+    // Xray 1.9.11 does not create a JSON file when no PoC matches. Absence is only
+    // meaningful after its log proves that PoCs loaded, requests ran and all work finished.
+    ToolExecutionResult result = parseOutput(expectedTarget, selected, readJson(output));
+    Map<String, Object> data = new LinkedHashMap<>(result.data());
+    data.putAll(execution);
+    return new ToolExecutionResult(result.summary(), data, result.findings());
+  }
+
+  private Map<String, Object> verifyExecution(String stdout, int selectedCount, boolean allPocs) {
+    String log = stdout == null ? "" : stdout.replaceAll("\\u001B\\[[;\\d]*[A-Za-z]", "");
+    String lower = log.toLowerCase(Locale.ROOT);
+    boolean diagnostic = SCAN_DIAGNOSTIC.matcher(log).find();
+    if (diagnostic && (lower.contains("dial tcp") || lower.contains("connectex")
+        || lower.contains("connection refused") || lower.contains("no such host")
+        || lower.contains("network is unreachable") || lower.contains("i/o timeout")
+        || lower.contains("context deadline exceeded") || lower.contains("tls handshake"))) {
+      throw new ApiException(
+          "无法连接目标或目标响应超时，检测未完成。请确认目标已开机、网站已启动，并检查目标地址和网络连接。");
+    }
+    long loadedPocs = -1;
+    Matcher loaded = LOADED_POC_COUNT.matcher(log);
+    while (loaded.find()) loadedPocs = Long.parseLong(loaded.group(1));
+    if (loadedPocs == 0 || lower.contains("no plugin enabled") || lower.contains("nothing will be scanned")) {
+      throw new ApiException("所选漏洞检测规则未能加载，本次没有执行检测。请重新选择规则，或检查 Xray 规则库后重试。");
+    }
+    if (loadedPocs > 0 && !allPocs && loadedPocs < selectedCount) {
+      throw new ApiException("部分漏洞检测规则未能加载，本次检测不完整。请检查 Xray 规则库后重试。");
+    }
+    if (diagnostic) {
+      throw new ApiException("Xray 检测过程中出现异常，未能完成全部检查。请检查目标连接和检测工具配置后重试。");
+    }
+    Matcher statistics = SCAN_STATISTICS.matcher(log);
+    long scanned = -1;
+    long pending = -1;
+    long requests = -1;
+    double failedRatio = -1;
+    while (statistics.find()) {
+      scanned = Long.parseLong(statistics.group(1));
+      pending = Long.parseLong(statistics.group(2));
+      requests = Long.parseLong(statistics.group(3));
+      failedRatio = Double.parseDouble(statistics.group(4));
+    }
+    if (failedRatio > 0) {
+      throw new ApiException("部分检测请求失败，本次检测不完整。请确认目标网站正常运行、网络连接稳定后重试。");
+    }
+    if (loadedPocs <= 0 || scanned <= 0 || pending != 0 || requests <= 0 || failedRatio != 0
+        || !lower.contains("all pending requests have been scanned")) {
+      throw new ApiException("未收到完整的检测执行记录，无法确认本次检测已完成。请检查 Xray 版本和检测工具配置后重试。");
+    }
+    return Map.of("executionVerified", true, "loadedPocCount", loadedPocs,
+        "scannedCount", scanned, "requestCount", requests);
   }
 
   private FindingDraft toFindingDraft(
@@ -564,20 +667,35 @@ http:
 
   private List<JsonNode> resultItems(JsonNode root) {
     List<JsonNode> result = new ArrayList<>();
-    if (root == null || root.isNull()) return result;
+    if (root == null || root.isNull()) throw invalidResultShape();
     if (root.isArray()) {
       root.forEach(item -> result.addAll(resultItems(item)));
       return result;
     }
-    if (!root.isObject()) return result;
-    if (root.has("plugin") && (root.has("target") || root.has("detail"))) {
+    if (!root.isObject()) throw invalidResultShape();
+    if (root.hasNonNull("error") || root.hasNonNull("errors")
+        || (root.has("success") && !root.path("success").asBoolean())) {
+      throw invalidResultShape();
+    }
+    if (root.path("plugin").isTextual() && !root.path("plugin").asText().isBlank()
+        && (root.has("target") || root.has("detail"))) {
       result.add(root);
       return result;
     }
+    boolean recognized = false;
     for (String field : List.of("results", "vulnerabilities", "items")) {
-      if (root.path(field).isArray()) result.addAll(resultItems(root.path(field)));
+      if (root.has(field)) {
+        if (!root.path(field).isArray()) throw invalidResultShape();
+        result.addAll(resultItems(root.path(field)));
+        recognized = true;
+      }
     }
+    if (!recognized) throw invalidResultShape();
     return result;
+  }
+
+  private ApiException invalidResultShape() {
+    return new ApiException("Xray 检测结果格式异常，无法确认检测结论。请检查 Xray 版本和检测工具配置后重试。");
   }
 
   private ScannerPocSelectionService.SelectedPoc resolvePoc(
@@ -611,27 +729,32 @@ http:
     return value;
   }
 
-  private String waitFor(
+  String waitFor(
       Process process, ToolExecutionObserver observer, String operation, long timeout) throws Exception {
     ExecutorService reader = Executors.newSingleThreadExecutor();
     Future<String> output = reader.submit(() -> readLimited(process));
     try {
+      assertNotCancelled(observer);
       long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeout);
       while (!process.waitFor(250, TimeUnit.MILLISECONDS)) {
         observer.heartbeat(operation);
-        if (observer.isCancellationRequested()) {
-          process.destroyForcibly();
-          throw new ApiException("任务已取消");
-        }
+        assertNotCancelled(observer);
         if (System.nanoTime() >= deadline) {
           process.destroyForcibly();
-          throw new ApiException("Xray 扫描超过 " + timeout + " 秒，已强制终止");
+          throw new TimeoutException("Xray 检测超过 " + timeout + " 秒，已停止运行，检测未完成。");
         }
       }
+      assertNotCancelled(observer);
       return output.get(10, TimeUnit.SECONDS);
     } finally {
       if (process.isAlive()) process.destroyForcibly();
       reader.shutdownNow();
+    }
+  }
+
+  private void assertNotCancelled(ToolExecutionObserver observer) {
+    if (Thread.currentThread().isInterrupted() || observer.isCancellationRequested()) {
+      throw new CancellationException("Xray 检测已取消");
     }
   }
 

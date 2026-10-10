@@ -32,6 +32,9 @@ compile(fs.readFileSync(path.resolve(__dirname, '../src/utils/taskProgress.ts'),
 const approvalModule = { exports: {} };
 compile(fs.readFileSync(path.resolve(__dirname, '../src/utils/aiApproval.ts'), 'utf8'),
   { exports: approvalModule.exports, module: approvalModule }, 'undefined');
+const answerModule = { exports: {} };
+compile(fs.readFileSync(path.resolve(__dirname, '../src/utils/aiAnswer.ts'), 'utf8'),
+  { exports: answerModule.exports, module: answerModule }, 'undefined');
 const tasks = { value: [] };
 const view = compile(functionSource('planStepState') + functionSource('planTaskSummary') + functionSource('taskState'),
   { tasks, ...progressModule.exports, ...approvalModule.exports }, '({ planStepState, planTaskSummary, taskState })');
@@ -41,6 +44,7 @@ function deferred() { let resolve, reject; const promise = new Promise((yes, no)
 function lifecycleBindings(network) {
   const updates = [], appended = [];
   return { updates, appended, bindings: {
+    ...answerModule.exports,
     conversations: { updateMessage: (_thread, _message, patch) => updates.push(patch), appendMessage: (_thread, item) => appended.push(item) },
     buildContextPrompt: () => '读取状态', messageReferences: () => [], projectIdForTarget: () => 131,
     latestWorkflowIdentity: async () => ({ workflowRevision: 2 }), dispatchAiStreaming: () => network.promise,
@@ -85,6 +89,13 @@ function lifecycleBindings(network) {
   await test('plan summary counts ended tasks and retains missing task denominator', () => {
     tasks.value = [{ id: 1, status: 'SUCCESS' }, { id: 2, status: 'FAILED' }, { id: 3, status: 'RUNNING' }];
     assert.equal(view.planTaskSummary({ taskIds: [1, 2, 3, 4] }), '已结束 2/4 个任务');
+  });
+  await test('confirmed dispatch rejection overrides stale approved waiting labels without hiding saved answer', () => {
+    const message = { id: 'saved', status: 'completed', content: 'original plan', approvalId: 63, approvalStatus: 'APPROVED', approvalDispatchStatus: 'rejected', approvalDispatchError: '授权目标已停用', steps: [{ toolCode: 'nmap_service_scan' }], taskIds: [] };
+    const state = view.taskState(message), step = view.planStepState(message, 0);
+    assert.equal(state.label, '执行已拒绝，未派发任务'); assert.equal(state.className, 'failed'); assert.equal(state.progress, 0);
+    assert.equal(step.label, '执行已拒绝'); assert.equal(step.state, 'failed'); assert.equal(message.status, 'completed'); assert.equal(message.content, 'original plan');
+    message.approvalDispatchStatus = 'unknown'; assert.equal(view.taskState(message).label, '派发结果待核实');
   });
   for (const reject of [false, true]) await test('dispatch stream lifecycle records actual ' + (reject ? 'rejection' : 'completion'), async () => {
     const network = deferred(), harness = lifecycleBindings(network);

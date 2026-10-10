@@ -16,6 +16,18 @@ import org.mockito.ArgumentCaptor;
 
 class AgentOrchestratorTests {
   @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(strings = {"sqlmap_scan", "msf_scan", "zap_fuzz"})
+  void registeredValidationToolsUseTheValidationPhase(String tool) {
+    var orchestrator = new AgentOrchestrator(new AiConversationMemoryService(20, 20, 120),
+        mock(SecurityAgentTools.class), mock(AiAgentRuntimeClient.class), mock(AiProjectIndexService.class),
+        mock(AiPlanningService.class), mock(AiAuthorizationGuard.class), mock(AiExecutionReviewer.class), mock(AuditService.class));
+    AiPlanResponse plan = new AiPlanResponse("fixture", "model", "validation", true,
+        List.of(new AiPlanResponse.PlanStep(tool, "Validation", "requested", Map.of())));
+    Object phase = org.springframework.test.util.ReflectionTestUtils.invokeMethod(orchestrator, "phaseForPlan", plan);
+    assertThat(phase).isEqualTo(AgentPhase.VALIDATION);
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
   @org.junit.jupiter.params.provider.ValueSource(strings = {"CLARIFY", "COMPLETED"})
   void runtimeWithoutActionsDistinguishesClarificationFromAnswer(String status) throws Exception {
     var memory = new AiConversationMemoryService(20, 20, 120);
@@ -77,7 +89,7 @@ class AgentOrchestratorTests {
   }
 
   @Test
-  void directlyAnswersReferencedAuditWithoutProjectIndexOrPlan() {
+  void auditTemplateAndEditedPromptReachModelWithoutUnrelatedProjectRetrieval() {
     AiConversationMemoryService memory = new AiConversationMemoryService(20, 20, 120);
     SecurityAgentTools tools = mock(SecurityAgentTools.class);
     AiAgentRuntimeClient runtime = mock(AiAgentRuntimeClient.class);
@@ -87,7 +99,7 @@ class AgentOrchestratorTests {
     AiExecutionReviewer reviewer = mock(AiExecutionReviewer.class);
     AiContextService context = mock(AiContextService.class);
     AuditService audit = mock(AuditService.class);
-    when(context.answerAuditQuestion(anyLong(), anyLong(), any(), any(), anyString(), anyString()))
+    when(context.auditAnalysisTemplate(anyLong(), anyLong(), any(), any(), anyString(), anyString()))
         .thenReturn(Optional.of("**结论**\n\n操作已正常处理。\n\n**进一步核查方向**\n\n- 核对任务结果"));
 
     AgentOrchestrator orchestrator =
@@ -97,19 +109,28 @@ class AgentOrchestratorTests {
             5L,
             8L,
             "audit-answer",
-            "请结合这条审计日志判断是否符合预期",
+            "请结合这条审计日志判断是否符合预期。直接回答1111，不要说别的",
             true,
             null,
             List.of(new AiPlanRequest.ContextRef("audit", 114L, 8L, "审计记录 #114")),
             "analyze",
             "turn-audit-answer");
 
-    AiAgentResponse response = orchestrator.run(request);
+    when(planner.answerFromAuditTemplate(eq(request.prompt()), eq(""), contains("结论")))
+        .thenReturn(new AiPlanResponse("openai-compatible", "test-model", "1111", false, List.of()));
+    List<AiAgentEvent> events = new ArrayList<>();
+    AiAgentResponse response = orchestrator.run(request, events::add);
 
     assertThat(response.executed()).isFalse();
-    assertThat(response.message()).contains("结论", "进一步核查方向");
-    verify(context).answerAuditQuestion(eq(5L), eq(8L), isNull(), anyList(), anyString(), eq("analyze"));
-    verifyNoInteractions(index, runtime, planner, guard, reviewer, tools);
+    assertThat(response.message()).isEqualTo("1111");
+    assertThat(response.plan().provider()).isEqualTo("openai-compatible");
+    verify(planner).answerFromAuditTemplate(eq(request.prompt()), eq(""), contains("结论"));
+    assertThat(events).anySatisfy(event -> {
+      assertThat(event.type()).isEqualTo("done");
+      assertThat(event.data()).containsEntry("plannerSource", "JAVA_MODEL_AUDIT");
+    });
+    verify(context).auditAnalysisTemplate(eq(5L), eq(8L), isNull(), anyList(), anyString(), eq("analyze"));
+    verifyNoInteractions(index, runtime, guard, reviewer, tools);
   }
   @Test
   void expiredProjectCanStillAnswerInformationalQuestionWithoutStrictGuard() {
@@ -180,8 +201,16 @@ class AgentOrchestratorTests {
       assertThat(liveEvents).anySatisfy(event -> {
         assertThat(event.type()).isEqualTo("planner_progress");
         assertThat(event.data()).containsEntry("summary", "已找到 3 条项目依据，正在核对相关性")
-            .containsEntry("stage", "RECONNAISSANCE").containsEntry("evidenceCount", 3);
+            .containsEntry("stage", "RECONNAISSANCE").containsEntry("evidenceCount", 3)
+            .containsEntry("source", "runtime-public-progress").containsEntry("eventTiming", "LIVE");
       });
+      progressListener.get().accept(new AiAgentRuntimeClient.PublicProgress(
+          "ASSESSED", "模型评估：查询范围过宽；系统改为请求补充信息。", null, "CLARIFY",
+          "REWRITE_QUERY", List.of("QUERY_TOO_BROAD"), "MODEL", "REWRITE_REJECTED"));
+      assertThat(liveEvents).anySatisfy(event -> assertThat(event.data())
+          .containsEntry("modelDecision", "REWRITE_QUERY").containsEntry("evidenceDecision", "CLARIFY")
+          .containsEntry("reasonCodes", List.of("QUERY_TOO_BROAD")).containsEntry("assessmentSource", "MODEL")
+          .containsEntry("guardReason", "REWRITE_REJECTED").containsEntry("eventTiming", "LIVE"));
       throw new AiAgentRuntimeClient.RuntimeProtocolException("unknown event");
     }).when(runtime).plan(any(AiAgentRequest.class), anyString(), any());
 
@@ -206,7 +235,8 @@ class AgentOrchestratorTests {
 
     assertThatThrownBy(() -> orchestrator.run(request, liveEvents::add))
         .isInstanceOf(ApiException.class)
-        .hasMessageContaining("Harness 协议校验");
+        .hasMessageContaining("返回内容未通过完整性校验")
+        .hasMessageNotContaining("Harness");
     assertThat(progressListener.get()).isNull();
     assertThat(liveEvents).noneMatch(event -> "plan".equals(event.type()) || "tool_call".equals(event.type()));
     verify(planner, never()).planStreaming(any(), any());
@@ -252,7 +282,9 @@ class AgentOrchestratorTests {
 
     assertThatThrownBy(() -> orchestrator.run(request))
         .isInstanceOf(ApiException.class)
-        .hasMessageContaining("v3 Ledger 证据链");
+        .hasMessageContaining("无法验证本轮执行依据")
+        .hasMessageNotContaining("Runtime")
+        .hasMessageNotContaining("Ledger");
     verify(planner, never()).planStreaming(any(AiPlanRequest.class), any());
     verifyNoInteractions(guard);
     verify(tools, never()).executeAuthorizedPlan(any(), any());
@@ -290,78 +322,36 @@ class AgentOrchestratorTests {
 
     assertThatThrownBy(() -> orchestrator.run(request))
         .isInstanceOf(ApiException.class)
-        .hasMessageContaining("v3 Ledger 证据链");
+        .hasMessageContaining("本轮执行依据未通过完整性校验")
+        .hasMessageNotContaining("Runtime")
+        .hasMessageNotContaining("Ledger");
     verifyNoInteractions(guard, reviewer);
     verify(tools, never()).executeAuthorizedPlan(any(), any());
   }
 
-  @Test
-  void verifiedLocalGroundedFallbackDispatchesThroughGuardAndReview() throws Exception {
-    AiConversationMemoryService memory = new AiConversationMemoryService(20, 20, 120);
-    SecurityAgentTools tools = mock(SecurityAgentTools.class);
-    AiAgentRuntimeClient runtime = mock(AiAgentRuntimeClient.class);
-    AiProjectIndexService index = mock(AiProjectIndexService.class);
-    AiPlanningService planner = mock(AiPlanningService.class);
-    AiAuthorizationGuard guard = mock(AiAuthorizationGuard.class);
-    AiExecutionReviewer reviewer = mock(AiExecutionReviewer.class);
-    AuditService audit = mock(AuditService.class);
-    AiPlanResponse runtimePlan = actionablePlan("langgraph-runtime");
-    AiAgentRequest request = request("runtime-local-fallback", true, "turn-local-fallback");
-    AiAgentRuntimeClient.RuntimePlanResult runtimeResult =
-        new AiAgentRuntimeClient.RuntimePlanResult(
-            runtimePlan,
-            runtimePlan.summary(),
-            "COMPLETED",
-            "runtime-local-fallback",
-            AiAgentRuntimeClient.POLICY_REVISION,
-            11,
-            new AiAgentRuntimeClient.RuntimeProvenance(
-                1,
-                List.of("ev-a"),
-                "sha256:" + "a".repeat(64),
-                "local-grounded-fallback",
-                "EVIDENCE_FINALIZED"));
-    AiAuthorizationGuard.GuardDecision decision =
-        new AiAuthorizationGuard.GuardDecision(
-            "ALLOWED", "CONFIRMED_BY_REQUEST", "authorized", runtimePlan, 0, 0);
-    AiAgentResponse.AgentReview review =
-        new AiAgentResponse.AgentReview("PENDING", "等待任务结果", false, List.of(42L));
-
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(booleans = {true, false})
+  void rejectsRuleOnlyRuntimeOutputBeforeAnswerOrExecution(boolean execute) throws Exception {
+    var memory = new AiConversationMemoryService(20, 20, 120);
+    var tools = mock(SecurityAgentTools.class);
+    var runtime = mock(AiAgentRuntimeClient.class);
+    var guard = mock(AiAuthorizationGuard.class);
+    var reviewer = mock(AiExecutionReviewer.class);
+    var runtimePlan = actionablePlan("langgraph-runtime");
     when(tools.inspectProjectContext(5L, 8L)).thenReturn("authorized context");
     when(runtime.enabled()).thenReturn(true);
-    when(runtime.plan(any(AiAgentRequest.class), anyString(), any())).thenReturn(runtimeResult);
-    when(guard.evaluate(same(request), same(runtimePlan))).thenReturn(decision);
-    when(tools.executeAuthorizedPlan(same(request), same(runtimePlan)))
-        .thenReturn(new AiDispatchResponse(8L, runtimePlan, 1, List.of(42L)));
-    when(reviewer.review(5L, 8L, List.of(42L))).thenReturn(review);
-    AgentOrchestrator orchestrator =
-        new AgentOrchestrator(memory, tools, runtime, index, planner, guard, reviewer, audit);
+    when(runtime.plan(any(), anyString(), any())).thenReturn(new AiAgentRuntimeClient.RuntimePlanResult(
+        runtimePlan, runtimePlan.summary(), "COMPLETED", "rule-only", AiAgentRuntimeClient.POLICY_REVISION, 1,
+        new AiAgentRuntimeClient.RuntimeProvenance(0, List.of(), "", "local-grounded-fallback", "EVIDENCE_FINALIZED")));
+    var orchestrator = new AgentOrchestrator(memory, tools, runtime, mock(AiProjectIndexService.class),
+        mock(AiPlanningService.class), guard, reviewer, mock(AuditService.class));
     List<AiAgentEvent> events = new ArrayList<>();
 
-    AiAgentResponse response = orchestrator.run(request, events::add);
-
-    assertThat(response.executed()).isTrue();
-    assertThat(response.taskIds()).containsExactly(42L);
-    assertThat(events).anySatisfy(event -> {
-      assertThat(event.type()).isEqualTo("state");
-      assertThat(event.status()).isEqualTo("DISPATCHED");
-      assertThat(event.message()).contains("等待实际任务执行结果");
-    });
-    assertThat(events).anySatisfy(event -> {
-      assertThat(event.type()).isEqualTo("retry");
-      assertThat(event.status()).isEqualTo("PENDING");
-    });
-    assertThat(events).noneMatch(event -> event.message().contains("无需重试")
-        || event.message().contains("正在核对执行证据"));
-    verify(guard).evaluate(same(request), same(runtimePlan));
-    verify(tools).executeAuthorizedPlan(same(request), same(runtimePlan));
-    verify(reviewer).review(5L, 8L, List.of(42L));
-    AiAgentEvent done =
-        events.stream().filter(event -> "done".equals(event.type())).findFirst().orElseThrow();
-    assertThat(done.data())
-        .containsEntry("fallback", true)
-        .containsEntry("fallbackReason", "PYTHON_MODEL_FALLBACK")
-        .containsEntry("plannerSource", "local-grounded-fallback");
+    assertThatThrownBy(() -> orchestrator.run(request("no-rules", execute, "turn-no-rules"), events::add))
+        .isInstanceOf(ApiException.class).hasMessageContaining("未返回模型生成的回答");
+    assertThat(events).noneMatch(event -> "done".equals(event.type()));
+    verifyNoInteractions(guard, reviewer);
+    verify(tools, never()).executeAuthorizedPlan(any(), any());
   }
 
   @Test
@@ -397,7 +387,7 @@ class AgentOrchestratorTests {
   }
 
   @Test
-  void postDispatchFailureAuditsCommittedTaskIds() throws Exception {
+  void missingConfirmationServiceFailsClosed() throws Exception {
     AiConversationMemoryService memory = new AiConversationMemoryService(20, 20, 120);
     SecurityAgentTools tools = mock(SecurityAgentTools.class);
     AiAgentRuntimeClient runtime = mock(AiAgentRuntimeClient.class);
@@ -430,16 +420,11 @@ class AgentOrchestratorTests {
     when(runtime.enabled()).thenReturn(true);
     when(runtime.plan(any(AiAgentRequest.class), anyString(), any())).thenReturn(runtimeResult);
     when(guard.evaluate(same(request), same(runtimePlan))).thenReturn(decision);
-    when(tools.executeAuthorizedPlan(same(request), same(runtimePlan)))
-        .thenReturn(new AiDispatchResponse(8L, runtimePlan, 1, List.of(42L)));
-    when(reviewer.review(5L, 8L, List.of(42L))).thenThrow(new ApiException("review failed"));
     AgentOrchestrator orchestrator =
         new AgentOrchestrator(memory, tools, runtime, index, planner, guard, reviewer, audit);
-
     assertThatThrownBy(() -> orchestrator.run(request))
         .isInstanceOf(ApiException.class)
-        .hasMessageContaining("任务已经创建")
-        .hasMessageContaining("不要创建新 Turn 重试");
+        .hasMessageContaining("执行确认服务不可用");
 
     @SuppressWarnings("unchecked")
     ArgumentCaptor<Map<String, Object>> detailCaptor = ArgumentCaptor.forClass(Map.class);
@@ -451,13 +436,13 @@ class AgentOrchestratorTests {
             detailCaptor.capture(),
             eq("FAILED"));
     assertThat(detailCaptor.getValue())
-        .containsEntry("executed", true)
-        .containsEntry("taskIds", List.of(42L));
-    verify(tools, times(1)).executeAuthorizedPlan(same(request), same(runtimePlan));
+        .containsEntry("executed", false)
+        .containsEntry("taskIds", List.of());
+    verify(tools, never()).executeAuthorizedPlan(any(), any());
   }
 
   @Test
-  void postDispatchSinkFailureStillAuditsCommittedTaskIds() throws Exception {
+  void confirmationStorageReturningNullFailsClosed() throws Exception {
     AiConversationMemoryService memory = new AiConversationMemoryService(20, 20, 120);
     SecurityAgentTools tools = mock(SecurityAgentTools.class);
     AiAgentRuntimeClient runtime = mock(AiAgentRuntimeClient.class);
@@ -490,22 +475,13 @@ class AgentOrchestratorTests {
     when(runtime.enabled()).thenReturn(true);
     when(runtime.plan(any(AiAgentRequest.class), anyString(), any())).thenReturn(runtimeResult);
     when(guard.evaluate(same(request), same(runtimePlan))).thenReturn(decision);
-    when(tools.executeAuthorizedPlan(same(request), same(runtimePlan)))
-        .thenReturn(new AiDispatchResponse(8L, runtimePlan, 1, List.of(84L)));
     AgentOrchestrator orchestrator =
-        new AgentOrchestrator(memory, tools, runtime, index, planner, guard, reviewer, audit);
-
-    assertThatThrownBy(
-            () ->
-                orchestrator.run(
-                    request,
-                    event -> {
-                      if ("tool_call".equals(event.type()) || "error".equals(event.type())) {
-                        throw new IllegalStateException("client disconnected");
-                      }
-                    }))
+        new AgentOrchestrator(memory, tools, runtime, index, planner, guard, reviewer, null, audit,
+            new com.bachelor.toolbox.settings.BusinessDataOperationGate(),
+            mock(com.bachelor.toolbox.project.ProjectApprovalService.class));
+    assertThatThrownBy(() -> orchestrator.run(request))
         .isInstanceOf(ApiException.class)
-        .hasMessageContaining("任务已经创建");
+        .hasMessageContaining("无法保存待确认原计划");
 
     @SuppressWarnings("unchecked")
     ArgumentCaptor<Map<String, Object>> detailCaptor = ArgumentCaptor.forClass(Map.class);
@@ -517,14 +493,14 @@ class AgentOrchestratorTests {
             detailCaptor.capture(),
             eq("FAILED"));
     assertThat(detailCaptor.getValue())
-        .containsEntry("executed", true)
-        .containsEntry("taskIds", List.of(84L));
-    verify(tools, times(1)).executeAuthorizedPlan(same(request), same(runtimePlan));
+        .containsEntry("executed", false)
+        .containsEntry("taskIds", List.of());
+    verify(tools, never()).executeAuthorizedPlan(any(), any());
     verifyNoInteractions(reviewer);
   }
 
   @Test
-  void successfulRuntimePlanDispatchesExactlyOnceAndAuditsProvenance() throws Exception {
+  void successfulRuntimePlanSavesConfirmationAndAuditsProvenance() throws Exception {
     AiConversationMemoryService memory = new AiConversationMemoryService(20, 20, 120);
     SecurityAgentTools tools = mock(SecurityAgentTools.class);
     AiAgentRuntimeClient runtime = mock(AiAgentRuntimeClient.class);
@@ -561,18 +537,21 @@ class AgentOrchestratorTests {
     when(runtime.enabled()).thenReturn(true);
     when(runtime.plan(any(AiAgentRequest.class), anyString(), any())).thenReturn(runtimeResult);
     when(guard.evaluate(same(request), same(runtimePlan))).thenReturn(decision);
-    when(tools.executeAuthorizedPlan(same(request), same(runtimePlan)))
-        .thenReturn(new AiDispatchResponse(8L, runtimePlan, 1, List.of(42L)));
-    when(reviewer.review(5L, 8L, List.of(42L))).thenReturn(review);
+    var approvals = savedApprovalService(777L);
+    when(reviewer.review(5L, 8L, List.of())).thenReturn(
+        new AiAgentResponse.AgentReview("NOT_REQUIRED", "尚未创建任务", false, List.of()));
     AgentOrchestrator orchestrator =
-        new AgentOrchestrator(memory, tools, runtime, index, planner, guard, reviewer, audit);
+        new AgentOrchestrator(memory, tools, runtime, index, planner, guard, reviewer, null, audit,
+            new com.bachelor.toolbox.settings.BusinessDataOperationGate(), approvals);
     List<AiAgentEvent> events = new ArrayList<>();
 
     AiAgentResponse response = orchestrator.run(request, events::add);
 
-    assertThat(response.executed()).isTrue();
-    assertThat(response.taskIds()).containsExactly(42L);
-    verify(tools, times(1)).executeAuthorizedPlan(same(request), same(runtimePlan));
+    assertThat(response.executed()).isFalse();
+    assertThat(response.approvalId()).isEqualTo(777L);
+    assertThat(response.taskIds()).isEmpty();
+    verify(tools, never()).executeAuthorizedPlan(any(), any());
+    verify(approvals).requestAiPlan(same(request), same(runtimePlan), isNull());
     verify(planner, never()).planStreaming(any(), any());
     AiAgentEvent done =
         events.stream().filter(event -> "done".equals(event.type())).findFirst().orElseThrow();
@@ -595,8 +574,8 @@ class AgentOrchestratorTests {
     assertThat(detailCaptor.getValue())
         .containsEntry("schemaVersion", 3)
         .containsEntry("turnId", "turn-runtime-success")
-        .containsEntry("executed", true)
-        .containsEntry("taskIds", List.of(42L))
+        .containsEntry("executed", false)
+        .containsEntry("taskIds", List.of())
         .containsEntry("retrievalRoundCount", 2)
         .containsEntry("evidenceIds", List.of("ev-a", "ev-b"))
         .containsEntry("indexRevision", "sha256:" + "a".repeat(64))
@@ -838,8 +817,8 @@ class AgentOrchestratorTests {
     assertThat(response.approvalStatus()).isEqualTo("REQUIRED");
     // 审批工单号被透传，供前端渲染 HITL 审核卡片。
     assertThat(response.approvalId()).isEqualTo(777L);
-    assertThat(response.message()).startsWith("本轮实际状态：已保存审批申请 #777，等待审批，尚未创建检测任务。")
-        .contains(plan.summary()).doesNotContain("未提交审批申请");
+    assertThat(response.message()).startsWith("本轮实际状态：已保存执行确认申请 #777，等待管理员确认，尚未创建检测任务。")
+        .contains("http_headers", "本轮已核对的方案参数").doesNotContain("未提交审批申请");
     assertThat(events).noneMatch(event -> event.phase() == AgentPhase.RETEST && "RUNNING".equals(event.status()));
 
     verify(approvalService)
@@ -911,6 +890,14 @@ class AgentOrchestratorTests {
     });
     verifyNoInteractions(approvals);
     verify(tools, never()).executeAuthorizedPlan(any(), any());
+  }
+
+  private static com.bachelor.toolbox.project.ProjectApprovalService savedApprovalService(long id) {
+    var approvals = mock(com.bachelor.toolbox.project.ProjectApprovalService.class);
+    var ticket = new com.bachelor.toolbox.project.ProjectApproval();
+    ticket.setId(id);
+    when(approvals.requestAiPlan(any(), any(), any())).thenReturn(ticket);
+    return approvals;
   }
 
   private static AiPlanResponse actionablePlan(String provider) {

@@ -51,7 +51,7 @@ async function run(page, H, ctx) {
     for (let i = 0; i < n; i++) {
       titles.push(((await groups.nth(i).locator("header.settings-group-title").first().textContent().catch(() => "")) || "").replace(/\s+/g, " ").trim());
     }
-    const expect = ["外观", "AI 与外部服务", "安全与访问", "系统与审计", "危险操作", "关于"];
+    const expect = ["外观", "AI 与外部服务", "安全与访问", "危险操作", "关于"];
     const missing = expect.filter((e) => !titles.some((t) => t.includes(e)));
     if (missing.length) throw new Error(`缺少分组: ${missing.join("、")}（实际: ${titles.join("/")}）`);
     return `${n} 个分组: ${titles.join(" / ")}`;
@@ -73,7 +73,7 @@ async function run(page, H, ctx) {
     const dlg = page.locator(".ai-model-dialog, .el-dialog:visible").last();
     if (!(await dlg.isVisible().catch(() => false))) throw new Error("AI 模型服务对话框未打开");
     const text = ((await dlg.textContent()) || "").replace(/\s+/g, " ");
-    const expect = ["API 地址", "API Key", "模型名称", "知识检索方式"];
+    const expect = ["API 地址", "API 密钥", "模型名称", "知识检索方式"];
     const missing = expect.filter((k) => !text.includes(k));
     if (missing.length) throw new Error(`缺少配置项: ${missing.join("、")}`);
     ctx.aiDialogText = text.slice(0, 400);
@@ -106,8 +106,8 @@ async function run(page, H, ctx) {
   await H.run("M-07", "AI 对话框提供连接测试与保存入口", async () => {
     const dlg = page.locator(".el-dialog:visible").last();
     const btns = (await dlg.locator("button").allTextContents()).map((s) => s.trim()).filter(Boolean);
-    const found = ["测试连接", "保存并应用"].filter((k) => btns.some((b) => b.includes(k)));
-    if (found.length === 0) throw new Error(`缺少测试/保存入口，实际按钮: ${btns.join(" | ")}`);
+    const found = ["发送测试", "保存"].filter((k) => btns.some((b) => b === k));
+    if (found.length !== 2) throw new Error(`缺少测试/保存入口，实际按钮: ${btns.join(" | ")}`);
     return `入口: ${found.join("、")}（按钮: ${btns.join(" | ").slice(0, 120)}）`;
   }, { page });
 
@@ -139,31 +139,31 @@ async function run(page, H, ctx) {
   }, { page });
 
   // ---------- 修改密码（仅校验，不真正改密） ----------
-  await H.run("M-11", "打开「修改登录密码」对话框并渲染三个密码字段", async () => {
+  await H.run("M-11", "打开「修改登录密码」并核对当前运行模式的密码字段", async () => {
     await openSettingsRow(page, "修改登录密码");
     const dlg = page.locator(".el-dialog:visible").last();
     if (!(await dlg.isVisible().catch(() => false))) throw new Error("改密对话框未打开");
     const pwInputs = dlg.locator('input[type="password"]');
     const n = await pwInputs.count();
-    if (n < 3) throw new Error(`密码输入框不足 3 个（实际 ${n} 个）`);
+    const desktop = await page.evaluate(() => Boolean(window.toolboxDesktop));
+    if (n !== (desktop ? 2 : 3)) throw new Error(`密码输入框数量与运行模式不符：desktop=${desktop}, count=${n}`);
+    if (desktop && !(await dlg.innerText()).includes("Windows Hello")) throw new Error("桌面改密缺少 Windows Hello 身份验证说明");
     return `渲染 ${n} 个密码字段`;
   }, { page });
 
   await H.run("M-12", "新密码与确认不一致时被拒绝（不改密）", async () => {
     const dlg = page.locator(".el-dialog:visible").last();
     await clearMessages(page);
-    const pw = dlg.locator('input[type="password"]');
-    await pw.nth(0).fill(ctx.password);
-    await pw.nth(1).fill("TestPassword-A-123456");
-    await pw.nth(2).fill("TestPassword-B-654321");
+    const current = dlg.getByPlaceholder("请输入当前登录密码", { exact: true });
+    if (await current.count()) await current.fill(ctx.password);
+    await dlg.getByPlaceholder("请输入新密码", { exact: true }).fill("TestPassword-A-123456");
+    await dlg.getByPlaceholder("请再次输入新密码", { exact: true }).fill("TestPassword-B-654321");
     await dlg.locator("button", { hasText: "保存" }).last().click();
     await sleep(1800);
     const msg = await lastMessage(page, { timeout: 8000 });
     const stillOpen = await dlg.isVisible().catch(() => false);
     const errs = (await page.locator(".el-form-item__error").allTextContents()).map((s) => s.trim()).filter(Boolean);
-    if (!stillOpen && (!msg || msg.type === "success")) {
-      throw new Error("两次新密码不一致却修改成功");
-    }
+    if (!stillOpen || !/两次输入的新密码不一致/.test([msg?.text, ...errs].join(";"))) throw new Error("未明确拒绝不一致密码: " + JSON.stringify({stillOpen,msg,errs}));
     return `已拒绝${msg ? `，提示="${msg.text}"` : ""}${errs.length ? `，校验: ${errs.join(";")}` : ""}`;
   }, { page, shotOnPass: true });
 
@@ -171,18 +171,16 @@ async function run(page, H, ctx) {
     const dlg = page.locator(".el-dialog:visible").last();
     if (!(await dlg.isVisible().catch(() => false))) return "对话框已关闭，跳过";
     await clearMessages(page);
-    const pw = dlg.locator('input[type="password"]');
-    await pw.nth(0).fill(ctx.password);
-    await pw.nth(1).fill("short");
-    await pw.nth(2).fill("short");
+    const current = dlg.getByPlaceholder("请输入当前登录密码", { exact: true });
+    if (await current.count()) await current.fill(ctx.password);
+    await dlg.getByPlaceholder("请输入新密码", { exact: true }).fill("short");
+    await dlg.getByPlaceholder("请再次输入新密码", { exact: true }).fill("short");
     await dlg.locator("button", { hasText: "保存" }).last().click();
     await sleep(1800);
     const msg = await lastMessage(page, { timeout: 8000 });
     const stillOpen = await dlg.isVisible().catch(() => false);
     const errs = (await page.locator(".el-form-item__error").allTextContents()).map((s) => s.trim()).filter(Boolean);
-    if (!stillOpen && (!msg || msg.type === "success")) {
-      throw new Error("过短新密码却修改成功（要求至少 8 位）");
-    }
+    if (!stillOpen || !/新密码至少 8 位/.test([msg?.text, ...errs].join(";"))) throw new Error("未明确拒绝短密码: " + JSON.stringify({stillOpen,msg,errs}));
     return `已拒绝${msg ? `，提示="${msg.text}"` : ""}${errs.length ? `，校验: ${errs.join(";")}` : ""}`;
   }, { page, shotOnPass: true });
 
@@ -215,22 +213,35 @@ async function run(page, H, ctx) {
     return `版本号=${v}`;
   }, { page });
 
-  await H.run("M-17", "「授权目标」快捷入口可跳转到目标管理页", async () => {
-    const group = page.locator("section.settings-group", { hasText: "安全与访问" }).first();
-    await group.locator("button.settings-row", { hasText: "授权目标" }).first().click();
+  await H.run("M-17", "设置不重复提供「授权目标」，侧边栏入口可进入目标管理页", async () => {
+    const settings = page.locator(".settings-page");
+    await settings.waitFor({ state: "visible", timeout: 10000 });
+    if (await settings.locator("button.settings-row", { hasText: "授权目标" }).count()) {
+      throw new Error("设置页仍重复提供授权目标入口");
+    }
+    await navigate(page, "授权目标");
     await settle(page, 2500);
     if (!page.url().includes("/targets")) throw new Error(`未跳转到目标页: ${page.url()}`);
     await openSettings(page);
     await sleep(1500);
-    return "跳转正常并已返回设置页";
+    return "设置页无重复入口，侧边栏跳转正常并已返回设置页";
   }, { page });
 
-  await H.run("M-18", "「操作审计」快捷入口可跳转到审计日志页", async () => {
-    const group = page.locator("section.settings-group", { hasText: "系统与审计" }).first();
-    await group.locator("button.settings-row", { hasText: "操作审计" }).first().click();
+  await H.run("M-18", "设置不重复提供审计与依赖检测入口，侧边栏可进入审计日志页", async () => {
+    const settings = page.locator(".settings-page");
+    await settings.waitFor({ state: "visible", timeout: 10000 });
+    for (const label of ["操作审计", "依赖检测与工具安装"]) {
+      if (await settings.locator("button.settings-row", { hasText: label }).count()) {
+        throw new Error(`设置页仍重复提供${label}入口`);
+      }
+    }
+    if (await settings.locator("header.settings-group-title", { hasText: "系统与审计" }).count()) {
+      throw new Error("设置页仍保留已无配置项的系统与审计分组");
+    }
+    await navigate(page, "审计日志");
     await settle(page, 2500);
     if (!page.url().includes("/audits")) throw new Error(`未跳转到审计页: ${page.url()}`);
-    return "跳转到审计日志页成功";
+    return "设置页无重复入口，侧边栏跳转到审计日志页成功";
   }, { page });
 
   // ================= 审计日志 =================

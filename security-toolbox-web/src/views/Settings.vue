@@ -1,19 +1,16 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
-  Aim,
   ArrowRight,
   ChatDotRound,
   Compass,
   Delete,
-  Document,
   Download,
   Key,
   MagicStick,
   Setting,
-  Tools,
   View,
   Warning,
 } from "../components/fluentIcons";
@@ -28,10 +25,12 @@ import { useAuthStore } from "../stores/auth";
 import { useConversationStore } from "../stores/conversations";
 import { endpoints, type TaskControlStatus } from "../api";
 import { toErrorMessage } from "../utils/errorMessage";
+import { DEFAULT_NOTIFICATION_PREFERENCES, loadNotificationPreferences, saveNotificationPreferences } from "../utils/notifications";
 import AiRelaySettings from "../components/AiRelaySettings.vue";
 import MarkdownBody from "../components/MarkdownBody.vue";
 
 const router = useRouter();
+const route = useRoute();
 const auth = useAuthStore();
 const copilot = useCopilotStore();
 const conversations = useConversationStore();
@@ -267,42 +266,41 @@ const aiConnectionAlert = computed(() => {
   };
 });
 
-function rerunSetup() {
-  localStorage.removeItem("security_toolbox_setup_complete_v2");
-  router.push({ path: "/setup", query: { redirect: "/settings" } });
-}
-
 function troubleshootWithCopilot() {
+  if (aiSettingsBusy.value || aiLoading.value) return;
   const relayEnabled = aiRelayEnabled.value === true;
-  const retrievalBackend = aiStatus.value?.retrievalBackend || aiForm.retrievalBackend;
-  const provider = relayEnabled ? "openai-compatible" : aiStatus.value?.provider || "local-rules";
+  const status = aiStatus.value;
+  const retrievalBackend = status?.retrievalBackend;
+  const provider = relayEnabled ? "openai-compatible" : status?.provider;
   copilot.open({
     mode: "troubleshoot",
-    prompt: "请根据当前 AI 服务的非敏感配置状态，给出连接诊断和配置检查步骤。",
+    prompt: "请根据当前 AI 服务已读取的非敏感配置状态，给出连接诊断和配置检查步骤；未知状态请明确说明，不要据此断言模型已连接或测试通过。",
     entity: {
       type: "ai-settings-status",
       title: "AI 模型服务状态",
       source: "settings",
       summary:
-        "仅共享 provider、model、代理模式与连接配置状态；API Key、Key 提示和 API 地址均未发送。",
+        "仅共享服务商、模型、代理模式与连接配置状态；API 密钥、密钥提示和 API 地址均未发送。",
       data: {
-        provider,
-        model: relayEnabled ? "API 线路自动轮询" : aiStatus.value?.model || aiForm.model,
-        relayEnabled,
-        retrievalBackend,
-        embeddingEnabled: retrievalBackend === "real_embedding",
-        ...(retrievalBackend === "real_embedding" ? {
-          embeddingModel: aiStatus.value?.embeddingModel || aiForm.embeddingModel,
-          embeddingConnectionMode: aiStatus.value?.embeddingConnectionMode || aiForm.embeddingConnectionMode,
+        configurationSource: isDesktop ? "desktop-saved-settings" : "server-managed",
+        configurationRead: Boolean(status) || aiRelayEnabled.value !== null,
+        ...(provider ? { provider } : {}),
+        ...(relayEnabled ? { model: "API 线路自动轮询" } : status ? { model: status.model } : {}),
+        ...(aiRelayEnabled.value !== null ? { relayEnabled } : {}),
+        ...(status ? {
+          retrievalBackend,
+          embeddingEnabled: retrievalBackend === "real_embedding",
+          proxyMode: !relayEnabled && Boolean(status.proxyMode),
+          configured: relayEnabled || status.provider === "openai-compatible" || hasIndependentEmbedding.value,
         } : {}),
-        proxyMode: !relayEnabled && Boolean(aiStatus.value?.proxyMode),
-        configured:
-          relayEnabled ||
-          aiStatus.value?.provider === "openai-compatible" ||
-          hasIndependentEmbedding.value,
+        ...(retrievalBackend === "real_embedding" && status ? {
+          embeddingModel: status.embeddingModel,
+          embeddingConnectionMode: status.embeddingConnectionMode,
+        } : {}),
       },
     },
   });
+  aiDialog.value = false;
   void router.push("/");
 }
 
@@ -702,7 +700,7 @@ async function clearEmbeddingApiKey() {
   try {
     await ElMessageBox.confirm(
       "清除后，单独配置的向量服务将不再发送鉴权密钥。确定继续吗？",
-      "清除向量 API Key",
+      "清除向量 API 密钥",
       { confirmButtonText: "清除", cancelButtonText: "取消", type: "warning" },
     );
     aiSaving.value = true;
@@ -711,10 +709,10 @@ async function clearEmbeddingApiKey() {
       embeddingApiKey: "",
     });
     aiForm.embeddingApiKey = "";
-    ElMessage.success("向量 API Key 已清除");
+    ElMessage.success("向量 API 密钥已清除");
   } catch (error) {
     if (error !== "cancel" && error !== "close")
-      ElMessage.error(errorText(error, "向量 API Key 清除失败"));
+      ElMessage.error(errorText(error, "向量 API 密钥清除失败"));
   } finally {
     aiSaving.value = false;
   }
@@ -727,7 +725,7 @@ async function clearApiKey() {
       aiForm.proxyMode
         ? "清除后仍会通过 CCS 代理调用，但不再发送鉴权密钥。"
         : "清除后将切换回本地规则模式，确定继续吗？",
-      "清除 API Key",
+      "清除 API 密钥",
       {
         confirmButtonText: "清除",
         cancelButtonText: "取消",
@@ -742,12 +740,12 @@ async function clearApiKey() {
     aiForm.apiKey = "";
     ElMessage.success(
       aiForm.proxyMode
-        ? "API Key 已清除，当前使用无密钥 CCS 代理模式"
-        : "API Key 已清除，当前使用本地规则模式",
+        ? "API 密钥已清除，当前使用无密钥 CCS 代理模式"
+        : "API 密钥已清除，当前使用本地规则模式",
     );
   } catch (error) {
     if (error !== "cancel" && error !== "close")
-      ElMessage.error(errorText(error, "API Key 清除失败"));
+      ElMessage.error(errorText(error, "API 密钥清除失败"));
   } finally {
     aiSaving.value = false;
   }
@@ -893,7 +891,7 @@ async function saveGithubToken() {
   if (!window.toolboxDesktop?.saveGithubTokenSettings)
     return ElMessage.warning("GitHub 访问令牌仅支持桌面应用");
   const token = githubForm.token.trim();
-  if (!token) return ElMessage.warning("请粘贴 GitHub Personal Access Token");
+  if (!token) return ElMessage.warning("请粘贴 GitHub 个人访问令牌");
   githubSaving.value = true;
   try {
     githubStatus.value = await window.toolboxDesktop.saveGithubTokenSettings({
@@ -981,6 +979,12 @@ async function savePostgresPassword() {
   }
 }
 
+watch(() => route.query.ai, section => {
+  if (section !== "diagnostics") return;
+  aiSettingsTab.value = "diagnostics";
+  aiDialog.value = true;
+}, { immediate: true });
+
 onMounted(() => {
   void loadThemeModeSetting();
   void loadAiSettings();
@@ -1003,56 +1007,62 @@ const notificationSeverityOptions = [
 const notifDialog = ref(false);
 const notifLoading = ref(false);
 const notifSaving = ref(false);
-const notifEnabled = ref(true);
-const notifWorkflowSkip = ref(true);
-const notifSeverities = ref<string[]>(["CRITICAL", "HIGH", "MEDIUM"]);
+const notifPreferences = reactive({ ...DEFAULT_NOTIFICATION_PREFERENCES, severities: [...DEFAULT_NOTIFICATION_PREFERENCES.severities] });
+const notificationCategoryOptions = [
+  { key: "taskCompleteNotifications", label: "任务完成", description: "检测任务执行完成时提醒，包括没有发现漏洞的任务" },
+  { key: "taskFailureNotifications", label: "任务异常", description: "任务失败、超时或被拒绝时提醒，主动取消不提醒" },
+  { key: "findingNotifications", label: "漏洞发现", description: "任务或工作流保存所选等级的漏洞结果时提醒，包括失败前保留的结果" },
+  { key: "workflowCompleteNotifications", label: "工作流结果", description: "工作流完成或异常结束时提醒" },
+  { key: "workflowSkipNotifications", label: "工作流跳过", description: "工作流跳过不可用节点时提醒" },
+  { key: "approvalNotifications", label: "执行确认", description: "AI 行动方案保存成功、等待管理员确认时提醒" },
+  { key: "scheduleNotifications", label: "定时计划", description: "定时计划派发失败或被自动停用时提醒" },
+  { key: "trafficNotifications", label: "流量操作", description: "流量定向扫描、批量 Fuzz 完成或异常时提醒" },
+  { key: "serviceNotifications", label: "本地服务异常", description: "桌面版 Java 或 AI 服务意外退出时提醒" },
+] as const;
+const browserNotificationPermission = ref<NotificationPermission | "unsupported">(
+  typeof Notification === "undefined" ? "unsupported" : Notification.permission,
+);
+const notificationPermissionBusy = ref(false);
 const notifSummary = computed(() => {
-  if (!isDesktop) return "网页模式不支持系统级任务提醒";
-  if (notifEnabled.value) {
-    const labels = notificationSeverityOptions
-      .filter((o) => notifSeverities.value.includes(o.value))
-      .map((o) => o.label)
-      .join(" / ");
-    return `任务完成并命中【${labels || "无"}】严重程度时提醒`;
-  }
-  return "任务完成时不进行系统提醒";
+  if (!notifPreferences.enabled) return "系统通知已关闭";
+  const count = notificationCategoryOptions.filter(option => notifPreferences[option.key]).length;
+  return `已开启 ${count} 类提醒${!isDesktop && browserNotificationPermission.value !== "granted" ? "，后台通知需浏览器授权" : ""}`;
 });
+
+async function requestBrowserNotificationPermission() {
+  if (isDesktop || typeof Notification === "undefined") return;
+  notificationPermissionBusy.value = true;
+  try {
+    browserNotificationPermission.value = await Notification.requestPermission();
+    if (browserNotificationPermission.value === "granted") ElMessage.success("浏览器通知已允许");
+  } catch (error) {
+    ElMessage.error(errorText(error, "无法申请浏览器通知权限"));
+  } finally {
+    notificationPermissionBusy.value = false;
+  }
+}
 
 async function loadNotificationSettings(open = false) {
   if (open) notifDialog.value = true;
-  if (!window.toolboxDesktop?.getNotificationSettings) return;
+  if (typeof Notification !== "undefined") browserNotificationPermission.value = Notification.permission;
   notifLoading.value = true;
   try {
-    const settings = await window.toolboxDesktop.getNotificationSettings();
-    notifSeverities.value = settings.severities.slice();
-    notifEnabled.value = settings.taskCompleteNotifications;
-    notifWorkflowSkip.value = settings.workflowSkipNotifications !== false;
+    Object.assign(notifPreferences, await loadNotificationPreferences());
   } catch (error) {
-    ElMessage.error(errorText(error, "无法读取任务提醒设置"));
+    ElMessage.error(errorText(error, "无法读取系统通知设置"));
   } finally {
     notifLoading.value = false;
   }
 }
 
 async function saveNotificationSettings() {
-  if (!window.toolboxDesktop?.saveNotificationSettings)
-    return ElMessage.warning("任务提醒仅支持桌面应用");
-  if (!notifSeverities.value.length)
-    return ElMessage.warning("请至少勾选一个需要提醒的严重程度");
   notifSaving.value = true;
   try {
-    const settings = await window.toolboxDesktop.saveNotificationSettings({
-      severities: notifSeverities.value,
-      taskCompleteNotifications: notifEnabled.value,
-      workflowSkipNotifications: notifWorkflowSkip.value,
-    });
-    notifSeverities.value = settings.severities.slice();
-    notifEnabled.value = settings.taskCompleteNotifications;
-    notifWorkflowSkip.value = settings.workflowSkipNotifications !== false;
+    Object.assign(notifPreferences, await saveNotificationPreferences({ ...notifPreferences, severities: [...notifPreferences.severities] }));
     notifDialog.value = false;
-    ElMessage.success("任务提醒设置已保存");
+    ElMessage.success("系统通知设置已保存");
   } catch (error) {
-    ElMessage.error(errorText(error, "任务提醒设置保存失败"));
+    ElMessage.error(errorText(error, "系统通知设置保存失败"));
   } finally {
     notifSaving.value = false;
   }
@@ -1110,7 +1120,7 @@ watch(
     <header class="simple-page-heading">
       <span>系统设置</span>
       <h1>工作区与运行环境</h1>
-      <p>管理外观、AI 接入、授权范围、系统依赖和本地审计记录。</p>
+      <p>管理外观、AI 与外部服务连接、登录密码、通知偏好和任务执行参数。</p>
     </header>
 
     <div class="settings-stack">
@@ -1232,7 +1242,7 @@ watch(
             <el-icon class="settings-row-icon"><ChatDotRound /></el-icon>
             <span class="settings-row-copy">
               <strong>AI 模型服务</strong>
-              <small>{{ aiRelayEnabled ? '多 API 轮询已启用 · 管理线路与连接设置' : aiServiceSummary }}</small>
+              <small>{{ aiRelayEnabled ? '多 API 轮询已启用' : aiServiceSummary }} · 线路、连接测试与配置诊断</small>
             </span>
             <el-icon class="settings-row-chevron"><ArrowRight /></el-icon>
           </button>
@@ -1304,38 +1314,12 @@ watch(
             </span>
             <el-icon class="settings-row-chevron"><ArrowRight /></el-icon>
           </button>
-          <button
-            type="button"
-            class="settings-row"
-            @click="troubleshootWithCopilot"
-          >
-            <el-icon class="settings-row-icon"><MagicStick /></el-icon>
-            <span class="settings-row-copy">
-              <strong>AI 配置诊断</strong>
-              <small
-                >仅把服务商、模型和连接状态交给 Copilot，不发送 API Key</small
-              >
-            </span>
-            <el-icon class="settings-row-chevron"><ArrowRight /></el-icon>
-          </button>
         </div>
       </section>
 
       <section class="settings-group">
         <header class="settings-group-title">安全与访问</header>
         <div class="settings-list">
-          <button
-            type="button"
-            class="settings-row"
-            @click="router.push('/targets')"
-          >
-            <el-icon class="settings-row-icon"><Aim /></el-icon>
-            <span class="settings-row-copy">
-              <strong>授权目标</strong>
-              <small>登记允许主动检测的系统、地址和端口范围</small>
-            </span>
-            <el-icon class="settings-row-chevron"><ArrowRight /></el-icon>
-          </button>
           <button type="button" class="settings-row" @click="openPasswordDialog">
             <el-icon class="settings-row-icon"><Key /></el-icon>
             <span class="settings-row-copy">
@@ -1350,17 +1334,16 @@ watch(
       </section>
 
       <section class="settings-group">
-        <header class="settings-group-title">任务提醒</header>
+        <header class="settings-group-title">系统通知</header>
         <div class="settings-list">
           <button
             type="button"
             class="settings-row"
             @click="loadNotificationSettings(true)"
-            :disabled="!isDesktop"
           >
             <el-icon class="settings-row-icon"><Warning /></el-icon>
             <span class="settings-row-copy">
-              <strong>漏洞等级提醒</strong>
+              <strong>通知偏好</strong>
               <small>{{ notifSummary }}</small>
             </span>
             <el-icon class="settings-row-chevron"><ArrowRight /></el-icon>
@@ -1370,7 +1353,7 @@ watch(
 
       <el-dialog
         v-model="notifDialog"
-        title="漏洞等级提醒"
+        title="系统通知"
         class="app-dialog app-dialog--md"
         align-center
       >
@@ -1378,27 +1361,33 @@ watch(
           <div class="settings-row settings-row--control">
             <el-icon class="settings-row-icon"><Warning /></el-icon>
             <span class="settings-row-copy">
-              <strong>任务完成提醒</strong>
-              <small
-                >任务完成任务而想第一时间收到系统通知时开启（仅在桌面版生效）</small
-              >
+              <strong>允许系统通知</strong>
+              <small>统一控制以下所有提醒，通知出现时不会切换当前窗口</small>
             </span>
-            <el-switch v-model="notifEnabled" />
+            <el-switch v-model="notifPreferences.enabled" aria-label="允许系统通知" />
           </div>
-          <div class="settings-row settings-row--control">
+          <div v-if="!isDesktop" class="notif-severity-block">
+            <strong>浏览器通知权限</strong>
+            <small v-if="browserNotificationPermission === 'granted'">已允许。应用在后台时可发送系统通知。</small>
+            <small v-else-if="browserNotificationPermission === 'denied'">浏览器已阻止通知，请在地址栏的网站设置中允许通知，再重新打开此设置。</small>
+            <small v-else-if="browserNotificationPermission === 'unsupported'">当前浏览器不支持系统通知，将使用页面内提醒。</small>
+            <template v-else>
+              <small>允许后，应用在后台时可发送系统通知。页面内提醒无需此权限。</small>
+              <el-button :loading="notificationPermissionBusy" @click="requestBrowserNotificationPermission">允许浏览器通知</el-button>
+            </template>
+          </div>
+          <div v-for="option in notificationCategoryOptions" :key="option.key" class="settings-row settings-row--control">
             <el-icon class="settings-row-icon"><Warning /></el-icon>
             <span class="settings-row-copy">
-              <strong>工作流跳过提醒</strong>
-              <small
-                >红队工作流跳过依赖缺失等不可用节点时，以系统通知告知（此开关独立于上方任务完成提醒，仅桌面版生效）</small
-              >
+              <strong>{{ option.label }}</strong>
+              <small>{{ option.description }}</small>
             </span>
-            <el-switch v-model="notifWorkflowSkip" />
+            <el-switch v-model="notifPreferences[option.key]" :disabled="!notifPreferences.enabled" :aria-label="option.label" />
           </div>
           <div class="notif-severity-block">
-            <strong>命中以下严重程度时提醒（可多选）</strong>
-            <small>任务完成并发现所选等级的漏洞时才弹出系统提醒</small>
-            <el-checkbox-group v-model="notifSeverities" class="notif-severity-checks">
+            <strong>漏洞发现提醒等级（可多选）</strong>
+            <small>此筛选只影响漏洞发现提醒；任务完成提醒可独立开启。</small>
+            <el-checkbox-group v-model="notifPreferences.severities" :disabled="!notifPreferences.enabled || !notifPreferences.findingNotifications" class="notif-severity-checks">
               <el-checkbox
                 v-for="option in notificationSeverityOptions"
                 :key="option.value"
@@ -1454,32 +1443,6 @@ watch(
               style="width: 120px"
             />
           </div>
-        </div>
-      </section>
-
-      <section class="settings-group">
-        <header class="settings-group-title">系统与审计</header>
-        <div class="settings-list">
-          <button type="button" class="settings-row" @click="rerunSetup">
-            <el-icon class="settings-row-icon"><Tools /></el-icon>
-            <span class="settings-row-copy">
-              <strong>依赖检测与工具安装</strong>
-              <small>重新运行完整依赖检测，查看缺失项并安装</small>
-            </span>
-            <el-icon class="settings-row-chevron"><ArrowRight /></el-icon>
-          </button>
-          <button
-            type="button"
-            class="settings-row"
-            @click="router.push('/audits')"
-          >
-            <el-icon class="settings-row-icon"><Document /></el-icon>
-            <span class="settings-row-copy">
-              <strong>操作审计</strong>
-              <small>查看检测、登录和配置变更记录</small>
-            </span>
-            <el-icon class="settings-row-chevron"><ArrowRight /></el-icon>
-          </button>
         </div>
       </section>
 
@@ -1781,7 +1744,7 @@ watch(
           show-icon
         />
         <el-form label-position="top" class="icp-settings-form">
-          <el-form-item label="Personal Access Token">
+          <el-form-item label="个人访问令牌">
             <el-input
               v-model="githubForm.token"
               type="password"
@@ -2011,6 +1974,7 @@ watch(
       <el-tabs v-model="aiSettingsTab" class="ai-service-tabs">
         <el-tab-pane v-if="isDesktop" label="API 线路" name="relay" :disabled="aiSettingsBusy" />
         <el-tab-pane label="知识检索" name="single" :disabled="aiSettingsBusy" />
+        <el-tab-pane label="配置诊断" name="diagnostics" :disabled="aiSettingsBusy" />
       </el-tabs>
       <div v-if="isDesktop" v-show="aiSettingsTab === 'relay'">
         <p class="ai-active-connection">{{ aiRelayEnabled ? '正在使用已启用的 API 线路' : '当前沿用现有连接；启用 API 线路后替代。' }}</p>
@@ -2024,11 +1988,12 @@ watch(
               v-model="aiForm.retrievalBackend"
               class="settings-segmented"
               block
+              aria-label="知识检索方式"
               :options="retrievalBackendOptions"
               :disabled="!isDesktop"
             />
             <p>
-              BM25 无需模型服务；向量检索需要配置 Embedding 模型。
+              BM25 无需模型服务；向量检索需要配置向量模型。
             </p>
           </el-form-item>
           <el-form-item
@@ -2040,10 +2005,11 @@ watch(
               v-model="aiForm.embeddingConnectionMode"
               class="settings-segmented"
               block
+              aria-label="向量服务连接方式"
               :options="embeddingConnectionModeOptions"
               :disabled="!isDesktop"
             />
-            <p v-if="aiRelayEnabled">API 线路仅支持对话。请单独配置支持 Embedding 的服务；没有向量服务时可继续使用 BM25。</p>
+            <p v-if="aiRelayEnabled">API 线路仅支持对话。请单独配置支持向量嵌入的服务；没有向量服务时可继续使用 BM25。</p>
           </el-form-item>
           <el-form-item
             v-if="
@@ -2063,7 +2029,7 @@ watch(
               aiForm.retrievalBackend === 'real_embedding' &&
               aiForm.embeddingConnectionMode === 'custom'
             "
-            label="向量 API Key"
+            label="向量 API 密钥"
           >
             <el-input
               v-model="aiForm.embeddingApiKey"
@@ -2080,7 +2046,7 @@ watch(
           </el-form-item>
           <el-form-item
             v-if="aiForm.retrievalBackend === 'real_embedding'"
-            label="Embedding 模型"
+            label="向量模型"
           >
             <el-input
               v-model="aiForm.embeddingModel"
@@ -2115,7 +2081,7 @@ watch(
               本地代理可不填密钥；如需访问令牌，在下方填写。
             </p>
           </el-form-item>
-          <el-form-item label="API Key">
+          <el-form-item label="API 密钥">
             <el-input
               v-model="aiForm.apiKey"
               type="password"
@@ -2124,7 +2090,7 @@ watch(
               :placeholder="
                 aiStatus?.hasApiKey
                   ? '留空表示继续使用已保存的密钥'
-                  : '请输入 API Key'
+                  : '请输入 API 密钥'
               "
               :disabled="!isDesktop"
             />
@@ -2151,12 +2117,42 @@ watch(
           </details>
         </el-form>
       </div>
+      <section v-show="aiSettingsTab === 'diagnostics'" v-loading="aiLoading" class="ai-diagnostics" aria-label="AI 配置诊断">
+        <div>
+          <h3>当前生效配置</h3>
+          <p>配置状态不代表模型已连接。请通过发送测试确认服务能否返回完整回答。</p>
+        </div>
+        <dl class="ai-diagnostics-status">
+          <div>
+            <dt>对话服务</dt>
+            <dd>{{ !isDesktop ? '由服务端管理，当前页面未读取模型配置' : aiRelayEnabled ? '已启用 API 线路自动轮询' : aiStatus ? aiStatus.provider === 'openai-compatible' ? `现有连接 · ${aiStatus.model}` : '本地规则模式，未启用模型服务' : '尚未读取配置' }}</dd>
+          </div>
+          <div>
+            <dt>知识检索</dt>
+            <dd>{{ aiStatus ? aiStatus.retrievalBackend === 'real_embedding' ? `向量检索 · ${aiStatus.embeddingModel}` : 'BM25 关键词检索' : '尚未读取配置' }}</dd>
+          </div>
+        </dl>
+        <div class="ai-diagnostics-checks">
+          <h3>连接检查</h3>
+          <p v-if="isDesktop">在 API 线路中展开“测试连接”，检查各线路的实际回复；展开“运行状态与重试机制”可查看请求结果和最近错误。向量服务可在知识检索中单独测试。</p>
+          <p v-else>网页端由服务端管理模型和密钥。请在桌面应用中测试 API 线路，或由服务端管理员检查模型配置与运行日志。</p>
+          <div v-if="isDesktop" class="ai-inline-actions">
+            <el-button :disabled="aiSettingsBusy" @click="aiSettingsTab = 'relay'">检查 API 线路</el-button>
+            <el-button :disabled="aiSettingsBusy" @click="aiSettingsTab = 'single'">检查知识检索</el-button>
+          </div>
+        </div>
+        <div class="ai-diagnostics-assistant">
+          <h3>AI 配置诊断</h3>
+          <p>将已读取的服务商、模型与连接配置状态带入 AI 安全助手，由你发送诊断请求。不会附带 API 密钥、密钥提示或 API 地址。</p>
+          <el-button :icon="MagicStick" :disabled="aiSettingsBusy || aiLoading" @click="troubleshootWithCopilot">在 AI 助手中诊断</el-button>
+        </div>
+      </section>
       <template #footer>
         <div class="app-dialog__footer-row">
           <span class="app-dialog__footer-spacer" />
-          <el-button :disabled="aiSettingsBusy" @click="aiDialog = false">取消</el-button>
+          <el-button :disabled="aiSettingsBusy" @click="aiDialog = false">{{ aiSettingsTab === 'diagnostics' ? '关闭' : '取消' }}</el-button>
           <el-button v-if="aiSettingsTab === 'relay'" type="primary" :loading="aiRelayEditor?.saving" :disabled="aiSettingsBusy || !aiRelayEditor?.canSave" @click="aiRelayEditor?.save()">保存</el-button>
-          <el-button v-else type="primary" :loading="aiSaving" :disabled="!isDesktop || aiSettingsBusy" @click="saveAi">保存</el-button>
+          <el-button v-else-if="aiSettingsTab === 'single'" type="primary" :loading="aiSaving" :disabled="!isDesktop || aiSettingsBusy" @click="saveAi">保存</el-button>
         </div>
       </template>
     </el-dialog>
@@ -2183,12 +2179,20 @@ watch(
   font-family: Consolas, monospace;
 }
 .settings-segmented { width: 100%; }
-.settings-segmented :deep(.el-segmented__item) { min-height: 32px; font-weight: 600; }
 .ai-stacked-field :deep(.el-form-item__content) { flex-direction: column; align-items: stretch; gap: 10px; }
 .ai-settings-form p { flex-basis: 100%; margin-top: 10px; font-size: 12px; line-height: 1.6; }
 .ai-stacked-field p { width: 100%; margin: 0; }
 .ai-test-reply { max-height: 220px; overflow-y: auto; padding: 14px; background: var(--app-surface-soft); border-radius: var(--fluent-radius-control); }
 .ai-active-connection { margin: 0 0 16px; color: var(--app-muted); font-size: 12px; }
+.ai-diagnostics { display: grid; gap: 20px; }
+.ai-diagnostics h3 { margin: 0 0 8px; font-size: 14px; }
+.ai-diagnostics p { margin: 0; color: var(--app-muted); font-size: 13px; line-height: 1.7; }
+.ai-diagnostics-status { display: grid; gap: 12px; margin: 0; padding: 16px; background: var(--app-surface-soft); border: 1px solid var(--app-border); border-radius: var(--fluent-radius-control); }
+.ai-diagnostics-status > div { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 12px; line-height: 1.6; }
+.ai-diagnostics-status dt { color: var(--app-muted); }
+.ai-diagnostics-status dd { margin: 0; overflow-wrap: anywhere; }
+.ai-diagnostics-assistant { padding-top: 20px; border-top: 1px solid var(--app-border); }
+.ai-diagnostics-assistant .el-button { margin-top: 14px; }
 .ai-legacy-settings { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--app-border); }
 .ai-legacy-settings summary { cursor: pointer; color: var(--app-muted); font-size: 13px; }
 .ai-legacy-settings .ai-legacy-note { margin: 12px 0 20px; }

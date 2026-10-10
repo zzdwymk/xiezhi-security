@@ -135,6 +135,67 @@ async function verify() {
   assert.equal(pentest.applyPayloadStep("😀", "escape-js"), "\\ud83d\\ude00");
   assert.equal(pentest.testRegex("a(.)", "", "ab ac").count, 2);
   assert.throws(() => pentest.testRegex("(", "", "test"), /正则表达式无效/);
+  const regexCases = [
+    ["(?:)", "gu", "😀"],
+    ["(?:)", "g", "😀"],
+    ["(?:)", "gu", ""],
+    ["(?:)", "g", ""],
+    ["(?=(.))", "gu", "a😀b"],
+    ["(?=(.))", "g", "a😀b"],
+    ["(?:)", "gu", "\ud800a\udc00"],
+    ["(?:)", "guy", "😀"],
+    ["a|$", "gu", "a"],
+    ["z", "gu", "😀"],
+  ];
+  // The v flag uses the same Unicode advancement rules when supported by the runtime.
+  try {
+    new RegExp("", "v");
+    regexCases.push(["(?:)", "gv", "😀"]);
+  } catch {}
+  for (const [pattern, flags, input] of regexCases) {
+    const result = pentest.testRegex(pattern, flags, input);
+    const expected = Array.from(
+      input.matchAll(new RegExp(pattern, flags)),
+      (match) => ({
+        index: match.index,
+        text: match[0],
+        groups: match.slice(1),
+      }),
+    );
+    assert.deepEqual(
+      result.matches,
+      expected,
+      `${pattern} / ${flags} / ${JSON.stringify(input)}`,
+    );
+    assert.equal(result.count, expected.length);
+    assert.equal(result.truncated, false);
+    assert.equal(result.maxMatches, 5000);
+  }
+  assert.deepEqual(
+    pentest.testRegex("(?:)", "gu", "😀").matches.map((match) => match.index),
+    [0, 2],
+  );
+  assert.deepEqual(
+    pentest.testRegex("(?:)", "g", "😀").matches.map((match) => match.index),
+    [0, 1, 2],
+  );
+  for (const [pattern, flags, input, truncated] of [
+    ["a", "g", "a".repeat(5000), false],
+    ["a", "g", "a".repeat(5001), true],
+    ["a", "g", "a".repeat(6000), true],
+    ["(?:)", "gu", "😀".repeat(4999), false],
+    ["(?:)", "gu", "😀".repeat(5000), true],
+  ]) {
+    const result = pentest.testRegex(pattern, flags, input);
+    assert.equal(result.count, 5000);
+    assert.equal(result.matches.length, 5000);
+    assert.equal(result.truncated, truncated);
+    assert.equal(result.maxMatches, 5000);
+    assert.equal(
+      result.matches.at(-1).index,
+      flags.includes("u") ? 9998 : 4999,
+    );
+  }
   assert.throws(
     () => pentest.radixToText("110000", "hex"),
     /Unicode 码点不能超过 U\+10FFFF/,

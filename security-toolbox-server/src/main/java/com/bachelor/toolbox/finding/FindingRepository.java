@@ -5,6 +5,8 @@ import java.util.List;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 public interface FindingRepository
     extends JpaRepository<Finding, Long>, JpaSpecificationExecutor<Finding> {
@@ -15,6 +17,9 @@ public interface FindingRepository
   List<Finding> findAllByTaskIdOrderByCreatedAtAsc(Long taskId);
 
   long countByTaskId(Long taskId);
+
+  @Query("select distinct f.severity from Finding f where f.taskId in :taskIds")
+  List<String> findDistinctSeveritiesByTaskIds(@Param("taskIds") List<Long> taskIds);
 
   List<Finding> findAllByTaskIdInOrderByCreatedAtAsc(List<Long> taskIds);
 

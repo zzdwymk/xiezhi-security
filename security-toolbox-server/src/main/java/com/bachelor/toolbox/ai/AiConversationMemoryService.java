@@ -159,6 +159,29 @@ public class AiConversationMemoryService {
     }
   }
 
+  String deliveredPlan(String sessionId) {
+    Session session = require(sessionId);
+    synchronized (session.monitor) {
+      ensureCurrent(sessionId, session);
+      return session.lastPlanJson;
+    }
+  }
+
+  void saveDeliveredPlan(String sessionId, String planJson) {
+    Session session = require(sessionId);
+    synchronized (session.monitor) {
+      ensureCurrent(sessionId, session);
+      String previous = session.lastPlanJson;
+      session.lastPlanJson = planJson;
+      try {
+        persist(sessionId, session);
+      } catch (RuntimeException ex) {
+        session.lastPlanJson = previous;
+        throw ex;
+      }
+    }
+  }
+
   public SessionScope clear(String sessionId) {
     if (sessionId == null) return null;
     synchronized (lifecycleMonitor) {
@@ -297,6 +320,7 @@ public class AiConversationMemoryService {
       return;
     }
     Session session = new Session(record.getProjectId(), record.getTargetId(), maxMessages);
+    session.lastPlanJson = record.getLastPlanJson();
     try {
       List<PersistedTurn> persistedTurns =
           objectMapper.readValue(record.getTurnsJson(), new TypeReference<List<PersistedTurn>>() {});
@@ -322,6 +346,7 @@ public class AiConversationMemoryService {
       record.setProjectId(session.projectId);
       record.setTargetId(session.targetId);
       record.setLastAccess(session.lastAccess);
+      record.setLastPlanJson(session.lastPlanJson);
       record.setTurnsJson(
           objectMapper.writeValueAsString(
               session.turns.stream()
@@ -358,6 +383,7 @@ public class AiConversationMemoryService {
     private final Object monitor = new Object();
     private final ChatMemory memory;
     private final Deque<Turn> turns = new ArrayDeque<>();
+    private String lastPlanJson;
     private volatile Instant lastAccess = Instant.now();
 
     private Session(Long projectId, Long targetId, int maxMessages) {

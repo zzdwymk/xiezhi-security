@@ -70,9 +70,11 @@ public class TaskController {
 
   @PostMapping("/{id}/retry")
   @ResponseStatus(HttpStatus.ACCEPTED)
-  public SecurityTask retry(@PathVariable Long id) {
-    SecurityTask task = service.retry(id);
-    progressEvents.publish(task, "重试任务已进入本地执行队列");
+  public SecurityTask retry(@PathVariable Long id,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
+    SecurityTask task = idempotencyKey == null ? service.retry(id) : service.retry(id, idempotencyKey);
+    if (idempotencyKey != null) task = service.get(task.getId());
+    progressEvents.publish(task, task.getProgressMessage());
     return task;
   }
 

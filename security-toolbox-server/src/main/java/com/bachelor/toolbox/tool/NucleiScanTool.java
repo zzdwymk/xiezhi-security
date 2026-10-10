@@ -157,7 +157,7 @@ public class NucleiScanTool implements SecurityTool {
     assertExecutableIfAbsolute();
     if (selected.isEmpty() && !hasTemplates())
       throw new ApiException("未安装 Nuclei 模板，请先在依赖检测页面更新或重新安装 Nuclei");
-    Path targetList = createTargetList(target, host, canonicalPorts);
+    Path targetList = createTargetList(target, host, canonicalPorts, parameters);
     List<String> command =
         buildCommand(
             targetList,
@@ -169,22 +169,48 @@ public class NucleiScanTool implements SecurityTool {
     ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);
     Process process = ProcessEnvironmentSanitizer.sanitize(builder).start();
     try {
-      String outputText = waitFor(process, observer);
-      if (process.exitValue() != 0) {
-        throw new ApiException(
-            "Nuclei 执行失败，退出码 " + process.exitValue() + "：" + abbreviate(outputText, 500));
-      }
-      observer.progressPercent(100d, "Nuclei 扫描完成，正在解析匹配结果");
-      return parseOutput(host, canonicalPorts, outputText);
+      return executeProcess(process, host, canonicalPorts, observer);
     } finally {
       if (process.isAlive()) process.destroyForcibly();
       Files.deleteIfExists(targetList);
     }
   }
 
+  ToolExecutionResult executeProcess(
+      Process process, String host, String canonicalPorts, ToolExecutionObserver observer)
+      throws Exception {
+    String outputText;
+    try {
+      outputText = waitFor(process, observer);
+    } catch (NucleiOutputTimeoutException timeout) {
+      // Use the same parser and host/port guard as a completed scan. A scope violation
+      // rejects the entire output; it must not be relabeled as a harmless timeout.
+      ToolExecutionResult observed = parseOutput(host, canonicalPorts, timeout.output);
+      Map<String, Object> data = new LinkedHashMap<>(observed.data());
+      data.put("partial", true);
+      data.put("scanCompleted", false);
+      data.put("terminationReason", "TIMEOUT");
+      String summary = "Nuclei 扫描超时，未完整完成；已保留 " + observed.findings().size()
+          + " 项已观察匹配，未完成部分不能判断为无风险";
+      ToolExecutionTimeoutException failure = new ToolExecutionTimeoutException(
+          summary, new ToolExecutionResult(summary, data, observed.findings()));
+      failure.initCause(timeout);
+      throw failure;
+    }
+    if (process.exitValue() != 0) {
+      throw new ApiException(
+          "Nuclei 执行失败，退出码 " + process.exitValue() + "：" + abbreviate(outputText, 500));
+    }
+    validateCompletedOutput(outputText);
+    ToolExecutionResult result = parseOutput(host, canonicalPorts, outputText);
+    observer.progressPercent(100d, "Nuclei 扫描完成，正在解析匹配结果");
+    return result;
+  }
+
   String waitFor(Process process, ToolExecutionObserver observer) throws Exception {
+    StringBuffer capturedOutput = new StringBuffer();
     ExecutorService readerExecutor = Executors.newSingleThreadExecutor();
-    Future<String> output = readerExecutor.submit(() -> readLimited(process, observer));
+    Future<String> output = readerExecutor.submit(() -> readLimited(process, observer, capturedOutput));
     try {
       long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds);
       while (!process.waitFor(250, TimeUnit.MILLISECONDS)) {
@@ -198,13 +224,33 @@ public class NucleiScanTool implements SecurityTool {
         if (System.nanoTime() >= deadline) {
           process.destroyForcibly();
           process.waitFor(5, TimeUnit.SECONDS);
-          throw new java.util.concurrent.TimeoutException("Nuclei 扫描超过 " + timeoutSeconds + " 秒，已强制终止");
+          try {
+            // Drain output already written before termination, within a bounded wait.
+            output.get(1, TimeUnit.SECONDS);
+          } catch (java.util.concurrent.ExecutionException failure) {
+            // Closing a killed process's pipe may fail after valid complete lines.
+            // Output-limit, observer and authorization failures still fail closed.
+            if (!(failure.getCause() instanceof java.io.IOException)) throw failure;
+          } catch (java.util.concurrent.TimeoutException ignored) {
+            // The synchronized snapshot contains only lines the reader has obtained.
+          }
+          throw new NucleiOutputTimeoutException(
+              "Nuclei 扫描超过 " + timeoutSeconds + " 秒，已强制终止", capturedOutput.toString());
         }
       }
       return output.get(10, TimeUnit.SECONDS);
     } finally {
       if (process.isAlive()) process.destroyForcibly();
       readerExecutor.shutdownNow();
+    }
+  }
+
+  private static final class NucleiOutputTimeoutException extends java.util.concurrent.TimeoutException {
+    private final String output;
+
+    private NucleiOutputTimeoutException(String message, String output) {
+      super(message);
+      this.output = output;
     }
   }
 
@@ -241,6 +287,7 @@ public class NucleiScanTool implements SecurityTool {
             "-silent",
             "-jsonl",
             "-nc",
+            "-stats",
             "-stats-json",
             "-si",
             "1",
@@ -324,22 +371,91 @@ public class NucleiScanTool implements SecurityTool {
     return new ToolExecutionResult("Nuclei 扫描完成，匹配 " + total + " 项潜在问题", data, findings);
   }
 
-  private Path createTargetList(AuthorizedTarget target, String host, String canonicalPorts)
+  private void validateCompletedOutput(String output) {
+    JsonNode finalStats = null;
+    for (String line : output.split("\\R")) {
+      if (!line.stripLeading().startsWith("{")) continue;
+      JsonNode item;
+      try {
+        item = objectMapper.readTree(line);
+      } catch (Exception ex) {
+        throw new ApiException("Nuclei 返回的检测结果不完整，无法判断是否存在漏洞，请重试");
+      }
+      if (item.has("template-id")) {
+        if (item.path("template-id").asText("").isBlank()
+            || item.path("matched-at").asText(item.path("host").asText("")).isBlank()) {
+          throw new ApiException("Nuclei 返回的检测结果不完整，无法判断是否存在漏洞，请重试");
+        }
+      } else if (item.has("requests") || item.has("templates")) {
+        finalStats = item;
+      }
+    }
+    if (finalStats == null) {
+      throw new ApiException("Nuclei 未提供有效的执行记录，无法确认检测是否完成，请检查扫描器后重试");
+    }
+    long templates = executionCount(finalStats, "templates");
+    long hosts = executionCount(finalStats, "hosts");
+    long requests = executionCount(finalStats, "requests");
+    long errors = executionCount(finalStats, "errors");
+    if (templates == 0 || hosts == 0 || requests == 0) {
+      throw new ApiException("Nuclei 没有实际执行有效检测，请确认目标已启动、地址可访问且已选择可用规则后重试");
+    }
+    // Nuclei also increments requests for failed/skipped requests; exit code 0 and
+    // 100% progress therefore do not demonstrate that the target responded.
+    if (errors > 0) {
+      throw new ApiException("Nuclei 检测过程中有请求失败，本次检测未完整完成，不能据此判断目标没有漏洞。请确认目标已开机、网站已启动且网络可达后重试");
+    }
+  }
+
+  private long executionCount(JsonNode stats, String field) {
+    String value = stats.path(field).asText("");
+    if (!value.matches("0|[1-9][0-9]{0,17}")) {
+      throw new ApiException("Nuclei 执行记录不完整，无法确认检测是否完成，请重试");
+    }
+    return Long.parseLong(value);
+  }
+
+  private Path createTargetList(AuthorizedTarget target, String host, String canonicalPorts,
+      Map<String, Object> parameters)
       throws Exception {
+    List<String> targets = targetEntries(target, host, canonicalPorts, parameters);
     Path file = Files.createTempFile("secbox-nuclei-targets-", ".txt");
+    Files.write(file, targets, StandardCharsets.UTF_8);
+    return file;
+  }
+
+  List<String> targetEntries(AuthorizedTarget target, String host, String canonicalPorts,
+      Map<String, Object> parameters) {
     List<String> targets = new ArrayList<>();
+    List<URI> resolvedBases = WebTargetResolver.basesFromParameters(parameters);
+    Object rawBases = parameters == null ? null : parameters.get(WebTargetResolver.PARAM_RESOLVED_BASES);
+    if (rawBases != null && (!(rawBases instanceof List<?> values) || values.size() != resolvedBases.size())) {
+      throw new ApiException("Nuclei 目标地址格式异常，请重新选择授权目标");
+    }
+    if (!resolvedBases.isEmpty()) {
+      for (URI base : resolvedBases) {
+        if (!("http".equalsIgnoreCase(base.getScheme()) || "https".equalsIgnoreCase(base.getScheme()))
+            || base.getRawUserInfo() != null || base.getRawFragment() != null
+            || (base.getPort() != -1 && (base.getPort() < 1 || base.getPort() > 65535))
+            || !authorizedMatch(host, canonicalPorts, base.toString())) {
+          throw new ApiException("Nuclei 检测地址不在授权主机和端口范围内，请重新选择目标");
+        }
+        targets.add(base.toString());
+      }
+      return targets.stream().distinct().toList();
+    }
     String value = target.getTargetValue();
     if (value.startsWith("http://") || value.startsWith("https://")) {
       targets.add(policy.validatedHttpUri(target).toString());
     } else {
       String safeHost = host.contains(":") ? "[" + host + "]" : host;
       for (Integer port : ports.parse(canonicalPorts, maxPorts)) {
-        targets.add("http://" + safeHost + ":" + port);
-        targets.add("https://" + safeHost + ":" + port);
+        // Let Nuclei choose the working HTTP scheme for this authorized port.
+        // Sending both explicit schemes makes normal HTTP-only services fail TLS.
+        targets.add(safeHost + ":" + port);
       }
     }
-    Files.write(file, targets, StandardCharsets.UTF_8);
-    return file;
+    return targets;
   }
 
   private void assertExecutableIfAbsolute() {
@@ -388,14 +504,14 @@ public class NucleiScanTool implements SecurityTool {
     }
   }
 
-  private String readLimited(Process process, ToolExecutionObserver observer) throws Exception {
-    StringBuilder output = new StringBuilder();
+  private String readLimited(
+      Process process, ToolExecutionObserver observer, StringBuffer output) throws Exception {
     try (BufferedReader reader =
         new BufferedReader(
             new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
       String line;
       while ((line = reader.readLine()) != null) {
-        if (output.length() + line.length() > MAX_OUTPUT_CHARS) {
+        if (output.length() + line.length() + 1 > MAX_OUTPUT_CHARS) {
           process.destroyForcibly();
           throw new ApiException("Nuclei 输出超过安全大小限制");
         }

@@ -221,10 +221,10 @@ async function pickSelect(page, selectLocator, keyword, { preferType = null } = 
       return `发起提示="${msg.text}"`;
     }, { page, shotOnPass: true });
 
-    await H.run("V-09", "等待 sqlmap 任务完成并在「结果中心」确认 HIGH SQL 注入发现", async () => {
-      await navigate(page, "结果中心");
+    await H.run("V-09", "等待 sqlmap 任务完成并在「安全发现」确认 HIGH SQL 注入发现", async () => {
+      await navigate(page, "安全发现");
       await settle(page, 1500);
-      // sqlmap 可能耗时较长；在结果中心轮询含 SQL 注入的 HIGH 记录（最多 ~6 分钟）。
+      // sqlmap 可能耗时较长；在安全发现轮询含 SQL 注入的 HIGH 记录（最多 ~6 分钟）。
       const deadline = Date.now() + 6 * 60 * 1000;
       let hit = null;
       while (Date.now() < deadline) {
@@ -241,7 +241,7 @@ async function pickSelect(page, selectLocator, keyword, { preferType = null } = 
         if (hit) break;
         await sleep(5000);
       }
-      if (!hit) throw new Error("超时未在结果中心看到 HIGH 级 SQL 注入发现");
+      if (!hit) throw new Error("超时未在安全发现看到 HIGH 级 SQL 注入发现");
       return `发现命中：${hit.slice(0, 90)}`;
     }, { page, shotOnPass: true });
 
