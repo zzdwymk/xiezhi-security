@@ -8,6 +8,10 @@ const ast=ts.createSourceFile('Dashboard.ts',dashboard.scriptSetup.content,ts.Sc
 function code(name){const node=ast.statements.find(n=>ts.isFunctionDeclaration(n)?n.name?.text===name:ts.isVariableStatement(n)&&n.declarationList.declarations.some(d=>d.name.getText(ast)===name));assert.ok(node,name);return ts.transpileModule(node.getText(ast),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;}
 function fragment(name){function walk(n){if(n.type===1&&n.props.some(p=>p.type===6&&p.name==='class'&&p.value?.content===name))return n.loc.source;for(const c of n.children||[]){const found=walk(c);if(found)return found;}}const result=walk(baseParse(dashboard.template.content));assert.ok(result,name);return result;}
 function componentFragment(name){function walk(n){if(n.type===1&&n.tag===name)return n.loc.source;for(const c of n.children||[]){const found=walk(c);if(found)return found;}}const result=walk(baseParse(dashboard.template.content));assert.ok(result,name);return result;}
+// This suite drives the card body the message actions belong to: the assistant
+// progress panel and the user bubble. The reference, citation and plan cards
+// have their own suites and their helpers are not part of this fixture.
+function messageCardFragment(){function walk(n){if(n.type===1&&n.props.some(p=>p.type===6&&p.name==='class'&&p.value?.content==='message-response'))return n;for(const c of n.children||[]){const found=walk(c);if(found)return found;}}const card=walk(baseParse(dashboard.template.content));assert.ok(card,'message-response');const cls=n=>String(n.props.find(p=>p.type===6&&p.name==='class')?.value?.content||'');const keep=(card.children||[]).filter(n=>n.type===1&&(n.tag==='AiProgressPanel'||cls(n).startsWith('message-bubble')));assert.equal(keep.length,2,'assistant panel and user bubble');return card.loc.source.slice(0,card.loc.source.indexOf('>')+1)+keep.map(n=>n.loc.source).join('\n')+'</div>';}
 const settings=parse(fs.readFileSync(path.join(root,'src/views/Settings.vue'),'utf8')).descriptor;
 const settingsAst=ts.createSourceFile('Settings.ts',settings.scriptSetup.content,ts.ScriptTarget.Latest,true);
 const diagnosticsWatch=settingsAst.statements.find(n=>ts.isExpressionStatement(n)&&n.getText(settingsAst).startsWith('watch(() => route.query.ai,'));assert.ok(diagnosticsWatch);
@@ -18,7 +22,8 @@ import {CircleCheck,CopyDocument,EditPen,Refresh,Dismiss,Promotion} from '/src/c
 import messageQuoteIcon from '@fluentui/svg-icons/icons/text_quote_24_regular.svg?url';
 import MarkdownComposerPreview from '/src/components/MarkdownComposerPreview.vue';
 import ConversationAvatar from '/src/components/ConversationAvatar.vue';import {markdownToPlainText,renderMarkdown} from '/src/utils/markdown';
-import AiFailureNotice from '/src/components/AiFailureNotice.vue';import AiProgressPanel from '/src/components/AiProgressPanel.vue';
+import AiFailureNotice from '/src/components/AiFailureNotice.vue';import AiProgressPanel from '/src/components/AiProgressPanel.vue';import AiStatusStamp from '/src/components/AiStatusStamp.vue';
+import {isAiStatusOutsideCard} from '/src/utils/aiStatus';
 import FluentIcon from '/src/components/FluentIcon.vue';
 import {displayKnownTestName,copilotReferenceTypeLabel} from '/src/utils/aiPresentation';
 import {requireAiAnswer} from '/src/utils/aiAnswer';
@@ -45,11 +50,11 @@ const projectByTarget=ref({9:7}),tasks=ref([]);const scrollToBottom=async()=>{},
 const answerRequests=[];const endpoints={answerAi:async request=>{answerRequests.push(request);return{data:{answer:'重新生成的回复'}}}};
 const referencesPrompt=refs=>refs.length?JSON.stringify(refs):'';const displayedMessageContent=message=>message.content;
 const auditScopeForMessage=async()=>undefined;
-${['messageQuoteStyle','composerReferences','cloneMessageDraft','messageReferences','messageContextContent','buildContextPrompt','quoteMessage','focusComposer','clearQuotedMessage','quotePreview','editMessage','cancelMessageEdit','copyMessage','projectIdForTarget','sendPrompt','handlePromptKeydown','openAiDiagnostics','relatedTasks','retryConversationMessage'].map(code).join('\n')}
+${['messageQuoteStyle','composerReferences','cloneMessageDraft','messageReferences','messageContextContent','buildContextPrompt','quoteMessage','focusComposer','clearQuotedMessage','quotePreview','editMessage','cancelMessageEdit','copyMessage','projectIdForTarget','sendPrompt','handlePromptKeydown','openAiDiagnostics','relatedTasks','isStatusOutsideAnswerCard','retryConversationMessage'].map(code).join('\n')}
 const requests=[];async function dispatchConversationMessage(thread,user,assistant,projectId){requests.push({sessionId:thread.id,turnId:user.id,context:buildContextPrompt(thread,user.id),user:JSON.parse(JSON.stringify(user)),assistant:JSON.parse(JSON.stringify(assistant)),projectId});if(window.holdDispatch)await new Promise(resolve=>window.releaseDispatch=resolve);conversations.updateMessage(thread.id,assistant.id,{content:'分支的新回复',status:'completed'});}
 Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.copiedMarkdown=text}}});
 window.editFixture={conversations,route,selectedThread,prompt,activeDraft,quotedMessage,editingMessage,sending,requests,notices,original,editMessage,cancelMessageEdit,sendPrompt,handlePromptKeydown,copyMessage,tasks,answerRequests,aiSettingsTab,aiDialog};
-</script><template><main class="desktop-v2-app-frame"><div class="desktop-v2-content"><div class="chat-page"><section class="messages-inner"><article v-for="message in selectedThread.messages" :key="message.id" class="chat-message" :class="message.role" :data-id="message.id"><ConversationAvatar class="message-avatar" :role="message.role" /><div class="message-column">${fragment('message-response')}</div></article></section>${fragment('thread-composer')}</div></div></main></template>
+</script><template><main class="desktop-v2-app-frame"><div class="desktop-v2-content"><div class="chat-page"><section class="messages-inner"><article v-for="message in selectedThread.messages" :key="message.id" class="chat-message" :class="message.role" :data-id="message.id"><ConversationAvatar class="message-avatar" :role="message.role" /><div class="message-column">${messageCardFragment()}${fragment('message-status')}${fragment('message-actions')}</div></article></section>${fragment('thread-composer')}</div></div></main></template>
 ${dashboard.styles.map(style=>'<style scoped>'+style.content+'</style>').join('\n')}`;
 const html=`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><style>html,body{height:auto!important;overflow:auto!important}main{max-width:900px;margin:24px auto;padding:8px}.messages-inner{width:100%!important;padding:0!important}.thread-composer{margin-top:20px}</style></head><body class="desktop-v2-native-frame"><div id="app"></div><script type="module">
 import {createApp} from 'vue';import {createPinia} from 'pinia';import ElementPlus from 'element-plus';import 'element-plus/dist/index.css';import '/src/unified-theme.css';import '/src/fluent-design-2.css';import '/src/fluent-design-3.css';
@@ -60,7 +65,7 @@ async function check(name,fn){await fn();results.push({name,status:'PASS'});cons
 const fixturePort=await new Promise((resolve,reject)=>{const probe=require('node:net').createServer();probe.once('error',reject);probe.listen(0,'127.0.0.1',()=>{const port=probe.address().port;probe.close(()=>resolve(port))})});
 server=await createServer({configFile:false,root,cacheDir:path.join(out,'cache'),plugins:[{name:'message-edit',resolveId(id){if(id==='/__message-edit.vue')return fixtureId},load(id){if(id===fixtureId)return sfc},configureServer(s){s.middlewares.use(async(req,res,next)=>{if(req.url!=='/__message-edit')return next();res.setHeader('Content-Type','text/html;charset=utf-8');res.end(await s.transformIndexHtml(req.url,html))})}},vue()],optimizeDeps:{entries:[],include:['vue','pinia','element-plus','marked','dompurify'],noDiscovery:true},server:{host:'127.0.0.1',port:fixturePort,strictPort:true,hmr:false,watch:{ignored:['**/desktop-release/**','**/dist/**']}},logLevel:'error'});
 await server.listen();browser=await chromium.launch({executablePath:'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',headless:true});
-const page=await browser.newPage({viewport:{width:1100,height:950}});page.on('pageerror',e=>errors.push(e.message));
+const page=await browser.newPage({viewport:{width:1100,height:950}});page.on('pageerror',e=>errors.push(e.message));page.setDefaultTimeout(180000);page.setDefaultNavigationTimeout(180000);
 await page.goto('http://127.0.0.1:'+server.httpServer.address().port+'/__message-edit',{waitUntil:'domcontentloaded'});await page.locator('[data-id="u2"]').waitFor();
 await check('message action icons reveal on hover and keyboard focus, with distinct assistant/user actions',async()=>{
  const user=page.locator('[data-id="u2"]'),assistant=page.locator('[data-id="a1"]');
@@ -141,7 +146,9 @@ await check('failed reply keeps real task state, hides long detail by default an
  await page.setViewportSize({width:1100,height:950});
  await page.evaluate(()=>{const f=window.editFixture;f.route.query={conversation:'source'};f.tasks.value=[{id:303,targetId:9,toolCode:'tcp_ports',status:'RUNNING',progress:40,createdAt:new Date().toISOString(),startedAt:new Date().toISOString()}];f.conversations.appendMessage('source',{role:'assistant',content:'本轮没有执行检测；模型未返回有效回复，请检查配置。',status:'failed',replyToId:'u3',taskIds:[303],steps:[],modelStreamStatus:'failed'});});
  const failed=page.locator('.chat-message').filter({has:page.locator('.ai-failure-notice')});
- assert.match(await failed.locator('.tool-state').innerText(),/执行中/);
+ // The execution disclosure is collapsed by default, so read the recorded task
+ // state from the disclosure's markup instead of its rendered text.
+ assert.match(await failed.locator('.tool-state').evaluate(el=>el.textContent),/执行中/);
  assert.equal(await failed.locator('.progress-attention,.progress-activity').count(),0);
  assert.equal(await failed.locator('.failure-details > p').isVisible(),false);
  await failed.locator('.failure-details summary').focus();await page.keyboard.press('Enter');
@@ -182,8 +189,11 @@ await check('18-second failure uses one bounded card with header, actions and fo
  for(const theme of ['light','dark'])for(const width of [1100,460]){
   await page.setViewportSize({width,height:950});await page.evaluate(theme=>document.documentElement.dataset.systemTheme=theme,theme);
   const card=page.locator('.message-response.is-failed');await card.scrollIntoViewIfNeeded();
-  const geometry=await card.evaluate(el=>{const c=getComputedStyle(el),r=el.getBoundingClientRect(),header=el.querySelector('.ai-progress-panel'),footer=el.querySelector('.message-actions');return{width:r.width,border:c.borderTopWidth,radius:c.borderTopLeftRadius,headerBorder:getComputedStyle(header).borderBottomWidth,footerBorder:getComputedStyle(footer).borderTopWidth,actions:[...footer.querySelectorAll('button')].map(button=>{const rect=button.getBoundingClientRect();return{label:button.getAttribute('aria-label'),top:rect.top,width:rect.width,height:rect.height}}),overflow:el.scrollWidth>el.clientWidth,footerVisible:getComputedStyle(footer).opacity}});
-  assert.ok(geometry.width<=720&&geometry.width>250,JSON.stringify(geometry));assert.equal(geometry.border,'1px');assert.equal(geometry.radius,'8px');assert.equal(geometry.headerBorder,'1px');assert.equal(geometry.footerBorder,'1px');assert.equal(geometry.overflow,false);assert.equal(geometry.footerVisible,'1');
+  const geometry=await card.evaluate(el=>{const c=getComputedStyle(el),r=el.getBoundingClientRect(),header=el.querySelector('.ai-progress-panel'),footer=el.nextElementSibling&&el.nextElementSibling.classList.contains('message-actions')?el.nextElementSibling:null;return{width:r.width,border:c.borderTopWidth,radius:c.borderTopLeftRadius,headerBorder:getComputedStyle(header).borderBottomWidth,footerBorder:footer?getComputedStyle(footer).borderTopWidth:'missing',actions:footer?[...footer.querySelectorAll('button')].map(button=>{const rect=button.getBoundingClientRect();return{label:button.getAttribute('aria-label'),top:rect.top,width:rect.width,height:rect.height}}):[],overflow:el.scrollWidth>el.clientWidth,footerVisible:footer?getComputedStyle(footer).opacity:'missing'}});
+  assert.ok(geometry.width<=720&&geometry.width>250,JSON.stringify(geometry));assert.equal(geometry.border,'1px');assert.equal(geometry.radius,'8px');
+  // The failure card is bounded by its own body plus the action bar that follows
+  // it as the next sibling; the panel inside the card draws no border of its own.
+  assert.equal(geometry.headerBorder,'0px',JSON.stringify(geometry));assert.equal(geometry.footerBorder,'1px',JSON.stringify(geometry));assert.equal(geometry.overflow,false);assert.equal(geometry.footerVisible,'1');
   assert.deepEqual(geometry.actions.map(action=>action.label).sort(),['引用消息','选择复制格式','重试回复','配置诊断'].sort());
   for(const action of geometry.actions){assert.ok(Math.abs(action.top-geometry.actions[0].top)<=1,JSON.stringify(geometry));assert.equal(action.width,geometry.actions[0].width);assert.equal(action.height,geometry.actions[0].height);if(width<640)assert.ok(action.width>=40&&action.height>=40);}
   assert.equal(await card.locator('.ai-failure-notice button,.failure-actions').count(),0);

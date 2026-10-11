@@ -13,9 +13,11 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Deque;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -71,15 +73,38 @@ public class AiConversationMemoryService {
       throw new ApiException("AI 会话编号格式不合法");
     }
     Session session;
+    List<RuntimeCleanup> pendingCleanups;
     synchronized (lifecycleMonitor) {
-      evictExpired();
+      // evictExpired 由 open() 在每一轮对话中调用，而这里持有全局 lifecycleMonitor。
+      // 它只负责在锁内登记待清理项，真正的 HTTP 清理必须等出锁后再做，
+      // 否则一次慢调用就会占住全局锁，阻塞所有会话的对话。
+      pendingCleanups = evictExpired();
       if (!sessions.containsKey(id)) {
         loadPersisted(id);
       }
       if (!sessions.containsKey(id)) {
-        evictAtCapacity();
+        pendingCleanups.addAll(evictAtCapacity());
       }
-      session = sessions.computeIfAbsent(id, ignored -> new Session(projectId, targetId, maxMessages));
+      Session existing = sessions.get(id);
+      if (existing != null) {
+        session = existing;
+      } else {
+        // 先落库再登记：若 persist 抛错，绝不能把这个空的 Session 留在 sessions 里。
+        // 否则重试时第 76 行判断为"已存在"而跳过 loadPersisted，历史会被空列表覆盖，
+        // 造成静默的上下文丢失。
+        Session created = new Session(projectId, targetId, maxMessages);
+        synchronized (created.monitor) {
+          created.lastAccess = Instant.now();
+          try {
+            persist(id, created);
+          } catch (RuntimeException ex) {
+            sessions.remove(id, created);
+            throw ex;
+          }
+          sessions.put(id, created);
+        }
+        session = created;
+      }
       synchronized (session.monitor) {
         if (!projectId.equals(session.projectId) || !targetId.equals(session.targetId)) {
           throw new ApiException("AI 会话已绑定其他项目或目标，请新建会话");
@@ -88,6 +113,8 @@ public class AiConversationMemoryService {
         persist(id, session);
       }
     }
+    // 已出锁：此时才真正发起运行时记忆清理。
+    flushRuntimeCleanups(pendingCleanups);
     return new SessionHandle(id, session.monitor, session.projectId, session.targetId);
   }
 
@@ -97,15 +124,19 @@ public class AiConversationMemoryService {
       ensureCurrent(sessionId, session);
       session.lastAccess = Instant.now();
       StringBuilder output = new StringBuilder();
+      boolean truncated = false;
       for (Turn turn : session.turns) {
         String line = (turn.user ? "用户" : "助手") + "：" + turn.text + "\n";
         if (output.length() + line.length() > MAX_TRANSCRIPT_CHARS) {
-          int remaining = MAX_TRANSCRIPT_CHARS - output.length();
-          if (remaining > 0) output.append(line, 0, Math.min(remaining, line.length()));
+          // 不再截半行：被切断的句子会被当作"有效历史"拼进规划提示词发给模型，
+          // 让模型看到一段没有上下文、可能断在字符中间的伪造历史。
+          // 宁可整轮丢弃，并显式标注已截断。
+          truncated = true;
           break;
         }
         output.append(line);
       }
+      if (truncated) output.append("（历史较长，较早的内容已省略）\n");
       persist(sessionId, session);
       return output.toString().strip();
     }
@@ -245,8 +276,14 @@ public class AiConversationMemoryService {
     if (sessions.get(id) != session) throw new ApiException("AI 会话不存在或已过期");
   }
 
-  private void evictExpired() {
+  private List<RuntimeCleanup> evictExpired() {
     Instant threshold = Instant.now().minus(ttl);
+    // clearRuntimeMemory 会同步调用 AI Runtime 的索引清理接口（读超时可达 120 秒）。
+    // 它必须在所有锁之外执行：evictExpired 由 open() 在每一轮对话中调用，
+    // 而 open() 本身持有 lifecycleMonitor。若在这里同步发 HTTP，一次慢调用就会
+    // 占住这个全局锁，阻塞所有会话的对话（与 clear() 曾出现的缺陷同一类）。
+    // 因此先在锁内收集待清理项，出锁后统一处理。
+    List<RuntimeCleanup> cleanups = new ArrayList<>();
     for (Map.Entry<String, Session> entry : sessions.entrySet()) {
       String id = entry.getKey();
       Session session = entry.getValue();
@@ -255,22 +292,32 @@ public class AiConversationMemoryService {
         if (sessions.get(id) != session || !session.lastAccess.isBefore(threshold)) continue;
         if (sessions.remove(id, session)) {
           deletePersisted(id);
-          clearRuntimeMemory(session.projectId, id);
+          cleanups.add(new RuntimeCleanup(session.projectId, id));
         }
       }
     }
     if (repository != null) {
+      // 同一会话可能既在内存中被移除、又出现在这条持久化查询里（deletePersisted 之后
+      // 查询结果仍可能是移除前的快照）。用 already 去重，避免对同一会话重复发起清理。
+      Set<String> already = new HashSet<>();
+      for (RuntimeCleanup cleanup : cleanups) already.add(cleanup.sessionId());
       repository.findByLastAccessBefore(threshold).stream()
           .filter(record -> !sessions.containsKey(record.getId()))
+          .filter(record -> already.add(record.getId()))
           .forEach(
               record -> {
                 repository.delete(record);
-                clearRuntimeMemory(record.getProjectId(), record.getId());
+                cleanups.add(new RuntimeCleanup(record.getProjectId(), record.getId()));
               });
     }
+    return cleanups;
   }
 
-  private void evictAtCapacity() {
+  /** 待清理的运行时记忆：锁内只登记，锁外才真正发起 HTTP。 */
+  private record RuntimeCleanup(long projectId, String sessionId) {}
+
+  private List<RuntimeCleanup> evictAtCapacity() {
+    List<RuntimeCleanup> cleanups = new ArrayList<>();
     if (repository != null) {
       while (repository.count() >= maxSessions) {
         AiConversationSessionRecord oldest =
@@ -279,7 +326,7 @@ public class AiConversationMemoryService {
         Session session = sessions.get(oldest.getId());
         if (session == null) {
           repository.delete(oldest);
-          clearRuntimeMemory(oldest.getProjectId(), oldest.getId());
+          cleanups.add(new RuntimeCleanup(oldest.getProjectId(), oldest.getId()));
           continue;
         }
         synchronized (session.monitor) {
@@ -290,11 +337,12 @@ public class AiConversationMemoryService {
           if (!oldest.getId().equals(refreshedOldest.getId())) continue;
           if (sessions.remove(oldest.getId(), session)) {
             repository.delete(refreshedOldest);
-            clearRuntimeMemory(refreshedOldest.getProjectId(), refreshedOldest.getId());
+            cleanups.add(
+                new RuntimeCleanup(refreshedOldest.getProjectId(), refreshedOldest.getId()));
           }
         }
       }
-      return;
+      return cleanups;
     }
     while (sessions.size() >= maxSessions) {
       Map.Entry<String, Session> oldest =
@@ -312,9 +360,17 @@ public class AiConversationMemoryService {
         if (refreshedOldest == null) break;
         if (refreshedOldest.getValue() != session) continue;
         if (sessions.remove(oldest.getKey(), session)) {
-          clearRuntimeMemory(session.projectId, oldest.getKey());
+          cleanups.add(new RuntimeCleanup(session.projectId, oldest.getKey()));
         }
       }
+    }
+    return cleanups;
+  }
+
+  /** 在锁外统一执行运行时记忆清理，避免阻塞 lifecycleMonitor / session.monitor。 */
+  private void flushRuntimeCleanups(List<RuntimeCleanup> cleanups) {
+    for (RuntimeCleanup cleanup : cleanups) {
+      clearRuntimeMemory(cleanup.projectId(), cleanup.sessionId());
     }
   }
 

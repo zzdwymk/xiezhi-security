@@ -200,6 +200,7 @@ function decodeResponse(raw, contentType, mode) {
 // but healthy model response is not mistaken for an upstream outage.
 function createAiRelay({providers = [], fetchImpl = globalThis.fetch, attemptTimeoutMs = 120000, totalTimeoutMs = 150000, cooldownMs = 5000} = {}) {
   let entries = normalize(providers), cursor = 0, server = null, baseUrl = null
+  let forcedCoolingAttempts = 0
   const apiKey = randomBytes(32).toString('hex')
   const controllers = new Set()
   async function attempt(provider, body, messages, timeoutMs, requestSignal) {
@@ -239,13 +240,24 @@ function createAiRelay({providers = [], fetchImpl = globalThis.fetch, attemptTim
     // Keep a generation snapshot: edits cannot alter an in-flight request or its counters.
     const generation = entries, enabled = generation.filter(e => e.provider.enabled)
     if (!enabled.length) throw new RelayError('no_enabled_providers')
-    if (enabled.every(e => e.cooldownUntil > Date.now())) throw new RelayError('all_providers_cooling_down')
-    const start = enabled.length ? cursor++ % enabled.length : 0
-    const candidates = enabled.slice(start).concat(enabled.slice(0, start))
+    // 冷却中的提供方在正常情况下应被跳过（避免对刚失败的上游连续重试）。
+    // 但若**全部**提供方都在冷却中，直接抛 all_providers_cooling_down 会让用户
+    // 在几百毫秒内看到"模型服务暂时不可用"——上游可能只是抖了一下，
+    // 模型根本没被调用过。此时改为忽略冷却、照常尝试：失败判定交给 attempt，
+    // 只有上游确实再次失败才真正报错。
+    const ready = enabled.filter(e => !(e.cooldownUntil > Date.now()))
+    const cooling = enabled.filter(e => e.cooldownUntil > Date.now())
+    const pool = ready.length ? ready : enabled
+    const start = pool.length ? cursor++ % pool.length : 0
+    const candidates = pool.slice(start).concat(pool.slice(0, start))
+    if (!ready.length && cooling.length) {
+      // 记录一次"冷却期内强制尝试"，便于诊断区分"上游抖动"与"持续故障"。
+      forcedCoolingAttempts++
+    }
     const deadline = Date.now() + totalTimeoutMs
     for (const entry of candidates) {
       if (requestSignal?.aborted) throw new RelayError('request_cancelled')
-      if (entry.cooldownUntil > Date.now() || Date.now() >= deadline) continue
+      if (Date.now() >= deadline) break
       const began = Date.now()
       entry.requests++
       try {
@@ -310,7 +322,7 @@ function createAiRelay({providers = [], fetchImpl = globalThis.fetch, attemptTim
       return {baseUrl, apiKey}
     },
     setProviders(providers) { entries = normalize(providers); cursor = 0 },
-    status() { return {running: Boolean(server?.listening), providers: entries.map(({provider, ...stats}) => ({id: provider.id, name: provider.name, enabled: provider.enabled, ...stats}))} },
+    status() { return {running: Boolean(server?.listening), forcedCoolingAttempts, providers: entries.map(({provider, ...stats}) => ({id: provider.id, name: provider.name, enabled: provider.enabled, ...stats}))} },
     async testProvider(provider, prompt = '你好，请简短介绍自己。') {
       const began = Date.now()
       try {

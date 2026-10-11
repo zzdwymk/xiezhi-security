@@ -173,6 +173,118 @@ class AiConversationMemoryServiceTests {
   }
 
   @Test
+  void evictionDoesNotHoldLocksWhileClearingRuntimeMemory() throws Exception {
+    // 回归：evictExpired() 由 open() 在每一轮对话中调用，而 open() 持有
+    // lifecycleMonitor。若在其中同步调用 AI Runtime 的清理接口，一次慢调用就会
+    // 占住这个全局锁，阻塞所有会话的对话。
+    RepositoryFixture fixture = new RepositoryFixture();
+    AiAgentRuntimeClient runtime = mock(AiAgentRuntimeClient.class);
+    CountDownLatch runtimeEntered = new CountDownLatch(1);
+    CountDownLatch releaseRuntime = new CountDownLatch(1);
+    doAnswer(
+            invocation -> {
+              runtimeEntered.countDown();
+              await(releaseRuntime);
+              return 1;
+            })
+        .when(runtime)
+        .clearConversationMemories(any(Long.class), any(String.class));
+    AiConversationMemoryService memory = fixture.service(runtime, 20, 5);
+    AiConversationMemoryService.SessionHandle stale = memory.open("evict-slow", 81L, 82L);
+    Instant expired = Instant.now().minus(6, ChronoUnit.MINUTES);
+    setLastAccess(memory, stale.id(), expired);
+    fixture.records.get(stale.id()).setLastAccess(expired);
+
+    // 只让第一次运行时清理卡住：后续调用直接返回，避免测试自身互相等待。
+    java.util.concurrent.atomic.AtomicBoolean firstCall =
+        new java.util.concurrent.atomic.AtomicBoolean(true);
+    doAnswer(
+            invocation -> {
+              if (firstCall.compareAndSet(true, false)) {
+                runtimeEntered.countDown();
+                awaitLong(releaseRuntime, 20);
+              }
+              return 1;
+            })
+        .when(runtime)
+        .clearConversationMemories(any(Long.class), any(String.class));
+
+    ExecutorService workers = Executors.newFixedThreadPool(3);
+    try {
+      Future<AiConversationMemoryService.SessionHandle> opening =
+          workers.submit(() -> memory.open("evict-trigger", 91L, 92L));
+      assertThat(runtimeEntered.await(5, TimeUnit.SECONDS))
+          .as("淘汰过期会话时应发起运行时清理")
+          .isTrue();
+
+      // 运行时清理仍在进行时，另一个会话必须能立刻打开（全局锁未被占住）。
+      // 注意 await() 内部等待上限为 2 秒，因此这里必须尽快放行运行时调用。
+      Future<AiConversationMemoryService.SessionHandle> other =
+          workers.submit(() -> memory.open("evict-other", 93L, 94L));
+      assertThat(other.get(5, TimeUnit.SECONDS)).isNotNull();
+      releaseRuntime.countDown();
+      assertThat(opening.get(5, TimeUnit.SECONDS)).isNotNull();
+    } finally {
+      releaseRuntime.countDown();
+      workers.shutdownNow();
+    }
+  }
+
+  @Test
+  void failedPersistDoesNotLeaveHalfCreatedSessionBehind() {
+    // 回归：open() 曾先用 computeIfAbsent 把 Session 登记进 sessions，再调用 persist()。
+    // 若 persist 失败，这个空会话会残留；重试时因"已存在"而跳过 loadPersisted，
+    // 历史会被空列表覆盖，造成静默的上下文丢失。
+    RepositoryFixture fixture = new RepositoryFixture();
+    AiAgentRuntimeClient runtime = mock(AiAgentRuntimeClient.class);
+    AiConversationMemoryService memory = fixture.service(runtime);
+    memory.open("persist-fail", 101L, 102L);
+    memory.addUser("persist-fail", "重要上下文");
+    memory.addAssistant("persist-fail", "重要回答");
+    assertThat(fixture.records.get("persist-fail").getTurnsJson()).contains("重要上下文");
+
+    // 另开一个会话，并让它的首次落库失败。
+    fixture.failNextSave.set(true);
+    assertThatThrownBy(() -> memory.open("half-created", 103L, 104L))
+        .isInstanceOf(ApiException.class);
+
+    // 失败后不能残留内存会话：重新打开必须是全新的空会话，而不是"半成品"。
+    AiConversationMemoryService.SessionHandle reopened = memory.open("half-created", 103L, 104L);
+    assertThat(reopened.projectId()).isEqualTo(103L);
+    assertThat(memory.transcript(reopened.id())).isEmpty();
+    assertThat(fixture.records).containsKey("half-created");
+  }
+
+  @Test
+  void transcriptDropsWholeTurnInsteadOfSlicingItMidway() {
+    // 回归：历史超长时曾把当前这一行"截半"追加，半句话会被当作有效历史
+    // 拼进规划提示词发给模型。现在应当整轮丢弃并显式标注已截断。
+    AiConversationMemoryService memory = new AiConversationMemoryService(200, 20, 120);
+    memory.open("long-history", 1L, 2L);
+    String longTurn = "A".repeat(3800);
+    for (int i = 0; i < 4; i++) {
+      memory.addUser("long-history", longTurn + "-" + i);
+      memory.addAssistant("long-history", longTurn + "-" + i);
+    }
+
+    String transcript = memory.transcript("long-history");
+
+    assertThat(transcript).contains("历史较长，较早的内容已省略");
+    // 不能以半行结尾：每条完整记录的结尾都是换行后被 strip 掉的完整句子，
+    // 因此不允许出现"被截断的 3800 字长句"这种中间态。
+    assertThat(transcript.length()).isLessThanOrEqualTo(8000 + 40);
+    for (String line : transcript.split("\n")) {
+      if (line.startsWith("用户：") || line.startsWith("助手：")) {
+        String body = line.substring(3);
+        assertThat(body.endsWith("历史较长，较早的内容已省略"))
+            .as("每一行都必须是完整记录或省略标记")
+            .isFalse();
+        assertThat(body).matches(".*-\\d$");
+      }
+    }
+  }
+
+  @Test
   void restoresScopedConversationAfterServiceRestart() {
     RepositoryFixture fixture = new RepositoryFixture();
     AiAgentRuntimeClient runtime = mock(AiAgentRuntimeClient.class);
@@ -322,6 +434,17 @@ class AiConversationMemoryServiceTests {
     }
   }
 
+  /** 与 await 相同，但等待上限更长，供需要跨多步验证的并发用例使用。 */
+  private void awaitLong(CountDownLatch latch, long seconds) {
+    try {
+      if (!latch.await(seconds, TimeUnit.SECONDS))
+        throw new AssertionError("timed out waiting for latch");
+    } catch (InterruptedException ex) {
+      Thread.currentThread().interrupt();
+      throw new AssertionError("interrupted while waiting for latch", ex);
+    }
+  }
+
   private void awaitState(AtomicReference<Thread> threadRef, Thread.State expected)
       throws InterruptedException {
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
@@ -355,6 +478,9 @@ class AiConversationMemoryServiceTests {
     private final AiConversationSessionRepository repository =
         mock(AiConversationSessionRepository.class);
     private final AtomicReference<SaveBlock> nextSaveBlock = new AtomicReference<>();
+    /** 置为 true 时下一次 save 直接抛错，用于验证"落库失败不留下半成品会话"。 */
+    final java.util.concurrent.atomic.AtomicBoolean failNextSave =
+        new java.util.concurrent.atomic.AtomicBoolean(false);
 
     private RepositoryFixture() {
       when(repository.findById(any(String.class)))
@@ -363,6 +489,9 @@ class AiConversationMemoryServiceTests {
           .thenAnswer(
               invocation -> {
                 AiConversationSessionRecord record = invocation.getArgument(0);
+                if (failNextSave.compareAndSet(true, false)) {
+                  throw new IllegalStateException("simulated repository failure");
+                }
                 SaveBlock block = nextSaveBlock.get();
                 if (block != null
                     && block.sessionId.equals(record.getId())

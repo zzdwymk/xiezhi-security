@@ -1339,7 +1339,8 @@ html
   .el-popper .el-autocomplete-suggestion__list li
 ) {
   min-height: 32px;
-  border-radius: var(--fluent-radius-control);
+  /* Square, edge-to-edge rows — no rounded pill inside dropdown surfaces. */
+  border-radius: 0;
   color: var(--fluent-overlay-fg) !important;
   font-size: var(--fluent-body1-size);
   line-height: 20px;

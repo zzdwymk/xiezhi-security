@@ -1,34 +1,26 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import type { ConversationMessage } from "../stores/conversations";
-import { buildAiProgress, aiTaskElapsed, type AiProgressTask, type ProgressTone } from "../utils/aiProgress";
+import { aiTaskElapsed, type AiProgressTask, type ProgressTone } from "../utils/aiProgress";
 import { aiElapsedLabel, aiToolLabel, publicAiProgressText } from "../utils/aiPresentation";
+import { AI_STATUS_LABELS, aiStatusIcon, buildAiStatusSummary } from "../utils/aiStatus";
 import FluentIcon from "./FluentIcon.vue";
-const props = defineProps<{ message: ConversationMessage; tasks: AiProgressTask[]; hideAttention?: boolean }>();
+// statusOutside: the parent renders this turn's status stamp with the message
+// chrome instead of inside the answer surface (see AiStatusStamp).
+const props = defineProps<{ message: ConversationMessage; tasks: AiProgressTask[]; hideAttention?: boolean; statusOutside?: boolean }>();
 const emit = defineEmits<{ (event: "open-tasks"): void }>();
 const now = ref(Date.now());
 const expanded = ref(false);
-const progress = computed(() => buildAiProgress(props.message, props.tasks, now.value));
-// Older records can lack an approval ID or plan. A retained dispatch warning
-// still prevents a generic completed message from presenting a success mark.
-const dispatchConcern = computed(() => progress.value.tone === "success"
-  && (["dispatching", "unknown", "rejected"].includes(props.message.approvalDispatchStatus || "")
-    || (props.message.approvalStatus === "APPROVED" && !props.message.taskIds.length)));
-const needsClarification = computed(() => props.message.executionDecision === "CLARIFY"
-  && !progress.value.active && !progress.value.interrupted && !progress.value.failed && !progress.value.waitingApproval
-  && !dispatchConcern.value && progress.value.tone !== "warning" && !props.message.taskIds.length);
-const displayTone = computed<ProgressTone>(() => dispatchConcern.value
-  ? props.message.approvalDispatchStatus === "rejected" ? "failed" : "warning"
-  : needsClarification.value ? "warning" : progress.value.tone as ProgressTone);
-const spinning = computed(() => displayTone.value === "active" && (progress.value.elapsed ?? 0) >= 1000);
-const completed = computed(() => props.message.status === "completed" && displayTone.value === "success");
-const title = computed(() => dispatchConcern.value
-  ? props.message.approvalDispatchStatus === "rejected" ? "执行已拒绝，未派发任务"
-    : props.message.approvalDispatchStatus === "unknown" ? "派发结果待核实" : "审批已通过，等待派发确认"
-  : completed.value ? "已完成" : needsClarification.value ? "等待补充信息" : progress.value.currentTitle);
+const summary = computed(() => buildAiStatusSummary(props.message, props.tasks, now.value));
+const progress = computed(() => summary.value.progress);
+const dispatchConcern = computed(() => summary.value.dispatchConcern);
+const needsClarification = computed(() => summary.value.needsClarification);
+const displayTone = computed<ProgressTone>(() => summary.value.tone);
+const spinning = computed(() => summary.value.spinning);
+const completed = computed(() => summary.value.completed);
+const title = computed(() => summary.value.title);
 const taskLabels: Record<string, string> = { SUCCESS: "成功", FAILED: "失败", TIMEOUT: "超时", REJECTED: "已拒绝", CANCELLED: "已取消", SKIPPED: "已跳过", BLOCKED: "等待前置任务", PENDING: "排队中", RUNNING: "执行中" };
 const taskTones: Record<string, ProgressTone> = { SUCCESS: "success", FAILED: "failed", TIMEOUT: "failed", REJECTED: "warning", CANCELLED: "warning", SKIPPED: "neutral", BLOCKED: "neutral", PENDING: "neutral", RUNNING: "active" };
-const stateLabels: Record<ProgressTone, string> = { active: "进行中", success: "成功", failed: "失败", warning: "需要关注", neutral: "阶段反馈" };
 const attention = computed(() => {
   if (props.hideAttention) return "";
   const p = progress.value;
@@ -57,9 +49,6 @@ function taskDuration(task: AiProgressTask) {
   const elapsed = aiTaskElapsed(task, now.value);
   return elapsed === undefined ? "" : elapsed < 1000 ? "不足 1 秒" : aiElapsedLabel(elapsed);
 }
-function stateIcon(tone: ProgressTone | string) {
-  return tone === "success" ? "checkmark-circle" : tone === "failed" ? "dismiss" : tone === "warning" ? "warning" : tone === "neutral" ? "info" : "clock";
-}
 function receivedAt(at: number) {
   const elapsed = Math.max(0, at - progress.value.startedAt);
   return elapsed < 1000 ? "不足 1 秒" : aiElapsedLabel(elapsed);
@@ -79,7 +68,7 @@ function receivedAt(at: number) {
         <details v-for="task in progress.related" :key="task.id" :data-task-id="task.id" class="progress-tool-call" :class="taskTones[task.status] || 'neutral'">
           <summary>
             <span v-if="task.status === 'RUNNING'" class="progress-spinner task-spinner" aria-hidden="true" />
-            <FluentIcon v-else :name="stateIcon(taskTones[task.status] || 'neutral')" />
+            <FluentIcon v-else :name="aiStatusIcon(taskTones[task.status] || 'neutral')" />
             <span class="tool-name">{{ aiToolLabel(task.toolCode) }}</span>
             <span class="tool-state">{{ taskLabels[task.status] || '等待状态' }}</span>
             <FluentIcon name="chevron-down" class="tool-chevron" />
@@ -93,9 +82,9 @@ function receivedAt(at: number) {
       </div>
     </details>
     <div v-if="$slots.default" class="progress-response-content"><slot /></div>
-    <header class="progress-header">
+    <header v-if="!statusOutside" class="progress-header">
       <span v-if="spinning" class="progress-spinner" role="progressbar" :aria-labelledby="`${message.id}-progress-title`" />
-      <FluentIcon v-else :name="stateIcon(displayTone)" :label="stateLabels[displayTone]" class="progress-status-icon" />
+      <FluentIcon v-else :name="aiStatusIcon(displayTone)" :label="AI_STATUS_LABELS[displayTone]" class="progress-status-icon" />
       <div class="progress-heading" role="status" aria-live="polite" aria-atomic="true"><strong :id="`${message.id}-progress-title`">{{ title }}</strong></div>
       <span v-if="progress.elapsed !== undefined" class="progress-elapsed" title="从本轮请求开始计时，不代表模型思考耗时">{{ progress.elapsed < 1000 ? '不足 1 秒' : aiElapsedLabel(progress.elapsed) }}</span>
       <button v-if="progress.modelEntries.length" class="progress-toggle" type="button" :aria-label="expanded ? '收起模型决策摘要' : '查看模型决策摘要'" :aria-expanded="expanded" :aria-controls="`${message.id}-progress-timeline`" @click="expanded = !expanded">
@@ -107,7 +96,7 @@ function receivedAt(at: number) {
     <div v-if="progress.modelEntries.length" v-show="expanded" :id="`${message.id}-progress-timeline`" class="progress-timeline-wrap">
       <ol class="progress-timeline" tabindex="0" aria-label="模型决策摘要，可滚动查看">
         <li v-for="entry in progress.modelEntries" :key="entry.key" :class="entry.tone">
-          <FluentIcon :name="stateIcon(entry.tone)" :label="stateLabels[entry.tone]" />
+          <FluentIcon :name="aiStatusIcon(entry.tone)" :label="AI_STATUS_LABELS[entry.tone]" />
           <div><strong>模型决策摘要</strong><p>{{ publicAiProgressText(entry.event.summary || entry.event.message) }}</p></div><time v-if="entry.at !== undefined && Number.isFinite(progress.startedAt) && entry.at >= progress.startedAt" :datetime="entry.event.createdAt" title="从本轮请求到收到摘要的时间">+{{ receivedAt(entry.at) }}</time>
         </li>
       </ol>

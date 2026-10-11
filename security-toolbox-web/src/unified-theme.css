@@ -1833,6 +1833,9 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
   display: none !important;
 }
 
+/* Overlay list rows use an edge-to-edge, square highlight band: a rounded
+   pill inside a rounded menu reads as a floating card and breaks the
+   continuous list rhythm. The menu surface itself keeps its radius. */
 .el-dropdown-menu__item,
 .el-select-dropdown__item,
 .el-cascader-node {
@@ -1840,7 +1843,7 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
   min-height: 34px !important;
   padding: 6px 14px !important;
   line-height: 1.4 !important;
-  border-radius: var(--fluent-radius-control);
+  border-radius: 0;
   color: var(--app-text);
   font-size: 12px;
 }

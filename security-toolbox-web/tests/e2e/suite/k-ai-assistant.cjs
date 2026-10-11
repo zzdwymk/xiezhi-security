@@ -217,36 +217,61 @@ async function run(page, H, ctx) {
   }, { page });
 
   await H.run("K-17", "可删除最近对话并需二次确认", async () => {
+    // 注意：侧边栏只渲染 visibleConversations = items.slice(0, limit) 这一段窗口，
+    // 且 limit 只会增长、删除时不会收缩。所以「已挂载行数」在删除后可能保持不变，
+    // 不能作为会话数是否减少的判据。这里改用两种稳定信号：
+    //   1) 被删除会话的 data-conversation-id 从 DOM 中消失；
+    //   2) 头部真实计数 .desktop-v2-recents-count 下降。
     const items = page.locator("button.desktop-v2-recent-open");
     const before = await items.count();
     if (before === 0) return "无最近对话可删除";
+
+    const readCount = async () => {
+      const el = page.locator(".desktop-v2-recents-count").first();
+      if (!(await el.count())) return null;
+      const m = ((await el.textContent()) || "").match(/\d+/);
+      return m ? Number(m[0]) : null;
+    };
+    const beforeCount = await readCount();
+
+    const targetId = await items.first().getAttribute("data-conversation-id").catch(() => null);
     const del = page.locator('button.desktop-v2-recent-delete[aria-label="删除对话"]').first();
     if (!(await del.count())) return "未渲染删除对话入口";
     await del.click();
     await sleep(1200);
     const clicked = await confirmBoxIfPresent(page, ["删除", "确定", "确认"]);
     if (!clicked) throw new Error("删除对话未弹出确认框");
+
     // 删除在后端还要尽力清理 AI Runtime 的索引记忆，实测可达 10 秒以上；
-    // 固定 sleep 会在请求完成前就断言。这里改为轮询等待列表真正减少。
-    let after = before;
+    // 固定 sleep 会在请求完成前就断言。这里轮询等待可观察的删除证据。
     const deadline = Date.now() + 45000;
+    let afterCount = beforeCount;
+    let gone = false;
     let successToast = "";
     while (Date.now() < deadline) {
       await sleep(1000);
-      after = await page.locator("button.desktop-v2-recent-open").count();
-      if (after < before) break;
-      const toast = page.locator(".el-message--success").last();
-      if (await toast.count()) {
-        successToast = ((await toast.textContent()) || "").trim();
-        if (/已删除/.test(successToast)) break;
+      if (targetId) {
+        gone =
+          (await page
+            .locator(`button.desktop-v2-recent-open[data-conversation-id="${targetId}"]`)
+            .count()) === 0;
       }
+      afterCount = await readCount();
+      const toast = page.locator(".el-message--success").last();
+      if (await toast.count()) successToast = ((await toast.textContent()) || "").trim();
+      if (gone || (beforeCount !== null && afterCount !== null && afterCount < beforeCount)) break;
     }
-    if (after >= before)
+
+    const countDropped = beforeCount !== null && afterCount !== null && afterCount < beforeCount;
+    if (!gone && !countDropped) {
       throw new Error(
-        `删除后会话数未减少: ${before} → ${after}` +
+        `删除后会话未消失: 已挂载行 ${before} → ${await items.count()}` +
+          `，真实计数 ${beforeCount} → ${afterCount}` +
           (successToast ? `（但已出现成功提示：${successToast}）` : "（未出现成功提示）"),
       );
-    return `会话数 ${before} → ${after}${successToast ? `；提示：${successToast}` : ""}`;
+    }
+    const how = gone ? "该会话已从列表消失" : `真实计数 ${beforeCount} → ${afterCount}`;
+    return `${how}${successToast ? `；提示：${successToast}` : ""}`;
   }, { page, shotOnPass: true });
 
   await H.run("K-18", "点击「新建对话」重置为欢迎态", async () => {

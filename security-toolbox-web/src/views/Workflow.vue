@@ -7172,7 +7172,8 @@ onBeforeUnmount(() => {
   gap: 6px;
   padding: 4px 8px;
   border: 0;
-  border-radius: var(--fluent-radius-control);
+  /* Context-menu commands use a square, edge-to-edge hover band. */
+  border-radius: 0;
   background: transparent;
   color: var(--app-text);
   cursor: pointer;

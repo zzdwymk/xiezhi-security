@@ -2004,7 +2004,10 @@ export function normalizeAgentEvent(
     taskCount: boundedNumber(raw.taskCount ?? responseRaw?.taskCount),
     taskIds,
     targetId: raw.targetId || responseRaw?.targetId,
-    answer: raw.answer || responseRaw?.message,
+    // 终端 done 帧里 raw.answer 常为空；真正的模型正文在 data.response.message。
+    // 这里必须让 responseRaw.message 优先：raw.answer 若被后端填成进度/阶段文案
+    // （非空但不是回答），用 `||` 会让进度串顶掉真正的模型回答。
+    answer: responseRaw?.message || raw.answer,
     runId: raw.runId || raw.sessionId || responseRaw?.sessionId,
     contractVersion: boundedNumber(raw.contractVersion),
     workflowId: boundedString(raw.workflowId || responseRaw?.workflowId, 64),
@@ -2163,6 +2166,11 @@ export async function dispatchAiStreaming(
   const controller = new AbortController();
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  // 注意：这里刻意**不**在 fetch 之前启动空闲计时器。
+  // STREAM_IDLE_TIMEOUT_MS 的语义是"两次数据之间的最大间隔"，若在建立连接前
+  // 就启动，它会把连接握手、鉴权、以及模型首 token 的思考时间一并算进预算；
+  // 一次首 token 超过 90 秒的正常慢回答会被整体中止，并被报成传输失败
+  // （已流出的部分回答也随之被覆盖）。计时器改为在响应头到达后启动。
   const markStreamActivity = () => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(
@@ -2170,7 +2178,6 @@ export async function dispatchAiStreaming(
       STREAM_IDLE_TIMEOUT_MS,
     );
   };
-  markStreamActivity();
 
   try {
     const token = readAuthToken();
@@ -2245,6 +2252,8 @@ export async function dispatchAiStreaming(
     }
 
     if (!response.body) throw new Error("AI 流式响应缺少响应体");
+    // 响应头已到达：从这一刻起才启动"两次数据之间的最大间隔"计时。
+    markStreamActivity();
     reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
