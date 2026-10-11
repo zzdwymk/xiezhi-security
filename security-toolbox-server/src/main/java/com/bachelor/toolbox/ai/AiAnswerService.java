@@ -21,10 +21,13 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 @Service
 public class AiAnswerService {
+  private static final Logger log = LoggerFactory.getLogger(AiAnswerService.class);
   private static final int MAX_TASKS = 20;
   private static final int MAX_FINDING_DETAILS = 50;
   private static final int MAX_MODEL_CONTEXT_CHARS = 40_000;
@@ -76,7 +79,10 @@ public class AiAnswerService {
         answer = callModel(target, request.prompt(), tasks, findings);
         if (answer == null || answer.isBlank()) throw new IllegalStateException("模型返回空回答");
       } catch (Exception ex) {
-        throw new ApiException("AI 模型未能生成检测结果回答，请检查模型连接后重试。");
+        // 保留原始异常：鉴权失败（401/403）、读超时、返回空内容是完全不同的故障，
+        // 丢掉 cause 会让日志与审计只剩一句笼统提示，无法定位也无法区分责任方。
+        log.warn("AI 检测结果回答生成失败: {}", ex.toString(), ex);
+        throw new ApiException("AI 模型未能生成检测结果回答，请检查模型连接后重试。", ex);
       }
 
       Map<String, Long> severityCounts = severityCounts(findings);

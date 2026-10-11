@@ -71,6 +71,7 @@ import {
 } from "../utils/taskProgress";
 import { taskbarProgress } from "../utils/taskbarProgress";
 import AiProgressPanel from "../components/AiProgressPanel.vue";
+import AiStatusStamp from "../components/AiStatusStamp.vue";
 import AiFailureNotice from "../components/AiFailureNotice.vue";
 import FluentIcon from "../components/FluentIcon.vue";
 import MarkdownComposerPreview from "../components/MarkdownComposerPreview.vue";
@@ -81,6 +82,7 @@ import { createAiApprovalPromptGate, isAwaitingAiApproval, isAwaitingAiDispatch,
 import { aiEventStepStatus, findMatchingAiStep, mergeAiStep } from "../utils/aiStepState";
 import { mergeTaskDetailSnapshot } from "../utils/taskDetail";
 import { aiExecutionRequest } from "../utils/aiIntent";
+import { isAiStatusOutsideCard } from "../utils/aiStatus";
 import { aiAnswerSource, isLocalAiAnswer, requireAiAnswer } from "../utils/aiAnswer";
 import { resolveAuditConversationScope } from "../utils/auditConversationScope";
 import { aiProgressFailureText, isPublicAiProgressEvent, publicAiProgressText } from "../utils/aiPresentation";
@@ -219,6 +221,12 @@ function taskLogs(message: ConversationMessage) {
     .map((task) => formatExecutionLog(task.executionLog))
     .filter(Boolean)
     .join("\n");
+}
+
+// A finished answer shows its status stamp with the message chrome, below the
+// answer card, instead of inside the answer surface.
+function isStatusOutsideAnswerCard(message: ConversationMessage) {
+  return isAiStatusOutsideCard(message, relatedTasks(message), Date.now());
 }
 
 function displayAgentValue(value: unknown, limit = 1600) {
@@ -1012,16 +1020,13 @@ function applyAgentEvent(
                 ? "running"
                 : message.status;
   let content = message.content;
-  // 后端终态事件把模型正文放在 data.response.message（data.response 是对象，
-  // 直接字符串化会得到 "[object Object]"），也可能放在 event.answer。
-  const donePayload = (event.data as any)?.response;
+  // 后端终态事件把模型正文放在 data.response.message。normalizeAgentEvent()
+  // 已经把 data.response 摊平到事件对象上（见 api.ts 的 answer/approvalId/
+  // taskIds 等字段），因此这里**不存在** event.data —— 之前读取
+  // (event.data as any)?.response 是死代码，永远得到 undefined。
+  // 正文顺序：event.answer（已由 api.ts 优先取 response.message）→ 计划摘要 → 事件消息。
   const doneAnswer = String(
-    event.answer ||
-      (donePayload && typeof donePayload === "object"
-        ? donePayload.message || donePayload.plan?.summary || ""
-        : donePayload || "") ||
-      event.message ||
-      "",
+    event.answer || event.plan?.summary || event.message || "",
   ).trim();
   if (event.type === "error" && !recordedEvent)
     content = readableAiConversationError(
@@ -1030,7 +1035,13 @@ function applyAgentEvent(
     ).slice(0, 2000);
   else if (event.type === "done" && doneAnswer)
     content = doneAnswer;
-  else if (progressSummary && ["planning", "running"].includes(status))
+  else if (
+    progressSummary &&
+    ["planning", "running"].includes(status) &&
+    // 已经拿到终态回答后，后续迟到的进度事件不得再把回答正文顶掉
+    // （表现为回答先显示、随后被"正在调用…"这类状态句替换）。
+    message.modelStreamStatus !== "completed"
+  )
     content = progressSummary;
   conversations.updateMessage(threadId, messageId, {
     status: status as ConversationMessage["status"],
@@ -1044,24 +1055,14 @@ function applyAgentEvent(
       : event.type === "error" && !recordedEvent
         ? "failed"
         : message.modelStreamStatus,
-    approvalId:
-      (donePayload as any)?.approvalId ||
-      (event.data as any)?.approvalId ||
-      event.approvalId ||
-      message.approvalId,
-    approvalStatus:
-      (donePayload as any)?.approvalStatus ||
-      event.approvalStatus ||
-      message.approvalStatus,
-    executionDecision:
-      (donePayload as any)?.guardStatus ||
-      event.executionDecision ||
-      message.executionDecision,
+    approvalId: event.approvalId || message.approvalId,
+    approvalStatus: event.approvalStatus || message.approvalStatus,
+    executionDecision: event.executionDecision || message.executionDecision,
     // 终态事件会带回本轮是否真的派发了任务；无任务时保持空数组，
     // 使界面呈现"等待确认/未创建任务"而不是永久进行中。
     taskIds:
-      Array.isArray((donePayload as any)?.taskIds) && (donePayload as any).taskIds.length
-        ? (donePayload as any).taskIds
+      Array.isArray(event.taskIds) && event.taskIds.length
+        ? event.taskIds
         : message.taskIds,
     planningStage:
       event.stage || String(event.node || "") || message.planningStage,
@@ -1191,11 +1192,17 @@ async function dispatchConversationMessage(
   const planSummary = data.plan.summary?.trim();
   const answerText = data.answer?.trim() || planSummary;
   const operationalReceipt = !answerText && (data.taskIds.length > 0 || data.approvalId || streamedMessage?.approvalId);
+  // 兜底顺序：最终答案字段 → 计划摘要 → 已经流式写入的消息正文。
+  // 终端 done 事件里 event.answer 常为空（模型正文在 data.response.message，
+  // 由 applyAgentEvent 先一步写入 content）。若这里直接 requireAiAnswer(answerText)
+  // 抛错，sendPrompt 的 catch 会把已经渲染好的回答覆盖成错误提示——
+  // 用户明明看到了模型回答，界面却变成"未获得模型回答"。
+  const streamedFallback = String(streamedMessage?.content || "").trim();
   const finalContent = operationalReceipt
     ? data.taskIds.length
       ? `已按授权范围派发 ${data.taskIds.length} 个任务。执行状态以任务记录为准，结束后将生成检测结论。`
       : "方案已提交确认，请查看本次操作和授权范围。"
-    : requireAiAnswer(answerText);
+    : requireAiAnswer(answerText || streamedFallback);
   conversations.updateMessage(thread.id, assistantMessage.id, {
     content: finalContent,
     status: data.taskIds.length ? "running" : "completed",
@@ -1446,9 +1453,31 @@ async function sendPrompt() {
     await dispatchConversationMessage(thread, userMessage, assistantMessage, projectId);
   } catch (error: any) {
     const message = error instanceof ConversationStorageError ? error.message : readableConversationError(error);
-    if (thread && assistantMessage)
-      conversations.updateMessage(thread.id, assistantMessage.id, { content: message, status: "failed", modelStreamStatus: "failed" });
-    else ElMessage.error(message);
+    if (thread && assistantMessage) {
+      // 关键：模型回答可能已经通过流式事件写入 content（见 applyAgentEvent 的
+      // doneAnswer 分支）。若此处无条件用错误信息覆盖，用户已经看到的回答会被
+      // 抹掉，并显示成"未获得模型回答"——即使模型其实已经正常回答。
+      // 因此只在 content 仍为空/仍是占位时才写入错误。
+      const existing = conversations.items
+        .find((item) => item.id === thread.id)
+        ?.messages.find((item) => item.id === assistantMessage.id);
+      const streamed = String(existing?.content || "").trim();
+      const alreadyAnswered = Boolean(streamed) && !/^(正在|思考中|分析中)/.test(streamed);
+      if (alreadyAnswered) {
+        // 已有回答：保留回答正文，仅把状态标为已完成，避免"重试回复"按钮误现。
+        conversations.updateMessage(thread.id, assistantMessage.id, {
+          content: streamed,
+          status: "completed",
+          modelStreamStatus: "completed",
+        });
+      } else {
+        conversations.updateMessage(thread.id, assistantMessage.id, {
+          content: message,
+          status: "failed",
+          modelStreamStatus: "failed",
+        });
+      }
+    } else ElMessage.error(message);
   } finally {
     sending.value = false;
     void scrollToBottom();
@@ -2128,14 +2157,15 @@ onBeforeUnmount(() => {
                 <span>{{ quotePreview(message.quote.content) }}</span>
               </div>
               <div
-                v-if="message.role === 'assistant'"
                 class="message-response"
-                :class="{ 'is-failed': message.status === 'failed' }"
+                :class="{ 'is-failed': message.role === 'assistant' && message.status === 'failed' }"
               >
                 <AiProgressPanel
+                  v-if="message.role === 'assistant'"
                   :message="message"
                   :tasks="relatedTasks(message)"
                   :hide-attention="message.status === 'failed'"
+                  :status-outside="isStatusOutsideAnswerCard(message)"
                   @open-tasks="router.push('/tasks')"
                 >
                   <AiFailureNotice v-if="message.status === 'failed'" :message="message" />
@@ -2145,12 +2175,11 @@ onBeforeUnmount(() => {
                     v-html="renderMarkdown(displayedMessageContent(message), { localizeToolCodes: true })"
                   />
                 </AiProgressPanel>
-              </div>
-              <div
-                v-else-if="message.role === 'user'"
-                class="message-bubble markdown-body"
-                v-html="renderMarkdown(message.content)"
-              />
+                <div
+                  v-else-if="message.role === 'user'"
+                  class="message-bubble markdown-body"
+                  v-html="renderMarkdown(message.content)"
+                />
               <div
                 v-if="
                   message.reference && isTrafficReference(message.reference)
@@ -2371,6 +2400,13 @@ onBeforeUnmount(() => {
                   <FluentCodeBlock class="runtime-output" :content="taskLogs(message)" aria-label="AI 任务详细执行日志" :min-rows="3" :max-rows="8" wrap live />
                 </details>
               </details>
+              </div>
+              <AiStatusStamp
+                v-if="isStatusOutsideAnswerCard(message)"
+                class="message-status"
+                :message="message"
+                :tasks="relatedTasks(message)"
+              />
               <div class="message-actions" role="toolbar" aria-label="消息操作">
                 <el-tooltip content="引用消息" placement="top" :show-after="350">
                   <button type="button" class="message-action" aria-label="引用消息" :disabled="sending" @click="quoteMessage(message)">
@@ -4028,8 +4064,8 @@ a.agent-citation-bubble {
   font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif;
 }
 :global(.target-picker-popper .el-select-dropdown__item) {
-  border-radius: 8px;
-  margin: 2px 6px;
+  /* Menu rows stay square and edge-to-edge, matching every other select. */
+  border-radius: 0;
   padding-left: 10px;
   padding-right: 10px;
 }
@@ -4185,6 +4221,10 @@ a.agent-citation-bubble {
 .chat-message.assistant .message-response.is-failed {
   padding: 0;
   overflow: hidden;
+  /* The action bar closes the failure card, so their shared outline is drawn
+     once: the card keeps the top, the footer keeps the bottom. */
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
 }
 .message-response.is-failed :deep(.ai-progress-panel) { width: auto; margin: 0; padding: 0; border: 0; background: transparent; }
 .message-response.is-failed :deep(.progress-header) { min-height: 32px; margin: 12px 16px 0; flex-wrap: wrap; }
@@ -4192,9 +4232,19 @@ a.agent-citation-bubble {
 .message-response.is-failed :deep(.progress-timeline-wrap) { margin: 0 16px 12px; }
 .message-response.is-failed :deep(.progress-heading strong) { font-weight: 600; }
 .message-response.is-failed :deep(.progress-toggle) { min-height: 32px; padding: 0 6px; }
-.message-response.is-failed .message-actions { display: flex; justify-content: flex-start; gap: 4px; margin: 0; padding: 8px 12px; min-height: 32px; border-top: 1px solid var(--app-border); opacity: 1; pointer-events: auto; background: var(--app-surface-soft); }
-.message-response.is-failed .message-actions .message-action { border: 1px solid transparent; }
-.message-response.is-failed .message-actions .message-action:hover:not(:disabled) { border-color: var(--app-border); }
+.message-response.is-failed + .message-actions { display: flex; justify-content: flex-start; gap: 4px; margin: 0; padding: 8px 12px; min-height: 32px; border: 1px solid var(--app-border); border-radius: 0 0 8px 8px; opacity: 1; pointer-events: auto; background: var(--app-surface-soft); }
+.message-response.is-failed + .message-actions .message-action { border: 1px solid transparent; }
+.message-response.is-failed + .message-actions .message-action:hover:not(:disabled) { border-color: var(--app-border); }
+/* The finished-answer status stamp and the action bar belong to the message
+   chrome: they sit outside the answer card, aligned with its outer edge, so the
+   card holds only the answer. The card's own bottom padding separates the stamp
+   from the prose, so the panel's trailing margin is not needed. */
+.message-status {
+  width: min(100%, 720px);
+  box-sizing: border-box;
+  margin: 0;
+}
+.chat-message.assistant .message-response:has(+ .message-status) :deep(.ai-progress-panel) { margin-bottom: 0; }
 .composer-edit-notice {
   display: flex;
   align-items: center;

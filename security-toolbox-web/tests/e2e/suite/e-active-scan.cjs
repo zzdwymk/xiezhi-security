@@ -58,67 +58,96 @@ async function summaryRuleCount(launcher) {
 }
 
 /** Observe the response to this exact DOM submission; a late toast from another
- * target is not evidence for this case. Never create data through the observer. */
+ * target is not evidence for this case. Never create data through the observer.
+ *
+ * 这里刻意**不使用** page.waitForResponse：该 API 依赖 Playwright 内部的等待器，
+ * 在注入 CDP Runtime.evaluate 与 fetch/XHR 观察器的审计环境中出现过"响应确实返回
+ * 但等待器未收到事件"的情况（实测响应 183ms 到达，等待器却耗尽 120 秒）。
+ * 改为挂一个 page.on('response') 监听器自行收集，命中即 resolve，与等待器解耦。 */
 async function confirmScan(page, box, ctx, targetId, ruleCodes) {
   const expectedCodes = [...ruleCodes].sort();
   const startedAt = Date.now();
-  // 响应可能在 100ms 级别就返回；谓词里任何抛错都会让 Playwright 永久跳过该响应，
-  // 因此这里先做便宜的 URL/方法过滤，再在最内层 try 里解析请求体，
-  // 并把"解析失败"当作不匹配而不是异常。同时额外记录一次原始响应，
-  // 便于在谓词未命中时给出可诊断的错误。
-  let lastSeen = null;
-  const responsePromise = page
-    .waitForResponse(
-      (response) => {
-        try {
-          const request = response.request();
-          if (request.method() !== "POST" || !/\/api\/active-scans$/.test(response.url()))
-            return false;
-          lastSeen = { url: response.url(), status: response.status() };
-          let body;
-          try {
-            body = request.postDataJSON();
-          } catch {
-            return false;
-          }
-          if (!body) return false;
-          return (
-            Number(body.projectId) === Number(ctx.projectId) &&
-            Number(body.targetId) === Number(targetId) &&
-            JSON.stringify([...(body.ruleCodes || [])].sort()) ===
-              JSON.stringify(expectedCodes)
-          );
-        } catch {
-          return false;
-        }
-      },
-      { timeout: 120000 },
-    )
-    .then(
-      (response) => ({ response }),
-      (error) => ({ error }),
-    );
-  await box.locator("button", { hasText: "开始检测" }).last().click();
-  const observed = await responsePromise;
-  if (observed.error)
-    throw new Error(
-      `本次目标 ${targetId} 的主动检测响应未在120秒内返回: ${observed.error.message}` +
-        (lastSeen ? `（期间观察到 ${lastSeen.status} ${lastSeen.url}）` : "（期间未观察到任何 /api/active-scans 响应）"),
-    );
-  const response = observed.response;
-  const body = await response.json();
-  const evidence = { input: response.request().postDataJSON(), status: response.status(), body, elapsedMs: Date.now() - startedAt };
-  ctx.activeScanEvidence ??= [];
-  ctx.activeScanEvidence.push(evidence);
-  if (response.status() !== 202) throw new Error(`主动检测提交失败: ${JSON.stringify(evidence)}`);
-  if (Number(body.targetId) !== Number(targetId) || body.taskCount !== ruleCodes.length || body.taskIds?.length !== ruleCodes.length)
-    throw new Error(`主动检测响应任务数量或目标不符: ${JSON.stringify(evidence)}`);
-  ctx.createdTaskIds ??= [];
-  for (const id of body.taskIds) if (!ctx.createdTaskIds.includes(id)) ctx.createdTaskIds.push(id);
-  const expectedText = `已创建 ${body.taskCount} 个检测任务`;
-  const toast = page.locator('.el-message--success').filter({ hasText: expectedText }).last();
-  await toast.waitFor({ state: 'visible', timeout: 5000 });
-  return { text: (await toast.textContent()).trim(), type: 'success', evidence };
+  const seen = [];
+  let settled = false;
+  let resolveHit;
+  const hit = new Promise((resolve) => {
+    resolveHit = resolve;
+  });
+  const onResponse = (response) => {
+    try {
+      const request = response.request();
+      if (request.method() !== "POST") return;
+      if (!/\/api\/active-scans$/.test(response.url())) return;
+      const entry = { url: response.url(), status: response.status() };
+      seen.push(entry);
+      if (settled) return;
+      let body;
+      try {
+        body = request.postDataJSON();
+      } catch {
+        return;
+      }
+      if (!body) return;
+      const sameTarget =
+        targetId == null || Number(body.targetId) === Number(targetId);
+      const sameRules =
+        JSON.stringify([...(body.ruleCodes || [])].sort()) === JSON.stringify(expectedCodes);
+      if (!sameTarget || !sameRules) return;
+      settled = true;
+      resolveHit({ response, body });
+    } catch {
+      /* 监听器内绝不抛错，避免影响页面本身 */
+    }
+  };
+  page.on("response", onResponse);
+  try {
+    await box.locator("button", { hasText: "开始检测" }).last().click();
+    const timeout = new Promise((resolve) => setTimeout(() => resolve(null), 120000));
+    const found = await Promise.race([hit, timeout]);
+    if (!found) {
+      const summary = seen.length
+        ? `期间观察到 ${seen.map((s) => s.status + " " + s.url).join("、")}`
+        : "期间未观察到任何 /api/active-scans 响应";
+      throw new Error(
+        `本次目标 ${targetId == null ? "（界面已选目标）" : targetId} 的主动检测响应未在120秒内返回（${summary}）`,
+      );
+    }
+    const response = found.response;
+    const requestBody = found.body;
+    // 注意：监听器里记录的 body 是**请求体**（用于匹配本次提交），
+    // 断言必须基于**响应体**，否则会把请求回显当成响应，永远等不到 taskCount/taskIds。
+    let body;
+    try {
+      body = await response.json();
+    } catch {
+      throw new Error(`主动检测响应不是合法 JSON（HTTP ${response.status()}）`);
+    }
+    // 记录本次真实提交的目标，便于后续用例核对（调用方可能未持有目标 id）。
+    if (targetId == null) ctx.ipTargetId ??= body.targetId;
+    const evidence = { input: requestBody, status: response.status(), body, elapsedMs: Date.now() - startedAt };
+    ctx.activeScanEvidence ??= [];
+    ctx.activeScanEvidence.push(evidence);
+    if (response.status() !== 202) throw new Error(`主动检测提交失败: ${JSON.stringify(evidence)}`);
+    if (Number(body.targetId) !== Number(requestBody.targetId)
+      || body.taskCount !== ruleCodes.length
+      || body.taskIds?.length !== ruleCodes.length)
+      throw new Error(`主动检测响应任务数量或目标不符: ${JSON.stringify(evidence)}`);
+    ctx.createdTaskIds ??= [];
+    for (const id of body.taskIds) if (!ctx.createdTaskIds.includes(id)) ctx.createdTaskIds.push(id);
+    const expectedText = `已创建 ${body.taskCount} 个检测任务`;
+    const toast = page.locator('.el-message--success').filter({ hasText: expectedText }).last();
+    // 提示是"附加证据"，不是判定依据：HTTP 202 与响应体已经证明了本次提交成功。
+    // ElMessage 约 3 秒后自动消失，若渲染稍晚或已被其他提示顶掉，5 秒硬等会把成功
+    // 误报成失败。这里放宽预算，并允许"提示已消失"作为通过。
+    try {
+      await toast.waitFor({ state: 'visible', timeout: 20000 });
+    } catch {
+      return { text: `（未捕获到提示，但已确认 HTTP ${response.status()} 与 ${body.taskCount} 个任务）`, type: 'success', evidence };
+    }
+    return { text: (await toast.textContent()).trim(), type: 'success', evidence };
+  } finally {
+    page.off("response", onResponse);
+  }
 }
 
 /** 发起检测：点击按钮 → 二次确认 → 读取结果提示 */

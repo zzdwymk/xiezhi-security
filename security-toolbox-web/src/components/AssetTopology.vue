@@ -4231,7 +4231,8 @@ html.dark .zoom-controls .divider-v,
   gap: 10px;
   width: 100%;
   border: 0;
-  border-radius: 4px;
+  /* Popover command rows follow the square menu-row style. */
+  border-radius: 0;
   padding: 8px;
   background: transparent;
   color: var(--app-text);
@@ -5037,7 +5038,8 @@ html.dark .zoom-controls .divider-v,
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  border-radius: var(--fluent-radius-control, 4px);
+  /* Menu commands use a square, edge-to-edge hover band. */
+  border-radius: 0;
   font-size: var(--fluent-caption1-size, 12px);
   color: var(--app-text);
   cursor: pointer;

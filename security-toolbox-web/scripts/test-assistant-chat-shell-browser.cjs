@@ -17,13 +17,18 @@ function find(node, predicate) {
   for (const child of node.children || []) { const found = find(child, predicate); if (found) return found; }
 }
 const hasClass = value => node => node.props.some(p => p.type === 6 && p.name === 'class' && p.value?.content.split(' ').includes(value));
-const response = find(baseParse(descriptors.Dashboard.template.content), hasClass('message-response'));
+const dashboardTemplate = baseParse(descriptors.Dashboard.template.content);
+const response = find(dashboardTemplate, hasClass('message-response'));
 const panel = find(response, node => node.tag === 'AiProgressPanel');
-const actions = find(response, hasClass('message-actions'));
+// The finished-answer status stamp and the action bar are message chrome:
+// production renders them outside the answer card.
+const stamp = find(dashboardTemplate, node => node.tag === 'AiStatusStamp');
+const actions = find(dashboardTemplate, hasClass('message-actions'));
 const traffic = find(baseParse(descriptors.Traffic.template.content), hasClass('traffic-chat-message'));
-assert(response && panel && actions && traffic, 'Production fragments must exist');
+assert(response && panel && stamp && actions && traffic, 'Production fragments must exist');
 const openResponse = response.loc.source.slice(0, response.loc.source.indexOf('>') + 1);
 const displayedMessageContent = descriptors.Dashboard.scriptSetup.content.match(/function displayedMessageContent\([^]*?\n\}/)[0];
+const isStatusOutsideAnswerCard = descriptors.Dashboard.scriptSetup.content.match(/function isStatusOutsideAnswerCard\([^]*?\n\}/)[0];
 const value = v => JSON.stringify(v).replace(/</g, '\\u003c');
 const start = '2026-10-07T01:00:00.000Z', finish = '2026-10-07T01:00:10.000Z';
 const base = { id: 'synthetic-success', role: 'assistant', status: 'completed', content: '新增历史核验', provider: 'openai-compatible', taskIds: [], steps: [], agentEvents: [], createdAt: start, updatedAt: finish, progressStartedAt: start, progressFinishedAt: finish, modelStreamStatus: 'completed' };
@@ -61,6 +66,7 @@ const cases = [
 const fixture = `<script setup lang="ts">
 import { computed, reactive, nextTick } from 'vue';
 import AiProgressPanel from '/src/components/AiProgressPanel.vue';
+import AiStatusStamp from '/src/components/AiStatusStamp.vue';
 import AiFailureNotice from '/src/components/AiFailureNotice.vue';
 import MarkdownBody from '/src/components/MarkdownBody.vue';
 import FluentIcon from '/src/components/FluentIcon.vue';
@@ -69,6 +75,7 @@ import quoteIcon from '@fluentui/svg-icons/icons/text_quote_24_regular.svg?url';
 import { renderMarkdown } from '/src/utils/markdown';
 import { aiProgressFailureText, localizeAiRuntimeFailure } from '/src/utils/aiPresentation';
 import { aiAnswerSource } from '/src/utils/aiAnswer';
+import { isAiStatusOutsideCard } from '/src/utils/aiStatus';
 const state = reactive({ message: ${value(base)}, tasks: [], surface:'dashboard', native:false });
 const message = computed(() => state.message);
 const currentTrafficChat = computed(() => [{ ...state.message, role: 'ASSISTANT' }]);
@@ -78,6 +85,7 @@ const sending = false, copiedMessageId = '', retryingMessageIds = new Set();
 const messageQuoteStyle = {maskImage:'url("' + quoteIcon + '")'};
 const quoteMessage = () => {}, copyMessage = () => {}, retryConversationMessage = () => {}, openAiDiagnostics = () => {}, editMessage = () => {};
 ${displayedMessageContent}
+${isStatusOutsideAnswerCard}
 window.chatShellFixture = state;
 window.setChatShellCase = async update => {
   Object.assign(state, update); await nextTick();
@@ -93,7 +101,7 @@ window.setChatShellCase = async update => {
 <article v-if="state.surface === 'dashboard'" class="chat-message assistant">
 <div class="message-avatar"><FluentIcon name="shield-checkmark" /></div>
 <div class="message-column"><div class="message-meta"><strong>安全助手</strong><span>2026-10-07 09:00:00</span></div>
-${openResponse}${panel.loc.source}${actions.loc.source}</div></div></article>
+${openResponse}${panel.loc.source}</div>${stamp.loc.source}${actions.loc.source}</div></article>
 <div v-else class="traffic-analysis-messages">${traffic.loc.source}</div>
 </div></main>
 </template>
@@ -138,10 +146,13 @@ function assertShell(m, { failure = false, traffic = false } = {}) {
   await server.listen(); const origin = 'http://127.0.0.1:' + server.httpServer.address().port;
   browser = await chromium.launch({executablePath:process.env.AI_PROGRESS_BROWSER || 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',headless:true});
   const page = await browser.newPage({viewport:{width:1000,height:800},reducedMotion:'reduce'});
+  // The cold Vite transform of this fixture plus Element Plus, and the evidence
+  // screenshots, are slow on a loaded machine; timeouts are not assertions here.
+  page.setDefaultTimeout(180000); page.setDefaultNavigationTimeout(180000);
   activePage=page;
   page.on('pageerror', e=>errors.push(e.message));
   await page.route('**/*', route => { const url = route.request().url(); if(url.startsWith(origin + '/') && !new URL(url).pathname.startsWith('/api/')) return route.continue(); blockedRequests.push(url); return route.abort(); });
-  await page.goto(origin + '/__assistant-chat-shell'); await page.locator('.message-response').waitFor();
+  await page.goto(origin + '/__assistant-chat-shell'); await page.locator('.message-response').first().waitFor();
   for(const theme of ['light','dark']) for(const native of [false,true]) {
     await page.evaluate(({theme,native})=>{document.documentElement.dataset.systemTheme=theme;window.chatShellFixture.native=native;},{theme,native});
     for(const scenario of cases) await check(`${theme}/${native?'native':'web'}/${scenario.name}`, async()=>{
@@ -165,8 +176,12 @@ function assertShell(m, { failure = false, traffic = false } = {}) {
       }
       if(scenario.noDuration) assert.equal(await page.locator('.progress-elapsed').count(),0);
       if(scenario.expectCompleted) {
-        const b=await page.locator('.message-bubble').boundingBox(), h=await page.locator('.progress-header').boundingBox(), a=await page.locator('.message-actions').boundingBox();
-        assert(h.y >= b.y+b.height+12 && h.y <= b.y+b.height+16); assert(a.y>=h.y+h.height); assert.equal(a.x,b.x);
+        const card=await page.locator('.message-response').boundingBox(), b=await page.locator('.message-bubble').boundingBox(), h=await page.locator('.progress-header').boundingBox(), a=await page.locator('.message-actions').boundingBox();
+        // The status stamp belongs to the message chrome below the answer card,
+        // and the action bar follows it; both align with the card's outer edge.
+        assert(h.y>=card.y+card.height,JSON.stringify({card,h}));
+        assert(h.y-(b.y+b.height)>=12&&h.y-(b.y+b.height)<=16,JSON.stringify({card,b,h}));
+        assert(a.y>=h.y+h.height); assert.equal(h.x,card.x); assert.equal(a.x,card.x);
         assert.equal(await page.locator('.progress-heading strong').evaluate(el=>getComputedStyle(el).fontSize),'13px');
       }
       if(theme==='light'&&!native&&['completed','failed','rich-markdown'].includes(scenario.name)) {

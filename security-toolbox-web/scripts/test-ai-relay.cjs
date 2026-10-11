@@ -275,11 +275,20 @@ async function main() {
       assert.equal(relay.status().providers[1].requests, 0)
     })
   })
-  await test('cooldown has a distinct stable error code', () => fixture({providers: [provider('a')], fetchImpl: async () => new Response('', {status: 500})}, async (_, request) => {
+  // 冷却期内仍然真实尝试上游：旧行为是"全部冷却 ⇒ 立刻抛
+  // all_providers_cooling_down"，用户会在几百毫秒内看到"模型服务暂时不可用"，
+  // 而模型根本没被调用过（上游抖动往往只有几百毫秒，被误判成持续故障）。
+  // 现在的契约：冷却期照常尝试；只有上游确实再次失败才报错，
+  // 并且错误码反映"上游不可用"而不是"本地主动拒绝"。
+  await test('cooling providers are still attempted upstream', () => fixture({providers: [provider('a')], fetchImpl: async () => new Response('', {status: 500})}, async (relay, request) => {
     assert.equal((await request()).status, 503)
+    assert.equal(relay.status().providers[0].lastError, 'http_500')
     const response = await request()
     assert.equal(response.status, 503)
-    assert.equal((await response.json()).error.code, 'all_providers_cooling_down')
+    assert.equal((await response.json()).error.code, 'all_providers_unavailable')
+    // 关键：第二次请求确实又打了一次上游（requests 从 1 变 2），
+    // 而不是在本地被冷却直接拒绝。
+    assert.equal(relay.status().providers[0].requests, 2)
   }))
   await test('request body accepts runtime payloads above 1MB', () => fixture({providers: [provider('a')], fetchImpl: async () => ok('OK')}, async (_, request) => {
     assert.equal((await request({messages: [{role: 'user', content: 'x'.repeat(1024 * 1024 + 1024)}]})).status, 200)
