@@ -117,6 +117,14 @@ public final class BashProbePolicy {
   /** 拒绝消息中回显原始请求路径的最大字符数（防超长/控制字符污染审计日志）。 */
   private static final int MAX_RAW_ECHO = 200;
 
+  /**
+   * 请求的工作目录字符串长度上限（字符）。
+   *
+   * <p>必须<strong>平台无关</strong>地设限，不能依赖 JDK 抛 {@code InvalidPathException}——见
+   * {@link #resolveWorkingDirectory} 的说明。
+   */
+  private static final int MAX_REQUESTED_PATH_LENGTH = 1024;
+
   private BashProbePolicy() {}
 
   // ---------------------------------------------------------------- 校验
@@ -190,22 +198,52 @@ public final class BashProbePolicy {
     if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS) && !Files.isDirectory(root)) {
       throw new BashProbeRejectedException("工作区根目录不是目录: " + root);
     }
-    // ⚠️ root.resolve(...) 可能抛 InvalidPathException——它不是 BashProbeRejectedException。
+    // ⚠️ 这里必须【先显式校验】，再交给 JDK 解析，不能反过来。
     //
-    // 触发条件：请求的路径含平台非法字符（Windows 上如 "sub/.. /.." 的尾随空格、
-    // 非法字符 <>:"|?* 等）。若任其冒泡，调用方拿到的是一个【未归一化的原始异常】，
-    // 既不在"护栏拒绝"的语义内，也不带可归因的拒绝理由——校验路径于是变成了"崩溃"
-    // 而不是"拒绝"。这正是本项目反复强调的"拒绝理由必须可归因"。
+    // 教训（CI 实测暴露的真实缺陷）：原实现只写 `root.resolve(requested.trim())` 并 catch
+    // InvalidPathException，把"拒绝非法路径"这件事**完全委托给 JDK 的解析器**。但两个平台的
+    // 非法字符判定范围并不一致：
     //
-    // 因此统一归一化为拒绝：非法路径 = 不允许的工作目录。
+    //   Windows（WindowsPathParser#isInvalidPathChar）: ch < '\u0020' || "<>:\"|?*"
+    //                                                    → 换行/制表符等【所有】控制字符都非法
+    //   Linux/macOS（UnixPath#normalizeAndCheck）      : 只检查 '\u0000'
+    //                                                    → 换行、制表符【合法】，能正常构造出 Path
+    //
+    // 后果：同一个含 "\n" 的请求，Windows 上抛 InvalidPathException 被归一化为拒绝，
+    // Linux 上却**顺利解析成功**、不抛任何异常——即同一份代码在两个平台上给出不同的安全判定。
+    // 这违反了"校验必须平台无关"的前提，属于 fail-open 方向的平台差异。
+    //
+    // 因此改为在调用 resolve 之前做平台无关的显式检查（长度 + 控制字符），
+    // 下面保留的 catch 仅作为兜底（覆盖 Windows 保留字符等剩余情形）。
+    //
+    // ⚠️ 检查必须针对【原始输入】而不是 trim 之后的结果。
+    // String.trim() 会剥掉所有 <= U+0020 的字符，因此 "\u0001"×1000 这类【纯控制字符】输入
+    // trim 后变成空串，会落进 isBlank() 分支被当作"未指定工作目录"而放行——这是一条 fail-open。
+    // 先把原始输入的控制字符与长度查完，再决定是否回退到工作区根目录。
+    if (requested != null && !requested.isEmpty()) {
+      if (requested.length() > MAX_REQUESTED_PATH_LENGTH) {
+        throw new BashProbeRejectedException(
+            "工作目录路径过长（" + requested.length() + " 字符，上限 " + MAX_REQUESTED_PATH_LENGTH
+                + "），拒绝执行: " + describeRaw(requested));
+      }
+      for (int index = 0; index < requested.length(); index++) {
+        char current = requested.charAt(index);
+        if (current < 0x20 || current == 0x7F) {
+          throw new BashProbeRejectedException(
+              "工作目录路径含控制字符，拒绝执行: " + describeRaw(requested));
+        }
+      }
+    }
     Path candidate;
-    try {
-      candidate =
-          (requested == null || requested.isBlank())
-              ? root
-              : root.resolve(requested.trim()).normalize();
-    } catch (InvalidPathException malformed) {
-      throw new BashProbeRejectedException("工作目录路径非法，拒绝执行: " + describeRaw(requested));
+    if (requested == null || requested.isBlank()) {
+      candidate = root;
+    } else {
+      String trimmed = requested.trim();
+      try {
+        candidate = root.resolve(trimmed).normalize();
+      } catch (InvalidPathException malformed) {
+        throw new BashProbeRejectedException("工作目录路径非法，拒绝执行: " + describeRaw(trimmed));
+      }
     }
     Path resolved;
     if (Files.exists(candidate)) {
@@ -233,22 +271,30 @@ public final class BashProbePolicy {
    *
    * <p>该字符串可能含控制字符或极长内容，直接拼接会污染审计日志（甚至注入换行伪造日志行）。
    * 因此：截断到 {@value #MAX_RAW_ECHO} 字符，并把不可打印字符转义为 {@code \\uXXXX}。
+   *
+   * <p><strong>输出长度有硬上界</strong>：转义是"1 字符 → 6 字符"的膨胀，若只按输入截断，
+   * 200 个控制字符会渲染成 1200 字符，仍能撑爆审计日志。因此这里按<strong>输出</strong>预算截断，
+   * 保证返回串不超过 {@link #MAX_RAW_ECHO}，从而拒绝消息总长恒定有界。
    */
   private static String describeRaw(String raw) {
     if (raw == null) {
       return "<null>";
     }
-    StringBuilder out = new StringBuilder(Math.min(raw.length(), MAX_RAW_ECHO) + 8);
+    StringBuilder out = new StringBuilder(MAX_RAW_ECHO + 24);
     int limit = Math.min(raw.length(), MAX_RAW_ECHO);
     for (int index = 0; index < limit; index++) {
       char current = raw.charAt(index);
-      if (current < 0x20 || current == 0x7F) {
-        out.append(String.format("\\u%04x", (int) current));
-      } else {
-        out.append(current);
+      String rendered =
+          (current < 0x20 || current == 0x7F)
+              ? String.format("\\u%04x", (int) current)
+              : String.valueOf(current);
+      // 按输出预算截断：宁可少回显几个字符，也不让消息长度失控。
+      if (out.length() + rendered.length() > MAX_RAW_ECHO) {
+        break;
       }
+      out.append(rendered);
     }
-    if (raw.length() > MAX_RAW_ECHO) {
+    if (raw.length() > out.length()) {
       out.append("…(共 ").append(raw.length()).append(" 字符)");
     }
     return out.toString();
