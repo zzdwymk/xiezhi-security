@@ -269,10 +269,8 @@ public class AiTaskDispatchService {
       case "http_headers" -> targetPolicyService.validatedHttpUri(target);
       case "http_security_check" -> {
         targetPolicyService.validatedHttpUri(target);
-        String check = Objects.toString(parameters.get("check"), "");
-        if (!Set.of("cookies", "cors", "methods", "disclosure").contains(check)) {
-          throw new ApiException("HTTP 检查类型不受支持");
-        }
+        // D-1：取值规格与护栏侧共用 ToolParameterSpec（单一事实来源）。
+        String check = ToolParameterSpec.requireHttpCheck(parameters.get("check"));
         parameters.put("check", check);
       }
       case "tls_config" -> {
@@ -297,18 +295,18 @@ public class AiTaskDispatchService {
         }
         parameters.put("ports", canonicalPorts);
         if ("nmap_service_scan".equals(toolCode)) {
-          String mode = Objects.toString(parameters.getOrDefault("mode", "quick"), "");
-          if (!Set.of("quick", "service").contains(mode)) {
-            throw new ApiException("Nmap mode 仅支持 quick 或 service");
-          }
+          // D-2：取值规格与护栏侧共用 ToolParameterSpec。
+          String mode =
+              ToolParameterSpec.requireNmapMode(
+                  parameters.getOrDefault("mode", ToolParameterSpec.NMAP_DEFAULT_MODE));
           parameters.put("mode", mode);
         }
         if ("fscan_scan".equals(toolCode)) {
+          // D-3：取值规格与护栏侧共用 ToolParameterSpec。注意 FULL 启用漏洞利用类检测。
           String vulnMode =
-              Objects.toString(parameters.getOrDefault("vulnMode", "safe"), "").toUpperCase(Locale.ROOT);
-          if (!Set.of("SAFE", "FINGERPRINT", "FULL").contains(vulnMode)) {
-            throw new ApiException("fscan 模式仅支持 safe、fingerprint 或 full");
-          }
+              ToolParameterSpec.requireFscanVulnMode(
+                  parameters.getOrDefault(
+                      "vulnMode", ToolParameterSpec.FSCAN_DEFAULT_VULN_MODE));
           parameters.put("vulnMode", vulnMode);
         }
       }
@@ -327,11 +325,8 @@ public class AiTaskDispatchService {
           throw new ApiException("ZAP spider 参数必须为布尔值");
         }
         if (parameters.containsKey("strength")) {
-          String strength =
-              Objects.toString(parameters.get("strength"), "").toUpperCase(Locale.ROOT);
-          if (!Set.of("LOW", "MEDIUM", "HIGH", "INSANE").contains(strength)) {
-            throw new ApiException("ZAP 扫描强度仅支持 LOW、MEDIUM、HIGH 或 INSANE");
-          }
+          // D-4：取值规格与护栏侧共用 ToolParameterSpec。
+          String strength = ToolParameterSpec.requireZapStrength(parameters.get("strength"));
           parameters.put("strength", strength);
         }
       }
