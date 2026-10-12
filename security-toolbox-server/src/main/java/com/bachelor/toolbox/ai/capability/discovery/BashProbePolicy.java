@@ -3,6 +3,7 @@ package com.bachelor.toolbox.ai.capability.discovery;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -113,6 +114,9 @@ public final class BashProbePolicy {
   /** 危险命令模式（教科书式的破坏性写法）。 */
   private static final Map<String, Pattern> DENIED_PATTERNS = deniedPatterns();
 
+  /** 拒绝消息中回显原始请求路径的最大字符数（防超长/控制字符污染审计日志）。 */
+  private static final int MAX_RAW_ECHO = 200;
+
   private BashProbePolicy() {}
 
   // ---------------------------------------------------------------- 校验
@@ -186,10 +190,23 @@ public final class BashProbePolicy {
     if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS) && !Files.isDirectory(root)) {
       throw new BashProbeRejectedException("工作区根目录不是目录: " + root);
     }
-    Path candidate =
-        (requested == null || requested.isBlank())
-            ? root
-            : root.resolve(requested.trim()).normalize();
+    // ⚠️ root.resolve(...) 可能抛 InvalidPathException——它不是 BashProbeRejectedException。
+    //
+    // 触发条件：请求的路径含平台非法字符（Windows 上如 "sub/.. /.." 的尾随空格、
+    // 非法字符 <>:"|?* 等）。若任其冒泡，调用方拿到的是一个【未归一化的原始异常】，
+    // 既不在"护栏拒绝"的语义内，也不带可归因的拒绝理由——校验路径于是变成了"崩溃"
+    // 而不是"拒绝"。这正是本项目反复强调的"拒绝理由必须可归因"。
+    //
+    // 因此统一归一化为拒绝：非法路径 = 不允许的工作目录。
+    Path candidate;
+    try {
+      candidate =
+          (requested == null || requested.isBlank())
+              ? root
+              : root.resolve(requested.trim()).normalize();
+    } catch (InvalidPathException malformed) {
+      throw new BashProbeRejectedException("工作目录路径非法，拒绝执行: " + describeRaw(requested));
+    }
     Path resolved;
     if (Files.exists(candidate)) {
       try {
@@ -209,6 +226,32 @@ public final class BashProbePolicy {
           "工作目录逃逸出工作区，拒绝执行: " + resolved + "（工作区: " + root + "）");
     }
     return resolved;
+  }
+
+  /**
+   * 把原始请求字符串安全地渲染进拒绝消息。
+   *
+   * <p>该字符串可能含控制字符或极长内容，直接拼接会污染审计日志（甚至注入换行伪造日志行）。
+   * 因此：截断到 {@value #MAX_RAW_ECHO} 字符，并把不可打印字符转义为 {@code \\uXXXX}。
+   */
+  private static String describeRaw(String raw) {
+    if (raw == null) {
+      return "<null>";
+    }
+    StringBuilder out = new StringBuilder(Math.min(raw.length(), MAX_RAW_ECHO) + 8);
+    int limit = Math.min(raw.length(), MAX_RAW_ECHO);
+    for (int index = 0; index < limit; index++) {
+      char current = raw.charAt(index);
+      if (current < 0x20 || current == 0x7F) {
+        out.append(String.format("\\u%04x", (int) current));
+      } else {
+        out.append(current);
+      }
+    }
+    if (raw.length() > MAX_RAW_ECHO) {
+      out.append("…(共 ").append(raw.length()).append(" 字符)");
+    }
+    return out.toString();
   }
 
   /**

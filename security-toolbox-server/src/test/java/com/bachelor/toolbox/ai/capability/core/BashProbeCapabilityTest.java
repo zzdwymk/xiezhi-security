@@ -187,12 +187,162 @@ class BashProbeCapabilityTest {
         BashProbePolicy.resolveWorkingDirectory(workspace, "sub"),
         "工作区内的目录必须放行");
 
-    for (String escape : new String[] {"..", "../..", "../../etc", "sub/../..", "..\\.."}) {
+    // 平台无关的逃逸写法：'/' 在所有平台都是分隔符。
+    for (String escape : new String[] {"..", "../..", "../../etc", "sub/../.."}) {
       assertThrows(
           BashProbePolicy.BashProbeRejectedException.class,
           () -> BashProbePolicy.resolveWorkingDirectory(workspace, escape),
           "必须拒绝逃逸写法: " + escape);
     }
+  }
+
+  /**
+   * 反斜杠写法 {@code "..\.."} 的<strong>平台相关</strong>语义。
+   *
+   * <h2>为什么必须分平台断言（CI 失败的真实原因）</h2>
+   *
+   * <p>{@code \} <strong>只在 Windows 上是路径分隔符</strong>：
+   *
+   * <ul>
+   *   <li><strong>Windows</strong>：{@code root.resolve("..\\..").normalize()} 会折叠为工作区的
+   *       <em>上两级目录</em> → 逃逸 → 必须被拒绝 ✅
+   *   <li><strong>Linux/macOS</strong>：{@code \} 是<strong>普通文件名字符</strong>，
+   *       {@code "..\.."} 是一个名为 {@code ..\..} 的<strong>单层子目录</strong> →
+   *       {@code normalize()} 不折叠 → 路径<strong>并未逃逸</strong> → 不拒绝
+   * </ul>
+   *
+   * <p>因此"{@code ..\..} 必须被拒绝"<strong>不是一条跨平台成立的性质</strong>。
+   * 原用例把它写进平台无关循环，导致 <strong>CI（ubuntu-latest）必然失败</strong>：
+   * 在 Linux 上该输入既没逃逸、也不该被拒绝。
+   *
+   * <p><strong>这不是实现缺陷</strong>——{@code resolveWorkingDirectory} 的职责是
+   * "拒绝一切逃出工作区的路径"，而在 Linux 上 {@code "..\.."} <em>本就没有逃出</em>。
+   * 真正需要保证的性质是下面这条<strong>平台无关</strong>的不变式：
+   * <blockquote>
+   * 无论请求什么字符串，返回的工作目录<strong>永远</strong>位于工作区内。
+   * </blockquote>
+   * 本用例正是断言这条不变式，而不是断言某个特定写法被拒。
+   */
+  @Test
+  void backslashEscapeIsPlatformDependentButNeverEscapes(@TempDir Path workspace)
+      throws IOException {
+    Path root = workspace.toRealPath();
+    boolean windows = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("win");
+
+    if (windows) {
+      // Windows：反斜杠是分隔符 → 确实逃逸 → 必须拒绝。
+      assertThrows(
+          BashProbePolicy.BashProbeRejectedException.class,
+          () -> BashProbePolicy.resolveWorkingDirectory(workspace, "..\\.."),
+          "Windows 上 '..\\..' 是真实逃逸，必须被拒绝");
+      return;
+    }
+
+    // 非 Windows：反斜杠是普通字符 → 未逃逸 → 放行，但仍必须【落在工作区内】。
+    Path resolved = BashProbePolicy.resolveWorkingDirectory(workspace, "..\\..");
+    assertTrue(
+        resolved.startsWith(root),
+        "无论平台，解析结果都必须位于工作区内；实际: " + resolved + "，工作区: " + root);
+    assertTrue(
+        resolved.getFileName().toString().contains(".."),
+        "非 Windows 上 '..\\..' 应被当作普通文件名，实际: " + resolved);
+  }
+
+  /**
+   * <strong>平台无关的核心不变式</strong>：任意输入都不得逃出工作区。
+   *
+   * <p>这是比"某个写法被拒"更强的性质——它同时覆盖 Windows 与 POSIX 语义，
+   * 也覆盖实现内部走 {@code toRealPath()} 还是 {@code normalize()} 分支。
+   */
+  @Test
+  void noInputEverEscapesWorkspace(@TempDir Path workspace) throws IOException {
+    Path root = workspace.toRealPath();
+    String[] hostile = {
+      "..",
+      "../..",
+      "../../../../../../..",
+      "sub/../..",
+      "..\\..",
+      "..\\..\\..\\..",
+      "....//....//",
+      "./.././../",
+      "sub/../../..",
+      "/etc",
+      "/",
+      "C:\\Windows",
+      "\\\\server\\share",
+      "%2e%2e/%2e%2e",
+      "..%2f..%2f",
+      "sub/.. /..",
+      "\u002e\u002e/\u002e\u002e",
+    };
+    for (String hostileInput : hostile) {
+      Path resolved;
+      try {
+        resolved = BashProbePolicy.resolveWorkingDirectory(workspace, hostileInput);
+      } catch (BashProbePolicy.BashProbeRejectedException rejected) {
+        continue; // 被拒绝 = 安全
+      }
+      // 若未拒绝，则必须确实仍在工作区内——否则就是逃逸。
+      assertTrue(
+          resolved.startsWith(root),
+          "输入 " + hostileInput + " 未被拒绝，且解析结果逃出工作区: " + resolved + "（工作区: " + root + "）");
+    }
+  }
+
+  /**
+   * <strong>非法路径字符必须归一化为"护栏拒绝"，而不是泄漏 {@code InvalidPathException}</strong>。
+   *
+   * <h2>这是本轮发现的真实缺陷（非测试问题）</h2>
+   *
+   * <p>原实现直接写 {@code root.resolve(requested.trim())}。当请求字符串含平台非法字符时
+   * （Windows 上如 {@code "sub/.. /.."} 的<em>尾随空格</em>、或 {@code <>:"|?*} 等），
+   * {@code resolve} 会抛 {@link java.nio.file.InvalidPathException}——它
+   * <strong>不是</strong> {@code BashProbeRejectedException}。
+   *
+   * <p>后果：调用方拿到一个<strong>未归一化的原始异常</strong>，既不在"护栏拒绝"的语义内，
+   * 也没有可归因的拒绝理由。校验路径于是变成"崩溃"而非"拒绝"——
+   * 违反本项目"拒绝理由必须可归因、且必须 fail-closed"的原则。
+   *
+   * <p>修复：把 {@code resolve} 包进 try，将 {@code InvalidPathException} 归一化为
+   * {@code BashProbeRejectedException}（非法路径 = 不允许的工作目录）。
+   */
+  @Test
+  void malformedPathIsRejectedAsGuardrailDenialNotRawException(@TempDir Path workspace) {
+    // 尾随空格在 Windows 上非法；在 POSIX 上合法（会当作普通文件名）。
+    // 因此这里断言【要么拒绝、要么安全地留在工作区内】，不允许泄漏原始异常。
+    String[] malformed = {"sub/.. /..", "a\u0000b", "con", "aux", "trailing.", "trailing "};
+    for (String input : malformed) {
+      try {
+        Path resolved = BashProbePolicy.resolveWorkingDirectory(workspace, input);
+        assertTrue(
+            resolved.isAbsolute(),
+            "未被拒绝的输入也必须返回绝对路径: " + input + " -> " + resolved);
+      } catch (BashProbePolicy.BashProbeRejectedException expected) {
+        assertNotNull(expected.getMessage(), "拒绝必须带可归因的理由: " + input);
+      }
+      // 其他任何异常类型都是缺陷（未归一化）。
+    }
+  }
+
+  /**
+   * <strong>超长/含控制字符的非法路径不得污染审计日志</strong>。
+   *
+   * <p>拒绝消息会进入审计账本。若直接拼接原始输入，攻击者可用换行伪造日志行、
+   * 或用超长字符串撑爆日志。
+   */
+  @Test
+  void rejectionMessageDoesNotEchoRawControlCharacters(@TempDir Path workspace) {
+    String hostile = "x".repeat(5000) + "\n伪造日志行\t" + "\u0000";
+    BashProbePolicy.BashProbeRejectedException rejected =
+        assertThrows(
+            BashProbePolicy.BashProbeRejectedException.class,
+            () -> BashProbePolicy.resolveWorkingDirectory(workspace, hostile));
+    String message = rejected.getMessage();
+    assertNotNull(message);
+    assertFalse(message.contains("\n"), "拒绝消息不得含换行（防伪造日志行）: " + message);
+    assertFalse(message.contains("\t"), "拒绝消息不得含制表符");
+    assertTrue(message.length() < 600, "拒绝消息必须截断，实际长度: " + message.length());
   }
 
   @Test
