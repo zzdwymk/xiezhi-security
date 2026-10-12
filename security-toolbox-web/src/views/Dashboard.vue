@@ -1454,24 +1454,29 @@ async function sendPrompt() {
   } catch (error: any) {
     const message = error instanceof ConversationStorageError ? error.message : readableConversationError(error);
     if (thread && assistantMessage) {
+      // 绑定到 const 局部变量：thread/assistantMessage 是外层 let，TS 无法把收窄结果
+      // 带进下面的箭头函数闭包（TS18048）。此处显式固定，既满足类型检查，
+      // 也避免闭包内再次读取可变变量。
+      const activeThread = thread;
+      const activeAssistantMessage = assistantMessage;
       // 关键：模型回答可能已经通过流式事件写入 content（见 applyAgentEvent 的
       // doneAnswer 分支）。若此处无条件用错误信息覆盖，用户已经看到的回答会被
       // 抹掉，并显示成"未获得模型回答"——即使模型其实已经正常回答。
       // 因此只在 content 仍为空/仍是占位时才写入错误。
       const existing = conversations.items
-        .find((item) => item.id === thread.id)
-        ?.messages.find((item) => item.id === assistantMessage.id);
+        .find((item) => item.id === activeThread.id)
+        ?.messages.find((item) => item.id === activeAssistantMessage.id);
       const streamed = String(existing?.content || "").trim();
       const alreadyAnswered = Boolean(streamed) && !/^(正在|思考中|分析中)/.test(streamed);
       if (alreadyAnswered) {
         // 已有回答：保留回答正文，仅把状态标为已完成，避免"重试回复"按钮误现。
-        conversations.updateMessage(thread.id, assistantMessage.id, {
+        conversations.updateMessage(activeThread.id, activeAssistantMessage.id, {
           content: streamed,
           status: "completed",
           modelStreamStatus: "completed",
         });
       } else {
-        conversations.updateMessage(thread.id, assistantMessage.id, {
+        conversations.updateMessage(activeThread.id, activeAssistantMessage.id, {
           content: message,
           status: "failed",
           modelStreamStatus: "failed",
