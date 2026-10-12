@@ -478,6 +478,22 @@ Write-Host 'Frontend: http://127.0.0.1:5173'
 Write-Host 'Backend:  http://127.0.0.1:8080'
 Write-Host "Logs:     $logDir"
 
+# reports/ 分级保留兜底：距上次回收超过 7 天则触发一次（失败不影响启动）。
+try {
+    $retentionScript = Join-Path $PSScriptRoot 'reports-retention.ps1'
+    $retentionStamp = Join-Path $workspace 'reports\.last-retention'
+    if (Test-Path -LiteralPath $retentionScript) {
+        $lastRetention = if (Test-Path -LiteralPath $retentionStamp) { (Get-Item -LiteralPath $retentionStamp).LastWriteTime } else { [datetime]::MinValue }
+        if ($lastRetention -lt (Get-Date).AddDays(-7)) {
+            Write-Host 'Running reports/ retention (last run was over 7 days ago)...' -ForegroundColor DarkGray
+            & $retentionScript -Apply -Quiet -PurgeQuarantine
+            New-Item -ItemType File -Path $retentionStamp -Force | Out-Null
+        }
+    }
+} catch {
+    Write-Host ("reports/ retention skipped: {0}" -f $_.Exception.Message) -ForegroundColor DarkYellow
+}
+
 if (-not $NoBrowser) {
     Start-Process 'http://127.0.0.1:5173'
 }
