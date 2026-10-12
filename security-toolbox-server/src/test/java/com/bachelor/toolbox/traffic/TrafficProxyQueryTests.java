@@ -40,13 +40,7 @@ class TrafficProxyQueryTests {
       session.setId(90L);
       return session;
     });
-    int port = 0;
-    for (int candidate = 19080; candidate <= 19120; candidate++) {
-      try (java.net.ServerSocket socket = new java.net.ServerSocket(candidate, 1, java.net.InetAddress.getLoopbackAddress())) {
-        port = candidate;
-        break;
-      } catch (java.io.IOException occupied) { }
-    }
+    int port = availablePort();
     assertThat(port).isGreaterThan(0);
     TrafficProxyService proxy = service();
     try {
@@ -82,13 +76,7 @@ class TrafficProxyQueryTests {
       session.setId(9L);
       return session;
     });
-    int port = 0;
-    for (int candidate = 19080; candidate <= 19120; candidate++) {
-      try (java.net.ServerSocket socket = new java.net.ServerSocket(candidate, 1, java.net.InetAddress.getLoopbackAddress())) {
-        port = candidate;
-        break;
-      } catch (java.io.IOException occupied) { }
-    }
+    int port = availablePort();
     assertThat(port).isGreaterThan(0);
     TrafficProxyService service = service();
     assertThat(service.packets()).containsExactly(history);
@@ -114,6 +102,43 @@ class TrafficProxyQueryTests {
     packet.setSessionId(sessionId);
     packet.setCreatedAt(Instant.now());
     return packet;
+  }
+
+  /**
+   * 在固定区间 19080-19120 内挑一个空闲端口。
+   *
+   * <p>与 {@code TrafficProxyLifecycleTests#availablePort()} 同源（该区间是
+   * {@code TrafficProxyService.start} 的产品约束，测试不能改用端口 0）。两点缓解：
+   *
+   * <ul>
+   *   <li>探测时带 {@code setReuseAddress(true)}，与 {@code LocalTrafficProxy.start} 的绑定方式
+   *       对齐，避免把 {@code TIME_WAIT} 误判为占用；
+   *   <li>从随机起点扫描，避免多个测试类总是争抢 19080 这一个端口。
+   * </ul>
+   *
+   * <p>"探测后 close 再绑定"的 TOCTOU 窗口被缩小但未消除——已在注释中如实记录，未假装解决。
+   */
+  private static int availablePort() {
+    int span = 19120 - 19080 + 1;
+    int offset = java.util.concurrent.ThreadLocalRandom.current().nextInt(span);
+    for (int attempt = 0; attempt < span; attempt++) {
+      int port = 19080 + ((offset + attempt) % span);
+      java.net.ServerSocket socket = null;
+      try {
+        socket = new java.net.ServerSocket();
+        socket.setReuseAddress(true);
+        socket.bind(
+            new java.net.InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), port), 1);
+        return port;
+      } catch (java.io.IOException occupied) {
+        // 该端口已被占用，试下一个。
+      } finally {
+        if (socket != null) {
+          try { socket.close(); } catch (java.io.IOException ignored) { }
+        }
+      }
+    }
+    throw new IllegalStateException("No free test proxy port");
   }
 
   private TrafficProxyService service() {
