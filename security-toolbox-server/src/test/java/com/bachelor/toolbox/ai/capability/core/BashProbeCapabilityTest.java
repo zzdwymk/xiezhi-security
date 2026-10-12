@@ -326,6 +326,93 @@ class BashProbeCapabilityTest {
   }
 
   /**
+   * <strong>控制字符必须被平台无关地拒绝</strong>（CI 实测暴露的真实缺陷回归）。
+   *
+   * <h2>为什么单靠上面那条用例不够</h2>
+   *
+   * <p>上面的 {@link #rejectionMessageDoesNotEchoRawControlCharacters} 断言的是"要么拒绝、
+   * 且消息干净"。它之所以在 <strong>Windows 上通过、在 Linux 上失败</strong>，是因为它把
+   * "是否被拒绝"这件事<strong>委托给了 JDK 解析器的平台差异</strong>：
+   *
+   * <ul>
+   *   <li><strong>Windows</strong>：{@code WindowsPathParser#isInvalidPathChar} 判定
+   *       {@code ch < '\u0020'}，换行属于非法 → {@code Path.resolve} 抛
+   *       {@code InvalidPathException} → 被归一化为拒绝 ✅
+   *   <li><strong>Linux/macOS</strong>：{@code UnixPath#normalizeAndCheck} <em>只</em>检查
+   *       {@code '\u0000'}，换行是合法文件名字符 → {@code resolve} 顺利成功、不抛异常
+   *       → 测试报 "nothing was thrown" ❌
+   * </ul>
+   *
+   * <p>也就是说，原用例在 Linux 上<strong>从来没有真正验证过</strong>"控制字符被拒绝"这条性质——
+   * 它验证的只是"Windows 恰好会拒绝"。这正是本轮 CI 失败（run 38221083719，JDK 17 / ubuntu-latest）
+   * 的根因。
+   *
+   * <p>本用例改为断言<strong>平台无关</strong>的性质：含控制字符的输入<strong>必须</strong>被拒绝，
+   * 不依赖任何平台的解析器行为。
+   */
+  @Test
+  void controlCharactersInWorkingDirectoryAreRejectedOnEveryPlatform(@TempDir Path workspace) {
+    // 逐个覆盖各类控制字符：换行、回车、制表符、NUL、退格、垂直制表、DEL。
+    for (String control :
+        new String[] {"\n", "\r", "\t", "\u0000", "\u0008", "\u000B", "\u000C", "\u001B", "\u007F"}) {
+      String input = "sub" + control + "dir";
+      assertThrows(
+          BashProbePolicy.BashProbeRejectedException.class,
+          () -> BashProbePolicy.resolveWorkingDirectory(workspace, input),
+          "含控制字符的路径必须被拒绝（平台无关），实际未拒绝: " + input.replace(control, "<ctrl>"));
+    }
+
+    // 上面那条失败用例的原始输入：必须在所有平台都被拒绝。
+    String hostile = "x".repeat(5000) + "\n伪造日志行\t" + "\u0000";
+    BashProbePolicy.BashProbeRejectedException rejected =
+        assertThrows(
+            BashProbePolicy.BashProbeRejectedException.class,
+            () -> BashProbePolicy.resolveWorkingDirectory(workspace, hostile),
+            "超长且含控制字符的路径必须在所有平台都被拒绝");
+    String message = rejected.getMessage();
+    assertNotNull(message);
+    assertFalse(message.contains("\n"), "拒绝消息不得含换行: " + message);
+    assertFalse(message.contains("\t"), "拒绝消息不得含制表符");
+    assertTrue(message.length() < 600, "拒绝消息必须截断，实际长度: " + message.length());
+
+    // 超长但【不含】控制字符的输入也必须拒绝，且不得依赖平台路径长度上限。
+    assertThrows(
+        BashProbePolicy.BashProbeRejectedException.class,
+        () -> BashProbePolicy.resolveWorkingDirectory(workspace, "a".repeat(4096)),
+        "超长路径必须被拒绝");
+
+    // 回归：**纯控制字符**的输入不得因为 String.trim() 剥空而落进"未指定工作目录"分支。
+    // trim() 会剥掉所有 <= U+0020 的字符，故 "\u0001"×1000 trim 后是空串；若先 trim 再校验，
+    // 这类输入会被当作 null 而放行（fail-open）。校验必须针对原始输入。
+    for (String controlOnly :
+        new String[] {
+          "\u0001".repeat(1000), "\n".repeat(1000), "\t".repeat(1000), "\u007F".repeat(1000)
+        }) {
+      assertThrows(
+          BashProbePolicy.BashProbeRejectedException.class,
+          () -> BashProbePolicy.resolveWorkingDirectory(workspace, controlOnly),
+          "纯控制字符输入必须被拒绝，不得被 trim 成空串后放行");
+    }
+
+    // 拒绝消息长度必须有硬上界：控制字符按 6 字符转义膨胀，最坏情况也不得超过 600。
+    int worst = 0;
+    for (String adversarial :
+        new String[] {
+          "\u0001".repeat(1024), "\u007F".repeat(1024), "x".repeat(100000), "\n".repeat(100000)
+        }) {
+      try {
+        BashProbePolicy.resolveWorkingDirectory(workspace, adversarial);
+      } catch (BashProbePolicy.BashProbeRejectedException bounded) {
+        worst = Math.max(worst, bounded.getMessage().length());
+      }
+    }
+    assertTrue(worst < 600, "最坏情况拒绝消息长度必须 < 600，实际: " + worst);
+
+    // 边界：合法路径不受影响（测误拦率）。
+    BashProbePolicy.resolveWorkingDirectory(workspace, "sub");
+  }
+
+  /**
    * <strong>超长/含控制字符的非法路径不得污染审计日志</strong>。
    *
    * <p>拒绝消息会进入审计账本。若直接拼接原始输入，攻击者可用换行伪造日志行、
