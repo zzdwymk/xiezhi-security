@@ -115,7 +115,7 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
       html.append("<tr><td>")
           .append(task.getId())
           .append("</td><td>")
-          .append(text(task.getToolCode()))
+          .append(text(ReportFormatters.toolLabel(task.getToolCode())))
           .append("</td><td>")
           .append(text(ReportFormatters.taskStatusLabel(task.getStatus())))
           .append("</td><td>")
@@ -215,7 +215,7 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
             taskTable,
             fonts,
             String.valueOf(task.getId()),
-            safe(task.getToolCode()),
+            ReportFormatters.toolLabel(task.getToolCode()),
             ReportFormatters.taskStatusLabel(task.getStatus()),
             format(task.getCreatedAt()),
             safe(task.getToolVersionSnapshot()) + "\n" + joinHashes(task));

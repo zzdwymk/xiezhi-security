@@ -1,6 +1,7 @@
 import DOMPurify from "dompurify";
 import { Marked, Tokenizer } from "marked";
 import { localizeAiDisplayText, localizeAiInlineIdentifier, type AiDisplayTextOptions } from "./aiPresentation";
+import { detectLanguage, formatCode, highlightCode, getLanguageLabel } from "./codeHighlight";
 
 const cache = new Map<string, string>();
 const MAX_CACHE_ENTRIES = 200;
@@ -91,6 +92,60 @@ export function renderMarkdown(value: string, options: AiDisplayTextOptions & {
       }
     }
   }
+  template.content.querySelectorAll("pre").forEach((pre) => {
+    if (pre.parentElement?.classList.contains("code-block-wrapper")) return;
+
+    const codeEl = pre.querySelector("code");
+    const rawCode = (codeEl ? codeEl.textContent : pre.textContent) || "";
+
+    const langClass = Array.from(codeEl?.classList || []).find((c) => c.startsWith("language-"));
+    const explicitLang = langClass ? langClass.replace(/^language-/, "") : "";
+    const detectedLang = detectLanguage(rawCode, explicitLang);
+    const langLabel = getLanguageLabel(detectedLang);
+
+    const formattedCode = formatCode(rawCode, detectedLang);
+    const highlightedHtml = highlightCode(formattedCode, detectedLang);
+
+    const wrapper = document.createElement("div");
+    wrapper.className = `code-block-wrapper code-lang-${detectedLang}`;
+    wrapper.setAttribute("data-lang", detectedLang);
+
+    const header = document.createElement("div");
+    header.className = "code-block-header";
+    header.setAttribute("data-code-header", "true");
+
+    const badge = document.createElement("span");
+    badge.className = "code-block-badge";
+    badge.textContent = langLabel;
+    header.appendChild(badge);
+
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "code-copy-btn";
+    copyBtn.setAttribute("aria-label", "复制代码");
+    copyBtn.innerHTML = `
+      <svg class="code-copy-icon" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="5.5" y="5.5" width="8" height="8" rx="1.5"></rect>
+        <path d="M3.5 10.5V3.5A1.5 1.5 0 0 1 5 2h5.5"></path>
+      </svg>
+      <svg class="code-copy-check" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3.5 8.5L6.5 11.5L12.5 4.5"></path>
+      </svg>
+      <span class="code-copy-text">复制</span>
+    `;
+    header.appendChild(copyBtn);
+
+    if (codeEl) {
+      codeEl.className = `language-${detectedLang}`;
+      codeEl.innerHTML = highlightedHtml;
+    } else {
+      pre.innerHTML = `<code class="language-${detectedLang}">${highlightedHtml}</code>`;
+    }
+
+    pre.parentNode?.insertBefore(wrapper, pre);
+    wrapper.appendChild(header);
+    wrapper.appendChild(pre);
+  });
   const html = template.innerHTML;
   cache.set(cacheKey, html);
   if (cache.size > MAX_CACHE_ENTRIES)
@@ -108,6 +163,7 @@ export function markdownToPlainText(value: string) {
     let result = "";
     let previousBlock = false;
     for (const child of node.childNodes) {
+      if (child instanceof Element && child.classList.contains("code-block-header")) continue;
       const block = child instanceof Element && blockTags.has(child.tagName);
       const text = nodeText(child);
       if (!text || (!text.trim() && (!result || previousBlock))) continue;

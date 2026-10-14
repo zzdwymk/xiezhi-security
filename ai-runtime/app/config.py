@@ -57,7 +57,7 @@ class Settings:
         "AI_RUNTIME_EXPERIMENT_DATE", "2026-08-07"
     )[:32]
     llm_timeout_seconds: float = _bounded_float(
-        "AI_RUNTIME_LLM_TIMEOUT_SECONDS", 45.0, 0.1, 120.0
+        "AI_RUNTIME_LLM_TIMEOUT_SECONDS", 120.0, 0.1, 240.0
     )
     max_retries: int = min(max(int(os.getenv("AI_RUNTIME_MAX_RETRIES", "2")), 0), 3)
     max_request_bytes: int = min(

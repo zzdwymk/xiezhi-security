@@ -6,6 +6,7 @@ const crypto = require("node:crypto");
 async function captureReport(page, H, locator, expectedPath, label, timeout = 60000) {
   const pending = page.waitForResponse(r => new URL(r.url()).pathname === expectedPath && r.request().method() === "GET", { timeout })
     .then(response => ({ response }), error => ({ error }));
+  await locator.scrollIntoViewIfNeeded().catch(() => {});
   await locator.click();
   const observed = await pending;
   if (observed.error) throw new Error(`未观察到报告响应 ${expectedPath}: ${observed.error.message}`);

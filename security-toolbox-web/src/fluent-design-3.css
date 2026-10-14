@@ -266,7 +266,7 @@ html .el-button.el-button--danger.is-plain:not(.is-disabled):not(:disabled):acti
 .desktop-v2-recent-item:hover small {
   color: var(--app-text) !important;
 }
-.desktop-v2-recent-item:hover .el-icon {
+.desktop-v2-recent-item:hover .desktop-v2-recent-open > .el-icon {
   color: var(--app-accent) !important;
 }
 .desktop-v2-recent-item.active {

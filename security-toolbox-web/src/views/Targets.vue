@@ -20,6 +20,7 @@ import { toErrorMessage } from "../utils/errorMessage";
 import { downloadBlob, EmptyDownloadError } from "../utils/download";
 import {
   COMMON_PORT_OPTIONS,
+  inferTargetType,
   normalizeAllowedPorts,
   validateDomainTarget,
 } from "../utils/ports";
@@ -384,6 +385,20 @@ function openCreate() {
 
   saveError.value = "";
   dialog.value = true;
+}
+
+function onTargetValueInput(val: string) {
+  const inferred = inferTargetType(val);
+  if (inferred) {
+    form.targetType = inferred;
+  }
+}
+
+function onEditTargetValueInput(val: string) {
+  const inferred = inferTargetType(val);
+  if (inferred) {
+    editForm.targetType = inferred;
+  }
 }
 
 async function create() {
@@ -935,6 +950,7 @@ onMounted(load);
           v-model="form.projectId"
           placeholder="选择该目标归属的评估项目"
           filterable
+          clearable
           style="width: 100%"
           @change="applyProjectAuthorizationDefaults"
         >
@@ -961,6 +977,7 @@ onMounted(load);
         ><el-input
           v-model="form.targetValue"
           placeholder="example.com 或 192.0.2.10"
+          @input="onTargetValueInput"
       /></el-form-item>
       <el-form-item label="授权记录"
         ><el-input
@@ -1290,6 +1307,7 @@ onMounted(load);
         <el-input
           v-model="editForm.targetValue"
           placeholder="例如：example.com"
+          @input="onEditTargetValueInput"
         />
       </el-form-item>
       <el-form-item label="授权记录">

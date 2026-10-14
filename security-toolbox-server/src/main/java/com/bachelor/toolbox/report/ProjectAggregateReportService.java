@@ -123,7 +123,7 @@ public class ProjectAggregateReportService {
           .append("</td><td>")
           .append(task.getTargetId())
           .append("</td><td>")
-          .append(esc(task.getToolCode()))
+          .append(esc(ReportFormatters.toolLabel(task.getToolCode())))
           .append("</td><td>")
           .append(esc(ReportFormatters.taskStatusLabel(task.getStatus())))
           .append("</td><td>")
@@ -248,7 +248,7 @@ public class ProjectAggregateReportService {
             fonts,
             String.valueOf(task.getId()),
             String.valueOf(task.getTargetId()),
-            safe(task.getToolCode()),
+            ReportFormatters.toolLabel(task.getToolCode()),
             ReportFormatters.taskStatusLabel(task.getStatus()),
             format(task.getCreatedAt()),
             safe(task.getToolVersionSnapshot())

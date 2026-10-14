@@ -38,6 +38,8 @@ function runtimeModelEnvironment(settings) {
     AI_RUNTIME_PROXY_MODE: String(proxyMode),
     AI_RUNTIME_API_MODE: settings.apiMode || "chat_completions",
     AI_RUNTIME_API_KEY: settings.apiKey || "",
+    AI_RUNTIME_LLM_TIMEOUT_SECONDS: "120",
+    AI_RUNTIME_AGENT_TURN_TIMEOUT_SECONDS: "180",
   };
 }
 

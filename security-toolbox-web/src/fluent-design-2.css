@@ -2344,6 +2344,7 @@ html
   line-height: 1;
   border-radius: var(--fluent-radius-control);
   transform: translateY(-50%);
+  color: light-dark(var(--fluent-danger-bg), #ffb4ab) !important;
 }
 
 .desktop-v2-app-frame .desktop-v2-recent-delete > .el-icon {
@@ -2351,6 +2352,7 @@ html
   width: 16px;
   height: 16px;
   line-height: 1;
+  color: light-dark(var(--fluent-danger-bg), #ffb4ab) !important;
 }
 
 .desktop-v2-app-frame .desktop-v2-recent-item:hover .desktop-v2-recent-delete,
@@ -2362,7 +2364,11 @@ html
 
 .desktop-v2-app-frame .desktop-v2-recent-delete:is(:hover, :focus-visible):not(:disabled) {
   background: color-mix(in srgb, var(--fluent-danger-bg) 10%, var(--app-surface-strong));
-  color: light-dark(var(--fluent-danger-hover-bg), #ffd2cc);
+  color: light-dark(var(--fluent-danger-hover-bg), #ffd2cc) !important;
+}
+
+.desktop-v2-app-frame .desktop-v2-recent-delete:is(:hover, :focus-visible):not(:disabled) > .el-icon {
+  color: light-dark(var(--fluent-danger-hover-bg), #ffd2cc) !important;
 }
 
 .desktop-v2-app-frame .desktop-v2-recent-empty {

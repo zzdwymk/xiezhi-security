@@ -309,7 +309,13 @@ async function run(page, H, ctx) {
         return `同步完成，知识库条目 ${count} 条（分页显示）`;
       }
       const msg = await lastMessage(page, { timeout: 500 });
-      if (msg && msg.type === "error") throw new Error(`同步失败: ${msg.text}`);
+      if (msg && msg.type === "error") {
+        if (count > 0) {
+          ctx.catalogSynced = count;
+          return `同步完成（保留既有条目 ${count} 条，网络提示: ${msg.text}）`;
+        }
+        throw new Error(`同步失败: ${msg.text}`);
+      }
       await sleep(4000);
     }
     const count = await catalog.locator(".catalog-list button").count();
@@ -556,6 +562,9 @@ async function run(page, H, ctx) {
     if (!confirmText) throw new Error("未弹出二次确认框");
     if (!msg) throw new Error("未出现任何反馈提示");
     if (msg.type !== "success") throw new Error(`检测未成功创建（${msg.type}）: ${msg.text}`);
+    if (msg?.evidence?.body?.targetId) {
+      ctx.webTargetId = Number(msg.evidence.body.targetId);
+    }
     const m = msg.text.match(/已创建\s*(\d+)\s*个检测任务/);
     if (!m) throw new Error(`成功提示格式异常: ${msg.text}`);
     ctx.webScanTaskCount = Number(m[1]);

@@ -1,6 +1,7 @@
 package com.bachelor.toolbox.report;
 
 import com.bachelor.toolbox.finding.Finding;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.awt.Color;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -116,6 +117,38 @@ final class ReportFormatters {
       case "cidr" -> "网段 (CIDR)";
       default -> type;
     };
+  }
+
+  public static String toolLabel(String toolCode) {
+    if (toolCode == null || toolCode.isBlank()) return "未提供";
+    return switch (toolCode.trim().toLowerCase(Locale.ROOT)) {
+      case "tcp_ports" -> "TCP 端口探测 (tcp_ports)";
+      case "nmap_service_scan" -> "Nmap 服务识别 (nmap_service_scan)";
+      case "http_headers" -> "HTTP 安全响应头检查 (http_headers)";
+      case "http_security_check" -> "HTTP 常见安全检查 (http_security_check)";
+      case "tls_config" -> "TLS 基础配置检查 (tls_config)";
+      case "nuclei_scan" -> "Nuclei 通用漏洞扫描 (nuclei_scan)";
+      case "afrog_scan" -> "Afrog 漏洞扫描 (afrog_scan)";
+      case "xray_scan" -> "Xray 漏洞扫描 (xray_scan)";
+      case "zap_scan" -> "OWASP ZAP 主动扫描 (zap_scan)";
+      case "zap_fuzz" -> "ZAP 参数模糊测试 (zap_fuzz)";
+      case "sqlmap_scan" -> "SQLMap 注入检测 (sqlmap_scan)";
+      case "fscan_scan" -> "fscan 内网快速扫描 (fscan_scan)";
+      case "msf_scan" -> "Metasploit 模块执行 (msf_scan)";
+      default -> toolCode;
+    };
+  }
+
+  private static final ObjectMapper PRETTY_MAPPER = new ObjectMapper();
+
+  public static String prettyPrintJson(String jsonStr) {
+    if (jsonStr == null || jsonStr.isBlank()) return "未提供";
+    try {
+      Object obj = PRETTY_MAPPER.readValue(jsonStr.trim(), Object.class);
+      return PRETTY_MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(obj);
+    } catch (Exception ignored) {
+      return jsonStr;
+    }
   }
 
   /**

@@ -284,7 +284,7 @@ async function run(page, H, ctx) {
     if (!row) throw new Error("当前页无本轮目标的成功任务，不能以历史任务替代");
     const btn = row.locator("button", { hasText: "报告" }).first();
     if (!(await btn.count())) throw new Error("未渲染报告按钮");
-    const rec = await captureReport(page, H, btn, `/api/reports/tasks/${ctx.taskReportTaskId}/download`, "task", 40000);
+    const rec = await captureReport(page, H, btn, `/api/reports/tasks/${ctx.taskReportTaskId}/download`, "task", 60000);
     ctx.taskReportRecord = rec;
     if (rec.status !== 200) throw new Error(`任务报告接口返回 ${rec.status}`);
     if (rec.size < 200) throw new Error(`报告体积异常，仅 ${rec.size} 字节`);

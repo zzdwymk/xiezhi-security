@@ -402,11 +402,19 @@ public class AiConversationMemoryService {
     }
   }
 
-  private void persist(String id, Session session) {
+  private synchronized void persist(String id, Session session) {
     if (repository == null) return;
     try {
-      AiConversationSessionRecord record = new AiConversationSessionRecord();
-      record.setId(id);
+      AiConversationSessionRecord record =
+          repository
+              .findById(id)
+              .orElseGet(
+                  () -> {
+                    AiConversationSessionRecord r = new AiConversationSessionRecord();
+                    r.setId(id);
+                    r.setCreatedAt(Instant.now());
+                    return r;
+                  });
       record.setProjectId(session.projectId);
       record.setTargetId(session.targetId);
       record.setLastAccess(session.lastAccess);
@@ -416,9 +424,23 @@ public class AiConversationMemoryService {
               session.turns.stream()
                   .map(turn -> new PersistedTurn(turn.user(), turn.text()))
                   .toList()));
-      repository.save(record);
+      try {
+        repository.saveAndFlush(record);
+      } catch (org.springframework.dao.DataIntegrityViolationException dive) {
+        repository
+            .findById(id)
+            .ifPresent(
+                existing -> {
+                  existing.setProjectId(session.projectId);
+                  existing.setTargetId(session.targetId);
+                  existing.setLastAccess(session.lastAccess);
+                  existing.setLastPlanJson(session.lastPlanJson);
+                  existing.setTurnsJson(record.getTurnsJson());
+                  repository.save(existing);
+                });
+      }
     } catch (Exception ex) {
-      throw new ApiException("AI 会话记忆暂时不可写");
+      // 尽力而为持久化，避免底层竞态导致模型回答失败
     }
   }
 
@@ -440,6 +462,93 @@ public class AiConversationMemoryService {
   public record SessionHandle(String id, Object monitor, Long projectId, Long targetId) {}
 
   public record SessionScope(Long projectId, Long targetId) {}
+
+  public List<Map<String, Object>> listAllPersistedThreads() {
+    if (repository == null) return List.of();
+    List<AiConversationSessionRecord> records = repository.findAllByOrderByLastAccessDesc();
+    List<Map<String, Object>> threads = new ArrayList<>(records.size());
+    for (AiConversationSessionRecord record : records) {
+      if (record.getThreadJson() != null && !record.getThreadJson().isBlank()) {
+        try {
+          @SuppressWarnings("unchecked")
+          Map<String, Object> map = objectMapper.readValue(record.getThreadJson(), Map.class);
+          threads.add(map);
+          continue;
+        } catch (Exception ignored) {
+        }
+      }
+      Map<String, Object> fallback = new LinkedHashMap<>();
+      fallback.put("id", record.getId());
+      fallback.put("title", record.getTitle() != null ? record.getTitle() : "历史对话");
+      fallback.put("projectId", record.getProjectId());
+      fallback.put("targetId", record.getTargetId());
+      fallback.put("targetName", record.getTargetName());
+      fallback.put(
+          "createdAt",
+          record.getCreatedAt() != null
+              ? record.getCreatedAt().toString()
+              : record.getLastAccess().toString());
+      fallback.put("updatedAt", record.getLastAccess().toString());
+      fallback.put("messages", List.of());
+      threads.add(fallback);
+    }
+    return threads;
+  }
+
+  public synchronized void saveClientThread(String sessionId, Map<String, Object> threadData) {
+    if (repository == null || sessionId == null || sessionId.isBlank()) return;
+    try {
+      AiConversationSessionRecord record =
+          repository
+              .findById(sessionId)
+              .orElseGet(
+                  () -> {
+                    AiConversationSessionRecord r = new AiConversationSessionRecord();
+                    r.setId(sessionId);
+                    r.setCreatedAt(Instant.now());
+                    r.setTurnsJson("[]");
+                    return r;
+                  });
+      record.setLastAccess(Instant.now());
+      if (threadData != null) {
+        Object title = threadData.get("title");
+        if (title != null) record.setTitle(String.valueOf(title));
+        Object proj = threadData.get("projectId");
+        if (proj instanceof Number n) record.setProjectId(n.longValue());
+        Object tgt = threadData.get("targetId");
+        if (tgt instanceof Number n) record.setTargetId(n.longValue());
+        Object tgtName = threadData.get("targetName");
+        if (tgtName != null) record.setTargetName(String.valueOf(tgtName));
+        record.setThreadJson(objectMapper.writeValueAsString(threadData));
+      }
+      try {
+        repository.saveAndFlush(record);
+      } catch (org.springframework.dao.DataIntegrityViolationException dive) {
+        repository
+            .findById(sessionId)
+            .ifPresent(
+                existing -> {
+                  existing.setLastAccess(Instant.now());
+                  if (record.getTitle() != null) existing.setTitle(record.getTitle());
+                  if (record.getThreadJson() != null)
+                    existing.setThreadJson(record.getThreadJson());
+                  repository.save(existing);
+                });
+      }
+    } catch (Exception ignored) {
+    }
+  }
+
+  public void deletePersistedThread(String sessionId) {
+    clear(sessionId);
+  }
+
+  public void clearAllPersistedThreads() {
+    if (repository != null) {
+      repository.deleteAll();
+    }
+    evictAllLocal();
+  }
 
   private static final class Session {
     private final Long projectId;

@@ -7,9 +7,11 @@ import "./desktop-v2.css";
 import "./unified-theme.css";
 import "./fluent-design-2.css";
 import "./fluent-design-3.css";
+import "./code-block.css";
 import "./motion.css";
 import { initializeSystemTheme } from "./system-theme";
 import { initializeMotion } from "./motion";
+import { initializeMarkdownCopyListener } from "./utils/codeHighlight";
 import App from "./App.vue";
 import router from "./router";
 
@@ -24,6 +26,7 @@ if (tableComponent?.props?.border !== undefined) {
 async function bootstrap() {
   await initializeSystemTheme();
   initializeMotion();
+  initializeMarkdownCopyListener();
   const app = createApp(App).use(createPinia()).use(router);
   await router.isReady();
   app.mount("#app");

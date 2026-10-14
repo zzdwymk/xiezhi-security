@@ -14,6 +14,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -128,14 +129,14 @@ public class ReportService {
                     : target == null ? null : target.getAuthorizationNote()))
         .append("</div></div></div>")
         .append("<h2>测试范围</h2><div class=\"grid\">")
-        .append(row("授权目标快照", task.getTargetSnapshotJson()))
+        .append(row("授权目标快照", formatTargetSnapshot(task.getTargetSnapshotJson())))
         .append(row("允许端口快照", task.getAllowedPortsSnapshot()))
         .append(row("授权生效时间", format(task.getAuthorizationValidFromSnapshot())))
         .append(row("授权到期时间", format(task.getAuthorizationExpiresAtSnapshot())))
         .append(row("快照采集时间", format(task.getSnapshotCapturedAt())))
         .append("</div>")
         .append("<h2>任务与工具</h2><div class=\"grid\">")
-        .append(row("测试工具", task.getToolCode()))
+        .append(row("测试工具", ReportFormatters.toolLabel(task.getToolCode())))
         .append(row("工具版本快照", task.getToolVersionSnapshot()))
         .append(row("规则版本 SHA-256", task.getRuleVersionSnapshot()))
         .append(row("Nuclei 模板集合 SHA-256", task.getNucleiTemplateHashSnapshot()))
@@ -144,8 +145,8 @@ public class ReportService {
         .append(row("创建时间", format(task.getCreatedAt())))
         .append(row("开始时间", format(task.getStartedAt())))
         .append(row("完成时间", format(task.getFinishedAt())))
-        .append(row("请求参数", task.getRequestJson()))
-        .append(row("执行结果", task.getResultJson()))
+        .append(row("请求参数", formatJsonBlock(task.getRequestJson())))
+        .append(row("执行结果", formatJsonBlock(task.getResultJson())))
         .append(row("错误信息", reportErrorMessage(task)))
         .append("</div>");
 
@@ -230,11 +231,48 @@ public class ReportService {
     return "AI 综合研判暂不可用。报告仍保留任务执行状态、原始结果和风险发现，供人工复核。";
   }
 
+  private String formatTargetSnapshot(String snapshotJson) {
+    if (snapshotJson == null || snapshotJson.isBlank()) return "未记录";
+    try {
+      @SuppressWarnings("unchecked")
+      Map<String, Object> map =
+          new com.fasterxml.jackson.databind.ObjectMapper().readValue(snapshotJson, Map.class);
+      StringBuilder sb = new StringBuilder();
+      if (map.containsKey("name")) sb.append("目标名称：").append(map.get("name")).append("\n");
+      if (map.containsKey("targetValue")) sb.append("目标地址：").append(map.get("targetValue")).append("\n");
+      if (map.containsKey("targetType"))
+        sb.append("目标类型：")
+            .append(ReportFormatters.targetTypeLabel(String.valueOf(map.get("targetType"))))
+            .append("\n");
+      if (map.containsKey("enabled"))
+        sb.append("启用状态：")
+            .append(Boolean.TRUE.equals(map.get("enabled")) ? "已启用" : "已停用")
+            .append("\n");
+      if (!sb.isEmpty()) return multiline(sb.toString().trim());
+    } catch (Exception ignored) {
+    }
+    return formatJsonBlock(snapshotJson);
+  }
+
+  private String formatJsonBlock(String json) {
+    if (json == null || json.isBlank()) return "未提供";
+    String pretty = ReportFormatters.prettyPrintJson(json);
+    return "<pre style=\"margin:4px 0;background:#f8fafc;color:#1e293b;border:1px solid #e2e8f0;padding:10px;font-family:Consolas,monospace;font-size:12px;border-radius:6px;white-space:pre-wrap;\"><code>"
+        + text(pretty)
+        + "</code></pre>";
+  }
+
   private String row(String label, Object value) {
+    String content;
+    if (value instanceof String str && (str.startsWith("<pre") || str.contains("<br>"))) {
+      content = str;
+    } else {
+      content = multiline(value == null ? null : value.toString());
+    }
     return "<div class=\"label\">"
         + text(label)
         + "</div><div>"
-        + multiline(value == null ? null : value.toString())
+        + content
         + "</div>";
   }
 
