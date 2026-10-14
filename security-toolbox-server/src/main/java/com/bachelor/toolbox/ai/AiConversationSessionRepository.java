@@ -10,4 +10,6 @@ public interface AiConversationSessionRepository
   List<AiConversationSessionRecord> findByLastAccessBefore(Instant threshold);
 
   Optional<AiConversationSessionRecord> findFirstByOrderByLastAccessAsc();
+
+  List<AiConversationSessionRecord> findAllByOrderByLastAccessDesc();
 }

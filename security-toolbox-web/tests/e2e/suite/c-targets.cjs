@@ -101,10 +101,21 @@ async function run(page, H, ctx) {
   await H.run("C-08", "点击「保存目标」成功登记授权目标", async () => {
     const dlg = await dialog(page, "新增授权目标");
     await clearMessages(page);
+    const targetPromise = page.waitForResponse(
+      (r) => r.request().method() === "POST" && /\/api\/targets$/.test(r.url()),
+      { timeout: 15000 }
+    ).catch(() => null);
     await dialogButton(dlg, "保存目标");
     await sleep(1500);
     await confirmBoxIfPresent(page, "确认并保存");
     await sleep(2000);
+    const r = await targetPromise;
+    if (r && r.ok()) {
+      try {
+        const body = await r.json();
+        if (body && body.id) ctx.ipTargetId = body.id;
+      } catch {}
+    }
     const stillOpen = await dlg.isVisible().catch(() => false);
     if (stillOpen) {
       const err = ((await dlg.locator(".target-save-error").textContent().catch(() => "")) || "").trim();
@@ -262,10 +273,21 @@ async function run(page, H, ctx) {
   await H.run("C-21", "保存 URL 型目标", async () => {
     const dlg = await dialog(page, "新增授权目标");
     await clearMessages(page);
+    const targetPromise = page.waitForResponse(
+      (r) => r.request().method() === "POST" && /\/api\/targets$/.test(r.url()),
+      { timeout: 15000 }
+    ).catch(() => null);
     await dialogButton(dlg, "保存目标");
     await sleep(1500);
     await confirmBoxIfPresent(page, "确认并保存");
     await sleep(2000);
+    const r = await targetPromise;
+    if (r && r.ok()) {
+      try {
+        const body = await r.json();
+        if (body && body.id) ctx.webTargetId = body.id;
+      } catch {}
+    }
     if (await dlg.isVisible().catch(() => false)) {
       const err = ((await dlg.locator(".target-save-error").textContent().catch(() => "")) || "").trim();
       throw new Error(`对话框未关闭，错误="${err}"`);

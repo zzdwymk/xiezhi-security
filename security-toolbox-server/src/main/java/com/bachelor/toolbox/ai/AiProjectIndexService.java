@@ -19,10 +19,13 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Function;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -98,7 +101,13 @@ public class AiProjectIndexService {
             "授权开始：" + time(project.getAuthorizationValidFrom()),
             "授权结束：" + time(project.getAuthorizationExpiresAt()),
             "授权声明：" + safe(project.getAuthorizationStatement()),
-            "项目说明：" + safe(project.getDescription())),
+            "项目说明：" + safe(project.getDescription()),
+            // 授权声明是自由文本，只是背景资料；可执行范围永远由"登记目标 + 允许端口"决定。
+            // 必须显式告知模型，否则模型会把声明里的地址当成权威范围来源
+            // （实测曾据此断言"授权目标是另一个地址"而与本轮实际目标冲突）。
+            "可执行范围说明：授权声明为人工填写的背景资料，可能滞后或与实际登记不一致；"
+                + "本项目唯一可执行的授权范围以「授权目标」文档中的登记地址与允许端口为准，"
+                + "声明文本不授予任何额外目标或端口。若两者冲突，以登记目标为准并明确指出该不一致。"),
         "project",
         Map.of("projectId", projectId.toString(), "kind", "authorization"));
 
@@ -106,10 +115,32 @@ public class AiProjectIndexService {
     Map<Long, AuthorizedTarget> targetById =
         targets.findAllById(links.stream().map(ProjectTarget::getTargetId).toList()).stream()
             .collect(Collectors.toMap(AuthorizedTarget::getId, Function.identity()));
-    links.stream()
+    List<AuthorizedTarget> registeredTargets =
+        links.stream()
+            .map(link -> targetById.get(link.getTargetId()))
+            .filter(Objects::nonNull)
+            .toList();
+    // 声明与登记目标的一致性核查：声明是自由文本，可能残留历史地址（换靶机后忘记更新）。
+    // 这里把冲突显式写进索引，让模型据实说明，而不是把过期地址当成权威授权范围。
+    List<String> conflict = authorizationStatementConflicts(project, registeredTargets);
+    if (!conflict.isEmpty()) {
+      output.add(
+          "授权声明与登记目标不一致（重要）",
+          String.join(
+              "\n",
+              "以下地址出现在项目授权声明中，但并不是本项目当前登记的授权目标：",
+              String.join("、", conflict),
+              "登记目标：" 
+                  + registeredTargets.stream()
+                      .map(t -> safe(t.getTargetValue()))
+                      .collect(Collectors.joining("、")),
+              "结论：这些地址不在授权范围内，不得对其执行任何检测；"
+                  + "可执行范围以登记目标与允许端口为准。回答时应主动指出该不一致。"),
+          "project",
+          Map.of("projectId", projectId.toString(), "kind", "authorization-conflict"));
+    }
+    registeredTargets.stream()
         .limit(40)
-        .map(link -> targetById.get(link.getTargetId()))
-        .filter(Objects::nonNull)
         .forEach(
             target ->
                 output.add(
@@ -271,6 +302,38 @@ public class AiProjectIndexService {
 
   private String time(Instant value) {
     return value == null ? "无" : DISPLAY_TIME.format(value);
+  }
+
+  /** IPv4 字面量（含可选的端口/路径后缀上下文，只取地址部分）。 */
+  private static final Pattern IPV4 =
+      Pattern.compile("(?<![\\d.])((?:\\d{1,3}\\.){3}\\d{1,3})(?![\\d.])");
+
+  /**
+   * 找出「项目授权声明」里提到、但并非本项目当前登记目标的地址。
+   *
+   * <p>授权声明是人工填写的自由文本，更换靶机后容易忘记同步（实测出现过声明仍写旧靶机、
+   * 而实际登记目标已是新地址的情况）。这类不一致若只交给模型自行发现，换模型或换措辞
+   * 就可能被静默忽略，因此这里主动检出并写入索引。
+   *
+   * <p>只做地址级别的粗粒度比对，不解析 CIDR/域名，避免误报；返回结果去重并保持出现顺序。
+   */
+  private List<String> authorizationStatementConflicts(
+      AssessmentProject project, List<AuthorizedTarget> registeredTargets) {
+    String statement = project == null ? null : project.getAuthorizationStatement();
+    if (statement == null || statement.isBlank() || registeredTargets.isEmpty()) return List.of();
+    Set<String> registered =
+        registeredTargets.stream()
+            .map(AuthorizedTarget::getTargetValue)
+            .filter(Objects::nonNull)
+            .flatMap(value -> IPV4.matcher(value).results().map(match -> match.group(1)))
+            .collect(Collectors.toCollection(LinkedHashSet::new));
+    LinkedHashSet<String> conflicts = new LinkedHashSet<>();
+    IPV4.matcher(statement)
+        .results()
+        .map(match -> match.group(1))
+        .filter(address -> !registered.contains(address))
+        .forEach(conflicts::add);
+    return List.copyOf(conflicts);
   }
 
   private String safe(String value) {

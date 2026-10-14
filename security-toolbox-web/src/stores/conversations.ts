@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
+import { endpoints } from "../api";
 import type { CopilotReference } from "../types/copilot";
 import type { CopilotMode } from "../types/copilot";
 import { isPublicAiProgressEvent, publicAiProgressText, publicProgressProvenance } from "../utils/aiPresentation";
@@ -226,7 +227,8 @@ interface LegacyConversationRecord {
 
 const STORAGE_KEY = "security_toolbox_ai_conversations_v2";
 const LEGACY_STORAGE_KEY = "security_toolbox_ai_conversations_v1";
-const MAX_STORAGE_CHARS = 3_500_000;
+const MAX_STORAGE_CHARS = 4_500_000;
+const MAX_CONVERSATIONS = 100;
 
 export class ConversationStorageError extends Error {
   constructor(message: string) {
@@ -417,10 +419,27 @@ export const useConversationStore = defineStore("conversations", () => {
 
   function persistCandidates(candidates: ConversationThread[], operation: string, keepInMemory = false) {
     try {
-      const serialized = JSON.stringify(candidates);
+      let trimmed = candidates;
+      let serialized = JSON.stringify(trimmed);
+      // 若超出存储容量或会话数量过多，自动归档截断最久未活跃的旧会话（保留最新会话），防止硬溢出
+      if (serialized.length > MAX_STORAGE_CHARS || trimmed.length > MAX_CONVERSATIONS) {
+        while (trimmed.length > 5 && (serialized.length > MAX_STORAGE_CHARS || trimmed.length > MAX_CONVERSATIONS)) {
+          trimmed = trimmed.slice(0, -1);
+          serialized = JSON.stringify(trimmed);
+        }
+      }
       if (serialized.length > MAX_STORAGE_CHARS)
         throw new Error(`本机对话达到保存大小限制（${serialized.length} / ${MAX_STORAGE_CHARS} 字符）`);
       localStorage.setItem(STORAGE_KEY, serialized);
+      // 同步更新 items 避免内存状态与存储状态分裂
+      if (trimmed.length !== candidates.length) {
+        items.value = trimmed;
+      }
+      // 异步持久化到后端数据库
+      if (trimmed.length > 0) {
+        const active = trimmed[0];
+        void endpoints.saveConversation(active.id, active).catch(() => {});
+      }
       persistenceError.value = undefined;
       hasUnsavedChanges.value = false;
       return true;
@@ -567,11 +586,34 @@ export const useConversationStore = defineStore("conversations", () => {
     const candidates = items.value.filter((item) => item.id !== id);
     requirePersistence(candidates, "删除本机对话");
     items.value = candidates;
+    void endpoints.deleteConversation(id).catch(() => {});
   }
 
   function clear() {
     requirePersistence([], "清空本机对话");
     items.value = [];
+    void endpoints.clearAllConversations().catch(() => {});
+  }
+
+  async function fetchFromDatabase() {
+    try {
+      const { data } = await endpoints.listConversations();
+      if (Array.isArray(data) && data.length > 0) {
+        const remoteThreads = normalizeConversations(data as ConversationThread[]);
+        const map = new Map<string, ConversationThread>();
+        for (const t of remoteThreads) map.set(t.id, t);
+        for (const t of items.value) {
+          const remote = map.get(t.id);
+          if (!remote || new Date(t.updatedAt).getTime() >= new Date(remote.updatedAt).getTime()) {
+            map.set(t.id, t);
+          }
+        }
+        const merged = Array.from(map.values()).sort(
+          (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+        );
+        items.value = merged;
+      }
+    } catch {}
   }
 
   function taskIds(thread: ConversationThread) {
@@ -592,6 +634,7 @@ export const useConversationStore = defineStore("conversations", () => {
     updateThreadTarget,
     remove,
     clear,
+    fetchFromDatabase,
     taskIds,
   };
 });

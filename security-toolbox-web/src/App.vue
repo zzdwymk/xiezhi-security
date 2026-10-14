@@ -432,7 +432,11 @@ async function removeConversation(id: string) {
     return;
   }
   try {
-    await endpoints.clearAgentSession(id);
+    try {
+      await endpoints.clearAgentSession(id);
+    } catch {
+      // 后端清理会话记忆尽力而为，不阻断前端本地对话的删除
+    }
     conversations.remove(id);
     if (route.query.conversation === id) await router.replace("/");
     ElMessage.success("对话已删除");

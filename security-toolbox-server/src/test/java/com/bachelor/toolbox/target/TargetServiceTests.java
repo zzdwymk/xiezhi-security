@@ -339,6 +339,97 @@ class TargetServiceTests {
     verify(auditService).record("DELETE_TARGET", "TARGET", 7L, "127.0.0.1", "SUCCESS");
   }
 
+  @Test
+  void rejectsInvalidIpTargetValues() {
+    AuthorizedTargetRepository repository = mock(AuthorizedTargetRepository.class);
+    AuditService auditService = mock(AuditService.class);
+    AssessmentProjectRepository projects = mock(AssessmentProjectRepository.class);
+    ProjectTargetRepository projectTargets = mock(ProjectTargetRepository.class);
+    AssessmentProject project = new AssessmentProject();
+    project.setId(1L);
+    project.setOwner("admin");
+    project.setStatus("ACTIVE");
+    when(projects.findById(1L)).thenReturn(Optional.of(project));
+    authenticateAsAdmin();
+    TargetService service =
+        new TargetService(
+            repository,
+            auditService,
+            new PortRangeParser(),
+            projects,
+            projectTargets,
+            new ProjectAuthorizationService(projects),
+            65535);
+
+    // 1. IP with trailing dot (FZT-07)
+    assertThatThrownBy(
+            () ->
+                service.create(
+                    new TargetRequest(
+                        "lab",
+                        "192.168.222.133.",
+                        "IP",
+                        "written auth",
+                        "80",
+                        true,
+                        null,
+                        null,
+                        1L)))
+        .isInstanceOf(com.bachelor.toolbox.common.ApiException.class)
+        .hasMessageContaining("IP 地址格式不正确");
+
+    // 2. IP with protocol/path (FZT-09)
+    assertThatThrownBy(
+            () ->
+                service.create(
+                    new TargetRequest(
+                        "lab",
+                        "http://192.168.222.133/admin?id=1",
+                        "IP",
+                        "written auth",
+                        "80",
+                        true,
+                        null,
+                        null,
+                        1L)))
+        .isInstanceOf(com.bachelor.toolbox.common.ApiException.class)
+        .hasMessageContaining("IP 地址格式不正确");
+
+    // 3. Five-segment IP (FZT-06)
+    assertThatThrownBy(
+            () ->
+                service.create(
+                    new TargetRequest(
+                        "lab",
+                        "1.2.3.4.5",
+                        "IP",
+                        "written auth",
+                        "80",
+                        true,
+                        null,
+                        null,
+                        1L)))
+        .isInstanceOf(com.bachelor.toolbox.common.ApiException.class)
+        .hasMessageContaining("IP 地址格式不正确");
+
+    // 4. Invalid URL
+    assertThatThrownBy(
+            () ->
+                service.create(
+                    new TargetRequest(
+                        "lab",
+                        "not-a-valid-url",
+                        "URL",
+                        "written auth",
+                        "80",
+                        true,
+                        null,
+                        null,
+                        1L)))
+        .isInstanceOf(com.bachelor.toolbox.common.ApiException.class)
+        .hasMessageContaining("URL 格式不正确");
+  }
+
   private void authenticateAs(String username) {
     SecurityContextHolder.getContext()
         .setAuthentication(

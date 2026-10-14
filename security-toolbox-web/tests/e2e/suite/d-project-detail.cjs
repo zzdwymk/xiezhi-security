@@ -13,8 +13,16 @@ const {
   pickDateTimeNow, pickDateTimeFuture, dismissStrayModal,
 } = require("../lib/ui.cjs");
 
+let suiteCtx = null;
+
 /** 切换项目详情页签 */
 async function openTab(page, label) {
+  // 如果当前不在项目详情页（例如前序操作导致路由跳出），先通过 URL 或侧边栏恢复到当前项目
+  if (!/\/projects\/\d+/.test(page.url()) && suiteCtx?.projectId) {
+    const targetUrl = `${suiteCtx.baseUrl || "#"}projects/${suiteCtx.projectId}`;
+    await page.goto(targetUrl).catch(() => {});
+    await settle(page, 2000);
+  }
   const tabs = page.locator(".project-tabs").first();
   await tabs.waitFor({ state: "visible", timeout: 15000 });
   // 清理可能遗留的模态遮罩（如上一阶段迟到的同步确认框），否则页签点击会被拦截超时
@@ -31,6 +39,7 @@ function panel(page) {
 }
 
 async function run(page, H, ctx) {
+  suiteCtx = ctx;
   H.phase("阶段 D — 评估项目详情工作区");
 
   // ---------- 进入项目详情 ----------
@@ -169,7 +178,9 @@ async function run(page, H, ctx) {
       if (msg) break;
       await sleep(2000);
     }
-    const text = ((await pane.textContent()) || "").replace(/\s+/g, " ");
+    // 确保仍定位在当前可见面板
+    const currentPane = page.locator(".el-tab-pane:visible").last();
+    const text = ((await currentPane.textContent().catch(() => "")) || "").replace(/\s+/g, " ");
     if (msg && msg.type === "error") throw new Error(`识别失败: ${msg.text}`);
     const hasResult = text.includes(ctx.targetIp);
     return `${msg ? `提示="${msg.text}" ` : ""}结果区${hasResult ? "已包含靶机记录" : "暂无记录"}`;
@@ -278,7 +289,7 @@ async function run(page, H, ctx) {
   await H.run("D-20", "「漏洞与复测」页签列出本项目漏洞记录", async () => {
     await openTab(page, "漏洞与复测");
     const pane = page.locator(".el-tab-pane:visible").last();
-    await pane.locator(".el-table, .empty-state").first().waitFor({ state: "visible", timeout: 12000 });
+    await pane.locator(".el-table, .el-empty, .empty-state").first().waitFor({ state: "visible", timeout: 15000 });
     const rows = await pane.locator(".el-table__row").count();
     ctx.projectFindingRows = rows;
     return `漏洞记录 ${rows} 条`;

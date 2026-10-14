@@ -1,0 +1,269 @@
+/* ==========================================================================
+   Fluent Design System (Fluent 2) Code Block
+   Fully aligned with Microsoft Fluent 2 design tokens:
+   - Typography: Cascadia Code / Cascadia Mono + Segoe UI Variable
+   - Radii: --fluent-radius-card (8px) & --fluent-radius-control (4px)
+   - Elevation: --fluent-card-shadow (dual-layer directional + ambient)
+   - Interaction: Fluent Subtle Button pattern with --fluent-fast timing
+   - Syntax: Accessible contrast ratios matching VS Code / Fluent palette
+   ========================================================================== */
+
+.markdown-body .code-block-wrapper {
+  position: relative;
+  margin: 12px 0;
+  border-radius: var(--fluent-radius-card, 8px);
+  border: var(--fluent-stroke-thin, 1px) solid var(--app-border, rgba(0, 0, 0, 0.12));
+  background: var(--app-surface-soft, rgba(0, 0, 0, 0.03));
+  overflow: hidden;
+  box-shadow: var(--fluent-card-shadow, var(--fluent-shadow-2));
+  transition:
+    border-color var(--fluent-fast, 120ms) ease,
+    box-shadow var(--fluent-fast, 120ms) ease;
+}
+
+.markdown-body .code-block-wrapper:hover {
+  border-color: color-mix(in srgb, var(--app-accent, #0067b8) 35%, var(--app-border, rgba(0, 0, 0, 0.15)));
+  box-shadow: var(--fluent-shadow-4);
+}
+
+/* Header toolbar: Subheader row */
+.markdown-body .code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px;
+  min-height: 32px;
+  background: color-mix(in srgb, var(--app-surface-soft, #f3f3f3) 90%, var(--app-text, #1f1f1f) 10%);
+  border-bottom: var(--fluent-stroke-thin, 1px) solid var(--app-border, rgba(0, 0, 0, 0.08));
+  user-select: none;
+}
+
+/* Language Badge: Fluent Caption 1 Semibold */
+.markdown-body .code-block-badge {
+  font-family: var(--font-mono, "Cascadia Code", "Cascadia Mono", Consolas, monospace);
+  font-size: var(--fluent-caption1-size, 11px);
+  font-weight: var(--fluent-weight-semibold, 600);
+  line-height: var(--fluent-caption1-line, 16px);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--app-muted, #616161);
+}
+
+/* Copy button: Fluent Subtle Button component */
+.markdown-body .code-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  min-height: 24px;
+  border: var(--fluent-stroke-thin, 1px) solid transparent;
+  border-radius: var(--fluent-radius-control, 4px);
+  background: transparent;
+  color: var(--app-muted, #616161);
+  font-family: var(--fluent-font, "Segoe UI Variable Text", "Segoe UI", sans-serif);
+  font-size: var(--fluent-caption1-size, 12px);
+  font-weight: var(--fluent-weight-medium, 500);
+  line-height: 1;
+  cursor: pointer;
+  outline: none;
+  transition:
+    background-color var(--fluent-fast, 120ms) ease,
+    color var(--fluent-fast, 120ms) ease,
+    border-color var(--fluent-fast, 120ms) ease,
+    transform var(--fluent-fast, 120ms) ease;
+}
+
+.markdown-body .code-copy-btn:hover {
+  background: color-mix(in srgb, var(--app-surface-soft, #f3f3f3) 70%, var(--app-text, #1f1f1f) 10%);
+  color: var(--app-text, #1f1f1f);
+  border-color: color-mix(in srgb, var(--app-border) 60%, transparent);
+}
+
+.markdown-body .code-copy-btn:active {
+  transform: scale(0.97);
+}
+
+.markdown-body .code-copy-btn:focus-visible {
+  outline: var(--fluent-stroke-thick, 2px) solid var(--app-accent);
+  outline-offset: 1px;
+}
+
+.markdown-body .code-copy-btn .code-copy-icon {
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.markdown-body .code-copy-btn .code-copy-check {
+  display: none;
+  vertical-align: middle;
+  color: var(--fluent-success-bg, #107c41);
+}
+
+.markdown-body .code-copy-btn.is-copied {
+  color: var(--fluent-success-bg, #107c41);
+  background: color-mix(in srgb, var(--fluent-success-bg, #107c41) 12%, transparent);
+  border-color: color-mix(in srgb, var(--fluent-success-bg, #107c41) 28%, transparent);
+}
+
+.markdown-body .code-copy-btn.is-copied .code-copy-icon {
+  display: none;
+}
+
+.markdown-body .code-copy-btn.is-copied .code-copy-check {
+  display: inline-block;
+}
+
+/* Pre and Code typography */
+.markdown-body .code-block-wrapper pre {
+  margin: 0 !important;
+  padding: 10px 14px 12px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  font-family: var(--font-mono, "Cascadia Code", "Cascadia Mono", Consolas, monospace) !important;
+  font-size: 12.5px !important;
+  line-height: 1.55 !important;
+  overflow-x: auto !important;
+  white-space: pre !important;
+  tab-size: 2;
+}
+
+.markdown-body .code-block-wrapper pre code {
+  font-family: inherit !important;
+  font-size: inherit !important;
+  padding: 0 !important;
+  background: transparent !important;
+  color: var(--app-text, #1f1f1f) !important;
+}
+
+/* ==========================================================================
+   Syntax Highlighting Token Theme (Fluent 2 Light Palette)
+   ========================================================================== */
+.markdown-body .token-key {
+  color: #005fb8; /* Fluent 2 Brand Blue */
+  font-weight: var(--fluent-weight-semibold, 600);
+}
+.markdown-body .token-string {
+  color: #8f3414; /* Warm Terra Cotta */
+}
+.markdown-body .token-number {
+  color: #0b6a0b; /* Forest Green */
+}
+.markdown-body .token-boolean {
+  color: #7b1fa2; /* Fluent Purple */
+  font-weight: var(--fluent-weight-semibold, 600);
+}
+.markdown-body .token-null {
+  color: #767676;
+  font-style: italic;
+}
+.markdown-body .token-punctuation {
+  color: #616161;
+}
+.markdown-body .token-keyword {
+  color: #005fb8;
+  font-weight: var(--fluent-weight-semibold, 600);
+}
+.markdown-body .token-comment {
+  color: #6e7681;
+  font-style: italic;
+}
+.markdown-body .token-operator {
+  color: #0066cc;
+}
+.markdown-body .token-variable {
+  color: #b33900;
+}
+
+/* ==========================================================================
+   Dark Mode (Fluent 2 Dark Palette)
+   ========================================================================== */
+:root[data-system-theme="dark"] .markdown-body .code-block-wrapper,
+[data-theme="dark"] .markdown-body .code-block-wrapper {
+  background: #181b22;
+  border-color: #2b313a;
+  box-shadow: var(--fluent-card-shadow, 0 2px 6px rgba(0, 0, 0, 0.25));
+}
+
+:root[data-system-theme="dark"] .markdown-body .code-block-header,
+[data-theme="dark"] .markdown-body .code-block-header {
+  background: #20242c;
+  border-bottom-color: #2b313a;
+}
+
+:root[data-system-theme="dark"] .markdown-body .code-block-badge,
+[data-theme="dark"] .markdown-body .code-block-badge {
+  color: #9da7b3;
+}
+
+:root[data-system-theme="dark"] .markdown-body .code-copy-btn,
+[data-theme="dark"] .markdown-body .code-copy-btn {
+  color: #a0aec0;
+}
+
+:root[data-system-theme="dark"] .markdown-body .code-copy-btn:hover,
+[data-theme="dark"] .markdown-body .code-copy-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f7fafc;
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+:root[data-system-theme="dark"] .markdown-body .code-copy-btn.is-copied,
+[data-theme="dark"] .markdown-body .code-copy-btn.is-copied {
+  color: #57ab5a;
+  background: rgba(87, 171, 90, 0.15);
+  border-color: rgba(87, 171, 90, 0.3);
+}
+
+:root[data-system-theme="dark"] .markdown-body .code-copy-btn .code-copy-check,
+[data-theme="dark"] .markdown-body .code-copy-btn .code-copy-check {
+  color: #57ab5a;
+}
+
+:root[data-system-theme="dark"] .markdown-body .code-block-wrapper pre code,
+[data-theme="dark"] .markdown-body .code-block-wrapper pre code {
+  color: #e6edf3 !important;
+}
+
+:root[data-system-theme="dark"] .markdown-body .token-key,
+[data-theme="dark"] .markdown-body .token-key {
+  color: #79c0ff;
+  font-weight: var(--fluent-weight-semibold, 600);
+}
+:root[data-system-theme="dark"] .markdown-body .token-string,
+[data-theme="dark"] .markdown-body .token-string {
+  color: #a5d6ff;
+}
+:root[data-system-theme="dark"] .markdown-body .token-number,
+[data-theme="dark"] .markdown-body .token-number {
+  color: #7ee787;
+}
+:root[data-system-theme="dark"] .markdown-body .token-boolean,
+[data-theme="dark"] .markdown-body .token-boolean {
+  color: #d2a8ff;
+}
+:root[data-system-theme="dark"] .markdown-body .token-null,
+[data-theme="dark"] .markdown-body .token-null {
+  color: #8b949e;
+}
+:root[data-system-theme="dark"] .markdown-body .token-punctuation,
+[data-theme="dark"] .markdown-body .token-punctuation {
+  color: #8b949e;
+}
+:root[data-system-theme="dark"] .markdown-body .token-keyword,
+[data-theme="dark"] .markdown-body .token-keyword {
+  color: #ff7b72;
+}
+:root[data-system-theme="dark"] .markdown-body .token-comment,
+[data-theme="dark"] .markdown-body .token-comment {
+  color: #8b949e;
+}
+:root[data-system-theme="dark"] .markdown-body .token-operator,
+[data-theme="dark"] .markdown-body .token-operator {
+  color: #79c0ff;
+}
+:root[data-system-theme="dark"] .markdown-body .token-variable,
+[data-theme="dark"] .markdown-body .token-variable {
+  color: #ffa657;
+}

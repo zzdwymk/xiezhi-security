@@ -556,11 +556,11 @@ body,
   color: #f1f5f9 !important;
 }
 
-:root[data-system-theme="dark"] .desktop-v2-recent-item .el-icon {
+:root[data-system-theme="dark"] .desktop-v2-recent-item .desktop-v2-recent-open > .el-icon {
   color: #94a3b8 !important;
 }
 
-:root[data-system-theme="dark"] .desktop-v2-recent-item:hover .el-icon {
+:root[data-system-theme="dark"] .desktop-v2-recent-item:hover .desktop-v2-recent-open > .el-icon {
   color: #60a5fa !important;
 }
 
@@ -3277,7 +3277,6 @@ html .desktop-v2-native-frame .vuln-workbench {
   :is(
     .desktop-v2-nav button > .el-icon,
     .desktop-v2-recent-open > .el-icon,
-    .desktop-v2-recent-delete,
     .desktop-v2-user > .el-icon,
     .quiet-icon-button
   ) {

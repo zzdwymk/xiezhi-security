@@ -1809,8 +1809,10 @@ onUnmounted(() => {
         <el-select
           v-model="targetId"
           filterable
+          fit-input-width
           size="small"
           placeholder="选择或搜索授权目标"
+          popper-class="vuln-target-select-popper"
           style="width: 100%"
         >
           <el-option
@@ -1819,8 +1821,10 @@ onUnmounted(() => {
             :label="`${target.name} (${target.targetValue})`"
             :value="target.id"
           >
-            <span>{{ target.name }}</span
-            ><small class="target-value">{{ target.targetValue }}</small>
+            <div class="vuln-target-option">
+              <span class="vuln-target-name" :title="target.name">{{ target.name }}</span>
+              <small class="target-value" :title="target.targetValue">{{ target.targetValue }}</small>
+            </div>
           </el-option>
         </el-select>
         <label>检测规则</label>
@@ -1980,6 +1984,7 @@ onUnmounted(() => {
             collapse-tags
             :max-collapse-tags="4"
             placeholder="多选常用端口，或输入 8000-8010"
+            fit-input-width
             style="width: 100%"
           >
             <el-option
@@ -2019,6 +2024,7 @@ onUnmounted(() => {
             collapse-tags
             collapse-tags-tooltip
             placeholder="留空=仅测根地址；可多选已发现路径，或输入如 /Less-2/?id=1"
+            fit-input-width
             style="width: 100%"
           >
             <el-option
@@ -2470,10 +2476,40 @@ onUnmounted(() => {
 .scan-form > label:not(:first-child) {
   margin-top: 18px;
 }
-.target-value {
-  float: right;
-  margin-left: 14px;
+:global(.vuln-target-select-popper) {
+  max-width: min(560px, calc(100vw - 32px)) !important;
+}
+:global(.vuln-target-select-popper .el-select-dropdown) {
+  max-width: 100% !important;
+}
+:global(.vuln-target-select-popper .el-select-dropdown__item) {
+  padding-left: 12px !important;
+  padding-right: 12px !important;
+}
+.vuln-target-option,
+:global(.vuln-target-select-popper .vuln-target-option) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-width: 0;
+  gap: 12px;
+}
+.vuln-target-name,
+:global(.vuln-target-select-popper .vuln-target-name) {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.target-value,
+:global(.vuln-target-select-popper .target-value) {
+  flex: 0 0 auto;
+  margin-left: 0;
   color: #94a3b8;
+  font-size: 11px;
+  white-space: nowrap;
 }
 .rule-list {
   display: flex;

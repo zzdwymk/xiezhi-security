@@ -701,7 +701,15 @@ public class TaskExecutionService {
           || current instanceof java.net.SocketTimeoutException
           || current instanceof java.util.concurrent.TimeoutException) return true;
       String message = current.getMessage();
-      if (message != null && (message.contains("超时") || message.contains("超过"))) return true;
+      if (message != null) {
+        String lower = message.toLowerCase();
+        if (message.contains("超时")
+            || message.contains("超过")
+            || lower.contains("timed out")
+            || lower.contains("timeout")) {
+          return true;
+        }
+      }
     }
     return false;
   }

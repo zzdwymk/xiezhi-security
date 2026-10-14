@@ -1040,6 +1040,13 @@ export const endpoints = {
       `/ai/agent/sessions/${encodeURIComponent(sessionId)}`,
       { timeout: 45_000 },
     ),
+  listConversations: () => api.get<any[]>("/ai/conversations", { timeout: 15_000 }),
+  saveConversation: (sessionId: string, payload: any) =>
+    api.put(`/ai/conversations/${encodeURIComponent(sessionId)}`, payload, { timeout: 20_000 }),
+  deleteConversation: (sessionId: string) =>
+    api.delete(`/ai/conversations/${encodeURIComponent(sessionId)}`, { timeout: 30_000 }),
+  clearAllConversations: () =>
+    api.delete("/ai/conversations", { timeout: 30_000 }),
   answerAi: (payload: {
     projectId: number;
     targetId: number;
@@ -1210,7 +1217,10 @@ export const endpoints = {
       params: { baselineTaskId, currentTaskId },
     }),
   downloadReport: (taskId: number) =>
-    api.get(`/reports/tasks/${taskId}/download`, { responseType: "blob" }),
+    api.get(`/reports/tasks/${taskId}/download`, {
+      responseType: "blob",
+      timeout: 120_000,
+    }),
   downloadTargetReportPdf: (targetId: number) =>
     api.get(`/reports/projects/targets/${targetId}.pdf`, {
       responseType: "blob",
@@ -2098,7 +2108,11 @@ function dispatchFromEvent(
   return {
     targetId: Number(candidate.targetId ?? normalized.targetId ?? 0),
     plan: (plan || {
-      provider: "",
+      provider:
+        (candidate as any).provider ||
+        normalized.provider ||
+        (normalized as any).data?.provider ||
+        "openai-compatible",
       model: "",
       summary: "",
       requiresConfirmation: false,

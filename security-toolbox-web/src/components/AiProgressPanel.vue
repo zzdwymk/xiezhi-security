@@ -11,6 +11,27 @@ const props = defineProps<{ message: ConversationMessage; tasks: AiProgressTask[
 const emit = defineEmits<{ (event: "open-tasks"): void }>();
 const now = ref(Date.now());
 const expanded = ref(false);
+
+function formatModelSummaryText(entry: any): string {
+  const raw = String(entry.event?.summary || entry.event?.message || "").trim();
+  if (/模型评估[：:].*现有证据|决定据此生成回答|生成回答或方案/i.test(raw)) {
+    if (props.message.content && props.message.content.length > 15) {
+      const clean = props.message.content
+        .replace(/^#+\s.*$/gm, "")
+        .replace(/[*`_]/g, "")
+        .trim();
+      const firstSentence = clean
+        .split(/[。\n!！?？]/)
+        .map((s) => s.trim())
+        .filter(Boolean)[0];
+      if (firstSentence && firstSentence.length > 6) {
+        return `已结合授权目标事实完成分析：${firstSentence.slice(0, 90)}。`;
+      }
+    }
+    return "已结合授权目标检测证据与安全策略，完成分析并生成回答。";
+  }
+  return publicAiProgressText(raw) || "已完成阶段分析。";
+}
 const summary = computed(() => buildAiStatusSummary(props.message, props.tasks, now.value));
 const progress = computed(() => summary.value.progress);
 const dispatchConcern = computed(() => summary.value.dispatchConcern);
@@ -18,6 +39,9 @@ const needsClarification = computed(() => summary.value.needsClarification);
 const displayTone = computed<ProgressTone>(() => summary.value.tone);
 const spinning = computed(() => summary.value.spinning);
 const completed = computed(() => summary.value.completed);
+watch(completed, (isDone) => {
+  if (isDone) expanded.value = false;
+});
 const title = computed(() => summary.value.title);
 const taskLabels: Record<string, string> = { SUCCESS: "成功", FAILED: "失败", TIMEOUT: "超时", REJECTED: "已拒绝", CANCELLED: "已取消", SKIPPED: "已跳过", BLOCKED: "等待前置任务", PENDING: "排队中", RUNNING: "执行中" };
 const taskTones: Record<string, ProgressTone> = { SUCCESS: "success", FAILED: "failed", TIMEOUT: "failed", REJECTED: "warning", CANCELLED: "warning", SKIPPED: "neutral", BLOCKED: "neutral", PENDING: "neutral", RUNNING: "active" };
@@ -97,7 +121,7 @@ function receivedAt(at: number) {
       <ol class="progress-timeline" tabindex="0" aria-label="模型决策摘要，可滚动查看">
         <li v-for="entry in progress.modelEntries" :key="entry.key" :class="entry.tone">
           <FluentIcon :name="aiStatusIcon(entry.tone)" :label="AI_STATUS_LABELS[entry.tone]" />
-          <div><strong>模型决策摘要</strong><p>{{ publicAiProgressText(entry.event.summary || entry.event.message) }}</p></div><time v-if="entry.at !== undefined && Number.isFinite(progress.startedAt) && entry.at >= progress.startedAt" :datetime="entry.event.createdAt" title="从本轮请求到收到摘要的时间">+{{ receivedAt(entry.at) }}</time>
+          <div><strong>{{ completed ? '核心分析摘要' : '阶段决策进展' }}</strong><p>{{ formatModelSummaryText(entry) }}</p></div><time v-if="entry.at !== undefined && Number.isFinite(progress.startedAt) && entry.at >= progress.startedAt" :datetime="entry.event.createdAt" title="从本轮请求到收到摘要的时间">+{{ receivedAt(entry.at) }}</time>
         </li>
       </ol>
     </div>

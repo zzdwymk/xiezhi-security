@@ -24,6 +24,12 @@ public class TargetService {
   private static final Pattern DOMAIN_PATTERN =
       Pattern.compile(
           "(?i)^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$");
+  private static final Pattern IPV4_PATTERN =
+      Pattern.compile(
+          "^(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)){3}$");
+  private static final Pattern URL_PATTERN =
+      Pattern.compile(
+          "^(?i)https?://[a-zA-Z0-9.-]+(?::\\d{1,5})?(?:/[^\\s]*)?$");
   private static final Sort LIST_SORT =
       Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id"));
 
@@ -229,6 +235,12 @@ public class TargetService {
   private void validateTargetValue(String targetType, String targetValue) {
     if ("DOMAIN".equals(targetType) && !DOMAIN_PATTERN.matcher(targetValue).matches()) {
       throw new ApiException("域名格式不正确：请填写不含空格、协议或路径的主机名");
+    }
+    if ("IP".equals(targetType) && !IPV4_PATTERN.matcher(targetValue).matches()) {
+      throw new ApiException("IP 地址格式不正确：请填写标准的 IPv4 地址（如 192.168.1.1），不得包含协议、路径或末尾多余符号");
+    }
+    if ("URL".equals(targetType) && !URL_PATTERN.matcher(targetValue).matches()) {
+      throw new ApiException("URL 格式不正确：请填写以 http:// 或 https:// 开头的合法 URL 地址");
     }
   }
 }

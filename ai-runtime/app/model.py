@@ -718,17 +718,31 @@ def _parse_strict_contract(
     if not candidate.startswith("{") or not candidate.endswith("}"):
         raise ModelContractOutputError(f"{label} output must be a bare JSON object", [{"path": [], "type": "bare_json_object"}])
     try:
-        parsed = json.loads(
-            candidate,
-            object_pairs_hook=_reject_duplicate_keys,
-            parse_constant=lambda value: (_ for _ in ()).throw(
-                PlannerOutputError(f"invalid JSON constant: {value}")
-            ),
-        )
+        try:
+            parsed = json.loads(
+                candidate,
+                object_pairs_hook=_reject_duplicate_keys,
+                parse_constant=lambda value: (_ for _ in ()).throw(
+                    PlannerOutputError(f"invalid JSON constant: {value}")
+                ),
+            )
+        except (PlannerOutputError, RecursionError, TypeError, ValueError):
+            parsed = json.loads(
+                candidate,
+                strict=False,
+                object_pairs_hook=_reject_duplicate_keys,
+                parse_constant=lambda value: (_ for _ in ()).throw(
+                    PlannerOutputError(f"invalid JSON constant: {value}")
+                ),
+            )
     except (PlannerOutputError, RecursionError, TypeError, ValueError) as exc:
         raise ModelContractOutputError(f"{label} output is not strict JSON", [{"path": [], "type": "strict_json"}]) from exc
     if not isinstance(parsed, dict) or _json_depth(parsed) > 10:
         raise ModelContractOutputError(f"{label} output nesting is invalid", [{"path": [], "type": "nesting_depth"}])
+    if isinstance(contract, type) and issubclass(contract, GroundedPlannerOutput) and "intent" in parsed:
+        val = str(parsed["intent"]).strip()
+        if val in {"PROJECT_QA", "GENERAL_QA", "qa"}:
+            parsed["intent"] = "answer"
     try:
         return contract.model_validate(parsed, context=validation_context)
     except ValidationError as exc:

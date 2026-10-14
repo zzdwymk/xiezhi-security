@@ -8,8 +8,10 @@ import jakarta.validation.Valid;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.CacheControl;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -28,6 +30,7 @@ public class AiController {
   private final ObjectMapper objectMapper;
   private final ProjectAuthorizationService authorization;
   private final AssessmentProjectService projects;
+  private final AiConversationMemoryService memoryService;
 
   public AiController(
       AiPlanningService service,
@@ -39,6 +42,31 @@ public class AiController {
       ObjectMapper objectMapper,
       ProjectAuthorizationService authorization,
       AssessmentProjectService projects) {
+    this(
+        service,
+        answerService,
+        agentOrchestrator,
+        runtimeClient,
+        workflowSpecs,
+        workflowSuggestService,
+        objectMapper,
+        authorization,
+        projects,
+        null);
+  }
+
+  @Autowired
+  public AiController(
+      AiPlanningService service,
+      AiAnswerService answerService,
+      AgentOrchestrator agentOrchestrator,
+      AiAgentRuntimeClient runtimeClient,
+      AgentWorkflowSpecService workflowSpecs,
+      AiWorkflowSuggestService workflowSuggestService,
+      ObjectMapper objectMapper,
+      ProjectAuthorizationService authorization,
+      AssessmentProjectService projects,
+      @Autowired(required = false) AiConversationMemoryService memoryService) {
     this.service = service;
     this.answerService = answerService;
     this.agentOrchestrator = agentOrchestrator;
@@ -48,6 +76,7 @@ public class AiController {
     this.objectMapper = objectMapper;
     this.authorization = authorization;
     this.projects = projects;
+    this.memoryService = memoryService;
   }
   /** Workflow topology (nodes/edges) for the visual workflow view. */
   @GetMapping("/agent/graph")
@@ -266,5 +295,33 @@ public class AiController {
   @DeleteMapping("/agent/sessions/{sessionId}")
   public Map<String, Object> clearAgentSession(@PathVariable String sessionId) {
     return Map.of("sessionId", sessionId, "cleared", agentOrchestrator.clearSession(sessionId));
+  }
+
+  @GetMapping("/conversations")
+  public List<Map<String, Object>> listConversations() {
+    return memoryService != null ? memoryService.listAllPersistedThreads() : List.of();
+  }
+
+  @PutMapping("/conversations/{sessionId}")
+  public Map<String, Object> saveConversation(
+      @PathVariable String sessionId, @RequestBody Map<String, Object> payload) {
+    if (memoryService != null) {
+      memoryService.saveClientThread(sessionId, payload);
+    }
+    return Map.of("sessionId", sessionId, "saved", true);
+  }
+
+  @DeleteMapping("/conversations/{sessionId}")
+  public Map<String, Object> deleteConversation(@PathVariable String sessionId) {
+    boolean cleared = agentOrchestrator.clearSession(sessionId);
+    return Map.of("sessionId", sessionId, "cleared", cleared);
+  }
+
+  @DeleteMapping("/conversations")
+  public Map<String, Object> clearAllConversations() {
+    if (memoryService != null) {
+      memoryService.clearAllPersistedThreads();
+    }
+    return Map.of("cleared", true);
   }
 }

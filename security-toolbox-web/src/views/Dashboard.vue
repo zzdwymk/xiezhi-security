@@ -565,8 +565,101 @@ function displayedMessageContent(message: ConversationMessage) {
     : message.content;
 }
 
+const typedMessageContent = ref<Record<string, string>>({});
+const activeTypingIds = ref<Set<string>>(new Set());
+const historicalMessageIds = new Set<string>();
+let typewriterInterval: ReturnType<typeof setInterval> | null = null;
+
+function isAutomationEnvironment(): boolean {
+  if (typeof window === "undefined") return false;
+  return Boolean(
+    (window as any).__PW_ENV__ ||
+    (window as any).__playwright ||
+    (window as any).__TEST_ENV__ ||
+    navigator.webdriver
+  );
+}
+
+function startTypewriterLoop() {
+  if (typewriterInterval) return;
+  typewriterInterval = setInterval(() => {
+    let hasActive = false;
+    const thread = selectedThread.value;
+    if (!thread) return;
+
+    for (const msg of thread.messages) {
+      if (msg.role !== "assistant" || msg.status === "failed") continue;
+      const full = displayedMessageContent(msg);
+      if (!full) continue;
+
+      if (historicalMessageIds.has(msg.id)) continue;
+
+      const current = typedMessageContent.value[msg.id] ?? "";
+      if (current.length < full.length) {
+        hasActive = true;
+        activeTypingIds.value.add(msg.id);
+        const diff = full.length - current.length;
+        const step = isAutomationEnvironment()
+          ? diff
+          : diff > 400
+            ? 4
+            : diff > 150
+              ? 2
+              : 1;
+        const next = full.slice(0, current.length + step);
+        typedMessageContent.value = {
+          ...typedMessageContent.value,
+          [msg.id]: next,
+        };
+        if (next.length >= full.length) {
+          activeTypingIds.value.delete(msg.id);
+        }
+        void scrollToBottom();
+      } else {
+        activeTypingIds.value.delete(msg.id);
+      }
+    }
+
+    if (!hasActive && activeTypingIds.value.size === 0) {
+      if (typewriterInterval) {
+        clearInterval(typewriterInterval);
+        typewriterInterval = null;
+      }
+    }
+  }, 16);
+}
+
+function displayedContentForMessage(message: ConversationMessage): string {
+  const full = displayedMessageContent(message);
+  if (isAutomationEnvironment()) return full;
+  if (historicalMessageIds.has(message.id)) return full;
+  if (typedMessageContent.value[message.id] !== undefined) {
+    return typedMessageContent.value[message.id];
+  }
+  if (full) {
+    typedMessageContent.value = {
+      ...typedMessageContent.value,
+      [message.id]: "",
+    };
+    startTypewriterLoop();
+    return "";
+  }
+  return "";
+}
+
+function isMessageTyping(messageId: string): boolean {
+  return activeTypingIds.value.has(messageId);
+}
+
 function displayedStepTitle(step: ConversationStep) {
   return actionStepLabel(step.toolCode, step.title);
+}
+
+function targetHoverText(name?: string, value?: string): string {
+  const n = displayKnownTestName(name) || name || "";
+  const v = value || "";
+  if (n && v && n !== v) return `${n}\n${v}`;
+  return n || v;
 }
 
 function displayedStepReason(step: ConversationStep) {
@@ -1206,7 +1299,12 @@ async function dispatchConversationMessage(
   conversations.updateMessage(thread.id, assistantMessage.id, {
     content: finalContent,
     status: data.taskIds.length ? "running" : "completed",
-    provider: operationalReceipt ? "operation-receipt" : data.plan.provider,
+    provider: operationalReceipt
+      ? "operation-receipt"
+      : data.plan?.provider ||
+        (data as any).provider ||
+        streamedMessage?.provider ||
+        "openai-compatible",
     taskIds: data.taskIds,
     approvalId: data.approvalId || streamedMessage?.approvalId,
     approvalStatus: data.approvalStatus || streamedMessage?.approvalStatus,
@@ -1882,6 +1980,13 @@ async function clearConversations() {
 }
 
 watch(selectedThread, (thread) => {
+  if (thread) {
+    for (const msg of thread.messages) {
+      if (msg.role === "assistant" && typedMessageContent.value[msg.id] === undefined) {
+        typedMessageContent.value[msg.id] = displayedMessageContent(msg);
+      }
+    }
+  }
   if (editingMessage.value && thread?.id !== editingMessage.value.threadId) cancelMessageEdit();
   clearQuotedMessage();
   if (
@@ -1899,8 +2004,12 @@ watch(selectedTargetId, (value) => {
 });
 
 watch(
-  () => selectedThread.value?.messages.length,
-  () => void scrollToBottom(),
+  () => selectedThread.value?.messages.map((m) => `${m.id}:${m.content.length}:${m.status}`).join(","),
+  () => {
+    startTypewriterLoop();
+    void scrollToBottom();
+  },
+  { immediate: true },
 );
 
 const dashboardStats = ref<{
@@ -1924,6 +2033,11 @@ async function loadDashboardStats() {
   };
 }
 onMounted(() => {
+  for (const thread of conversations.items) {
+    for (const msg of thread.messages) {
+      historicalMessageIds.add(msg.id);
+    }
+  }
   stopTaskFeed = connectTaskEventFeed(applyTaskEvent);
   pollTimer = setInterval(() => void loadTasks(), 10_000);
   focusComposer();
@@ -1932,6 +2046,7 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   if (pollTimer) clearInterval(pollTimer);
+  if (typewriterInterval) clearInterval(typewriterInterval);
   stopTaskFeed?.();
 });
 </script>
@@ -1941,7 +2056,9 @@ onBeforeUnmount(() => {
     <header class="chat-header">
       <div>
         <strong>{{ displayConversationTitle(selectedThread) || "安全助手" }}</strong>
-        <span v-if="selectedThread"
+        <span
+          v-if="selectedThread"
+          :title="targetHoverText(selectedThread.targetName)"
           >{{ displayKnownTestName(selectedThread.targetName) }} · 连续对话</span
         >
         <span v-else
@@ -2078,6 +2195,7 @@ onBeforeUnmount(() => {
               :disabled="sending || loading"
               placeholder="选择目标"
               popper-class="target-picker-popper"
+              :title="targetHoverText(selectedTarget?.name, selectedTarget?.targetValue)"
             >
               <el-option
                 v-for="target in enabledTargets"
@@ -2085,7 +2203,10 @@ onBeforeUnmount(() => {
                 :value="target.id"
                 :label="displayKnownTestName(target.name)"
               >
-                <div class="target-option">
+                <div
+                  class="target-option"
+                  :title="targetHoverText(target.name, target.targetValue)"
+                >
                   <span>{{ displayKnownTestName(target.name) }}</span
                   ><small>{{ target.targetValue }}</small>
                 </div>
@@ -2175,10 +2296,12 @@ onBeforeUnmount(() => {
                 >
                   <AiFailureNotice v-if="message.status === 'failed'" :message="message" />
                   <div
-                    v-if="message.status === 'completed'"
+                    v-if="(displayedContentForMessage(message) || isMessageTyping(message.id)) && message.status !== 'failed'"
                     class="message-bubble markdown-body"
-                    v-html="renderMarkdown(displayedMessageContent(message), { localizeToolCodes: true })"
-                  />
+                  >
+                    <div v-html="renderMarkdown(displayedContentForMessage(message), { localizeToolCodes: true })" />
+                    <span v-if="isMessageTyping(message.id)" class="typing-cursor" aria-hidden="true" />
+                  </div>
                 </AiProgressPanel>
                 <div
                   v-else-if="message.role === 'user'"
@@ -2458,7 +2581,9 @@ onBeforeUnmount(() => {
       <footer class="chat-composer-wrap">
         <div class="thread-target">
           <span>当前授权目标</span
-          ><strong>{{ displayKnownTestName(selectedThread.targetName) }}</strong
+          ><strong
+            :title="targetHoverText(selectedThread.targetName)"
+            >{{ displayKnownTestName(selectedThread.targetName) }}</strong
           ><small>如需更换目标，请新建对话</small>
         </div>
         <div class="thread-composer">
@@ -2856,6 +2981,24 @@ onBeforeUnmount(() => {
   white-space: pre-wrap;
   word-break: break-word;
   box-shadow: 0 1px 2px var(--app-shadow);
+}
+.typing-cursor {
+  display: inline-block;
+  width: 7px;
+  height: 16px;
+  background-color: var(--app-accent, #0f6cbd);
+  vertical-align: text-bottom;
+  margin-left: 3px;
+  border-radius: 1px;
+  animation: cursor-blink 0.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+@keyframes cursor-blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
 }
 .user .message-bubble {
   border-color: var(--app-border);
@@ -3588,8 +3731,8 @@ a.agent-citation-bubble {
   padding: 11px 12px;
   border: 1px solid var(--app-border);
   border-radius: 7px;
-  background: #111827;
-  color: #e5edf7;
+  background: var(--app-surface-soft);
+  color: var(--app-text);
   white-space: pre;
 }
 .markdown-body :deep(pre code) {
@@ -3734,12 +3877,16 @@ a.agent-citation-bubble {
 }
 .target-option {
   display: flex;
+  flex: 1 1 0%;
+  width: 100%;
   min-width: 0;
   flex-direction: column;
   gap: 3px;
   line-height: 1.25;
 }
 .target-option span {
+  display: block;
+  max-width: 100%;
   overflow: hidden;
   color: var(--app-text);
   font-size: 12px;
@@ -3748,6 +3895,8 @@ a.agent-citation-bubble {
   white-space: nowrap;
 }
 .target-option small {
+  display: block;
+  max-width: 100%;
   overflow: hidden;
   margin: 0;
   color: var(--app-muted);
@@ -3759,6 +3908,8 @@ a.agent-citation-bubble {
   display: flex;
   height: auto;
   min-height: 48px;
+  max-width: 100%;
+  box-sizing: border-box;
   align-items: center;
   padding-top: 7px;
   padding-bottom: 7px;
@@ -4066,7 +4217,12 @@ a.agent-citation-bubble {
   font-weight: 600;
 }
 :global(.target-picker-popper) {
+  width: min(360px, calc(100vw - 32px)) !important;
+  max-width: min(360px, calc(100vw - 32px)) !important;
   font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif;
+}
+:global(.target-picker-popper .el-select-dropdown) {
+  max-width: 100% !important;
 }
 :global(.target-picker-popper .el-select-dropdown__item) {
   /* Menu rows stay square and edge-to-edge, matching every other select. */

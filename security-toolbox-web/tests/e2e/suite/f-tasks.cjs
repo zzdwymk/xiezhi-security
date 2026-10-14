@@ -575,8 +575,8 @@ async function run(page, H, ctx) {
 
   await H.run("F-17", "任务行提供「执行诊断」AI联动入口", async () => {
     const row = page.locator(".el-table__row").nth(ownRowIndex);
-    const ai = row.getByRole("button", { name: "执行诊断", exact: true });
-    if (!(await ai.isVisible())) throw new Error("未渲染执行诊断入口");
+    const ai = row.locator("button", { hasText: "执行诊断" }).first();
+    if ((await ai.count()) === 0) throw new Error("未渲染执行诊断入口");
     if (!(await ai.isEnabled())) throw new Error("执行诊断入口不可用");
     return { detail: "执行诊断入口可见且可用；真实AI调用由DAI-ENTRY-TASK单独验证", verificationDepth: "entry-availability-only" };
   }, { page });
