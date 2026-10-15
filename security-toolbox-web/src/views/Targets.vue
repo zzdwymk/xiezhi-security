@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox, type TableInstance } from "element-plus";
 import { MagicStick, Search, Document, EditPen, Delete } from "../components/fluentIcons";
@@ -405,7 +405,6 @@ async function create() {
   saveError.value = "";
   if (!form.projectId) {
     saveError.value = "请选择该目标归属的评估项目";
-    ElMessage.error(saveError.value);
     return;
   }
   if (
@@ -414,7 +413,6 @@ async function create() {
     !isDateWindowValid(form.authorizationValidFrom, form.authorizationExpiresAt)
   ) {
     saveError.value = "目标授权结束时间不能早于授权开始时间";
-    ElMessage.error(saveError.value);
     return;
   }
   try {
@@ -442,7 +440,10 @@ async function create() {
       error,
       "保存失败，请检查服务状态和填写内容",
     );
-    ElMessage.error(saveError.value);
+    void nextTick(() => {
+      const body = document.querySelector(".target-dialog .el-dialog__body");
+      body?.scrollTo({ top: 0, behavior: "smooth" });
+    });
   } finally {
     saving.value = false;
   }
@@ -452,17 +453,14 @@ async function batchCreate() {
   saveError.value = "";
   if (!batchForm.projectId) {
     saveError.value = "请选择批量目标归属的评估项目";
-    ElMessage.error(saveError.value);
     return;
   }
   if (!editableBatchItems.value.length) {
     saveError.value = "未解析出任何有效的主机、域名或 URL 目标，请检查输入";
-    ElMessage.error(saveError.value);
     return;
   }
   if (!batchForm.authorizationNote.trim()) {
     saveError.value = "请填写批量授权记录说明";
-    ElMessage.error(saveError.value);
     return;
   }
   if (

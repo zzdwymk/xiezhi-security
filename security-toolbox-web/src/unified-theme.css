@@ -1386,35 +1386,40 @@ body:not(:has(.desktop-v2-native-frame))
   max-height: calc(100% - 32px);
 }
 
-/* ElMessage: center horizontally relative to the workspace rather than the full viewport */
-body:has(.desktop-v2-native-frame) .el-message,
-body:not(:has(.desktop-v2-native-frame)) .el-message {
-  left: calc(50% + (var(--desktop-sidebar-width, 260px) - var(--desktop-workspace-gap)) / 2);
-}
-
-/* The native frame draws its own 38px title bar, so push toasts below it
-   instead of letting the default 16px offset overlap the caption. A margin
-   (not `top`) keeps Element Plus's inline `top` stacking intact. */
+/* ElMessage placement.
+   Toast 是全局临时通知，不应该盖住页面标题或右侧的操作按钮。
+   之前居中 + top: 58px 会挡住 "目标" 等 page heading；
+   改到右上角又会挡住 "新增目标" / 搜索框等右侧工具栏。
+   所以改成：水平居中（相对于工作区），但整体再往下挪 60px，
+   悬在 section-head 下方，既醒目又不遮挡任何页面元素。 */
 body:has(.desktop-v2-native-frame) .el-message {
-  margin-top: 38px;
+  top: calc(var(--desktop-titlebar-height, 38px) + 44px) !important;
+  left: calc(var(--desktop-sidebar-width, 260px) + (100% - var(--desktop-sidebar-width, 260px) - var(--desktop-workspace-gap, 5px)) / 2) !important;
+  transform: translateX(-50%) !important;
+  margin-top: 0 !important;
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
+  z-index: 99999 !important;
 }
 
-/* The centered login card has no inset workspace. */
+/* Web（无原生标题栏）同样下移，避免盖住页面头部。 */
+body:not(:has(.desktop-v2-native-frame)) .el-message {
+  top: 44px !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
+  z-index: 99999 !important;
+}
+
+/* 登录页没有侧边栏，toast 相对于整个窗口居中即可。 */
 body:has(.login-page) {
   --desktop-workspace-gap: 0px;
 }
-
-/* Login (and other full-bleed public pages) have no sidebar, so the dialog
-   mask must cover the whole window instead of leaving a strip on the left. */
-body:has(.login-page) .el-overlay.is-message-box,
-body:has(.login-page) .el-overlay.is-drawer,
-body:has(.login-page) .el-overlay:has(> .el-drawer),
-body:has(.login-page) .el-overlay:has(> .el-overlay-dialog) {
-  left: 0;
-  border-radius: 0;
-}
 body:has(.login-page) .el-message {
-  left: 50%;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  top: 24px !important;
 }
 
 .desktop-v2-content,

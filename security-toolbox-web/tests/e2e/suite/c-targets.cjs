@@ -79,7 +79,11 @@ async function run(page, H, ctx) {
       await sleep(400);
       const dd = page.locator(".el-select-dropdown:visible").last();
       const opt = dd.locator("li.el-select-dropdown__item", { hasText: label }).first();
-      if (await opt.count()) { await opt.click(); await sleep(300); }
+      if (await opt.count()) {
+        await opt.scrollIntoViewIfNeeded().catch(() => {});
+        await opt.click();
+        await sleep(300);
+      }
     }
     await page.keyboard.press("Escape").catch(() => {});
     await sleep(300);

@@ -118,6 +118,20 @@ public class AiConversationMemoryService {
     return new SessionHandle(id, session.monitor, session.projectId, session.targetId);
   }
 
+  public SessionScope scope(String sessionId) {
+    if (sessionId == null || !sessionId.matches("[A-Za-z0-9_-]{1,64}")) return null;
+    Session session = sessions.get(sessionId);
+    if (session != null) {
+      synchronized (session.monitor) {
+        if (sessions.get(sessionId) != session) return null;
+        return new SessionScope(session.projectId, session.targetId);
+      }
+    }
+    if (repository == null) return null;
+    AiConversationSessionRecord record = repository.findById(sessionId).orElse(null);
+    return record == null ? null : new SessionScope(record.getProjectId(), record.getTargetId());
+  }
+
   public String transcript(String sessionId) {
     Session session = require(sessionId);
     synchronized (session.monitor) {
@@ -385,6 +399,7 @@ public class AiConversationMemoryService {
     }
     Session session = new Session(record.getProjectId(), record.getTargetId(), maxMessages);
     session.lastPlanJson = record.getLastPlanJson();
+    session.usage = parseUsage(record.getUsageJson());
     try {
       List<PersistedTurn> persistedTurns =
           objectMapper.readValue(record.getTurnsJson(), new TypeReference<List<PersistedTurn>>() {});
@@ -419,6 +434,7 @@ public class AiConversationMemoryService {
       record.setTargetId(session.targetId);
       record.setLastAccess(session.lastAccess);
       record.setLastPlanJson(session.lastPlanJson);
+      record.setUsageJson(session.usage == null ? null : objectMapper.writeValueAsString(session.usage));
       record.setTurnsJson(
           objectMapper.writeValueAsString(
               session.turns.stream()
@@ -438,6 +454,149 @@ public class AiConversationMemoryService {
     if (runtimeClient != null && projectId != null) {
       runtimeClient.clearConversationMemories(projectId, conversationId);
     }
+  }
+
+  public Map<String, Object> usage(String sessionId) {
+    if (sessionId == null || !sessionId.matches("[A-Za-z0-9_-]{1,64}")) return Map.of();
+    Session session = sessions.get(sessionId);
+    if (session != null) {
+      synchronized (session.monitor) {
+        return session.usage == null ? Map.of() : java.util.Collections.unmodifiableMap(new LinkedHashMap<>(session.usage));
+      }
+    }
+    if (repository == null) return Map.of();
+    AiConversationSessionRecord record = repository.findById(sessionId).orElse(null);
+    return record == null ? Map.of()
+        : java.util.Collections.unmodifiableMap(new LinkedHashMap<>(parseUsage(record.getUsageJson())));
+  }
+
+  public void addModelUsage(String sessionId, Map<String, Object> usage) {
+    if (usage == null || usage.isEmpty()) return;
+    Session session = require(sessionId);
+    synchronized (session.monitor) {
+      Map<String, Object> previousUsage = session.usage;
+      Instant previousLastAccess = session.lastAccess;
+      Map<String, Object> aggregate = new LinkedHashMap<>(session.usage == null ? Map.of() : session.usage);
+      Set<String> requiredKeys = Set.of("available", "source", "model", "modelCalls", "providerReportedCalls",
+          "estimatedCalls", "cacheReportedCalls", "inputTokens", "outputTokens", "totalTokens",
+          "cachedInputTokens", "cacheWriteTokens", "reasoningTokens", "estimatedInputTokens",
+          "cacheHitRatePermille", "contextWindowTokens", "contextWindowSource", "contextWindowUsedTokens",
+          "contextWindowUsagePermille", "peakInputTokens", "lastInputTokens", "estimator");
+      if (!usage.keySet().containsAll(requiredKeys) || !requiredKeys.containsAll(usage.keySet())) return;
+      for (String key : List.of("modelCalls", "providerReportedCalls", "estimatedCalls", "cacheReportedCalls")) {
+        if (!validUsageInteger(usage.get(key), 10_000)) return;
+      }
+      for (String key : List.of("inputTokens", "outputTokens", "totalTokens", "cachedInputTokens", "cacheWriteTokens",
+          "reasoningTokens", "estimatedInputTokens", "contextWindowTokens", "contextWindowUsedTokens", "peakInputTokens", "lastInputTokens")) {
+        if (!validUsageInteger(usage.get(key), 4_000_000_000L)) return;
+      }
+      for (String key : List.of("contextWindowUsagePermille")) {
+        if (!validUsageInteger(usage.get(key), 1000)) return;
+      }
+      Object incomingCacheRate = usage.get("cacheHitRatePermille");
+      if (incomingCacheRate != null && !validUsageInteger(incomingCacheRate, 1000)) return;
+      if (!(usage.get("available") instanceof Boolean)
+          || !Set.of("PROVIDER", "ESTIMATED", "MIXED", "UNAVAILABLE").contains(usage.get("source"))
+          || !Set.of("MODEL", "CONFIGURED", "DEFAULT").contains(usage.get("contextWindowSource"))
+          || !validUsageText(usage.get("model"), 120)
+          || !validUsageText(usage.get("estimator"), 32)) return;
+      for (String key : List.of("modelCalls", "providerReportedCalls", "estimatedCalls", "cacheReportedCalls",
+          "inputTokens", "outputTokens", "totalTokens", "cachedInputTokens", "cacheWriteTokens",
+          "reasoningTokens", "estimatedInputTokens")) {
+        long oldValue = number(aggregate.get(key));
+        long delta = number(usage.get(key));
+        aggregate.put(key, Math.min(4_000_000_000L, oldValue + delta));
+      }
+      long modelCalls = number(aggregate.get("modelCalls"));
+      aggregate.put("available", modelCalls > 0);
+      long providerCalls = number(aggregate.get("providerReportedCalls"));
+      long estimatedCalls = number(aggregate.get("estimatedCalls"));
+      String aggregateSource;
+      if (providerCalls > 0 && estimatedCalls > 0) {
+        aggregateSource = "MIXED";
+      } else if (providerCalls > 0) {
+        aggregateSource = "PROVIDER";
+      } else if (estimatedCalls > 0) {
+        aggregateSource = "ESTIMATED";
+      } else {
+        aggregateSource = "UNAVAILABLE";
+      }
+      aggregate.put("source", aggregateSource);
+      aggregate.put("model", usage.getOrDefault("model", ""));
+      long window = Math.max(1L, number(usage.getOrDefault("contextWindowTokens", 128_000)));
+      aggregate.put("contextWindowTokens", (int) Math.min(4_000_000L, window));
+      aggregate.put("contextWindowSource", usage.getOrDefault("contextWindowSource", "DEFAULT"));
+      long windowUsed = Math.max(number(aggregate.get("contextWindowUsedTokens")), number(usage.get("contextWindowUsedTokens")));
+      aggregate.put("contextWindowUsedTokens", windowUsed);
+      long usagePermille = Math.min(1000L, Math.max(0L, Math.round((double) windowUsed * 1000.0 / window)));
+      aggregate.put("contextWindowUsagePermille", (int) usagePermille);
+      aggregate.put("peakInputTokens", Math.max(number(aggregate.get("peakInputTokens")), number(usage.get("peakInputTokens"))));
+      aggregate.put("lastInputTokens", usage.getOrDefault("lastInputTokens", 0));
+      long cacheReportedCalls = number(aggregate.get("cacheReportedCalls"));
+      if (modelCalls > 0 && cacheReportedCalls == modelCalls) {
+        long totalInput = number(aggregate.get("inputTokens"));
+        long totalCached = number(aggregate.get("cachedInputTokens"));
+        int rate = totalInput <= 0 ? 0 : (int) Math.min(1000L, Math.max(0L, Math.round((double) totalCached * 1000.0 / totalInput)));
+        aggregate.put("cacheHitRatePermille", rate);
+      } else {
+        aggregate.put("cacheHitRatePermille", null);
+      }
+      aggregate.put("estimator", usage.getOrDefault("estimator", "heuristic-v1"));
+      session.usage = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(aggregate));
+      session.lastAccess = Instant.now();
+      try {
+        persist(sessionId, session);
+      } catch (RuntimeException ex) {
+        session.usage = previousUsage;
+        session.lastAccess = previousLastAccess;
+        throw ex;
+      }
+    }
+  }
+
+  private long number(Object value) {
+    return value instanceof Number number ? Math.max(0, number.longValue()) : 0;
+  }
+
+  private Map<String, Object> parseUsage(String json) {
+    if (json == null || json.isBlank() || json.length() > 16_384) return new LinkedHashMap<>();
+    try {
+      Map<String, Object> value = objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+      Set<String> allowed = Set.of("available", "source", "model", "modelCalls", "providerReportedCalls",
+          "estimatedCalls", "cacheReportedCalls", "inputTokens", "outputTokens", "totalTokens",
+          "cachedInputTokens", "cacheWriteTokens", "reasoningTokens", "estimatedInputTokens",
+          "cacheHitRatePermille", "contextWindowTokens", "contextWindowSource", "contextWindowUsedTokens",
+          "contextWindowUsagePermille", "peakInputTokens", "lastInputTokens", "estimator");
+      if (value.size() != allowed.size() || !allowed.containsAll(value.keySet())) return new LinkedHashMap<>();
+      if (!(value.get("available") instanceof Boolean)
+          || !Set.of("PROVIDER", "ESTIMATED", "MIXED", "UNAVAILABLE").contains(value.get("source"))
+          || !Set.of("MODEL", "CONFIGURED", "DEFAULT").contains(value.get("contextWindowSource"))
+          || !validUsageText(value.get("model"), 120)
+          || !validUsageText(value.get("estimator"), 32)) return new LinkedHashMap<>();
+      for (String key : List.of("modelCalls", "providerReportedCalls", "estimatedCalls", "cacheReportedCalls")) {
+        if (!validUsageInteger(value.get(key), 10_000)) return new LinkedHashMap<>();
+      }
+      for (String key : List.of("inputTokens", "outputTokens", "totalTokens", "cachedInputTokens", "cacheWriteTokens",
+          "reasoningTokens", "estimatedInputTokens", "contextWindowTokens", "contextWindowUsedTokens", "peakInputTokens", "lastInputTokens")) {
+        if (!validUsageInteger(value.get(key), 4_000_000_000L)) return new LinkedHashMap<>();
+      }
+      if (!validUsageInteger(value.get("contextWindowUsagePermille"), 1000)) return new LinkedHashMap<>();
+      Object cacheRate = value.get("cacheHitRatePermille");
+      if (cacheRate != null && !validUsageInteger(cacheRate, 1000)) return new LinkedHashMap<>();
+      return new LinkedHashMap<>(value);
+    } catch (Exception ignored) {
+      return new LinkedHashMap<>();
+    }
+  }
+
+  private boolean validUsageText(Object value, int maxLength) {
+    return value instanceof String text && text.length() <= maxLength
+        && !text.matches("(?s).*[\\p{Cc}].*");
+  }
+
+  private boolean validUsageInteger(Object value, long max) {
+    return value instanceof Number number && !(value instanceof Double) && !(value instanceof Float)
+        && number.longValue() >= 0 && number.longValue() <= max;
   }
 
   private String safeText(String value) {
@@ -530,6 +689,7 @@ public class AiConversationMemoryService {
     private final ChatMemory memory;
     private final Deque<Turn> turns = new ArrayDeque<>();
     private String lastPlanJson;
+    private Map<String, Object> usage = new LinkedHashMap<>();
     private volatile Instant lastAccess = Instant.now();
 
     private Session(Long projectId, Long targetId, int maxMessages) {
