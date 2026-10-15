@@ -834,6 +834,14 @@ function normalizedStep(
   };
 }
 
+function formatUsageNumber(value: number) {
+  return new Intl.NumberFormat("zh-CN").format(value);
+}
+
+function usageRate(value: number) {
+  return `${(value / 10).toFixed(1)}%`;
+}
+
 function applyAgentEvent(
   threadId: string,
   messageId: string,
@@ -868,6 +876,7 @@ function applyAgentEvent(
       ? String(event.approvalStatus)
       : undefined,
     executionDecision: event.executionDecision,
+    modelUsage: event.modelUsage,
     citation: event.citation ? publicCitation(event.citation) : undefined,
     contractVersion:
       event.contractVersion !== undefined
@@ -1139,6 +1148,7 @@ function applyAgentEvent(
   conversations.updateMessage(threadId, messageId, {
     status: status as ConversationMessage["status"],
     content,
+    modelUsage: event.modelUsage || message.modelUsage,
     agentEvents: events.slice(-100),
     citations: citations.slice(-30),
     steps,
@@ -2296,11 +2306,10 @@ onBeforeUnmount(() => {
                 >
                   <AiFailureNotice v-if="message.status === 'failed'" :message="message" />
                   <div
-                    v-if="(displayedContentForMessage(message) || isMessageTyping(message.id)) && message.status !== 'failed'"
+                    v-if="displayedContentForMessage(message) && message.status !== 'failed'"
                     class="message-bubble markdown-body"
                   >
                     <div v-html="renderMarkdown(displayedContentForMessage(message), { localizeToolCodes: true })" />
-                    <span v-if="isMessageTyping(message.id)" class="typing-cursor" aria-hidden="true" />
                   </div>
                 </AiProgressPanel>
                 <div
@@ -2377,6 +2386,14 @@ onBeforeUnmount(() => {
                   <summary>查看引用详情</summary>
                   <FluentCodeBlock class="reference-output" :content="JSON.stringify(reference.data, null, 2)" aria-label="引用详情原始数据" :min-rows="4" :max-rows="10" wrap />
                 </details>
+              </div>
+              <div v-if="message.role === 'assistant' && message.modelUsage?.available" class="message-usage" aria-label="本轮模型用量">
+                <span>{{ formatUsageNumber(message.modelUsage.inputTokens) }} 输入</span>
+                <span>{{ formatUsageNumber(message.modelUsage.outputTokens) }} 输出</span>
+                <span>{{ formatUsageNumber(message.modelUsage.totalTokens) }} tokens</span>
+                <span v-if="message.modelUsage.cacheHitRatePermille !== null">缓存 {{ usageRate(message.modelUsage.cacheHitRatePermille) }}</span>
+                <span v-if="message.modelUsage.contextWindowTokens">上下文 {{ usageRate(message.modelUsage.contextWindowUsagePermille) }}</span>
+                <span class="message-usage-source">{{ message.modelUsage.source === 'ESTIMATED' ? '估算' : message.modelUsage.source === 'MIXED' ? '部分估算' : '模型报告' }}</span>
               </div>
               <div
                 v-if="
@@ -2982,24 +2999,6 @@ onBeforeUnmount(() => {
   word-break: break-word;
   box-shadow: 0 1px 2px var(--app-shadow);
 }
-.typing-cursor {
-  display: inline-block;
-  width: 7px;
-  height: 16px;
-  background-color: var(--app-accent, #0f6cbd);
-  vertical-align: text-bottom;
-  margin-left: 3px;
-  border-radius: 1px;
-  animation: cursor-blink 0.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-}
-@keyframes cursor-blink {
-  0%, 100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0;
-  }
-}
 .user .message-bubble {
   border-color: var(--app-border);
   border-radius: 13px 4px 13px 13px;
@@ -3543,6 +3542,19 @@ onBeforeUnmount(() => {
 .agent-event-list li.approval > span {
   background: #fff2d8;
   color: #875b10;
+}
+.message-usage {
+  display: flex;
+  width: fit-content;
+  max-width: 94%;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  margin-top: 8px;
+  color: var(--app-muted);
+  font-size: 10px;
+}
+.message-usage-source {
+  color: var(--app-accent);
 }
 .agent-citation-bubbles {
   display: flex;
