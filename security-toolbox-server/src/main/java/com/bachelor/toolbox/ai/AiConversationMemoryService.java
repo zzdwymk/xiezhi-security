@@ -424,23 +424,9 @@ public class AiConversationMemoryService {
               session.turns.stream()
                   .map(turn -> new PersistedTurn(turn.user(), turn.text()))
                   .toList()));
-      try {
-        repository.saveAndFlush(record);
-      } catch (org.springframework.dao.DataIntegrityViolationException dive) {
-        repository
-            .findById(id)
-            .ifPresent(
-                existing -> {
-                  existing.setProjectId(session.projectId);
-                  existing.setTargetId(session.targetId);
-                  existing.setLastAccess(session.lastAccess);
-                  existing.setLastPlanJson(session.lastPlanJson);
-                  existing.setTurnsJson(record.getTurnsJson());
-                  repository.save(existing);
-                });
-      }
+      repository.save(record);
     } catch (Exception ex) {
-      // 尽力而为持久化，避免底层竞态导致模型回答失败
+      throw new ApiException("AI 会话记忆暂时不可写");
     }
   }
 
@@ -521,20 +507,7 @@ public class AiConversationMemoryService {
         if (tgtName != null) record.setTargetName(String.valueOf(tgtName));
         record.setThreadJson(objectMapper.writeValueAsString(threadData));
       }
-      try {
-        repository.saveAndFlush(record);
-      } catch (org.springframework.dao.DataIntegrityViolationException dive) {
-        repository
-            .findById(sessionId)
-            .ifPresent(
-                existing -> {
-                  existing.setLastAccess(Instant.now());
-                  if (record.getTitle() != null) existing.setTitle(record.getTitle());
-                  if (record.getThreadJson() != null)
-                    existing.setThreadJson(record.getThreadJson());
-                  repository.save(existing);
-                });
-      }
+      repository.save(record);
     } catch (Exception ignored) {
     }
   }
