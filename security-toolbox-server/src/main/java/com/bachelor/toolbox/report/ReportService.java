@@ -90,7 +90,7 @@ public class ReportService {
     .severity-badge.severity-medium { color: #986f0b; background: #fefce8; border-color: #fef08a; }
     .severity-badge.severity-low { color: #0f6cbd; background: #eff6ff; border-color: #bfdbfe; }
     .severity-badge.severity-info { color: #475569; background: #f8fafc; border-color: #e2e8f0; }
-    pre { margin: 8px 0 0; padding: 12px; background: #0f172a; color: #e2e8f0; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 6px; }
+    pre { margin: 8px 0 0; padding: 12px 14px; background: #f8fafc; border: 1px solid #e2e8f0; color: #1e293b; font-family: Consolas, "Cascadia Code", monospace; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 6px; }
     .markdown-body { overflow-wrap: anywhere; }
     .markdown-body > :first-child { margin-top: 0; }
     .markdown-body > :last-child { margin-bottom: 0; }
