@@ -11,8 +11,11 @@ import { ElMessageBox } from "element-plus";
 function isAutomationEnvironment(): boolean {
   if (typeof window === "undefined") return false;
   return Boolean(
+    window.toolboxDesktop?.isAutomated ||
     (window as any).__PW_ENV__ ||
     (window as any).__playwright ||
+    (window as any).__PLAYWRIGHT__ ||
+    (window as any).__QA_TEST__ ||
     (window as any).__TEST_ENV__ ||
     navigator.webdriver
   );

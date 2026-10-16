@@ -18,6 +18,7 @@ interface ToolboxDesktopBridge {
   readonly testAiRelayProvider?: (provider: AiRelayProvider, prompt?: string) => Promise<{ ok: boolean; message: string; reason?: string | null; model?: string; reply?: string }>;
   readonly getAiRelayStatus?: () => Promise<AiRelayStatus>;
   readonly isDesktop: true;
+  readonly isAutomated?: boolean;
   readonly platform: string;
   readonly backendBaseUrl: string;
   readonly getSystemTheme?: () => Promise<SystemThemeState>;

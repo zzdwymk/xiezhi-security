@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld(
   "toolboxDesktop",
   Object.freeze({
     isDesktop: true,
+    isAutomated: process.argv.some((arg) => arg.includes("--remote-debugging-port")),
     platform: process.platform,
     backendBaseUrl,
     getSystemTheme: () => ipcRenderer.invoke("toolbox:get-system-theme"),
