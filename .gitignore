@@ -166,6 +166,7 @@ xray.yaml
 /qa-artifacts/
 /e2e-artifacts/
 /test-output/
+/preview-orig/
 **/.downloads/
 **/.uat-browser.*.tmpdir/
 *.har
