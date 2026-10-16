@@ -153,13 +153,23 @@ class TrafficProxyLifecycleTests {
     assertThat(service.status().capturing()).isFalse();
     assertThat(service.status().capturedCount()).isZero();
     assertThat(ReflectionTestUtils.getField(service, "current")).isNull();
-    ServerSocket listener = new ServerSocket();
-    try {
-      listener.setReuseAddress(true);
-      listener.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), 1);
-      assertThat(listener.isBound()).isTrue();
-    } finally {
-      listener.close();
+    java.io.IOException lastBindError = null;
+    for (int attempt = 0; attempt < 20; attempt++) {
+      ServerSocket listener = new ServerSocket();
+      try {
+        listener.setReuseAddress(true);
+        listener.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), 1);
+        assertThat(listener.isBound()).isTrue();
+        return;
+      } catch (java.io.IOException ex) {
+        lastBindError = ex;
+        Thread.sleep(50);
+      } finally {
+        try { listener.close(); } catch (Exception ignored) { }
+      }
+    }
+    if (lastBindError != null) {
+      throw lastBindError;
     }
   }
 
