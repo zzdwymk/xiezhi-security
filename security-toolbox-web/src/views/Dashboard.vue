@@ -781,6 +781,97 @@ async function scrollToBottom() {
   if (element) element.scrollTop = element.scrollHeight;
 }
 
+interface UserTurnItem {
+  id: string;
+  turn: number;
+  preview: string;
+  timeText: string;
+}
+
+const userTurns = computed<UserTurnItem[]>(() => {
+  if (!selectedThread.value?.messages) return [];
+  const turns: UserTurnItem[] = [];
+  let turnNumber = 0;
+  for (const message of selectedThread.value.messages) {
+    if (message.role === "user") {
+      turnNumber++;
+      const text = (message.content || "").trim();
+      const preview =
+        text.length > 80 ? text.slice(0, 80) + "…" : (text || "（空消息）");
+      turns.push({
+        id: message.id,
+        turn: turnNumber,
+        preview,
+        timeText: message.createdAt ? formatTime(message.createdAt) : "",
+      });
+    }
+  }
+  return turns;
+});
+
+const activeTurnId = ref<string>("");
+const highlightedTurnId = ref<string>("");
+let turnHighlightTimer: ReturnType<typeof setTimeout> | undefined;
+
+function updateActiveTurn() {
+  const container = messagesElement.value;
+  if (!container || !userTurns.value.length) return;
+  const containerRect = container.getBoundingClientRect();
+
+  const userArticles = container.querySelectorAll<HTMLElement>(
+    "article.chat-message.user[data-message-id]",
+  );
+  if (!userArticles.length) return;
+
+  let currentId = userTurns.value[0].id;
+  for (const el of userArticles) {
+    const rect = el.getBoundingClientRect();
+    if (rect.top <= containerRect.top + containerRect.height * 0.45) {
+      const id = el.getAttribute("data-message-id");
+      if (id) currentId = id;
+    } else {
+      break;
+    }
+  }
+  activeTurnId.value = currentId;
+}
+
+function jumpToTurn(turnId: string) {
+  const container = messagesElement.value;
+  if (!container) return;
+  const target = container.querySelector<HTMLElement>(
+    `article[data-message-id="${turnId}"]`,
+  );
+  if (!target) return;
+
+  target.scrollIntoView({ behavior: "smooth", block: "start" });
+  activeTurnId.value = turnId;
+
+  highlightedTurnId.value = turnId;
+  if (turnHighlightTimer) clearTimeout(turnHighlightTimer);
+  turnHighlightTimer = setTimeout(() => {
+    if (highlightedTurnId.value === turnId) {
+      highlightedTurnId.value = "";
+    }
+  }, 1800);
+}
+
+watch(
+  () => selectedThread.value?.id,
+  () => {
+    activeTurnId.value = "";
+    highlightedTurnId.value = "";
+    void nextTick(() => updateActiveTurn());
+  },
+);
+
+watch(
+  () => userTurns.value.length,
+  () => {
+    void nextTick(() => updateActiveTurn());
+  },
+);
+
 function eventStepIndex(message: ConversationMessage, event: AgentStreamEvent) {
   const match = findMatchingAiStep(message.steps, { id: event.stepId, workflowNodeId: event.workflowNodeId, toolCallId: event.toolCallId, taskId: event.taskId });
   if (match) return message.steps.indexOf(match);
@@ -2056,6 +2147,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (pollTimer) clearInterval(pollTimer);
   if (typewriterInterval) clearInterval(typewriterInterval);
+  if (turnHighlightTimer) clearTimeout(turnHighlightTimer);
   stopTaskFeed?.();
 });
 </script>
@@ -2264,15 +2356,16 @@ onBeforeUnmount(() => {
     </section>
 
     <template v-else>
-      <section ref="messagesElement" class="chat-messages">
-        <div class="messages-inner">
-          <article
-            v-for="message in selectedThread.messages"
-            :key="message.id"
-            :data-message-id="message.id"
-            class="chat-message"
-            :class="message.role"
-          >
+      <div class="chat-conversation-body">
+        <section ref="messagesElement" class="chat-messages" @scroll.passive="updateActiveTurn">
+          <div class="messages-inner">
+            <article
+              v-for="message in selectedThread.messages"
+              :key="message.id"
+              :data-message-id="message.id"
+              class="chat-message"
+              :class="[message.role, { 'is-turn-jump-highlight': highlightedTurnId === message.id }]"
+            >
             <ConversationAvatar class="message-avatar" :role="message.role" />
             <div class="message-column">
               <div class="message-meta">
@@ -2608,7 +2701,48 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <footer class="chat-composer-wrap">
+      <!-- 对话轮次快速导航条（DSH 风格右侧小横条） -->
+      <nav
+        v-if="userTurns.length > 1"
+        class="turn-rail"
+        aria-label="对话轮次快速导航"
+      >
+        <div class="turn-rail-track">
+          <el-tooltip
+            v-for="turn in userTurns"
+            :key="turn.id"
+            placement="left"
+            :show-after="80"
+            popper-class="turn-rail-tooltip"
+          >
+            <template #content>
+              <div class="turn-tooltip-content">
+                <div class="turn-tooltip-header">
+                  <strong>第 {{ turn.turn }} 轮提问</strong>
+                  <span v-if="turn.timeText">{{ turn.timeText }}</span>
+                </div>
+                <div class="turn-tooltip-body">{{ turn.preview }}</div>
+                <div class="turn-tooltip-tip">点击快速跳转</div>
+              </div>
+            </template>
+            <button
+              type="button"
+              class="turn-rail-mark"
+              :class="{
+                'is-active': activeTurnId === turn.id,
+                'is-target': highlightedTurnId === turn.id,
+              }"
+              :aria-label="`跳转到第 ${turn.turn} 轮提问: ${turn.preview}`"
+              @click="jumpToTurn(turn.id)"
+            >
+              <span class="turn-rail-bar" />
+            </button>
+          </el-tooltip>
+        </div>
+      </nav>
+    </div>
+
+    <footer class="chat-composer-wrap">
         <div class="thread-target">
           <span>当前授权目标</span
           ><strong
@@ -4862,5 +4996,183 @@ a.agent-citation-bubble {
 .execution-plan-disclosure:focus-visible {
   outline: 2px solid var(--app-text);
   outline-offset: -2px;
+}
+
+/* 对话轮次导航条（DSH 风格右侧小横条快速跳转） */
+.chat-conversation-body {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.chat-message {
+  scroll-margin-top: 18px;
+}
+
+.chat-message.is-turn-jump-highlight {
+  animation: turnMessageHighlight 1.8s cubic-bezier(0.2, 0.8, 0.2, 1);
+  border-radius: 10px;
+}
+
+@keyframes turnMessageHighlight {
+  0% {
+    background-color: color-mix(in srgb, var(--app-accent, #3b82f6) 24%, transparent);
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--app-accent, #3b82f6) 24%, transparent);
+  }
+  60% {
+    background-color: color-mix(in srgb, var(--app-accent, #3b82f6) 12%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-accent, #3b82f6) 12%, transparent);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: none;
+  }
+}
+
+.turn-rail {
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 15;
+  pointer-events: auto;
+  user-select: none;
+}
+
+.turn-rail-track {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+  padding: 8px 4px;
+  max-height: min(440px, calc(100vh - 280px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+.turn-rail-track::-webkit-scrollbar {
+  display: none;
+}
+
+.turn-rail-mark {
+  all: unset;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: 28px;
+  height: 12px;
+  cursor: pointer;
+  padding: 0;
+  border-radius: 4px;
+}
+
+.turn-rail-bar {
+  display: block;
+  width: 14px;
+  height: 2.5px;
+  border-radius: 2px;
+  background: var(--app-border, #cbd5e1);
+  opacity: 0.65;
+  transform-origin: right center;
+  transition: width 0.16s cubic-bezier(0.2, 0, 0, 1),
+              height 0.16s ease,
+              background-color 0.16s ease,
+              opacity 0.16s ease,
+              box-shadow 0.16s ease;
+}
+
+.turn-rail-mark:hover .turn-rail-bar {
+  width: 22px;
+  height: 3px;
+  background: var(--app-accent, #3b82f6);
+  opacity: 0.95;
+}
+
+.turn-rail-mark.is-active .turn-rail-bar {
+  width: 24px;
+  height: 3px;
+  background: var(--app-accent, #0066cc);
+  opacity: 1;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--app-accent, #0066cc) 40%, transparent);
+}
+
+.turn-rail-mark.is-target .turn-rail-bar {
+  width: 26px;
+  height: 3.5px;
+  background: var(--app-accent, #0066cc);
+  opacity: 1;
+  animation: turnBarPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes turnBarPulse {
+  0%, 100% { transform: scaleY(1); opacity: 0.85; }
+  50% { transform: scaleY(1.3); opacity: 1; }
+}
+
+.turn-tooltip-content {
+  max-width: 250px;
+  line-height: 1.4;
+}
+
+.turn-tooltip-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.turn-tooltip-header strong {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-text, #111827);
+}
+
+.turn-tooltip-header span {
+  font-size: 10px;
+  color: var(--app-muted, #6b7280);
+}
+
+.turn-tooltip-body {
+  font-size: 11px;
+  color: var(--app-text-secondary, #4b5563);
+  word-break: break-word;
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.turn-tooltip-tip {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--app-accent, #3b82f6);
+  opacity: 0.85;
+}
+
+:global(.turn-rail-tooltip) {
+  padding: 8px 12px !important;
+  border-radius: 8px !important;
+  background: var(--app-surface, #ffffff) !important;
+  color: var(--app-text, #111827) !important;
+  border: 1px solid var(--app-border, #e5e7eb) !important;
+  box-shadow: var(--app-shadow, 0 4px 16px rgba(0, 0, 0, 0.12)) !important;
+  max-width: 280px !important;
+}
+
+:global(.turn-rail-tooltip .el-popper__arrow::before) {
+  background: var(--app-surface, #ffffff) !important;
+  border-color: var(--app-border, #e5e7eb) !important;
+}
+
+@media (max-width: 768px) {
+  .turn-rail {
+    display: none;
+  }
 }
 </style>
