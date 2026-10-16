@@ -41,6 +41,10 @@ public class AiConversationSessionRecord {
   @Column(columnDefinition = "TEXT")
   private String lastPlanJson;
 
+  // Bounded, prompt-free aggregate model usage snapshot.
+  @Column(columnDefinition = "TEXT")
+  private String usageJson;
+
   @Column
   private Instant createdAt;
 

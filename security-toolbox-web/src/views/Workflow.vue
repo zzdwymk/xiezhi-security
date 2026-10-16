@@ -3940,7 +3940,7 @@ async function executeWorkflow() {
       void notifyWorkflowSkipped(
         {
           count: preflight.issues.length,
-          labels: preflight.issues.map((issue) => issue.label || issue.toolCode),
+          labels: preflight.issues.map((issue) => issue.label || actionStepLabel(issue.toolCode)),
         },
       );
     }
@@ -6353,18 +6353,18 @@ onBeforeUnmount(() => {
         <ProjectEvidenceResult v-if="nodeDetailRun.toolCode === 'retrieve_project_context' && nodeDetailRun.output" :data="nodeDetailRun.output" />
         <FluentCodeBlock
           v-else-if="nodeDetailRun.output"
-          title="节点输出"
+          title="节点输出（原始数据）"
           :content="JSON.stringify(nodeDetailRun.output, null, 2)"
-          aria-label="工作流节点输出"
+          aria-label="工作流节点原始输出"
           :min-rows="4"
           :max-rows="16"
           wrap
         />
         <FluentCodeBlock
           v-if="nodeDetailRun.log && nodeDetailRun.toolCode !== 'retrieve_project_context'"
-          title="节点日志"
+          title="节点日志（原始数据）"
           :content="nodeDetailRun.log"
-          aria-label="工作流节点日志"
+          aria-label="工作流节点原始日志"
           :min-rows="3"
           :max-rows="16"
           wrap
@@ -6498,7 +6498,9 @@ onBeforeUnmount(() => {
           </el-table-column>
           <el-table-column label="编号 / CVE" min-width="160" show-overflow-tooltip>
             <template #default="{ row }">
-              <span class="poc-dialog-code">{{ row.sourceExternalId || row.vulnerabilityCode }}</span>
+              <span class="poc-dialog-code">{{
+                row.sourceExternalId || "暂无公开编号"
+              }}</span>
             </template>
           </el-table-column>
           <el-table-column label="PoC / 漏洞名称" min-width="260" show-overflow-tooltip>

@@ -33,8 +33,7 @@ body {
   border-bottom: 1px solid #293341;
   color: #fff;
 }
-.product-icon,
-.login-logo {
+.product-icon {
   display: grid;
   place-items: center;
   width: 32px;
@@ -44,6 +43,14 @@ body {
   color: #fff;
   font-weight: 700;
   overflow: hidden;
+}
+.login-logo {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  background: transparent;
+  overflow: visible;
 }
 .login-logo img {
   display: block;

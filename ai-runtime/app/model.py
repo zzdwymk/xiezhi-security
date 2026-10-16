@@ -16,6 +16,13 @@ from pydantic import BaseModel, ValidationError
 from .config import settings
 from .diagnostics import record_diagnostic, rule_for_message
 from .progress import emit_progress
+from .usage import (
+    ModelCallUsage,
+    estimate_messages_tokens,
+    model_name,
+    record_model_call,
+    usage_from_response,
+)
 from .schemas import (
     ActionPlanPlannerOutput,
     AutoIntentDecision,
@@ -237,6 +244,44 @@ def _last_user_message(messages: list[dict[str, Any]]) -> str:
         if message.get("role") == "user":
             return str(message.get("content", ""))
     return str(messages[-1].get("content", "")) if messages else ""
+
+
+def _chain_prompt_texts(chain: Any, inputs: dict[str, Any]) -> list[str]:
+    """Best-effort recovery of the prompt text sent to the provider.
+
+    Used only for the local token estimate when the provider reports no usage
+    (for example a local proxy). Any failure degrades to "no estimate" rather
+    than to a guessed prompt, and prompt text never leaves this call.
+    """
+    template = getattr(chain, "first", None)
+    format_messages = getattr(template, "format_messages", None)
+    if not callable(format_messages):
+        return []
+    try:
+        messages = format_messages(**inputs)
+    except Exception:
+        return []
+    texts: list[str] = []
+    for message in messages:
+        content = getattr(message, "content", message)
+        if isinstance(content, str):
+            texts.append(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, str):
+                    texts.append(part)
+                elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                    texts.append(part["text"])
+    # Codex-compatible proxies carry the system policy as bound instructions
+    # rather than as a prompt message; it still consumes context window space.
+    bound = getattr(getattr(chain, "last", None), "kwargs", None)
+    if isinstance(bound, dict) and isinstance(bound.get("instructions"), str):
+        texts.insert(0, bound["instructions"])
+    return texts
+
+
+def _estimated_input_tokens(chain: Any, inputs: dict[str, Any]) -> int:
+    return estimate_messages_tokens(_chain_prompt_texts(chain, inputs))
 
 
 class PlannerOutputError(ValueError):
@@ -998,13 +1043,30 @@ class AgentPlanner:
 
     async def _call_model(self, chain: Any, inputs: dict[str, Any]) -> Any:
         _reserve_model_call()
+        # Provider usage is authoritative; the local estimate only fills the
+        # context-window reading when a proxy returns no usage block.
+        estimated_input_tokens = _estimated_input_tokens(chain, inputs)
         try:
             response = await chain.ainvoke(inputs)
         except BaseException:
             self._last_model_call_failed = True
+            # A failed attempt can still have consumed provider tokens.
+            record_model_call(
+                ModelCallUsage(
+                    model=model_name(),
+                    estimatedInputTokens=estimated_input_tokens,
+                )
+            )
             raise
         self._model_verified = True
         self._last_model_call_failed = False
+        record_model_call(
+            usage_from_response(
+                response,
+                model=model_name(),
+                estimated_input_tokens=estimated_input_tokens,
+            )
+        )
         return response
 
     async def _invoke_contract(

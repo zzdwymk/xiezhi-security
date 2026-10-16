@@ -1789,6 +1789,58 @@ const PUBLIC_NODE_STATUSES = new Set<PublicAgentNodeStatus>([
   "FAILED",
 ]);
 
+function normalizeModelUsage(value: Record<string, any>): ConversationAgentEvent["modelUsage"] | undefined {
+  const integer = (key: string, max = 4_000_000_000) => {
+    const number = value[key];
+    return Number.isInteger(number) && number >= 0 && number <= max ? number : null;
+  };
+  const source = ["PROVIDER", "ESTIMATED", "MIXED", "UNAVAILABLE"].includes(value.source) ? value.source : null;
+  const cache = value.cacheHitRatePermille;
+  const cacheRate = cache === null ? null : integer("cacheHitRatePermille", 1000);
+  const modelCalls = integer("modelCalls", 10_000);
+  const smallCounts = ["providerReportedCalls", "estimatedCalls", "cacheReportedCalls"]
+    .map((key) => integer(key, 10_000));
+  const extraTokenCounts = ["cacheWriteTokens", "reasoningTokens", "estimatedInputTokens", "lastInputTokens"]
+    .map((key) => integer(key));
+  const contextSource = ["MODEL", "CONFIGURED", "DEFAULT"].includes(value.contextWindowSource)
+    ? value.contextWindowSource : null;
+  const estimator = typeof value.estimator === "string" && value.estimator.length <= 32 ? value.estimator : null;
+  const input = integer("inputTokens"), output = integer("outputTokens"), total = integer("totalTokens");
+  const cached = integer("cachedInputTokens"), window = integer("contextWindowTokens");
+  const used = integer("contextWindowUsedTokens"), rate = integer("contextWindowUsagePermille", 1000);
+  const peak = integer("peakInputTokens");
+  if (typeof value.available !== "boolean" || !source || modelCalls === null || input === null
+      || output === null || total === null || cached === null || cacheRate === undefined
+      || window === null || used === null || rate === null || peak === null
+      || smallCounts.some((count) => count === null) || extraTokenCounts.some((count) => count === null)
+      || !contextSource || !estimator
+      || typeof value.model !== "string" || value.model.length > 120) return undefined;
+  return {
+    available: value.available,
+    source,
+    model: value.model,
+    modelCalls,
+    inputTokens: input,
+    outputTokens: output,
+    totalTokens: total,
+    cachedInputTokens: cached,
+    cacheHitRatePermille: cacheRate,
+    contextWindowTokens: window,
+    contextWindowUsedTokens: used,
+    contextWindowUsagePermille: rate,
+    peakInputTokens: peak,
+    providerReportedCalls: smallCounts[0] as number,
+    estimatedCalls: smallCounts[1] as number,
+    cacheReportedCalls: smallCounts[2] as number,
+    cacheWriteTokens: extraTokenCounts[0] as number,
+    reasoningTokens: extraTokenCounts[1] as number,
+    estimatedInputTokens: extraTokenCounts[2] as number,
+    lastInputTokens: extraTokenCounts[3] as number,
+    contextWindowSource: contextSource as "MODEL" | "CONFIGURED" | "DEFAULT",
+    estimator: estimator as string,
+  };
+}
+
 function boundedNumber(value: unknown): number | undefined {
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? number : undefined;
@@ -1882,6 +1934,8 @@ export function normalizeAgentEvent(
       : undefined;
   const responseRaw =
     raw.response && typeof raw.response === "object" ? raw.response : undefined;
+  const usageRaw = raw.modelUsage && typeof raw.modelUsage === "object" ? raw.modelUsage : responseRaw?.modelUsage;
+  const modelUsage = usageRaw && typeof usageRaw === "object" ? normalizeModelUsage(usageRaw) : undefined;
   const planRaw =
     raw.plan && typeof raw.plan === "object"
       ? raw.plan
@@ -2008,6 +2062,7 @@ export function normalizeAgentEvent(
     approvalId: raw.approvalId || raw.approval_id || responseRaw?.approvalId,
     approvalStatus: raw.approvalStatus || raw.approval_status || responseRaw?.approvalStatus,
     executionDecision: normalizeAiExecutionDecision(raw.executionDecision),
+    modelUsage,
     citation,
     plan: normalizedPlan,
     steps,

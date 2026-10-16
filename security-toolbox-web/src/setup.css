@@ -52,18 +52,18 @@ body:has(.setup-page) {
   width: 31px;
   height: 31px;
   place-items: center;
-  border: 1px solid #d6d6d1;
-  border-radius: 8px;
-  background: #fff;
+  border: none;
+  background: transparent;
   color: #246b5a;
   font-size: 16px;
-  box-shadow: 0 1px 2px rgba(26, 26, 24, 0.06);
-  overflow: hidden;
+  box-shadow: none;
+  overflow: visible;
 }
 .setup-logo img {
   display: block;
   width: 100%;
   height: 100%;
+  object-fit: contain;
 }
 .setup-brand > span:last-child {
   display: flex;
@@ -621,7 +621,6 @@ body:has(.setup-page) {
   border-color: var(--setup-border);
   background: var(--setup-side);
 }
-.setup-logo,
 .setup-storage,
 .setup-toolbox-card,
 .dependency-group,
@@ -635,7 +634,9 @@ body:has(.setup-page) {
   background: var(--setup-border);
 }
 .setup-logo {
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--app-text) 6%, transparent);
+  border: none;
+  background: transparent;
+  box-shadow: none;
 }
 .setup-steps li.active,
 .dependency-row:hover {
@@ -691,7 +692,6 @@ body:has(.setup-page) {
 .setup-page {
   font-family: inherit;
 }
-.setup-logo,
 .setup-storage,
 .setup-toolbox-card,
 .dependency-group,
@@ -1163,8 +1163,8 @@ body:has(.setup-page) {
 }
 
 :root[data-system-theme="dark"] .setup-logo {
-  border-color: var(--app-border);
-  background: var(--app-surface);
+  border: none;
+  background: transparent;
   color: var(--app-accent);
 }
 

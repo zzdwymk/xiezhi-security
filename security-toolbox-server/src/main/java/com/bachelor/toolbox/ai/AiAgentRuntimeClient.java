@@ -730,7 +730,7 @@ public class AiAgentRuntimeClient {
         runId,
         POLICY_REVISION,
         holder.stateVersion,
-       holder.provenance(), holder.executionDecision);
+       holder.provenance(), holder.executionDecision, holder.modelUsage);
  }
 
   /**
@@ -783,7 +783,7 @@ public class AiAgentRuntimeClient {
         runId,
         POLICY_REVISION,
         holder.stateVersion,
-        holder.provenance(), holder.executionDecision);
+        holder.provenance(), holder.executionDecision, holder.modelUsage);
   }
 
   /** Persist a bounded continuation tombstone in the local runtime after Java creates tasks. */
@@ -1829,10 +1829,16 @@ public class AiAgentRuntimeClient {
       String policyRevision,
       int stateVersion,
       RuntimeProvenance provenance,
-      String executionDecision) {
+      String executionDecision,
+      Map<String, Object> modelUsage) {
     public RuntimePlanResult(AiPlanResponse plan, String answer, String status, String runId,
         String policyRevision, int stateVersion, RuntimeProvenance provenance) {
-      this(plan, answer, status, runId, policyRevision, stateVersion, provenance, null);
+      this(plan, answer, status, runId, policyRevision, stateVersion, provenance, null, null);
+    }
+
+    public RuntimePlanResult(AiPlanResponse plan, String answer, String status, String runId,
+        String policyRevision, int stateVersion, RuntimeProvenance provenance, String executionDecision) {
+      this(plan, answer, status, runId, policyRevision, stateVersion, provenance, executionDecision, null);
     }
   }
 
@@ -1880,6 +1886,7 @@ public class AiAgentRuntimeClient {
     private JsonNode planEventData;
     private String answer = "";
     private String finishStatus = "";
+    private Map<String, Object> modelUsage;
     private String authorizationStatus = "";
     private String plannerSource = "";
     private String terminationReason = "";
@@ -2737,7 +2744,8 @@ public class AiAgentRuntimeClient {
               "indexRevision",
               "plannerSource",
               "terminationReason",
-              "llmCallCount"),
+              "llmCallCount",
+               "modelUsage"),
           Set.of(
               "status",
               "answer",
@@ -2754,6 +2762,9 @@ public class AiAgentRuntimeClient {
       // model calls, bounded by the same budget sent in the request.
       if (data.has("llmCallCount")) {
         strictBoundedInt(data, "llmCallCount", 0, RUNTIME_MAX_LLM_CALLS);
+      }
+      if (data.has("modelUsage")) {
+        modelUsage = validateModelUsage(data.get("modelUsage"));
       }
       finishStatus = strictText(data, "status", 32);
       if (!Set.of("COMPLETED", "DENIED", "APPROVAL_REQUIRED", "FAILED")
@@ -2949,6 +2960,71 @@ public class AiAgentRuntimeClient {
       }
     }
 
+    private Map<String, Object> validateModelUsage(JsonNode value) {
+      if (value == null || !value.isObject() || value.size() > 32) {
+        throw new RuntimeProtocolException("AI Runtime modelUsage 格式无效");
+      }
+      Set<String> allowed = Set.of(
+          "available", "source", "model", "modelCalls", "providerReportedCalls",
+          "estimatedCalls", "cacheReportedCalls", "inputTokens", "outputTokens",
+          "totalTokens", "cachedInputTokens", "cacheWriteTokens", "reasoningTokens",
+          "estimatedInputTokens", "cacheHitRatePermille", "contextWindowTokens",
+          "contextWindowSource", "contextWindowUsedTokens", "contextWindowUsagePermille",
+          "peakInputTokens", "lastInputTokens", "estimator");
+      value.fieldNames().forEachRemaining(key -> {
+        if (!allowed.contains(key)) throw new RuntimeProtocolException("AI Runtime modelUsage 含未知字段");
+      });
+      Map<String, Object> result = new LinkedHashMap<>();
+      result.put("available", strictBoolean(value, "available"));
+      String source = strictText(value, "source", 16);
+      if (!Set.of("PROVIDER", "ESTIMATED", "MIXED", "UNAVAILABLE").contains(source)) {
+        throw new RuntimeProtocolException("AI Runtime modelUsage source 无效");
+      }
+      result.put("source", source);
+      result.put("model", optionalUsageText(value, "model", 120));
+      for (String field : List.of("modelCalls", "providerReportedCalls", "estimatedCalls", "cacheReportedCalls")) {
+        result.put(field, strictBoundedInt(value, field, 0, 10_000));
+      }
+      for (String field : List.of("inputTokens", "outputTokens", "totalTokens", "cachedInputTokens",
+          "cacheWriteTokens", "reasoningTokens", "estimatedInputTokens", "contextWindowTokens",
+          "contextWindowUsedTokens", "peakInputTokens", "lastInputTokens")) {
+        result.put(field, strictBoundedLong(value, field, 0L, 4_000_000_000L));
+      }
+      result.put("cacheHitRatePermille", optionalUsageRate(value, "cacheHitRatePermille"));
+      result.put("contextWindowUsagePermille", strictBoundedInt(value, "contextWindowUsagePermille", 0, 1000));
+      String windowSource = strictText(value, "contextWindowSource", 16);
+      if (!Set.of("MODEL", "CONFIGURED", "DEFAULT").contains(windowSource)) {
+        throw new RuntimeProtocolException("AI Runtime modelUsage context source 无效");
+      }
+      result.put("contextWindowSource", windowSource);
+      result.put("estimator", optionalUsageText(value, "estimator", 32));
+      return java.util.Collections.unmodifiableMap(result);
+    }
+
+    private boolean strictBoolean(JsonNode node, String field) {
+      JsonNode value = node.get(field);
+      if (value == null || !value.isBoolean()) throw new RuntimeProtocolException("AI Runtime 字段 " + field + " 类型无效");
+      return value.booleanValue();
+    }
+
+    private String optionalUsageText(JsonNode node, String field, int maxLength) {
+      JsonNode value = node.get(field);
+      if (value == null || value.isNull()) return "";
+      if (!value.isTextual() || value.textValue().length() > maxLength || containsForbiddenControl(value.textValue())) {
+        throw new RuntimeProtocolException("AI Runtime 字段 " + field + " 文本无效");
+      }
+      return value.textValue();
+    }
+
+    private Object optionalUsageRate(JsonNode node, String field) {
+      JsonNode value = node.get(field);
+      if (value == null || value.isNull()) return null;
+      if (!value.isInt() || value.intValue() < 0 || value.intValue() > 1000) {
+        throw new RuntimeProtocolException("AI Runtime 字段 " + field + " 超出范围");
+      }
+      return value.intValue();
+    }
+
     private long strictPositiveLong(JsonNode node, String field) {
       JsonNode value = node.get(field);
       if (value == null || !value.isIntegralNumber() || !value.canConvertToLong() || value.longValue() <= 0) {
@@ -2966,6 +3042,15 @@ public class AiAgentRuntimeClient {
         throw new RuntimeProtocolException("AI Runtime 字段 " + field + " 超出范围");
       }
       return value.intValue();
+    }
+
+    private long strictBoundedLong(JsonNode node, String field, long min, long max) {
+      JsonNode value = node.get(field);
+      if (value == null || !value.isIntegralNumber() || !value.canConvertToLong()
+          || value.longValue() < min || value.longValue() > max) {
+        throw new RuntimeProtocolException("AI Runtime 字段 " + field + " 超出范围");
+      }
+      return value.longValue();
     }
 
     private String normalizeQuery(String value) {

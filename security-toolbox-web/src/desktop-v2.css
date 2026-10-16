@@ -54,20 +54,20 @@
 }
 .desktop-v2-native-titlebar-logo {
   display: grid;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   place-items: center;
-  border: 1px solid var(--v2-glass-border);
-  border-radius: 6px;
-  background: var(--v2-glass-panel);
+  border: none;
+  background: transparent;
   color: #246b5a;
   font-size: 12px;
-  overflow: hidden;
+  overflow: visible;
 }
 .desktop-v2-native-titlebar-logo img {
   display: block;
   width: 100%;
   height: 100%;
+  object-fit: contain;
 }
 .desktop-v2-window-controls {
   display: flex;
@@ -220,18 +220,18 @@ body.sidebar-resizing * {
   width: 32px;
   height: 32px;
   place-items: center;
-  border: 1px solid var(--v2-glass-border);
-  border-radius: 8px;
-  background: var(--v2-glass-panel);
+  border: none;
+  background: transparent;
   color: var(--v2-accent);
   font-size: 16px;
-  box-shadow: var(--fluent-card-shadow);
-  overflow: hidden;
+  box-shadow: none;
+  overflow: visible;
 }
 .desktop-v2-logo img {
   display: block;
   width: 100%;
   height: 100%;
+  object-fit: contain;
 }
 .desktop-v2-brand > span:last-child {
   display: flex;
