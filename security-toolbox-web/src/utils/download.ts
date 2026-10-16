@@ -61,7 +61,17 @@ export function downloadBlob(blob: Blob | null | undefined, filename: string): v
       }
     )
       .then(() => {
-        window.open(url, "_blank");
+        if (window.toolboxDesktop?.openExportedFile) {
+          const reader = new FileReader();
+          reader.onload = async () => {
+            const result = (reader.result as string) || "";
+            const base64 = result.includes(",") ? result.split(",")[1] : result;
+            await window.toolboxDesktop?.openExportedFile?.({ filename, base64 });
+          };
+          reader.readAsDataURL(blob);
+        } else {
+          window.open(url, "_blank");
+        }
       })
       .catch(() => {
         /* 用户选择暂不打开 */

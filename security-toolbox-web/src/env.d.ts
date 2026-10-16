@@ -37,6 +37,7 @@ interface ToolboxDesktopBridge {
   readonly toggleMaximizeWindow?: () => Promise<boolean>;
   readonly isWindowMaximized?: () => Promise<boolean>;
   readonly closeWindow?: () => Promise<void>;
+  readonly openExportedFile?: (payload: { filename: string; base64: string }) => Promise<boolean>;
   readonly onWindowMaximizedChanged?: (
     callback: (maximized: boolean) => void,
   ) => () => void;

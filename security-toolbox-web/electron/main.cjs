@@ -6048,6 +6048,27 @@ handleRendererIpc("toolbox:open-external", (event, targetUrl) => {
   }
   return false;
 });
+handleRendererIpc("toolbox:open-exported-file", async (event, payload) => {
+  assertMainRenderer(event);
+  if (!payload || typeof payload !== "object") return false;
+  const filename = String(payload.filename || "security-report.pdf").trim();
+  const safeFilename = path.basename(filename).replace(/[\\/:*?"<>|]/g, "_");
+  const base64 = String(payload.base64 || "");
+  if (!base64) return false;
+  try {
+    const downloadsDir = app.getPath("downloads") || app.getPath("temp");
+    const targetPath = path.join(downloadsDir, safeFilename);
+    const buffer = Buffer.from(base64, "base64");
+    fs.writeFileSync(targetPath, buffer);
+    const errMsg = await shell.openPath(targetPath);
+    if (errMsg) {
+      shell.showItemInFolder(targetPath);
+    }
+    return true;
+  } catch (err) {
+    return false;
+  }
+});
 handleRendererIpc("toolbox:set-window-material", (event, material) => {
   assertMainRenderer(event);
   if (!["none", "mica", "acrylic"].includes(material))

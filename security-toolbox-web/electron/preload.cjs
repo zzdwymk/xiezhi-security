@@ -31,6 +31,8 @@ contextBridge.exposeInMainWorld(
     isWindowMaximized: () => ipcRenderer.invoke("toolbox:window-is-maximized"),
     closeWindow: () => ipcRenderer.invoke("toolbox:window-close"),
     openExternal: (url) => ipcRenderer.invoke("toolbox:open-external", url),
+    openExportedFile: (payload) =>
+      ipcRenderer.invoke("toolbox:open-exported-file", payload),
     onWindowMaximizedChanged: (callback) => {
       const listener = (_event, maximized) => callback(Boolean(maximized));
       ipcRenderer.on("toolbox:window-maximized-changed", listener);
