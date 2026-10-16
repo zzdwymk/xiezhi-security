@@ -2693,9 +2693,9 @@ onUnmounted(() => {
 }
 .task-row-actions .row-action.row-action--danger.el-button:not(.is-disabled):not(:disabled):hover,
 .task-row-actions .row-action.row-action--danger.el-button:not(.is-disabled):not(:disabled):focus-visible {
-  border-color: light-dark(var(--fluent-danger-bg), #ffb4ab);
-  background: var(--fluent-danger-soft);
-  color: light-dark(var(--fluent-danger-bg), #ffb4ab);
+  border-color: var(--fluent-danger-bg);
+  background: color-mix(in srgb, var(--fluent-danger-bg) 10%, var(--app-surface-strong));
+  color: light-dark(var(--fluent-danger-hover-bg), #ffd2cc);
 }
 @media (max-width: 640px) {
   .schedule-rule-row {
