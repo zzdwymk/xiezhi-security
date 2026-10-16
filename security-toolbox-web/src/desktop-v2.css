@@ -626,6 +626,26 @@ body.sidebar-resizing * {
 .desktop-v2-workspace:has(.chat-page) > .desktop-v2-topbar {
   border-bottom: 0;
 }
+.desktop-v2-content:has(.chat-page),
+.desktop-v2-native-frame .desktop-v2-content:has(.chat-page) {
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  padding: 0 !important;
+}
+
+.desktop-v2-content:has(.chat-page) .chat-page,
+.desktop-v2-native-frame .chat-page {
+  flex: 1 1 0% !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
 /* Native pages already render their own title, description, status, and actions. */
 .desktop-v2-native-frame .desktop-v2-workspace > .desktop-v2-topbar {
   display: none;

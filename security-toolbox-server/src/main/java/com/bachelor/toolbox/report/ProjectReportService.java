@@ -63,7 +63,11 @@ public class ProjectReportService {
         """
 <!doctype html><html lang="zh-CN"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>项目级授权安全测试报告</title><style>
+<title>项目级授权安全测试报告</title>
+"""
+            + ReportFormatters.REPORT_FAVICON_HTML
+            + """
+<style>
 body{margin:0;background:#f4f7fb;color:#172033;font:14px/1.65 "Microsoft YaHei",sans-serif}
 main{max-width:1050px;margin:28px auto;padding:38px 44px;background:#fff;box-shadow:0 8px 30px #14274618}
 h1{margin:0}h2{margin-top:30px;border-bottom:2px solid #dce6f3;padding-bottom:7px}

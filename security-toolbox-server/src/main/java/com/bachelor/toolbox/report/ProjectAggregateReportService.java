@@ -62,6 +62,7 @@ public class ProjectAggregateReportService {
     html.append(
             "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta"
                 + " name=\"viewport\" content=\"width=device-width,initial-scale=1\">")
+        .append(ReportFormatters.REPORT_FAVICON_HTML)
         .append("<title>安全评估项目报告</title><style>")
         .append(
             "body{margin:0;background:#f4f7fb;color:#172033;font:14px/1.65 Microsoft"

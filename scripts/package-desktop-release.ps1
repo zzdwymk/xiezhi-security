@@ -1,4 +1,4 @@
-﻿param(
+param(
     [switch]$SkipComponentBuild,
     [switch]$Force,
     [string]$Python,
@@ -389,7 +389,7 @@ if (-not $SkipComponentBuild) {
     }
 
     # 2. Spring Boot backend delta check - watch entire module excluding build output
-    $backendJar = Join-Path $backend 'target\security-toolbox-server-0.1.0.jar'
+    $backendJar = Join-Path $backend 'target\security-toolbox-server-1.0.0.jar'
     $backendSources = @((Join-Path $backend '.'))
     $needBackendBuild = $Force -or (-not (Test-Path -LiteralPath $backendJar -PathType Leaf))
     if (-not $needBackendBuild) {
@@ -592,7 +592,7 @@ try {
 
     # Verify the packaged backend JAR is byte-identical to the freshly built JAR.
     $stageWatch = Start-Stage
-    $sourceBackendJar = Join-Path $backend 'target\security-toolbox-server-0.1.0.jar'
+    $sourceBackendJar = Join-Path $backend 'target\security-toolbox-server-1.0.0.jar'
     $packagedJar = Join-Path $unpackedStaging 'resources\server\security-toolbox-server.jar'
     if (-not (Test-Path -LiteralPath $packagedJar -PathType Leaf)) { throw 'Packaged backend JAR is missing.' }
     if (-not (Test-Path -LiteralPath $sourceBackendJar -PathType Leaf)) { throw 'Source backend JAR is missing.' }

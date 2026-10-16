@@ -86,7 +86,11 @@ import { aiAnswerSource, isLocalAiAnswer, requireAiAnswer } from "../utils/aiAns
 import { resolveAuditConversationScope } from "../utils/auditConversationScope";
 import { aiProgressFailureText, isPublicAiProgressEvent, publicAiProgressText } from "../utils/aiPresentation";
 import messageQuoteIcon from "@fluentui/svg-icons/icons/text_quote_24_regular.svg?url";
+import gaugeIcon from "@fluentui/svg-icons/icons/gauge_20_regular.svg?url";
+import databaseIcon from "@fluentui/svg-icons/icons/database_20_regular.svg?url";
 const messageQuoteStyle = { maskImage: `url("${messageQuoteIcon}")` };
+const gaugeIconStyle = { maskImage: `url("${gaugeIcon}")`, WebkitMaskImage: `url("${gaugeIcon}")` };
+const databaseIconStyle = { maskImage: `url("${databaseIcon}")`, WebkitMaskImage: `url("${databaseIcon}")` };
 
 interface TaskRow {
   id: number;
@@ -871,6 +875,137 @@ watch(
     void nextTick(() => updateActiveTurn());
   },
 );
+
+function formatTokensCompact(tokens: number): string {
+  if (tokens >= 1_000_000_000) {
+    return (tokens / 1_000_000_000).toFixed(1).replace(/\.0$/, "") + "B tok";
+  }
+  if (tokens >= 1_000_000) {
+    return (tokens / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M tok";
+  }
+  if (tokens >= 1_000) {
+    return (tokens / 1_000).toFixed(1).replace(/\.0$/, "") + "k tok";
+  }
+  return tokens + " tok";
+}
+
+function formatTokensExact(tokens: number): string {
+  return tokens.toLocaleString() + " tok";
+}
+
+function formatDurationCompact(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}毫秒`;
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}秒`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds > 0 ? `${minutes}分${seconds}秒` : `${minutes}秒`;
+}
+
+const sessionStats = computed(() => {
+  const thread = selectedThread.value;
+  if (!thread || !thread.messages || !thread.messages.length) return null;
+
+  let turns = 0;
+  let steps = 0;
+  let totalOutputTokens = 0;
+  let totalInputTokens = 0;
+  let totalCachedTokens = 0;
+  let totalCacheWriteTokens = 0;
+  let totalTokens = 0;
+  let llmMs = 0;
+  let toolMs = 0;
+  let lastContextWindowTokens = 0;
+  let lastContextWindowUsed = 0;
+  let lastContextRatePermille = 0;
+  let latestTps = 0;
+
+  for (const msg of thread.messages) {
+    if (msg.role === "user") {
+      turns++;
+    }
+    if (msg.steps && msg.steps.length) {
+      steps += msg.steps.length;
+      for (const step of msg.steps) {
+        if (step.taskId) {
+          const task = tasks.value.find((t) => t.id === step.taskId);
+          if (task?.startedAt && task?.finishedAt) {
+            const start = Date.parse(task.startedAt);
+            const end = Date.parse(task.finishedAt);
+            if (!isNaN(start) && !isNaN(end) && end > start) {
+              toolMs += end - start;
+            }
+          }
+        }
+      }
+    }
+    if (msg.role === "assistant") {
+      if (msg.progressStartedAt && msg.progressFinishedAt) {
+        const start = Date.parse(msg.progressStartedAt);
+        const end = Date.parse(msg.progressFinishedAt);
+        if (!isNaN(start) && !isNaN(end) && end > start) {
+          const duration = end - start;
+          llmMs += duration;
+          if (msg.modelUsage?.outputTokens) {
+            const sec = duration / 1000;
+            if (sec > 0) {
+              latestTps = Math.round(msg.modelUsage.outputTokens / sec);
+            }
+          }
+        }
+      }
+
+      if (msg.modelUsage && msg.modelUsage.available) {
+        const u = msg.modelUsage;
+        totalInputTokens += u.inputTokens || 0;
+        totalOutputTokens += u.outputTokens || 0;
+        totalCachedTokens += u.cachedInputTokens || 0;
+        totalCacheWriteTokens += u.cacheWriteTokens || 0;
+        totalTokens += u.totalTokens || ((u.inputTokens || 0) + (u.outputTokens || 0));
+
+        if (u.contextWindowTokens) {
+          lastContextWindowTokens = u.contextWindowTokens;
+          lastContextWindowUsed = u.contextWindowUsedTokens || 0;
+          lastContextRatePermille = u.contextWindowUsagePermille || 0;
+        }
+      }
+    }
+  }
+
+  const avgTps = llmMs > 0 && totalOutputTokens > 0
+    ? Math.round(totalOutputTokens / (llmMs / 1000))
+    : latestTps;
+
+  const totalBilledInput = totalInputTokens + totalCachedTokens;
+  const cacheHitRate = totalBilledInput > 0
+    ? Math.round((totalCachedTokens / totalBilledInput) * 100)
+    : null;
+
+  const contextPercent = lastContextRatePermille > 0
+    ? Math.round(lastContextRatePermille / 10)
+    : (lastContextWindowTokens > 0
+        ? Math.round((lastContextWindowUsed / lastContextWindowTokens) * 100)
+        : 0);
+
+  if (turns === 0 && steps === 0 && totalTokens === 0) return null;
+
+  return {
+    turns,
+    steps,
+    tps: avgTps || latestTps || 0,
+    llmMs,
+    toolMs,
+    totalTokens,
+    uncachedInputTokens: totalInputTokens,
+    cachedInputTokens: totalCachedTokens,
+    cacheWriteTokens: totalCacheWriteTokens,
+    outputTokens: totalOutputTokens,
+    cacheHitRate,
+    contextWindowTokens: lastContextWindowTokens,
+    contextWindowUsed: lastContextWindowUsed,
+    contextPercent: Math.min(100, Math.max(0, contextPercent)),
+  };
+});
 
 function eventStepIndex(message: ConversationMessage, event: AgentStreamEvent) {
   const match = findMatchingAiStep(message.steps, { id: event.stepId, workflowNodeId: event.workflowNodeId, toolCallId: event.toolCallId, taskId: event.taskId });
@@ -2479,14 +2614,6 @@ onBeforeUnmount(() => {
                   <FluentCodeBlock class="reference-output" :content="JSON.stringify(reference.data, null, 2)" aria-label="引用详情原始数据" :min-rows="4" :max-rows="10" wrap />
                 </details>
               </div>
-              <div v-if="message.role === 'assistant' && message.modelUsage?.available" class="message-usage" aria-label="本轮模型用量">
-                <span>{{ formatUsageNumber(message.modelUsage.inputTokens) }} 输入</span>
-                <span>{{ formatUsageNumber(message.modelUsage.outputTokens) }} 输出</span>
-                <span>{{ formatUsageNumber(message.modelUsage.totalTokens) }} tokens</span>
-                <span v-if="message.modelUsage.cacheHitRatePermille !== null">缓存 {{ usageRate(message.modelUsage.cacheHitRatePermille) }}</span>
-                <span v-if="message.modelUsage.contextWindowTokens">上下文 {{ usageRate(message.modelUsage.contextWindowUsagePermille) }}</span>
-                <span class="message-usage-source">{{ message.modelUsage.source === 'ESTIMATED' ? '估算' : message.modelUsage.source === 'MIXED' ? '部分估算' : '模型报告' }}</span>
-              </div>
               <div
                 v-if="
                   message.role === 'assistant' && agentCitations(message).length
@@ -2809,6 +2936,177 @@ onBeforeUnmount(() => {
         <span class="composer-hint"
           >仅调用白名单工具，并严格遵守该目标的授权范围</span
         >
+
+        <!-- 会话性能与用量统计底栏（DSH 同款设计） -->
+        <div v-if="sessionStats" class="composer-stats-bar" aria-label="会话性能与用量统计">
+          <!-- 1. 轮次、步数与输出速度 -->
+          <el-popover
+            placement="top"
+            :width="260"
+            trigger="click"
+            popper-class="stats-pill-popover"
+          >
+            <template #reference>
+              <button
+                type="button"
+                class="stats-pill"
+                :aria-label="`${sessionStats.turns} 轮 ${sessionStats.steps} 步${sessionStats.tps > 0 ? ` · ${sessionStats.tps} tok/s` : ''}`"
+              >
+                <span class="pill-icon pill-icon--gauge" :style="gaugeIconStyle" aria-hidden="true" />
+                <span>{{ sessionStats.turns }} 轮 {{ sessionStats.steps }} 步</span>
+                <template v-if="sessionStats.tps > 0">
+                  <span class="pill-sep" aria-hidden="true">·</span>
+                  <span>{{ sessionStats.tps }} tok/s</span>
+                </template>
+              </button>
+            </template>
+            <div class="stats-popover-content">
+              <div class="stats-popover-title">
+                <div class="stats-popover-title-left">
+                  <span class="pill-icon pill-icon--gauge" :style="gaugeIconStyle" aria-hidden="true" />
+                  <strong>会话统计</strong>
+                </div>
+              </div>
+              <div class="stats-popover-divider" />
+              <dl class="stats-popover-details">
+                <dt>对话轮数</dt>
+                <dd>{{ sessionStats.turns }} 轮</dd>
+                <dt>执行步骤</dt>
+                <dd>{{ sessionStats.steps }} 步</dd>
+                <dt v-if="sessionStats.llmMs > 0">模型用时</dt>
+                <dd v-if="sessionStats.llmMs > 0">{{ formatDurationCompact(sessionStats.llmMs) }}</dd>
+                <dt v-if="sessionStats.toolMs > 0">工具用时</dt>
+                <dd v-if="sessionStats.toolMs > 0">{{ formatDurationCompact(sessionStats.toolMs) }}</dd>
+                <dt v-if="sessionStats.tps > 0">输出速度（TPS）</dt>
+                <dd v-if="sessionStats.tps > 0">{{ sessionStats.tps }} tok/s</dd>
+              </dl>
+            </div>
+          </el-popover>
+
+          <!-- 2. Token 用量与缓存命中率 -->
+          <el-popover
+            v-if="sessionStats.totalTokens > 0"
+            placement="top"
+            :width="260"
+            trigger="click"
+            popper-class="stats-pill-popover"
+          >
+            <template #reference>
+              <button
+                type="button"
+                class="stats-pill"
+                :aria-label="`Token 用量: ${formatTokensCompact(sessionStats.totalTokens)}`"
+              >
+                <span class="pill-icon pill-icon--database" :style="databaseIconStyle" aria-hidden="true" />
+                <span>{{ formatTokensCompact(sessionStats.totalTokens) }}</span>
+                <template v-if="sessionStats.cacheHitRate !== null">
+                  <span class="pill-sep" aria-hidden="true">·</span>
+                  <span>缓存命中 {{ sessionStats.cacheHitRate }}%</span>
+                </template>
+              </button>
+            </template>
+            <div class="stats-popover-content">
+              <div class="stats-popover-title">
+                <div class="stats-popover-title-left">
+                  <span class="pill-icon pill-icon--database" :style="databaseIconStyle" aria-hidden="true" />
+                  <strong>Token 用量</strong>
+                </div>
+                <span class="stats-popover-title-val">{{ formatTokensExact(sessionStats.totalTokens) }}</span>
+              </div>
+              <div class="stats-popover-divider" />
+              <dl class="stats-popover-details">
+                <template v-if="sessionStats.cacheHitRate !== null">
+                  <dt>缓存命中率</dt>
+                  <dd>{{ sessionStats.cacheHitRate }}%</dd>
+                </template>
+                <dt>未缓存输入</dt>
+                <dd>{{ formatTokensExact(sessionStats.uncachedInputTokens) }}</dd>
+                <dt>缓存读取</dt>
+                <dd>{{ formatTokensExact(sessionStats.cachedInputTokens) }}</dd>
+                <dt v-if="sessionStats.cacheWriteTokens > 0">缓存写入</dt>
+                <dd v-if="sessionStats.cacheWriteTokens > 0">{{ formatTokensExact(sessionStats.cacheWriteTokens) }}</dd>
+                <dt>模型输出</dt>
+                <dd>{{ formatTokensExact(sessionStats.outputTokens) }}</dd>
+              </dl>
+            </div>
+          </el-popover>
+
+          <!-- 3. 上下文窗口占用率 (Context Meter Ring) -->
+          <el-popover
+            v-if="sessionStats.contextWindowTokens > 0 || sessionStats.contextPercent > 0"
+            placement="top"
+            :width="260"
+            trigger="click"
+            popper-class="stats-pill-popover"
+          >
+            <template #reference>
+              <button
+                type="button"
+                class="stats-pill"
+                :aria-label="`上下文占用: ${sessionStats.contextPercent}%`"
+              >
+                <svg class="context-ring" viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">
+                  <circle
+                    class="context-ring-bg"
+                    cx="7"
+                    cy="7"
+                    r="5.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    opacity="0.25"
+                  />
+                  <circle
+                    class="context-ring-meter"
+                    cx="7"
+                    cy="7"
+                    r="5.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                    :stroke-dasharray="2 * Math.PI * 5.5"
+                    :stroke-dashoffset="(2 * Math.PI * 5.5) * (1 - sessionStats.contextPercent / 100)"
+                    transform="rotate(-90 7 7)"
+                  />
+                </svg>
+                <span>{{ sessionStats.contextPercent }}%</span>
+              </button>
+            </template>
+            <div class="stats-popover-content">
+              <div class="stats-popover-title">
+                <div class="stats-popover-title-left">
+                  <svg class="context-ring" viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">
+                    <circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" stroke-width="1.8" opacity="0.25" />
+                    <circle
+                      cx="7"
+                      cy="7"
+                      r="5.5"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                      :stroke-dasharray="2 * Math.PI * 5.5"
+                      :stroke-dashoffset="(2 * Math.PI * 5.5) * (1 - sessionStats.contextPercent / 100)"
+                      transform="rotate(-90 7 7)"
+                    />
+                  </svg>
+                  <strong>上下文窗口占用</strong>
+                </div>
+                <span class="stats-popover-title-val">{{ sessionStats.contextPercent }}%</span>
+              </div>
+              <div class="stats-popover-divider" />
+              <dl class="stats-popover-details">
+                <dt>已占用 Tokens</dt>
+                <dd>{{ formatTokensExact(sessionStats.contextWindowUsed) }}</dd>
+                <dt>窗口容量上限</dt>
+                <dd>{{ formatTokensExact(sessionStats.contextWindowTokens) }}</dd>
+                <dt>当前负载</dt>
+                <dd>{{ sessionStats.contextPercent }}%</dd>
+              </dl>
+            </div>
+          </el-popover>
+        </div>
       </footer>
     </template>
     <AiApprovalDialog v-model:visible="approvalDialogVisible" :message="approvalDialogMessage" :target-name="displayKnownTestName(approvalTarget?.name || selectedThread?.targetName)" :target-value="approvalTarget?.targetValue || `目标 #${selectedThread?.targetId || ''}`" :allowed-ports="approvalTarget?.allowedPorts || ''" :busy="sending || approvingMessageId !== null" @decide="decideDialogApproval" />
@@ -2830,7 +3128,8 @@ onBeforeUnmount(() => {
 .chat-page {
   display: flex;
   height: 100%;
-  min-height: 620px;
+  min-height: 0;
+  flex: 1 1 0%;
   overflow: hidden;
   flex-direction: column;
   border: 1px solid var(--app-border);
@@ -3224,7 +3523,7 @@ onBeforeUnmount(() => {
   width: min(850px, 100%);
   flex: none;
   margin: 0 auto;
-  padding: 10px 22px 14px;
+  padding: 8px 22px 10px;
   background: transparent;
 }
 .thread-target {
@@ -3279,7 +3578,7 @@ onBeforeUnmount(() => {
 }
 .composer-hint {
   display: block;
-  margin-top: 6px;
+  margin-top: 3px;
   color: var(--app-muted);
   font-size: 9px;
   text-align: center;
@@ -4522,7 +4821,7 @@ a.agent-citation-bubble {
   border-radius: 8px;
 }
 .chat-composer-wrap {
-  padding: 10px 22px 16px;
+  padding: 8px 22px 10px;
 }
 .thread-composer {
   border-radius: 12px;
@@ -5173,6 +5472,149 @@ a.agent-citation-bubble {
 @media (max-width: 768px) {
   .turn-rail {
     display: none;
+  }
+}
+
+/* DSH 同款底部性能与用量统计栏 */
+.composer-stats-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 4px 0 2px;
+  user-select: none;
+}
+
+.stats-pill {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--app-muted, #6b7280);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: color 0.14s ease, background-color 0.14s ease;
+  line-height: 1;
+}
+
+.stats-pill:hover {
+  color: var(--app-text, #111827);
+  background-color: var(--app-surface-soft, rgba(0, 0, 0, 0.04));
+}
+
+.pill-icon {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  background-color: currentColor;
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  flex-shrink: 0;
+}
+
+.pill-sep {
+  opacity: 0.45;
+  margin: 0 1px;
+}
+
+.context-ring {
+  flex-shrink: 0;
+  color: var(--app-muted, #6b7280);
+  transition: color 0.14s ease;
+}
+
+.stats-pill:hover .context-ring {
+  color: var(--app-text, #111827);
+}
+
+.context-ring-meter {
+  transition: stroke-dashoffset 0.3s ease;
+  color: var(--app-accent, #3b82f6);
+}
+
+/* 状态统计弹窗样式 */
+:global(.stats-pill-popover) {
+  padding: 12px 14px !important;
+  border-radius: 10px !important;
+  background: var(--app-surface, #ffffff) !important;
+  border: 1px solid var(--app-border, #e5e7eb) !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12) !important;
+}
+
+.stats-popover-content {
+  font-size: 12px;
+  color: var(--app-text, #111827);
+  line-height: 1.5;
+}
+
+.stats-popover-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.stats-popover-title-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stats-popover-title strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.stats-popover-title-val {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-accent, #3b82f6);
+}
+
+.stats-popover-divider {
+  height: 1px;
+  background: var(--app-border, #e5e7eb);
+  margin-bottom: 8px;
+}
+
+.stats-popover-details {
+  display: grid;
+  grid-template-columns: auto auto;
+  justify-content: space-between;
+  row-gap: 5px;
+  column-gap: 16px;
+  margin: 0;
+  padding: 0;
+}
+
+.stats-popover-details dt {
+  color: var(--app-muted, #6b7280);
+  font-size: 11px;
+}
+
+.stats-popover-details dd {
+  margin: 0;
+  text-align: right;
+  font-weight: 500;
+  font-size: 11px;
+  color: var(--app-text, #111827);
+}
+
+@media (max-width: 640px) {
+  .composer-stats-bar {
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .stats-pill {
+    font-size: 11px;
+    padding: 3px 6px;
   }
 }
 </style>
