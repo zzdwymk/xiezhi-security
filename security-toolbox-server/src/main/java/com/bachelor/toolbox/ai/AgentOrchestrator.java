@@ -374,6 +374,7 @@ public class AgentOrchestrator {
                     });
             proposed = runtimeResult.plan();
             runtimeAnswer = runtimeResult.answer();
+            memory.addModelUsage(session.id(), runtimeResult.modelUsage());
             provenance.apply(runtimeResult.provenance());
             if ("PYTHON_MODEL_FALLBACK".equals(provenance.fallbackReason)) {
               throw new ApiException("智能服务未返回模型生成的回答，请检查模型配置后重试");
@@ -645,7 +646,7 @@ public class AgentOrchestrator {
             AgentPhase.COMPLETED,
             "COMPLETED",
             message,
-            provenance.eventData(Map.of("response", response)));
+            provenance.eventData(Map.of("response", response, "modelUsage", memory.usage(session.id()))));
         if (deliveredCandidate != null) {
           try {
             planContinuity.delivered(deliveredCandidate);
@@ -758,7 +759,7 @@ public class AgentOrchestrator {
         "COMPLETED",
         message,
         provenance.eventData(
-            Map.of("response", response, "intent", "ANSWER", "executed", false)));
+            Map.of("response", response, "intent", "ANSWER", "executed", false, "modelUsage", memory.usage(session.id()))));
     return response;
   }
 

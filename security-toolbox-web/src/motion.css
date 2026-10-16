@@ -30,7 +30,7 @@ html[data-anim-decorative="off"] .hub-status-dot {
 }
 
 /* 仪表盘：执行计划呼吸 */
-html[data-anim-decorative="off"] .execution-plan-list li.running > i {
+html[data-anim-decorative="off"] .execution-plan-list li.running .plan-step-icon {
   animation: none !important;
 }
 

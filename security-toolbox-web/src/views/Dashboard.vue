@@ -23,7 +23,6 @@ import {
   Plus,
   Promotion,
   Refresh,
-  Warning,
 } from "../components/fluentIcons";
 import {
   connectTaskEventFeed,
@@ -2435,30 +2434,45 @@ onBeforeUnmount(() => {
                   message.steps.length
                 "
                 class="execution-plan-card"
+                :class="{ 'is-awaiting-approval': isAwaitingAiApproval(message) }"
                 :open="isAwaitingAiApproval(message) || isAwaitingAiDispatch(message) || isAiDispatchRejected(message)"
               >
-                <summary class="execution-plan-disclosure">执行计划 · {{ message.steps.length }} 项</summary>
-                <!-- 人机协同审批卡片 (HITL Gate) -->
+                <!-- Fluent 2 card: the disclosure row is the card's only header.
+                     Everything below it is one section, never a nested banner. -->
+                <summary class="execution-plan-disclosure">
+                  <span class="execution-plan-disclosure-text">
+                    <FluentIcon name="chevron-right" class="execution-plan-chevron" aria-hidden="true" />
+                    <span>执行计划</span>
+                    <span class="execution-plan-count">{{ message.steps.length }} 项</span>
+                  </span>
+                  <span class="execution-plan-state" :class="taskState(message).className">{{ taskState(message).label }}</span>
+                </summary>
+
+                <!-- One decision surface for the approval gate. It states the
+                     state once, lists the plan, and carries the actions, so no
+                     separate banner repeats the header or the progress line. -->
                 <div
                   v-if="
                     message.steps.length &&
                     !message.taskIds.length &&
                     (message.approvalStatus === 'REQUIRED' || message.approvalStatus === 'PENDING')
                   "
-                  class="hitl-approval-banner"
+                  class="plan-approval"
                 >
-                  <div class="hitl-approval-info">
-                    <div class="hitl-badge">
-                      <el-icon><Warning /></el-icon>
-                      <span>执行前确认</span>
+                  <div class="plan-approval-head">
+                    <FluentIcon name="warning" class="plan-approval-icon" aria-hidden="true" />
+                    <div class="plan-approval-copy">
+                      <strong>等待管理员确认后执行</strong>
+                      <p>已生成 {{ message.steps.length }} 步计划，确认后才会创建检测任务。</p>
                     </div>
-                    <h4>AI 方案等待管理员确认</h4>
-                    <p>
-                      AI 已提交本次执行方案。请查看目标和操作参数，确认后执行。
-                    </p>
                   </div>
-                  <div class="hitl-approval-actions">
-                    <el-button :disabled="sending || approvingMessageId !== null" @click="reopenApproval(message)">查看方案详情</el-button>
+                  <div class="plan-approval-actions">
+                    <el-button
+                      size="default"
+                      :disabled="sending || approvingMessageId !== null"
+                      @click="reopenApproval(message)"
+                      >查看方案详情</el-button
+                    >
                     <el-button
                       type="success"
                       size="default"
@@ -2491,35 +2505,26 @@ onBeforeUnmount(() => {
                   <el-button :disabled="sending || approvingMessageId !== null" @click="handleAgentApprovalDecision(message, 'APPROVED')">恢复原计划执行</el-button>
                 </p>
 
-                <header v-if="message.steps.length">
-                  <div>
-                    <strong>执行计划清单</strong
-                    ><span
-                      >{{ message.steps.length }} 步 ·
-                      {{ taskState(message).label }}</span
-                    >
-                  </div>
-                  <button
-                    v-if="message.taskIds.length"
-                    type="button"
-                    @click="router.push('/tasks')"
-                  >
-                    查看任务
-                  </button>
-                </header>
-                <p v-if="message.taskIds.length" class="muted">{{ planTaskSummary(message) }}</p>
                 <ol v-if="message.steps.length" class="execution-plan-list">
                   <li
                     v-for="(step, index) in message.steps"
                     :key="`${message.id}-${step.taskId || step.toolCode}-${index}`"
                     :class="planStepState(message, index).state"
                   >
-                    <i
-                      ><el-icon
+                    <!-- Fluent list-row: a leading 20px state icon, then the
+                         title + supporting copy, then the trailing status. -->
+                    <span class="plan-step-icon" aria-hidden="true">
+                      <FluentIcon
                         v-if="planStepState(message, index).state === 'success'"
-                        ><CircleCheck /></el-icon
-                      ><template v-else>{{ index + 1 }}</template></i
-                    >
+                        name="checkmark-circle"
+                      />
+                      <FluentIcon
+                        v-else-if="planStepState(message, index).state === 'failed'"
+                        name="dismiss"
+                      />
+                      <FluentIcon v-else-if="planStepState(message, index).state === 'running'" name="clock" />
+                      <span v-else class="plan-step-index">{{ index + 1 }}</span>
+                    </span>
                     <div>
                       <strong>{{ displayedStepTitle(step) }}</strong
                       ><small>{{ displayedStepReason(step) }}</small
@@ -2534,9 +2539,17 @@ onBeforeUnmount(() => {
                         :duration="1.2"
                       />
                     </div>
-                    <span>{{ planStepState(message, index).label }}</span>
+                    <span class="plan-step-status">{{
+                      planStepState(message, index).label
+                    }}</span>
                   </li>
                 </ol>
+                <footer v-if="message.taskIds.length" class="execution-plan-footer">
+                  <span>{{ planTaskSummary(message) }}</span>
+                  <button type="button" class="execution-plan-link" @click="router.push('/tasks')">
+                    查看任务
+                  </button>
+                </footer>
                 <details
                   v-if="taskLogs(message)"
                   class="plan-runtime-details"
@@ -3190,72 +3203,192 @@ onBeforeUnmount(() => {
     display: none;
   }
 }
+/* =================================================================
+   Execution plan card — Fluent 2 Card anatomy
+   One disclosure row is the card header; below it a single content
+   section. A pending approval is a decision surface inside that same
+   section, never a second stacked banner with its own heading.
+   ================================================================= */
 .execution-plan-card {
   width: min(660px, 94%);
   margin-top: 10px;
-  padding: 12px 14px;
+  padding: 0;
   border: 1px solid var(--app-border);
-  border-radius: 8px;
-  background: var(--app-surface-soft);
+  border-radius: var(--fluent-radius-card, 8px);
+  background: var(--app-surface-strong);
   color: var(--app-text);
   box-shadow: 0 1px 2px color-mix(in srgb, CanvasText 4%, transparent);
 }
-.execution-plan-card > header {
+.execution-plan-card > summary {
+  list-style: none;
+}
+.execution-plan-card > summary::-webkit-details-marker {
+  display: none;
+}
+/* The disclosure keeps the card's 44px header row. Its divider is only drawn
+   when the content below it is not already separated by the approval
+   surface, so the two never render a double rule. */
+.execution-plan-disclosure {
   display: flex;
+  min-height: 44px;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 10px;
+  padding: 8px 14px;
+  border-radius: inherit;
+  color: var(--app-text-muted);
+  cursor: pointer;
 }
-.execution-plan-card > header > div {
-  display: flex;
+.execution-plan-card[open]:not(.is-awaiting-approval) > .execution-plan-disclosure {
+  border-bottom: 1px solid var(--app-border);
+}
+.execution-plan-disclosure:hover {
+  background: var(--app-surface-soft);
+}
+.execution-plan-disclosure:focus-visible {
+  outline: 2px solid var(--app-accent);
+  outline-offset: -2px;
+}
+.execution-plan-disclosure-text {
+  display: inline-flex;
   min-width: 0;
-  flex-direction: column;
-  gap: 3px;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fluent-body1-size, 14px);
+  font-weight: var(--fluent-weight-semibold, 600);
+  line-height: 20px;
 }
-.execution-plan-card > header strong {
-  font-size: 13px;
-}
-.execution-plan-card > header span {
-  overflow: hidden;
+.execution-plan-chevron {
+  width: 16px;
+  height: 16px;
+  flex: none;
   color: var(--app-muted);
-  font-size: 10px;
-  text-overflow: ellipsis;
+  transition: transform var(--fluent-fast, 150ms);
+}
+.execution-plan-card[open] .execution-plan-chevron {
+  transform: rotate(90deg);
+}
+.execution-plan-count {
+  color: var(--app-muted);
+  font-size: var(--fluent-caption1-size, 12px);
+  font-weight: var(--fluent-weight-regular, 400);
+}
+.execution-plan-state {
+  flex: none;
+  color: var(--app-muted);
+  font-size: var(--fluent-caption1-size, 12px);
+  line-height: 16px;
   white-space: nowrap;
 }
-.execution-plan-card > header button {
-  border: 0;
-  background: transparent;
-  color: var(--app-accent);
-  font-size: 10px;
-  cursor: pointer;
+.execution-plan-state.waiting {
+  color: var(--fluent-warning-bg, #8a4b08);
+}
+.execution-plan-state.failed {
+  color: var(--fluent-danger-bg, #b42318);
+}
+/* Approval decision surface: icon + copy on the left, actions on the
+   right, stacked only when the card gets narrow. */
+.plan-approval {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 16px;
+  padding: 12px 14px;
+  background: color-mix(
+    in srgb,
+    var(--fluent-warning-bg, #8a4b08) 6%,
+    var(--app-surface-soft)
+  );
+  border-bottom: 1px solid var(--app-border);
+}
+.plan-approval-head {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 260px;
+  align-items: flex-start;
+  gap: 10px;
+}
+.plan-approval-icon {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  margin-top: 1px;
+  color: var(--fluent-warning-bg, #8a4b08);
+}
+.plan-approval-copy {
+  min-width: 0;
+}
+.plan-approval-copy strong {
+  display: block;
+  color: var(--app-text);
+  font-size: var(--fluent-body1-size, 14px);
+  font-weight: var(--fluent-weight-semibold, 600);
+  line-height: 20px;
+}
+.plan-approval-copy p {
+  margin: 2px 0 0;
+  color: var(--app-muted);
+  font-size: var(--fluent-caption1-size, 12px);
+  line-height: 16px;
+}
+.plan-approval-actions {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.plan-approval-actions :deep(.el-button) {
+  margin: 0;
+  min-height: 32px;
+}
+.execution-plan-card > .muted,
+.execution-plan-card > .approval-dispatch-error {
+  margin: 10px 14px 0;
+}
+.execution-plan-card > .muted + .execution-plan-list {
+  margin-top: 8px;
 }
 .execution-plan-list {
   display: grid;
   gap: 0;
-  margin: 11px 0 0;
+  margin: 0;
   padding: 0;
   list-style: none;
 }
 .execution-plan-list li {
   display: grid;
-  grid-template-columns: 25px minmax(0, 1fr) auto;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
   align-items: start;
-  gap: 9px;
-  padding: 10px 2px;
+  gap: 10px;
+  padding: 10px 14px;
   border-top: 1px solid var(--app-border);
 }
-.execution-plan-list li > i {
+.execution-plan-list li:first-child {
+  border-top: 0;
+}
+/* Pending steps read as an ordered list; only terminal states get an icon. */
+.plan-step-icon {
   display: grid;
-  width: 21px;
-  height: 21px;
+  width: 20px;
+  height: 20px;
   place-items: center;
+  margin-top: 1px;
   border-radius: 50%;
-  background: var(--app-surface-strong);
+  background: var(--app-surface-soft);
   color: var(--app-muted);
-  font-size: 10px;
+}
+.plan-step-icon .fluent-system-icon {
+  width: 16px;
+  height: 16px;
+}
+.plan-step-index {
+  font-size: 11px;
   font-style: normal;
-  font-weight: 700;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 .execution-plan-list li > div {
   display: flex;
@@ -3264,55 +3397,101 @@ onBeforeUnmount(() => {
   gap: 3px;
 }
 .execution-plan-list li strong {
-  font-size: 11px;
+  color: var(--app-text);
+  font-size: var(--fluent-body1-size, 14px);
+  font-weight: var(--fluent-weight-medium, 500);
+  line-height: 20px;
 }
 .execution-plan-list li small {
-  overflow: hidden;
   color: var(--app-muted);
-  font-size: 9px;
-  line-height: 1.45;
-  text-overflow: ellipsis;
+  font-size: var(--fluent-caption1-size, 12px);
+  line-height: 16px;
+  overflow-wrap: anywhere;
 }
-.execution-plan-list li > span {
-  padding-top: 3px;
+.plan-step-status {
   color: var(--app-muted);
-  font-size: 9px;
+  font-size: var(--fluent-caption1-size, 12px);
+  line-height: 16px;
   white-space: nowrap;
 }
-.execution-plan-list li.running > i {
+.execution-plan-list li.running .plan-step-icon {
   background: var(--app-accent-soft);
   color: var(--app-accent);
   animation: planPulse 1.4s ease-in-out infinite;
 }
-.execution-plan-list li.running > span {
+.execution-plan-list li.running .plan-step-status {
   color: var(--app-accent);
 }
-.execution-plan-list li.success > i {
-  background: #e3f4ea;
-  color: #27815a;
+.execution-plan-list li.success .plan-step-icon {
+  background: color-mix(in srgb, var(--fluent-success-bg, #107c41) 14%, transparent);
+  color: var(--fluent-success-bg, #107c41);
 }
-.execution-plan-list li.success > span {
-  color: #27815a;
+.execution-plan-list li.success .plan-step-status {
+  color: var(--fluent-success-bg, #107c41);
 }
-.execution-plan-list li.failed > i {
-  background: #fbe8e8;
-  color: #b94040;
+.execution-plan-list li.failed .plan-step-icon {
+  background: color-mix(in srgb, var(--fluent-danger-bg, #b42318) 14%, transparent);
+  color: var(--fluent-danger-bg, #b42318);
 }
-.execution-plan-list li.failed > span {
-  color: #b94040;
+.execution-plan-list li.failed .plan-step-status {
+  color: var(--fluent-danger-bg, #b42318);
 }
 .execution-plan-list .el-progress {
   margin-top: 4px;
 }
+/* Footer carries the task summary and the only navigation action. */
+.execution-plan-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--app-border);
+  color: var(--app-muted);
+  font-size: var(--fluent-caption1-size, 12px);
+  line-height: 16px;
+}
+.execution-plan-footer span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.execution-plan-link {
+  flex: none;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--fluent-radius-control, 4px);
+  background: var(--app-surface-strong);
+  color: var(--app-text);
+  font: inherit;
+  font-weight: var(--fluent-weight-medium, 500);
+  cursor: pointer;
+}
+.execution-plan-link:hover {
+  background: var(--app-surface-soft);
+  border-color: var(--app-accent);
+  color: var(--app-accent);
+}
+.execution-plan-link:focus-visible {
+  outline: 2px solid var(--app-accent);
+  outline-offset: 1px;
+}
 .plan-runtime-details {
-  margin-top: 4px;
+  margin: 0;
   border-top: 1px solid var(--app-border);
 }
 .plan-runtime-details summary {
-  padding-top: 9px;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
   color: var(--app-accent);
-  font-size: 10px;
+  font-size: var(--fluent-caption1-size, 12px);
   cursor: pointer;
+}
+.plan-runtime-details > :not(summary) {
+  margin: 0 14px 10px;
 }
 @keyframes planPulse {
   50% {
@@ -4273,7 +4452,7 @@ a.agent-citation-bubble {
 .chat-welcome .quick-actions button,
 .chat-welcome .create-target,
 .chat-header-actions button,
-.execution-plan-card > header button {
+.execution-plan-link {
   color: var(--app-text);
 }
 
@@ -4303,8 +4482,7 @@ a.agent-citation-bubble {
   gap: 8px;
 }
 
-.message-actions button,
-.execution-plan-card > header button {
+.message-actions button {
   display: inline-flex;
   min-height: 32px;
   align-items: center;
@@ -4456,60 +4634,37 @@ a.agent-citation-bubble {
 }
 @media (prefers-reduced-motion: reduce) { .message-actions { transition: none; } }
 
+/* Keep commands and live execution details comfortably readable without
+   changing the conversation structure or adding another surface layer. */
 .execution-plan-card {
   margin-top: 14px;
-  padding: 16px 18px;
 }
 
-.execution-plan-card > header {
-  gap: 16px;
-  margin-bottom: 12px;
-}
-
-.execution-plan-card > header span {
-  font-size: 11px;
-  line-height: 1.45;
-}
-
-.execution-plan-card > header button {
-  border-radius: var(--fluent-radius-control);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.execution-plan-card > header button:hover {
-  background: var(--app-accent-soft);
-}
-
-.execution-plan-list {
-  margin-top: 14px;
+.execution-plan-disclosure {
+  min-height: 44px;
+  padding: 8px 16px;
 }
 
 .execution-plan-list li {
-  grid-template-columns: 28px minmax(0, 1fr) auto;
   gap: 12px;
-  padding: 12px 2px;
-}
-
-.execution-plan-list li > i {
-  width: 24px;
-  height: 24px;
-  font-size: 11px;
+  padding: 12px 16px;
 }
 
 .execution-plan-list li > div {
   gap: 4px;
 }
 
-.execution-plan-list li strong {
-  font-size: 12px;
-  line-height: 1.4;
+.plan-approval {
+  padding: 14px 16px;
+  gap: 14px 20px;
 }
 
-.execution-plan-list li small,
-.execution-plan-list li > span {
-  font-size: 11px;
-  line-height: 1.5;
+.plan-approval-actions {
+  gap: 10px;
+}
+
+.execution-plan-footer {
+  padding: 12px 16px;
 }
 
 .agent-event-details {
@@ -4517,7 +4672,6 @@ a.agent-citation-bubble {
 }
 
 .agent-event-details > summary,
-.plan-runtime-details > summary,
 .traffic-reference-card summary,
 .copilot-reference-card summary {
   display: flex;
@@ -4590,61 +4744,11 @@ a.agent-citation-bubble {
     gap: 8px;
   }
 
-.hitl-approval-banner {
-  margin-bottom: 12px;
-  padding: 12px 14px;
-  border: 1px solid rgba(230, 162, 60, 0.35);
-  border-radius: 6px;
-  background: color-mix(in srgb, #e6a23c 8%, var(--app-surface-soft));
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.hitl-approval-banner .hitl-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  font-weight: 600;
-  color: #e6a23c;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-.hitl-approval-banner h4 {
-  margin: 4px 0 2px 0;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--app-text);
-}
-.hitl-approval-banner p {
-  margin: 0;
-  font-size: 12px;
-  color: var(--app-muted);
-  line-height: 1.5;
-}
-.hitl-approval-banner code {
-  padding: 2px 5px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--app-text) 8%, transparent);
-  font-weight: 600;
-  color: var(--app-text);
-}
-.hitl-approval-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 4px;
-}
-.execution-plan-card {
-    width: 100%;
-    padding: 14px;
-  }
-
   .execution-plan-list li {
-    grid-template-columns: 28px minmax(0, 1fr);
+    grid-template-columns: 20px minmax(0, 1fr);
   }
 
-  .execution-plan-list li > span,
+  .execution-plan-list li .plan-step-status,
   .agent-event-list li > small {
     grid-column: 2;
     padding-top: 0;
@@ -4748,8 +4852,15 @@ a.agent-citation-bubble {
     grid-column: 2;
   }
 }
-/* Keep the plan in the message flow; approval plans open by default. */
-.execution-plan-card { width: 100%; margin-top: 4px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
-.execution-plan-disclosure { min-height: 32px; padding: 6px 0; color: var(--app-text-muted); font-size: 14px; line-height: 20px; cursor: pointer; }
-.execution-plan-disclosure:focus-visible { outline: 2px solid var(--app-text); outline-offset: 2px; }
+/* Keep the plan in the message flow; approval plans open by default. The
+   disclosure is the card header, so it keeps the card's own 44px row height
+   instead of collapsing into a bare text link. */
+.execution-plan-card {
+  width: 100%;
+  margin-top: 4px;
+}
+.execution-plan-disclosure:focus-visible {
+  outline: 2px solid var(--app-text);
+  outline-offset: -2px;
+}
 </style>

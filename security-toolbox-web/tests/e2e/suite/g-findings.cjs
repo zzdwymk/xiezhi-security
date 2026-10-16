@@ -14,6 +14,7 @@
 const {
   sleep, navigate, pageTitle, dialog, dialogButton, selectOn,
   lastMessage, clearMessages, rowCount, confirmBoxIfPresent,
+  dismissStrayModal,
 } = require("../lib/ui.cjs");
 const { TARGET_IP } = require("../lib/audit-target.cjs");
 
@@ -348,35 +349,45 @@ async function run(page, H, ctx) {
     const dlg = page.locator(".el-dialog:visible").last();
     const opened = await dlg.isVisible().catch(() => false);
 
-    if (!opened) {
-      throw new Error(
-        `状态变更后「后续路径」不可用${msg ? `，提示="${msg.text}"` : ""}` +
-          "（若提示缺少项目信息，说明 DEF-01 回归：状态更新响应未回填瞬态 projectId）",
-      );
+    try {
+      if (!opened) {
+        throw new Error(
+          `状态变更后「后续路径」不可用${msg ? `，提示="${msg.text}"` : ""}` +
+            "（若提示缺少项目信息，说明 DEF-01 回归：状态更新响应未回填瞬态 projectId）",
+        );
+      }
+      return "状态变更后无需刷新即可生成后续路径，项目上下文未丢失";
+    } finally {
+      const close = dlg.locator("button", { hasText: "关闭" }).last();
+      if (await close.isVisible().catch(() => false)) await close.click();
+      else await dlg.locator(".el-dialog__headerbtn").last().click().catch(() => {});
+      await sleep(1200);
+      await dismissStrayModal(page);
     }
-    const close = dlg.locator("button", { hasText: "关闭" }).last();
-    if (await close.isVisible().catch(() => false)) await close.click();
-    else await dlg.locator(".el-dialog__headerbtn").last().click();
-    await sleep(1200);
-    return "状态变更后无需刷新即可生成后续路径，项目上下文未丢失";
   }, { page, shotOnPass: true });
 
   await H.run("G-19", "刷新后「后续路径」同样可用", async () => {
+    await dismissStrayModal(page);
     await page.locator("button", { hasText: "刷新" }).first().click();
-    await sleep(3000);
+    await sleep(2000);
     await clearMessages(page);
     const row = page.locator(".el-table__row").first();
     await row.locator(".finding-action", { hasText: "后续路径" }).first().click();
-    await sleep(3500);
-    const dlg = page.locator(".el-dialog:visible").last();
-    const opened = await dlg.isVisible().catch(() => false);
-    const msg = await lastMessage(page, { timeout: 5000 });
-    if (!opened) throw new Error(`刷新后不可用${msg ? `，提示="${msg.text}"` : ""}`);
-    const close = dlg.locator("button", { hasText: "关闭" }).last();
-    if (await close.isVisible().catch(() => false)) await close.click();
-    else await dlg.locator(".el-dialog__headerbtn").last().click();
-    await sleep(1200);
-    return "刷新后功能正常";
+    const dlg = page.locator(".el-dialog:visible", { hasText: "AI 扫描后渗透验证路径" }).last();
+    const opened = await dlg.waitFor({ state: "visible", timeout: 20000 }).then(() => true).catch(() => false);
+    const msg = await lastMessage(page, { timeout: 2000 });
+    try {
+      if (!opened) throw new Error(`刷新后不可用${msg ? `，提示="${msg.text}"` : ""}`);
+      return "刷新后功能正常";
+    } finally {
+      // 无论断言成败都必须关掉弹窗：残留的模态遮罩会把后续 G-20 的
+      // 「扫描差异」按钮完全挡住，导致连锁超时失败。
+      const close = dlg.locator("button", { hasText: "关闭" }).last();
+      if (await close.isVisible().catch(() => false)) await close.click();
+      else await dlg.locator(".el-dialog__headerbtn").last().click().catch(() => {});
+      await sleep(1200);
+      await dismissStrayModal(page);
+    }
   }, { page });
 
   // ---------- 扫描差异 ----------
@@ -388,6 +399,7 @@ async function run(page, H, ctx) {
     if (targets.length < 2) return "本次任务集中只有一个目标，无法构造跨目标比较，跳过";
 
     await clearMessages(page);
+    await dismissStrayModal(page);
     await page.locator("button", { hasText: "扫描差异" }).first().click();
     const dlg = await dialog(page, "扫描差异");
     const selects = dlg.locator(".el-select");
@@ -435,16 +447,19 @@ async function run(page, H, ctx) {
 
   await H.run("G-22", "关闭扫描差异 对话框", async () => {
     const dlg = page.locator(".el-dialog:visible", { hasText: "扫描差异" }).last();
-    if (!(await dlg.isVisible().catch(() => false))) return "对话框已关闭";
-    const close = dlg.locator("button", { hasText: "关闭" }).last();
-    if (await close.isVisible().catch(() => false)) await close.click();
-    else await dlg.locator(".el-dialog__headerbtn").last().click();
-    await sleep(1200);
+    if (await dlg.isVisible().catch(() => false)) {
+      const close = dlg.locator("button", { hasText: "关闭" }).last();
+      if (await close.isVisible().catch(() => false)) await close.click();
+      else await dlg.locator(".el-dialog__headerbtn").last().click();
+      await sleep(1200);
+    }
+    await dismissStrayModal(page);
     return "已关闭";
   }, { page });
 
   // ---------- 分页与删除 ----------
   await H.run("G-23", "结果列表在有数据时渲染分页控件", async () => {
+    await dismissStrayModal(page);
     if ((ctx.findingTotal || 0) === 0) return "无数据，按设计不渲染分页";
     const pager = page.locator(".findings-pagination, .el-pagination").first();
     if (!(await pager.count())) throw new Error("有数据但未渲染分页控件");

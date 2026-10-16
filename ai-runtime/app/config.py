@@ -50,6 +50,10 @@ class Settings:
     )
     base_url: str = os.getenv("AI_RUNTIME_BASE_URL", "https://api.openai.com/v1")
     model: str = os.getenv("AI_RUNTIME_MODEL", "gpt-4.1-mini")
+    # 0 keeps the built-in per-model table; a positive value is authoritative.
+    context_window_tokens: int = _bounded_int(
+        "AI_RUNTIME_CONTEXT_WINDOW_TOKENS", 0, 0, 4_000_000
+    )
     rag_prompt_version: str = os.getenv(
         "AI_RUNTIME_RAG_PROMPT_VERSION", "agentic-rag-v1"
     )[:64]

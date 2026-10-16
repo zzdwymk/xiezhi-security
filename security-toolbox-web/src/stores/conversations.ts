@@ -77,6 +77,31 @@ export type PublicAgentNodeStatus =
   | "REVIEWED"
   | "FAILED";
 
+export interface ModelUsageSnapshot {
+  available: boolean;
+  source: "PROVIDER" | "ESTIMATED" | "MIXED" | "UNAVAILABLE";
+  model: string;
+  modelCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cachedInputTokens: number;
+  cacheHitRatePermille: number | null;
+  contextWindowTokens: number;
+  contextWindowUsedTokens: number;
+  contextWindowUsagePermille: number;
+  peakInputTokens: number;
+  providerReportedCalls: number;
+  estimatedCalls: number;
+  cacheReportedCalls: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
+  estimatedInputTokens: number;
+  lastInputTokens: number;
+  contextWindowSource: "MODEL" | "CONFIGURED" | "DEFAULT";
+  estimator: string;
+}
+
 export interface ConversationAgentEvent {
   id?: string;
   type: ConversationAgentEventType;
@@ -126,6 +151,7 @@ export interface ConversationAgentEvent {
   recorded?: boolean;
   eventTiming?: string;
   createdAt?: string;
+  modelUsage?: ModelUsageSnapshot;
 }
 
 export type ConversationMessageRole = "user" | "assistant";
@@ -172,6 +198,7 @@ export interface ConversationMessage {
   steps: ConversationStep[];
   thinking?: ConversationThinkingStep[];
   agentEvents?: ConversationAgentEvent[];
+  modelUsage?: ModelUsageSnapshot;
   citations?: ConversationCitation[];
   planningStage?: string;
   planningStatus?: string;
@@ -315,6 +342,48 @@ function finiteNumber(value: unknown) {
   return Number.isFinite(number) && number >= 0 ? number : undefined;
 }
 
+function sanitizeStoredModelUsage(value: ModelUsageSnapshot | undefined): ModelUsageSnapshot | undefined {
+  if (!value || typeof value !== "object" || typeof value.available !== "boolean") return undefined;
+  const bounded = (number: unknown, max = 4_000_000_000) =>
+    typeof number === "number" && Number.isInteger(number) && number >= 0 && number <= max ? number : undefined;
+  const source = ["PROVIDER", "ESTIMATED", "MIXED", "UNAVAILABLE"].includes(value.source) ? value.source : undefined;
+  const calls = bounded(value.modelCalls, 10_000);
+  const input = bounded(value.inputTokens);
+  const output = bounded(value.outputTokens);
+  const total = bounded(value.totalTokens);
+  const cached = bounded(value.cachedInputTokens);
+  const contextTokens = bounded(value.contextWindowTokens);
+  const contextUsed = bounded(value.contextWindowUsedTokens);
+  const contextRate = bounded(value.contextWindowUsagePermille, 1000);
+  const peak = bounded(value.peakInputTokens);
+  const cacheRate = value.cacheHitRatePermille === null ? null : bounded(value.cacheHitRatePermille, 1000);
+  const providerCalls = bounded(value.providerReportedCalls, 10_000);
+  const estimatedCalls = bounded(value.estimatedCalls, 10_000);
+  const cacheCalls = bounded(value.cacheReportedCalls, 10_000);
+  const cacheWrites = bounded(value.cacheWriteTokens);
+  const reasoning = bounded(value.reasoningTokens);
+  const estimatedInput = bounded(value.estimatedInputTokens);
+  const lastInput = bounded(value.lastInputTokens);
+  const contextSource = ["MODEL", "CONFIGURED", "DEFAULT"].includes(value.contextWindowSource)
+    ? value.contextWindowSource as ModelUsageSnapshot["contextWindowSource"] : undefined;
+  if (!source || calls === undefined || input === undefined || output === undefined || total === undefined
+    || cached === undefined || contextTokens === undefined || contextUsed === undefined
+    || contextRate === undefined || peak === undefined || cacheRate === undefined
+    || providerCalls === undefined || estimatedCalls === undefined || cacheCalls === undefined
+    || cacheWrites === undefined || reasoning === undefined || estimatedInput === undefined || lastInput === undefined
+    || !contextSource || typeof value.estimator !== "string" || value.estimator.length > 32
+    || typeof value.model !== "string" || value.model.length > 120) return undefined;
+  return {
+    available: value.available, source, model: value.model, modelCalls: calls,
+    inputTokens: input, outputTokens: output, totalTokens: total, cachedInputTokens: cached,
+    cacheHitRatePermille: cacheRate, contextWindowTokens: contextTokens, contextWindowUsedTokens: contextUsed,
+    contextWindowUsagePermille: contextRate, peakInputTokens: peak,
+    providerReportedCalls: providerCalls, estimatedCalls, cacheReportedCalls: cacheCalls,
+    cacheWriteTokens: cacheWrites, reasoningTokens: reasoning, estimatedInputTokens: estimatedInput,
+    lastInputTokens: lastInput, contextWindowSource: contextSource, estimator: value.estimator,
+  };
+}
+
 function sanitizeStoredCitation(value: ConversationCitation & { snippet?: unknown }) {
   return {
     id: value.id,
@@ -373,6 +442,7 @@ function sanitizeStoredAgentEvent(event: ConversationAgentEvent) {
     recorded: event.recorded,
     eventTiming: event.eventTiming,
     createdAt: event.createdAt,
+    modelUsage: sanitizeStoredModelUsage(event.modelUsage),
   } satisfies ConversationAgentEvent;
 }
 
@@ -395,6 +465,7 @@ export function normalizeConversations(
       approvalDispatchError: typeof message.approvalDispatchError === "string" ? message.approvalDispatchError : undefined,
       approvalDispatchUpdatedAt: typeof message.approvalDispatchUpdatedAt === "string" ? message.approvalDispatchUpdatedAt : undefined,
       taskIds: Array.isArray(message.taskIds) ? message.taskIds : [],
+      modelUsage: sanitizeStoredModelUsage(message.modelUsage),
       steps: Array.isArray(message.steps) ? message.steps : [],
       agentEvents: Array.isArray(message.agentEvents)
         ? message.agentEvents.filter(isPublicAiProgressEvent).map(sanitizeStoredAgentEvent)

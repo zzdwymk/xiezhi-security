@@ -38,6 +38,7 @@ from .schemas import (
     LedgerAgentResult,
 )
 from .tools import build_agent_tools
+from .usage import model_name, start_usage_run, usage_scope, usage_snapshot
 
 try:
     from langgraph.graph import END, START, StateGraph
@@ -1849,6 +1850,9 @@ class LedgerAgentRuntime:
             "plannerSource": str(plan.get("source") or "unknown"),
             "llmCallCount": state.get("llmCallCount", 0),
             "terminationReason": state.get("terminationReason"),
+            # Provider-reported (or locally estimated) token usage for this run.
+            # Presentation telemetry only; it never authorizes or changes a plan.
+            "modelUsage": usage_snapshot(),
         }
         return {
             "final": final,
@@ -1893,41 +1897,45 @@ class LedgerAgentRuntime:
         )
         state_version = 0
         try:
-            async with asyncio.timeout(timeout_seconds):
-                if self.graph is None:
-                    async for event in self._fallback_stream(initial):
-                        state_version += 1
-                        enveloped = envelope_runtime_event(
-                            event,
-                            request_payload,
-                            run_id,
-                            state_version,
-                            previous_digest,
-                        )
-                        previous_digest = enveloped["ledgerEntryDigest"]
-                        yield enveloped
-                else:
-                    async for update in self.graph.astream(
-                        initial,
-                        config={"recursion_limit": settings.graph_recursion_limit},
-                        stream_mode="updates",
-                    ):
-                        if not isinstance(update, dict):
-                            continue
-                        for node_update in update.values():
-                            if not isinstance(node_update, dict):
+            # Keep the ContextVar scope alive across async-generator yields so all
+            # LangGraph node model calls contribute to this run's terminal snapshot.
+            with usage_scope(model_name()):
+                start_usage_run()
+                async with asyncio.timeout(timeout_seconds):
+                    if self.graph is None:
+                        async for event in self._fallback_stream(initial):
+                            state_version += 1
+                            enveloped = envelope_runtime_event(
+                                event,
+                                request_payload,
+                                run_id,
+                                state_version,
+                                previous_digest,
+                            )
+                            previous_digest = enveloped["ledgerEntryDigest"]
+                            yield enveloped
+                    else:
+                        async for update in self.graph.astream(
+                            initial,
+                            config={"recursion_limit": settings.graph_recursion_limit},
+                            stream_mode="updates",
+                        ):
+                            if not isinstance(update, dict):
                                 continue
-                            for event in self._events_from_update(node_update):
-                                state_version += 1
-                                enveloped = envelope_runtime_event(
-                                    event,
-                                    request_payload,
-                                    run_id,
-                                    state_version,
-                                    previous_digest,
-                                )
-                                previous_digest = enveloped["ledgerEntryDigest"]
-                                yield enveloped
+                            for node_update in update.values():
+                                if not isinstance(node_update, dict):
+                                    continue
+                                for event in self._events_from_update(node_update):
+                                    state_version += 1
+                                    enveloped = envelope_runtime_event(
+                                        event,
+                                        request_payload,
+                                        run_id,
+                                        state_version,
+                                        previous_digest,
+                                    )
+                                    previous_digest = enveloped["ledgerEntryDigest"]
+                                    yield enveloped
         except TimeoutError:
             state_version += 1
             yield envelope_runtime_event(

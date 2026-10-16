@@ -44,14 +44,19 @@ final class ReportFormatters {
     return instant == null ? "未记录" : TIME_FORMATTER.format(instant);
   }
 
+  /**
+   * 报告展示只使用中文标签，不附英文代号。
+   * 严重度、状态等枚举的内部取值通过 {@link #findingDataAttrs(Finding)} 等 data-* 属性
+   * 与筛选控件保留机器可读形式，正文与表格对人只呈现中文。
+   */
   public static String severityLabel(String severity) {
     if (severity == null || severity.isBlank()) return "未知";
     return switch (severity.toUpperCase(Locale.ROOT)) {
-      case "CRITICAL" -> "严重 (CRITICAL)";
-      case "HIGH" -> "高危 (HIGH)";
-      case "MEDIUM" -> "中危 (MEDIUM)";
-      case "LOW" -> "低危 (LOW)";
-      case "INFO" -> "信息 (INFO)";
+      case "CRITICAL" -> "严重";
+      case "HIGH" -> "高危";
+      case "MEDIUM" -> "中危";
+      case "LOW" -> "低危";
+      case "INFO" -> "信息";
       default -> severity;
     };
   }
@@ -75,11 +80,11 @@ final class ReportFormatters {
   public static String projectStatusLabel(String status) {
     if (status == null || status.isBlank()) return "未记录";
     return switch (status.toUpperCase(Locale.ROOT)) {
-      case "ACTIVE" -> "进行中 (ACTIVE)";
-      case "DRAFT" -> "草稿 (DRAFT)";
-      case "PAUSED" -> "已暂停 (PAUSED)";
-      case "COMPLETED" -> "已完成 (COMPLETED)";
-      case "ARCHIVED" -> "已归档 (ARCHIVED)";
+      case "ACTIVE" -> "进行中";
+      case "DRAFT" -> "草稿";
+      case "PAUSED" -> "已暂停";
+      case "COMPLETED" -> "已完成";
+      case "ARCHIVED" -> "已归档";
       default -> status;
     };
   }
@@ -87,11 +92,11 @@ final class ReportFormatters {
   public static String taskStatusLabel(String status) {
     if (status == null || status.isBlank()) return "未记录";
     return switch (status.toUpperCase(Locale.ROOT)) {
-      case "SUCCESS" -> "执行成功 (SUCCESS)";
-      case "FAILED" -> "执行失败 (FAILED)";
-      case "RUNNING" -> "执行中 (RUNNING)";
-      case "PENDING" -> "排队中 (PENDING)";
-      case "CANCELED" -> "已取消 (CANCELED)";
+      case "SUCCESS" -> "执行成功";
+      case "FAILED" -> "执行失败";
+      case "RUNNING" -> "执行中";
+      case "PENDING" -> "排队中";
+      case "CANCELED" -> "已取消";
       default -> status;
     };
   }
@@ -99,11 +104,11 @@ final class ReportFormatters {
   public static String findingStatusLabel(String status) {
     if (status == null || status.isBlank()) return "未记录";
     return switch (status.toUpperCase(Locale.ROOT)) {
-      case "OPEN" -> "待处理 (OPEN)";
-      case "VERIFIED" -> "已确认 (VERIFIED)";
-      case "RETESTED" -> "已复测 (RETESTED)";
-      case "CLOSED" -> "已关闭 (CLOSED)";
-      case "FALSE_POSITIVE" -> "误报 (FALSE_POSITIVE)";
+      case "OPEN" -> "待处理";
+      case "VERIFIED" -> "已确认";
+      case "RETESTED" -> "已复测";
+      case "CLOSED" -> "已关闭";
+      case "FALSE_POSITIVE" -> "误报";
       default -> status;
     };
   }
@@ -113,8 +118,8 @@ final class ReportFormatters {
     return switch (type.toLowerCase(Locale.ROOT)) {
       case "ip" -> "IP 地址";
       case "domain" -> "域名";
-      case "url" -> "Web 目标 (URL)";
-      case "cidr" -> "网段 (CIDR)";
+      case "url" -> "Web 目标";
+      case "cidr" -> "网段";
       default -> type;
     };
   }
@@ -122,19 +127,19 @@ final class ReportFormatters {
   public static String toolLabel(String toolCode) {
     if (toolCode == null || toolCode.isBlank()) return "未提供";
     return switch (toolCode.trim().toLowerCase(Locale.ROOT)) {
-      case "tcp_ports" -> "TCP 端口探测 (tcp_ports)";
-      case "nmap_service_scan" -> "Nmap 服务识别 (nmap_service_scan)";
-      case "http_headers" -> "HTTP 安全响应头检查 (http_headers)";
-      case "http_security_check" -> "HTTP 常见安全检查 (http_security_check)";
-      case "tls_config" -> "TLS 基础配置检查 (tls_config)";
-      case "nuclei_scan" -> "Nuclei 通用漏洞扫描 (nuclei_scan)";
-      case "afrog_scan" -> "Afrog 漏洞扫描 (afrog_scan)";
-      case "xray_scan" -> "Xray 漏洞扫描 (xray_scan)";
-      case "zap_scan" -> "OWASP ZAP 主动扫描 (zap_scan)";
-      case "zap_fuzz" -> "ZAP 参数模糊测试 (zap_fuzz)";
-      case "sqlmap_scan" -> "SQLMap 注入检测 (sqlmap_scan)";
-      case "fscan_scan" -> "fscan 内网快速扫描 (fscan_scan)";
-      case "msf_scan" -> "Metasploit 模块执行 (msf_scan)";
+      case "tcp_ports" -> "TCP 端口探测";
+      case "nmap_service_scan" -> "Nmap 服务识别";
+      case "http_headers" -> "HTTP 安全响应头检查";
+      case "http_security_check" -> "HTTP 常见安全检查";
+      case "tls_config" -> "TLS 基础配置检查";
+      case "nuclei_scan" -> "Nuclei 通用漏洞扫描";
+      case "afrog_scan" -> "Afrog 漏洞扫描";
+      case "xray_scan" -> "Xray 漏洞扫描";
+      case "zap_scan" -> "OWASP ZAP 主动扫描";
+      case "zap_fuzz" -> "ZAP 参数模糊测试";
+      case "sqlmap_scan" -> "SQLMap 注入检测";
+      case "fscan_scan" -> "fscan 内网快速扫描";
+      case "msf_scan" -> "Metasploit 模块执行";
       default -> toolCode;
     };
   }

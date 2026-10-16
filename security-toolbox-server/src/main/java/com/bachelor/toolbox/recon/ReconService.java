@@ -754,7 +754,7 @@ public class ReconService {
           targetId,
           domain,
           "CONFIG_REQUIRED",
-          "尚未配置 ICP 查询数据源（ICP_API_URL）",
+          "尚未配置 ICP 查询数据源，请在设置中填写查询接口地址后重试",
           Map.of("source", "configuration", "requiredSetting", "ICP_API_URL"));
     }
 

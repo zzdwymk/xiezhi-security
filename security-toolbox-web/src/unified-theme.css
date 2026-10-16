@@ -1225,9 +1225,9 @@ body,
 
 .desktop-v2-logo,
 .desktop-v2-native-titlebar-logo {
-  border-color: var(--app-border-strong);
-  background: var(--app-surface);
-  color: var(--app-accent);
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
 }
 
 .desktop-v2-new-task {
@@ -2666,20 +2666,25 @@ html .desktop-v2-native-frame .vuln-workbench {
   color: var(--app-muted);
   font-size: 12px;
 }
+/* 品牌图标是透明背景的獬豸盾牌 PNG。这里不能加 border-radius / overflow:hidden，
+   否则 38px 的方形容器会把盾牌轮廓切出白边、四角露出底色，盾牌就像被塞进了
+   一个发白的方块里。容器保持透明且不裁剪，让盾牌自然融进卡片底色。 */
 .login-logo {
   display: grid;
   flex: 0 0 38px;
   width: 38px;
   height: 38px;
   place-items: center;
-  overflow: hidden;
-  border-radius: 9px;
+  overflow: visible;
+  border: none;
+  border-radius: 0;
+  background: transparent;
 }
 .login-logo img {
   display: block;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
 }
 .login-button {
   width: 100%;
@@ -2733,11 +2738,8 @@ html .desktop-v2-native-frame .vuln-workbench {
   background-clip: padding-box;
 }
 
-.login-logo {
-  background: var(--app-accent);
-  color: var(--system-accent-foreground);
-}
-
+/* .login-logo 已在上方统一定义为透明不裁剪容器；此处不再重复设置背景，
+   否则蓝色 accent 底会把透明盾牌 PNG 衬成一个实心方块。 */
 .desktop-v2-topbar,
 .traffic-session-rail,
 .packet-editor-pane,
@@ -2864,7 +2866,6 @@ html .desktop-v2-native-frame .vuln-workbench {
   backdrop-filter: none;
 }
 
-.setup-logo,
 .setup-storage,
 .dependency-group,
 .dependency-row,
@@ -2873,8 +2874,13 @@ html .desktop-v2-native-frame .vuln-workbench {
   background: var(--app-surface);
 }
 
+/* 品牌图标使用透明背景的 PNG 獬豸盾牌，任何不透明白底/边框都会在盾牌轮廓外
+   形成一块刺眼的白色方块。这里显式覆盖上面 .setup-logo 继承来的
+   background/border，保证盾牌与侧边栏底色自然融合。 */
 .setup-logo {
-  color: var(--app-accent);
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
 }
 
 .setup-steps li {
@@ -3427,11 +3433,13 @@ html .desktop-v2-native-frame .vuln-workbench {
   background: transparent !important;
 }
 
+/* 注意：.setup-logo 故意不在这张表里。它装的是透明背景的獬豸盾牌 PNG，
+   一旦跟着 storage/dependency 面板一起被刷成 var(--app-surface)，盾牌轮廓外
+   就会多出一块刺眼的白方块（Setup 向导侧栏尤其明显）。 */
 :root:is([data-window-material="mica"], [data-window-material="acrylic"])
   .desktop-v2-native-frame
   > .setup-page
   :is(
-    .setup-logo,
     .setup-storage,
     .dependency-group,
     .dependency-row,
@@ -3439,6 +3447,14 @@ html .desktop-v2-native-frame .vuln-workbench {
   ) {
   background: var(--app-surface) !important;
   border-color: var(--app-border) !important;
+}
+
+:root:is([data-window-material="mica"], [data-window-material="acrylic"])
+  .desktop-v2-native-frame
+  > .setup-page
+  .setup-logo {
+  background: transparent !important;
+  border-color: transparent !important;
 }
 
 :root[data-window-material="none"] .desktop-v2-native-frame > .setup-page,
@@ -3465,11 +3481,11 @@ html .desktop-v2-native-frame .vuln-workbench {
   backdrop-filter: none !important;
 }
 
+/* .setup-logo 同样不在这张表里：它必须保持透明，否则盾牌 PNG 会被衬成白块。 */
 :root[data-window-material="none"]
   .desktop-v2-native-frame
   > .setup-page
   :is(
-    .setup-logo,
     .setup-storage,
     .dependency-group,
     .dependency-row,
@@ -3478,6 +3494,15 @@ html .desktop-v2-native-frame .vuln-workbench {
   background: Canvas !important;
   background-color: Canvas !important;
   border-color: var(--app-border) !important;
+}
+
+:root[data-window-material="none"]
+  .desktop-v2-native-frame
+  > .setup-page
+  .setup-logo {
+  background: transparent !important;
+  background-color: transparent !important;
+  border-color: transparent !important;
 }
 
 :root[data-window-material="acrylic"]

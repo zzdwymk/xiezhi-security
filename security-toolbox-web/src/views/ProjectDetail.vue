@@ -3129,7 +3129,7 @@ async function queryIcpBatch() {
       }
     } else if (requiresConfiguration) {
       ElMessage.warning(
-        "ICP 查询暂未返回数据；可配置手动数据源（ICP_API_URL）",
+        "ICP 查询暂未返回数据；可在设置中填写 ICP 查询接口地址后重试",
       );
     } else if (requiresCaptcha)
       ElMessage.info(
@@ -3784,7 +3784,7 @@ async function runWorkflow() {
       void notifyWorkflowSkipped(
         {
           count: preflight.issues.length,
-          labels: preflight.issues.map((issue) => issue.label || issue.toolCode),
+          labels: preflight.issues.map((issue) => issue.label || actionStepLabel(issue.toolCode)),
         },
       );
     }
@@ -5037,7 +5037,7 @@ onUnmounted(() => {
               show-overflow-tooltip
             />
             <el-table-column
-              label="模板 ID"
+              label="模板编号"
               min-width="120"
               show-overflow-tooltip
               ><template #default="s"
@@ -5052,7 +5052,7 @@ onUnmounted(() => {
               }}</template></el-table-column
             >
             <el-table-column
-              label="模板摘要"
+              label="模板签名（SHA-256）"
               min-width="140"
               show-overflow-tooltip
               ><template #default="s"
@@ -6278,7 +6278,7 @@ onUnmounted(() => {
             <el-tag v-if="scope.row.requestedBy === 'ai-agent'" size="small" type="warning" effect="light">
               AI 渗透助手
             </el-tag>
-            <span v-else>{{ scope.row.requestedBy }}</span>
+            <span v-else>{{ formatAuditOperator(scope.row.requestedBy) }}</span>
           </template></el-table-column><el-table-column
             prop="approvedBy"
             label="确认人"
@@ -6409,8 +6409,8 @@ onUnmounted(() => {
           <el-table-column label="申请/审批" min-width="110"
             ><template #default="scope"
               ><span class="security-action-actors"
-                >申请：{{ scope.row.requestedBy }}<br />审批：{{
-                  scope.row.approvedBy || "待定"
+                >申请：{{ formatAuditOperator(scope.row.requestedBy) }}<br />审批：{{
+                  formatAuditOperator(scope.row.approvedBy) || "待定"
                 }}</span
               ></template
             ></el-table-column
@@ -7293,7 +7293,12 @@ onUnmounted(() => {
               {{ (scope.row.currentSeverity && severityLabel(scope.row.currentSeverity)) || "-" }}
             </template>
           </el-table-column>
-          <el-table-column prop="ruleCode" label="规则" min-width="110" show-overflow-tooltip />
+          <el-table-column label="规则编号" min-width="110" show-overflow-tooltip>
+            <template #default="scope">
+              <code v-if="scope.row.ruleCode">{{ scope.row.ruleCode }}</code>
+              <span v-else>-</span>
+            </template>
+          </el-table-column>
         </el-table>
         <AppPagination
           v-model:page="diffPage"
@@ -7403,10 +7408,10 @@ onUnmounted(() => {
             : "无"
         }}</el-descriptions-item>
         <el-descriptions-item label="方案来源">{{
-          securityActionDetail.requestedBy
+          formatAuditOperator(securityActionDetail.requestedBy)
         }}</el-descriptions-item>
         <el-descriptions-item label="审批人">{{
-          securityActionDetail.approvedBy || "待审批"
+          formatAuditOperator(securityActionDetail.approvedBy) || "待审批"
         }}</el-descriptions-item>
         <el-descriptions-item label="批准时间窗" :span="2"
           >{{ formatDateTime(securityActionDetail.windowStart) }} 至

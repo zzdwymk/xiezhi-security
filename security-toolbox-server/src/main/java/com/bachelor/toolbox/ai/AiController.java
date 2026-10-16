@@ -297,6 +297,16 @@ public class AiController {
     return Map.of("sessionId", sessionId, "cleared", agentOrchestrator.clearSession(sessionId));
   }
 
+  @GetMapping("/sessions/{sessionId}/usage")
+  public Map<String, Object> sessionUsage(@PathVariable String sessionId) {
+    if (memoryService == null) return Map.of("sessionId", sessionId, "usage", Map.of());
+    AiConversationMemoryService.SessionScope scope = memoryService.scope(sessionId);
+    if (scope == null) throw new org.springframework.web.server.ResponseStatusException(
+        org.springframework.http.HttpStatus.NOT_FOUND, "AI 会话不存在");
+    authorization.requireAccess(scope.projectId());
+    return Map.of("sessionId", sessionId, "usage", memoryService.usage(sessionId));
+  }
+
   @GetMapping("/conversations")
   public List<Map<String, Object>> listConversations() {
     return memoryService != null ? memoryService.listAllPersistedThreads() : List.of();
