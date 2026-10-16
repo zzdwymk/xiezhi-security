@@ -1,7 +1,7 @@
 {
   "name": "security-toolbox-desktop",
   "private": true,
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "Xiezhi authorized security testing platform",
   "type": "module",
   "main": "electron/main.cjs",
@@ -75,7 +75,7 @@
     ],
     "extraResources": [
       {
-        "from": "../security-toolbox-server/target/security-toolbox-server-0.1.0.jar",
+        "from": "../security-toolbox-server/target/security-toolbox-server-1.0.0.jar",
         "to": "server/security-toolbox-server.jar"
       },
       {

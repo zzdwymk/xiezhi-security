@@ -60,6 +60,9 @@ public class ReportService {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>授权安全测试报告</title>
+"""
+            + ReportFormatters.REPORT_FAVICON_HTML
+            + """
   <style>
     :root { color-scheme: light; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; color: #172033; }
     body { margin: 0; background: #f4f7fb; line-height: 1.65; }

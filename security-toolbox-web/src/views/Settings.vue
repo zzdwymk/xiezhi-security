@@ -1490,7 +1490,7 @@ watch(
               <strong>Xiezhi Desktop</strong>
               <small>本地前后端分离安全测试工作台</small>
             </span>
-            <code class="settings-version-code">0.2.0</code>
+            <code class="settings-version-code">1.0.0</code>
           </div>
         </div>
       </section>

@@ -1,0 +1,155 @@
+{
+  "schemaVersion": 1,
+  "backend": "native",
+  "rasterEngine": "libreoffice",
+  "source": "saved",
+  "inputPath": "D:\\study\\work\\Bachelor_Degree\\Graduation_Project\\docs\\23052167-曾昭典-基于大语言模型的授权网络安全测试平台设计与实现.docx",
+  "sourceSha256": "213b35bf686e9e532e05311364bccc5a07d1d242eea3b4be400607129d27e88b",
+  "dpi": 144,
+  "pageCount": 10,
+  "images": [
+    {
+      "index": 1,
+      "page": 1,
+      "path": "D:\\study\\work\\Bachelor_Degree\\Graduation_Project\\preview-orig\\page-0001.png",
+      "width": 1191,
+      "height": 1684,
+      "rectangle": {
+        "x": 0,
+        "y": 0,
+        "width": 793.7333333333333,
+        "height": 1122.5333333333333
+      },
+      "byteLength": 237075
+    },
+    {
+      "index": 2,
+      "page": 2,
+      "path": "D:\\study\\work\\Bachelor_Degree\\Graduation_Project\\preview-orig\\page-0002.png",
+      "width": 1191,
+      "height": 1684,
+      "rectangle": {
+        "x": 0,
+        "y": 0,
+        "width": 793.7333333333333,
+        "height": 1122.5333333333333
+      },
+      "byteLength": 279865
+    },
+    {
+      "index": 3,
+      "page": 3,
+      "path": "D:\\study\\work\\Bachelor_Degree\\Graduation_Project\\preview-orig\\page-0003.png",
+      "width": 1191,
+      "height": 1684,
+      "rectangle": {
+        "x": 0,
+        "y": 0,
+        "width": 793.7333333333333,
+        "height": 1122.5333333333333
+      },
+      "byteLength": 274210
+    },
+    {
+      "index": 4,
+      "page": 4,
+      "path": "D:\\study\\work\\Bachelor_Degree\\Graduation_Project\\preview-orig\\page-0004.png",
+      "width": 1191,
+      "height": 1684,
+      "rectangle": {
+        "x": 0,
+        "y": 0,
+        "width": 793.7333333333333,
+        "height": 1122.5333333333333
+      },
+      "byteLength": 272124
+    },
+    {
+      "index": 5,
+      "page": 5,
+      "path": "D:\\study\\work\\Bachelor_Degree\\Graduation_Project\\preview-orig\\page-0005.png",
+      "width": 1191,
+      "height": 1684,
+      "rectangle": {
+        "x": 0,
+        "y": 0,
+        "width": 793.7333333333333,
+        "height": 1122.5333333333333
+      },
+      "byteLength": 32126
+    },
+    {
+      "index": 6,
+      "page": 6,
+      "path": "D:\\study\\work\\Bachelor_Degree\\Graduation_Project\\preview-orig\\page-0006.png",
+      "width": 1191,
+      "height": 1684,
+      "rectangle": {
+        "x": 0,
+        "y": 0,
+        "width": 793.7333333333333,
+        "height": 1122.5333333333333
+      },
+      "byteLength": 157047
+    },
+    {
+      "index": 7,
+      "page": 7,
+      "path": "D:\\study\\work\\Bachelor_Degree\\Graduation_Project\\preview-orig\\page-0007.png",
+      "width": 1191,
+      "height": 1684,
+      "rectangle": {
+        "x": 0,
+        "y": 0,
+        "width": 793.7333333333333,
+        "height": 1122.5333333333333
+      },
+      "byteLength": 217531
+    },
+    {
+      "index": 8,
+      "page": 8,
+      "path": "D:\\study\\work\\Bachelor_Degree\\Graduation_Project\\preview-orig\\page-0008.png",
+      "width": 1191,
+      "height": 1684,
+      "rectangle": {
+        "x": 0,
+        "y": 0,
+        "width": 793.7333333333333,
+        "height": 1122.5333333333333
+      },
+      "byteLength": 165020
+    },
+    {
+      "index": 9,
+      "page": 9,
+      "path": "D:\\study\\work\\Bachelor_Degree\\Graduation_Project\\preview-orig\\page-0009.png",
+      "width": 1191,
+      "height": 1684,
+      "rectangle": {
+        "x": 0,
+        "y": 0,
+        "width": 793.7333333333333,
+        "height": 1122.5333333333333
+      },
+      "byteLength": 148256
+    },
+    {
+      "index": 10,
+      "page": 10,
+      "path": "D:\\study\\work\\Bachelor_Degree\\Graduation_Project\\preview-orig\\page-0010.png",
+      "width": 1191,
+      "height": 1684,
+      "rectangle": {
+        "x": 0,
+        "y": 0,
+        "width": 793.7333333333333,
+        "height": 1122.5333333333333
+      },
+      "byteLength": 52179
+    }
+  ],
+  "missingFonts": [
+    "宋体t."
+  ]
+}
