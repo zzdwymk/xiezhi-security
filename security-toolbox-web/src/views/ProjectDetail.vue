@@ -91,7 +91,7 @@ import {
   downloadText,
   EmptyDownloadError,
 } from "../utils/download";
-import { COMMON_PORT_OPTIONS, normalizeAllowedPorts } from "../utils/ports";
+import { COMMON_PORT_OPTIONS, normalizeAllowedPorts, inferTargetType } from "../utils/ports";
 import { parseBatchTargets } from "../utils/targetParser";
 
 const route = useRoute();
@@ -1999,8 +1999,28 @@ function removeTargetBatchItem(id: string) {
   );
 }
 
+const targetTypeManuallySet = ref(false);
+
+function onTargetTypeChange() {
+  targetTypeManuallySet.value = true;
+}
+
+function onTargetValueInput(val: string) {
+  if (!val.trim()) {
+    targetTypeManuallySet.value = false;
+    return;
+  }
+  if (!targetTypeManuallySet.value) {
+    const inferred = inferTargetType(val);
+    if (inferred) {
+      targetForm.value.targetType = inferred;
+    }
+  }
+}
+
 function openTargetCreate() {
   targetMode.value = "single";
+  targetTypeManuallySet.value = false;
   targetForm.value = {
     name: "",
     targetValue: "",
@@ -4234,7 +4254,7 @@ onUnmounted(() => {
                 ><el-input v-model="targetForm.name" placeholder="用于内部识别"
               /></el-form-item>
               <el-form-item label="类型"
-                ><el-select v-model="targetForm.targetType"
+                ><el-select v-model="targetForm.targetType" @change="onTargetTypeChange"
                   ><el-option label="域名" value="domain" /><el-option
                     label="IP 地址"
                     value="ip" /><el-option
@@ -4246,6 +4266,7 @@ onUnmounted(() => {
               ><el-input
                 v-model="targetForm.targetValue"
                 placeholder="example.com 或 192.0.2.10"
+                @input="onTargetValueInput"
             /></el-form-item>
             <el-form-item label="端口授权模式"
               ><div class="port-picker">

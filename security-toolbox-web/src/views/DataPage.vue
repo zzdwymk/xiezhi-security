@@ -231,11 +231,12 @@ watch(() => props.kind, load);
 
 <style scoped>
 .data-page :deep(.el-table) {
-  font-size: 14px;
+  font-size: 13px;
 }
 .data-page :deep(.el-table th.el-table__cell) {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
+  height: 44px;
 }
 .data-page :deep(.el-table td.el-table__cell .cell) {
   font-size: 13px;

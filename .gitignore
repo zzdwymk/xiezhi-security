@@ -242,6 +242,7 @@ venv/
 checks.json
 preview-orig/
 preview-*/
+软著*
 
 # 公开仓库必需的说明和协作文件，覆盖前面的 Markdown 忽略规则。
 !/LICENSE

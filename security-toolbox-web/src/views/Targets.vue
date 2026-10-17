@@ -384,20 +384,44 @@ function openCreate() {
   });
 
   saveError.value = "";
+  formTypeManuallySet.value = false;
   dialog.value = true;
 }
 
+const formTypeManuallySet = ref(false);
+const editTypeManuallySet = ref(false);
+
+function onTargetTypeChange() {
+  formTypeManuallySet.value = true;
+}
+
+function onEditTargetTypeChange() {
+  editTypeManuallySet.value = true;
+}
+
 function onTargetValueInput(val: string) {
-  const inferred = inferTargetType(val);
-  if (inferred) {
-    form.targetType = inferred;
+  if (!val.trim()) {
+    formTypeManuallySet.value = false;
+    return;
+  }
+  if (!formTypeManuallySet.value) {
+    const inferred = inferTargetType(val);
+    if (inferred) {
+      form.targetType = inferred;
+    }
   }
 }
 
 function onEditTargetValueInput(val: string) {
-  const inferred = inferTargetType(val);
-  if (inferred) {
-    editForm.targetType = inferred;
+  if (!val.trim()) {
+    editTypeManuallySet.value = false;
+    return;
+  }
+  if (!editTypeManuallySet.value) {
+    const inferred = inferTargetType(val);
+    if (inferred) {
+      editForm.targetType = inferred;
+    }
   }
 }
 
@@ -642,6 +666,7 @@ function openEditTarget(row: Target) {
     .filter(Boolean);
   editSelectedPorts.value = ports;
   editFullPortAccess.value = (row.allowedPorts || "") === "1-65535";
+  editTypeManuallySet.value = false;
   editDialog.value = true;
 }
 
@@ -965,7 +990,7 @@ onMounted(load);
           ><el-input v-model="form.name" placeholder="用于内部识别"
         /></el-form-item>
         <el-form-item label="目标类型"
-          ><el-select v-model="form.targetType"
+          ><el-select v-model="form.targetType" @change="onTargetTypeChange"
             ><el-option label="域名" value="domain" /><el-option
               label="IP 地址"
               value="ip" /><el-option label="URL" value="url" /></el-select
@@ -1294,7 +1319,7 @@ onMounted(load);
           <el-input v-model="editForm.name" placeholder="例如：主站" />
         </el-form-item>
         <el-form-item label="目标类型">
-          <el-select v-model="editForm.targetType">
+          <el-select v-model="editForm.targetType" @change="onEditTargetTypeChange">
             <el-option label="域名" value="domain" />
             <el-option label="IP 地址" value="ip" />
             <el-option label="URL" value="url" />

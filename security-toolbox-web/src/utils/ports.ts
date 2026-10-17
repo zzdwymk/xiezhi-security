@@ -94,10 +94,21 @@ export function inferTargetType(value: string): "ip" | "url" | "domain" | null {
   if (ipv4.test(trimmed)) {
     return "ip";
   }
+  // 带端口的 IPv4 地址（如 192.168.1.1:8080），归入 URL 类型
+  if (/^(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}:\d{1,5}$/.test(trimmed)) {
+    return "url";
+  }
+  // IPv6 地址（如 ::1 或 [::1]:80）
+  if (/^\[?[0-9a-fA-F:]+\]?(?::\d{1,5})?$/.test(trimmed) && trimmed.includes(":") && !trimmed.startsWith("http")) {
+    return "ip";
+  }
   const domain =
-    /^(?=.{1,253}$)(?:[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?\.)+[a-z]{2,}$/i;
+    /^(?=.{1,253}$)(?:[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?\.)+[a-z]{2,}(?::\d{1,5})?$/i;
   if (domain.test(trimmed) && trimmed.includes(".")) {
-    return "domain";
+    return trimmed.includes(":") ? "url" : "domain";
+  }
+  if (/^localhost(?::\d{1,5})?$/i.test(trimmed)) {
+    return trimmed.includes(":") ? "url" : "domain";
   }
   return null;
 }

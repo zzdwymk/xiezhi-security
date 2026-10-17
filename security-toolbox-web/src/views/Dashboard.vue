@@ -143,7 +143,45 @@ const editingMessage = ref<MessageEditState>();
 const copiedMessageId = ref<string>();
 let copiedMessageTimer: ReturnType<typeof setTimeout> | undefined;
 const loading = ref(false);
-const sending = ref(false);
+const activeSendingThreadIds = ref<Set<string>>(new Set());
+const isSendingAny = ref(false);
+const sending = computed({
+  get: () => {
+    const currentId = selectedThread.value?.id;
+    return Boolean(isSendingAny.value || (currentId && activeSendingThreadIds.value.has(currentId)));
+  },
+  set: (val: boolean) => {
+    const currentId = selectedThread.value?.id;
+    if (val) {
+      if (currentId) activeSendingThreadIds.value.add(currentId);
+      isSendingAny.value = true;
+    } else {
+      if (currentId) activeSendingThreadIds.value.delete(currentId);
+      isSendingAny.value = false;
+    }
+  },
+});
+
+const currentThreadStatus = computed(() => {
+  const t = selectedThread.value;
+  if (!t || !t.messages?.length) return null;
+  const lastAssistant = [...t.messages].reverse().find((m) => m.role === "assistant");
+  if (!lastAssistant) return null;
+  if (
+    ["sending", "planning", "running", "answering"].includes(lastAssistant.status) ||
+    lastAssistant.modelStreamStatus === "running" ||
+    activeSendingThreadIds.value.has(t.id)
+  ) {
+    return { label: "回答中", type: "running" };
+  }
+  if (lastAssistant.status === "completed" || lastAssistant.modelStreamStatus === "completed") {
+    return { label: "已完成", type: "completed" };
+  }
+  if (lastAssistant.status === "failed" || lastAssistant.modelStreamStatus === "failed") {
+    return { label: "失败", type: "failed" };
+  }
+  return null;
+});
 const messagesElement = ref<HTMLElement>();
 const answeringMessages = new Set<string>();
 const retryingMessageIds = ref(new Set<string>());
@@ -876,6 +914,69 @@ watch(
   },
 );
 
+/* Work events that represent real agent activity beyond executable plan steps.
+ * "plan"/"done"/"approval"/"citation"/"error" are lifecycle or payload frames, not work.
+ * "route"/"rewrite"/"retry"/"step" describe a unit of agent work in the graph. */
+const AGENT_WORK_EVENT_TYPES = new Set([
+  "route",
+  "rewrite",
+  "step",
+  "tool_call",
+  "tool_result",
+  "retry",
+]);
+
+/**
+ * How much real work one assistant turn performed *beyond* its plan steps.
+ *
+ * `message.steps` only holds *executable plan steps* — tasks that were planned
+ * for dispatch. A turn that answered from retrieved context, evaluated evidence
+ * and produced findings never populates that array, so counting it alone always
+ * showed "0 步" for the platform's most common turn type.
+ *
+ * The caller already adds `message.steps.length`, so this returns only the
+ * additional work those steps do not represent:
+ *   1. dispatched tasks in excess of the plan (post-approval dispatch);
+ *   2. tool calls recorded in the event stream (tool_call / tool_result);
+ *   3. graph work nodes recorded by the orchestrator (route / rewrite / step / retry).
+ *
+ * `seen` must be a set owned by a single stats computation. It dedupes retried or
+ * re-emitted frames of the same step across the whole thread; it must never be
+ * shared between recomputations, or the second pass would count nothing.
+ */
+function countAssistantWorkItems(message: ConversationMessage, seen: Set<string>): number {
+  const plannedSteps = Array.isArray(message.steps) ? message.steps.length : 0;
+  const dispatched = Array.isArray(message.taskIds) ? message.taskIds.length : 0;
+  const events = Array.isArray(message.agentEvents) ? message.agentEvents : [];
+  let eventWork = 0;
+  for (const event of events) {
+    if (!AGENT_WORK_EVENT_TYPES.has(String(event.type || ""))) continue;
+    const identity =
+      event.toolCallId ||
+      event.taskId ||
+      event.stepId ||
+      event.nodeRunId ||
+      event.workflowNodeId ||
+      event.id;
+    if (identity === undefined) {
+      eventWork += 1;
+      continue;
+    }
+    const key = `${message.id}:${identity}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      eventWork += 1;
+    }
+  }
+  if (plannedSteps > 0) {
+    // Plan steps already stand for the dispatched tasks; only count tasks that
+    // were dispatched without a corresponding plan step (e.g. post-approval
+    // dispatch into a turn whose plan was saved separately).
+    return Math.max(0, Math.max(dispatched, eventWork) - plannedSteps);
+  }
+  return Math.max(dispatched, eventWork);
+}
+
 function formatTokensCompact(tokens: number): string {
   if (tokens >= 1_000_000_000) {
     return (tokens / 1_000_000_000).toFixed(1).replace(/\.0$/, "") + "B tok";
@@ -919,6 +1020,9 @@ const sessionStats = computed(() => {
   let lastContextWindowUsed = 0;
   let lastContextRatePermille = 0;
   let latestTps = 0;
+  // Dedupes retried/re-emitted work events across the whole thread. Owned by this
+  // single computation so a recomputation always starts from a clean slate.
+  const seenWorkEvents = new Set<string>();
 
   for (const msg of thread.messages) {
     if (msg.role === "user") {
@@ -939,7 +1043,15 @@ const sessionStats = computed(() => {
         }
       }
     }
+    // A turn can do real work without ever becoming an executable plan step:
+    // the model may retrieve project context, evaluate evidence, and answer,
+    // which the orchestrator records as node events rather than plan steps.
+    // Counting only msg.steps made every such turn show "0 步" even though
+    // tokens, findings and elapsed time were all real.
+    // NOTE: msg.steps.length is already added above, so this must return only
+    // the work that plan steps do NOT already represent.
     if (msg.role === "assistant") {
+      steps += countAssistantWorkItems(msg, seenWorkEvents);
       if (msg.progressStartedAt && msg.progressFinishedAt) {
         const start = Date.parse(msg.progressStartedAt);
         const end = Date.parse(msg.progressFinishedAt);
@@ -1764,6 +1876,7 @@ async function sendPrompt() {
     } else if (!thread) {
       thread = conversations.createThread(target.id, target.name, text, projectIdForTarget(target.id));
     }
+    if (thread) activeSendingThreadIds.value.add(thread.id);
     const turn = conversations.appendTurn(thread.id, {
       role: "user", content: text, status: "completed", taskIds: [], steps: [],
       references, copilotMode: mode, executionIntent: "AUTO",
@@ -1817,6 +1930,7 @@ async function sendPrompt() {
       }
     } else ElMessage.error(message);
   } finally {
+    if (thread) activeSendingThreadIds.value.delete(thread.id);
     sending.value = false;
     void scrollToBottom();
   }
@@ -1843,6 +1957,7 @@ async function retryConversationMessage(message: ConversationMessage) {
   const answerRetry = message.taskIds.length > 0;
   const retryMessageId = message.id;
   retryingMessageIds.value = new Set(retryingMessageIds.value).add(message.id);
+  if (thread) activeSendingThreadIds.value.add(thread.id);
   sending.value = true;
   try {
     if (!answerRetry) {
@@ -1918,6 +2033,7 @@ async function retryConversationMessage(message: ConversationMessage) {
     const next = new Set(retryingMessageIds.value);
     next.delete(retryMessageId);
     retryingMessageIds.value = next;
+    if (thread) activeSendingThreadIds.value.delete(thread.id);
     sending.value = false;
     void scrollToBottom();
   }
@@ -2295,8 +2411,16 @@ onBeforeUnmount(() => {
         <span
           v-if="selectedThread"
           :title="targetHoverText(selectedThread.targetName)"
-          >{{ displayKnownTestName(selectedThread.targetName) }} · 连续对话</span
-        >
+          >{{ displayKnownTestName(selectedThread.targetName) }} · 连续对话
+          <span
+            v-if="currentThreadStatus"
+            class="dashboard-thread-status"
+            :class="`status--${currentThreadStatus.type}`"
+          >
+            <span v-if="currentThreadStatus.type === 'running'" class="status-dot-pulse" />
+            {{ currentThreadStatus.label }}
+          </span>
+        </span>
         <span v-else
           ><i :class="{ offline, checking: engine.status === 'checking' }" />{{
             engine.status === "checking"
@@ -2971,7 +3095,7 @@ onBeforeUnmount(() => {
               <dl class="stats-popover-details">
                 <dt>对话轮数</dt>
                 <dd>{{ sessionStats.turns }} 轮</dd>
-                <dt>执行步骤</dt>
+                <dt>工作步骤</dt>
                 <dd>{{ sessionStats.steps }} 步</dd>
                 <dt v-if="sessionStats.llmMs > 0">模型用时</dt>
                 <dd v-if="sessionStats.llmMs > 0">{{ formatDurationCompact(sessionStats.llmMs) }}</dd>
@@ -3176,6 +3300,44 @@ onBeforeUnmount(() => {
 }
 .chat-header span i.offline {
   background: #bd8136;
+}
+.dashboard-thread-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 14px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.dashboard-thread-status.status--running {
+  background: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+}
+.dashboard-thread-status.status--completed {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+.dashboard-thread-status.status--failed {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+}
+.status-dot-pulse {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #0284c7;
+  animation: tag-pulse 1.4s ease-in-out infinite;
+}
+@keyframes tag-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.3; transform: scale(0.7); }
 }
 .chat-header-actions {
   display: flex;
@@ -3523,7 +3685,7 @@ onBeforeUnmount(() => {
   width: min(850px, 100%);
   flex: none;
   margin: 0 auto;
-  padding: 8px 22px 10px;
+  padding: 8px 22px 12px;
   background: transparent;
 }
 .thread-target {
@@ -3630,7 +3792,7 @@ onBeforeUnmount(() => {
     max-width: 96%;
   }
   .chat-composer-wrap {
-    padding: 9px 11px 12px;
+    padding: 9px 11px 14px;
   }
   .thread-target small {
     display: none;
@@ -4821,7 +4983,7 @@ a.agent-citation-bubble {
   border-radius: 8px;
 }
 .chat-composer-wrap {
-  padding: 8px 22px 10px;
+  padding: 8px 22px 12px;
 }
 .thread-composer {
   border-radius: 12px;
@@ -5476,12 +5638,14 @@ a.agent-citation-bubble {
 }
 
 /* DSH 同款底部性能与用量统计栏 */
+/* 上下等间距：上方间距 = 本栏 padding-top；下方间距 = 本栏 padding-bottom
+   + .chat-composer-wrap 的 padding-bottom。两者须保持相等。 */
 .composer-stats-bar {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 16px;
-  padding: 4px 0 2px;
+  padding: 8px 0 4px;
   user-select: none;
 }
 
