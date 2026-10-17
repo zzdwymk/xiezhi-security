@@ -417,6 +417,26 @@ function openConversation(id: string) {
   router.push({ path: "/", query: { conversation: id } });
 }
 
+function conversationStatus(conversation: any): { label: string; type: "running" | "completed" | "failed" } | null {
+  const messages = conversation.messages || [];
+  if (!messages.length) return null;
+  const lastAssistant = [...messages].reverse().find((m: any) => m.role === "assistant");
+  if (!lastAssistant) return null;
+  if (
+    ["sending", "planning", "running", "answering"].includes(lastAssistant.status) ||
+    lastAssistant.modelStreamStatus === "running"
+  ) {
+    return { label: "回答中", type: "running" };
+  }
+  if (lastAssistant.status === "completed" || lastAssistant.modelStreamStatus === "completed") {
+    return { label: "已完成", type: "completed" };
+  }
+  if (lastAssistant.status === "failed" || lastAssistant.modelStreamStatus === "failed") {
+    return { label: "失败", type: "failed" };
+  }
+  return null;
+}
+
 async function removeConversation(id: string) {
   try {
     await ElMessageBox.confirm(
@@ -780,9 +800,6 @@ onBeforeUnmount(() => {
       class="desktop-v2-native-titlebar"
       aria-label="窗口标题栏"
     >
-      <span class="desktop-v2-native-titlebar-logo">
-        <img src="./assets/xiezhi-mark.png" alt="" aria-hidden="true" />
-      </span>
       <span>獬豸授权安全测试平台</span>
     </header>
     <router-view v-if="route.meta.public" />
@@ -953,13 +970,17 @@ onBeforeUnmount(() => {
                   <el-icon><ChatDotRound /></el-icon>
                   <span>
                     <strong>{{ displayConversationTitle(conversation) }}</strong>
-                    <small
-                      >{{ displayKnownTestName(conversation.targetName) }} ·
-                      {{
-                        conversations.taskIds(conversation).length
-                      }}
-                      个任务</small
-                    >
+                    <small>
+                      <span>{{ displayKnownTestName(conversation.targetName) }} · {{ conversations.taskIds(conversation).length }} 个任务</span>
+                      <span
+                        v-if="conversationStatus(conversation)"
+                        class="desktop-v2-conversation-tag"
+                        :class="`tag--${conversationStatus(conversation)?.type}`"
+                      >
+                        <span v-if="conversationStatus(conversation)?.type === 'running'" class="tag-pulse-dot" />
+                        {{ conversationStatus(conversation)?.label }}
+                      </span>
+                    </small>
                   </span>
                 </button>
                 <el-tooltip

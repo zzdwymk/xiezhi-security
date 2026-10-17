@@ -7,6 +7,7 @@ import { formatDateTime } from "../utils/dateTime";
 import { severityLabel } from "../utils/aiPresentation";
 import { targetedScanPresentation } from "../utils/targetedScanPresentation";
 import { toErrorMessage } from "../utils/errorMessage";
+import { InfoCircle, Refresh } from "./fluentIcons";
 import AppPagination from "./AppPagination.vue";
 
 interface ScanRecord {
@@ -154,21 +155,115 @@ onBeforeUnmount(() => {
 <template>
   <div v-if="canRead" class="traffic-scan-records">
     <div class="traffic-record-toolbar">
-      <p>{{ isFindings ? '按来源检测查看已保存的告警、风险证据和修复建议。模糊测试响应异常不作为漏洞发现。' : '跟踪流量定向检测与模糊测试的执行状态，查看探针和请求执行证据。' }}</p>
-      <el-select v-model="engine" clearable placeholder="全部引擎" aria-label="流量检测引擎" style="width: 150px">
-        <el-option v-for="item in engines" :key="item" :label="item === 'FUZZ' ? '模糊测试' : item" :value="item" />
-      </el-select>
-      <el-button :loading="loading" @click="refresh">刷新记录</el-button>
+      <div class="traffic-record-toolbar-desc">
+        <el-icon class="traffic-desc-icon"><InfoCircle /></el-icon>
+        <p>{{ isFindings ? '按来源检测查看已保存的告警、风险证据和修复建议。模糊测试响应异常不作为漏洞发现。' : '跟踪流量定向检测与模糊测试的执行状态，查看探针和请求执行证据。' }}</p>
+      </div>
+      <div class="traffic-record-toolbar-actions">
+        <el-select v-model="engine" clearable placeholder="全部引擎" aria-label="流量检测引擎" style="width: 140px">
+          <el-option v-for="item in engines" :key="item" :label="item === 'FUZZ' ? '模糊测试' : item" :value="item" />
+        </el-select>
+        <el-button :loading="loading" :icon="Refresh" @click="refresh">刷新记录</el-button>
+      </div>
     </div>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
-    <el-table v-loading="loading" :data="rows" row-key="id" :empty-text="isFindings ? '暂无包含告警的流量检测' : '暂无流量检测记录'" border>
-      <el-table-column prop="id" :label="isFindings ? '来源记录' : '记录 ID'" width="95" />
-      <el-table-column label="引擎" width="105"><template #default="{ row }">{{ row.engine === 'FUZZ' ? '模糊测试' : row.engine }}</template></el-table-column>
-      <el-table-column v-if="!isFindings" label="状态" width="105"><template #default="{ row }"><el-tag :type="tagType(row.status)">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
-      <el-table-column label="目标 URL" min-width="230" show-overflow-tooltip><template #default="{ row }">{{ row.url || row.host }}</template></el-table-column>
-      <el-table-column prop="hitCount" :label="isFindings ? '告警数' : '命中数'" width="90" />
-      <el-table-column v-if="!isFindings" label="开始时间" width="175"><template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template></el-table-column>
-      <el-table-column label="操作" width="205"><template #default="{ row }"><el-button link type="primary" @click="openDetail(row.id)">{{ isFindings ? '查看发现' : '执行详情' }}</el-button><el-button v-if="isFindings || (row.hitCount > 0 && row.engine !== 'FUZZ')" link @click="openRelated(row.id)">{{ isFindings ? '来源记录' : '查看发现' }}</el-button></template></el-table-column>
+    <el-table
+      v-loading="loading"
+      :data="rows"
+      row-key="id"
+      class="traffic-records-table"
+      :empty-text="isFindings ? '暂无包含告警的流量检测' : '暂无流量检测记录'"
+      stripe
+    >
+      <el-table-column prop="id" :label="isFindings ? '来源记录' : '记录 ID'" width="95" align="center">
+        <template #default="{ row }">
+          <span class="record-id">#{{ row.id }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="引擎" width="115" align="center">
+        <template #default="{ row }">
+          <el-tag
+            size="small"
+            :type="row.engine === 'FUZZ' ? 'warning' : 'info'"
+            effect="light"
+            class="engine-tag"
+          >
+            {{ row.engine === 'FUZZ' ? '模糊测试' : row.engine }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column v-if="!isFindings" label="状态" width="115" align="center">
+        <template #default="{ row }">
+          <el-tag size="small" :type="tagType(row.status)" effect="light" class="status-tag">
+            {{ statusLabel(row.status) }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="目标 URL" min-width="260" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span class="target-url-cell">{{ row.url || row.host }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column prop="hitCount" :label="isFindings ? '告警数' : '命中数'" width="95" align="center">
+        <template #default="{ row }">
+          <div class="hit-count-wrap">
+            <el-tag
+              v-if="row.hitCount > 0"
+              size="small"
+              type="danger"
+              effect="light"
+              round
+              class="hit-badge"
+            >
+              {{ row.hitCount }}
+            </el-tag>
+            <span v-else class="hit-zero">0</span>
+          </div>
+        </template>
+      </el-table-column>
+      <el-table-column v-if="!isFindings" label="开始时间" width="180" align="center">
+        <template #default="{ row }">
+          <span class="time-cell">{{ formatDateTime(row.createdAt) }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="190" align="center">
+        <template #default="{ row }">
+          <div class="table-actions">
+            <el-button link type="primary" size="small" @click="openDetail(row.id)">
+              {{ isFindings ? '查看发现' : '执行详情' }}
+            </el-button>
+            <el-button
+              v-if="isFindings || (row.hitCount > 0 && row.engine !== 'FUZZ')"
+              link
+              size="small"
+              @click="openRelated(row.id)"
+            >
+              {{ isFindings ? '来源记录' : '查看发现' }}
+            </el-button>
+          </div>
+        </template>
+      </el-table-column>
+
+      <template #empty>
+        <div class="traffic-empty-container">
+          <el-empty :image-size="76">
+            <template #description>
+              <div class="traffic-empty-desc">
+                <p class="traffic-empty-title">
+                  {{ isFindings ? '暂无包含告警的流量检测' : '暂无流量检测记录' }}
+                </p>
+                <p class="traffic-empty-sub">
+                  {{
+                    isFindings
+                      ? '当流量定向检测或模糊测试命中安全告警后，将在此聚合展示'
+                      : '通过流量定向检测或模糊测试下发任务后，执行状态与请求证据将在此展示'
+                  }}
+                </p>
+              </div>
+            </template>
+          </el-empty>
+        </div>
+      </template>
     </el-table>
     <p v-if="busy" class="traffic-record-muted">执行中的记录每 3 秒自动更新。</p>
     <AppPagination v-model:page="page" v-model:page-size="pageSize" :total="total" :page-sizes="[10, 20, 50]" @size-change="page = 1" />
@@ -231,12 +326,180 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.traffic-record-toolbar { display: flex; gap: 12px; align-items: center; margin: 0 0 16px; flex-wrap: wrap; }
-.traffic-record-toolbar p { flex: 1; margin: 0; min-width: 220px; color: var(--app-muted); }
-.traffic-record-muted { color: var(--app-muted); margin: 16px 0; }
-.traffic-record-hit { padding: 14px 0; border-bottom: 1px solid var(--app-border); }
-.traffic-record-hit h4 { display: flex; gap: 10px; align-items: center; margin: 0 0 12px; }
-.traffic-record-dialog .el-alert { margin: 16px 0; }
-pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 300px; overflow: auto; }
-.traffic-scan-records > :last-child { margin-top: 16px; }
+.traffic-record-toolbar {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 12px 0 16px;
+  padding: 12px 16px;
+  background: var(--app-surface-soft, rgba(0, 0, 0, 0.02));
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: var(--fluent-radius-card, 8px);
+  flex-wrap: wrap;
+}
+.traffic-record-toolbar-desc {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 240px;
+}
+.traffic-desc-icon {
+  font-size: 16px;
+  color: var(--app-accent, #0078d4);
+  flex-shrink: 0;
+}
+.traffic-record-toolbar-desc p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--app-muted, #64748b);
+}
+.traffic-record-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.traffic-record-muted {
+  color: var(--app-muted);
+  margin: 14px 0;
+  font-size: 12.5px;
+}
+.traffic-records-table {
+  width: 100%;
+  border-radius: var(--fluent-radius-card, 8px);
+  overflow: hidden;
+  border: 1px solid var(--app-border, #e2e8f0);
+  background: var(--app-surface, #ffffff);
+}
+.traffic-records-table :deep(th.el-table__cell) {
+  background-color: var(--app-surface-soft, #f8fafc) !important;
+  color: var(--app-text, #1e293b);
+  font-size: 13px !important;
+  font-weight: 600;
+  height: 44px;
+  padding: 0;
+  border-bottom: 1px solid var(--app-border, #e2e8f0) !important;
+}
+.traffic-records-table :deep(th.el-table__cell .cell) {
+  padding: 0 14px;
+  font-weight: 600;
+  color: var(--app-text, #334155);
+}
+.traffic-records-table :deep(td.el-table__cell) {
+  padding: 10px 0;
+  font-size: 13px;
+  color: var(--app-text, #334155);
+  border-bottom: 1px solid color-mix(in srgb, var(--app-border, #e2e8f0) 80%, transparent);
+}
+.traffic-records-table :deep(td.el-table__cell .cell) {
+  padding: 0 14px;
+  line-height: 1.5;
+}
+.traffic-records-table :deep(.el-table__row:hover > td.el-table__cell) {
+  background-color: var(--app-surface-soft, rgba(0, 0, 0, 0.025)) !important;
+}
+.record-id {
+  font-family: var(--font-mono, Consolas, Monaco, monospace);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--app-muted, #64748b);
+}
+.engine-tag,
+.status-tag {
+  font-weight: 500;
+  font-size: 12px;
+}
+.target-url-cell {
+  font-family: var(--font-mono, Consolas, Monaco, monospace);
+  font-size: 12.5px;
+  color: var(--app-text, #1e293b);
+  word-break: break-all;
+}
+.hit-count-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.hit-badge {
+  font-weight: 600;
+  font-size: 12px;
+  padding: 0 8px;
+}
+.hit-zero {
+  color: var(--app-muted, #94a3b8);
+  font-size: 13px;
+}
+.time-cell {
+  font-size: 12.5px;
+  color: var(--app-muted, #64748b);
+  white-space: nowrap;
+}
+.table-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+.traffic-empty-container {
+  padding: 36px 0 32px;
+  display: flex;
+  justify-content: center;
+}
+.traffic-empty-desc {
+  margin-top: 8px;
+}
+.traffic-empty-title {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--app-text, #1e293b);
+}
+.traffic-empty-sub {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--app-muted, #64748b);
+  max-width: 440px;
+  line-height: 1.5;
+}
+.traffic-record-dialog :deep(.el-table) {
+  font-size: 13px;
+  border-radius: var(--fluent-radius-card, 6px);
+  overflow: hidden;
+}
+.traffic-record-dialog :deep(.el-table th.el-table__cell) {
+  background-color: var(--app-surface-soft, #f8fafc) !important;
+  color: var(--app-text, #334155);
+  font-size: 13px !important;
+  font-weight: 600;
+  height: 40px;
+}
+.traffic-record-dialog :deep(.el-table td.el-table__cell) {
+  font-size: 12.5px;
+  padding: 8px 0;
+}
+.traffic-record-hit {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--app-border);
+}
+.traffic-record-hit h4 {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 0 0 12px;
+}
+.traffic-record-dialog .el-alert {
+  margin: 16px 0;
+}
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 300px;
+  overflow: auto;
+}
+.traffic-scan-records > :last-child {
+  margin-top: 16px;
+}
 </style>

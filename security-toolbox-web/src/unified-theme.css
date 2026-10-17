@@ -1213,18 +1213,7 @@ body,
   color: var(--system-accent-foreground);
 }
 
-:root[data-caption-mode="accent"] .desktop-v2-native-titlebar-logo {
-  border-color: color-mix(
-    in srgb,
-    var(--system-accent-foreground) 32%,
-    transparent
-  );
-  background: color-mix(in srgb, Canvas 22%, transparent);
-  color: var(--system-accent-foreground);
-}
-
-.desktop-v2-logo,
-.desktop-v2-native-titlebar-logo {
+.desktop-v2-logo {
   border: none !important;
   background: transparent !important;
   box-shadow: none !important;
@@ -1883,12 +1872,12 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
 
 .el-collapse-item__header {
   min-height: 44px;
-  padding: 0 14px;
+  padding: 0 16px !important;
   border-bottom-color: var(--app-border);
   background: var(--app-surface);
   color: var(--app-text);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .el-collapse-item__wrap,

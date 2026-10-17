@@ -2127,17 +2127,18 @@ onUnmounted(() => {
   margin-top: 12px;
 }
 .tasks-page :deep(.el-table) {
-  font-size: 14px;
+  font-size: 13px;
 }
 .tasks-page :deep(.el-table th.el-table__cell) {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
+  height: 44px;
 }
 .tasks-page :deep(.el-table td.el-table__cell .cell) {
   font-size: 13px;
 }
 .tasks-page :deep(.el-tag) {
-  font-size: 11px;
+  font-size: 12px;
 }
 .tasks-page :deep(.el-button.is-link) {
   font-size: 13px;
@@ -2551,6 +2552,29 @@ onUnmounted(() => {
   width: 100%;
   flex-direction: column;
   gap: 10px;
+}
+.task-result-panel :deep(.el-collapse) {
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: var(--fluent-radius-control, 6px);
+  background: var(--app-surface, #fff);
+  overflow: hidden;
+}
+.task-result-panel :deep(.el-collapse-item__header) {
+  height: 42px !important;
+  line-height: 42px !important;
+  padding: 0 16px !important;
+  background: var(--app-surface, #fff) !important;
+  color: var(--app-text, #1e293b) !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  border-bottom: none !important;
+}
+.task-result-panel :deep(.el-collapse-item__wrap) {
+  border-top: 1px solid var(--app-border, #e2e8f0);
+  background: var(--app-surface-soft, #f8fafc);
+}
+.task-result-panel :deep(.el-collapse-item__content) {
+  padding: 12px 16px !important;
 }
 .task-result-toolbar {
   display: flex;
