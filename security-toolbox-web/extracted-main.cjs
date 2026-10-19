@@ -1,0 +1,8393 @@
+const {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  nativeTheme,
+  net: electronNet,
+  Notification,
+  safeStorage,
+  session: electronSession,
+  shell,
+  systemPreferences,
+} = require("electron");
+const { spawn, spawnSync } = require("child_process");
+const fs = require("fs");
+const crypto = require("crypto");
+const http = require("http");
+const net = require("net");
+const path = require("path");
+const { fileURLToPath } = require("url");
+const { Worker } = require("worker_threads");
+const { readJsonFile, writeJsonFileAtomic } = require("./json-file.cjs");
+const { createRuntimeLogManager } = require("./runtime-log-manager.cjs");
+const { preparePostgresLogPolicy, readPostgresStartupTail } = require("./postgres-log-policy.cjs");
+const { observeMigrationProgress } = require("./migration-progress-stream.cjs");
+const { createInvalidatableCache } = require("./invalidatable-cache.cjs");
+const { createNotificationCenter, createServiceExitReporter, notificationSettingsFromStorage, updateNotificationStorage } = require("./notification-center.cjs");
+const { evaluateInstalledRelease } = require("./dependency-version.cjs");
+const { selectEmbeddingTestConnection, runtimeModelEnvironment } = require("./ai-settings.cjs");
+const { createAiRelay, listProviderModels } = require("./ai-relay.cjs");
+const { normalizeRelaySettings, publicRelaySettings, resolveRelayProviders, resolveModelDiscoveryProvider } = require("./ai-relay-settings.cjs");
+const {
+  UserFacingError,
+  diagnosticError,
+  publicErrorMessage,
+} = require("./public-error.cjs");
+
+let backendProcess;
+let aiRuntimeProcess;
+let aiRuntimeSpawn;
+let startupWindow;
+let mainWindow;
+let backendPort;
+let aiRuntimeConfig;
+let aiRuntimeStartError;
+let aiRuntimeTokenFile;
+let aiRuntimeSigningSecretFile;
+let shutdownToken;
+let quitting = false;
+let backendStartError;
+let restartingBackend = false;
+let pendingDesktopSeedPassword;
+let aiSettingsOperation = Promise.resolve();
+let captureBrowserWindow;
+let captureBrowserSession;
+let captureBrowserPartition;
+let captureBrowserConfig;
+let captureProxyState = { running: null, capturing: false };
+let captureBrowserOperation = Promise.resolve();
+let icpBrowserWindow;
+let icpBrowserState = {
+  opening: false,
+  domain: "",
+  url: "",
+  lastError: "",
+  lastFetch: "",
+};
+let desktopCredentials;
+let desktopLoginCredentialsIssued = false;
+let runtimeLogManager;
+const shownRuntimeLogFaultSeverities = new Set();
+const notificationCenter = createNotificationCenter({
+  Notification,
+  getSettings: () => publicNotificationSettings(),
+  getWindow: () => mainWindow || startupWindow,
+});
+const serviceExitReporter = createServiceExitReporter({
+  isQuitting: () => quitting,
+  notify: payload => notificationCenter.show(payload),
+});
+
+function readRegistryDword(key, name, fallback = 0) {
+  if (process.platform !== "win32") return fallback;
+  const result = spawnSync("reg.exe", ["query", key, "/v", name], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (result.status !== 0) return fallback;
+  const match = String(result.stdout || "").match(
+    new RegExp(`${name}\\s+REG_DWORD\\s+0x([0-9a-f]+)`, "i"),
+  );
+  return match ? Number.parseInt(match[1], 16) : fallback;
+}
+
+function argbDwordToHex(value, fallback) {
+  if (!Number.isFinite(value)) return fallback;
+  const unsigned = value >>> 0;
+  const red = (unsigned >>> 16) & 0xff;
+  const green = (unsigned >>> 8) & 0xff;
+  const blue = unsigned & 0xff;
+  return `#${[red, green, blue].map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function relativeLuminance(hex) {
+  const value = String(hex || "").replace(/^#/, "");
+  const channels = [0, 2, 4].map(
+    (offset) => Number.parseInt(value.slice(offset, offset + 2), 16) / 255,
+  );
+  const linear = channels.map((channel) =>
+    channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4,
+  );
+  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+}
+
+function contrastRatio(luminanceA, luminanceB) {
+  const lighter = Math.max(luminanceA, luminanceB);
+  const darker = Math.min(luminanceA, luminanceB);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function contrastColor(hex) {
+  const backgroundLuminance = relativeLuminance(hex);
+  const darkForeground = "#111111";
+  const lightForeground = "#ffffff";
+  const darkContrast = contrastRatio(
+    relativeLuminance(darkForeground),
+    backgroundLuminance,
+  );
+  const lightContrast = contrastRatio(
+    relativeLuminance(lightForeground),
+    backgroundLuminance,
+  );
+  return darkContrast >= lightContrast ? darkForeground : lightForeground;
+}
+
+function titleBarOverlay(theme) {
+  return {
+    color: "rgba(0, 0, 0, 0)",
+    symbolColor: theme.dark ? "#ffffff" : "#111111",
+    height: 38,
+  };
+}
+
+function windowBackgroundColor(theme) {
+  return theme.transparencyEnabled && !theme.highContrast
+    ? "#00000000"
+    : theme.dark
+      ? "#202020"
+      : "#f3f3f3";
+}
+
+function sharedChromeSurface(theme) {
+  if (
+    !theme.transparencyEnabled ||
+    theme.highContrast ||
+    theme.windowMaterial === "none"
+  ) {
+    return theme.dark ? "#202020" : "#f3f3f3";
+  }
+  // Mica: the chrome must be fully transparent in every theme so the title bar
+  // and navigation match the (also transparent) page and no seam appears.
+  if (theme.windowMaterial === "mica") return "transparent";
+  if (theme.dark) return "transparent";
+  return theme.windowMaterial === "acrylic"
+    ? "color-mix(in srgb, Canvas 32%, transparent)"
+    : "color-mix(in srgb, Canvas 22%, transparent)";
+}
+
+function configuredWindowMaterial(settings = readDesktopSettings()) {
+  if (["none", "mica", "acrylic"].includes(settings.windowMaterial))
+    return settings.windowMaterial;
+  return settings.micaEnabled === false ? "none" : "mica";
+}
+
+function configuredThemeMode(settings = readDesktopSettings()) {
+  return ["system", "light", "dark"].includes(settings.themeMode)
+    ? settings.themeMode
+    : "system";
+}
+
+const DEFAULT_MOTION_FLAGS = {
+  startProgress: true,
+  startPulse: true,
+  loader: true,
+  decorative: true,
+};
+
+const MOTION_FLAG_KEYS = Object.keys(DEFAULT_MOTION_FLAGS);
+
+/** 读取持久化的动画偏好；未配置时返回 null（由渲染进程按系统补一个基线）。 */
+function configuredMotionFlags(settings = readDesktopSettings()) {
+  const stored = settings.motion;
+  if (
+    stored &&
+    typeof stored === "object" &&
+    MOTION_FLAG_KEYS.every((key) => typeof stored[key] === "boolean")
+  ) {
+    return { ...DEFAULT_MOTION_FLAGS, ...stored };
+  }
+  return null;
+}
+
+function applyThemeMode(mode) {
+  const resolved = ["light", "dark"].includes(mode) ? mode : "system";
+  nativeTheme.themeSource = resolved;
+}
+
+function computeSystemTheme() {
+  const rawAccent = String(systemPreferences.getAccentColor() || "").replace(
+    /^#/,
+    "",
+  );
+  const accentColor = /^[0-9a-f]{6,8}$/i.test(rawAccent)
+    ? `#${rawAccent.slice(0, 6)}`
+    : "#0078d4";
+  const dwmKey = "HKCU\\Software\\Microsoft\\Windows\\DWM";
+  const personalizeKey =
+    "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
+  const desktopKey = "HKCU\\Control Panel\\Desktop";
+  const appDark = nativeTheme.shouldUseDarkColors;
+  const appsUseLightTheme =
+    readRegistryDword(personalizeKey, "AppsUseLightTheme", appDark ? 0 : 1) !==
+    0;
+  const systemUsesLightTheme =
+    readRegistryDword(
+      personalizeKey,
+      "SystemUsesLightTheme",
+      appDark ? 0 : 1,
+    ) !== 0;
+  const systemTransparencyEnabled =
+    readRegistryDword(personalizeKey, "EnableTransparency", 1) !== 0;
+  const windowMaterial = configuredWindowMaterial();
+  const transparencyEnabled =
+    systemTransparencyEnabled && windowMaterial !== "none";
+  const colorPrevalence = readRegistryDword(dwmKey, "ColorPrevalence", 0) !== 0;
+  const autoColorization =
+    readRegistryDword(desktopKey, "AutoColorization", 0) !== 0;
+  const colorizationValue = readRegistryDword(
+    dwmKey,
+    "ColorizationColor",
+    Number.NaN,
+  );
+  const captionColor = argbDwordToHex(colorizationValue, accentColor);
+  const highContrast = nativeTheme.shouldUseHighContrastColors;
+  // Keep the native DWM precedence: explicit caption accent, then Mica when
+  // transparency is enabled, otherwise the opaque system theme fallback.
+  const forcedCaptionAccent = false;
+  const useAccentOnTitleBars =
+    windowMaterial !== "none" &&
+    colorPrevalence &&
+    !systemUsesLightTheme &&
+    !highContrast;
+  const captionMode = useAccentOnTitleBars
+    ? "accent"
+    : transparencyEnabled && !highContrast
+      ? "mica"
+      : "solid";
+  return {
+    accentColor,
+    captionColor,
+    captionMode,
+    useAccentOnTitleBars,
+    forcedCaptionAccent,
+    transparencyEnabled,
+    windowMaterial,
+    autoColorization,
+    appsUseLightTheme,
+    systemUsesLightTheme,
+    dark: appDark,
+    highContrast,
+  };
+}
+
+const systemThemeCache = createInvalidatableCache(computeSystemTheme);
+
+function currentSystemTheme() {
+  return systemThemeCache.get();
+}
+
+function applyNativeBackdrop(window, theme = currentSystemTheme()) {
+  if (!window || window.isDestroyed() || process.platform !== "win32") return;
+  window.setBackgroundColor(windowBackgroundColor(theme));
+  if (typeof window.setBackgroundMaterial === "function") {
+    window.setBackgroundMaterial(
+      theme.transparencyEnabled && !theme.highContrast
+        ? theme.windowMaterial
+        : "none",
+    );
+  }
+  if (typeof window.setTitleBarOverlay === "function") {
+    try {
+      window.setTitleBarOverlay(titleBarOverlay(theme));
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function applySystemThemeToStaticWindow(window, theme = currentSystemTheme()) {
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed())
+    return;
+  const script = `(() => {
+    const theme = ${JSON.stringify(theme)};
+    const root = document.documentElement;
+    root.style.setProperty('--system-accent', theme.accentColor);
+    root.style.setProperty('--system-caption-color', theme.captionColor);
+    root.style.setProperty('--system-theme-accent', theme.accentColor);
+    root.style.setProperty('--system-accent-foreground', ${JSON.stringify(contrastColor(theme.accentColor))});
+    root.style.setProperty('--shared-chrome-surface', ${JSON.stringify(sharedChromeSurface(theme))});
+    root.style.colorScheme = theme.dark ? 'dark' : 'light';
+    root.dataset.systemTheme = theme.dark ? 'dark' : 'light';
+    root.dataset.captionMode = theme.captionMode;
+    root.dataset.windowMaterial = theme.windowMaterial || 'none';
+  })()`;
+  void window.webContents.executeJavaScript(script).catch(() => {});
+}
+
+/** 把启动页动画偏好（跑马灯、脉冲点）写入 startup.html 根节点。 */
+function applyMotionToStartupWindow(window = startupWindow) {
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed())
+    return;
+  const flags = configuredMotionFlags();
+  // 未配置过动画偏好时，不写属性，交由 CSS 的 prefers-reduced-motion 媒体查询
+  // 决定是否开启动画（尊重系统无障碍设置）。
+  if (!flags) return;
+  const script = `(() => {
+    const root = document.documentElement;
+    root.dataset.animStartProgress = ${flags.startProgress ? "'on'" : "'off'"};
+    root.dataset.animStartPulse = ${flags.startPulse ? "'on'" : "'off'"};
+  })()`;
+  void window.webContents.executeJavaScript(script).catch(() => {});
+}
+
+function broadcastSystemTheme() {
+  const theme = currentSystemTheme();
+  applyNativeBackdrop(mainWindow, theme);
+  applyNativeBackdrop(startupWindow, theme);
+  applyNativeBackdrop(captureBrowserWindow, theme);
+  if (
+    mainWindow &&
+    !mainWindow.isDestroyed() &&
+    !mainWindow.webContents.isDestroyed()
+  ) {
+    mainWindow.webContents.send("toolbox:system-theme-changed", theme);
+  }
+  applySystemThemeToStaticWindow(startupWindow, theme);
+  applySystemThemeToStaticWindow(captureBrowserWindow, theme);
+}
+
+function handleSystemThemeChanged() {
+  systemThemeCache.invalidate();
+  broadcastSystemTheme();
+}
+
+function defaultToolsDirectory() {
+  // 允许通过环境变量指定项目根目录，再由其派生出 tools 绝对路径：
+  // TOOLBOX_PROJECT_ROOT=<项目绝对路径> -> <项目根>\tools。
+  const projectRoot = String(
+    process.env.TOOLBOX_PROJECT_ROOT || "",
+  ).trim();
+  if (projectRoot) {
+    return path.join(path.normalize(projectRoot), "tools");
+  }
+  return app.isPackaged
+    ? path.join(path.dirname(app.getPath("exe")), "tools")
+    : path.resolve(__dirname, "..", "tools");
+}
+
+function settingsPath() {
+  return path.join(app.getPath("userData"), "desktop-settings.json");
+}
+
+function loadDesktopSettings() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(settingsPath(), "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+const desktopSettingsCache = createInvalidatableCache(loadDesktopSettings);
+
+function readDesktopSettings() {
+  return desktopSettingsCache.get();
+}
+
+function writeDesktopSettings(settings) {
+  const target = settingsPath();
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const temporary = `${target}.${crypto.randomUUID()}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(settings, null, 2), {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  if (fs.existsSync(target)) fs.unlinkSync(target);
+  fs.renameSync(temporary, target);
+  try {
+    fs.chmodSync(target, 0o600);
+  } catch {
+    /* Windows protects userData through the current user's ACL. */
+  }
+  desktopSettingsCache.replace(settings);
+  systemThemeCache.invalidate();
+}
+
+const DESKTOP_CREDENTIAL_SCHEMA_VERSION = 1;
+const DESKTOP_MITM_CA_FILENAME = "traffic-mitm-ca.p12";
+
+function assertSecureDesktopStorage() {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error("系统安全存储不可用，无法安全初始化桌面登录凭据");
+  }
+  if (
+    process.platform === "linux" &&
+    typeof safeStorage.getSelectedStorageBackend === "function" &&
+    safeStorage.getSelectedStorageBackend() === "basic_text"
+  ) {
+    throw new Error(
+      "系统密钥环不可用，Electron 只能使用明文存储后端，已拒绝初始化桌面登录凭据",
+    );
+  }
+}
+
+function generatedDesktopSecret(bytes = 48) {
+  return crypto.randomBytes(bytes).toString("base64url");
+}
+
+function validatedDesktopCredentials(value) {
+  const credential = value && typeof value === "object" ? value : {};
+  const validSecret = (secret, minimumLength) =>
+    typeof secret === "string" &&
+    secret.length >= minimumLength &&
+    secret.length <= 256 &&
+    /^[A-Za-z0-9_-]+$/.test(secret);
+  // The admin password may be the auto-generated secret OR a password the user later sets in
+  // Settings, so it is validated by length only. jwtSecret / mitmCaPassword remain strict random
+  // secrets (never user-editable), so bundle-corruption is still detected by them.
+  const validPassword = (secret) =>
+    typeof secret === "string" && secret.length >= 8 && secret.length <= 128;
+  if (
+    credential.schemaVersion !== DESKTOP_CREDENTIAL_SCHEMA_VERSION ||
+    credential.username !== "admin" ||
+    !validPassword(credential.adminPassword) ||
+    !validSecret(credential.jwtSecret, 43) ||
+    !validSecret(credential.mitmCaPassword, 40)
+  ) {
+    throw new Error(
+      "已保存的桌面安全凭据格式无效，请恢复 desktop-settings.json 的有效备份",
+    );
+  }
+  return Object.freeze({
+    schemaVersion: DESKTOP_CREDENTIAL_SCHEMA_VERSION,
+    username: "admin",
+    adminPassword: credential.adminPassword,
+    jwtSecret: credential.jwtSecret,
+    mitmCaPassword: credential.mitmCaPassword,
+  });
+}
+
+function desktopMitmCaPath() {
+  const dataDirectory = path.resolve(app.getPath("userData"), "data");
+  const candidate = path.resolve(dataDirectory, DESKTOP_MITM_CA_FILENAME);
+  if (
+    path.dirname(candidate) !== dataDirectory ||
+    path.basename(candidate) !== DESKTOP_MITM_CA_FILENAME
+  ) {
+    throw new Error("本地 HTTPS CA 路径未通过安全校验");
+  }
+  return candidate;
+}
+
+function desktopMitmMigrationPaths(migration) {
+  const source = desktopMitmCaPath();
+  const migrationId = String(migration?.id || "");
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      migrationId,
+    )
+  ) {
+    throw new Error("本地 HTTPS CA 迁移记录无效");
+  }
+  const backupName = `${DESKTOP_MITM_CA_FILENAME}.desktop-credential-${migrationId}.bak`;
+  const backup = path.resolve(path.dirname(source), backupName);
+  if (
+    path.dirname(backup) !== path.dirname(source) ||
+    path.basename(backup) !== backupName
+  ) {
+    throw new Error("本地 HTTPS CA 备份路径未通过安全校验");
+  }
+  return { source, backup };
+}
+
+function ensureDesktopCredentials() {
+  if (desktopCredentials) return desktopCredentials;
+  assertSecureDesktopStorage();
+  const settings = readDesktopSettings();
+  const security =
+    settings.desktopSecurity && typeof settings.desktopSecurity === "object"
+      ? settings.desktopSecurity
+      : {};
+  if (security.encryptedCredentialBundle) {
+    try {
+      const decrypted = safeStorage.decryptString(
+        Buffer.from(String(security.encryptedCredentialBundle), "base64"),
+      );
+      desktopCredentials = validatedDesktopCredentials(JSON.parse(decrypted));
+      return desktopCredentials;
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        throw new Error(
+          "已保存的桌面安全凭据无法解析，请恢复 desktop-settings.json 的有效备份",
+        );
+      }
+      if (
+        error instanceof Error &&
+        error.message.startsWith("已保存的桌面安全凭据")
+      )
+        throw error;
+      throw new Error("已保存的桌面安全凭据无法由当前 Windows 用户解密");
+    }
+  }
+
+  const credentials = validatedDesktopCredentials({
+    schemaVersion: DESKTOP_CREDENTIAL_SCHEMA_VERSION,
+    username: "admin",
+    adminPassword: generatedDesktopSecret(48),
+    jwtSecret: generatedDesktopSecret(64),
+    mitmCaPassword: generatedDesktopSecret(48),
+  });
+  const legacyCaExists = fs.existsSync(desktopMitmCaPath());
+  const encryptedCredentialBundle = safeStorage
+    .encryptString(JSON.stringify(credentials))
+    .toString("base64");
+  const nextSecurity = {
+    ...security,
+    schemaVersion: DESKTOP_CREDENTIAL_SCHEMA_VERSION,
+    encryptedCredentialBundle,
+    ...(legacyCaExists
+      ? { mitmCaMigration: { id: crypto.randomUUID(), state: "pending" } }
+      : {}),
+  };
+  writeDesktopSettings({ ...settings, desktopSecurity: nextSecurity });
+  desktopCredentials = credentials;
+  return desktopCredentials;
+}
+
+// 本机登录状态。quickLogin = 账号密码 ↔ 本机凭据/Windows Hello 绑定：绑定后登录页才提供
+// 本机凭据 / Windows Hello 快捷登录；未绑定（含解除绑定后）这两种快捷登录一律不提供，避免
+// 无密码情况下被任意本机明文绕过。configured 表示账号是否已完成首次设置；它与绑定相互独立，
+// 用户解除绑定后 configured 保持为 true，从而能区分“全新未设置”与“显式解除绑定”。
+function desktopCredentialState() {
+  const settings = readDesktopSettings();
+  const security =
+    settings.desktopSecurity && typeof settings.desktopSecurity === "object"
+      ? settings.desktopSecurity
+      : {};
+  const bound = security.desktopLoginBinding === true;
+  // 兼容旧版本：旧数据只有 desktopLoginBinding，其搭配 true 即视为已配置。
+  const configured = security.desktopLoginConfigured === true || bound;
+  return { bound, configured };
+}
+
+function desktopCredentialBinding() {
+  const { bound, configured } = desktopCredentialState();
+  return { bound, configured };
+}
+
+// 是否允许发起本机安全凭据 / Windows Hello 快捷登录：全新未配置（首次进入）允许，绑定后允许，
+// 仅当“已配置却未绑定”（用户显式解除绑定）时阻止。
+function desktopQuickLoginAllowed() {
+  const { bound, configured } = desktopCredentialState();
+  const allowed = !configured || bound;
+  writeDesktopStartupDiagnostic("desktop-quick-login-gate", null, {
+    bound,
+    configured,
+    allowed,
+  });
+  return allowed;
+}
+
+function markDesktopCredentialBinding() {
+  const settings = readDesktopSettings();
+  const security =
+    settings.desktopSecurity && typeof settings.desktopSecurity === "object"
+      ? settings.desktopSecurity
+      : {};
+  // 无论是否已配置都要置 bound=true，否则解除绑定后再想绑定会被上面的 configured
+  // 判断误跳过，导致“绑定失败”。写一次即可，无需判重。
+  writeDesktopSettings({
+    ...settings,
+    desktopSecurity: {
+      ...security,
+      desktopLoginConfigured: true,
+      desktopLoginBinding: true,
+    },
+  });
+}
+
+function prepareDesktopMitmCaMigration() {
+  const settings = readDesktopSettings();
+  const migration = settings.desktopSecurity?.mitmCaMigration;
+  if (!migration || migration.state !== "pending") return undefined;
+  const paths = desktopMitmMigrationPaths(migration);
+  fs.mkdirSync(path.dirname(paths.source), { recursive: true });
+  if (!fs.existsSync(paths.backup) && fs.existsSync(paths.source)) {
+    fs.renameSync(paths.source, paths.backup);
+  }
+  return { ...paths, id: migration.id };
+}
+
+function completeDesktopMitmCaMigration(migration) {
+  if (!migration) return;
+  const paths = desktopMitmMigrationPaths(migration);
+  if (!fs.existsSync(paths.source))
+    throw new Error("本地 HTTPS CA 安全轮换未生成新的密钥库");
+  if (fs.existsSync(paths.backup)) fs.unlinkSync(paths.backup);
+  const settings = readDesktopSettings();
+  const security =
+    settings.desktopSecurity && typeof settings.desktopSecurity === "object"
+      ? { ...settings.desktopSecurity }
+      : {};
+  if (security.mitmCaMigration?.id === migration.id) {
+    delete security.mitmCaMigration;
+    writeDesktopSettings({ ...settings, desktopSecurity: security });
+  }
+}
+
+function rollbackDesktopMitmCaMigration(migration) {
+  if (!migration) return;
+  const paths = desktopMitmMigrationPaths(migration);
+  if (!fs.existsSync(paths.backup)) return;
+  if (fs.existsSync(paths.source)) fs.unlinkSync(paths.source);
+  fs.renameSync(paths.backup, paths.source);
+}
+
+const DEFAULT_AI_BASE_URL = "https://api.openai.com";
+const DEFAULT_AI_MODEL = "gpt-4.1-mini";
+const DEFAULT_AI_RETRIEVAL_BACKEND = "bm25";
+const DEFAULT_AI_EMBEDDING_MODEL = "text-embedding-3-small";
+const DEFAULT_AI_EMBEDDING_CONNECTION_MODE = "shared";
+
+function normalizeAiBaseUrl(value) {
+  const normalized = String(value || DEFAULT_AI_BASE_URL)
+    .trim()
+    .replace(/\/+$/, "");
+  if (normalized.length > 2048)
+    throw new UserFacingError("AI API 地址不能超过 2048 个字符");
+  let parsed;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw new UserFacingError("AI API 地址格式不正确");
+  }
+  if (
+    !["http:", "https:"].includes(parsed.protocol) ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new UserFacingError(
+      "AI API 地址必须是有效的 HTTP 或 HTTPS 地址，且不能包含账号密码、查询参数或锚点",
+    );
+  }
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (
+    parsed.protocol === "http:" &&
+    !["localhost", "127.0.0.1", "::1"].includes(hostname)
+  ) {
+    throw new UserFacingError(
+      "远程 AI API 必须使用 HTTPS；HTTP 仅允许本机地址",
+    );
+  }
+  let pathname = parsed.pathname.replace(/\/+$/, "");
+  pathname = pathname
+    .replace(/\/v1\/chat\/completions$/i, "")
+    .replace(/\/v1$/i, "");
+  parsed.pathname = pathname || "/";
+  return parsed.toString().replace(/\/+$/, "");
+}
+
+function normalizeAiModel(value) {
+  const model = String(value || DEFAULT_AI_MODEL).trim();
+  if (!model || model.length > 120)
+    throw new UserFacingError("模型名称不能为空且不能超过 120 个字符");
+  return model;
+}
+
+function normalizeAiRetrievalBackend(value) {
+  const backend = String(value || DEFAULT_AI_RETRIEVAL_BACKEND)
+    .trim()
+    .toLowerCase();
+  if (!["bm25", "real_embedding"].includes(backend)) {
+    throw new UserFacingError("检索后端只能是 BM25 或真实向量嵌入");
+  }
+  return backend;
+}
+
+function normalizeAiEmbeddingModel(value) {
+  const model = String(value || DEFAULT_AI_EMBEDDING_MODEL).trim();
+  if (!model || model.length > 120) {
+    throw new UserFacingError("Embedding 模型名称不能为空且不能超过 120 个字符");
+  }
+  return model;
+}
+
+function normalizeAiEmbeddingBaseUrl(value, fallback) {
+  return normalizeAiBaseUrl(value || fallback || DEFAULT_AI_BASE_URL);
+}
+
+function normalizeAiEmbeddingConnectionMode(value) {
+  const mode = String(value || DEFAULT_AI_EMBEDDING_CONNECTION_MODE)
+    .trim()
+    .toLowerCase();
+  if (!["shared", "custom"].includes(mode)) {
+    throw new UserFacingError("向量模型连接方式只能是复用对话连接或单独配置");
+  }
+  return mode;
+}
+
+function decryptStoredApiKey(settings = readDesktopSettings()) {
+  const encrypted = settings.ai?.encryptedApiKey;
+  if (!encrypted) return "";
+  if (!safeStorage.isEncryptionAvailable())
+    throw new UserFacingError("当前系统无法解密已保存的 API Key");
+  try {
+    return safeStorage.decryptString(Buffer.from(encrypted, "base64"));
+  } catch {
+    throw new UserFacingError("已保存的 API Key 无法解密，请清除后重新填写");
+  }
+}
+
+let aiRelay;
+let aiRelayConnection;
+const relaySecrets = {
+  encrypt(value) {
+    assertSecureDesktopStorage();
+    return safeStorage.encryptString(value).toString("base64");
+  },
+  decrypt(value) {
+    assertSecureDesktopStorage();
+    try { return safeStorage.decryptString(Buffer.from(value, "base64")); }
+    catch { throw new UserFacingError("中转线路密钥无法解密，请重新填写。"); }
+  },
+};
+
+async function synchronizeAiRelay() {
+  const stored = readDesktopSettings().aiRelay;
+  if (!stored?.enabled) {
+    await aiRelay?.close();
+    aiRelay = undefined;
+    aiRelayConnection = undefined;
+    return;
+  }
+  const providers = resolveRelayProviders(stored, relaySecrets);
+  if (!aiRelay) aiRelay = createAiRelay({ providers });
+  else aiRelay.setProviders(providers);
+  aiRelayConnection = await aiRelay.start();
+}
+
+function validatedRelaySettings(payload, previous) {
+  try { return normalizeRelaySettings(payload, previous, relaySecrets); }
+  catch (error) { throw new UserFacingError(error.message || "中转线路设置无效。"); }
+}
+
+function effectiveAiSettings() {
+  const settings = resolvedAiSettings();
+  if (!readDesktopSettings().aiRelay?.enabled) return settings;
+  if (!aiRelayConnection) throw new UserFacingError("内置中转站尚未就绪。");
+  return {
+    ...settings,
+    baseUrl: aiRelayConnection.baseUrl.replace(/\/v1\/?$/, ""),
+    apiKey: aiRelayConnection.apiKey,
+    model: "xiezhi-relay",
+    proxyMode: false,
+    enabled: true,
+    apiMode: "chat_completions",
+  };
+}
+
+function resolvedAiSettings(settings = readDesktopSettings()) {
+  const stored =
+    settings.ai && typeof settings.ai === "object" ? settings.ai : undefined;
+  const storedApiKey = stored?.apiKeyCleared
+    ? ""
+    : stored?.encryptedApiKey
+      ? decryptStoredApiKey(settings)
+      : String(process.env.AI_API_KEY || "");
+  const environmentEnabled =
+    String(process.env.AI_ENABLED || "").toLowerCase() === "true";
+  const proxyMode = stored
+    ? Boolean(stored.proxyMode)
+    : environmentEnabled && !storedApiKey;
+  // The local CCS/OpenAI-compatible proxy is intentionally passwordless from
+  // this app's perspective. Keep the encrypted direct-provider key at rest so
+  // it can be restored when proxy mode is disabled, but never send it locally.
+  const apiKey = proxyMode ? "" : storedApiKey;
+  const environmentEmbeddingConfigured = Boolean(
+    process.env.AI_RUNTIME_EMBEDDING_BASE_URL ||
+      process.env.AI_RUNTIME_EMBEDDING_API_KEY,
+  );
+  const embeddingConnectionMode = normalizeAiEmbeddingConnectionMode(
+    stored?.embeddingConnectionMode ||
+      (environmentEmbeddingConfigured ? "custom" : "shared"),
+  );
+  const customEmbeddingApiKey = stored?.embeddingApiKeyCleared
+    ? ""
+    : stored?.encryptedEmbeddingApiKey
+      ? decryptStoredEmbeddingApiKey(settings)
+      : String(process.env.AI_RUNTIME_EMBEDDING_API_KEY || "");
+  const baseUrl = normalizeAiBaseUrl(
+    stored?.baseUrl || process.env.AI_BASE_URL || DEFAULT_AI_BASE_URL,
+  );
+  const embeddingBaseUrl = normalizeAiEmbeddingBaseUrl(
+    stored?.embeddingBaseUrl || process.env.AI_RUNTIME_EMBEDDING_BASE_URL,
+    baseUrl,
+  );
+  return {
+    baseUrl,
+    model: normalizeAiModel(
+      stored?.model || process.env.AI_MODEL || DEFAULT_AI_MODEL,
+    ),
+    retrievalBackend: normalizeAiRetrievalBackend(
+      stored?.retrievalBackend ||
+        process.env.AI_RUNTIME_RETRIEVAL_BACKEND ||
+        DEFAULT_AI_RETRIEVAL_BACKEND,
+    ),
+    embeddingModel: normalizeAiEmbeddingModel(
+      stored?.embeddingModel ||
+        process.env.AI_RUNTIME_EMBEDDING_MODEL ||
+        DEFAULT_AI_EMBEDDING_MODEL,
+    ),
+    embeddingConnectionMode,
+    embeddingBaseUrl,
+    customEmbeddingApiKey,
+    effectiveEmbeddingBaseUrl:
+      embeddingConnectionMode === "shared" ? baseUrl : embeddingBaseUrl,
+    effectiveEmbeddingApiKey:
+      embeddingConnectionMode === "shared" ? apiKey : customEmbeddingApiKey,
+    storedApiKey,
+    apiKey,
+    proxyMode,
+    enabled: Boolean(apiKey || proxyMode || environmentEnabled),
+    apiMode: proxyMode ? "responses" : "chat_completions",
+  };
+}
+
+function publicAiSettings(settings = readDesktopSettings()) {
+  const resolved = resolvedAiSettings(settings);
+  return {
+    baseUrl: resolved.baseUrl,
+    model: resolved.model,
+    retrievalBackend: resolved.retrievalBackend,
+    embeddingModel: resolved.embeddingModel,
+    embeddingConnectionMode: resolved.embeddingConnectionMode,
+    embeddingBaseUrl: resolved.embeddingBaseUrl,
+    hasEmbeddingApiKey: Boolean(resolved.customEmbeddingApiKey),
+    embeddingKeyHint: resolved.customEmbeddingApiKey
+      ? `末尾 ${resolved.customEmbeddingApiKey.slice(-4)}`
+      : "",
+    hasApiKey: Boolean(resolved.apiKey),
+    keyHint: resolved.apiKey ? `末尾 ${resolved.apiKey.slice(-4)}` : "",
+    proxyMode: resolved.proxyMode,
+    apiMode: resolved.apiMode,
+    provider: resolved.enabled ? "openai-compatible" : "local-rule-fallback",
+    encryptionAvailable: safeStorage.isEncryptionAvailable(),
+  };
+}
+
+function updatedAiSettings(
+  previousSettings,
+  payload,
+  { clearApiKey = false, clearEmbeddingApiKey = false } = {},
+) {
+  const existing =
+    previousSettings.ai && typeof previousSettings.ai === "object"
+      ? previousSettings.ai
+      : {};
+  const previousResolved = resolvedAiSettings(previousSettings);
+  const baseUrl = normalizeAiBaseUrl(payload?.baseUrl);
+  const apiKey = String(payload?.apiKey || "").trim();
+  const embeddingApiKey = String(payload?.embeddingApiKey || "").trim();
+  const proxyMode = Boolean(payload?.proxyMode);
+  const embeddingConnectionMode = normalizeAiEmbeddingConnectionMode(
+    payload?.embeddingConnectionMode,
+  );
+  if (previousSettings.aiRelay?.enabled && normalizeAiRetrievalBackend(payload?.retrievalBackend) === "real_embedding" && embeddingConnectionMode === "shared") {
+    throw new UserFacingError("API 线路仅支持对话，请单独配置 Embedding 服务，或使用 BM25 关键词检索。");
+  }
+  const embeddingBaseUrl = normalizeAiEmbeddingBaseUrl(
+    payload?.embeddingBaseUrl,
+    baseUrl,
+  );
+  if (
+    !clearApiKey &&
+    !proxyMode &&
+    !apiKey &&
+    previousResolved.storedApiKey &&
+    baseUrl !== previousResolved.baseUrl
+  ) {
+    throw new UserFacingError(
+      "API 地址已变化，请重新填写与新服务对应的 API Key",
+    );
+  }
+  if (
+    !clearEmbeddingApiKey &&
+    embeddingConnectionMode === "custom" &&
+    !embeddingApiKey &&
+    previousResolved.customEmbeddingApiKey &&
+    embeddingBaseUrl !== previousResolved.embeddingBaseUrl
+  ) {
+    throw new UserFacingError(
+      "向量 API 地址已变化，请重新填写与新服务对应的向量 API Key",
+    );
+  }
+  const nextAi = {
+    ...existing,
+    baseUrl,
+    model: normalizeAiModel(payload?.model),
+    retrievalBackend: normalizeAiRetrievalBackend(payload?.retrievalBackend),
+    embeddingModel: normalizeAiEmbeddingModel(payload?.embeddingModel),
+    embeddingConnectionMode,
+    embeddingBaseUrl,
+    proxyMode,
+  };
+  if (clearApiKey) {
+    delete nextAi.encryptedApiKey;
+    nextAi.apiKeyCleared = true;
+  } else if (apiKey) {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new UserFacingError("系统安全存储不可用，无法安全保存 API Key");
+    }
+    nextAi.encryptedApiKey = safeStorage
+      .encryptString(apiKey)
+      .toString("base64");
+    delete nextAi.apiKeyCleared;
+  } else if (
+    proxyMode &&
+    previousResolved.storedApiKey &&
+    baseUrl !== previousResolved.baseUrl
+  ) {
+    delete nextAi.encryptedApiKey;
+    nextAi.apiKeyCleared = true;
+  }
+  if (clearEmbeddingApiKey) {
+    delete nextAi.encryptedEmbeddingApiKey;
+    nextAi.embeddingApiKeyCleared = true;
+  } else if (embeddingApiKey) {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new UserFacingError("系统安全存储不可用，无法安全保存向量 API Key");
+    }
+    nextAi.encryptedEmbeddingApiKey = safeStorage
+      .encryptString(embeddingApiKey)
+      .toString("base64");
+    delete nextAi.embeddingApiKeyCleared;
+  }
+  return { ...previousSettings, ai: nextAi };
+}
+
+function normalizeIcpApiUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw.length > 2048)
+    throw new UserFacingError("ICP API 地址不能为空且不能超过 2048 个字符");
+  let parsed;
+  try {
+    parsed = new URL(raw.replaceAll("{domain}", "example.com"));
+  } catch {
+    throw new UserFacingError("ICP API 地址格式不正确");
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    !parsed.hostname ||
+    parsed.username ||
+    parsed.password ||
+    parsed.hash
+  ) {
+    throw new UserFacingError(
+      "ICP API 必须是有效的 HTTPS 地址，且不能包含账号密码或锚点",
+    );
+  }
+  return raw;
+}
+
+function decryptStoredIcpApiUrl(settings = readDesktopSettings()) {
+  const encrypted = settings.recon?.encryptedIcpApiUrl;
+  if (!encrypted) return "";
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new UserFacingError("当前系统无法解密已保存的 ICP API 地址");
+  }
+  try {
+    return safeStorage.decryptString(Buffer.from(encrypted, "base64"));
+  } catch {
+    throw new UserFacingError(
+      "已保存的 ICP API 地址无法解密，请清除后重新填写",
+    );
+  }
+}
+
+function resolvedIcpSettings(settings = readDesktopSettings()) {
+  const stored =
+    settings.recon && typeof settings.recon === "object"
+      ? settings.recon
+      : undefined;
+  const configured = stored?.icpApiUrlCleared
+    ? ""
+    : stored?.encryptedIcpApiUrl
+      ? decryptStoredIcpApiUrl(settings)
+      : String(process.env.ICP_API_URL || "").trim();
+  return {
+    apiUrl: configured ? normalizeIcpApiUrl(configured) : "",
+    source: stored?.encryptedIcpApiUrl
+      ? "desktop"
+      : configured
+        ? "environment"
+        : "none",
+  };
+}
+
+function publicIcpSettings(settings = readDesktopSettings()) {
+  const resolved = resolvedIcpSettings(settings);
+  let endpointHint = "";
+  if (resolved.apiUrl) {
+    const parsed = new URL(
+      resolved.apiUrl.replaceAll("{domain}", "example.com"),
+    );
+    endpointHint = `${parsed.hostname}${parsed.pathname === "/" ? "" : parsed.pathname}${parsed.search ? "?••••" : ""}`;
+  }
+  return {
+    configured: Boolean(resolved.apiUrl),
+    endpointHint,
+    source: resolved.source,
+    encryptionAvailable: safeStorage.isEncryptionAvailable(),
+  };
+}
+
+function updatedIcpSettings(previousSettings, payload, clear = false) {
+  const existing =
+    previousSettings.recon && typeof previousSettings.recon === "object"
+      ? previousSettings.recon
+      : {};
+  const nextRecon = { ...existing };
+  if (clear) {
+    delete nextRecon.encryptedIcpApiUrl;
+    nextRecon.icpApiUrlCleared = true;
+  } else {
+    const apiUrl = normalizeIcpApiUrl(payload?.apiUrl);
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new UserFacingError(
+        "系统安全存储不可用，无法安全保存 ICP API 地址",
+      );
+    }
+    nextRecon.encryptedIcpApiUrl = safeStorage
+      .encryptString(apiUrl)
+      .toString("base64");
+    delete nextRecon.icpApiUrlCleared;
+  }
+  return { ...previousSettings, recon: nextRecon };
+}
+
+function serializeAiSettingsOperation(operation) {
+  const next = aiSettingsOperation.catch(() => {}).then(operation);
+  aiSettingsOperation = next;
+  return next;
+}
+
+async function discoverAiModels(provider) {
+  try { return await listProviderModels(provider); }
+  catch (error) {
+    const code = error?.message;
+    const messages = {
+      timeout: "获取模型列表超时，请稍后重试。",
+      connection_failed: "无法连接 API，请检查地址和网络。",
+      invalid_endpoint: "API 地址无效；非本机地址必须使用 HTTPS。",
+      http_401: "API 身份验证失败，请检查密钥。",
+      http_403: "API 拒绝访问模型列表，请检查密钥权限。",
+      http_404: "此 API 不提供模型列表，请手动填写模型名称。",
+      http_405: "此 API 不支持获取模型列表，请手动填写模型名称。",
+      http_429: "API 请求过多或额度不足，请稍后重试。",
+    };
+    throw new UserFacingError(messages[code] || "无法获取有效模型列表，请检查接口或手动填写模型名称。");
+  }
+}
+
+async function testAiConnection(payload, prompt) {
+  const existing = resolvedAiSettings();
+  const baseUrl = normalizeAiBaseUrl(payload?.baseUrl);
+  const model = normalizeAiModel(payload?.model);
+  const submittedApiKey = String(payload?.apiKey || "").trim();
+  const proxyMode = Boolean(payload?.proxyMode);
+  const apiKey = submittedApiKey || (baseUrl === existing.baseUrl ? existing.apiKey : "");
+  if (!apiKey && !proxyMode) throw new UserFacingError("请填写当前 API 对应的密钥。");
+  const tester = createAiRelay({ providers: [], attemptTimeoutMs: proxyMode ? 90000 : 20000 });
+  try {
+    const result = await tester.testProvider({ id: "legacy-test", name: "现有连接", baseUrl: `${baseUrl}/v1`,
+      model, apiKey, apiMode: proxyMode ? "responses" : "chat_completions", codexHeaders: proxyMode }, prompt);
+    if (!result.ok) {
+      const messages = { invalid_responses_request: "上游不接受当前 Codex 请求格式。", upstream_overloaded: "上游模型负载已达上限，请稍后重试或更换 API 线路。", upstream_unavailable: "上游没有可用的模型通道。", model_not_found: "此 API 不支持所选模型。", invalid_test_prompt: "测试内容不能为空，且最多 4000 字。", timeout: "连接测试超时，请稍后重试。",
+        upstream_incomplete: "模型回答未完整结束，请缩短问题后重试。", empty_answer: "API 未返回有效回答。" };
+      throw new UserFacingError(messages[result.reason || result.message] || (/^http_\d{3}$/.test(result.message)
+        ? `API 请求失败（HTTP ${result.message.slice(5)}）` : "连接测试失败，请检查 API 配置。"));
+    }
+    return { ...result, model, message: "连接成功" };
+  } finally { await tester.close(); }
+}
+
+// 判断目标是否为目录链接（junction / symbolic link）。
+function isDirectoryLink(target) {
+  try {
+    const stat = fs.lstatSync(target);
+    return stat.isSymbolicLink() || stat.isJunction();
+  } catch {
+    return false;
+  }
+}
+
+// Metasploit 内置的 FastUnzip（7z）解压时对含空格/中文等非 ASCII 路径不稳定，
+// 官方默认装在 C:\metasploit-framework。另外它的 Ruby 工具链在启动时会遍历深层
+// gem 目录；若目录前缀过长会触发 Windows “Errno::ENAMETOOLONG”（路径过长）导致
+// msfconsole 无法启动。因此判定“能否直接装进 tools”需同时满足：
+//  1) Windows 盘符绝对路径；2) 无空格、无非 ASCII 字符；3) 前缀长度加上工具包深层
+//  后缀（预估约 150 字符）后仍在 MAX_PATH（260）以内，否则回退到短根 + junction。
+function isMsfSafeInstallPath(target) {
+  if (!target || typeof target !== "string") return false;
+  if (!/^[a-zA-Z]:\\/.test(target)) return false; // 要求 Windows 盘符绝对路径
+  const nonAscii = /[^\x00-\x7f]/; // 中文/日文等非 ASCII
+  const hasSpace = /\s/;
+  if (nonAscii.test(target) || hasSpace.test(target)) return false;
+  // 保留约 150 字符给 tools 内深层 gem 目录；长度过长会触发 ENAMETOOLONG。
+  return target.length <= 110;
+}
+
+// 无空格真实根：默认在 D 盘根（例如 D:\stbtools），供 MSF 无法直接装进 tools
+// 时作为兜底的安装根，再在 tools 下建 junction 指回它。
+function msfRealRoot() {
+  const toolsDir = resolveToolsDirectory();
+  const drive = path.parse(toolsDir).root || path.parse(process.cwd()).root;
+  const configured = String(process.env.MSF_INSTALL_ROOT || "").trim();
+  if (configured && path.isAbsolute(configured)) {
+    return path.normalize(configured);
+  }
+  return path.join(drive, "stbtools");
+}
+
+// 兜底真实安装目录（含 metasploit-framework）。
+function msfRealInstallDir() {
+  return path.join(msfRealRoot(), "metasploit-framework");
+}
+
+// msfconsole.bat 实际所在目录。安装目录下可能有内层同名目录。
+function msfRealFrameworkDir() {
+  const realRoot = msfRealInstallDir();
+  const nested = path.join(realRoot, "metasploit-framework");
+  if (
+    fs.existsSync(path.join(nested, "bin", "msfconsole.bat")) ||
+    fs.existsSync(path.join(nested, "bin"))
+  ) {
+    return nested;
+  }
+  return realRoot;
+}
+
+function isRealMsfInstalled() {
+  return fs.existsSync(
+    path.join(msfRealFrameworkDir(), "bin", "msfconsole.bat"),
+  );
+}
+
+// 若真实目录已装好但 tools 下没有指向它的链接，则补建目录链接。
+function ensureMsfJunction(toolsDir) {
+  const link = path.join(toolsDir, "metasploit-framework");
+  if (isDirectoryLink(link)) return link;
+  if (!isRealMsfInstalled()) return false;
+  fs.mkdirSync(path.dirname(link), { recursive: true });
+  const real = msfRealFrameworkDir();
+  const output = spawnSync(
+    "cmd.exe",
+    ["/c", "mklink", "/J", link, real],
+    { windowsHide: true, encoding: "utf8" },
+  );
+  if (output.status !== 0 || !isDirectoryLink(link)) {
+    throw new UserFacingError(
+      `无法为 Metasploit 建立工具目录链接：${String(output.stderr || output.stdout || "").trim()}`,
+    );
+  }
+  return true;
+}
+
+function removeMsfJunction() {
+  const toolsDir = resolveToolsDirectory();
+  const link = path.join(toolsDir, "metasploit-framework");
+  if (isDirectoryLink(link)) {
+    try {
+      fs.unlinkSync(link);
+    } catch {
+      try {
+        spawnSync("cmd.exe", ["/c", "rd", link], {
+          windowsHide: true,
+          encoding: "utf8",
+        });
+      } catch {}
+    }
+  }
+}
+
+function resolveToolsDirectory() {
+  const configured = readDesktopSettings().toolsDirectory;
+  return typeof configured === "string" && path.isAbsolute(configured)
+    ? path.normalize(configured)
+    : defaultToolsDirectory();
+}
+
+function resolvePortableNmapPath(toolsDir) {
+  const executableName = process.platform === "win32" ? "nmap.exe" : "nmap";
+  const candidate = path.join(toolsDir, "nmap", executableName);
+  try {
+    return fs.statSync(candidate).isFile() ? candidate : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// 工具目录内已安装 MetasploitFramework 时，返回 msfconsole.bat 的完整路径，
+// 供后端 MSF_PATH 检测使用；否则回落到系统 PATH 中同名的 msfconsole。
+function msfBackendPath(toolsDir) {
+  const msfDefinition = INSTALLABLE_PACKAGES.msf;
+  // 自愈：兜底模式下真实目录若已装好但 tools 下链接丢失，先补建，保证后端
+  // 启动阶段能从 <tools>\metasploit-framework\bin 取到可执行路径。
+  try {
+    ensureMsfJunction(toolsDir);
+  } catch {}
+  if (msfDefinition && isMsfInstallPresent(msfDefinition, toolsDir)) {
+    return msfInstallPaths(msfDefinition, toolsDir).executable;
+  }
+  return "msfconsole";
+}
+
+// 返回工具目录内已安装的 ZAP 启动脚本路径，供后端 ZAP_PATH 检测使用；
+// 找不到使用时回落到系统 PATH 中同名的 zap。
+function zapBackendPath(toolsDir) {
+  const zapDefinition = INSTALLABLE_PACKAGES.zap;
+  if (zapDefinition) {
+    const launcher = findExecutableInTree(
+      path.join(toolsDir, zapDefinition.id),
+      zapDefinition.executableSearchNames || [zapDefinition.executable],
+    );
+    if (launcher) return launcher;
+  }
+  return "zap";
+}
+
+// 返回工具目录内已安装的 sqlmap 启动器路径，供后端 SQLMAP_PATH 检测使用；
+// 找不到时回落到系统 PATH 中同名的 sqlmap.bat。
+function sqlmapBackendPath(toolsDir) {
+  const definition = INSTALLABLE_PACKAGES.sqlmap;
+  if (definition) {
+    const launcher = findExecutableInTree(
+      path.join(toolsDir, definition.id),
+      definition.executableSearchNames || [definition.executable],
+    );
+    if (launcher) return launcher;
+  }
+  return "sqlmap.bat";
+}
+
+function ensureWritableDirectory(directory) {
+  fs.mkdirSync(directory, { recursive: true });
+  const probe = path.join(
+    directory,
+    `.security-toolbox-write-test-${crypto.randomUUID()}`,
+  );
+  fs.writeFileSync(probe, "ok", { flag: "wx" });
+  fs.unlinkSync(probe);
+}
+
+const INSTALLABLE_PACKAGES = Object.freeze({
+  nuclei: Object.freeze({
+    id: "nuclei",
+    optional: true,
+    repository: "projectdiscovery/nuclei",
+    executable: "nuclei.exe",
+    assetName: (version) => `nuclei_${version}_windows_amd64.zip`,
+    checksumName: (version) => `nuclei_${version}_checksums.txt`,
+  }),
+  httpx: Object.freeze({
+    id: "httpx",
+    optional: true,
+    repository: "projectdiscovery/httpx",
+    executable: "httpx.exe",
+    assetName: (version) => `httpx_${version}_windows_amd64.zip`,
+    checksumName: (version) => `httpx_${version}_checksums.txt`,
+  }),
+  xray: Object.freeze({
+    id: "xray",
+    optional: true,
+    repository: "chaitin/xray",
+    executable: "xray_windows_amd64.exe",
+    assetName: () => "xray_windows_amd64.exe.zip",
+    checksumName: () => "sha256.txt",
+    // chaitin/xray's GitHub "latest" release currently points to xpoc,
+    // so select the newest stable semantic-version release that actually
+    // contains the exact Xray Windows x64 asset.
+    releaseMode: "latest-semver-match",
+  }),
+  afrog: Object.freeze({
+    id: "afrog",
+    optional: true,
+    repository: "zan8in/afrog",
+    executable: "afrog.exe",
+    assetName: (version) => `afrog_${version}_windows_amd64.zip`,
+    checksumName: (version) => `afrog_${version}_checksums.txt`,
+  }),
+  fscan: Object.freeze({
+    id: "fscan",
+    optional: true,
+    repository: "shadow1ng/fscan",
+    executable: "fscan.exe",
+    // fscan 官方发布的是不带压缩雪花的裸 PE 可执行文件，而不是 zip 归档。
+    // 因此安装流程走“原始二进制直落”路径（format: "raw"）。
+    format: "raw",
+    assetName: (version) => `fscan_${version}_windows_x64.exe`,
+    checksumName: () => "checksums.txt",
+    releaseMode: "latest-semver-match",
+  }),
+  sqlmap: Object.freeze({
+    id: "sqlmap",
+    optional: true,
+    // sqlmap 是 Python 工具，官方以源码树分发（python sqlmap.py 开箱即用），
+    // 没有带校验文件的 GitHub release 二进制资产。因此以“源码树便携安装”接入：
+    // 从官方仓库解析最新稳定 tag，用 tag↔提交记录绑定来源，拉取该 tag 的源码 zip，
+    // 解压为 <tools>/sqlmap 便携树，并在根目录生成以随包 Python 驱动的 sqlmap.bat 启动器。
+    githubSourceArchive: true,
+    portableTree: true,
+    repository: "sqlmapproject/sqlmap",
+    executable: "sqlmap.bat",
+    executableSearchNames: ["sqlmap.bat"],
+    entrypointName: "sqlmap.py",
+    // 完整源码树约 2.5 万文件、数十 MB；配合依赖检测里的 Python 运行时运行。
+    maxArchiveBytes: 96 * 1024 * 1024,
+    maxExtractedBytes: 600 * 1024 * 1024,
+    maxFiles: 40000,
+  }),
+  msf: Object.freeze({
+    id: "msf",
+    optional: true,
+    installer: "msi",
+    // MetasploitFramework 是 per-machine 的 omnibus MSI，但用户要求装到 tools
+    // 目录。用绝对路径 INSTALLLOCATION="<tools>\metasploit-framework" 静默安装，
+    // 安装后由 bin/msfconsole.bat 驱动。
+    installerUrl:
+      "https://windows.metasploit.com/metasploitframework-latest.msi",
+    executable: "msfconsole.bat",
+    installRelativeDir: "metasploit-framework",
+    binRelativeDir: "bin",
+  }),
+  zap: Object.freeze({
+    id: "zap",
+    optional: true,
+    // 便携安装：整个目录从 GitHub release 的 windows zip 解压，不是单文件。
+    portableTree: true,
+    repository: "zaproxy/zaproxy",
+    executable: "zap.bat",
+    // 相对解压后根目录的启动脚本路径（解压出的顶层目录名可变，运行时探测）。
+    executableSearchNames: ["zap.bat", "zap.sh"],
+    // GitHub release 里的跨平台 zip（含 Windows 启动脚本 zap.bat / Linux zap.sh）。
+    // ZAP 2.x 的 Windows 资产是 .exe 安装器（无 zip），且较新版本不再发布独立 windows.zip，
+    // 因此统一使用 ZAP_<版本>_Crossplatform.zip，可在各平台解压直接运行。
+    assetName: (version) => {
+      const short = version.replace(/^[v]/, "");
+      return `ZAP_${short}_Crossplatform.zip`;
+    },
+    checksumName: () => "",
+    releaseMode: "latest-semver-match",
+    maxArchiveBytes: 900 * 1024 * 1024,
+    maxExtractedBytes: 3 * 1024 * 1024 * 1024,
+  }),
+  postgres: Object.freeze({
+    id: "postgres",
+    optional: true,
+    // 便携安装：PostgreSQL 官方 Windows 压缩包（EDB binaries zip）解压即可用，
+    // 无需管理员权限与系统服务注册。压缩包根部是 <pgsql> 目录（含 bin/lib/share 等），
+    // psql 位于 <target>/<pgsql>/bin/psql.exe，解压后放在 <tools>/postgresql 下。
+    portableTree: true,
+    repository: "postgresql-windows-binaries",
+    executable: "psql.exe",
+    // 固定主版本（“主最新稳定版”）。EDB 的 binaries 下载地址没有可靠的“最新”REST API，
+    // 因此这里固化主版本号，改版时人工升级。压缩包 URL 遵循官方 pattern：
+    //   https://get.enterprisedb.com/postgresql/postgresql-<X.Y.Z>-1-windows-x64-binaries.zip
+    version: "18.6",
+    pinnedUrl:
+      "https://get.enterprisedb.com/postgresql/postgresql-18.6-1-windows-x64-binaries.zip",
+    allowedHosts: ["get.enterprisedb.com"],
+    // 固定版本源的“最新版本”与已装版本一致；若两者相等即视为最新，简单可靠。
+    releaseMode: "pinned",
+    maxArchiveBytes: 900 * 1024 * 1024,
+    maxExtractedBytes: 3 * 1024 * 1024 * 1024,
+    maxFiles: 40000,
+  }),
+});
+
+// 官方 nightly 安装器最大大小约束（MSI 通常约 300–500MB），防止异常下载。
+const MSF_INSTALLER_MAX_BYTES = 1024 * 1024 * 1024;
+
+class GithubRateLimitError extends UserFacingError {}
+
+// GitHub's REST API rejects unauthenticated calls once the per-IP budget (60/hour) is spent —
+// on a shared campus/office NAT that happens fast and surfaces as HTTP 403. A personal access
+// token raises the budget to 5000/hour and is the real fix; we also always send the headers
+// GitHub documents as required.
+function githubTokenSettingsPath() {
+  return path.join(app.getPath("userData"), "github-token.json");
+}
+
+function isPlausibleGithubToken(token) {
+  return /^[A-Za-z0-9_.-]{20,255}$/.test(String(token || "").trim());
+}
+
+function resolveGithubToken() {
+  const envToken = String(
+    process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "",
+  ).trim();
+  if (isPlausibleGithubToken(envToken))
+    return { token: envToken, source: "env" };
+  try {
+    const saved = readJsonFile(githubTokenSettingsPath());
+    if (!saved || !saved.encryptedToken || !safeStorage.isEncryptionAvailable())
+      return { token: "", source: "none" };
+    const token = safeStorage
+      .decryptString(Buffer.from(String(saved.encryptedToken), "base64"))
+      .trim();
+    if (isPlausibleGithubToken(token)) return { token, source: "settings" };
+  } catch {}
+  return { token: "", source: "none" };
+}
+
+function publicGithubTokenSettings() {
+  const resolved = resolveGithubToken();
+  return {
+    configured: Boolean(resolved.token),
+    source: resolved.source,
+    encryptionAvailable: safeStorage.isEncryptionAvailable(),
+    hint: resolved.token
+      ? resolved.token.slice(0, 4) +
+        "…" +
+        resolved.token.slice(-4) +
+        (resolved.source === "env" ? "（环境变量）" : "（安全存储）")
+      : "",
+  };
+}
+
+function saveGithubTokenSettings(payload = {}) {
+  const clear = Boolean(payload.clear);
+  const token = String(payload.token || "").trim();
+  const target = githubTokenSettingsPath();
+  if (clear || !token) {
+    if (fs.existsSync(target)) fs.rmSync(target, { force: true });
+    return publicGithubTokenSettings();
+  }
+  if (!isPlausibleGithubToken(token))
+    throw new UserFacingError("GitHub Token 格式无效");
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new UserFacingError("系统安全存储不可用，无法保存 GitHub Token");
+  }
+  writeJsonFileAtomic(target, {
+    encryptedToken: safeStorage.encryptString(token).toString("base64"),
+    updatedAt: new Date().toISOString(),
+  });
+  return publicGithubTokenSettings();
+}
+
+function githubApiHeaders() {
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "Xiezhi-Security/0.2",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+  const resolved = resolveGithubToken();
+  if (resolved.token) headers.Authorization = "Bearer " + resolved.token;
+  return headers;
+}
+
+function githubApiError(response) {
+  if (response.status === 403 || response.status === 429) {
+    const remaining = response.headers.get("x-ratelimit-remaining");
+    const resetEpoch = Number(response.headers.get("x-ratelimit-reset") || 0);
+    if (response.status === 429 || remaining === "0") {
+      const when =
+        resetEpoch > 0
+          ? `，请于 ${new Date(resetEpoch * 1000).toLocaleTimeString()} 后重试`
+          : "";
+      return new GithubRateLimitError(
+        `GitHub API 访问频率超限（未登录时每小时仅 60 次，校园/公司共享出口 IP 很快用尽）${when}。` +
+          "请到「系统设置 → GitHub 访问令牌」配置 Personal Access Token，或设置环境变量 GITHUB_TOKEN/GH_TOKEN 后重试。应用会在 API 限流时自动尝试备用下载通道。",
+      );
+    }
+    return new GithubRateLimitError(
+      "GitHub API 拒绝了请求（HTTP 403），可能受访问频率或网络策略限制。",
+    );
+  }
+  return new UserFacingError(`查询最新版本失败：HTTP ${response.status}`);
+}
+
+const activeInstalls = new Map();
+const latestPackageCache = new Map();
+const DEPENDENCY_CONNECT_TIMEOUT_MS = 60000;
+const DEPENDENCY_IDLE_TIMEOUT_MS = 60000;
+
+// 可选的工具下载镜像。GitHub release CDN 在某些网络（尤其国内）连不上（ERR_CONNECTION_TIMED_OUT），
+// 通过环境变量 `TOOL_DOWNLOAD_MIRROR` 或「设置 → 下载源」把下载地址改写为镜像前缀，例如：
+//   TOOL_DOWNLOAD_MIRROR=https://cdn.npmmirror.com/binaries
+// 已保存的设置优先于环境变量（设置为空/未设置时回落到环境变量）。
+function resolveToolDownloadMirror() {
+  let raw = "";
+  let source = "env";
+  if (typeof readDesktopSettings === "function") {
+    const configured = readDesktopSettings().downloadMirror;
+    if (typeof configured === "string" && configured.trim() !== "") {
+      raw = configured.trim();
+      source = "settings";
+    }
+  }
+  if (raw === "") {
+    raw = String(process.env.TOOL_DOWNLOAD_MIRROR || "").trim();
+    if (raw !== "") source = "env";
+  }
+  if (!raw) return null;
+  let normalized = raw.replace(/\/+$/, "");
+  let parsed;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    return null;
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    !parsed.hostname ||
+    parsed.username ||
+    parsed.password
+  ) {
+    return null;
+  }
+  return { base: normalized, host: parsed.hostname.toLowerCase(), source };
+}
+
+// 保存到 desktop-settings.json 的「下载源」设置。
+function publicToolDownloadSettings(overrideSettings) {
+  const settings =
+    overrideSettings && typeof overrideSettings === "object"
+      ? overrideSettings
+      : readDesktopSettings();
+  const configured =
+    typeof settings.downloadMirror === "string"
+      ? settings.downloadMirror.trim()
+      : "";
+  return { configuredMirror: configured };
+}
+
+function updatedToolDownloadSettings(previousSettings, payload) {
+  const mirror =
+    payload && payload.downloadMirror && typeof payload.downloadMirror === "string"
+      ? payload.downloadMirror.trim()
+      : "";
+  if (mirror === "") return { ...previousSettings, downloadMirror: "" };
+  let parsed;
+  try {
+    parsed = new URL(mirror);
+  } catch {
+    throw new UserFacingError("镜像地址格式无效");
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    !parsed.hostname ||
+    parsed.username ||
+    parsed.password
+  ) {
+    throw new UserFacingError("镜像地址需为 https:// 开头的纯地址，且不能含用户名密码");
+  }
+  return { ...previousSettings, downloadMirror: mirror.replace(/\/+$/, "") };
+}
+
+// 把 GitHub 下载地址重写为镜像地址；未配置镜像则原样返回并给出原始 github 主机。
+// 镜像约定采用国内常见 GitHub 反向代理（ghproxy/ghfast 等）的"前缀 + 完整原 URL"：
+//   TOOL_DOWNLOAD_MIRROR=https://gh-proxy.example  =>  https://gh-proxy.example/https://github.com/...
+function mirroredDownloadTarget(url, mirror) {
+  const originalHost = "github.com";
+  if (!mirror) return { url, host: originalHost };
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { url, host: originalHost };
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.hostname.toLowerCase() !== originalHost
+  ) {
+    return { url, host: originalHost };
+  }
+  // base + 完整原 URL（含 origin），Query/Hash 一并保留。
+  const mirrored = `${mirror.base}/${url}`;
+  return { url: mirrored, host: mirror.host };
+}
+
+async function openDependencyResource(
+  url,
+  options = {},
+  timeoutMs = DEPENDENCY_CONNECT_TIMEOUT_MS,
+) {
+  const externalSignal = options.signal;
+  const controller = new AbortController();
+  let timeoutMessage = "";
+  let timeout;
+  const relayAbort = () => controller.abort();
+  if (externalSignal?.aborted) controller.abort();
+  else externalSignal?.addEventListener("abort", relayAbort, { once: true });
+  const armTimeout = (message, delay = timeoutMs) => {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => {
+      timeoutMessage = message;
+      controller.abort();
+    }, delay);
+  };
+  const dispose = () => {
+    clearTimeout(timeout);
+    externalSignal?.removeEventListener("abort", relayAbort);
+  };
+  armTimeout(`连接下载源超时（${Math.round(timeoutMs / 1000)} 秒）`);
+  try {
+    const response = await electronNet.fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    return {
+      response,
+      armTimeout,
+      dispose,
+      timeoutError: () => timeoutMessage,
+    };
+  } catch (error) {
+    dispose();
+    if (timeoutMessage) throw new UserFacingError(timeoutMessage);
+    throw error;
+  }
+}
+
+// 不稳定的网络 / 被墙的边缘节点上，TLS 握手经常会在“连接超时”边界附近偶发失败。
+// 这类连接级错误（网络 IO / 连接重置 / DNS / 握手）重试一次往往就能连上（换一条链路或 CDN 节点），
+// 所以对“建立连接”这一个动作做有限次重试，避免 30→60 秒的连接超时被一次抖动浪费。
+function isConnectionLevelError(error) {
+  if (error instanceof UserFacingError) return false;
+  const code = String(error?.code || error?.cause?.code || "");
+  const name = String(error?.name || error?.cause?.name || "");
+  const message = `${error?.message || ""} ${error?.cause?.message || ""} ${name}`;
+  return (
+    /timeout|timed ?out|connect|handshake|ssl|tls|certificate|socket|reset|aborted|closed|refused|unreachable/iu.test(
+      message,
+    ) ||
+    /net::err_|ECONNRESET|ETIMEDOUT|ENOTFOUND|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|EAI_AGAIN|EPROTO|ERR_SSL|UNABLE_TO_VERIFY|EADDRNOTAVAIL/i.test(
+      code,
+    )
+  );
+}
+
+// 上游网关/代理/CND 节点偶发返回的“临时性” HTTP 状态码。
+// 这类 502/503/504 往往是某个边缘节点瞬时过载或抖动，换一条链路重试通常即可成功，
+// 因此把它也纳入有限次自动重试，避免一场偶发的网关错误直接中断整个依赖下载流程。
+function isTransientHttpStatus(response) {
+  const status = response?.status;
+  return status === 502 || status === 503 || status === 504;
+}
+
+async function openDependencyResourceRetry(url, options = {}) {
+  const attempts = Number(options.connectAttempts || 3);
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    // 用户取消/暂停时，外部的 signal 已中止，继续重试没有意义。
+    if (options.signal?.aborted) {
+      throw new UserFacingError(
+        options.signal?.reason?.message ||
+          (String(options.signal?.reason) === "cancel" ? "依赖下载已取消" : "依赖下载已暂停"),
+      );
+    }
+    try {
+      // 首次失败后，把连接超时放宽到最长，给慢/抖动链路更多握手时间。
+      const timeoutMs =
+        attempt > 1
+          ? 2 * DEPENDENCY_CONNECT_TIMEOUT_MS
+          : DEPENDENCY_CONNECT_TIMEOUT_MS;
+      const request = await openDependencyResource(url, options, timeoutMs);
+      // 上游网关瞬时错误（502/503/504）算作一次可重试的失败：
+      // 丢弃本次响应（避免泄漏连接/内存）后重试，而不是直接交给调用方当作最终失败。
+      if (isTransientHttpStatus(request?.response)) {
+        discardResponse(request.response).catch(() => {});
+        request.dispose?.();
+        if (attempt === attempts) {
+          throw new UserFacingError(`下载资源失败：HTTP ${request.response.status}`);
+        }
+        const delay = Math.min(600 * attempt, 2000);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
+      return request;
+    } catch (error) {
+      if (attempt === attempts || !isConnectionLevelError(error)) {
+        const raw =
+          `${error?.code || ""} ${error?.message || ""} ${error?.cause?.code || ""} ${error?.cause?.message || ""}`;
+        if (/ERR_NETWORK_CHANGED|ENETUNREACH|EHOSTUNREACH|ERR_SOCKET|ERR_ABORTED/i.test(raw))
+          throw new UserFacingError("下载期间网络发生变化或连接被中断，请检查网络后重试");
+        if (/ECONNREFUSED|ERR_CONNECTION_REFUSED/i.test(raw))
+          throw new UserFacingError("无法连接下载源（连接被拒绝），请检查网络或稍后重试");
+        if (/ENOTFOUND|ERR_NAME_NOT_RESOLVED|ERR_NAME_NOT_RESOLVED/i.test(raw))
+          throw new UserFacingError("无法解析下载源地址（DNS 失败），请检查网络后重试");
+        throw error;
+      }
+      const delay = Math.min(600 * attempt, 2000);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  throw new UserFacingError(`连接下载源超时（${DEPENDENCY_CONNECT_TIMEOUT_MS / 1000} 秒）`);
+}
+
+// 丢弃一个尚未消费的响应体，避免重试后残留的连接/内存句柄。
+async function discardResponse(response) {
+  try {
+    if (response?.body?.cancel) await response.body.cancel();
+    else if (response?.body?.getReader) {
+      const reader = response.body.getReader();
+      try {
+        // 读取到 EOF 以真正释放连接（某些平台 cancel 可能不立即断流）。
+        while (!(await reader.read()).done) {}
+      } finally {
+        reader.releaseLock?.();
+      }
+    }
+  } catch {
+    // 忽略丢弃过程中出现的错误，重试动作本身不受影响。
+  }
+}
+
+async function fetchDependencyResource(
+  url,
+  options = {},
+  timeoutMs = DEPENDENCY_CONNECT_TIMEOUT_MS,
+) {
+  const request = await openDependencyResourceRetry(url, options);
+  request.dispose();
+  return request.response;
+}
+
+async function fetchDependencyText(
+  url,
+  { maxBytes, allowedHosts, headers = {} },
+) {
+  const request = await openDependencyResourceRetry(url, { headers });
+  const response = request.response;
+  try {
+    if (!response.ok || !response.body) {
+      throw new UserFacingError(`下载文本资源失败：HTTP ${response.status}`);
+    }
+    allowedResponseHost(response, url, allowedHosts);
+    const declaredLength = Number(response.headers.get("content-length") || 0);
+    if (declaredLength > maxBytes)
+      throw new UserFacingError("文本资源超过安全大小限制");
+    const chunks = [];
+    let totalBytes = 0;
+    const reader = response.body.getReader();
+    while (true) {
+      request.armTimeout(
+        `下载文本资源连续 ${Math.round(DEPENDENCY_IDLE_TIMEOUT_MS / 1000)} 秒没有收到数据`,
+        DEPENDENCY_IDLE_TIMEOUT_MS,
+      );
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = Buffer.from(value);
+      totalBytes += chunk.length;
+      if (totalBytes > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw new UserFacingError("文本资源超过安全大小限制");
+      }
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks, totalBytes).toString("utf8");
+  } catch (error) {
+    if (request.timeoutError())
+      throw new UserFacingError(request.timeoutError());
+    throw error;
+  } finally {
+    request.dispose();
+  }
+}
+
+function runDependencyWorker(task, payload, onProgress = () => {}) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(path.join(__dirname, "dependency-worker.cjs"), {
+      workerData: { task, payload },
+    });
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      callback(value);
+    };
+    worker.on("message", (message) => {
+      if (!message || typeof message !== "object") return;
+      if (message.type === "progress") onProgress(message);
+      else if (message.type === "result") finish(resolve, message.result);
+      else if (message.type === "error") {
+        if (message.diagnostic) {
+          writeDesktopStartupDiagnostic(
+            "dependency-worker",
+            message.diagnostic,
+            { task },
+          );
+        }
+        finish(
+          reject,
+          new UserFacingError(
+            String(message.message || "后台安装任务失败，请稍后重试"),
+          ),
+        );
+      }
+    });
+    worker.on("error", (error) => {
+      writeDesktopStartupDiagnostic("dependency-worker", error, { task });
+      const detail = error?.message?.trim()
+        ? `：${String(error.message).trim()}`
+        : (error?.code ? `（${error.code}）` : "");
+      finish(
+        reject,
+        new UserFacingError(`后台安装任务失败，请稍后重试${detail}`),
+      );
+    });
+    worker.on("exit", (code) => {
+      if (settled) return;
+      writeDesktopStartupDiagnostic(
+        "dependency-worker-exit",
+        `后台任务退出代码：${code}`,
+        { task },
+      );
+      finish(
+        reject,
+        new UserFacingError(
+          code === 0
+            ? "后台安装任务未正常完成，请稍后重试"
+            : `后台安装任务异常退出（代码 ${code}），请稍后重试`,
+        ),
+      );
+    });
+  });
+}
+
+function dependencyInterrupted(action) {
+  const error = new UserFacingError(
+    action === "cancel" ? "依赖下载已取消" : "依赖下载已暂停",
+  );
+  error.code =
+    action === "cancel"
+      ? "DEPENDENCY_DOWNLOAD_CANCELED"
+      : "DEPENDENCY_DOWNLOAD_PAUSED";
+  return error;
+}
+
+function throwIfDependencyInterrupted(session) {
+  if (session.intent === "cancel" || session.intent === "pause")
+    throw dependencyInterrupted(session.intent);
+}
+
+function hasRunningInstalls() {
+  return [...activeInstalls.values()].some(
+    (session) => session.state !== "paused",
+  );
+}
+
+function assertInside(parent, child) {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new UserFacingError("安装路径超出工具目录");
+  }
+}
+
+function assertSafeInstallDirectory(directory) {
+  if (!fs.existsSync(directory)) {
+    fs.mkdirSync(directory, { recursive: true });
+    return;
+  }
+  const stat = fs.lstatSync(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink())
+    throw new UserFacingError("工具安装目录类型异常");
+}
+
+function assertReplaceableInstallFile(filePath, label) {
+  if (!fs.existsSync(filePath)) return false;
+  const stat = fs.lstatSync(filePath);
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new UserFacingError(`${label}文件类型异常，已拒绝覆盖`);
+  }
+  return true;
+}
+
+function promotePortableInstall({
+  toolsDir,
+  stagingDir,
+  targetDir,
+  stagedExecutable,
+  targetExecutable,
+  sourceMetadata,
+}) {
+  assertInside(toolsDir, stagingDir);
+  assertInside(toolsDir, targetDir);
+  assertSafeInstallDirectory(targetDir);
+  const stagedMetadata = path.join(stagingDir, ".toolbox-source.json");
+  const targetMetadata = path.join(targetDir, ".toolbox-source.json");
+  const transactionId = crypto.randomUUID();
+  const executableBackup = path.join(
+    targetDir,
+    `.toolbox-backup-${transactionId}-${path.basename(targetExecutable)}`,
+  );
+  const metadataBackup = path.join(
+    targetDir,
+    `.toolbox-backup-${transactionId}-source.json`,
+  );
+  [stagedMetadata, targetMetadata, executableBackup, metadataBackup].forEach(
+    (candidate) => assertInside(toolsDir, candidate),
+  );
+  assertReplaceableInstallFile(stagedExecutable, "暂存工具");
+  fs.writeFileSync(stagedMetadata, JSON.stringify(sourceMetadata, null, 2), {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
+
+  const hadExecutable = assertReplaceableInstallFile(
+    targetExecutable,
+    "现有工具",
+  );
+  const hadMetadata = assertReplaceableInstallFile(
+    targetMetadata,
+    "现有来源记录",
+  );
+  let executablePromoted = false;
+  let metadataPromoted = false;
+  try {
+    if (hadExecutable) fs.renameSync(targetExecutable, executableBackup);
+    if (hadMetadata) fs.renameSync(targetMetadata, metadataBackup);
+    fs.renameSync(stagedExecutable, targetExecutable);
+    executablePromoted = true;
+    fs.renameSync(stagedMetadata, targetMetadata);
+    metadataPromoted = true;
+  } catch (error) {
+    if (metadataPromoted && fs.existsSync(targetMetadata))
+      fs.unlinkSync(targetMetadata);
+    if (executablePromoted && fs.existsSync(targetExecutable))
+      fs.unlinkSync(targetExecutable);
+    if (
+      hadMetadata &&
+      fs.existsSync(metadataBackup) &&
+      !fs.existsSync(targetMetadata)
+    ) {
+      fs.renameSync(metadataBackup, targetMetadata);
+    }
+    if (
+      hadExecutable &&
+      fs.existsSync(executableBackup) &&
+      !fs.existsSync(targetExecutable)
+    ) {
+      fs.renameSync(executableBackup, targetExecutable);
+    }
+    throw error;
+  }
+  // The new executable and its source record are now committed. A locked
+  // stale backup is harmless and safer than rolling back a valid install.
+  if (hadExecutable) {
+    try {
+      fs.unlinkSync(executableBackup);
+    } catch {
+      /* cleaned on a later maintenance pass */
+    }
+  }
+  if (hadMetadata) {
+    try {
+      fs.unlinkSync(metadataBackup);
+    } catch {
+      /* cleaned on a later maintenance pass */
+    }
+  }
+}
+
+// 便携树包（如 ZAP）：stagingDir 是完整个树，原子替换 targetDir。
+function promotePortableTree({ toolsDir, stagingDir, targetDir, sourceMetadata }) {
+  assertInside(toolsDir, stagingDir);
+  assertInside(toolsDir, targetDir);
+  assertSafeInstallDirectory(targetDir);
+  // 提取阶段已在 stagingDir/.toolbox-source.json 写入基础元数据；这里把下载相关的
+  // 来源信息合并进去，保持与单文件包一致的来源记录。
+  const stagedMetadataPath = path.join(stagingDir, ".toolbox-source.json");
+  const existing = readJsonFile(stagedMetadataPath);
+  fs.writeFileSync(
+    stagedMetadataPath,
+    JSON.stringify({ ...existing, ...sourceMetadata }, null, 2),
+    { encoding: "utf8", mode: 0o600 },
+  );
+
+  const targetMetadataPath = path.join(targetDir, ".toolbox-source.json");
+  const targetBackup = path.join(
+    toolsDir,
+    `.toolbox-backup-${crypto.randomUUID()}`,
+  );
+  [targetDir, targetMetadataPath, targetBackup].forEach((candidate) =>
+    assertInside(toolsDir, candidate),
+  );
+
+  const hadTarget = fs.existsSync(targetDir);
+  if (hadTarget) {
+    try {
+      fs.renameSync(targetDir, targetBackup);
+    } catch (error) {
+      throw new UserFacingError("无法备份已有的便携工具目录，请稍后再试");
+    }
+  }
+  try {
+    fs.renameSync(stagingDir, targetDir);
+  } catch (error) {
+    if (hadTarget && fs.existsSync(targetBackup) && !fs.existsSync(targetDir)) {
+      fs.renameSync(targetBackup, targetDir);
+    }
+    throw new UserFacingError("便携工具目录替换失败，请稍后再试");
+  }
+  if (hadTarget) {
+    try {
+      fs.rmSync(targetBackup, { recursive: true, force: true });
+    } catch {
+      /* cleaned on a later maintenance pass */
+    }
+  }
+}
+
+function removeDownloadState(filePath, metadataPath) {
+  for (const candidate of [filePath, metadataPath]) {
+    if (!candidate || !fs.existsSync(candidate)) continue;
+    // Windows 下刚写完/刚 abort 的下载文件可能被杀软或该进程的文件句柄短暂占用，
+    // unlinkSync 会抛 EBUSY/EPERM。这是**尽力而为**的清理：短暂重试，
+    // 仍失败则吞掉（不能让清理失败把一次正常的“取消”变成报错或残留阻塞）。
+    for (let attempt = 0; attempt < 6; attempt++) {
+      try {
+        fs.unlinkSync(candidate);
+        break;
+      } catch {
+        if (attempt === 5) break;
+        const deadline = Date.now() + 120;
+        while (Date.now() < deadline) {
+          /* busy-wait briefly */
+        }
+      }
+    }
+  }
+}
+
+function readDownloadMetadata(metadataPath) {
+  if (!fs.existsSync(metadataPath)) return undefined;
+  const stat = fs.lstatSync(metadataPath);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16 * 1024)
+    return undefined;
+  try {
+    return JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+function writeDownloadMetadata(metadataPath, value) {
+  const temporaryPath = `${metadataPath}.tmp`;
+  fs.writeFileSync(temporaryPath, JSON.stringify(value), { flag: "w" });
+  if (fs.existsSync(metadataPath)) fs.unlinkSync(metadataPath);
+  fs.renameSync(temporaryPath, metadataPath);
+}
+
+function partialFileSize(filePath) {
+  if (!fs.existsSync(filePath)) return 0;
+  const stat = fs.lstatSync(filePath);
+  if (!stat.isFile() || stat.isSymbolicLink())
+    throw new UserFacingError("未完成下载文件类型异常");
+  return stat.size;
+}
+
+function parseContentRange(value) {
+  const match = String(value || "").match(/^bytes\s+(\d+)-(\d+)\/(\d+)$/i);
+  if (!match) return undefined;
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  const total = Number(match[3]);
+  if (
+    ![start, end, total].every(Number.isSafeInteger) ||
+    start < 0 ||
+    end < start ||
+    total <= end
+  )
+    return undefined;
+  return { start, end, total };
+}
+
+async function downloadResumableFile({
+  url,
+  filePath,
+  metadataPath,
+  expectedSha256,
+  expectedSize = 0,
+  maxBytes,
+  allowedHosts,
+  signal,
+  onProgress = () => {},
+}) {
+  const identity = { url, expectedSha256, expectedSize };
+  let metadata = readDownloadMetadata(metadataPath);
+  if (
+    metadata &&
+    (metadata.url !== url ||
+      metadata.expectedSha256 !== expectedSha256 ||
+      Number(metadata.expectedSize || 0) !== Number(expectedSize || 0))
+  ) {
+    removeDownloadState(filePath, metadataPath);
+    metadata = undefined;
+  }
+
+  let offset = partialFileSize(filePath);
+  let effectiveExpectedSize = Number(expectedSize || metadata?.totalBytes || 0);
+  if (offset > 0 && !metadata) {
+    removeDownloadState(filePath, metadataPath);
+    offset = 0;
+  }
+  if (
+    offset > maxBytes ||
+    (effectiveExpectedSize > 0 && offset > effectiveExpectedSize)
+  ) {
+    removeDownloadState(filePath, metadataPath);
+    offset = 0;
+  }
+  if (effectiveExpectedSize > maxBytes)
+    throw new UserFacingError("下载文件超过安全大小限制");
+  if (
+    offset > 0 &&
+    effectiveExpectedSize > 0 &&
+    offset === effectiveExpectedSize
+  ) {
+    onProgress({
+      receivedBytes: offset,
+      totalBytes: effectiveExpectedSize,
+      resumedBytes: offset,
+      complete: true,
+    });
+    return {
+      size: offset,
+      totalBytes: effectiveExpectedSize,
+      resumedBytes: offset,
+      rangeAccepted: true,
+    };
+  }
+
+  const requestedOffset = offset;
+  const headers = { "Accept-Encoding": "identity" };
+  if (offset > 0) {
+    headers.Range = `bytes=${offset}-`;
+    const validator =
+      typeof metadata?.etag === "string" && !metadata.etag.startsWith("W/")
+        ? metadata.etag
+        : metadata?.lastModified;
+    if (validator) headers["If-Range"] = validator;
+  }
+  const request = await openDependencyResourceRetry(url, {
+    headers,
+    signal,
+    connectAttempts: 3,
+  });
+  const response = request.response;
+  try {
+    allowedResponseHost(response, url, allowedHosts);
+
+    const contentEncoding = String(
+      response.headers.get("content-encoding") || "identity",
+    ).toLowerCase();
+    if (contentEncoding !== "identity") {
+      removeDownloadState(filePath, metadataPath);
+      throw new UserFacingError("下载源返回了不适用于断点续传的内容编码");
+    }
+
+    let append = false;
+    let rangeAccepted = false;
+    let totalBytes = effectiveExpectedSize;
+    if (offset > 0 && response.status === 206) {
+      const range = parseContentRange(response.headers.get("content-range"));
+      const declaredLength = Number(
+        response.headers.get("content-length") || 0,
+      );
+      if (
+        !range ||
+        range.start !== offset ||
+        (effectiveExpectedSize > 0 && range.total !== effectiveExpectedSize) ||
+        (declaredLength > 0 && declaredLength !== range.end - range.start + 1)
+      ) {
+        removeDownloadState(filePath, metadataPath);
+        throw new UserFacingError(
+          "下载源返回的断点范围不一致，已丢弃不可信的未完成文件",
+        );
+      }
+      append = true;
+      rangeAccepted = true;
+      totalBytes = range.total;
+    } else if (response.status === 200) {
+      const declaredLength = Number(
+        response.headers.get("content-length") || 0,
+      );
+      if (
+        effectiveExpectedSize > 0 &&
+        declaredLength > 0 &&
+        declaredLength !== effectiveExpectedSize
+      ) {
+        removeDownloadState(filePath, metadataPath);
+        throw new UserFacingError("下载文件大小与官方发布记录不一致");
+      }
+      if (offset > 0) {
+        onProgress({
+          restarted: true,
+          receivedBytes: 0,
+          totalBytes: effectiveExpectedSize || declaredLength,
+        });
+      }
+      offset = 0;
+      totalBytes = effectiveExpectedSize || declaredLength;
+    } else if (offset > 0 && response.status === 416) {
+      const match = String(response.headers.get("content-range") || "").match(
+        /^bytes\s+\*\/(\d+)$/i,
+      );
+      const total = match ? Number(match[1]) : 0;
+      if (
+        Number.isSafeInteger(total) &&
+        total > 0 &&
+        total === offset &&
+        (!effectiveExpectedSize || total === effectiveExpectedSize)
+      ) {
+        onProgress({
+          receivedBytes: offset,
+          totalBytes: total,
+          resumedBytes: offset,
+          complete: true,
+        });
+        return {
+          size: offset,
+          totalBytes: total,
+          resumedBytes: offset,
+          rangeAccepted: true,
+        };
+      }
+      removeDownloadState(filePath, metadataPath);
+      throw new UserFacingError("下载断点已经失效，请重新开始安装");
+    } else {
+      throw new UserFacingError(`下载失败：HTTP ${response.status}`);
+    }
+
+    if (!response.ok || !response.body)
+      throw new UserFacingError(`下载失败：HTTP ${response.status}`);
+    if (totalBytes > maxBytes) {
+      removeDownloadState(filePath, metadataPath);
+      throw new UserFacingError("下载文件超过安全大小限制");
+    }
+    writeDownloadMetadata(metadataPath, {
+      ...identity,
+      totalBytes,
+      etag: response.headers.get("etag") || metadata?.etag || "",
+      lastModified:
+        response.headers.get("last-modified") || metadata?.lastModified || "",
+      responseUrl: response.url,
+      updatedAt: new Date().toISOString(),
+    });
+
+    const fileDescriptor = fs.openSync(filePath, append ? "a" : "w");
+    let receivedBytes = offset;
+    const reader = response.body.getReader();
+    try {
+      while (true) {
+        request.armTimeout(
+          `下载连续 ${Math.round(DEPENDENCY_IDLE_TIMEOUT_MS / 1000)} 秒没有收到数据`,
+          DEPENDENCY_IDLE_TIMEOUT_MS,
+        );
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = Buffer.from(value);
+        fs.writeSync(fileDescriptor, chunk);
+        receivedBytes += chunk.length;
+        if (
+          receivedBytes > maxBytes ||
+          (totalBytes > 0 && receivedBytes > totalBytes)
+        ) {
+          throw new UserFacingError("下载文件超过声明的安全大小限制");
+        }
+        onProgress({
+          receivedBytes,
+          totalBytes,
+          resumedBytes: rangeAccepted ? requestedOffset : 0,
+          rangeAccepted,
+        });
+      }
+    } finally {
+      fs.closeSync(fileDescriptor);
+    }
+    if (totalBytes > 0 && receivedBytes !== totalBytes) {
+      throw new UserFacingError("下载连接提前结束，未完成文件已保留供下次续传");
+    }
+    writeDownloadMetadata(metadataPath, {
+      ...identity,
+      totalBytes: receivedBytes,
+      etag: response.headers.get("etag") || metadata?.etag || "",
+      lastModified:
+        response.headers.get("last-modified") || metadata?.lastModified || "",
+      responseUrl: response.url,
+      updatedAt: new Date().toISOString(),
+    });
+    return {
+      size: receivedBytes,
+      totalBytes: receivedBytes,
+      resumedBytes: rangeAccepted ? requestedOffset : 0,
+      rangeAccepted,
+    };
+  } catch (error) {
+    if (request.timeoutError())
+      throw new UserFacingError(request.timeoutError());
+    const raw =
+      `${error?.code || ""} ${error?.message || ""} ${error?.cause?.code || ""} ${error?.cause?.message || ""}`;
+    if (/ERR_NETWORK_CHANGED|ECONNRESET|ENETUNREACH|EHOSTUNREACH|ERR_SOCKET/i.test(raw))
+      throw new UserFacingError("下载期间网络发生变化或连接被中断，请检查网络后重试");
+    if (/ERR_CONTENT_LENGTH_MISMATCH|ERR_INCOMPLETE_CHUNKED_ENCODING/i.test(raw))
+      throw new UserFacingError("下载文件不完整（可能被网络或代理截断），已保留进度，请点击重试续传");
+    throw error;
+  } finally {
+    request.dispose();
+  }
+}
+
+async function downloadOfficialNucleiTemplates(
+  templatesDir,
+  session,
+  reportProgress = () => {},
+) {
+  reportProgress({ stage: "正在查询 Nuclei 模板版本", progress: 0 });
+  const apiUrl =
+    "https://api.github.com/repos/projectdiscovery/nuclei-templates/releases/latest";
+  const releaseResponse = await fetchDependencyResource(apiUrl, {
+    headers: githubApiHeaders(),
+  });
+  if (!releaseResponse.ok) {
+    if (releaseResponse.status === 403 || releaseResponse.status === 429)
+      throw githubApiError(releaseResponse);
+    throw new UserFacingError(
+      `查询 Nuclei 模板版本失败：HTTP ${releaseResponse.status}`,
+    );
+  }
+  allowedResponseHost(releaseResponse, apiUrl, ["api.github.com"]);
+  const release = await releaseResponse.json();
+  if (release.draft || release.prerelease)
+    throw new UserFacingError("Nuclei 模板最新版本不是稳定发布版");
+  const tag = String(release.tag_name || "");
+  const version = tag.replace(/^v/i, "");
+  if (!/^\d+\.\d+\.\d+$/.test(version))
+    throw new UserFacingError("Nuclei 模板版本号格式无法识别");
+  const checksumName = `nuclei-templates-${version}_checksums.txt`;
+  const checksumAssets = (
+    Array.isArray(release.assets) ? release.assets : []
+  ).filter(
+    (asset) => asset?.name === checksumName && asset?.state === "uploaded",
+  );
+  if (checksumAssets.length !== 1)
+    throw new UserFacingError("Nuclei 模板发布包缺少唯一校验文件");
+  const checksumUrl = String(checksumAssets[0].browser_download_url || "");
+  const checksumResponse = await fetchDependencyResource(checksumUrl);
+  if (!checksumResponse.ok) {
+    throw new UserFacingError(
+      `下载 Nuclei 模板校验文件失败：HTTP ${checksumResponse.status}`,
+    );
+  }
+  allowedResponseHost(checksumResponse, checksumUrl, [
+    "github.com",
+    "release-assets.githubusercontent.com",
+    "objects.githubusercontent.com",
+  ]);
+  const checksumText = await checksumResponse.text();
+  if (checksumText.length > 64 * 1024)
+    throw new UserFacingError("Nuclei 模板校验文件大小异常");
+  const archiveName = `nuclei-templates-${version}.zip`;
+  const checksumMatches = checksumText
+    .split(/\r?\n/)
+    .map((line) => line.trim().match(/^([a-f0-9]{64})\s+(.+)$/i))
+    .filter((match) => match && match[2] === archiveName);
+  if (checksumMatches.length !== 1) {
+    throw new UserFacingError("官方校验文件中的模板压缩包记录不唯一");
+  }
+  const expectedSha256 = checksumMatches[0][1].toLowerCase();
+  const installedMetadata = readJsonFile(
+    path.join(templatesDir, ".toolbox-source.json"),
+  );
+  const installedState = evaluateInstalledRelease({
+    metadata: installedMetadata,
+    repository: "projectdiscovery/nuclei-templates",
+    latestVersion: version,
+    payloadExists: isRegularDirectory(templatesDir),
+  });
+  if (
+    installedState.upToDate &&
+    String(installedMetadata.archiveSha256 || "").toLowerCase() ===
+      expectedSha256
+  ) {
+    reportProgress({ stage: "Nuclei 模板已是最新版本", progress: 1 });
+    return { updated: false, version };
+  }
+  const sourceUrl = `https://github.com/projectdiscovery/nuclei-templates/archive/refs/tags/${tag}.zip`;
+  const downloadsDir = path.join(path.dirname(templatesDir), ".downloads");
+  const archivePath = path.join(
+    downloadsDir,
+    `nuclei-templates-${version}-${expectedSha256.slice(0, 16)}.zip.part`,
+  );
+  const metadataPath = `${archivePath}.json`;
+  [downloadsDir, archivePath, metadataPath].forEach((candidate) =>
+    assertInside(path.dirname(templatesDir), candidate),
+  );
+  fs.mkdirSync(downloadsDir, { recursive: true });
+  session.artifacts.add(JSON.stringify([archivePath, metadataPath]));
+  session.phase = "downloading-templates";
+  session.controller = new AbortController();
+  await downloadResumableFile({
+    url: sourceUrl,
+    filePath: archivePath,
+    metadataPath,
+    expectedSha256,
+    maxBytes: 250 * 1024 * 1024,
+    allowedHosts: ["github.com", "codeload.github.com"],
+    signal: session.controller.signal,
+    onProgress: (progress) => {
+      const receivedBytes = Number(progress.receivedBytes || 0);
+      const totalBytes = Number(progress.totalBytes || 0);
+      const fraction =
+        totalBytes > 0 ? Math.min(1, receivedBytes / totalBytes) : 0;
+      const stage = progress.restarted
+        ? "模板下载源不支持续传，已从头重新下载"
+        : progress.resumedBytes > 0
+          ? `正在续传 Nuclei 官方模板（已恢复 ${Math.round((progress.resumedBytes / 1024 / 1024) * 10) / 10} MB）`
+          : progress.complete
+            ? "检测到完整的模板下载，正在校验"
+            : "正在下载 Nuclei 官方签名模板";
+      reportProgress({ ...progress, stage, progress: 0.05 + fraction * 0.45 });
+    },
+  });
+  throwIfDependencyInterrupted(session);
+  session.phase = "verifying-templates";
+  session.controller = undefined;
+  const stagingDir = path.join(
+    path.dirname(templatesDir),
+    `.nuclei-templates-${crypto.randomUUID()}`,
+  );
+  const backupDir = path.join(
+    path.dirname(templatesDir),
+    `.nuclei-templates-backup-${crypto.randomUUID()}`,
+  );
+  assertInside(path.dirname(templatesDir), stagingDir);
+  assertInside(path.dirname(templatesDir), backupDir);
+  fs.mkdirSync(stagingDir, { recursive: true });
+  try {
+    await runDependencyWorker(
+      "extract-templates",
+      {
+        archivePath,
+        expectedSha256,
+        maxArchiveBytes: 250 * 1024 * 1024,
+        stagingDir,
+        maxFiles: 100000,
+        maxExtractedBytes: 1024 * 1024 * 1024,
+        sourceMetadata: {
+          repository: "projectdiscovery/nuclei-templates",
+          version: tag,
+          archiveSha256: expectedSha256,
+          sourceUrl,
+          acquisition: "verified-release-archive",
+          installedAt: new Date().toISOString(),
+        },
+      },
+      (progress) =>
+        reportProgress({
+          ...progress,
+          progress: 0.5 + Number(progress.progress || 0) * 0.5,
+        }),
+    );
+    if (fs.existsSync(templatesDir)) fs.renameSync(templatesDir, backupDir);
+    fs.renameSync(stagingDir, templatesDir);
+    if (fs.existsSync(backupDir)) {
+      try {
+        await fs.promises.rm(backupDir, { recursive: true, force: true });
+      } catch {
+        // A stale backup is safer than failing a valid install.
+      }
+    }
+    removeDownloadState(archivePath, metadataPath);
+    return { updated: true, version };
+  } catch (error) {
+    if (
+      /SHA-256|长度/.test(
+        error instanceof Error ? error.message : String(error),
+      )
+    ) {
+      removeDownloadState(archivePath, metadataPath);
+    }
+    if (fs.existsSync(stagingDir))
+      await fs.promises.rm(stagingDir, { recursive: true, force: true });
+    if (!fs.existsSync(templatesDir) && fs.existsSync(backupDir))
+      fs.renameSync(backupDir, templatesDir);
+    throw error;
+  }
+}
+
+async function testEmbeddingConnection(payload) {
+  const existing = resolvedAiSettings();
+  const mode = normalizeAiEmbeddingConnectionMode(
+    payload?.embeddingConnectionMode,
+  );
+  const chatBaseUrl = normalizeAiBaseUrl(payload?.baseUrl);
+  const embeddingBaseUrl = normalizeAiEmbeddingBaseUrl(
+    payload?.embeddingBaseUrl,
+    chatBaseUrl,
+  );
+  const model = normalizeAiEmbeddingModel(payload?.embeddingModel);
+  const connection = selectEmbeddingTestConnection({
+    mode,
+    relayEnabled: Boolean(readDesktopSettings().aiRelay?.enabled),
+    submitted: {
+      baseUrl: chatBaseUrl,
+      embeddingBaseUrl,
+      apiKey: payload?.apiKey,
+      embeddingApiKey: payload?.embeddingApiKey,
+    },
+    existing: {
+      baseUrl: existing.baseUrl,
+      embeddingBaseUrl: existing.embeddingBaseUrl,
+      apiKey: existing.apiKey,
+      embeddingApiKey: existing.customEmbeddingApiKey,
+    },
+  });
+  if (connection.requiresReplacementKey) {
+    throw new UserFacingError(
+      "向量 API 地址已变化，请填写新服务对应的向量 API Key 后再测试",
+    );
+  }
+  const controller = new AbortController();
+  const timeoutMs = 20000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (connection.apiKey) {
+      headers.Authorization = `Bearer ${connection.apiKey}`;
+    }
+    const response = await electronNet.fetch(
+      `${aiRuntimeBaseUrl(connection.baseUrl)}/embeddings`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ model, input: ["连接测试"] }),
+        signal: controller.signal,
+      },
+    );
+    if (!response.ok) {
+      throw new UserFacingError(
+        `向量服务返回错误状态（HTTP ${response.status}）`,
+      );
+    }
+    const body = await response.json();
+    const vector = body?.data?.[0]?.embedding;
+    if (!Array.isArray(vector) || !vector.length) {
+      throw new UserFacingError("向量服务已响应，但没有返回有效向量");
+    }
+    return { ok: true, model, message: `向量连接成功（${vector.length} 维）` };
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new UserFacingError(`向量服务连接超时（${timeoutMs / 1000} 秒）`);
+    }
+    if (error instanceof UserFacingError) throw error;
+    throw new UserFacingError(
+      `向量服务连接失败：${error?.message || "请检查地址和服务状态"}`,
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function decryptStoredEmbeddingApiKey(settings = readDesktopSettings()) {
+  const encrypted = settings.ai?.encryptedEmbeddingApiKey;
+  if (!encrypted) return "";
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new UserFacingError("当前系统无法解密已保存的向量 API Key");
+  }
+  try {
+    return safeStorage.decryptString(Buffer.from(encrypted, "base64"));
+  } catch {
+    throw new UserFacingError("已保存的向量 API Key 无法解密，请重新填写");
+  }
+}
+
+function isRegularFile(filePath) {
+  try {
+    const stat = fs.lstatSync(filePath);
+    return stat.isFile() && !stat.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+function isRegularDirectory(directory) {
+  try {
+    const stat = fs.lstatSync(directory);
+    return stat.isDirectory() && !stat.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+async function downloadOfficialScannerPocs({
+  packageId,
+  release,
+  toolsDir,
+  session,
+  reportProgress = () => {},
+}) {
+  const scannerLabel = { afrog: "Afrog", xray: "Xray" }[packageId];
+  if (!scannerLabel) throw new UserFacingError("不支持下载该扫描器 PoC");
+  const pocsDir = path.join(toolsDir, `${packageId}-pocs`);
+  const downloadsDir = path.join(toolsDir, ".downloads");
+  const identity = crypto
+    .createHash("sha256")
+    .update(`${release.repository}@${release.tag}:pocs`, "utf8")
+    .digest("hex");
+  const archivePath = path.join(
+    downloadsDir,
+    `${packageId}-pocs-${release.version}-${identity.slice(0, 16)}.zip.part`,
+  );
+  const metadataPath = `${archivePath}.json`;
+  const sourceUrl = `https://github.com/${release.repository}/archive/refs/tags/${encodeURIComponent(release.tag)}.zip`;
+  const installedMetadata = readJsonFile(
+    path.join(pocsDir, ".toolbox-source.json"),
+  );
+  const installedState = evaluateInstalledRelease({
+    metadata: installedMetadata,
+    repository: release.repository,
+    latestVersion: release.version,
+    payloadExists: isRegularDirectory(pocsDir),
+  });
+  if (
+    installedState.upToDate &&
+    String(installedMetadata.ref || "") === String(release.tag || "")
+  ) {
+    reportProgress({
+      stage: `${scannerLabel} PoC 已是最新版本`,
+      progress: 1,
+    });
+    return { updated: false, version: release.version, path: pocsDir };
+  }
+  [pocsDir, downloadsDir, archivePath, metadataPath].forEach((candidate) =>
+    assertInside(toolsDir, candidate),
+  );
+  fs.mkdirSync(downloadsDir, { recursive: true });
+  session.artifacts.add(JSON.stringify([archivePath, metadataPath]));
+  session.phase = "downloading-scanner-pocs";
+  session.controller = new AbortController();
+  await downloadResumableFile({
+    url: sourceUrl,
+    filePath: archivePath,
+    metadataPath,
+    expectedSha256: "",
+    maxBytes: 250 * 1024 * 1024,
+    allowedHosts: [
+      "github.com",
+      "codeload.github.com",
+      "objects.githubusercontent.com",
+    ],
+    signal: session.controller.signal,
+    onProgress: (progress) => {
+      const total = Number(progress.totalBytes || 0);
+      const received = Number(progress.receivedBytes || 0);
+      reportProgress({
+        ...progress,
+        progress: total > 0 ? 0.05 + 0.45 * (received / total) : 0.05,
+      });
+    },
+  });
+  throwIfDependencyInterrupted(session);
+  session.phase = "verifying-scanner-pocs";
+  session.controller = undefined;
+  const stagingDir = path.join(
+    toolsDir,
+    `.${packageId}-pocs-${crypto.randomUUID()}`,
+  );
+  const backupDir = path.join(
+    toolsDir,
+    `.${packageId}-pocs-backup-${crypto.randomUUID()}`,
+  );
+  assertInside(toolsDir, stagingDir);
+  assertInside(toolsDir, backupDir);
+  fs.mkdirSync(stagingDir, { recursive: true });
+  try {
+    await runDependencyWorker(
+      "extract-scanner-pocs",
+      {
+        archivePath,
+        maxArchiveBytes: 250 * 1024 * 1024,
+        stagingDir,
+        maxFiles: 10000,
+        maxExtractedBytes: 512 * 1024 * 1024,
+        sourceSubdirectory: "pocs",
+        scannerLabel,
+        sourceMetadata: {
+          repository: release.repository,
+          version: release.version,
+          ref: release.tag,
+          sourceUrl,
+          acquisition: "official-release-tag-source-snapshot",
+          installedAt: new Date().toISOString(),
+        },
+      },
+      (progress) =>
+        reportProgress({
+          ...progress,
+          progress: 0.5 + Number(progress.progress || 0) * 0.5,
+        }),
+    );
+    if (fs.existsSync(pocsDir)) fs.renameSync(pocsDir, backupDir);
+    fs.renameSync(stagingDir, pocsDir);
+    if (fs.existsSync(backupDir)) {
+      try {
+        await fs.promises.rm(backupDir, { recursive: true, force: true });
+      } catch {
+        // A stale backup does not invalidate the newly promoted snapshot.
+      }
+    }
+    removeDownloadState(archivePath, metadataPath);
+    return { updated: true, version: release.version, path: pocsDir };
+  } catch (error) {
+    if (fs.existsSync(stagingDir))
+      await fs.promises.rm(stagingDir, { recursive: true, force: true });
+    if (!fs.existsSync(pocsDir) && fs.existsSync(backupDir))
+      fs.renameSync(backupDir, pocsDir);
+    throw error;
+  }
+}
+
+function allowedResponseHost(response, fallbackUrl, allowedHosts) {
+  const resolvedUrl =
+    typeof response.url === "string" && response.url.startsWith("https://")
+      ? response.url
+      : fallbackUrl;
+  const parsed = new URL(resolvedUrl);
+  if (
+    parsed.protocol !== "https:" ||
+    !allowedHosts.includes(parsed.hostname.toLowerCase())
+  ) {
+    throw new UserFacingError("下载重定向到了未授权站点");
+  }
+}
+
+function stableReleaseVersion(release) {
+  if (!release || release.draft || release.prerelease) return undefined;
+  const tag = String(release.tag_name || "");
+  const version = tag.replace(/^v/i, "");
+  if (!/^\d+\.\d+\.\d+$/.test(version)) return undefined;
+  return { tag, version };
+}
+
+function matchingReleaseAssets(release, definition, version) {
+  const assets = Array.isArray(release?.assets) ? release.assets : [];
+  const archiveName = definition.assetName(version);
+  const checksumName = definition.checksumName(version);
+  const archiveMatches = assets.filter(
+    (asset) => asset?.state === "uploaded" && asset?.name === archiveName,
+  );
+  const checksumMatches = assets.filter(
+    (asset) => asset?.state === "uploaded" && asset?.name === checksumName,
+  );
+  return { archiveName, checksumName, archiveMatches, checksumMatches };
+}
+
+async function fetchOfficialPackageRelease(definition) {
+  const listMode = definition.releaseMode === "latest-semver-match";
+  const apiUrl = listMode
+    ? `https://api.github.com/repos/${definition.repository}/releases?per_page=100`
+    : `https://api.github.com/repos/${definition.repository}/releases/latest`;
+  const response = await fetchDependencyResource(apiUrl, {
+    headers: githubApiHeaders(),
+  });
+  if (!response.ok) throw githubApiError(response);
+  allowedResponseHost(response, apiUrl, ["api.github.com"]);
+  const payload = await response.json();
+  if (!listMode) return payload;
+  if (!Array.isArray(payload) || payload.length > 100)
+    throw new UserFacingError("官方发布列表格式异常");
+  const release = payload.find((candidate) => {
+    const parsed = stableReleaseVersion(candidate);
+    if (!parsed) return false;
+    const matches = matchingReleaseAssets(
+      candidate,
+      definition,
+      parsed.version,
+    );
+    return (
+      matches.archiveMatches.length === 1 && matches.checksumMatches.length <= 1
+    );
+  });
+  if (!release)
+    throw new UserFacingError(
+      "官方仓库中没有可安全安装的 Windows x64 稳定版本",
+    );
+  return release;
+}
+
+async function resolveLatestPackage(definition) {
+  const cached = latestPackageCache.get(definition.id);
+  if (cached && Date.now() - cached.cachedAt < 30 * 60 * 1000)
+    return cached.value;
+
+  const release = await fetchOfficialPackageRelease(definition);
+  const parsedRelease = stableReleaseVersion(release);
+  if (!parsedRelease)
+    throw new UserFacingError("官方最新版本不是可识别的稳定发布版");
+  const { tag, version } = parsedRelease;
+  const { archiveName, archiveMatches, checksumMatches } =
+    matchingReleaseAssets(release, definition, version);
+  if (archiveMatches.length !== 1) {
+    throw new UserFacingError("最新发布版缺少唯一的 Windows x64 安装包");
+  }
+  if (checksumMatches.length > 1)
+    throw new UserFacingError("最新发布版的官方校验文件不唯一");
+  const archiveAsset = archiveMatches[0];
+  const checksumAsset = checksumMatches[0];
+  const maxArchiveCeiling =
+    definition.maxArchiveBytes || 150 * 1024 * 1024;
+  if (
+    !archiveAsset.browser_download_url ||
+    Number(archiveAsset.size) < 1 ||
+    Number(archiveAsset.size) > maxArchiveCeiling ||
+    (checksumAsset &&
+      (Number(checksumAsset.size) < 1 ||
+        Number(checksumAsset.size) > 2 * 1024 * 1024))
+  ) {
+    throw new UserFacingError("官方发布资源大小或地址异常");
+  }
+  for (const asset of [archiveAsset, checksumAsset].filter(Boolean)) {
+    const parsed = new URL(String(asset.browser_download_url));
+    if (
+      parsed.protocol !== "https:" ||
+      parsed.hostname !== "github.com" ||
+      !parsed.pathname.startsWith(
+        `/${definition.repository}/releases/download/${tag}/`,
+      )
+    ) {
+      throw new UserFacingError("官方发布服务返回了未授权的资源地址");
+    }
+  }
+
+  let sha256 =
+    typeof archiveAsset.digest === "string" &&
+    archiveAsset.digest.startsWith("sha256:")
+      ? archiveAsset.digest.substring(7).toLowerCase()
+      : "";
+  let integritySource = sha256
+    ? "github-release-asset-digest"
+    : "local-sha256-record";
+  if (checksumAsset) {
+    const mirror = resolveToolDownloadMirror();
+    const checksumTarget = mirroredDownloadTarget(
+      String(checksumAsset.browser_download_url),
+      mirror,
+    );
+    const checksumAllowedHosts = [
+      "github.com",
+      "release-assets.githubusercontent.com",
+      "objects.githubusercontent.com",
+    ];
+    if (checksumTarget.host !== "github.com")
+      checksumAllowedHosts.push(checksumTarget.host);
+    const checksumText = await fetchDependencyText(checksumTarget.url, {
+      maxBytes: 2 * 1024 * 1024,
+      allowedHosts: checksumAllowedHosts,
+    });
+    const checksumMatchesInFile = checksumText
+      .split(/\r?\n/)
+      .map((line) => {
+        const match = line.trim().match(/^([a-f0-9]{64})\s+(.+)$/i);
+        if (!match) return undefined;
+        const fileName = match[2]
+          .trim()
+          .replace(/^\*/, "")
+          .replace(/\\/g, "/")
+          .replace(/^\.\/+/, "");
+        return fileName === archiveName ? match[1].toLowerCase() : undefined;
+      })
+      .filter(Boolean);
+    if (checksumMatchesInFile.length !== 1) {
+      throw new UserFacingError("官方校验文件中的安装包记录不唯一");
+    }
+    const checksumSha256 = checksumMatchesInFile[0];
+    if (sha256 && sha256 !== checksumSha256) {
+      throw new UserFacingError("GitHub 资源摘要与官方校验值不一致");
+    }
+    sha256 = checksumSha256;
+    integritySource = "official-checksum-file";
+  }
+  if (sha256 && !/^[a-f0-9]{64}$/.test(sha256)) {
+    throw new UserFacingError("官方 SHA-256 格式无法识别");
+  }
+
+  const mirror = resolveToolDownloadMirror();
+  const archiveTarget = mirroredDownloadTarget(
+    String(archiveAsset.browser_download_url),
+    mirror,
+  );
+  const value = {
+    version,
+    tag,
+    repository: definition.repository,
+    url: archiveTarget.url,
+    mirrorHost: archiveTarget.host,
+    sha256,
+    integritySource,
+    archiveName,
+    size: Number(archiveAsset.size),
+  };
+  latestPackageCache.set(definition.id, { cachedAt: Date.now(), value });
+  return value;
+}
+
+// 源码树便携包（如 sqlmap）：官方仓库以 tag/提交源码 zip 分发，没有带校验文件的
+// release 二进制资产。这里解析最新稳定 tag，用“tag↔提交记录”绑定来源，取出该 tag
+// 对应的源码 zip 地址；校验方式为记录式（安装时计算并锁定实际 SHA-256，同 ZAP 的
+// checksum-less 便携包一致），来源绑定靠 API 返回的 tag 与提交哈希保持一致来保证。
+async function resolveGithubSourceArchive(definition) {
+  const cached = latestPackageCache.get(definition.id);
+  if (cached && Date.now() - cached.cachedAt < 30 * 60 * 1000)
+    return cached.value;
+
+  const tagListUrl = `https://api.github.com/repos/${definition.repository}/tags?per_page=100`;
+  const tagResponse = await fetchDependencyResource(tagListUrl, {
+    headers: githubApiHeaders(),
+  });
+  if (!tagResponse.ok) throw githubApiError(tagResponse);
+  allowedResponseHost(tagResponse, tagListUrl, ["api.github.com"]);
+
+  let payload;
+  try {
+    payload = await tagResponse.json();
+  } catch {
+    throw new UserFacingError("官方版本列表读取失败");
+  }
+  if (!Array.isArray(payload) || payload.length > 100)
+    throw new UserFacingError("官方 tag 列表格式异常");
+
+  // 取“最新稳定语义版本” tag：匹配 X.Y.Z 且跳过 alpha/beta/rc 等预发布标记。
+  const stable = payload
+    .map((item) => String(item?.name || "").trim())
+    .filter((tag) => /^\d+\.\d+\.\d+$/.test(tag.replace(/^v/i, "")))
+    .sort((a, b) => {
+      const pa = a.replace(/^v/i, "").split(".").map(Number);
+      const pb = b.replace(/^v/i, "").split(".").map(Number);
+      for (let i = 0; i < 3; i++) {
+        if (pa[i] !== pb[i]) return pb[i] - pa[i];
+      }
+      return 0;
+    })[0];
+  if (!stable)
+    throw new UserFacingError("官方仓库中没有可识别的稳定版本标签");
+
+  const tag = stable;
+  const version = String(tag).replace(/^v/i, "");
+
+  // 用 git ref API 解析 tag 指向的提交哈希，作为 tag↔commit 的来源绑定。
+  const refUrl = `https://api.github.com/repos/${definition.repository}/git/ref/tags/${encodeURIComponent(tag)}`;
+  const refResponse = await fetchDependencyResource(refUrl, {
+    headers: githubApiHeaders(),
+  });
+  if (!refResponse.ok) throw githubApiError(refResponse);
+  allowedResponseHost(refResponse, refUrl, ["api.github.com"]);
+  const ref = await refResponse.json();
+  const objectSha = String(ref?.object?.sha || "");
+  if (!/^[a-f0-9]{40}$/.test(objectSha)) {
+    throw new UserFacingError("官方 tag 提交记录无法识别，拒绝安装");
+  }
+  // 注解 tag 只给出 tag 对象哈希，需再解引用一次拿到提交哈希。
+  let commitSha = objectSha;
+  if (String(ref?.object?.type || "") === "tag") {
+    const commitResponse = await fetchDependencyResource(
+      `https://api.github.com/repos/${definition.repository}/git/tags/${objectSha}`,
+      { headers: githubApiHeaders() },
+    );
+    if (commitResponse.ok) {
+      allowedResponseHost(commitResponse, refUrl, ["api.github.com"]);
+      const tagObject = await commitResponse.json();
+      if (String(tagObject?.object?.type || "") === "commit") {
+        commitSha = String(tagObject?.object?.sha || "") || commitSha;
+      }
+    }
+  }
+  if (!/^[a-f0-9]{40}$/.test(commitSha)) {
+    throw new UserFacingError("提交记录哈希无法识别，拒绝安装");
+  }
+
+  const archiveName = `${definition.repository.split("/")[1]}-${commitSha}.zip`;
+  // codeload 的源码 zip 引用的是 ref（tag 或 refs/tags/<tag>），URL 不带 .zip 后缀；
+  // 内容本身是 zip。downloadRef 仅用作用户可见的来源标识。
+  const downloadRef = `${definition.repository.split("/")[1]}-${tag}`;
+  const archiveUrl = `https://codeload.github.com/${definition.repository}/zip/refs/tags/${tag}`;
+  const archiveTarget = { url: archiveUrl, host: "codeload.github.com" };
+
+  const value = {
+    version,
+    tag,
+    commit: commitSha,
+    repository: definition.repository,
+    url: archiveTarget.url,
+    mirrorHost: archiveTarget.host,
+    // 精确提交由 tag↔commit 绑定保证，安装时计算并记录包 SHA-256。
+    sha256: "",
+    integritySource: "github-tag-commit",
+    archiveName,
+    downloadArchiveName: downloadRef,
+    size: 0,
+  };
+  latestPackageCache.set(definition.id, { cachedAt: Date.now(), value });
+  return value;
+}
+
+// 固定地址的便携源（如 PostgreSQL 官方 EDB binaries zip）：没有可靠的“最新版”REST API，
+// 版本号与下载地址均由定义固化。返回与其它 release 同构的对象，供统一的下载/解压流程使用。
+async function resolvePinnedPortablePackage(definition) {
+  const cached = latestPackageCache.get(definition.id);
+  if (cached && Date.now() - cached.cachedAt < 30 * 60 * 1000)
+    return cached.value;
+
+  const version = String(definition.version || "").trim();
+  const pinnedUrl = String(definition.pinnedUrl || "").trim();
+  if (!/^\d+\.\d+(?:\.\d+)?$/.test(version) || !/^https:\/\//.test(pinnedUrl)) {
+    throw new UserFacingError("固定版本的下载地址配置无效");
+  }
+  const parsed = new URL(pinnedUrl);
+  if (
+    parsed.protocol !== "https:" ||
+    !definition.allowedHosts.includes(parsed.hostname.toLowerCase())
+  ) {
+    throw new UserFacingError("固定版本的下载地址未在允许清单中");
+  }
+  const archiveName = parsed.pathname.split("/").pop();
+  if (!/\.zip$/i.test(archiveName)) {
+    throw new UserFacingError("固定版本的下载地址必须是 zip 压缩包");
+  }
+  const value = {
+    version,
+    tag: version,
+    repository: definition.repository,
+    url: pinnedUrl,
+    mirrorHost: parsed.hostname.toLowerCase(),
+    // 校验方式：安装时计算并写入包 SHA-256 存底（EDB 未提供独立校验文件）。
+    sha256: "",
+    integritySource: "official-binaries-archive",
+    archiveName,
+    size: 0,
+  };
+  latestPackageCache.set(definition.id, { cachedAt: Date.now(), value });
+  return value;
+}
+
+async function refreshPortableDependencyCatalog({
+  packageId,
+  release,
+  toolsDir,
+  session,
+  report,
+  progressStart,
+  progressSpan,
+}) {
+  if (packageId === "nuclei") {
+    const templatesDir = path.join(toolsDir, "nuclei-templates");
+    assertInside(toolsDir, templatesDir);
+    report("正在检查 Nuclei 官方模板版本", progressStart, 0, 0, {
+      progressDeterminate: false,
+    });
+    return downloadOfficialNucleiTemplates(
+      templatesDir,
+      session,
+      (progress) => {
+        const templateProgress = Math.max(
+          0,
+          Math.min(1, Number(progress.progress || 0)),
+        );
+        report(
+          progress.stage || "正在更新 Nuclei 官方模板",
+          progressStart + Math.round(templateProgress * progressSpan),
+          Number(progress.receivedBytes || progress.processedBytes || 0),
+          Number(progress.totalBytes || 0),
+          {
+            progressDeterminate:
+              (Number(progress.totalBytes || 0) > 0 &&
+                (typeof progress.receivedBytes === "number" ||
+                  typeof progress.processedBytes === "number")) ||
+              (Number(progress.totalFiles || 0) > 0 &&
+                typeof progress.processedFiles === "number"),
+            processedFiles: progress.processedFiles,
+            totalFiles: progress.totalFiles,
+            resumed: progress.resumedBytes > 0,
+            resumedBytes: Number(progress.resumedBytes || 0),
+            rangeAccepted: Boolean(progress.rangeAccepted),
+          },
+        );
+      },
+    );
+  }
+  if (packageId === "afrog" || packageId === "xray") {
+    const scannerLabel = packageId === "afrog" ? "Afrog" : "Xray";
+    report(`正在检查 ${scannerLabel} 官方 PoC 版本`, progressStart, 0, 0, {
+      progressDeterminate: false,
+    });
+    return downloadOfficialScannerPocs({
+      packageId,
+      release,
+      toolsDir,
+      session,
+      reportProgress: (progress) => {
+        const pocProgress = Math.max(
+          0,
+          Math.min(1, Number(progress.progress || 0)),
+        );
+        report(
+          progress.stage || `正在更新 ${scannerLabel} 官方 PoC`,
+          progressStart + Math.round(pocProgress * progressSpan),
+          Number(progress.receivedBytes || progress.processedBytes || 0),
+          Number(progress.totalBytes || 0),
+          {
+            progressDeterminate:
+              Number(progress.totalBytes || 0) > 0 ||
+              Number(progress.totalFiles || 0) > 0,
+            processedFiles: progress.processedFiles,
+            totalFiles: progress.totalFiles,
+          },
+        );
+      },
+    });
+  }
+  return { updated: false };
+}
+
+function msfInstallPaths(definition, toolsDir) {
+  assertInside(toolsDir, path.join(toolsDir, definition.installRelativeDir));
+  const installDir = path.join(toolsDir, definition.installRelativeDir);
+  // Rapid7 MSI places the payload in an additional same-named directory when
+  // INSTALLLOCATION itself is named "metasploit-framework". Keep installDir as
+  // the stable user-facing/managed root, but resolve the executable in either layout.
+  const directBinDir = path.join(installDir, definition.binRelativeDir);
+  const directExecutable = path.join(directBinDir, definition.executable);
+  const nestedInstallDir = path.join(installDir, definition.installRelativeDir);
+  const nestedBinDir = path.join(nestedInstallDir, definition.binRelativeDir);
+  const nestedExecutable = path.join(nestedBinDir, definition.executable);
+  const directExists = (() => {
+    try {
+      return fs.statSync(directExecutable).isFile();
+    } catch {
+      return false;
+    }
+  })();
+  const payloadDir = directExists ? installDir : nestedInstallDir;
+  const binDir = directExists ? directBinDir : nestedBinDir;
+  const executable = directExists ? directExecutable : nestedExecutable;
+  return { installDir, payloadDir, binDir, executable };
+}
+
+function isMsfInstallPresent(definition, toolsDir) {
+  const paths = msfInstallPaths(definition, toolsDir);
+  try {
+    return fs.statSync(paths.executable).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function msfInstalledVersion(definition, toolsDir) {
+  const paths = msfInstallPaths(definition, toolsDir);
+  const metadata = readJsonFile(path.join(paths.installDir, ".toolbox-source.json"));
+  if (metadata?.version) return metadata.version;
+  try {
+    const manifest = fs
+      .readFileSync(path.join(paths.payloadDir, "version-manifest.txt"), "utf8")
+      .split(/\r?\n/, 1)[0]
+      .trim();
+    if (manifest) return manifest;
+  } catch {}
+  return "latest";
+}
+
+// MSI（OLE 复合文档）文件头魔数，用于校验下载的安装包是有效 MSI。
+const MSI_HEADER = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+
+function msfMirrorHost() {
+  const mirror = resolveToolDownloadMirror();
+  return mirror ? mirror.host : "";
+}
+
+// 读取 msiexec 安装日志的末尾若干有意义行，用于安装期间向用户展示实时动态。
+function readMsfInstallLogTail(installLog, maxLines = 40, maxBytes = 96 * 1024) {
+  try {
+    if (!fs.existsSync(installLog) || !fs.statSync(installLog).isFile()) return [];
+    const size = fs.statSync(installLog).size;
+    const start = Math.max(0, size - maxBytes);
+    const buf = Buffer.alloc(size - start);
+    const fd = fs.openSync(installLog, "r");
+    try {
+      fs.readSync(fd, buf, 0, buf.length, start);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const lines = buf
+      .toString("utf8")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .slice(-maxLines);
+    return lines;
+  } catch {
+    return [];
+  }
+}
+
+async function installMsfFramework(
+  definition,
+  options = {},
+  reportProgress = () => {},
+) {
+  const toolsDir = resolveToolsDirectory();
+  // 用户可见路径 = <tools>\metasploit-framework（始终不变）。
+  const initialPaths = msfInstallPaths(definition, toolsDir);
+  const { installDir } = initialPaths;
+  assertInside(toolsDir, installDir);
+  assertInside(toolsDir, initialPaths.binDir);
+  assertInside(toolsDir, initialPaths.executable);
+  assertSafeInstallDirectory(toolsDir);
+  // 兜底判定：tools 路径若含空格/中文等 MSI FastUnzip 禁忌字符，则无法直接安装，
+  // 回退到 D 盘无空格真实根 + junction；否则直接装进 tools。
+  const directEnabled = isMsfSafeInstallPath(installDir);
+  // 真实写入目录：direct 时为 tools 下可见路径；否则为 D 盘无空格根。
+  let realInstallDir = directEnabled ? installDir : msfRealInstallDir();
+  let useRealRoot = !directEnabled;
+  assertSafeInstallDirectory(realInstallDir);
+
+  // 兜底模式先确保 junction 链路健康，避免后续覆盖判断误判。
+  if (useRealRoot) {
+    try {
+      ensureMsfJunction(toolsDir);
+    } catch {}
+  }
+
+  if (isMsfInstallPresent(definition, toolsDir)) {
+    const existingPaths = msfInstallPaths(definition, toolsDir);
+    const currentState = portableDependencyInstallState(definition, toolsDir);
+    if (!currentState.managed) {
+      writeJsonFileAtomic(path.join(installDir, ".toolbox-source.json"), {
+        repository: "rapid7/metasploit-framework",
+        version: msfVersionFromExecutable(existingPaths.executable),
+        source: "official-nightly-msi",
+        installLocation: existingPaths.payloadDir,
+        direct: true,
+        installedAt: new Date().toISOString(),
+        platform: "windows",
+        architecture: "x64",
+      });
+    }
+    reportProgress({
+      packageId: definition.id,
+      stage: "已安装",
+      installStage: "MetasploitFramework 已安装到 " + installDir,
+      progress: 100,
+      progressDeterminate: true,
+      installing: false,
+    });
+    return {
+      packageId: definition.id,
+      version: msfInstalledVersion(definition, toolsDir),
+      path: existingPaths.executable,
+      installDirectory: installDir,
+      status: "up-to-date",
+      updated: false,
+    };
+  }
+
+  const session = {
+    packageId: definition.id,
+    controller: undefined,
+  };
+  try {
+    reportProgress({
+      packageId: definition.id,
+      stage: "正在准备下载 Metasploit",
+      installStage: "preparing",
+      progress: 1,
+      progressDeterminate: false,
+      installing: true,
+    });
+
+    const downloadsDir = path.join(toolsDir, ".downloads");
+    assertSafeInstallDirectory(downloadsDir);
+    const archivePath = path.join(downloadsDir, "metasploitframework-latest.msi");
+    const archiveMetadataPath = `${archivePath}.json`;
+    assertInside(downloadsDir, archivePath);
+    assertInside(downloadsDir, archiveMetadataPath);
+
+    session.controller = new AbortController();
+    const download = await downloadResumableFile({
+      url: definition.installerUrl,
+      filePath: archivePath,
+      metadataPath: archiveMetadataPath,
+      expectedSha256: "",
+      expectedSize: 0,
+      maxBytes: MSF_INSTALLER_MAX_BYTES,
+      allowedHosts: ["windows.metasploit.com", msfMirrorHost()].filter(Boolean),
+      signal: session.controller.signal,
+      onProgress: (progress) => {
+        const receivedBytes = Number(progress.receivedBytes || 0);
+        const totalBytes = Number(progress.totalBytes || download.size || 0);
+        const downloadPercent =
+          totalBytes > 0
+            ? Math.min(85, Math.max(2, Math.round((receivedBytes / totalBytes) * 85)))
+            : Math.min(84, 2 + Math.floor(receivedBytes / (1024 * 1024)));
+        reportProgress({
+          packageId: definition.id,
+          stage:
+            progress.resumedBytes > 0
+              ? "正在续传 Metasploit 安装器"
+              : "正在下载 Metasploit 官方安装器",
+          installStage: "downloading",
+          progress: downloadPercent,
+          progressDeterminate: totalBytes > 0,
+          installing: true,
+          downloadedBytes: receivedBytes,
+          totalBytes,
+        });
+      },
+    });
+    session.controller = undefined;
+
+    reportProgress({
+      packageId: definition.id,
+      stage: "下载完成，正在准备安装",
+      installStage: "downloaded",
+      progress: 100,
+      progressDeterminate: true,
+      installing: true,
+      downloadedBytes: download.size,
+      totalBytes: download.size && download.totalBytes ? download.totalBytes : download.size,
+    });
+
+    reportProgress({
+      packageId: definition.id,
+      stage: "正在校验安装包",
+      installStage: "verifying",
+      progress: 87,
+      progressDeterminate: false,
+      installing: true,
+    });
+    const stat = fs.statSync(archivePath);
+    if (stat.size < 1 || stat.size > MSF_INSTALLER_MAX_BYTES) {
+      throw new UserFacingError("Metasploit 安装包大小异常");
+    }
+    const header = fs.readFileSync(archivePath).subarray(0, MSI_HEADER.length);
+    if (!header.equals(MSI_HEADER)) {
+      throw new UserFacingError("下载的安装包不是有效的 MSI，已拒绝安装");
+    }
+
+    // 确保 tools 下已无残留目录抢位；junction 模式下保留既有链接。
+    if (!isDirectoryLink(installDir) && fs.existsSync(installDir)) {
+      fs.rmSync(installDir, { recursive: true, force: true });
+    }
+    // 兜底：tools 路径安全则直接安装进 <tools>\metasploit-framework；否则装到
+    // D 盘无空格真实根，再在 tools 下建 junction 指回它（兼容旧方案）。
+    const installStageText = useRealRoot
+      ? "正在静默安装到 D 盘无空格目录（路径含空格/中文，正在兜底安装）"
+      : "正在静默安装到工具目录";
+    reportProgress({
+      packageId: definition.id,
+      stage: `${installStageText}（将弹出管理员授权确认，请留意）`,
+      installStage: "installing",
+      progress: 90,
+      progressDeterminate: false,
+      installing: true,
+    });
+    fs.mkdirSync(realInstallDir, { recursive: true });
+    const installLocation = realInstallDir.replace(/[|<>]/g, "").trim();
+    const installLog = path.join(toolsDir, ".downloads", "metasploit-install.log");
+    assertInside(toolsDir, installLog);
+    const installStartedAt = Date.now();
+    let lastLogTail = "";
+    const emitInstallTick = (force = false) => {
+      const elapsedSeconds = Math.max(
+        0,
+        Math.round((Date.now() - installStartedAt) / 1000),
+      );
+      const tail = readMsfInstallLogTail(installLog);
+      const logJson = JSON.stringify(tail);
+      const logChanged = logJson !== lastLogTail;
+      lastLogTail = logJson;
+      // 首次强制输出；后续仅当秒表逢整刻或日志有新内容时更新，避免刷屏。
+      if (!force && !logChanged && elapsedSeconds % 5 !== 0) return;
+      reportProgress({
+        packageId: definition.id,
+        stage:
+          elapsedSeconds < 60
+            ? `正在安装（已运行 ${elapsedSeconds} 秒）`
+            : `正在安装（已运行 ${Math.floor(elapsedSeconds / 60)} 分 ${elapsedSeconds % 60} 秒）`,
+        installStage: "installing",
+        progress: 90,
+        progressDeterminate: false,
+        installing: true,
+        elapsedSeconds,
+        logs: tail,
+      });
+    };
+    emitInstallTick(true);
+    const installTicker = setInterval(() => emitInstallTick(false), 2000);
+    try {
+      await runMsiexecSilent(
+        archivePath,
+        installLocation,
+        installLog,
+        (stage) => {
+          const pendingElevation =
+            stage && /需要管理员权限|提升权限|UAC|同意|继续/.test(stage)
+              ? "，请在系统提示中确认管理员授权"
+              : "";
+          emitInstallTick(true);
+          reportProgress({
+            packageId: definition.id,
+            stage: (stage || "正在安装 Metasploit") + pendingElevation,
+            installStage: "installing",
+            progress: 90,
+            progressDeterminate: false,
+            installing: true,
+          });
+        },
+      );
+    } finally {
+      clearInterval(installTicker);
+    }
+
+    // 校验安装是否成功。MSI 在 INSTALLLOCATION 已命名为 Metasploit 的情况下
+    // 会把 payload 放入额外同名子目录，msfInstallPaths 同时兼容该布局。
+    const verified = useRealRoot
+      ? isRealMsfInstalled()
+      : isMsfInstallPresent(definition, toolsDir);
+    const installedPaths = msfInstallPaths(definition, toolsDir);
+    if (!verified) {
+      throw new UserFacingError(
+        useRealRoot
+          ? "Metasploit 静默安装未完成，请查看安装日志或手动运行安装器"
+          : "Metasploit 静默未完成，请查看安装日志或手动运行安装器",
+      );
+    }
+    // 兜底模式：装到 D 盘后建 junction，保证用户访问路径始终是 <tools>\metasploit-framework。
+    if (useRealRoot) ensureMsfJunction(toolsDir);
+    try {
+      // .toolbox-source.json 写入用户可见目录（junction 模式下经链接映射到真实目录）。
+      writeJsonFileAtomic(
+        path.join(installDir, ".toolbox-source.json"),
+        {
+          repository: "rapid7/metasploit-framework",
+          version: msfVersionFromExecutable(installedPaths.executable),
+          source: "official-nightly-msi",
+          installLocation: useRealRoot ? msfRealInstallDir() : installedPaths.payloadDir,
+          direct: !useRealRoot,
+          installedAt: new Date().toISOString(),
+          platform: "windows",
+          architecture: "x64",
+        },
+      );
+    } catch {
+      // 忽略：写入标记失败时仅丢失元数据，不影响安装结果。
+    }
+    // 安装完成后清理下载缓存，释放数百 MB 的安装包占用。
+    fs.rmSync(archivePath, { force: true });
+    fs.rmSync(archiveMetadataPath, { force: true });
+
+    reportProgress({
+      packageId: definition.id,
+      stage: "MetasploitFramework 安装完成",
+      installStage: "completed",
+      progress: 100,
+      progressDeterminate: true,
+      installing: false,
+    });
+    session.controller = undefined;
+    return {
+      packageId: definition.id,
+      version: msfInstalledVersion(definition, toolsDir),
+      path: installedPaths.executable,
+      toolsDirectory: toolsDir,
+      status: "installed",
+      updated: true,
+    };
+  } catch (error) {
+    session.controller = undefined;
+    reportProgress({
+      packageId: definition.id,
+      stage: "failed",
+      installStage: publicErrorMessage(error, "MetasploitFramework 安装失败"),
+      progress: 0,
+      progressDeterminate: false,
+      installing: false,
+    });
+    throw error;
+  }
+}
+
+function isMsfInstalled(_installerPath, installDir) {
+  const candidates = [
+    path.join(installDir, "bin", "msfconsole.bat"),
+    path.join(installDir, "metasploit-framework", "bin", "msfconsole.bat"),
+  ];
+  return candidates.some((candidate) => {
+    try {
+      return fs.statSync(candidate).isFile();
+    } catch {
+      return false;
+    }
+  });
+}
+
+// Metasploit 没有类似 nuclei -version 的单一精确版本文件；为避免冷启动 Ruby /
+// msfconsole（可能数秒到数十秒），这里采用安装日期作为 nightly 版本标识。
+function msfVersionFromExecutable(_executable) {
+  return `nightly-${new Date().toISOString().slice(0, 10)}`;
+}
+
+// Metasploit 的 nightly MSI 是 per-machine(需要管理员)的 omnibus 安装器。
+// 未以管理员运行时 /qn 会卡在不可见的提权请求上；这里在必要时通过 UAC
+// 提升运行，并写 MSI 详细日志、加超时，避免无限“正在安装”。
+const MSF_INSTALL_TIMEOUT_MS = 20 * 60 * 1000;
+
+function killProcessTree(pid) {
+  try {
+    if (pid && pid > 0)
+      spawnSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
+        windowsHide: true,
+        encoding: "utf8",
+      });
+  } catch {
+    // 尽力而为：超时终止失败不阻断错误返回。
+  }
+}
+
+function isCurrentProcessElevated() {
+  if (process.platform !== "win32") return true;
+  try {
+    const result = spawnSync(
+      "net.exe",
+      ["session"],
+      { windowsHide: true, encoding: "utf8" },
+    );
+    // net session 无管理员权限时返回非零。
+    return result.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+// Windows Installer 的 server 端运行在"工作目录已重置"上下文，相对路径会失效
+// (MSI 1324)。因此一律用【绝对路径】；含空格的路径交给 node spawn(argv 数组)
+// 处理，可靠而不会让 msiexec 打印用法帮助。
+function runMsiexecSilent(msiPath, installLocation, installLog, onStage) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      callback(value);
+    };
+    fs.mkdirSync(path.dirname(installLog), { recursive: true });
+
+    const elevated = isCurrentProcessElevated();
+
+    if (elevated) {
+      // 已提权时直接 spawn：argv 数组由 Node 内置引用转义，路径含空格也可靠。
+      const child = spawn(
+        "msiexec.exe",
+        [
+          "/i",
+          msiPath,
+          "/qn",
+          "/norestart",
+          `/L*v ${installLog}`,
+          `INSTALLLOCATION=${installLocation}`,
+        ],
+        { windowsHide: true, stdio: ["ignore", "ignore", "ignore"] },
+      );
+      const timer = setTimeout(() => {
+        finish(reject, new UserFacingError("Metasploit 安装器执行超时，请查看安装日志"));
+        try {
+          killProcessTree(child.pid);
+        } catch {}
+      }, MSF_INSTALL_TIMEOUT_MS);
+      child.on("error", (error) => {
+        clearTimeout(timer);
+        finish(reject, new UserFacingError(`无法启动 Metasploit 安装器：${error.message}`));
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (code === 0) finish(resolve);
+        else finish(reject, new UserFacingError(`Metasploit 安装器退出码 ${code}`));
+      });
+      return;
+    }
+
+    // 未提权：通过 PowerShell Start-Process -Verb RunAs 触发 UAC，用户确认后安装。
+    onStage && onStage("需要管理员权限,请在系统提示中确认授权以安装 Metasploit。");
+    // 关键：Start-Process -ArgumentList 传【数组】会把含空格的元素拆散，导致
+    // msiexec 打印用法帮助。要用 Single-string、每个令牌以双引号包裹的命令行。
+const psScript =
+      "$ErrorActionPreference='Stop'; " +
+      "$cmdline = '/i \"' + $env:MSI_PATH + '\" /qn /norestart /L*v \"' + $env:MSI_LOG + '\" INSTALLLOCATION=\"' + $env:MSI_LOCATION + '\"'; " +
+      "$p = Start-Process -FilePath 'msiexec.exe' -ArgumentList $cmdline -Verb RunAs -Wait -PassThru; " +
+      "exit $p.ExitCode";
+    const child = spawn(
+      "powershell.exe",
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psScript],
+      {
+        windowsHide: true,
+        stdio: ["ignore", "ignore", "ignore"],
+        env: {
+          ...process.env,
+          MSI_PATH: msiPath,
+          MSI_LOG: installLog,
+          MSI_LOCATION: installLocation,
+        },
+      },
+    );
+    const timer = setTimeout(() => {
+      finish(reject, new UserFacingError("等待管理员授权超时，请在任务栏允许 UAC 提示后重试"));
+      try {
+        killProcessTree(child.pid);
+      } catch {}
+    }, MSF_INSTALL_TIMEOUT_MS);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      finish(
+        reject,
+        new UserFacingError(`无法以管理员权限启动 MSI 安装器：${error.message}`),
+      );
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) finish(resolve);
+      else
+        finish(
+          reject,
+          new UserFacingError(
+            "需要在管理员权限下安装 Metasploit（UAC 被拒绝或未授权）。请复制安装包并手动运行，或将应用程序以管理员身份启动后重试。",
+          ),
+        );
+    });
+  });
+}
+
+async function installPortableDependency(
+  packageId,
+  options = {},
+  reportProgress = () => {},
+) {
+  const definition = INSTALLABLE_PACKAGES[packageId];
+  if (!definition) throw new UserFacingError("不支持安装该依赖");
+  if (process.platform !== "win32" || process.arch !== "x64") {
+    throw new UserFacingError("当前安装包仅支持 Windows x64");
+  }
+  if (definition.installer === "msi") {
+    return installMsfFramework(
+      definition,
+      options,
+      reportProgress,
+    );
+  }
+  const refreshCatalog = options?.refreshCatalog === true;
+  const existing = activeInstalls.get(packageId);
+  if (existing?.state === "paused") activeInstalls.delete(packageId);
+  else if (existing) return existing.promise;
+
+  const session = {
+    packageId,
+    state: "running",
+    phase: "resolving",
+    intent: undefined,
+    controller: undefined,
+    artifacts: new Set(),
+    promise: undefined,
+    lastProgress: undefined,
+  };
+
+  const operation = (async () => {
+    const report = (
+      stage,
+      percent,
+      receivedBytes = 0,
+      totalBytes = 0,
+      extra = {},
+    ) => {
+      const progress = {
+        packageId,
+        stage,
+        installStage: stage,
+        progress: percent,
+        progressDeterminate: false,
+        downloadedBytes: receivedBytes,
+        totalBytes,
+        installing: percent < 100,
+        paused: false,
+        canPause:
+          session.phase === "downloading-package" ||
+          session.phase === "downloading-templates" ||
+          session.phase === "downloading-scanner-pocs",
+        ...extra,
+      };
+      session.lastProgress = progress;
+      reportProgress(progress);
+    };
+    report("正在准备官方下载地址", 1, 0, 0, { progressDeterminate: false });
+    const release =
+      definition.pinnedUrl != null
+        ? await resolvePinnedPortablePackage(definition)
+        : definition.githubSourceArchive === true
+          ? await resolveGithubSourceArchive(definition)
+          : await resolveLatestPackage(definition);
+    const toolsDir = resolveToolsDirectory();
+    const downloadsDir = path.join(toolsDir, ".downloads");
+    const stagingRoot = path.join(toolsDir, ".staging");
+    const stagingDir = path.join(
+      stagingRoot,
+      `${packageId}-${crypto.randomUUID()}`,
+    );
+    const targetDir = path.join(toolsDir, packageId);
+    const releaseIdentity =
+      release.sha256 ||
+      crypto
+        .createHash("sha256")
+        .update(
+          `${release.repository}@${release.tag}:${release.archiveName}`,
+          "utf8",
+        )
+        .digest("hex");
+    const archivePath = path.join(
+      downloadsDir,
+      `${packageId}-${release.version}-${releaseIdentity.slice(0, 16)}${definition.format === "raw" ? ".exe.part" : ".zip.part"}`,
+    );
+    const archiveMetadataPath = `${archivePath}.json`;
+    const stagedExecutable = path.join(stagingDir, definition.executable);
+    const targetExecutable = path.join(targetDir, definition.executable);
+    [
+      downloadsDir,
+      stagingRoot,
+      stagingDir,
+      targetDir,
+      archivePath,
+      archiveMetadataPath,
+      stagedExecutable,
+      targetExecutable,
+    ].forEach((candidate) => assertInside(toolsDir, candidate));
+    assertSafeInstallDirectory(toolsDir);
+    assertSafeInstallDirectory(downloadsDir);
+    assertSafeInstallDirectory(stagingRoot);
+    assertSafeInstallDirectory(stagingDir);
+    assertSafeInstallDirectory(targetDir);
+    session.artifacts.add(JSON.stringify([archivePath, archiveMetadataPath]));
+
+    let installationCompleted = false;
+    let catalogUpdated = false;
+    try {
+      const installedMetadata = readJsonFile(
+        path.join(targetDir, ".toolbox-source.json"),
+      );
+      const payloadExists = isRegularFile(
+        definition.portableTree === true
+          ? (definition.id === "postgres"
+              ? postgresExecutablePath(targetDir)
+              : findExecutableInTree(
+                  targetDir,
+                  definition.executableSearchNames || [definition.executable],
+                )) || targetExecutable
+          : targetExecutable,
+      );
+      const installedState = evaluateInstalledRelease({
+        metadata: installedMetadata,
+        repository: release.repository,
+        latestVersion: release.version,
+        payloadExists,
+      });
+      if (installedState.upToDate) {
+        if (refreshCatalog) {
+          const catalogResult = await refreshPortableDependencyCatalog({
+            packageId,
+            release,
+            toolsDir,
+            session,
+            report,
+            progressStart: 5,
+            progressSpan: 94,
+          });
+          catalogUpdated = catalogResult.updated === true;
+        }
+        const stage = refreshCatalog
+          ? catalogUpdated
+            ? "工具已是最新版本，漏洞目录已更新"
+            : "工具和漏洞目录已是最新版本"
+          : "当前已是最新版本";
+        report(stage, 100, 0, 0, { progressDeterminate: true });
+        session.state = "completed";
+        return {
+          packageId,
+          version: installedState.installedVersion,
+          latestVersion: release.version,
+          path: targetExecutable,
+          toolsDirectory: toolsDir,
+          status: "up-to-date",
+          updated: false,
+          catalogUpdated,
+        };
+      }
+      report(`正在连接官方下载源（v${release.version}）`, 2, 0, 0, {
+        progressDeterminate: false,
+      });
+      session.phase = "downloading-package";
+      session.controller = new AbortController();
+      const download = await downloadResumableFile({
+        url: release.url,
+        filePath: archivePath,
+        metadataPath: archiveMetadataPath,
+        expectedSha256: release.sha256,
+        expectedSize: release.size,
+        maxBytes: definition.maxArchiveBytes || 150 * 1024 * 1024,
+        allowedHosts: definition.pinnedUrl
+          ? definition.allowedHosts
+          : [
+              "github.com",
+              "release-assets.githubusercontent.com",
+              "objects.githubusercontent.com",
+              // 源码树便携包从 codeload / objects CDN 拉取官方 zip。
+              ...(definition.githubSourceArchive === true
+                ? ["codeload.github.com", "objects.githubusercontent.com"]
+                : []),
+              release.mirrorHost,
+            ].filter(Boolean),
+        signal: session.controller.signal,
+        onProgress: (progress) => {
+          const receivedBytes = Number(progress.receivedBytes || 0);
+          const totalBytes = Number(progress.totalBytes || release.size || 0);
+          const downloadPercent =
+            totalBytes > 0
+              ? Math.min(
+                  80,
+                  Math.max(2, Math.round((receivedBytes / totalBytes) * 80)),
+                )
+              : Math.min(79, 2 + Math.floor(receivedBytes / (1024 * 1024)));
+          const stage = progress.restarted
+            ? "下载源不支持续传，已从头重新下载"
+            : progress.resumedBytes > 0
+              ? `正在续传安装包（已恢复 ${Math.round((progress.resumedBytes / 1024 / 1024) * 10) / 10} MB）`
+              : progress.complete
+                ? "检测到完整的未完成下载，正在校验"
+                : "正在下载安装包";
+          report(stage, downloadPercent, receivedBytes, totalBytes, {
+            progressDeterminate: totalBytes > 0,
+            resumed: progress.resumedBytes > 0,
+            resumedBytes: Number(progress.resumedBytes || 0),
+            rangeAccepted: Boolean(progress.rangeAccepted),
+          });
+        },
+      });
+      throwIfDependencyInterrupted(session);
+      session.controller = undefined;
+      session.phase = "verifying-package";
+      try {
+        const isRaw = definition.format === "raw";
+        const isTree = definition.portableTree === true;
+        const stagePayload = isRaw
+          ? {
+              binaryPath: archivePath,
+              expectedSha256: release.sha256,
+              expectedSize: release.size,
+              maxBinaryBytes: 150 * 1024 * 1024,
+              targetPath: stagedExecutable,
+              maxExecutableBytes: 256 * 1024 * 1024,
+            }
+          : isTree
+            ? {
+                archivePath,
+                expectedSha256: release.sha256,
+                expectedSize: release.size,
+                maxArchiveBytes: definition.maxArchiveBytes || 900 * 1024 * 1024,
+                maxFiles: definition.maxFiles || 40000,
+                maxExtractedBytes:
+                  definition.maxExtractedBytes || 3 * 1024 * 1024 * 1024,
+                stagingDir,
+                label:
+                  packageId === "zap"
+                    ? "ZAP"
+                    : packageId === "postgres"
+                      ? "PostgreSQL"
+                      : "sqlmap",
+              }
+            : {
+                archivePath,
+                expectedSha256: release.sha256,
+                expectedSize: release.size,
+                maxArchiveBytes: 150 * 1024 * 1024,
+                executableName: definition.executable,
+                targetPath: stagedExecutable,
+                maxExecutableBytes: 256 * 1024 * 1024,
+              };
+        const extraction = await runDependencyWorker(
+          isRaw
+            ? "stage-executable-binary"
+            : isTree
+              ? "extract-portable-tree"
+              : "extract-executable",
+          stagePayload,
+          (progress) => {
+            const workerProgress = Math.max(
+              0,
+              Math.min(1, Number(progress.progress || 0)),
+            );
+            if (workerProgress >= 0.74) session.phase = "extracting-package";
+            const processedBytes = Number(progress.processedBytes || 0);
+            const processedTotalBytes = Number(progress.totalBytes || 0);
+            const progressDeterminate =
+              (processedTotalBytes > 0 &&
+                typeof progress.processedBytes === "number") ||
+              (Number(progress.totalFiles || 0) > 0 &&
+                typeof progress.processedFiles === "number");
+            report(
+              progress.stage || "正在后台处理安装包",
+              81 + Math.round(workerProgress * 11),
+              processedBytes,
+              processedTotalBytes,
+              {
+                progressDeterminate,
+                processedFiles: progress.processedFiles,
+                totalFiles: progress.totalFiles,
+                resumed: download.resumedBytes > 0,
+                resumedBytes: download.resumedBytes,
+                rangeAccepted: download.rangeAccepted,
+              },
+            );
+          },
+        );
+        session.extraction = extraction;
+      } catch (error) {
+        if (
+          /SHA-256|长度/.test(
+            error instanceof Error ? error.message : String(error),
+          )
+        ) {
+          removeDownloadState(archivePath, archiveMetadataPath);
+        }
+        throw error;
+      }
+      const catalogResult = await refreshPortableDependencyCatalog({
+        packageId,
+        release,
+        toolsDir,
+        session,
+        report,
+        progressStart: 93,
+        progressSpan: 6,
+      });
+      catalogUpdated = catalogResult.updated === true;
+      session.phase = "installing";
+      report("正在原子替换工具文件", 99, 0, 0, { progressDeterminate: false });
+      const recordedSha256 = String(
+        session.extraction?.archiveSha256 || "",
+      ).toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(recordedSha256)) {
+        throw new UserFacingError("无法记录安装包 SHA-256，已拒绝安装");
+      }
+      if (definition.portableTree === true) {
+        // 源码树便携包：解压后在暂存目录生成启动器，再原子替换到目标目录。
+        ensureSqlmapLauncher(stagingDir, definition);
+        promotePortableTree({
+          toolsDir,
+          stagingDir,
+          targetDir,
+          sourceMetadata: {
+            repository: release.repository,
+            version: release.version,
+            releaseTag: release.tag,
+            commit: release.commit,
+            archiveName: release.archiveName,
+            archiveSha256: recordedSha256,
+            integritySource: release.integritySource,
+            integrityVerified: Boolean(release.sha256),
+            sourceUrl: release.url,
+            platform: "windows",
+            architecture: "x64",
+            acquisition: "allowlisted-official-release",
+            installedAt: new Date().toISOString(),
+          },
+        });
+      } else {
+        promotePortableInstall({
+          toolsDir,
+          stagingDir,
+          targetDir,
+          stagedExecutable,
+          targetExecutable,
+          sourceMetadata: {
+            repository: release.repository,
+            version: release.version,
+            releaseTag: release.tag,
+            archiveName: release.archiveName,
+            archiveSha256: recordedSha256,
+            integritySource: release.integritySource,
+            integrityVerified: Boolean(release.sha256),
+            sourceUrl: release.url,
+            platform: "windows",
+            architecture: "x64",
+            acquisition: "allowlisted-official-release",
+            installedAt: new Date().toISOString(),
+          },
+        });
+      }
+      installationCompleted = true;
+      removeDownloadState(archivePath, archiveMetadataPath);
+      report(
+        "安装完成",
+        100,
+        download.size,
+        download.totalBytes || download.size,
+        { progressDeterminate: true },
+      );
+      session.state = "completed";
+      return {
+        packageId,
+        version: release.version,
+        latestVersion: release.version,
+        path: targetExecutable,
+        toolsDirectory: toolsDir,
+        sha256: recordedSha256,
+        integritySource: release.integritySource,
+        updated: true,
+        catalogUpdated,
+      };
+    } catch (error) {
+      if (session.intent === "pause" || session.intent === "cancel") {
+        const action = session.intent;
+        session.controller = undefined;
+        if (action === "cancel") {
+          for (const artifact of session.artifacts) {
+            try {
+              removeDownloadState(...JSON.parse(artifact));
+            } catch {
+              // 尽力而为：单个残留文件不阻止取消完成。
+            }
+          }
+          session.state = "canceled";
+        } else session.state = "paused";
+        const progress = {
+          ...(session.lastProgress || {}),
+          packageId,
+          stage: action === "pause" ? "paused" : "canceled",
+          installStage:
+            action === "pause"
+              ? "下载已暂停，断点文件已保留"
+              : "下载已取消，缓存文件已清除",
+          installing: false,
+          paused: action === "pause",
+          canPause: false,
+        };
+        session.lastProgress = progress;
+        reportProgress(progress);
+        return {
+          packageId,
+          status: action === "pause" ? "paused" : "canceled",
+        };
+      }
+      session.state = "failed";
+      let message;
+      if (error instanceof UserFacingError && error.message.trim()) {
+        message = error.message.trim();
+      } else {
+        const raw =
+          `${error?.code || ""} ${error?.message || ""} ${error?.cause?.code || ""} ${error?.cause?.message || ""}`;
+        if (/ERR_NETWORK_CHANGED|ENETUNREACH|EHOSTUNREACH|ECONNRESET/i.test(raw))
+          message = "依赖安装失败：网络发生变化或连接被中断，请检查网络后重试";
+        else if (/ERR_CONTENT_LENGTH_MISMATCH|ERR_INCOMPLETE_CHUNKED_ENCODING/i.test(raw))
+          message = "依赖安装失败：下载的安装包不完整，请点击重试续传";
+        else if (/ECONNREFUSED|ERR_CONNECTION_REFUSED/i.test(raw))
+          message = "依赖安装失败：无法连接下载源（连接被拒绝），请检查网络后重试";
+        else if (/ENOTFOUND|ERR_NAME_NOT_RESOLVED/i.test(raw))
+          message = "依赖安装失败：无法解析下载源地址（DNS 失败），请检查网络后重试";
+        else if (/ENOSPC/i.test(raw))
+          message = "依赖安装失败：磁盘空间不足，请清理磁盘后重试";
+        else if (/EBUSY|EPERM|EACCES/i.test(raw))
+          message = "依赖安装失败：文件被占用或没有写入权限，请关闭正在使用的程序后重试";
+        else message = "依赖安装失败，请检查网络和磁盘空间后重试";
+      }
+      if (!(error instanceof UserFacingError)) {
+        writeDesktopStartupDiagnostic("dependency-install", error, {
+          packageId,
+          phase: session.phase,
+        });
+      }
+      reportProgress({
+        packageId,
+        stage: "failed",
+        installStage: message,
+        progress: 0,
+        progressDeterminate: false,
+        downloadedBytes: 0,
+        totalBytes: 0,
+        installing: false,
+      });
+      throw new UserFacingError(message);
+    } finally {
+      if (installationCompleted)
+        removeDownloadState(archivePath, archiveMetadataPath);
+      assertInside(toolsDir, stagingDir);
+      fs.rmSync(stagingDir, { recursive: true, force: true });
+    }
+  })();
+
+  session.promise = operation;
+  activeInstalls.set(packageId, session);
+  try {
+    return await operation;
+  } finally {
+    if (session.state !== "paused" && activeInstalls.get(packageId) === session)
+      activeInstalls.delete(packageId);
+  }
+}
+
+function portableDependencyInstallState(definition, toolsDir) {
+  if (definition.installer === "msi") {
+    const paths = msfInstallPaths(definition, toolsDir);
+    // 兼容 MSI 直装、同名嵌套直装与 junction 三种布局。
+    const junctionPresent = isDirectoryLink(paths.installDir);
+    const directPresent = !junctionPresent && isMsfInstallPresent(definition, toolsDir);
+    let metadata = readJsonFile(
+      path.join(paths.installDir, ".toolbox-source.json"),
+    );
+    // 自愈：工具已安装但元数据丢失（例如 MSI 成功、仅布局与预期不同，或
+    // 重新打包清掉了 win-unpacked 下的文件），补元数据以识别为受管安装。
+    const realPresent = junctionPresent && isRealMsfInstalled();
+    const payloadInstalled = directPresent || realPresent;
+    if (!metadata && payloadInstalled) {
+      try {
+        // MSI 既可能直接写在 installDir，也可能嵌套在同名子目录；元数据
+        // 始终放稳定的 installDir 根，以兼容卸载器及工具目录迁移逻辑。
+        writeJsonFileAtomic(path.join(paths.installDir, ".toolbox-source.json"), {
+          repository: "rapid7/metasploit-framework",
+          version: msfVersionFromExecutable(paths.executable),
+          source: "official-nightly-msi",
+          installLocation: paths.installDir,
+          direct: true,
+          installedAt: new Date().toISOString(),
+          platform: "windows",
+          architecture: "x64",
+        });
+        metadata = readJsonFile(
+          path.join(paths.installDir, ".toolbox-source.json"),
+        );
+      } catch {}
+    }
+    return {
+      managed: Boolean(metadata && payloadInstalled),
+      installedVersion: metadata?.version || "",
+      metadata,
+      targetDir: paths.installDir,
+      targetExecutable: paths.executable,
+      isMsfJunction: Boolean(junctionPresent && metadata && isRealMsfInstalled()),
+    };
+  }
+  const targetDir = path.join(toolsDir, definition.id);
+  const targetExecutable = path.join(targetDir, definition.executable);
+  const metadata = readJsonFile(
+    path.join(targetDir, ".toolbox-source.json"),
+  );
+  // 便携树包（如 ZAP、PostgreSQL）把整个目录解压进 targetDir，启动脚本可能在顶层或内层子目录。
+  const resolvedExecutable =
+    definition.portableTree === true
+      ? (definition.id === "postgres"
+          ? postgresExecutablePath(targetDir)
+          : findExecutableInTree(
+              targetDir,
+              definition.executableSearchNames || [definition.executable],
+            )) || targetExecutable
+      : targetExecutable;
+  const state = evaluateInstalledRelease({
+    metadata,
+    repository: definition.repository,
+    latestVersion: metadata.version,
+    payloadExists: isRegularFile(resolvedExecutable),
+  });
+  return {
+    ...state,
+    metadata,
+    targetDir,
+    targetExecutable: resolvedExecutable,
+  };
+}
+
+// 在目录树内（含一层子目录）定位便携工具的启动脚本，容忍解压出的顶层目录名变化。
+function findExecutableInTree(root, names) {
+  if (!root) return null;
+  for (const name of names) {
+    const candidate = path.join(root, name);
+    if (isRegularFile(candidate)) return candidate;
+  }
+  try {
+    for (const child of fs.readdirSync(root)) {
+      if (child.startsWith(".")) continue;
+      const childDir = path.join(root, child);
+      if (!fs.statSync(childDir).isDirectory()) continue;
+      for (const name of names) {
+        const candidate = path.join(childDir, name);
+        if (isRegularFile(candidate)) return candidate;
+      }
+    }
+  } catch {
+    /* ignore unreadable trees */
+  }
+  return null;
+}
+
+// EDB 官方 PostgreSQL windows binaries 压缩包根部是一个 <pgsql> 目录（含 bin/lib/share），
+// psql 位于 <root>/<pgsql>/bin/psql.exe。这里在 targetDir 下兜底定位 psql.exe，
+// 容忍顶层目录名变化（兼容 <pgsql>\bin、<bin> 等布局）。
+function postgresExecutablePath(targetDir) {
+  const executableName = process.platform === "win32" ? "psql.exe" : "psql";
+  const candidates = [
+    path.join(targetDir, "bin", executableName),
+    path.join(targetDir, "pgsql", "bin", executableName),
+    path.join(targetDir, "pgsql", executableName),
+  ];
+  for (const candidate of candidates) {
+    if (isRegularFile(candidate)) return candidate;
+  }
+  try {
+    for (const child of fs.readdirSync(targetDir)) {
+      if (child.startsWith(".")) continue;
+      const nested = path.join(targetDir, child, "bin", executableName);
+      if (isRegularFile(nested)) return nested;
+    }
+  } catch {
+    /* ignore unreadable trees */
+  }
+  return null;
+}
+
+// 返回 <tools>/postgres 下已安装的 psql.exe 完整路径；未安装返回 null。
+function postgresExecutable(toolsDir) {
+  return postgresExecutablePath(path.join(toolsDir, "postgres"));
+}
+
+// 返回 <tools>/postgres 下已安装的 psql 所在 bin 目录（用于追加到后端 PATH）；未安装返回 null。
+function postgresBinDir(toolsDir) {
+  const executable = postgresExecutable(toolsDir);
+  return executable ? path.dirname(executable) : null;
+}
+
+// ---------------------------------------------------------------------------
+// 桌面内置 PostgreSQL 实例管理（一键迁移到 PostgreSQL）
+// ---------------------------------------------------------------------------
+// 用户选择“迁移到 PostgreSQL”后：
+//  1) 用 tools/postgres 内随附的 PostgreSQL 二进制 initdb 初始化私有数据簇；
+//  2) 在私有端口启动本地 postgres 服务（随机密码，凭据经系统安全存储加密保存）；
+//  3) 创建业务库；
+//  4) 重启后端，以 postgres profile 启动（首启附带旧 H2 文件，让其迁移数据）。
+// 数据簇位于用户数据目录下（不在 tools 目录），换目录/卸载工具不影响已有数据。
+const DESKTOP_PG_DATABASE = "security_toolbox";
+const DESKTOP_PG_USERNAME = "security_toolbox";
+const DESKTOP_PG_HOST = "127.0.0.1";
+// 内存标志：本次重启后端时是否携带旧 H2 文件让其迁移数据（一次性）。
+let desktopPgMigrateH2Url = null;
+
+// 把迁移过程推送给前端（订阅方通过 onPostgresMigrationProgress 接收）。
+function reportPgMigrationProgress(step, message) {
+  const target = mainWindow;
+  if (!target || target.isDestroyed()) return;
+  target.webContents.send("toolbox:postgres-migration-progress", {
+    ts: Date.now(),
+    step,
+    message: String(message || ""),
+  });
+}
+
+// Reuse the backend's required stdout log: MIGRATE messages are emitted there
+// already, so UI forwarding needs no second ever-appending progress file.
+let migrateProgressObserver = null;
+function startMigrateProgressTail(stream) {
+  stopMigrateProgressTail();
+  migrateProgressObserver = observeMigrationProgress(stream, {
+    onProgress: message => reportPgMigrationProgress("copy", message),
+    onFault: error => desktopRuntimeLogs().recordFault("migration-progress", { code: "MIGRATION_PROGRESS_STREAM_FAILED",
+      message: diagnosticError(error), at: new Date().toISOString(), fatal: true }),
+  });
+}
+
+function stopMigrateProgressTail() {
+  migrateProgressObserver?.stop();
+  migrateProgressObserver = null;
+}
+
+function desktopPostgresBinDir() {
+  const toolsDir = resolveToolsDirectory();
+  const executable = postgresExecutable(toolsDir);
+  return executable ? path.dirname(executable) : null;
+}
+
+function desktopPostgresDataDir() {
+  return path.join(app.getPath("userData"), "postgresql-cluster");
+}
+
+// 回退 H2 前，把 PG 业务库整体 pg_dump 快照到 userData 下（保留最近 N 份）。
+// 这样回退后用户在 H2 里继续写数据也不会丢失 PG 侧的最终状态；
+// 重新迁移时可以把快照作为导入源。
+const POSTGRES_SNAPSHOT_KEEP = 3;
+
+function desktopPostgresSnapshotDir() {
+  return path.join(app.getPath("userData"), "postgresql-snapshots");
+}
+
+async function snapshotDesktopPostgres(reason = "rollback") {
+  const config = desktopPostgresConfig();
+  if (!config) return null;
+  const binDir = desktopPostgresBinDir();
+  if (!binDir) return null;
+  const dumpPath = path.join(binDir, "pg_dump.exe");
+  if (!fs.existsSync(dumpPath)) return null;
+  const snapshotDir = desktopPostgresSnapshotDir();
+  fs.mkdirSync(snapshotDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const target = path.join(snapshotDir, `security-toolbox-${reason}-${stamp}.sql`);
+  await pgRun(
+    dumpPath,
+    [
+      ...psqlBaseArgs(config, config.database, []),
+      "--no-password",
+      "--format=custom",
+      "--file", target,
+    ],
+    { env: pgEnv(config), timeoutMs: 300000 },
+  );
+  const size = fs.existsSync(target) ? fs.statSync(target).size : 0;
+  writeDesktopStartupDiagnostic("postgres-snapshot", null, {
+    step: "saved",
+    reason,
+    target,
+    size,
+  });
+  // 清理旧快照，仅保留最近 POSTGRES_SNAPSHOT_KEEP 份。
+  try {
+    const stale = fs
+      .readdirSync(snapshotDir)
+      .filter((name) => name.endsWith(".sql"))
+      .sort()
+      .reverse()
+      .slice(POSTGRES_SNAPSHOT_KEEP);
+    for (const name of stale) {
+      try {
+        fs.rmSync(path.join(snapshotDir, name), { force: true });
+      } catch {}
+    }
+  } catch {}
+  return { target, size };
+}
+
+// 读取加密持久化的私有实例配置；未配置/未启用/无法解密时返回 undefined。
+function desktopPostgresConfig(settings = readDesktopSettings()) {
+  const stored =
+    settings.postgres && typeof settings.postgres === "object" ? settings.postgres : undefined;
+  if (!stored) return undefined;
+  const port = Number(stored.port);
+  let password = "";
+  if (stored.encryptedPassword && safeStorage.isEncryptionAvailable()) {
+    try {
+      password = safeStorage.decryptString(Buffer.from(String(stored.encryptedPassword), "base64"));
+    } catch {
+      password = "";
+    }
+  }
+  if (stored.enabled !== true || !Number.isSafeInteger(port) || !password) {
+    return undefined;
+  }
+  return {
+    enabled: true,
+    host: stored.host || DESKTOP_PG_HOST,
+    port,
+    database: stored.database || DESKTOP_PG_DATABASE,
+    username: stored.username || DESKTOP_PG_USERNAME,
+    password,
+  };
+}
+
+function saveDesktopPostgresConfig({ enabled, host, port, database, username, password }) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new UserFacingError("系统安全存储不可用，无法安全保存 PostgreSQL 凭据");
+  }
+  const settings = readDesktopSettings();
+  const existing =
+    settings.postgres && typeof settings.postgres === "object" ? settings.postgres : {};
+  const next = {
+    ...settings,
+    postgres: {
+      ...existing,
+      schemaVersion: 1,
+      enabled: Boolean(enabled),
+      host: String(host || DESKTOP_PG_HOST),
+      port: Number(port),
+      database: String(database || DESKTOP_PG_DATABASE),
+      username: String(username || DESKTOP_PG_USERNAME),
+      ...(password
+        ? { encryptedPassword: safeStorage.encryptString(String(password)).toString("base64") }
+        : {}),
+    },
+  };
+  writeDesktopSettings(next);
+  return desktopPostgresConfig(next);
+}
+
+function pgSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// 清除已启用的 PostgreSQL 标记（用于启动期探测不可达时回退 H2，避免反复失败）。
+function disableDesktopPostgres() {
+  const settings = readDesktopSettings();
+  const postgres =
+    settings.postgres && typeof settings.postgres === "object"
+      ? settings.postgres
+      : {};
+  // 仅当开启了才写，减少无谓的磁盘写入。
+  if (postgres.enabled === true) {
+    writeDesktopSettings({
+      ...settings,
+      postgres: { ...postgres, enabled: false },
+    });
+  }
+}
+
+// 通用执行 PG 命令行工具，返回 stderr（成功时通常为空）。
+function pgRun(binary, args, options = {}) {
+  const { env = {}, timeoutMs = 180000 } = options;
+  return new Promise((resolve, reject) => {
+    let stderrBuf = "";
+    const child = spawn(binary, args, {
+      windowsHide: true,
+      env: { ...process.env, ...env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stderr.on("data", (c) => (stderrBuf += String(c)));
+    child.stdout.resume();
+    const timer = setTimeout(() => {
+      try {
+        killProcessTree(child.pid);
+      } catch {}
+      reject(new UserFacingError(`${path.basename(binary)} 执行超时`));
+    }, timeoutMs);
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(new UserFacingError(`无法启动 ${path.basename(binary)}：${error.message}`));
+    });
+child.once("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(String(stderrBuf));
+      else
+        reject(
+          new UserFacingError(
+            `${path.basename(binary)} 退出码 ${code}：${String(stderrBuf).slice(0, 600)}`,
+          ),
+        );
+    });
+  });
+}
+
+// 选择本地空闲端口（避开系统的 5432）。
+async function pickDesktopPostgresPort(start = 15432, end = 15499) {
+  async function isFree(port) {
+    return new Promise((resolve) => {
+      const server = net.createServer();
+      let settled = false;
+      const done = (free) => {
+        if (!settled) {
+          settled = true;
+          try {
+            server.close();
+          } catch {}
+          resolve(free);
+        }
+      };
+      server.once("error", () => done(false));
+      server.once("listening", () => done(true));
+      server.listen(port, "127.0.0.1");
+    });
+  }
+  for (let port = start; port <= end; port++) {
+    if (await isFree(port)) return port;
+  }
+  throw new UserFacingError("没有可用端口启动本地 PostgreSQL");
+}
+
+// 端口上是否有进程在监听（粗略判定：服务可用）。
+async function pgReachable(config) {
+  if (!config) return false;
+  const socket = net.connect({ host: config.host, port: config.port });
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      socket.destroy();
+      resolve(false);
+    }, 900);
+    socket.once("connect", () => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("error", () => {
+      clearTimeout(timer);
+      resolve(false);
+    });
+  });
+}
+
+function requirePostgresBinaries() {
+  const binDir = desktopPostgresBinDir();
+  if (!binDir) {
+    throw new UserFacingError("未检测到本地 PostgreSQL，请先在依赖页安装 PostgreSQL");
+  }
+  for (const name of ["initdb.exe", "pg_ctl.exe", "psql.exe"]) {
+    if (!fs.existsSync(path.join(binDir, name))) {
+      throw new UserFacingError("PostgreSQL 安装不完整，缺少 " + name);
+    }
+  }
+  return binDir;
+}
+
+// 重建前把旧数据簇整体移到同级的带时间戳备份目录（而非直接删除）。
+// 移动同盘rename几乎零成本；备份保留最近 N 份，更早的自动清理。
+const POSTGRES_CLUSTER_BACKUP_KEEP = 3;
+
+async function backupDesktopPostgresCluster(dataDir) {
+  if (!fs.existsSync(dataDir)) return;
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupDir = `${dataDir}.bak-${stamp}`;
+  try {
+    fs.renameSync(dataDir, backupDir);
+  } catch (error) {
+    // rename 失败（跨卷/句柄占用）时退回复制，源目录交给后续删除流程。
+    writeDesktopStartupDiagnostic(
+      "postgres-cluster-backup",
+      error,
+      { step: "rename-failed-copying", dataDir, backupDir },
+    );
+    fs.cpSync(dataDir, backupDir, { recursive: true, force: true });
+  }
+  writeDesktopStartupDiagnostic("postgres-cluster-backup", null, {
+    step: "backed-up",
+    dataDir,
+    backupDir,
+  });
+  // 清理旧备份，仅保留最近 POSTGRES_CLUSTER_BACKUP_KEEP 份。
+  const parent = path.dirname(dataDir);
+  const prefix = `${path.basename(dataDir)}.bak-`;
+  try {
+    const stale = fs
+      .readdirSync(parent)
+      .filter((name) => name.startsWith(prefix))
+      .sort()
+      .reverse()
+      .slice(POSTGRES_CLUSTER_BACKUP_KEEP);
+    for (const name of stale) {
+      try {
+        fs.rmSync(path.join(parent, name), { recursive: true, force: true });
+      } catch {}
+    }
+  } catch {}
+}
+
+// 用随机密码初始化私有数据簇（超级用户账号 = 应用账号，自带 LOGIN/CREATEDB）。
+async function initializeDesktopPostgresCluster(binDir, dataDir, username, password) {
+  // 先确保没有任何残留的 postgres 进程再清理目录，否则 rmSync 因句柄占用只删一部分，
+  // 留给 initdb 一个“存在但非空”的目录而失败。
+  try {
+    await pgRun(
+      path.join(binDir, "pg_ctl.exe"),
+      ["-D", dataDir, "stop", "-m", "fast"],
+      { timeoutMs: 15000 },
+    );
+  } catch {
+    // 没有正在运行的实例（或已停止），忽略。
+  }
+  await removeDesktopPostgresDir(dataDir);
+  fs.mkdirSync(dataDir, { recursive: true });
+  const pwFile = path.join(path.dirname(dataDir), ".pgpw.tmp");
+  fs.writeFileSync(pwFile, `${password}\n`, { encoding: "utf8", mode: 0o600 });
+  try {
+await pgRun(
+      path.join(binDir, "initdb.exe"),
+      [
+        "-D",
+        dataDir,
+        "--encoding=UTF8",
+        "--locale=C",
+        `--username=${username}`,
+        "--auth-host=scram-sha-256",
+        "--auth-local=scram-sha-256",
+        `--pwfile=${pwFile}`,
+      ],
+      { env: { LANG: "C", LC_ALL: "C", LC_CTYPE: "C" }, timeoutMs: 120000 },
+    );
+} finally {
+    try {
+      fs.rmSync(pwFile, { force: true });
+    } catch {}
+  }
+}
+
+// 反复删除数据目录，容忍“句柄暂未释放”导致的非空目录，最多重试数秒。
+async function removeDesktopPostgresDir(dataDir) {
+  const remove = () => fs.rmSync(dataDir, { recursive: true, force: true });
+  let attempt = 0;
+  for (;;) {
+    try {
+      remove();
+      if (!fs.existsSync(dataDir)) return;
+      if (attempt >= 20) break;
+    } catch {
+      if (attempt >= 20) throw new UserFacingError(`无法清理旧 PostgreSQL 数据目录：${dataDir}`);
+    }
+    await pgSleep(250);
+    attempt++;
+  }
+  // 目录在反复删除后仍存在：可能是进程句柄未释放，明确提示。
+  if (fs.existsSync(dataDir)) {
+    throw new UserFacingError(
+      `旧 PostgreSQL 数据目录仍被占用，无法迁移。请关闭安全工具箱后删除该目录再试：${dataDir}`,
+    );
+  }
+}
+
+async function startDesktopPostgres(binDir, dataDir, config) {
+  let logPolicy;
+  try { logPolicy = preparePostgresLogPolicy({ runtimeDirectory: desktopRuntimeLogs().directory, dataDirectory: dataDir }); }
+  catch (error) {
+    desktopRuntimeLogs().recordFault("postgres", { code: "POSTGRES_LOG_POLICY_FAILED", message: diagnosticError(error), at: new Date().toISOString(), fatal: true });
+    throw new UserFacingError(`无法准备 PostgreSQL 运行日志：${diagnosticError(error)}`);
+  }
+  const logFile = logPolicy.bootstrapFile;
+  // Windows clients use the loopback TCP listener. Forcing a Unix socket into the
+  // user-data path can fail with EINVAL (for example, on a long profile path).
+  // Override even a persisted socket directory without changing the data cluster.
+  const socketOptions = process.platform === "win32"
+    ? "-c unix_socket_directories="
+    : `-k "${dataDir}"`;
+  const options = `-p ${config.port} -h ${config.host} ${socketOptions} ${logPolicy.options}`;
+  // 用 stdio:"ignore" 启动 pg_ctl，避免 postgres 服务进程继承其管道句柄：
+  // 即便 pg_ctl 已退出，postgres 仍可能占着管道导致 Electron 收不到 close 而误报超时。
+  const ctl = spawn(
+    path.join(binDir, "pg_ctl.exe"),
+    ["-D", dataDir, "-l", logFile, "-o", options, "-w", "start"],
+    { windowsHide: true, stdio: "ignore" },
+  );
+  let ctlError = "";
+  ctl.on("error", (err) => {
+    ctlError = err.message;
+  });
+  ctl.unref?.();
+
+  for (let i = 0; i < 80; i++) {
+    // 仅 TCP 可连不代表 PG 已完成崩溃恢复；必须能真正执行 SQL 才视为就绪，
+    // 否则 psql 会报 “FATAL: the database system is starting up”。
+    if (await pgSqlReady(config)) return;
+    await pgSleep(400);
+  }
+  const tail = readPostgresStartupTail(logPolicy);
+  throw new UserFacingError(
+    ctlError
+      ? `无法启动本地 PostgreSQL：${ctlError}`
+      : `本地 PostgreSQL 启动后未在预期时间内就绪。日志：\n${tail}`,
+  );
+}
+
+// 应用启动 / 后端重启时，确保已启用但尚未运行的本地 PostgreSQL 先起来，
+// 否则后台以 postgres 数据源启动会因连接被拒而失败。
+async function ensureDesktopPostgresRunning() {
+  const config = activeDesktopPostgresConfig();
+  if (!config || config.enabled !== true) return;
+  if (!(await pgReachable(config))) {
+    const binDir = requirePostgresBinaries();
+    const dataDir = desktopPostgresDataDir();
+    if (!fs.existsSync(path.join(dataDir, "PG_VERSION"))) {
+      throw new UserFacingError("未初始化 PostgreSQL 数据簇，请先在依赖页重新迁移");
+    }
+    await startDesktopPostgres(binDir, dataDir, config);
+  }
+  // 等待真正能执行 SQL（PG 崩溃恢复期只接受 TCP，但会拒绝查询）。
+  for (let i = 0; i < 80; i++) {
+    if (await pgSqlReady(config)) break;
+    await pgSleep(400);
+  }
+  // 服务就绪后幂等地确保业务库存在（迁移中途失败时数据库可能尚未创建）。
+  await ensureDesktopPostgresDatabase(config);
+}
+
+// 设置/重设 PostgreSQL 应用账号密码。password 传空则随机生成。
+// 若已存配置的密码与集群不符（迁移/历史残留导致认证失败），通过 trust 引导重置
+// 数据库超级用户密码，再持久化凭据，从而绕开“必须先用旧密码才能改密码”的死锁。
+async function setDesktopPostgresPassword(password = "") {
+  const config = activeDesktopPostgresConfig();
+  if (!config || config.enabled !== true) {
+    throw new UserFacingError("当前未启用 PostgreSQL，请在依赖页先完成迁移");
+  }
+  const nextPassword =
+    typeof password === "string" && password.trim()
+      ? password.trim()
+      : generatedDesktopSecret(24);
+  const binDir = requirePostgresBinaries();
+  const dataDir = desktopPostgresDataDir();
+  if (!fs.existsSync(path.join(dataDir, "PG_VERSION"))) {
+    throw new UserFacingError("未初始化 PostgreSQL 数据簇，请先在依赖页重新迁移");
+  }
+  await bootstrapResetDesktopPostgresPassword({
+    binDir,
+    dataDir,
+    host: config.host,
+    port: config.port,
+    username: config.username,
+    database: config.database,
+    password: nextPassword,
+  });
+  const saved = saveDesktopPostgresConfig({
+    enabled: true,
+    host: config.host,
+    port: config.port,
+    database: config.database,
+    username: config.username,
+    password: nextPassword,
+  });
+  return {
+    host: saved.host,
+    port: saved.port,
+    database: saved.database,
+    username: saved.username,
+    password: nextPassword,
+  };
+}
+
+// 通过临时把 pg_hba.conf 改为 trust 来重设超级用户密码：
+// 1) 停止旧实例；2) 备份并改写 pg_hba 为 trust；3) 启动并 ALTER USER 设新密码；
+// 4) 恢复 pg_hba；5) 用新密码重新启动并返回。
+// 不依赖当前密码是否正确，适合迁移/历史凭据错乱后的自愈。
+async function bootstrapResetDesktopPostgresPassword({
+  binDir,
+  dataDir,
+  host,
+  port,
+  username,
+  database,
+  password,
+}) {
+  const pgHba = path.join(dataDir, "pg_hba.conf");
+  if (!fs.existsSync(pgHba)) {
+    throw new UserFacingError(`找不到 PostgreSQL 认证配置：${pgHba}`);
+  }
+  const original = fs.readFileSync(pgHba, "utf8");
+  const trustLines =
+    "host    all    all    127.0.0.1/32    trust\n" +
+    "host    all    all    ::1/128         trust\n" +
+    "local   all    all                   trust\n";
+
+  const bootstrapConfig = { host, port, username, database, password };
+
+  // 1) 停止（无论是否在运行）。
+  await stopDesktopPostgres();
+
+  // 2) 用 trust 覆盖 pg_hba（trust 行放在最前，优先于后面的 scram）。
+  fs.writeFileSync(pgHba, trustLines + original, "utf8");
+
+  let started = false;
+  try {
+    // 3) 以 trust 启动并设置新密码（trust 下任意密码都能连上）。
+    await startDesktopPostgres(binDir, dataDir, bootstrapConfig);
+    started = true;
+    const escaped = String(password).replace(/'/g, "''");
+    await pgExec(
+      { host, port, username, database: "postgres", password: "trust-bootstrap" },
+      `ALTER USER ${username} PASSWORD '${escaped}'`,
+      "postgres",
+    );
+  } finally {
+    if (started) {
+      try {
+        await pgRun(
+          path.join(binDir, "pg_ctl.exe"),
+          ["-D", dataDir, "stop", "-m", "fast"],
+          { timeoutMs: 20000 },
+        );
+      } catch {}
+    }
+    // 4) 恢复原认证配置。
+    try {
+      fs.writeFileSync(pgHba, original, "utf8");
+    } catch {}
+  }
+
+  // 5) 用新密码重新启动并等待真正就绪。
+  await startDesktopPostgres(binDir, dataDir, bootstrapConfig);
+  // 验证新密码确实可用。
+  const probe = await pgQuery(
+    { host, port, username, database, password },
+    "SELECT 1",
+    "postgres",
+  );
+  if (probe !== "1") {
+    throw new UserFacingError(
+      `重设密码后到 PostgreSQL 认证校验失败（端口 ${port}），请重试。`,
+    );
+  }
+}
+
+function pgEnv(config) {
+  return { PGPASSWORD: config.password };
+}
+function psqlBaseArgs(config, db, extra) {
+  return [
+    "-h", config.host, "-p", String(config.port), "-U", config.username, "-d", db,
+    ...(extra || []),
+  ];
+}
+
+// 以应用身份执行一条 SQL；用于建库等 DDL。
+async function pgExec(config, sql, db = config.database) {
+  await pgRun(
+    path.join(desktopPostgresBinDir(), "psql.exe"),
+    [...psqlBaseArgs(config, db), "-v", "ON_ERROR_STOP=1", "-c", sql],
+    { env: pgEnv(config) },
+  );
+}
+
+// 以应用身份查询，返回去掉两侧空白的输出。
+function pgQuery(config, sql, db = config.database) {
+  return new Promise((resolve, reject) => {
+    const psql = spawn(
+      path.join(desktopPostgresBinDir(), "psql.exe"),
+      [...psqlBaseArgs(config, db, ["-A", "-t"]), "-c", sql],
+      { env: { ...process.env, ...pgEnv(config) }, windowsHide: true },
+    );
+    let out = "";
+    let err = "";
+    psql.stdout.on("data", (c) => (out += String(c)));
+    psql.stderr.on("data", (c) => (err += String(c)));
+    psql.on("close", (code) => {
+      if (code === 0) resolve(out.trim());
+      else reject(new Error("psql 查询失败: " + String(err).slice(0, 400)));
+    });
+psql.on("error", (e) => reject(new Error("无法启动 psql: " + e.message)));
+  });
+}
+
+// 真正能执行 SQL 才算就绪（PG 崩溃恢复期只接受 TCP，但会拒绝查询）。
+function pgSqlReady(config) {
+  return new Promise((resolve) => {
+    try {
+      const psql = spawn(
+        path.join(desktopPostgresBinDir(), "psql.exe"),
+        [...psqlBaseArgs(config, "postgres", ["-A", "-t", "-q"]), "-c", "SELECT 1"],
+        { env: { ...process.env, ...pgEnv(config) }, windowsHide: true },
+      );
+      let timer = setTimeout(() => {
+        try {
+          psql.kill();
+        } catch {}
+        resolve(false);
+      }, 4000);
+      psql.once("error", () => {
+        clearTimeout(timer);
+        resolve(false);
+      });
+      psql.once("close", (code) => {
+        clearTimeout(timer);
+        resolve(code === 0);
+      });
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+// 幂等建库（库所有者 = 应用账号）。
+async function ensureDesktopPostgresDatabase(config) {
+  const { username, database } = config;
+  const exists = (await pgQuery(config, `SELECT 1 FROM pg_database WHERE datname = '${database}'`, "postgres")) === "1";
+  if (!exists) {
+    await pgExec(config, `CREATE DATABASE ${database} OWNER ${username}`, "postgres");
+  }
+}
+
+// 收紧 app 账号的全局权限：仍保留它自己业务库的所有权与读写，但去掉全局
+// SUPERUSER / CREATEROLE，使其无法改动其它数据库/账号。必须幂等：
+// 只有该角色仍是超级用户时才执行降权——一旦降过，就直接跳过，
+// 否则非超级用户再去 ALTER ROLE 会报 “bootstrap superuser must have SUPERUSER”。
+async function downgradeDesktopPostgresRole(config) {
+  const username = config.username;
+  const escaped = String(username).replace(/"/g, '""');
+  const roleRow = await pgQuery(
+    config,
+    `SELECT rolsuper::text || '|' ||
+              (SELECT count(*) FROM pg_roles WHERE rolsuper)::text
+       FROM pg_roles WHERE rolname = '${escaped}'`,
+    "postgres",
+  );
+  const [superUser, totalSupers] = (roleRow || "").split("|");
+  if (superUser !== "true") {
+    // 已经不是超级用户：无需也无法再降级，直接返回。
+    reportPgMigrationProgress(
+      "harden-skip",
+      "app 账号已是非超级用户，跳过降级",
+    );
+    return;
+  }
+  // 本机随包 PostgreSQL 由 initdb 初始化，应用账号就是唯一的 bootstrap 超级用户。
+  // PostgreSQL 不允许剥夺最后一个超级用户的 SUPERUSER（否则会报
+  // “The bootstrap superuser must have the SUPERUSER attribute”）。因此当它确定
+  // 暂不能降级时直接跳过，避免迁移因此失败。
+  if (Number(totalSupers) <= 1) {
+    reportPgMigrationProgress(
+      "harden-skip",
+      "app 账号是唯一的 bootstrap 超级用户，跳过降级（无法剥夺最后一个 SUPERUSER）",
+    );
+    return;
+  }
+  await pgExec(
+    config,
+    `ALTER ROLE "${escaped}" NOSUPERUSER NOCREATEROLE NOBYPASSRLS`,
+    "postgres",
+  );
+  reportPgMigrationProgress("harden-done", "app 账号权限已收紧（非超级用户）");
+}
+
+async function stopDesktopPostgres() {
+  const binDir = desktopPostgresBinDir();
+  const dataDir = desktopPostgresDataDir();
+  if (!binDir || !fs.existsSync(path.join(dataDir, "PG_VERSION"))) return;
+  try {
+    await pgRun(path.join(binDir, "pg_ctl.exe"), ["-D", dataDir, "stop", "-m", "fast"], {});
+  } catch {
+    // 尽力而为
+  }
+}
+
+// 旧 H2 文件库 URL（供后端在 postgres 首启时迁移数据）。
+function desktopH2MigrateUrl() {
+  const dataDir = path.join(app.getPath("userData"), "data");
+  return `jdbc:h2:file:${path.join(dataDir, "security-toolbox").replace(/\\/g, "/")};MODE=PostgreSQL;AUTO_SERVER=TRUE`;
+}
+
+// 一键迁移编排：初始化/启动/建库并持久化配置；copyH2 为真时让后端迁移旧数据。
+async function migrateDesktopToPostgres({ copyH2 } = {}) {
+  const binDir = requirePostgresBinaries();
+  const dataDir = desktopPostgresDataDir();
+
+  // 已启用且数据簇可连接时拒绝重复迁移：迁移会重建数据簇，此时旧簇里的
+  // 业务数据（上次迁移后新产生的记录）无法从 H2 找回，属于不可逆操作。
+  // 回退 H2 后想再次迁移属于合理场景（enabled=false），不受此限制。
+  const existingConfig = desktopPostgresConfig();
+  if (existingConfig?.enabled === true) {
+    throw new UserFacingError(
+      "当前已启用 PostgreSQL，重复迁移会重建数据库并可能丢失其中尚未导出的数据。" +
+        "如需重置，请先在设置中回退到 H2，或在数据库连接对话框中管理现有实例。",
+    );
+  }
+
+let config = undefined;
+  // 迁移是“一次性建立本地可用的 PostgreSQL”操作：为避免之前留下的集群密码与
+  // 配置不一致导致认证失败，这里以全新随机密码重建数据簇（数据从 H2 导入），
+  // 并在启动+认证成功之后才持久化凭据。
+  // 先停掉任何仍按旧配置运行的本地实例，确保端口与数据目录都不被旧进程占用，
+  // 否则 initdb 会因目录被旧实例锁定而“重建了个还在跑旧密码的实例”。
+  // 旧数据簇内可能含有尚未导出/未被 H2 覆盖的业务数据（例如上次迁移后新产生的
+  // 记录），删除前先整目录备份，避免二次迁移时静默清空 PG 数据。
+  await stopDesktopPostgres();
+  writeDesktopStartupLog("postgres-migrate-stopped-old", { dataDir });
+  await backupDesktopPostgresCluster(dataDir);
+  const password = generatedDesktopSecret(24);
+  const username = DESKTOP_PG_USERNAME;
+  const port = await pickDesktopPostgresPort();
+  reportPgMigrationProgress("cleaning", "备份旧数据目录后初始化新数据簇");
+  writeDesktopStartupDiagnostic(
+    "postgres-migrate-init",
+    null,
+    { step: "rebuild", port, dataDir },
+  );
+  await initializeDesktopPostgresCluster(binDir, dataDir, username, password);
+  reportPgMigrationProgress("initdb", "initdb 完成，数据簇已初始化");
+  writeDesktopStartupLog("postgres-migrate-initdb-done", {
+    port,
+    clusterDir: dataDir,
+  });
+
+  reportPgMigrationProgress("starting", `启动本地 PostgreSQL（端口 ${port}）`);
+  await startDesktopPostgres(binDir, dataDir, { host: DESKTOP_PG_HOST, port, username, password, database: DESKTOP_PG_DATABASE });
+  reportPgMigrationProgress("started", "PostgreSQL 已就绪");
+
+  // 用本次新密码做一次真实查询，验证认证确实通过；失败则说明 initdb 初始化的
+  // 超级用户密码与应用端不符（例如旧实例未真正停止、initdb 未生效），需显式报错。
+  writeDesktopStartupLog("postgres-migrate-auth-check", {
+    port,
+    username,
+    hasPassword: Boolean(password),
+  });
+  try {
+    const probe = await pgQuery(
+      { host: DESKTOP_PG_HOST, port, username, database: "postgres", password },
+      "SELECT 1",
+      "postgres",
+    );
+    writeDesktopStartupLog("postgres-migrate-auth-ok", { port, probe });
+    if (probe !== "1") {
+      throw new Error("认证成功但 SELECT 1 返回异常：" + String(probe));
+    }
+  } catch (authError) {
+    writeDesktopStartupLog(
+      "postgres-migrate-auth-failed",
+      `step=ready-check port=${port} user=${username} msg=${String(
+        authError instanceof Error ? authError.message : authError,
+      ).replace(/[\r\n]+/g, " ")}`,
+    );
+    throw new UserFacingError(
+      `迁移过程中认证失败（端口 ${port}）：` +
+        (authError instanceof Error ? authError.message : String(authError)) +
+        "。请关闭安全工具箱后，确认没有其他程序占用本地 15432-15499 端口，再重新迁移。",
+    );
+  }
+
+  // 认证通过后才保存凭据，避免存一个连不上的密码。
+  config = saveDesktopPostgresConfig({
+    enabled: true,
+    host: DESKTOP_PG_HOST,
+    port,
+    database: DESKTOP_PG_DATABASE,
+    username,
+    password,
+  });
+
+  reportPgMigrationProgress("ensure-db", `创建业务库 ${config.database}`);
+  await ensureDesktopPostgresDatabase(config);
+  // 加固：去掉 app 账号的全局超级用户/建角色/绕过 RLS 等权限，仅保留它对自己业务库的
+  // 所有权与读写，避免它能改动其它数据库/账号（多数据库或多账号场景更安全）。
+  reportPgMigrationProgress("harden", "收紧 app 账号的数据库权限");
+  await downgradeDesktopPostgresRole(config);
+  desktopPgMigrateH2Url = copyH2 ? desktopH2MigrateUrl() : null;
+  reportPgMigrationProgress(
+    copyH2 ? "migrating" : "ready",
+    copyH2 ? "后端将把 H2 历史数据迁入 PostgreSQL" : "后端将切换到 PostgreSQL",
+  );
+  return config;
+}
+
+// 前端可见状态（不含凭据）。
+function publicPostgresMigrationState(settings = readDesktopSettings()) {
+  const config = desktopPostgresConfig(settings);
+  return {
+    available: Boolean(desktopPostgresBinDir()),
+    configured: Boolean(config),
+    enabled: config?.enabled === true,
+    running: Boolean(config) && Boolean(config?.port),
+    port: config?.port || null,
+    database: config?.database || DESKTOP_PG_DATABASE,
+  };
+}
+
+// 供 startBackend 判断数据源：返回启用状态的配置（含凭据，仅供主进程内部使用）。
+function activeDesktopPostgresConfig() {
+  return desktopPostgresConfig() || null;
+}
+
+function takeDesktopPgMigrateH2Url() {
+  const url = desktopPgMigrateH2Url;
+  desktopPgMigrateH2Url = null;
+  return url;
+}
+
+// 计算后端启动时的数据源 JVM 参数：启用 PostgreSQL 时激活 postgres profile（连接信息
+// 由环境变量 SPRING_PROFILES_ACTIVE/DB_URL/DB_USERNAME/DB_PASSWORD 提供），否则用 H2。
+function desktopBackendDatasourceArgs({ databasePath }) {
+  // 只有 PostgreSQL 确实可连接时才用 postgres 数据源；否则回退 H2，避免因本地 PG
+  // 未就绪/已崩溃导致后端无法启动（冷启动阶段此时必须同步判断）。
+  const config = activeDesktopPostgresConfig();
+  if (config && pgPortOpenSync(config)) {
+    return ["--spring.profiles.active=postgres"];
+  }
+  if (config) {
+    writeDesktopStartupDiagnostic(
+      "postgres-datasource-fallback",
+      new Error(
+        `已启用 MySQL/PostgreSQL 但本地服务不可达（${config.host}:${config.port}），本次回退 H2 启动`,
+      ),
+      { host: config.host, port: config.port },
+    );
+  }
+  return [
+    `--spring.datasource.url=jdbc:h2:file:${databasePath};MODE=PostgreSQL;AUTO_SERVER=TRUE`,
+  ];
+}
+
+// 同步探测端口是否有进程监听（用于启动期数据源选择；确认可连接即视为就绪）。
+function pgPortOpenSync(config) {
+  if (!config) return false;
+  const { host, port } = config;
+  try {
+    const script =
+      "const n=require('net');const s=n.connect(" +
+      port +
+      ",'" +
+      String(host).replace(/'/g, "\\'") +
+      "');" +
+      "const t=setTimeout(()=>{process.exit(1)},1200);" +
+      "s.once('connect',()=>{clearTimeout(t);process.exit(0)});" +
+      "s.once('error',()=>{clearTimeout(t);process.exit(1)})";
+    const result = spawnSync(process.execPath, ["-e", script], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 2000,
+      // Electron's process.execPath is the Electron binary, not plain Node.
+      // ELECTRON_RUN_AS_NODE makes it evaluate `-e` as a Node script instead of
+      // booting the app (which would never run the probe and always time out).
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    });
+    return result.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+// 源码树便携包（sqlmap）：解压出的是一棵含顶层目录的源码树，且原生入口是 python
+// 脚本（sqlmap.py），Windows 上无法可靠地直接以脚本进程启动。这里在安装目录根目录
+// 生成一个 sqlmap.bat 启动器，用系统 Python 调用树内入口，供后端 SQLMAP_PATH 使用。
+function ensureSqlmapLauncher(stagingDir, definition) {
+  if (!definition || definition.githubSourceArchive !== true) return;
+  const entrypointName = definition.entrypointName || "sqlmap.py";
+  const entrypoint = findExecutableInTree(stagingDir, [entrypointName]);
+  if (!entrypoint) {
+    throw new UserFacingError(
+      "源码树中未找到 sqlmap 入口脚本，已拒绝安装",
+    );
+  }
+  const relative = path.relative(path.resolve(stagingDir), path.resolve(entrypoint));
+  if (
+    !relative ||
+    relative.startsWith("..") ||
+    path.isAbsolute(relative)
+  ) {
+    throw new UserFacingError("sqlmap 入口脚本路径异常，已拒绝安装");
+  }
+  const launcher = path.join(stagingDir, definition.executable || "sqlmap.bat");
+  assertInside(stagingDir, launcher);
+  assertReplaceableInstallFile(launcher, "sqlmap 启动器");
+  // “%~dp0”在本批处理所在目录（<tools>/sqlmap）展开，拼接相对入口即可定位源码树。
+  const relativeWindows = relative.replace(/\//g, "\\");
+  const script = [
+    "@echo off",
+    `chcp 65001 >nul`,
+    `python "%~dp0${relativeWindows}" %*`,
+    "exit /b %errorlevel%",
+  ].join("\r\n");
+  fs.writeFileSync(launcher, script, { encoding: "utf8", flag: "wx" });
+}
+
+async function uninstallPortableDependency(packageId) {
+  const definition = INSTALLABLE_PACKAGES[packageId];
+  if (!definition || definition.optional !== true) {
+    throw new UserFacingError("只能卸载应用管理的可选依赖");
+  }
+  if (activeInstalls.has(packageId)) {
+    throw new UserFacingError("该依赖正在更新，请等待完成或先取消下载");
+  }
+  const toolsDir = resolveToolsDirectory();
+  const installed = portableDependencyInstallState(definition, toolsDir);
+  assertInside(toolsDir, installed.targetDir);
+  if (!installed.managed) {
+    throw new UserFacingError("该依赖不是由本应用安装，无法在此卸载");
+  }
+
+  // MSF 直装：<tools>\metasploit-framework 是普通目录，走统一“改名再删”路径。
+  // 兜底模式：tools 下是 junction（真实目录在 D 盘无空格根），卸载 = 删链接 + 删真实目录。
+  if (installed.isMsfJunction && isDirectoryLink(installed.targetDir)) {
+    removeMsfJunction();
+    const realDir = msfRealInstallDir();
+    if (fs.existsSync(realDir)) {
+      try {
+        await fs.promises.rm(realDir, { recursive: true, force: true });
+      } catch (error) {
+        // 尽力而为，卸载失败时重建链接以便重试。
+        try {
+          ensureMsfJunction(toolsDir);
+        } catch {}
+        throw error;
+      }
+    }
+    return {
+      packageId,
+      version: installed.installedVersion,
+      status: "uninstalled",
+    };
+  }
+
+  const removalDir = path.join(
+    toolsDir,
+    `.uninstall-${packageId}-${crypto.randomUUID()}`,
+  );
+  assertInside(toolsDir, removalDir);
+  fs.renameSync(installed.targetDir, removalDir);
+  try {
+    await fs.promises.rm(removalDir, { recursive: true, force: true });
+  } catch (error) {
+    if (!fs.existsSync(installed.targetDir) && fs.existsSync(removalDir)) {
+      fs.renameSync(removalDir, installed.targetDir);
+    }
+    throw error;
+  }
+  return {
+    packageId,
+    version: installed.installedVersion,
+    status: "uninstalled",
+  };
+}
+
+async function controlDependencyInstall(packageId, action) {
+  if (!["pause", "cancel"].includes(action))
+    throw new UserFacingError("不支持的下载控制操作");
+  const session = activeInstalls.get(packageId);
+  if (!session) throw new UserFacingError("当前没有可控制的依赖下载");
+  if (action === "cancel" && session.state === "paused") {
+    for (const artifact of session.artifacts) {
+      try {
+        removeDownloadState(...JSON.parse(artifact));
+      } catch {
+        // 尽力而为：单个残留文件不阻止取消完成。
+      }
+    }
+    session.state = "canceled";
+    activeInstalls.delete(packageId);
+    return { packageId, status: "canceled" };
+  }
+  if (session.state !== "running")
+    throw new UserFacingError("当前下载状态不允许此操作");
+  if (
+    !["downloading-package", "downloading-templates"].includes(session.phase)
+  ) {
+    throw new UserFacingError("当前正在校验、解压或安装，不能暂停或取消");
+  }
+  if (action === "cancel" || !session.intent) session.intent = action;
+  session.controller?.abort();
+  return session.promise;
+}
+
+function isTrustedMainRendererUrl(value) {
+  try {
+    const candidate = new URL(String(value || ""));
+    const devUrl = process.env.TOOLBOX_DEV_URL;
+    if (devUrl) {
+      const expected = new URL(devUrl);
+      return (
+        candidate.protocol === expected.protocol &&
+        candidate.hostname === expected.hostname &&
+        candidate.port === expected.port
+      );
+    }
+    if (candidate.protocol !== "file:") return false;
+    const expectedEntry = path.resolve(app.getAppPath(), "dist", "index.html");
+    return path.resolve(fileURLToPath(candidate)) === expectedEntry;
+  } catch {
+    return false;
+  }
+}
+
+function isTrustedLocalFileUrl(value, expectedFile) {
+  try {
+    const candidate = new URL(String(value || ""));
+    return (
+      candidate.protocol === "file:" &&
+      path.resolve(fileURLToPath(candidate)) === path.resolve(expectedFile)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function assertMainRenderer(event) {
+  const mainFrame =
+    mainWindow && !mainWindow.isDestroyed()
+      ? mainWindow.webContents.mainFrame
+      : undefined;
+  const sameMainFrame =
+    event.senderFrame === mainFrame ||
+    (Number.isInteger(event.senderFrame?.processId) &&
+      Number.isInteger(event.senderFrame?.routingId) &&
+      event.senderFrame.processId === mainFrame?.processId &&
+      event.senderFrame.routingId === mainFrame?.routingId);
+  if (
+    !mainWindow ||
+    mainWindow.isDestroyed() ||
+    event.sender !== mainWindow.webContents ||
+    !event.senderFrame ||
+    !sameMainFrame ||
+    !isTrustedMainRendererUrl(event.senderFrame.url)
+  ) {
+    throw new Error("不允许从当前窗口执行桌面操作");
+  }
+}
+
+function assertDesktopLoginRenderer(event) {
+  assertMainRenderer(event);
+  let hash;
+  try {
+    hash = new URL(event.senderFrame.url).hash;
+  } catch {
+    throw new Error("无法确认桌面登录页面来源");
+  }
+  if (!/^#\/login(?:\?|$)/.test(hash)) {
+    throw new Error("本机登录凭据只允许由桌面登录页面请求");
+  }
+}
+
+function normalizeCaptureTargetUrl(value) {
+  let raw = String(value || "").trim();
+  if (!raw || raw === "about:blank") return "about:blank";
+  if (raw.length > 2048)
+    throw new UserFacingError("抓包浏览器目标地址不能超过 2048 个字符");
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) raw = `http://${raw}`;
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new UserFacingError("抓包浏览器目标地址格式不正确");
+  }
+  if (
+    !["http:", "https:"].includes(parsed.protocol) ||
+    !parsed.hostname ||
+    parsed.username ||
+    parsed.password
+  ) {
+    throw new UserFacingError(
+      "抓包浏览器仅支持不含账号密码的 HTTP 或 HTTPS 地址",
+    );
+  }
+  return parsed.toString();
+}
+
+function normalizeCaptureBrowserOptions(payload) {
+  const proxyHost = String(payload?.proxyHost || "")
+    .trim()
+    .toLowerCase();
+  if (!["127.0.0.1", "localhost", "::1"].includes(proxyHost)) {
+    throw new UserFacingError("抓包浏览器只允许连接本机代理");
+  }
+  const proxyPort = Number(payload?.proxyPort);
+  if (!Number.isInteger(proxyPort) || proxyPort < 19080 || proxyPort > 19120) {
+    throw new UserFacingError("抓包浏览器代理端口必须在 19080-19120 范围");
+  }
+  const rawFingerprint = String(payload?.caFingerprint || "").trim();
+  let caFingerprint;
+  if (rawFingerprint) {
+    const compactFingerprint = rawFingerprint.replace(/:/g, "");
+    if (
+      !/^[0-9a-f]{64}$/i.test(compactFingerprint) ||
+      (rawFingerprint.includes(":") &&
+        !/^(?:[0-9a-f]{2}:){31}[0-9a-f]{2}$/i.test(rawFingerprint))
+    ) {
+      throw new UserFacingError("抓包浏览器 CA 指纹必须是有效的 SHA-256 指纹");
+    }
+    caFingerprint = compactFingerprint.toUpperCase();
+  }
+  return {
+    proxyHost,
+    proxyPort,
+    targetUrl: normalizeCaptureTargetUrl(payload?.targetUrl),
+    caFingerprint,
+  };
+}
+
+function normalizeCertificateFingerprint(value) {
+  const normalized = String(value || "")
+    .replace(/:/g, "")
+    .trim()
+    .toUpperCase();
+  return /^[0-9A-F]{64}$/.test(normalized) ? normalized : undefined;
+}
+
+function rootCertificateFingerprint(certificate) {
+  let current = certificate;
+  const visited = new Set();
+  for (let depth = 0; current && depth < 16; depth += 1) {
+    const fingerprint = normalizeCertificateFingerprint(
+      current.fingerprint256 || current.fingerprint,
+    );
+    const identity = `${fingerprint || ""}:${current.serialNumber || ""}`;
+    if (visited.has(identity)) return fingerprint;
+    visited.add(identity);
+    if (!current.issuerCert) return fingerprint;
+    const issuerFingerprint = normalizeCertificateFingerprint(
+      current.issuerCert.fingerprint256 || current.issuerCert.fingerprint,
+    );
+    if (!issuerFingerprint || issuerFingerprint === fingerprint)
+      return issuerFingerprint || fingerprint;
+    current = current.issuerCert;
+  }
+  return undefined;
+}
+
+function configureCaptureCertificateTrust(captureSession, caFingerprint) {
+  if (!caFingerprint) {
+    captureSession.setCertificateVerifyProc(null);
+    return;
+  }
+  captureSession.setCertificateVerifyProc((request, callback) => {
+    // This is a dedicated, isolated capture-browser session. The proxy's
+    // locally generated leaf certificates must be accepted so Chromium can
+    // complete the client-side TLS handshake and the server can decrypt it.
+    // External applications are never affected by this exception.
+    callback(0);
+  });
+}
+
+function captureBrowserStatus() {
+  return {
+    running: Boolean(
+      captureBrowserWindow && !captureBrowserWindow.isDestroyed(),
+    ),
+    proxyHost: captureBrowserConfig?.proxyHost,
+    proxyPort: captureBrowserConfig?.proxyPort,
+    targetUrl: captureBrowserConfig?.targetUrl,
+    mitmTrusted: Boolean(captureBrowserConfig?.caFingerprint),
+  };
+}
+
+async function publishCaptureProxyState() {
+  const captureWindow = captureBrowserWindow;
+  if (!captureWindow || captureWindow.isDestroyed()) return;
+  // The receiver is the trusted local browser shell, never the visited webview.
+  await captureWindow.webContents.executeJavaScript(
+    `window.setCaptureProxyState?.(${JSON.stringify({
+      ...captureProxyState,
+      proxy: captureBrowserConfig ? `${captureBrowserConfig.proxyHost}:${captureBrowserConfig.proxyPort}` : "",
+    })})`,
+  ).catch(() => {});
+}
+
+function serializeCaptureBrowserOperation(operation) {
+  const next = captureBrowserOperation.then(operation, operation);
+  captureBrowserOperation = next.catch(() => {});
+  return next;
+}
+
+async function setCaptureBrowserProxyState(payload) {
+  captureProxyState = {
+    running: typeof payload?.running === "boolean" ? payload.running : null,
+    capturing: payload?.running === true && payload?.capturing === true,
+  };
+  await publishCaptureProxyState();
+}
+
+async function disposeCaptureBrowserSession(sessionToDispose) {
+  if (!sessionToDispose) return;
+  sessionToDispose.setCertificateVerifyProc(null);
+  await sessionToDispose.setProxy({ mode: "direct" }).catch(() => {});
+  await sessionToDispose.closeAllConnections().catch(() => {});
+  await sessionToDispose.clearStorageData().catch(() => {});
+  await sessionToDispose.clearCache().catch(() => {});
+}
+
+async function closeCaptureBrowser() {
+  const windowToClose = captureBrowserWindow;
+  // Only the actual closed event releases the session. A rejected/cancelled
+  // close must keep both the window state and its browsing data intact.
+  if (windowToClose && !windowToClose.isDestroyed()) {
+    await new Promise((resolve, reject) => {
+      const finish = () => {
+        clearTimeout(timer);
+        windowToClose.removeListener("closed", finish);
+        resolve();
+      };
+      // A page may cancel closing; report the still-open window in that case.
+      const timer = setTimeout(finish, 1500);
+      windowToClose.once("closed", finish);
+      try {
+        windowToClose.close();
+        if (windowToClose.isDestroyed()) finish();
+      } catch (error) {
+        clearTimeout(timer);
+        windowToClose.removeListener("closed", finish);
+        reject(error);
+      }
+    });
+  }
+  return captureBrowserStatus();
+}
+
+function isHttpNavigation(url) {
+  if (url === "about:blank") return true;
+  try {
+    return ["http:", "https:"].includes(new URL(url).protocol);
+  } catch {
+    return false;
+  }
+}
+
+async function launchCaptureBrowser(payload) {
+  const options = normalizeCaptureBrowserOptions(payload);
+  if (captureBrowserWindow && !captureBrowserWindow.isDestroyed()) {
+    const captureWindow = captureBrowserWindow;
+    const captureSession = captureBrowserSession;
+    const previousConfig = captureBrowserConfig;
+    const changed = captureBrowserConfig?.proxyHost !== options.proxyHost
+      || captureBrowserConfig?.proxyPort !== options.proxyPort
+      || captureBrowserConfig?.caFingerprint !== options.caFingerprint;
+    if (changed) {
+      const endpoint = `${options.proxyHost}:${options.proxyPort}`;
+      await captureSession.setProxy({
+        mode: "fixed_servers",
+        proxyRules: `http=${endpoint};https=${endpoint}`,
+        proxyBypassRules: "<-loopback>",
+      });
+      if (captureWindow.isDestroyed()) throw new UserFacingError("抓包浏览器已关闭，请重新打开");
+      configureCaptureCertificateTrust(captureSession, options.caFingerprint);
+      await captureSession.closeAllConnections();
+      if (captureWindow.isDestroyed()) throw new UserFacingError("抓包浏览器已关闭，请重新打开");
+      captureBrowserConfig = { ...options, targetUrl: previousConfig.targetUrl };
+    }
+    if (captureWindow.isDestroyed()) throw new UserFacingError("抓包浏览器已关闭，请重新打开");
+    if (captureWindow.isMinimized()) captureWindow.restore();
+    captureWindow.show();
+    captureWindow.focus();
+    await publishCaptureProxyState();
+    return captureBrowserStatus();
+  }
+
+  const partition = `capture:security-toolbox-${crypto.randomUUID()}`;
+  const captureSession = electronSession.fromPartition(partition, {
+    cache: false,
+  });
+  configureCaptureCertificateTrust(captureSession, options.caFingerprint);
+  const proxyEndpoint = `${options.proxyHost}:${options.proxyPort}`;
+  await captureSession.setProxy({
+    mode: "fixed_servers",
+    proxyRules: `http=${proxyEndpoint};https=${proxyEndpoint}`,
+    proxyBypassRules: "<-loopback>",
+  });
+  await captureSession.closeAllConnections();
+
+  const captureTheme = currentSystemTheme();
+  const captureWindow = new BrowserWindow({
+    width: 1280,
+    height: 820,
+    minWidth: 760,
+    minHeight: 520,
+    show: false,
+    title: "獬豸抓包浏览器",
+    backgroundColor: windowBackgroundColor(captureTheme),
+    backgroundMaterial:
+      captureTheme.transparencyEnabled && !captureTheme.highContrast
+        ? captureTheme.windowMaterial
+        : "none",
+    autoHideMenuBar: false,
+    webPreferences: {
+      devTools: !app.isPackaged,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webviewTag: true,
+    },
+  });
+
+  captureBrowserWindow = captureWindow;
+  captureBrowserSession = captureSession;
+  captureBrowserPartition = partition;
+  captureBrowserConfig = options;
+
+  const captureShell = path.join(__dirname, "capture-browser.html");
+  const guardCaptureShellNavigation = (event, url) => {
+    if (!isTrustedLocalFileUrl(url, captureShell)) event.preventDefault();
+  };
+  captureWindow.webContents.on("will-navigate", guardCaptureShellNavigation);
+  captureWindow.webContents.on("will-redirect", guardCaptureShellNavigation);
+
+  captureWindow.webContents.on(
+    "will-attach-webview",
+    (event, webPreferences, params) => {
+      if (params.partition !== partition || !isHttpNavigation(params.src)) {
+        event.preventDefault();
+        return;
+      }
+      webPreferences.nodeIntegration = false;
+      webPreferences.nodeIntegrationInSubFrames = false;
+      webPreferences.contextIsolation = true;
+      webPreferences.sandbox = true;
+      webPreferences.webSecurity = true;
+      webPreferences.devTools = !app.isPackaged;
+      delete webPreferences.preload;
+    },
+  );
+  captureWindow.webContents.on("did-attach-webview", (_event, guest) => {
+    guest.on("will-navigate", (navigationEvent, url) => {
+      if (!isHttpNavigation(url)) navigationEvent.preventDefault();
+    });
+    guest.setWindowOpenHandler(({ url }) => {
+      if (isHttpNavigation(url))
+        setImmediate(() => {
+          if (!guest.isDestroyed()) guest.loadURL(url);
+        });
+      return { action: "deny" };
+    });
+  });
+  captureWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  captureWindow.on("closed", () => {
+    if (captureBrowserWindow === captureWindow) {
+      captureBrowserWindow = undefined;
+      captureBrowserSession = undefined;
+      captureBrowserPartition = undefined;
+      captureBrowserConfig = undefined;
+      void disposeCaptureBrowserSession(captureSession);
+      if (mainWindow && !mainWindow.isDestroyed())
+        mainWindow.webContents.send("toolbox:capture-browser-closed");
+    }
+  });
+  captureWindow.once("ready-to-show", () => {
+    applySystemThemeToStaticWindow(captureWindow);
+    captureWindow.show();
+  });
+  try {
+    await captureWindow.loadFile(captureShell, {
+      query: { target: options.targetUrl, partition, proxy: proxyEndpoint },
+    });
+    await publishCaptureProxyState();
+  } catch (error) {
+    // A newly created shell that failed to load has no page to preserve.
+    if (!captureWindow.isDestroyed()) captureWindow.destroy();
+    throw error;
+  }
+  return captureBrowserStatus();
+}
+
+const ICP_QUERY_URL = "https://beian.miit.gov.cn/";
+const ICP_QUERY_PATH_HINT = "请核对页面，工信部反爬策略可能导致无法自动定位输入框";
+// A real desktop Chrome UA so the MIIT front page (which bot-protects bare
+// Electron/Chromium identifiers) renders instead of a blank challenge frame.
+const ICP_BROWSER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+  "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+function normalizeIcpDomain(raw) {
+  let value = String(raw || "").trim().toLowerCase();
+  if (!value) return "";
+  if (/^[a-z0-9+.-]+:\/\//.test(value)) {
+    try {
+      value = new URL(value).hostname;
+    } catch {
+      value = value.replace(/^[a-z0-9+.-]+:\/\//, "");
+    }
+  }
+  value = value.split(/[/?#]/)[0];
+  if (value.includes("@")) value = value.slice(value.lastIndexOf("@") + 1);
+  if (value.startsWith("[")) value = value.slice(1, value.indexOf("]"));
+  value = value.split(":")[0];
+  value = value.replace(/^www\./, "").replace(/\.$/, "");
+  // ICP is registered per registerable domain. Strip a leading single-label
+  // content/locale/CDN prefix (cn., m., mobile., app., api., en., de., …) so the
+  // query targets the canonical root (cn.bing.com -> bing.com) instead of parking.
+  const labels = value.split(".");
+  if (labels.length >= 3 && CONTENT_PREFIX.has(labels[0])) {
+    labels.shift();
+    if (labels.length >= 2) value = labels.join(".");
+  }
+  return value;
+}
+const CONTENT_PREFIX = new Set([
+  "www", "m", "mobile", "wap", "app", "apps", "api", "apiv2", "apiv3",
+  "static", "cdn", "img", "image", "web", "www2",
+  "cn", "en", "de", "fr", "es", "it", "jp", "kr", "ru", "pt", "br", "mx",
+  "in", "au", "sg", "my", "id", "vn", "th", "ph", "tw", "hk", "global", "world",
+]);
+
+function icpBrowserStatus() {
+  const windowAlive = Boolean(icpBrowserWindow && !icpBrowserWindow.isDestroyed());
+  return {
+    running: windowAlive,
+    opening: icpBrowserState.opening,
+    domain: icpBrowserState.domain,
+    url: icpBrowserState.url,
+    lastError: icpBrowserState.lastError,
+    lastFetch: icpBrowserState.lastFetch,
+  };
+}
+
+async function autoFillIcpQuery(webContents, domain) {
+  if (!webContents || webContents.isDestroyed()) {
+    return { filled: false, reason: "窗口已关闭" };
+  }
+  const target = String(domain || "").trim();
+  if (!target) {
+    return { filled: false, reason: "缺少待查询域名" };
+  }
+  // Probe + fill the query input. Returns { found, filled, reason }.
+  const attempt = () =>
+    webContents.executeJavaScript(
+      `(() => {
+      try {
+        const value = ${JSON.stringify(target)};
+        const setValue = (el, v) => {
+          const setter = Object.getOwnPropertyDescriptor(el.constructor.prototype, 'value')?.set;
+          if (setter) setter.call(el, v);
+          else el.value = v;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        const candidates = [
+          '#unitName', 'input[placeholder*="注册单位"]', 'input[placeholder*="备案号"]',
+          'input[placeholder*="域名"]', 'input[placeholder*="单位"]', '.ant-input',
+          'input[type="text"]', 'textarea'
+        ];
+        let input = null;
+        for (const sel of candidates) {
+          try {
+            const els = document.querySelectorAll(sel);
+            for (const el of els) {
+              const r = el.getBoundingClientRect();
+              if (r.width > 0 && r.height > 0) { input = el; break; }
+            }
+          } catch (e) {}
+          if (input) break;
+        }
+        if (!input) return { found: false, filled: false, reason: '查询输入框尚未渲染' };
+        setValue(input, value);
+        const submitBtn = ['.ant-btn-primary', 'button:not([disabled])'].map(sel => {
+          const all = Array.from(document.querySelectorAll(sel));
+          return all.find(b => /查询|确定|搜|查/i.test(b.textContent || ''));
+        }).find(Boolean);
+        if (submitBtn) submitBtn.click();
+        return { found: true, filled: true, reason: '已代填域名并尝试触发查询，若弹出验证请完成验证' };
+      } catch (e) {
+        return { found: false, filled: false, reason: '代填异常：' + (e && e.message ? e.message : String(e)) };
+      }
+    })()`,
+      true,
+    );
+
+  // The MIIT front page is a Vue SPA that can take several seconds to mount its
+  // query form. Poll for the input so the auto-fill does not run into the still
+  // empty DOM, and do it before the login/guide screen hides the field.
+  const deadline = Date.now() + 6000;
+  let last = { found: false, filled: false, reason: "查询输入框尚未渲染" };
+  while (Date.now() < deadline) {
+    if (webContents.isDestroyed()) return { filled: false, reason: "窗口已关闭" };
+    last = await attempt();
+    if (last.found) return last;
+    await new Promise((r) => setTimeout(r, 600));
+  }
+  return { filled: false, reason: last.reason || "未能定位查询输入框，请在页面内手动填入域名" };
+}
+
+async function extractIcpBrowserResult(webContents) {
+  if (!webContents || webContents.isDestroyed()) {
+    return { ok: false, reason: "窗口已关闭，无法抓取" };
+  }
+  const script = `
+    (() => {
+      try {
+        const pickText = (el) => (el ? (el.innerText || el.textContent || '').trim() : '');
+        const rows = [];
+        // Preferred source: the structured MIIT query response (params.list). It carries the
+        // whole result set (not just visible DOM rows) with clean key/value fields, so import
+        // every entry straight off it.
+        try {
+          const list = (window && window.__icpList) || [];
+          if (Array.isArray(list) && list.length && list[0] && typeof list[0] === 'object') {
+            const seen = new Set();
+            for (const item of list) {
+              const row = {
+                mainLicense: item.mainLicence || '',
+                serviceLicense: item.serviceLicence || '',
+                owner: item.unitName || '',
+                type: item.natureName || '',
+                domain: item.domain || '',
+                approvedContent: item.contentTypeName || '',
+                limitAccess: item.limitAccess || '',
+                leaderName: item.leaderName || '',
+                updateRecordTime: item.updateRecordTime || '',
+              };
+              const key =
+                (row.mainLicense || '') + '|' +
+                (row.serviceLicense || '') + '|' +
+                (row.owner || '') + '|' +
+                (item.domain || '');
+              if (!seen.has(key)) { seen.add(key); rows.push(row); }
+            }
+          }
+        } catch (e) {}
+        if (rows.length) {
+          return {
+            ok: true,
+            found: rows.length,
+            rows,
+            raw: (window && (window.__icpRawResponse || window.__icpList)) || null,
+            source: 'miit-api',
+            pageText: (document.body && document.body.innerText || '').slice(0, 4000)
+          };
+        }
+        // Candidate result rows: broad selector list so layout changes (table vs div list)
+        // are tolerated. Each captured row keeps both the structured cells and the raw text.
+        const rowSelectors = [
+          'table tbody tr', 'table tr',
+          '.ant-table-row', '.el-table__row',
+          '.item-row, .row-item', '.result-row',
+          'li[class*="row"]', 'li[class*="item"]'
+        ];
+        const seenTexts = new Set();
+        let nodeList = [];
+        for (const sel of rowSelectors) {
+          nodeList = nodeList.concat(Array.from(document.querySelectorAll(sel)));
+        }
+        for (const node of nodeList) {
+          const cells = Array.from(node.querySelectorAll('td,th'))
+            .map(pickText)
+            .concat([pickText(node)])
+            .filter((t) => t && t.length);
+          if (!cells.length) continue;
+          const row = {};
+          row.cells = cells.slice(0, cells.length - 1);
+          row.text = cells[cells.length - 1];
+          // De-dup: keep the first (most specific) match for the same visible text.
+          const key = row.text;
+          if (!key || seenTexts.has(key)) continue;
+          seenTexts.add(key);
+          rows.push(row);
+        }
+        // Family: if nothing structured was found, fall back to table <td> scanning.
+        if (!rows.length) {
+          const seen = new Set();
+          for (const tr of document.querySelectorAll('tr')) {
+            const cells = Array.from(tr.querySelectorAll('td')).map(pickText).filter(Boolean);
+            if (cells.length >= 3) {
+              const row = { cells, text: cells.join(' | ') };
+              const key = row.text;
+              if (!seen.has(key)) { seen.add(key); rows.push(row); }
+            }
+          }
+        }
+        return {
+          ok: rows.length > 0,
+          found: rows.length,
+          rows,
+          pageText: (document.body && document.body.innerText || '').slice(0, 4000)
+        };
+      } catch (e) {
+        return { ok: false, found: 0, rows: [], pageText: '', error: String(e && e.message || e) };
+      }
+    })()
+  `;
+  return webContents.executeJavaScript(script, true);
+}
+
+async function openIcpBrowser(payload) {
+  const domain = normalizeIcpDomain(payload && payload.domain);
+  if (!domain) throw new Error("缺少待查询域名");
+  if (icpBrowserWindow && !icpBrowserWindow.isDestroyed()) {
+    icpBrowserWindow.close();
+    icpBrowserWindow = undefined;
+  }
+  try {
+    return await openIcpBrowserInner(domain);
+  } catch (error) {
+    icpBrowserState.opening = false;
+    icpBrowserState.lastError =
+      icpBrowserState.lastError ||
+      publicErrorMessage(error, "打开工信部查询窗口失败");
+    return icpBrowserStatus();
+  }
+}
+
+async function openIcpBrowserInner(domain) {
+  icpBrowserState = {
+    opening: true,
+    domain,
+    url: ICP_QUERY_URL,
+    lastError: "",
+    lastFetch: "",
+  };
+
+  const theme = currentSystemTheme();
+  // A persistent partition keeps the MIIT session cookies (e.g. __jsluid_s) across
+  // opens, matching a normal browser as closely as possible. backgroundThrottling is
+  // disabled so the SPA paints even while the window is still hidden, preventing a
+  // blank white frame that Chromium would otherwise throttle.
+  const icpSession = electronSession.fromPartition("persist:beian-miit");
+  icpSession.setUserAgent(ICP_BROWSER_UA);
+  // Clear stored cookies/cache so a previously-challenged/bot-flagged session does
+  // not keep serving the blank/521 page across opens.
+  await icpSession
+    .clearStorageData({ storages: ["cookies", "cachestorage", "caches"] })
+    .catch(() => {});
+  const window = new BrowserWindow({
+    width: 1240,
+    height: 860,
+    minWidth: 720,
+    minHeight: 540,
+    show: false,
+    title: `ICP备案查询代填 - ${domain}`,
+    backgroundColor: windowBackgroundColor(theme),
+    autoHideMenuBar: true,
+    webPreferences: {
+      session: icpSession,
+      devTools: !app.isPackaged,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      backgroundThrottling: false,
+      spellcheck: false,
+    },
+  });
+  icpBrowserWindow = window;
+
+  const guard = (event, url) => {
+    if (!isHttpNavigation(url)) event.preventDefault();
+  };
+  window.webContents.on("will-navigate", guard);
+  window.webContents.on("will-redirect", guard);
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (isHttpNavigation(url))
+      setImmediate(() => {
+        if (!icpBrowserWindow.isDestroyed()) icpBrowserWindow.loadURL(url);
+      });
+    return { action: "deny" };
+  });
+  // On the MIIT site, once a captcha slide is completed the browser navigates or
+  // the results render; we only report the state, never offer a local proxy.
+  window.webContents.on("did-navigate", () => {
+    icpBrowserState.url = window.webContents.getURL();
+  });
+  window.webContents.on("did-navigate-in-page", () => {
+    icpBrowserState.url = window.webContents.getURL();
+  });
+  window.webContents.on(
+    "did-fail-load",
+    (_event, errorCode, errorDescription, validatedURL) => {
+      if (validatedURL === ICP_QUERY_URL || validatedURL.startsWith("https://beian.miit.gov.cn")) {
+        icpBrowserState.lastError =
+          `页面加载失败(${errorCode}): ${errorDescription}`;
+      }
+    },
+  );
+  window.on("closed", () => {
+    if (icpBrowserWindow === window) icpBrowserWindow = undefined;
+    if (mainWindow && !mainWindow.isDestroyed())
+      mainWindow.webContents.send("toolbox:icp-browser-closed");
+  });
+  window.once("ready-to-show", () => {
+    applySystemThemeToStaticWindow(window);
+    window.show();
+  });
+
+  try {
+    await window.loadURL(ICP_QUERY_URL);
+  } catch (error) {
+    // The MIIT front shell frequently rejects loadURL with a bot/HTTP error yet
+    // still paints a page. Do NOT abort the whole open: record the error, retry
+    // once (reload completes the challenge handshake), and keep the window usable.
+    icpBrowserState.lastError = publicErrorMessage(error, "打开工信部查询页失败");
+    try {
+      if (!window.isDestroyed()) {
+        await window.loadURL(ICP_QUERY_URL);
+      }
+    } catch (_retryError) {
+      // give up retrying silently — the blank-frame auto-reload below will run
+    }
+  }
+
+  // Ensure the window is visible even if "ready-to-show" was delayed by a slow SPA.
+  if (!window.isDestroyed() && !window.isVisible()) window.show();
+  window.webContents
+    .executeJavaScript(
+      "new Promise(r => { if (document.readyState === 'complete') return r(true); window.addEventListener('load', () => r(true), { once: true }); setTimeout(() => r(true), 15000); })",
+      true,
+    )
+    .catch(() => {});
+
+  // Minimal silent recovery: the MIIT shell sometimes paints an empty frame on the
+  // first hit (bot challenge has not completed yet). If the body is still blank a
+  // moment later, reload once (ignoring cache) to let the challenge handshake
+  // finish and the SPA render — with no UI/log/debug gall.
+  try {
+    await new Promise((resolve) => setTimeout(resolve, window.isDestroyed() ? 0 : 1200));
+    if (!window.isDestroyed()) {
+      const blank = await window.webContents.executeJavaScript(
+        `(() => {
+          try {
+            const t = (document.body && (document.body.innerText || '').trim()) || '';
+            return t.length === 0;
+          } catch (e) { return true; }
+        })()`,
+        true,
+      );
+      if (blank) {
+        await window.webContents.reloadIgnoringCache();
+        await new Promise((resolve) => setTimeout(resolve, window.isDestroyed() ? 0 : 1600));
+      }
+    }
+  } catch (_ignored) {
+    // never block opening on the recovery attempt
+  }
+
+  // Tap the SPA's query responses: whenever the page loads the structured ICP result
+  // JSON (params.list), stash it on window so a later "抓取并导入" can import the WHOLE
+  // list mapped by its clean key/value pairs instead of scraping only visible DOM rows.
+  try {
+    if (!window.isDestroyed()) {
+      await window.webContents.executeJavaScript(
+        `
+        (() => {
+          try {
+            if (window.__icpListBufferInit) return true;
+            window.__icpListBufferInit = true;
+            window.__icpList = [];
+            const storeIcResponse = (data) => {
+              if (!data || typeof data !== 'object') return;
+              if (data.params && Array.isArray(data.params.list)) {
+                window.__icpList = data.params.list;
+                window.__icpRawResponse = data;
+              }
+            };
+            const origFetch = window.fetch;
+            if (typeof origFetch === 'function') {
+              window.fetch = async (...args) => {
+                const res = await origFetch.apply(window, args);
+                try {
+                  const ct = (res.headers && res.headers.get('content-type')) || '';
+                  if (ct.indexOf('json') >= 0) {
+                    const c = res.clone();
+                    storeIcResponse(await c.json());
+                  }
+                } catch (e) {}
+                return res;
+              };
+            }
+            const XHR = window.XMLHttpRequest;
+            if (XHR && XHR.prototype) {
+              const send = XHR.prototype.send;
+              XHR.prototype.send = function (...args) {
+                this.addEventListener('load', () => {
+                  try {
+                    const ct = (this.getResponseHeader && this.getResponseHeader('content-type')) || '';
+                    if (ct.indexOf('json') >= 0 && this.responseText) {
+                      storeIcResponse(JSON.parse(this.responseText));
+                    }
+                  } catch (e) {}
+                });
+                return send.apply(this, args);
+              };
+            }
+            return true;
+          } catch (e) {
+            return false;
+          }
+        })()
+        `,
+        true,
+      );
+    }
+  } catch (_ignored) {
+    // the injector is best-effort; the DOM row fallback still works
+  }
+
+  // Wait for the page to settle, then attempt a tolerant auto-fill.
+  try {
+    await new Promise((resolve) => setTimeout(resolve, window.isDestroyed() ? 0 : 1200));
+    if (!window.isDestroyed()) {
+      const result = await autoFillIcpQuery(window.webContents, domain);
+      icpBrowserState.lastError =
+        result && result.filled === false && result.reason
+          ? String(result.reason)
+          : "";
+    }
+  } catch (error) {
+    icpBrowserState.lastError = publicErrorMessage(error, "自动代填失败，请在窗口内手动填写");
+  }
+  icpBrowserState.opening = false;
+  return icpBrowserStatus();
+}
+
+async function fetchIcpBrowserResult() {
+  const window = icpBrowserWindow;
+  if (!window || window.isDestroyed()) {
+    return { ok: false, error: "ICP 浏览器未打开，请先打开并完成验证" };
+  }
+  const extracted = await extractIcpBrowserResult(window.webContents);
+  icpBrowserState.lastFetch = extracted.ok ? `已抓取 ${extracted.found} 行` : String(extracted.reason || "未解析到结果");
+  return extracted;
+}
+
+function closeIcpBrowser() {
+  const windowToClose = icpBrowserWindow;
+  icpBrowserWindow = undefined;
+  if (windowToClose && !windowToClose.isDestroyed()) windowToClose.close();
+  return icpBrowserStatus();
+}
+
+function handleRendererIpc(channel, handler) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    try {
+      return await handler(event, ...args);
+    } catch (error) {
+      if (error instanceof UserFacingError && error.message.trim()) {
+        throw error;
+      }
+      if (!(error instanceof UserFacingError)) {
+        writeDesktopStartupDiagnostic(`ipc:${channel}`, error);
+      }
+      const raw =
+        `${error?.code || ""} ${error?.message || ""} ${error?.cause?.code || ""} ${error?.cause?.message || ""}`;
+      let readable = "桌面操作失败，请稍后重试";
+      if (/ERR_NETWORK_CHANGED|ENETUNREACH|EHOSTUNREACH|ERR_ABORTED/i.test(raw))
+        readable = "网络发生变化或连接被中断，请检查网络后重试";
+      else if (/ERR_CONTENT_LENGTH_MISMATCH|ERR_INCOMPLETE_CHUNKED_ENCODING/i.test(raw))
+        readable = "下载文件不完整（可能被网络或代理截断），请点击重试续传";
+      else if (/ECONNRESET|ERR_SOCKET/i.test(raw))
+        readable = "连接被重置，请检查网络后重试";
+      else if (/ECONNREFUSED|ERR_CONNECTION_REFUSED/i.test(raw))
+        readable = "无法连接下载源（连接被拒绝），请检查网络或稍后重试";
+      else if (/ENOTFOUND|ERR_NAME_NOT_RESOLVED/i.test(raw))
+        readable = "无法解析下载源地址（DNS 失败），请检查网络后重试";
+      else if (/EBUSY|EPERM|EACCES/i.test(raw))
+        readable = "文件被占用或没有写入权限，请关闭正在使用的程序后重试";
+      throw new Error(readable);
+    }
+  });
+}
+
+handleRendererIpc("toolbox:get-tools-directory", (event) => {
+  assertMainRenderer(event);
+  return resolveToolsDirectory();
+});
+handleRendererIpc("toolbox:get-system-theme", (event) => {
+  assertMainRenderer(event);
+  return currentSystemTheme();
+});
+handleRendererIpc("toolbox:get-mica-enabled", (event) => {
+  assertMainRenderer(event);
+  return readDesktopSettings().micaEnabled !== false;
+});
+handleRendererIpc("toolbox:set-mica-enabled", (event, enabled) => {
+  assertMainRenderer(event);
+  const settings = readDesktopSettings();
+  writeDesktopSettings({ ...settings, micaEnabled: Boolean(enabled) });
+  broadcastSystemTheme();
+  return readDesktopSettings().micaEnabled !== false;
+});
+handleRendererIpc("toolbox:get-window-material", (event) => {
+  assertMainRenderer(event);
+  return configuredWindowMaterial();
+});
+handleRendererIpc("toolbox:window-minimize", (event) => {
+  assertMainRenderer(event);
+  mainWindow.minimize();
+});
+handleRendererIpc("toolbox:window-toggle-maximize", (event) => {
+  assertMainRenderer(event);
+  if (mainWindow.isMaximized()) mainWindow.unmaximize();
+  else mainWindow.maximize();
+  return mainWindow.isMaximized();
+});
+handleRendererIpc("toolbox:window-is-maximized", (event) => {
+  assertMainRenderer(event);
+  return mainWindow.isMaximized();
+});
+handleRendererIpc("toolbox:window-close", (event) => {
+  assertMainRenderer(event);
+  mainWindow.close();
+});
+handleRendererIpc("toolbox:open-external", (event, targetUrl) => {
+  assertMainRenderer(event);
+  if (typeof targetUrl !== "string") return false;
+  const trimmed = targetUrl.trim();
+  if (/^https?:\/\//i.test(trimmed)) {
+    void shell.openExternal(trimmed);
+    return true;
+  }
+  return false;
+});
+handleRendererIpc("toolbox:open-exported-file", async (event, payload) => {
+  assertMainRenderer(event);
+  if (!payload || typeof payload !== "object") return false;
+  const filename = String(payload.filename || "security-report.pdf").trim();
+  const safeFilename = path.basename(filename).replace(/[\\/:*?"<>|]/g, "_");
+  const base64 = String(payload.base64 || "");
+  if (!base64) return false;
+  try {
+    const downloadsDir = app.getPath("downloads") || app.getPath("temp");
+    const targetPath = path.join(downloadsDir, safeFilename);
+    const buffer = Buffer.from(base64, "base64");
+    fs.writeFileSync(targetPath, buffer);
+    const errMsg = await shell.openPath(targetPath);
+    if (errMsg) {
+      shell.showItemInFolder(targetPath);
+    }
+    return true;
+  } catch (err) {
+    return false;
+  }
+});
+handleRendererIpc("toolbox:set-window-material", (event, material) => {
+  assertMainRenderer(event);
+  if (!["none", "mica", "acrylic"].includes(material))
+    throw new UserFacingError("不支持的窗口材质");
+  const settings = readDesktopSettings();
+  writeDesktopSettings({
+    ...settings,
+    windowMaterial: material,
+    micaEnabled: material !== "none",
+  });
+  broadcastSystemTheme();
+  return configuredWindowMaterial();
+});
+handleRendererIpc("toolbox:get-theme-mode", (event) => {
+  assertMainRenderer(event);
+  return configuredThemeMode();
+});
+handleRendererIpc("toolbox:set-theme-mode", (event, mode) => {
+  assertMainRenderer(event);
+  if (!["system", "light", "dark"].includes(mode))
+    throw new UserFacingError("不支持的外观模式");
+  const settings = readDesktopSettings();
+  writeDesktopSettings({ ...settings, themeMode: mode });
+  applyThemeMode(mode);
+  broadcastSystemTheme();
+  return configuredThemeMode();
+});
+handleRendererIpc("toolbox:get-motion-settings", (event) => {
+  assertMainRenderer(event);
+  return configuredMotionFlags();
+});
+handleRendererIpc("toolbox:set-motion-settings", (event, flags) => {
+  assertMainRenderer(event);
+  const next = { ...DEFAULT_MOTION_FLAGS };
+  if (flags && typeof flags === "object") {
+    for (const key of MOTION_FLAG_KEYS) {
+      if (typeof flags[key] === "boolean") next[key] = flags[key];
+    }
+  }
+  writeDesktopSettings({ ...readDesktopSettings(), motion: next });
+  applyMotionToStartupWindow();
+  return next;
+});
+function updateTaskbarProgress(progress, options) {
+  const win = mainWindow || startupWindow;
+  if (!win || win.isDestroyed()) return;
+  try {
+    if (
+      progress === -1 ||
+      (options && options.mode === "none") ||
+      progress === null ||
+      progress === undefined
+    ) {
+      win.setProgressBar(-1, { mode: "none" });
+    } else if (options && options.mode === "indeterminate") {
+      win.setProgressBar(2, { mode: "indeterminate" });
+    } else if (typeof progress === "number") {
+      const normalized = Math.max(0, Math.min(1, progress));
+      win.setProgressBar(normalized, {
+        mode: options && options.mode ? options.mode : "normal",
+      });
+    }
+  } catch (_e) {
+    // Ignore taskbar update errors on transient window states
+  }
+}
+
+handleRendererIpc("toolbox:set-progress-bar", (event, progress, options) => {
+  assertMainRenderer(event);
+  updateTaskbarProgress(progress, options);
+});
+
+handleRendererIpc("toolbox:show-task-notification", (event, payload) => {
+  assertMainRenderer(event);
+  return notificationCenter.show(payload);
+});
+
+function publicNotificationSettings(settings = readDesktopSettings()) {
+  return notificationSettingsFromStorage(settings);
+}
+handleRendererIpc("toolbox:get-notification-settings", (event) => {
+  assertMainRenderer(event);
+  return publicNotificationSettings();
+});
+handleRendererIpc("toolbox:set-notification-settings", (event, payload) => {
+  assertMainRenderer(event);
+  writeDesktopSettings(updateNotificationStorage(readDesktopSettings(), payload || {}));
+  const settings = publicNotificationSettings();
+  for (const win of [mainWindow, startupWindow]) {
+    if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
+      win.webContents.send("toolbox:notification-settings-changed", settings);
+    }
+  }
+  return settings;
+});
+
+handleRendererIpc("toolbox:choose-tools-directory", async (event) => {
+  assertMainRenderer(event);
+  if (hasRunningInstalls())
+    throw new UserFacingError("依赖正在安装，暂时不能切换目录");
+  const result = await dialog.showOpenDialog(mainWindow || undefined, {
+    title: "选择便携工具安装目录",
+    defaultPath: resolveToolsDirectory(),
+    properties: ["openDirectory", "createDirectory"],
+  });
+  if (result.canceled || !result.filePaths[0]) {
+    const toolsDirectory = resolveToolsDirectory();
+    return {
+      changed: false,
+      canceled: true,
+      path: toolsDirectory,
+      toolsDirectory,
+    };
+  }
+  return changeToolsDirectory(result.filePaths[0]);
+});
+handleRendererIpc("toolbox:reset-tools-directory", async (event) => {
+  assertMainRenderer(event);
+  if (hasRunningInstalls())
+    throw new UserFacingError("依赖正在安装，暂时不能切换目录");
+  return changeToolsDirectory(defaultToolsDirectory());
+});
+handleRendererIpc("toolbox:list-installable-dependencies", (event) => {
+  assertMainRenderer(event);
+  const toolsDir = resolveToolsDirectory();
+  return Object.values(INSTALLABLE_PACKAGES).map((definition) => {
+    const installed = portableDependencyInstallState(definition, toolsDir);
+    return {
+      packageId: definition.id,
+      version: installed.installedVersion || "latest",
+      optional: definition.optional === true,
+      uninstallSupported:
+        definition.optional === true && installed.managed === true,
+    };
+  });
+});
+handleRendererIpc("toolbox:install-dependency", (event, packageId, options) => {
+  assertMainRenderer(event);
+  return installPortableDependency(
+    String(packageId),
+    { refreshCatalog: options?.refreshCatalog === true },
+    (progress) => {
+      if (!event.sender.isDestroyed())
+        event.sender.send("toolbox:dependency-install-progress", progress);
+    },
+  );
+});
+handleRendererIpc("toolbox:control-dependency-install", (event, payload) => {
+  assertMainRenderer(event);
+  return controlDependencyInstall(
+    String(payload?.packageId || ""),
+    String(payload?.action || ""),
+  );
+});
+handleRendererIpc("toolbox:uninstall-dependency", (event, packageId) => {
+  assertMainRenderer(event);
+  return uninstallPortableDependency(String(packageId));
+});
+handleRendererIpc("toolbox:get-postgres-migration-state", (event) => {
+  assertMainRenderer(event);
+  return publicPostgresMigrationState();
+});
+handleRendererIpc("toolbox:migrate-to-postgres", async (event, payload = {}) => {
+  assertMainRenderer(event);
+  const options = typeof payload === "object" && payload ? payload : {};
+  try {
+    const config = await migrateDesktopToPostgres({ copyH2: options.copyH2 === true });
+    reportPgMigrationProgress("restarting", "正在重启后端以切换数据源");
+    await restartBackend();
+    reportPgMigrationProgress("done", "迁移完成，后端已切换");
+    return {
+      host: config.host,
+      port: config.port,
+      database: config.database,
+      status: "migrated",
+    };
+  } catch (error) {
+    reportPgMigrationProgress(
+      "error",
+      error instanceof Error ? error.message : String(error),
+    );
+    throw error;
+  }
+});
+handleRendererIpc("toolbox:rollback-from-postgres", async (event) => {
+  assertMainRenderer(event);
+  // 回退前先给 PG 数据做快照：回退后用户在 H2 上的新写入会与 PG 分叉，
+  // 这份快照是重新迁移时找回 PG 侧最终状态的唯一途径。
+  let snapshot = null;
+  try {
+    snapshot = await snapshotDesktopPostgres("rollback");
+  } catch (error) {
+    reportPgMigrationProgress(
+      "error",
+      "回退前快照失败：" +
+        (error instanceof Error ? error.message : String(error)),
+    );
+    throw error;
+  }
+  const settings = readDesktopSettings();
+  writeDesktopSettings({
+    ...settings,
+    postgres: {
+      ...(settings.postgres && typeof settings.postgres === "object" ? settings.postgres : {}),
+      enabled: false,
+    },
+  });
+  await stopDesktopPostgres();
+  await restartBackend();
+  return { ...publicPostgresMigrationState(), snapshotPath: snapshot?.target || null };
+});
+handleRendererIpc("toolbox:set-postgres-password", async (event, payload = {}) => {
+  assertMainRenderer(event);
+  const options = typeof payload === "object" && payload ? payload : {};
+  try {
+    const result = await setDesktopPostgresPassword(
+      typeof options.password === "string" ? options.password : "",
+    );
+    return {
+      host: result.host,
+      port: result.port,
+      database: result.database,
+      username: result.username,
+      password: result.password,
+      status: "ok",
+    };
+  } catch (error) {
+    reportPgMigrationProgress(
+      "error",
+      error instanceof Error ? error.message : String(error),
+    );
+    throw error;
+  }
+});
+handleRendererIpc("toolbox:get-ai-settings", (event) => {
+  assertMainRenderer(event);
+  return publicAiSettings();
+});
+handleRendererIpc("toolbox:get-icp-settings", (event) => {
+  assertMainRenderer(event);
+  return publicIcpSettings();
+});
+handleRendererIpc("toolbox:get-tool-download-settings", (event) => {
+  assertMainRenderer(event);
+  return publicToolDownloadSettings();
+});
+handleRendererIpc("toolbox:save-tool-download-settings", (event, payload) => {
+  assertMainRenderer(event);
+  const previousSettings = readDesktopSettings();
+  const nextSettings = updatedToolDownloadSettings(
+    previousSettings,
+    payload && typeof payload === "object" ? payload : {},
+  );
+  writeDesktopSettings(nextSettings);
+  return publicToolDownloadSettings(nextSettings);
+});
+handleRendererIpc("toolbox:get-github-token-settings", (event) => {
+  assertMainRenderer(event);
+  return publicGithubTokenSettings();
+});
+handleRendererIpc("toolbox:save-github-token-settings", (event, payload) => {
+  assertMainRenderer(event);
+  return saveGithubTokenSettings(
+    payload && typeof payload === "object" ? payload : {},
+  );
+});
+handleRendererIpc("toolbox:get-desktop-login-credentials", (event) => {
+  assertDesktopLoginRenderer(event);
+  // 本机安全凭据 = 这台设备自己的首登材料；首次没有任何密码时也允许用它进入，避免首登死结。
+  // 绑定只是把账号密码与本机/PIN 关联的选项。解除绑定后不再提供本机凭据，仅保留账号密码。
+  const allowed = desktopQuickLoginAllowed();
+  writeRuntimeDiagnostic("desktop-login", {
+    at: new Date().toISOString(),
+    step: "ipc-get-credentials",
+    allowed,
+  });
+  if (!allowed) {
+    return null;
+  }
+  const credentials = ensureDesktopCredentials();
+  return {
+    username: credentials.username,
+    password: credentials.adminPassword,
+  };
+});
+handleRendererIpc("toolbox:get-desktop-login-binding", (event) => {
+  assertMainRenderer(event);
+  return desktopCredentialBinding();
+});
+handleRendererIpc("toolbox:bind-desktop-login", (event) => {
+  assertMainRenderer(event);
+  // Ensure a credential bundle exists, then mark it bound.
+  ensureDesktopCredentials();
+  markDesktopCredentialBinding();
+  return desktopCredentialBinding();
+});
+handleRendererIpc("toolbox:unbind-desktop-login", (event) => {
+  assertMainRenderer(event);
+  const settings = readDesktopSettings();
+  const security =
+    settings.desktopSecurity && typeof settings.desktopSecurity === "object"
+      ? settings.desktopSecurity
+      : {};
+  if (security.desktopLoginBinding === true) {
+    writeDesktopSettings({
+      ...settings,
+      desktopSecurity: { ...security, desktopLoginBinding: false },
+    });
+  }
+  return desktopCredentialBinding();
+});
+// Gate the local credential behind the operating system's Windows Hello (PIN / fingerprint /
+// face). Electron has no built-in Hello API, so we drive WinRT UserConsentVerifier through
+// Windows PowerShell 5.1 (which carries the WinRT projection); the script is passed as a
+// UTF-16 -EncodedCommand to avoid any quoting/encoding pitfalls.
+function verifyWindowsHello() {
+  return new Promise((resolve) => {
+    const script = [
+      "$ErrorActionPreference='Stop'",
+      "try {",
+      "  Add-Type -AssemblyName System.Runtime.WindowsRuntime",
+      "  $null=[Windows.Security.Credentials.UI.UserConsentVerifier,Windows.Security.Credentials.UI,ContentType=WindowsRuntime]",
+      "  $asTask=([System.WindowsRuntimeSystemExtensions].GetMethods()|?{$_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'})[0]",
+      "  function Await($op,$t){ $m=$asTask.MakeGenericMethod($t); $x=$m.Invoke($null,@($op)); $x.Wait(-1)|Out-Null; $x.Result }",
+      "  $a=Await ([Windows.Security.Credentials.UI.UserConsentVerifier]::CheckAvailabilityAsync()) ([Windows.Security.Credentials.UI.UserConsentVerifierAvailability])",
+      '  if ("$a" -ne \'Available\'){ Write-Output "UNAVAILABLE:$a"; exit 2 }',
+      "  $r=Await ([Windows.Security.Credentials.UI.UserConsentVerifier]::RequestVerificationAsync('验证身份以登录獬豸授权安全测试平台')) ([Windows.Security.Credentials.UI.UserConsentVerificationResult])",
+      "  if (\"$r\" -eq 'Verified'){ Write-Output 'VERIFIED'; exit 0 } else { Write-Output \"DENIED:$r\"; exit 1 }",
+      '} catch { Write-Output "ERR:$($_.Exception.Message)"; exit 3 }',
+    ].join("\n");
+    const encoded = Buffer.from(script, "utf16le").toString("base64");
+    let out = "";
+    try {
+      const child = spawn(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-STA",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-EncodedCommand",
+          encoded,
+        ],
+        { windowsHide: true },
+      );
+      const timer = setTimeout(() => {
+        try {
+          child.kill();
+        } catch {
+          /* ignore */
+        }
+      }, 90000);
+      child.stdout.on("data", (chunk) => {
+        out += chunk.toString();
+      });
+      child.on("error", (error) => {
+        clearTimeout(timer);
+        writeDesktopStartupDiagnostic("windows-hello-start", error);
+        resolve({
+          available: false,
+          verified: false,
+          reason: "无法启动 Windows Hello 验证",
+        });
+      });
+      child.on("close", () => {
+        clearTimeout(timer);
+        const text = out.trim();
+        if (text.includes("VERIFIED"))
+          resolve({ available: true, verified: true });
+        else if (text.includes("UNAVAILABLE")) {
+          resolve({
+            available: false,
+            verified: false,
+            reason: "当前设备未启用 Windows Hello",
+          });
+        } else {
+          if (text.startsWith("ERR:"))
+            writeDesktopStartupDiagnostic("windows-hello-verify", text);
+          resolve({
+            available: true,
+            verified: false,
+            reason: "Windows Hello 验证未通过或已取消",
+          });
+        }
+      });
+    } catch (error) {
+      writeDesktopStartupDiagnostic("windows-hello-start", error);
+      resolve({
+        available: false,
+        verified: false,
+        reason: "无法启动 Windows Hello 验证",
+      });
+    }
+  });
+}
+handleRendererIpc("toolbox:desktop-login-with-hello", async (event) => {
+  // 该通道仅供登录页“免密快捷登录”使用。Windows Hello 提示框是强身份验证关，因此只需可信
+  // 主窗口调用即可；但解除绑定的用户不得再用 Hello 快捷登录（系统设置里的改密走独立的
+  // change-desktop-admin-password 通道，不受此处门禁影响）。
+  assertMainRenderer(event);
+  if (process.platform !== "win32") {
+    return {
+      verified: false,
+      available: false,
+      reason: "当前系统不支持 Windows Hello",
+    };
+  }
+  if (!desktopQuickLoginAllowed()) {
+    return {
+      verified: false,
+      available: true,
+      reason: "已解除本机登录绑定，请改用账号密码登录",
+    };
+  }
+  const result = await verifyWindowsHello();
+  if (!result.verified)
+    return {
+      verified: false,
+      available: result.available,
+      reason: result.reason,
+    };
+  const credentials = ensureDesktopCredentials();
+  return {
+    verified: true,
+    credentials: {
+      username: credentials.username,
+      password: credentials.adminPassword,
+    },
+  };
+});
+// Keep account-password / 本机安全凭据 / Windows Hello consistent: when the user changes the
+// login password in Settings, re-encrypt the local credential bundle with the new password so
+// every login path uses the same password (and no login button silently stops working).
+function updateDesktopAdminPassword(newPassword) {
+  assertSecureDesktopStorage();
+  const current = ensureDesktopCredentials();
+  const updated = validatedDesktopCredentials({
+    schemaVersion: DESKTOP_CREDENTIAL_SCHEMA_VERSION,
+    username: "admin",
+    adminPassword: String(newPassword),
+    jwtSecret: current.jwtSecret,
+    mitmCaPassword: current.mitmCaPassword,
+  });
+  const settings = readDesktopSettings();
+  const security =
+    settings.desktopSecurity && typeof settings.desktopSecurity === "object"
+      ? settings.desktopSecurity
+      : {};
+  const encryptedCredentialBundle = safeStorage
+    .encryptString(JSON.stringify(updated))
+    .toString("base64");
+  writeDesktopSettings({
+    ...settings,
+    desktopSecurity: {
+      ...security,
+      schemaVersion: DESKTOP_CREDENTIAL_SCHEMA_VERSION,
+      encryptedCredentialBundle,
+    },
+  });
+  desktopCredentials = updated;
+}
+handleRendererIpc(
+  "toolbox:set-desktop-admin-password",
+  (event, newPassword) => {
+    assertMainRenderer(event);
+    const pw = String(newPassword || "");
+    if (pw.length < 8 || pw.length > 128)
+      throw new UserFacingError("密码长度需为 8-128 位");
+    updateDesktopAdminPassword(pw);
+    return { updated: true };
+  },
+);
+// 首次使用：生成一个账号密码，写回桌面凭据并重启后端（后端 admin 用新密码），
+// 仅在返回时向当前登录页显示一次明文；后续不再显示，等同 API key 语义。
+// 与“自定义密码”一致：生成后即视为完成首次设置，登录页不再显示首次选项。
+handleRendererIpc("toolbox:generate-desktop-login", async (event) => {
+  assertMainRenderer(event);
+  const password = generatedDesktopSecret(24);
+  updateDesktopAdminPassword(password);
+  markDesktopCredentialBinding();
+  // 一次性把新密码交给后端，让其更新数据库里的 admin 密码（即便 admin 已存在）。
+  pendingDesktopSeedPassword = password;
+  writeDesktopStartupDiagnostic(
+    "desktop-login-generate",
+    null,
+    { action: "generate-and-restart" },
+  );
+  await restartBackend();
+  return {
+    username: "admin",
+    password,
+    note: "密码仅本次显示，请立即保存或更改",
+  };
+});
+// 用户自定义初始登录密码：设为用户输入的明文，写回桌面凭据、绑定本机/PIN，
+// 重启后端让 admin 用新密码，前端随后用 admin + 该密码登录。
+handleRendererIpc("toolbox:init-desktop-login", async (event, payload = {}) => {
+  assertMainRenderer(event);
+  const options = payload && typeof payload === "object" ? payload : {};
+  const password = String(options.password || "").trim();
+  if (password.length < 8 || password.length > 128)
+    throw new UserFacingError("自定义密码长度需为 8-128 位");
+  updateDesktopAdminPassword(password);
+  markDesktopCredentialBinding();
+  pendingDesktopSeedPassword = password;
+  writeDesktopStartupDiagnostic("desktop-login-init", null, {
+    action: "custom-and-restart",
+  });
+  await restartBackend();
+  return {
+    username: "admin",
+    password,
+    note: "密码已绑定本机与 Windows Hello",
+  };
+});
+// 重置登录密码（忘记密码 / 需要随机强密码时）：Windows Hello 验证通过后，
+// 生成新的随机强密码，写回桌面凭据、绑定本机/PIN、重启后端让 admin 用新密码，
+// 仅在本次向前端显示一次明文。这样即便忘了原密码，也能可靠地靠自己这台设备取回。
+handleRendererIpc("toolbox:reset-random-desktop-login", async (event) => {
+  assertMainRenderer(event);
+  const hello = await verifyWindowsHello();
+  if (!hello.verified) {
+    // 用户的常见操作（取消/未通过）不作为“后端异常”抛给渲染层，避免出现
+    // “Error invoking remote method ...”这类杂讯；用结构化结果返回清晰提示。
+    return {
+      resettled: false,
+      available: hello.available === true,
+      reason:
+        hello.reason ||
+        (hello.available === false
+          ? "本机未启用 Windows Hello（PIN／指纹／面部）"
+          : "Windows Hello 验证未通过或被取消"),
+    };
+  }
+  const password = generatedDesktopSecret(24);
+  updateDesktopAdminPassword(password);
+  markDesktopCredentialBinding();
+  pendingDesktopSeedPassword = password;
+  writeDesktopStartupDiagnostic("desktop-login-reset-random", null, {
+    action: "reset-random-and-restart",
+  });
+  await restartBackend();
+  return {
+    resettled: true,
+    username: "admin",
+    password,
+    note: "密码仅本次显示，请立即保存或尽快在设置中改成自己记得的自定义密码",
+  };
+});
+// 桌面版“本机身份验证后免输入原始密码”的改密入口：Windows Hello 本身就是身份强校验，
+// 且当前 admin 密码一直由桌面凭据保管、绝不出现在渲染进程。经 Hello 验证后，主进程用
+// 已知的当前 admin 密码调用后端 change-password（原密码校验照常生效），再用新密码同步
+// 本地桌面凭据。这样首次用「本机安全凭据 / Windows Hello」登录、不知道原始 admin 密码
+// 的用户也能在设置中安全地修改登录密码，而无需新增后端免密改密接口。
+function desktopChangeAdminPasswordThroughHello(newPassword) {
+  return new Promise((resolve) => {
+    const pw = String(newPassword || "").trim();
+    if (pw.length < 8 || pw.length > 128) {
+      resolve({ changed: false, reason: "密码长度需为 8-128 位" });
+      return;
+    }
+    verifyWindowsHello()
+      .then(async (verifiedResult) => {
+        if (!verifiedResult.verified) {
+          resolve({
+            changed: false,
+            available: verifiedResult.available,
+            reason:
+              verifiedResult.reason ||
+              "身份验证未通过或被取消，请重试",
+          });
+          return;
+        }
+        if (!backendPort) {
+          resolve({ changed: false, reason: "后端服务尚未就绪，请稍后重试" });
+          return;
+        }
+        const base = `http://127.0.0.1:${backendPort}`;
+        const credentials = ensureDesktopCredentials();
+        let token;
+        try {
+          const loginResponse = await electronNet.fetch(`${base}/api/auth/login`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              username: credentials.username,
+              password: credentials.adminPassword,
+            }),
+          });
+          if (!loginResponse.ok) {
+            writeDesktopStartupDiagnostic(
+              "desktop-login-change",
+              new Error(`登录失败 HTTP ${loginResponse.status}`),
+              { action: "verify-token" },
+            );
+            resolve({ changed: false, reason: "本机密码校验失败，请重试" });
+            return;
+          }
+          const loginJson = await loginResponse.json();
+          token = String(loginJson?.token || loginJson?.accessToken || "");
+          if (!token) {
+            resolve({ changed: false, reason: "无法获取本机登录令牌，请重试" });
+            return;
+          }
+        } catch (error) {
+          writeDesktopStartupDiagnostic("desktop-login-change", error, {
+            action: "verify-token",
+          });
+          resolve({ changed: false, reason: "无法连接后端服务，请重试" });
+          return;
+        }
+        try {
+          // 用已知的当前 admin 密码发起改密，后端仍校验 currentPassword。
+          const changeResponse = await electronNet.fetch(
+            `${base}/api/auth/change-password`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify({
+                currentPassword: credentials.adminPassword,
+                newPassword: pw,
+              }),
+            },
+          );
+          if (!changeResponse.ok) {
+            writeDesktopStartupDiagnostic(
+              "desktop-login-change",
+              new Error(`改密失败 HTTP ${changeResponse.status}`),
+              { action: "change" },
+            );
+            resolve({ changed: false, reason: "后端拒绝修改密码，请重试" });
+            return;
+          }
+          updateDesktopAdminPassword(pw);
+          writeDesktopStartupDiagnostic("desktop-login-change", null, {
+            action: "changed-via-hello",
+          });
+          resolve({ changed: true });
+        } catch (error) {
+          writeDesktopStartupDiagnostic("desktop-login-change", error, {
+            action: "change",
+          });
+          resolve({ changed: false, reason: "无法连接后端服务，请重试" });
+        }
+      })
+      .catch((error) => {
+        writeDesktopStartupDiagnostic("desktop-login-change", error, {
+          action: "hello",
+        });
+        resolve({ changed: false, reason: "本机身份验证失败，请重试" });
+      });
+  });
+}
+handleRendererIpc("toolbox:change-desktop-admin-password", async (event, payload = {}) => {
+  assertMainRenderer(event);
+  const options = payload && typeof payload === "object" ? payload : {};
+  return desktopChangeAdminPasswordThroughHello(options.password);
+});
+// 手动把 H2 历史数据重新导入当前 PostgreSQL。设置一次性迁移 URL 后重启后端，
+// postgres profile 下的 LegacyPostgresMigrationRunner 会把 H2 白名单核心表拷进 PG。
+// 可选的 H2 导入源候选：桌面模式常规文件 + 开发模式文件（存在才列出），
+// 按最后写入时间排序。导入源错了就会把空库/旧库盖进 PG，必须让用户显式选择。
+function desktopH2SourceCandidates() {
+  const candidates = [
+    {
+      id: "desktop",
+      label: "桌面模式数据（AppData）",
+      file: path.join(app.getPath("userData"), "data", "security-toolbox.mv.db"),
+    },
+    {
+      id: "dev",
+      label: "开发模式数据（项目目录 security-toolbox-server\\data）",
+      file: path.join(
+        "D:\\study\\work\\Bachelor_Degree\\Graduation_Project",
+        "security-toolbox-server",
+        "data",
+        "security-toolbox.mv.db",
+      ),
+    },
+  ];
+  return candidates
+    .filter((c) => fs.existsSync(c.file))
+    .map((c) => ({
+      ...c,
+      size: fs.statSync(c.file).size,
+      lastWriteTime: fs.statSync(c.file).lastWriteTime.toISOString(),
+    }))
+    .sort((a, b) => b.lastWriteTime.localeCompare(a.lastWriteTime));
+}
+
+// 把选中的 .mv.db 临时拷贝到独立目录再生成 JDBC URL，避免源文件被 H2 锁文件阻塞。
+// （拷贝是只读安全的：H2 在非 AUTO_SERVER 连接下只读打开也不会写源文件。）
+function desktopH2MigrateUrlFor(file) {
+  const normalized = path.resolve(String(file || ""));
+  const known = desktopH2SourceCandidates().some((c) => path.resolve(c.file) === normalized);
+  if (!known) {
+    throw new UserFacingError("导入源不在允许的候选列表中，已拒绝");
+  }
+  return `jdbc:h2:file:${normalized.replace(/\\/g, "/").replace(/\.mv\.db$/i, "")};MODE=PostgreSQL;AUTO_SERVER=TRUE`;
+}
+
+handleRendererIpc("toolbox:get-h2-import-sources", (event) => {
+  assertMainRenderer(event);
+  return desktopH2SourceCandidates();
+});
+
+handleRendererIpc("toolbox:reimport-h2-to-postgres", async (event, payload = {}) => {
+  assertMainRenderer(event);
+  const config = activeDesktopPostgresConfig();
+  if (!config || config.enabled !== true) {
+    throw new UserFacingError("当前未启用 PostgreSQL，请先完成迁移");
+  }
+  const options = typeof payload === "object" && payload ? payload : {};
+  const sourceFile = String(options.sourceFile || "").trim();
+  // 未指定源时保持旧行为（桌面模式默认文件）；指定时必须是候选之一。
+  const h2Url = sourceFile ? desktopH2MigrateUrlFor(sourceFile) : desktopH2MigrateUrl();
+  desktopPgMigrateH2Url = h2Url;
+  writeDesktopStartupDiagnostic("postgres-reimport", null, {
+    action: "restart-and-copy",
+    h2Url,
+  });
+await restartBackend();
+  return { status: "restarted" };
+});
+handleRendererIpc("toolbox:test-ai-settings", (event, payload, prompt) => {
+  assertMainRenderer(event);
+  return testAiConnection(payload, prompt);
+});
+handleRendererIpc("toolbox:get-ai-relay-settings", (event) => {
+  assertMainRenderer(event);
+  return publicRelaySettings(readDesktopSettings().aiRelay);
+});
+handleRendererIpc("toolbox:list-ai-relay-models", (event, payload) => {
+  assertMainRenderer(event);
+  return serializeAiSettingsOperation(async () => {
+    let provider;
+    try { provider = resolveModelDiscoveryProvider(payload, readDesktopSettings().aiRelay, relaySecrets); }
+    catch (error) { throw new UserFacingError(error.message || "线路配置无效。"); }
+    return discoverAiModels(provider);
+  });
+});
+handleRendererIpc("toolbox:list-ai-models", (event, payload) => {
+  assertMainRenderer(event);
+  return serializeAiSettingsOperation(async () => {
+    const existing = resolvedAiSettings();
+    const baseUrl = normalizeAiBaseUrl(payload?.baseUrl);
+    const submitted = payload?.apiKey;
+    if (submitted !== undefined && (typeof submitted !== "string" || submitted.length > 8192 || /[\r\n\x00]/.test(submitted))) {
+      throw new UserFacingError("API Key 格式无效。");
+    }
+    const apiKey = submitted?.trim() || (baseUrl === existing.baseUrl ? existing.apiKey : "");
+    if (!apiKey && !payload?.proxyMode) throw new UserFacingError("请填写当前 API 对应的密钥后获取模型列表。");
+    return discoverAiModels({ baseUrl: `${baseUrl}/v1`, apiKey, codexHeaders: Boolean(payload?.proxyMode) });
+  });
+});
+handleRendererIpc("toolbox:get-ai-relay-status", (event) => {
+  assertMainRenderer(event);
+  return { enabled: Boolean(readDesktopSettings().aiRelay?.enabled), ...(aiRelay?.status() || { running: false, providers: [] }) };
+});
+handleRendererIpc("toolbox:test-ai-relay-provider", (event, payload, prompt) => {
+  assertMainRenderer(event);
+  return serializeAiSettingsOperation(async () => {
+    const parsed = validatedRelaySettings({ enabled: false, providers: [payload] }, readDesktopSettings().aiRelay);
+    const [provider] = resolveRelayProviders(parsed, relaySecrets);
+    const tester = createAiRelay({ providers: [] });
+    try { return await tester.testProvider(provider, prompt); }
+    finally { await tester.close(); }
+  });
+});
+handleRendererIpc("toolbox:save-ai-relay-settings", (event, payload) => {
+  assertMainRenderer(event);
+  return serializeAiSettingsOperation(async () => {
+    const previous = readDesktopSettings();
+    const next = validatedRelaySettings(payload, previous.aiRelay);
+    const embedding = resolvedAiSettings(previous);
+    if (next.enabled && embedding.retrievalBackend === "real_embedding" && embedding.embeddingConnectionMode === "shared") {
+      throw new UserFacingError("启用 API 线路前，请为向量检索单独配置 Embedding 服务，或切换为 BM25 关键词检索。");
+    }
+    writeDesktopSettings({ ...previous, aiRelay: next });
+    try {
+      await synchronizeAiRelay();
+      if (Boolean(previous.aiRelay?.enabled) !== next.enabled) await restartAiRuntimeAndBackend();
+      return publicRelaySettings(next);
+    } catch (error) {
+      writeDesktopSettings(previous);
+      await synchronizeAiRelay().catch(() => {});
+      if (Boolean(previous.aiRelay?.enabled) !== next.enabled) await restartAiRuntimeAndBackend().catch(() => {});
+      throw error;
+    }
+  });
+});
+handleRendererIpc("toolbox:test-embedding-settings", (event, payload) => {
+  assertMainRenderer(event);
+  return testEmbeddingConnection(payload);
+});
+handleRendererIpc("toolbox:save-ai-settings", (event, payload) => {
+  assertMainRenderer(event);
+  return serializeAiSettingsOperation(async () => {
+    const previousSettings = readDesktopSettings();
+    const nextSettings = updatedAiSettings(previousSettings, payload);
+    writeDesktopSettings(nextSettings);
+    try {
+      await restartAiRuntimeAndBackend();
+      return publicAiSettings(nextSettings);
+    } catch (error) {
+      writeDesktopSettings(previousSettings);
+      await restartAiRuntimeAndBackend().catch(() => {});
+      throw error;
+    }
+  });
+});
+handleRendererIpc("toolbox:clear-ai-api-key", (event, payload) => {
+  assertMainRenderer(event);
+  return serializeAiSettingsOperation(async () => {
+    const previousSettings = readDesktopSettings();
+    const nextSettings = updatedAiSettings(previousSettings, payload, {
+      clearApiKey: true,
+    });
+    writeDesktopSettings(nextSettings);
+    try {
+      await restartAiRuntimeAndBackend();
+      return publicAiSettings(nextSettings);
+    } catch (error) {
+      writeDesktopSettings(previousSettings);
+      await restartAiRuntimeAndBackend().catch(() => {});
+      throw error;
+    }
+  });
+});
+handleRendererIpc("toolbox:clear-embedding-api-key", (event, payload) => {
+  assertMainRenderer(event);
+  return serializeAiSettingsOperation(async () => {
+    const previousSettings = readDesktopSettings();
+    const nextSettings = updatedAiSettings(previousSettings, payload, {
+      clearEmbeddingApiKey: true,
+    });
+    writeDesktopSettings(nextSettings);
+    try {
+      await restartAiRuntimeAndBackend();
+      return publicAiSettings(nextSettings);
+    } catch (error) {
+      writeDesktopSettings(previousSettings);
+      await restartAiRuntimeAndBackend().catch(() => {});
+      throw error;
+    }
+  });
+});
+handleRendererIpc("toolbox:save-icp-settings", (event, payload) => {
+  assertMainRenderer(event);
+  return serializeAiSettingsOperation(async () => {
+    const previousSettings = readDesktopSettings();
+    const nextSettings = updatedIcpSettings(previousSettings, payload);
+    writeDesktopSettings(nextSettings);
+    try {
+      await restartBackend();
+      return publicIcpSettings(nextSettings);
+    } catch (error) {
+      writeDesktopSettings(previousSettings);
+      await restartBackend().catch(() => {});
+      throw error;
+    }
+  });
+});
+handleRendererIpc("toolbox:clear-icp-settings", (event) => {
+  assertMainRenderer(event);
+  return serializeAiSettingsOperation(async () => {
+    const previousSettings = readDesktopSettings();
+    const nextSettings = updatedIcpSettings(previousSettings, undefined, true);
+    writeDesktopSettings(nextSettings);
+    try {
+      await restartBackend();
+      return publicIcpSettings(nextSettings);
+    } catch (error) {
+      writeDesktopSettings(previousSettings);
+      await restartBackend().catch(() => {});
+      throw error;
+    }
+  });
+});
+handleRendererIpc("toolbox:launch-capture-browser", (event, payload) => {
+  assertMainRenderer(event);
+  return serializeCaptureBrowserOperation(() => launchCaptureBrowser(payload));
+});
+handleRendererIpc("toolbox:close-capture-browser", (event) => {
+  assertMainRenderer(event);
+  return serializeCaptureBrowserOperation(() => closeCaptureBrowser());
+});
+handleRendererIpc("toolbox:get-capture-browser-status", (event) => {
+  assertMainRenderer(event);
+  return captureBrowserStatus();
+});
+handleRendererIpc("toolbox:set-capture-browser-proxy-state", (event, payload) => {
+  assertMainRenderer(event);
+  return setCaptureBrowserProxyState(payload);
+});
+handleRendererIpc("toolbox:open-icp-browser", (event, payload) => {
+  assertMainRenderer(event);
+  return openIcpBrowser(payload);
+});
+handleRendererIpc("toolbox:fetch-icp-browser-result", (event) => {
+  assertMainRenderer(event);
+  return fetchIcpBrowserResult();
+});
+handleRendererIpc("toolbox:close-icp-browser", (event) => {
+  assertMainRenderer(event);
+  return closeIcpBrowser();
+});
+handleRendererIpc("toolbox:get-icp-browser-status", (event) => {
+  assertMainRenderer(event);
+  return icpBrowserStatus();
+});
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) app.quit();
+
+function resolveJava() {
+  if (process.env.JAVA_HOME) {
+    const candidate = path.join(
+      process.env.JAVA_HOME,
+      "bin",
+      process.platform === "win32" ? "java.exe" : "java",
+    );
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  // Let the real backend process perform PATH resolution. Its error listener
+  // preserves startup diagnostics without launching a throwaway JVM first.
+  return "java";
+}
+
+function resolveServerJar() {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, "server", "security-toolbox-server.jar");
+  }
+  const targetDir = path.resolve(
+    __dirname,
+    "..",
+    "..",
+    "security-toolbox-server",
+    "target",
+  );
+  for (const name of ["security-toolbox-server-1.0.0.jar", "security-toolbox-server-0.1.0.jar"]) {
+    const candidate = path.join(targetDir, name);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  throw new Error(`未找到后端服务文件：${path.join(targetDir, "security-toolbox-server-1.0.0.jar")}`);
+}
+
+async function findFreePort(start = 18080, end = 18120) {
+  for (let port = start; port <= end; port += 1) {
+    const free = await new Promise((resolve) => {
+      const server = net.createServer();
+      server.once("error", () => resolve(false));
+      server.once("listening", () => server.close(() => resolve(true)));
+      server.listen(port, "127.0.0.1");
+    });
+    if (free) return port;
+  }
+  throw new Error(`没有可用的本地服务端口（${start}-${end}）。`);
+}
+
+function updateStartup(title, message, error) {
+  if (!startupWindow || startupWindow.isDestroyed()) return;
+  const args = [title, message || "", error || ""]
+    .map((value) => JSON.stringify(value))
+    .join(",");
+  startupWindow.webContents
+    .executeJavaScript(`window.setStartupStatus(${args})`)
+    .catch(() => {});
+}
+
+function waitForBackend(port, timeoutMs = 90000) {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      const request = http.get(
+        `http://127.0.0.1:${port}/api/system/health`,
+        (response) => {
+          const chunks = [];
+          response.on("data", (chunk) => chunks.push(chunk));
+          response.on("end", () => {
+            if (response.statusCode !== 200) return retry();
+            try {
+              resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+            } catch {
+              retry();
+            }
+          });
+        },
+      );
+      request.setTimeout(35000, () => request.destroy());
+      request.on("error", retry);
+    };
+    const retry = () => {
+      if (backendStartError) return reject(backendStartError);
+      if (Date.now() >= deadline)
+        return reject(new Error("本地服务启动超时，请查看桌面日志。"));
+      setTimeout(check, 500);
+    };
+    check();
+  });
+}
+
+const AI_RUNTIME_MIN_PYTHON = Object.freeze([3, 11]);
+const AI_RUNTIME_PYTHON_MODULES = Object.freeze([
+  "fastapi",
+  "uvicorn",
+  "pydantic",
+  "httpx",
+  "langchain_core",
+  "langchain_openai",
+  "langgraph",
+  "rank_bm25",
+]);
+
+function inspectAiRuntimePython(candidate) {
+  const probe = [
+    "import importlib.util,json,struct,sys",
+    `modules=${JSON.stringify(AI_RUNTIME_PYTHON_MODULES)}`,
+    "missing=[name for name in modules if importlib.util.find_spec(name) is None]",
+    "print(json.dumps({'major':sys.version_info.major,'minor':sys.version_info.minor,'bits':struct.calcsize('P')*8,'implementation':sys.implementation.name,'missing':missing}))",
+  ].join(";");
+  const result = spawnSync(candidate.command, [...candidate.args, "-c", probe], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 10000,
+  });
+  if (result.status !== 0) return undefined;
+  try {
+    const info = JSON.parse(String(result.stdout || "").trim().split(/\r?\n/).at(-1));
+    const compatibleVersion =
+      info.major > AI_RUNTIME_MIN_PYTHON[0] ||
+      (info.major === AI_RUNTIME_MIN_PYTHON[0] &&
+        info.minor >= AI_RUNTIME_MIN_PYTHON[1]);
+    if (
+      info.implementation !== "cpython" ||
+      info.bits !== 64 ||
+      !compatibleVersion ||
+      !Array.isArray(info.missing) ||
+      info.missing.length
+    )
+      return undefined;
+    return { ...candidate, major: info.major, minor: info.minor };
+  } catch {
+    return undefined;
+  }
+}
+
+function discoverAiRuntimePython(runtimeRoot) {
+  const projectPython =
+    process.platform === "win32"
+      ? path.join(runtimeRoot, ".venv", "Scripts", "python.exe")
+      : path.join(runtimeRoot, ".venv", "bin", "python");
+  if (fs.existsSync(projectPython)) {
+    const projectCandidate = inspectAiRuntimePython({
+      command: projectPython,
+      args: [],
+      source: "ai-runtime/.venv",
+    });
+    if (projectCandidate) return projectCandidate;
+  }
+
+  const candidates = [];
+  const seen = new Set();
+  const addPath = (candidatePath, source) => {
+    if (!candidatePath || !fs.existsSync(candidatePath)) return;
+    const resolved = path.resolve(candidatePath);
+    const key = resolved.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push({ command: resolved, args: [], source });
+  };
+  const addCommand = (command, source) => {
+    const key = `command:${command.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push({ command, args: [], source });
+  };
+
+  for (const environmentRoot of [
+    process.env.VIRTUAL_ENV,
+    process.env.CONDA_PREFIX,
+  ]) {
+    if (!environmentRoot) continue;
+    addPath(
+      process.platform === "win32"
+        ? path.join(environmentRoot, "python.exe")
+        : path.join(environmentRoot, "bin", "python"),
+      "active environment",
+    );
+  }
+  addCommand("python", "PATH");
+
+  if (process.platform === "win32") {
+    const condaCommand = process.env.CONDA_EXE || "conda";
+    const conda = spawnSync(condaCommand, ["env", "list", "--json"], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 10000,
+    });
+    if (conda.status === 0) {
+      try {
+        for (const environmentRoot of JSON.parse(conda.stdout).envs || [])
+          addPath(path.join(environmentRoot, "python.exe"), "Conda environment");
+      } catch {
+        // Ignore malformed third-party Conda output and continue discovery.
+      }
+    }
+
+    const launcher = spawnSync("py", ["-0p"], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 10000,
+    });
+    if (launcher.status === 0) {
+      for (const line of String(launcher.stdout || "").split(/\r?\n/)) {
+        const match = line.match(/([A-Za-z]:\\.*?python(?:\.exe)?)\s*$/i);
+        if (match) addPath(match[1].trim(), "Python Launcher");
+      }
+    }
+  } else {
+    addCommand("python3", "PATH");
+  }
+
+  return candidates
+    .map(inspectAiRuntimePython)
+    .filter(Boolean)
+    .sort((left, right) => left.major - right.major || left.minor - right.minor)[0];
+}
+
+function resolveAiRuntimeLaunch() {
+  const runtimeRoot = app.isPackaged
+    ? path.join(process.resourcesPath, "ai-runtime")
+    : path.resolve(__dirname, "..", "..", "ai-runtime");
+  const executableName =
+    process.platform === "win32"
+      ? "security-toolbox-ai-runtime.exe"
+      : "security-toolbox-ai-runtime";
+  const packagedExecutable = app.isPackaged
+    ? path.join(runtimeRoot, executableName)
+    : path.join(
+        runtimeRoot,
+        "dist",
+        "security-toolbox-ai-runtime",
+        executableName,
+      );
+  const configuredExecutable = String(
+    process.env.AI_RUNTIME_EXECUTABLE || "",
+  ).trim();
+  if (configuredExecutable) {
+    const candidate = path.resolve(configuredExecutable);
+    if (!fs.existsSync(candidate))
+      throw new Error(`AI Runtime 可执行文件不存在：${candidate}`);
+    return { command: candidate, args: [], cwd: path.dirname(candidate) };
+  }
+  if (app.isPackaged) {
+    if (!fs.existsSync(packagedExecutable))
+      throw new Error(`安装包缺少 AI Runtime：${packagedExecutable}`);
+    return { command: packagedExecutable, args: [], cwd: runtimeRoot };
+  }
+
+  const preferSourceRuntime =
+    String(process.env.AI_RUNTIME_DEV_SOURCE || "").toLowerCase() === "true";
+  if (!preferSourceRuntime && fs.existsSync(packagedExecutable)) {
+    return {
+      command: packagedExecutable,
+      args: [],
+      cwd: path.dirname(packagedExecutable),
+    };
+  }
+
+  const sourceEntrypoint = path.join(runtimeRoot, "runtime_server.py");
+  if (fs.existsSync(sourceEntrypoint)) {
+    const python = discoverAiRuntimePython(runtimeRoot);
+    if (python) {
+      return {
+        command: python.command,
+        args: [...python.args, sourceEntrypoint],
+        cwd: runtimeRoot,
+      };
+    }
+  }
+  if (fs.existsSync(packagedExecutable))
+    return { command: packagedExecutable, args: [], cwd: runtimeRoot };
+  throw new Error("未找到可用的 AI Runtime 或 Python 运行环境");
+}
+
+function aiRuntimeBaseUrl(baseUrl) {
+  return `${String(baseUrl || "").replace(/\/+$/, "")}/v1`;
+}
+
+function reportRuntimeLogFault(fault) {
+  const severity = fault.fatal ? "fatal" : "degraded";
+  const detail = `${fault.component || "desktop"}: ${fault.code}\n${fault.message}\n${fault.healthFile || fault.directory || ""}`;
+  try {
+    notificationCenter.show({ eventKey: `runtime-logging:${severity}`, category: "service", outcome: "error", type: "error",
+      title: "运行日志保存异常", body: "日志保存已降级，请检查日志目录和可用空间。当前请求不会由日志记录器终止。" });
+  } catch {}
+  // The system notification can be disabled. A native warning provides a
+  // visible failure without editing renderer business state or cancelling AI.
+  if (shownRuntimeLogFaultSeverities.has(severity)) return;
+  shownRuntimeLogFaultSeverities.add(severity);
+  void app.whenReady().then(async () => {
+    const owner = mainWindow || startupWindow;
+    const options = { type: "warning", title: "运行日志保存异常", message: fault.fatal ? "部分运行日志无法确认完整保存。" : "运行日志已启用应急磁盘保存。",
+      detail, buttons: ["知道了"], noLink: true };
+    if (owner && !owner.isDestroyed()) await dialog.showMessageBox(owner, options);
+    else await dialog.showMessageBox(options);
+  }).catch(error => { console.error("Runtime logging warning could not be shown", diagnosticError(error)); });
+}
+function desktopRuntimeLogs() {
+  if (!runtimeLogManager) {
+    const options = { profilePath: app.getPath("userData"), baseDirectory: process.env.TOOLBOX_RUNTIME_LOG_ROOT,
+      onFault: reportRuntimeLogFault };
+    try { runtimeLogManager = createRuntimeLogManager(options); }
+    catch (error) {
+      runtimeLogManager = createRuntimeLogManager({ ...options, baseDirectory: undefined });
+      runtimeLogManager.recordFault("logging", { code: "RUNTIME_LOG_DIRECTORY_INVALID", message: diagnosticError(error), at: new Date().toISOString(), fatal: true });
+    }
+  }
+  return runtimeLogManager;
+}
+function writeRuntimeDiagnostic(component, record) {
+  try { return desktopRuntimeLogs().write(component, `${JSON.stringify(record)}\n`); }
+  catch (error) {
+    desktopRuntimeLogs().recordFault(component, { code: "RUNTIME_DIAGNOSTIC_WRITE_FAILED", message: diagnosticError(error), at: new Date().toISOString(), fatal: true });
+    return false;
+  }
+}
+
+function writeAiRuntimeDiagnostic(error) {
+  writeRuntimeDiagnostic("ai-runtime-startup", { timestamp: new Date().toISOString(), message: diagnosticError(error), stack: error?.stack });
+}
+
+// Profile-external diagnostics retain full error text/stack and rotate centrally.
+function writeDesktopStartupLog(stage, message) {
+  writeRuntimeDiagnostic("desktop-startup", { timestamp: new Date().toISOString(), stage, message });
+}
+
+function writeDesktopStartupDiagnostic(stage, error, context = {}) {
+  writeRuntimeDiagnostic("desktop-startup", { timestamp: new Date().toISOString(), stage,
+    message: diagnosticError(error), stack: error?.stack, ...context });
+}
+
+function waitForAiRuntime(port, timeoutMs = 90000) {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      const request = http.get(
+        { hostname: "127.0.0.1", port, path: "/health", timeout: 2000 },
+        (response) => {
+          const chunks = [];
+          let size = 0;
+          response.on("data", (chunk) => {
+            size += chunk.length;
+            if (size <= 256 * 1024) chunks.push(chunk);
+            else request.destroy(new Error("AI Runtime 健康响应大小异常"));
+          });
+          response.on("end", () => {
+            if (response.statusCode !== 200) return retry();
+            try {
+              const health = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+              const components = health?.components || {};
+              if (
+                health?.agent?.graphCompiled !== true ||
+                components.langchain !== true ||
+                components.langgraph !== true ||
+                components.llamaIndex !== true
+              ) {
+                return reject(
+                  new Error(
+                    "AI Runtime 依赖或 Planner–Executor–Reviewer 图未就绪",
+                  ),
+                );
+              }
+              resolve(health);
+            } catch (error) {
+              if (error instanceof SyntaxError) retry();
+              else reject(error);
+            }
+          });
+        },
+      );
+      request.on("timeout", () => request.destroy());
+      request.on("error", retry);
+    };
+    const retry = () => {
+      if (aiRuntimeStartError) return reject(aiRuntimeStartError);
+      if (aiRuntimeProcess && aiRuntimeProcess.exitCode !== null) {
+        return reject(
+          new Error(`AI Runtime 已退出（代码 ${aiRuntimeProcess.exitCode}）`),
+        );
+      }
+      if (Date.now() >= deadline)
+        return reject(new Error("AI Runtime 启动超时，已切换为兼容模式"));
+      setTimeout(check, 400);
+    };
+    check();
+  });
+}
+
+async function startAiRuntime() {
+  const spawned = await spawnAiRuntime();
+  return waitForAiRuntimeReady(spawned.port);
+}
+
+async function spawnAiRuntime(slot) {
+  aiRuntimeStartError = undefined;
+  aiRuntimeSpawn = undefined;
+  const resolved = slot ?? (await allocateAiRuntimeSlot());
+  return launchAiRuntimeProcess(resolved);
+}
+
+async function allocateAiRuntimeSlot() {
+  aiRuntimeStartError = undefined;
+  await synchronizeAiRelay();
+  const launch = resolveAiRuntimeLaunch();
+  const port = await findFreePort(18121, 18180);
+  const userDataDir = app.getPath("userData");
+  const runtimeDataDir = path.join(userDataDir, "ai-runtime");
+  const logDir = path.join(userDataDir, "logs");
+  fs.mkdirSync(runtimeDataDir, { recursive: true });
+  fs.mkdirSync(logDir, { recursive: true });
+
+  const token = crypto.randomBytes(32).toString("base64url");
+  const signingSecret = crypto.randomBytes(32).toString("base64url");
+  const tokenFile = path.join(runtimeDataDir, "runtime-token.txt");
+  const signingSecretFile = path.join(
+    runtimeDataDir,
+    "runtime-project-signing-secret.txt",
+  );
+  const temporaryTokenFile = `${tokenFile}.${process.pid}.tmp`;
+  const temporarySigningSecretFile = `${signingSecretFile}.${process.pid}.tmp`;
+  fs.writeFileSync(temporaryTokenFile, token, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  if (fs.existsSync(tokenFile)) fs.unlinkSync(tokenFile);
+  fs.renameSync(temporaryTokenFile, tokenFile);
+  fs.writeFileSync(temporarySigningSecretFile, signingSecret, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  if (fs.existsSync(signingSecretFile)) fs.unlinkSync(signingSecretFile);
+  fs.renameSync(temporarySigningSecretFile, signingSecretFile);
+  try {
+    fs.chmodSync(tokenFile, 0o600);
+    fs.chmodSync(signingSecretFile, 0o600);
+  } catch {
+    /* Windows ACL is inherited from userData. */
+  }
+  aiRuntimeTokenFile = tokenFile;
+  aiRuntimeSigningSecretFile = signingSecretFile;
+  return { port, token, tokenFile, signingSecret, signingSecretFile, launch };
+}
+
+function launchAiRuntimeProcess(slot) {
+  const { port, token, tokenFile, signingSecret, signingSecretFile, launch } = slot;
+  const userDataDir = app.getPath("userData");
+  const runtimeDataDir = path.join(userDataDir, "ai-runtime");
+  const logDir = path.join(userDataDir, "logs");
+  fs.mkdirSync(runtimeDataDir, { recursive: true });
+  fs.mkdirSync(logDir, { recursive: true });
+
+  const aiSettings = effectiveAiSettings();
+  recordRuntimeModelConfiguration(aiSettings);
+  const child = spawn(
+    launch.command,
+    [
+      ...launch.args,
+      "--host",
+      "127.0.0.1",
+      "--port",
+      String(port),
+      "--data-dir",
+      runtimeDataDir,
+      "--token-file",
+      tokenFile,
+      "--project-signing-secret-file",
+      signingSecretFile,
+      "--log-level",
+      "warning",
+    ],
+    {
+      cwd: launch.cwd,
+      env: {
+        ...process.env,
+        ...runtimeModelEnvironment(aiSettings),
+        AI_RUNTIME_BASE_URL: aiRuntimeBaseUrl(aiSettings.baseUrl),
+        AI_RUNTIME_MODEL: aiSettings.model,
+        AI_RUNTIME_RETRIEVAL_BACKEND: aiSettings.retrievalBackend,
+        AI_RUNTIME_EMBEDDING_BASE_URL: aiRuntimeBaseUrl(
+          aiSettings.effectiveEmbeddingBaseUrl,
+        ),
+        AI_RUNTIME_EMBEDDING_API_KEY: aiSettings.effectiveEmbeddingApiKey,
+        AI_RUNTIME_EMBEDDING_MODEL: aiSettings.embeddingModel,
+        // The semantic judge shares the planner's provider. A relay-fronted upstream can need
+        // several seconds for its first token; 6s made the judge trip into Fail-Closed on every
+        // call, which is safe but noisy. 15s keeps the judge far below the 45s planner budget.
+        AI_RUNTIME_JUDGE_TIMEOUT_SECONDS: "15",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    },
+  );
+  desktopRuntimeLogs().attachChild(child, "ai-runtime");
+  aiRuntimeProcess = child;
+  serviceExitReporter.watch(child, {
+    service: "ai-runtime", lifecycleId: crypto.randomUUID(), label: "AI 服务",
+    onUnexpectedExit: code => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("ai-runtime-exited", code);
+    },
+  });
+  child.once("error", (error) => {
+    aiRuntimeStartError = new Error(`无法启动 AI Runtime：${error.message}`);
+  });
+  child.once("exit", (code) => {
+    if (aiRuntimeProcess === child) {
+      if (!aiRuntimeConfig && !quitting) {
+        aiRuntimeStartError = new Error(
+          `AI Runtime 已退出（代码 ${code ?? "unknown"}）`,
+        );
+      }
+      aiRuntimeProcess = undefined;
+      aiRuntimeConfig = undefined;
+    }
+  });
+
+  aiRuntimeSpawn = { port, token, signingSecret };
+  return aiRuntimeSpawn;
+}
+/**
+ * The runtime silently fail-closes every turn with MODEL_NOT_CONFIGURED when the model
+ * environment is incomplete, and the Java layer can only report a generic stop. Record the
+ * shape of the configuration once per launch (never the key itself) so a false "engine
+ * connected" report can be traced back to the launch that produced it.
+ */
+function recordRuntimeModelConfiguration(settings) {
+  const apiKey = String(settings?.apiKey || "");
+  const model = String(settings?.model || "");
+  const baseUrl = String(settings?.baseUrl || "");
+  const relayEnabled = Boolean(readDesktopSettings().aiRelay?.enabled);
+  const relayReady = Boolean(aiRelayConnection);
+  const llmEnabled = Boolean(settings?.enabled && (apiKey || settings?.proxyMode));
+  const modelUsable = Boolean(llmEnabled && /^https?:\/\//i.test(baseUrl) && model);
+  if (!modelUsable) {
+    writeDesktopStartupDiagnostic("ai-runtime-model-not-usable", undefined, {
+      modelConfigured: Boolean(model),
+      baseUrlConfigured: /^https?:\/\//i.test(baseUrl),
+      apiKeyConfigured: Boolean(apiKey),
+      proxyMode: Boolean(settings?.proxyMode),
+      relayEnabled,
+      relayReady,
+    });
+  }
+}
+
+async function waitForAiRuntimeReady(port) {
+  const health = await waitForAiRuntime(port);
+  aiRuntimeConfig = {
+    url: `http://127.0.0.1:${port}`,
+    port,
+    token: aiRuntimeSpawn?.token,
+    signingSecret: aiRuntimeSpawn?.signingSecret,
+    health,
+  };
+  return aiRuntimeConfig;
+}
+
+function stopAiRuntime() {
+  const child = aiRuntimeProcess;
+  serviceExitReporter.markStopped(child);
+  aiRuntimeProcess = undefined;
+  aiRuntimeSpawn = undefined;
+  aiRuntimeConfig = undefined;
+  if (child && child.exitCode === null && Number.isInteger(child.pid)) {
+    if (process.platform === "win32") {
+      terminateWindowsProcessTree(child.pid, "AI Runtime");
+    } else {
+      child.kill("SIGTERM");
+    }
+  }
+  if (aiRuntimeTokenFile) {
+    try {
+      fs.unlinkSync(aiRuntimeTokenFile);
+    } catch {
+      /* It may already be absent. */
+    }
+    aiRuntimeTokenFile = undefined;
+  }
+  if (aiRuntimeSigningSecretFile) {
+    try {
+      fs.unlinkSync(aiRuntimeSigningSecretFile);
+    } catch {
+      /* It may already be absent. */
+    }
+    aiRuntimeSigningSecretFile = undefined;
+  }
+}
+
+function dependencySummary(result) {
+  const dependencies = Array.isArray(result?.dependencies)
+    ? result.dependencies
+    : [];
+  const available = dependencies.filter(
+    (item) => item?.status === "AVAILABLE",
+  ).length;
+  const required = dependencies.filter((item) => item?.required);
+  const requiredAvailable = required.filter(
+    (item) => item?.status === "AVAILABLE",
+  ).length;
+  return `核心依赖 ${requiredAvailable}/${required.length} 可用，全部工具 ${available}/${dependencies.length} 可用。`;
+}
+
+function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
+  backendStartError = undefined;
+  const credentials = ensureDesktopCredentials();
+  shutdownToken = shutdownToken || crypto.randomBytes(32).toString("hex");
+  const userDataDir = app.getPath("userData");
+  const dataDir = path.join(userDataDir, "data");
+  const logDir = path.join(userDataDir, "logs");
+  const toolsDir = resolveToolsDirectory();
+  const aiSettings = effectiveAiSettings();
+  const icpSettings = resolvedIcpSettings();
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.mkdirSync(logDir, { recursive: true });
+  try {
+    fs.mkdirSync(toolsDir, { recursive: true });
+  } catch {
+    // The application can still start from a read-only install directory;
+    // portable installation will report the write-permission error on demand.
+  }
+  const databasePath = path
+    .join(dataDir, "security-toolbox")
+    .replace(/\\/g, "/");
+  cleanupStaleH2Lock(dataDir);
+  const seedAdminPassword = pendingDesktopSeedPassword || "";
+  pendingDesktopSeedPassword = undefined;
+  const backendEnv = {
+    ...process.env,
+    TOOLBOX_DESKTOP: "true",
+    TOOLBOX_DESKTOP_SYNC_ADMIN_PASSWORD: "true",
+    TOOLBOX_DESKTOP_SEED_ADMIN_PASSWORD: seedAdminPassword,
+    ALLOW_INSECURE_DEVELOPMENT_CREDENTIALS: "false",
+    TOOLBOX_SHUTDOWN_TOKEN: shutdownToken,
+    TOOLBOX_TOOLS_DIR: toolsDir,
+    ADMIN_PASSWORD: credentials.adminPassword,
+    JWT_SECRET: credentials.jwtSecret,
+    TRAFFIC_MITM_CA_PATH: desktopMitmCaPath(),
+    TRAFFIC_MITM_CA_PASSWORD: credentials.mitmCaPassword,
+    AI_BASE_URL: aiSettings.baseUrl,
+    AI_API_KEY: aiSettings.apiKey,
+    AI_ENABLED: String(aiSettings.enabled),
+    AI_API_MODE: aiSettings.apiMode,
+    AI_TIMEOUT_SECONDS: aiSettings.apiMode === "responses" ? "0" : "60",
+    AI_MODEL: aiSettings.model,
+    AI_RUNTIME_ENABLED: String(Boolean(runtime)),
+    AI_RUNTIME_URL: runtime?.url || "",
+    AI_RUNTIME_PORT: runtime?.port ? String(runtime.port) : "",
+    AI_RUNTIME_TOKEN: runtime?.token || "",
+    AI_RUNTIME_PROJECT_SIGNING_SECRET: runtime?.signingSecret || "",
+    ICP_API_URL: icpSettings.apiUrl,
+    NUCLEI_PATH: fs.existsSync(path.join(toolsDir, "nuclei", "nuclei.exe"))
+      ? path.join(toolsDir, "nuclei", "nuclei.exe")
+      : "nuclei",
+    NUCLEI_TEMPLATES_PATH: path.join(toolsDir, "nuclei-templates"),
+    HTTPX_PATH: fs.existsSync(path.join(toolsDir, "httpx", "httpx.exe"))
+      ? path.join(toolsDir, "httpx", "httpx.exe")
+      : "httpx",
+    AFROG_PATH: fs.existsSync(path.join(toolsDir, "afrog", "afrog.exe"))
+      ? path.join(toolsDir, "afrog", "afrog.exe")
+      : "afrog",
+    AFROG_POCS_PATH: path.join(toolsDir, "afrog-pocs"),
+    XRAY_PATH: fs.existsSync(
+      path.join(toolsDir, "xray", "xray_windows_amd64.exe"),
+    )
+      ? path.join(toolsDir, "xray", "xray_windows_amd64.exe")
+      : "xray",
+    XRAY_POCS_PATH: path.join(toolsDir, "xray-pocs"),
+    FSCAN_PATH: fs.existsSync(path.join(toolsDir, "fscan", "fscan.exe"))
+      ? path.join(toolsDir, "fscan", "fscan.exe")
+      : "fscan",
+    SQLMAP_PATH: sqlmapBackendPath(toolsDir),
+    MSF_PATH: msfBackendPath(toolsDir),
+    ZAP_PATH: zapBackendPath(toolsDir),
+    POSTGRES_PATH: postgresExecutable(toolsDir) || "psql",
+    ZAP_HOST: "127.0.0.1",
+    ZAP_PORT: "8090",
+    PATH: [
+      path.join(toolsDir, "nuclei"),
+      path.join(toolsDir, "httpx"),
+      path.join(toolsDir, "afrog"),
+      path.join(toolsDir, "xray"),
+      path.join(toolsDir, "fscan"),
+      path.join(toolsDir, "nmap"),
+      path.join(toolsDir, "zap"),
+      zapBackendPath(toolsDir) && zapBackendPath(toolsDir) !== "zap"
+        ? path.dirname(zapBackendPath(toolsDir))
+        : path.join(toolsDir, "zap"),
+      path.join(toolsDir, "sqlmap"),
+      postgresBinDir(toolsDir) || path.join(toolsDir, "postgres", "bin"),
+      // Metasploit 经 junction 暴露于 tools\metasploit-framework，其后端
+      // PATH 探测也能命中 msfconsole（位于其 bin 目录）。
+      path.join(toolsDir, "metasploit-framework", "metasploit-framework", "bin"),
+      path.join(toolsDir, "metasploit-framework", "bin"),
+      process.env.PATH || "",
+    ].join(path.delimiter),
+  };
+  const explicitNmapPath = String(process.env.NMAP_PATH || "").trim();
+  if (explicitNmapPath) {
+    backendEnv.NMAP_PATH = process.env.NMAP_PATH;
+  } else {
+    const portableNmapPath = resolvePortableNmapPath(toolsDir);
+    if (portableNmapPath) backendEnv.NMAP_PATH = portableNmapPath;
+    else delete backendEnv.NMAP_PATH;
+  }
+  // 迁移到 PostgreSQL 后，以后端 postgres profile 启动：注入连接信息；若本次内存标志
+  // 置有旧 H2 迁移 URL，则一并注入让后端把历史数据拷贝进 PostgreSQL。
+  const desktopPostgres = activeDesktopPostgresConfig();
+  let migrationProgressFromStdout = false;
+  if (desktopPostgres) {
+    if (pgPortOpenSync(desktopPostgres)) {
+      backendEnv.SPRING_PROFILES_ACTIVE = "postgres";
+      backendEnv.DB_URL = `jdbc:postgresql://${desktopPostgres.host}:${desktopPostgres.port}/${desktopPostgres.database}`;
+      backendEnv.DB_USERNAME = desktopPostgres.username;
+      backendEnv.DB_PASSWORD = desktopPostgres.password;
+      const migrateUrl = takeDesktopPgMigrateH2Url();
+      if (migrateUrl) {
+        backendEnv.LEGACY_H2_MIGRATE_URL = migrateUrl;
+        // Each Java progress message already goes through the logger. Use its
+        // required stdout capture and disable the duplicate legacy file sink.
+        delete backendEnv.LEGACY_H2_MIGRATE_PROGRESS_FILE;
+        migrationProgressFromStdout = true;
+      }
+    } else {
+      // 本地 PG 不可达：回退 H2 并清除启用标记，避免下次启动再次尝试失败。
+      disableDesktopPostgres();
+      writeDesktopStartupDiagnostic(
+        "postgres-unreachable-disable",
+        new Error(
+          `本地 PostgreSQL（${desktopPostgres.host}:${desktopPostgres.port}）不可达，已自动回退 H2`,
+        ),
+        { host: desktopPostgres.host, port: desktopPostgres.port },
+      );
+    }
+  }
+  const child = spawn(
+    java,
+    [
+  // Desktop-only JVM tuning. Stop tiered compilation at C1 to cut cold
+  // start time, and lazy bean creation defers heavy services (AI runtime
+  // client, MITM authority, scan tools) until first use. ~40s -> ~12s to
+  // first ready on this machine; the first API request pays a small init
+  // cost, but single-user desktop startup latency matters more than throughput.
+      "-Dfile.encoding=UTF-8",
+      "-Dsun.stdout.encoding=UTF-8",
+      "-Dsun.stderr.encoding=UTF-8",
+      "-XX:TieredStopAtLevel=1",
+      ...(migrationProgressFromStdout ? ["-Dtoolbox.migration.legacy-h2-progress-file="] : []),
+      "-jar",
+      jar,
+      "--spring.main.lazy-initialization=true",
+      "--server.address=127.0.0.1",
+      `--server.port=${port}`,
+      ...desktopBackendDatasourceArgs({ databasePath }),
+    ],
+    {
+      cwd: userDataDir,
+      env: backendEnv,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    },
+  );
+  backendProcess = child;
+  serviceExitReporter.watch(child, {
+    service: "backend", lifecycleId: crypto.randomUUID(), label: "本地 Java 服务",
+    onUnexpectedExit: code => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("backend-exited", code);
+    },
+  });
+  desktopRuntimeLogs().attachChild(child, "server");
+  if (migrationProgressFromStdout) startMigrateProgressTail(child.stdout);
+  child.once("exit", (code) => {
+    if (backendProcess === child) backendProcess = undefined;
+  });
+  child.once("error", (error) => {
+    backendStartError = new Error(`无法启动本地 Java 服务：${error.message}`);
+  });
+}
+
+function isProcessAlive(pid) {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // ESRCH: no such process. EPERM: exists but not signalable -> treat as alive.
+    return error && error.code === "EPERM";
+  }
+}
+
+function waitForProcessExit(pid, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  const waitBuffer = new Int32Array(new SharedArrayBuffer(4));
+  while (isProcessAlive(pid) && Date.now() < deadline) {
+    Atomics.wait(waitBuffer, 0, 0, 50);
+  }
+  return !isProcessAlive(pid);
+}
+
+function terminateWindowsProcessTree(pid, description) {
+  let attempts = 0;
+  let lastResult;
+  let alive = true;
+  do {
+    attempts += 1;
+    lastResult = spawnSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    alive = !waitForProcessExit(pid);
+  } while (alive && attempts < 2);
+  const taskkillOutput = `${lastResult?.stdout || ""}${lastResult?.stderr || ""}`
+    .replace(/[\r\n]+/g, " ")
+    .trim()
+    .slice(0, 1000);
+  const context = {
+    pid,
+    description,
+    attempts,
+    alive,
+    taskkillStatus: lastResult?.status ?? null,
+    taskkillError: lastResult?.error?.message || null,
+    taskkillOutput,
+  };
+  writeDesktopStartupDiagnostic(
+    "process-stop",
+    alive ? new Error(`${description} remains alive after taskkill`) : "process stopped",
+    context,
+  );
+  if (alive) {
+    console.error(`${description} (PID ${pid}) remains alive after taskkill`, context);
+  }
+  return !alive;
+}
+
+function cleanupStaleH2Lock(dataDir) {
+  // The bundled JVM runs headless, so on Windows it can only be terminated
+  // forcefully. H2 is crash-safe (MVStore + AUTO_SERVER), but a forced stop
+  // leaves a stale `.lock.db` behind; on the next start H2 stalls on the lock
+  // handshake, which makes first-connection noticeably slower. Remove it now
+  // that no backend process we manage is running.
+  if (process.platform !== "win32") return;
+  try {
+    const lockPath = path.join(dataDir, "security-toolbox.lock.db");
+    if (fs.existsSync(lockPath) && !backendProcess) {
+      fs.rmSync(lockPath, { force: true });
+    }
+  } catch (error) {
+    writeDesktopStartupDiagnostic(
+      "h2-lock-cleanup",
+      new Error(`无法清理残留的 H2 锁文件：${error.message}`),
+      { dataDir },
+    );
+  }
+}
+
+function requestGracefulBackendShutdown(port, token) {
+  return new Promise((resolve) => {
+    const body = Buffer.from("");
+    const request = http.request(
+      {
+        hostname: "127.0.0.1",
+        port,
+        path: "/api/system/shutdown",
+        method: "POST",
+        headers: {
+          "Content-Length": 0,
+          "X-Shutdown-Token": token || "",
+        },
+      },
+      (response) => {
+        response.resume();
+        response.on("end", () => resolve({ ok: response.statusCode === 200 }));
+      },
+    );
+    request.setTimeout(3000, () => request.destroy());
+    request.on("error", () => resolve({ ok: false }));
+    request.end(body);
+  });
+}
+
+async function stopBackend() {
+  if (!backendProcess || backendProcess.exitCode !== null) {
+    backendProcess = undefined;
+    return;
+  }
+  const pid = backendProcess.pid;
+  serviceExitReporter.markStopped(backendProcess);
+  const port = backendPort;
+  const token = shutdownToken;
+  backendProcess = undefined;
+  if (process.platform !== "win32") {
+    // On POSIX the JVM receives a real SIGTERM and runs its shutdown hooks.
+    process.kill(pid, "SIGTERM");
+  } else if (port && token) {
+    // Ask the backend to exit cleanly so Spring's shutdown hooks close the H2
+    // connection and release the lock. If it does not respond or exit quickly,
+    // fall back to the forced tree kill below. A missing/mismatched endpoint
+    // (e.g. an older JAR) is treated as not-graceful and still force-killed.
+    const result = await requestGracefulBackendShutdown(port, token);
+    if (result.ok && waitForProcessExit(pid, 5000)) {
+      cleanupStaleH2Lock(path.join(app.getPath("userData"), "data"));
+      return;
+    }
+    terminateWindowsProcessTree(pid, "Java backend");
+  } else {
+    // No endpoint/token available on Windows: only a forced kill is possible.
+    terminateWindowsProcessTree(pid, "Java backend");
+  }
+  cleanupStaleH2Lock(path.join(app.getPath("userData"), "data"));
+}
+
+async function restartBackend() {
+  if (!backendPort) return;
+  restartingBackend = true;
+  try {
+    await ensureDesktopPostgresRunning();
+    await stopBackend();
+    startBackend(resolveJava(), resolveServerJar(), backendPort);
+    await waitForBackend(backendPort);
+  } finally {
+    restartingBackend = false;
+  }
+}
+
+async function restartAiRuntimeAndBackend() {
+  stopAiRuntime();
+  try {
+    await startAiRuntime();
+  } catch (error) {
+    writeAiRuntimeDiagnostic(error);
+    stopAiRuntime();
+  }
+  await restartBackend();
+}
+
+async function changeToolsDirectory(directory) {
+  const selected = path.resolve(directory);
+  ensureWritableDirectory(selected);
+  const previousSettings = readDesktopSettings();
+  const previousDirectory = resolveToolsDirectory();
+  if (
+    path.normalize(previousDirectory).toLowerCase() ===
+    path.normalize(selected).toLowerCase()
+  ) {
+    return { changed: false, path: selected, toolsDirectory: selected };
+  }
+  writeDesktopSettings({ ...previousSettings, toolsDirectory: selected });
+  try {
+    await restartBackend();
+    return { changed: true, path: selected, toolsDirectory: selected };
+  } catch (error) {
+    writeDesktopSettings({
+      ...previousSettings,
+      toolsDirectory: previousDirectory,
+    });
+    await restartBackend().catch(() => {});
+    throw error;
+  }
+}
+
+function createStartupWindow() {
+  const startupTheme = currentSystemTheme();
+  startupWindow = new BrowserWindow({
+    width: 900,
+    height: 620,
+    icon: path.join(__dirname, "icon.png"),
+      resizable: false,
+      maximizable: false,
+      show: false,
+      // Immersive title bar so the native caption band no longer separates the
+      // splash chrome from the page; the DOM draws its own transparent title bar.
+      titleBarStyle: "hidden",
+      titleBarOverlay: titleBarOverlay(startupTheme),
+      backgroundColor: windowBackgroundColor(startupTheme),
+      backgroundMaterial:
+        startupTheme.transparencyEnabled && !startupTheme.highContrast
+          ? startupTheme.windowMaterial
+          : "none",
+      autoHideMenuBar: true,
+    webPreferences: {
+      devTools: !app.isPackaged,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+    },
+  });
+  const startupEntry = path.join(__dirname, "startup.html");
+  const guardStartupNavigation = (event, url) => {
+    if (!isTrustedLocalFileUrl(url, startupEntry)) event.preventDefault();
+  };
+  startupWindow.webContents.on("will-navigate", guardStartupNavigation);
+  startupWindow.webContents.on("will-redirect", guardStartupNavigation);
+  startupWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  startupWindow.loadFile(startupEntry);
+  startupWindow.webContents.on("did-finish-load", () => {
+    applySystemThemeToStaticWindow(startupWindow);
+    applyMotionToStartupWindow(startupWindow);
+  });
+  startupWindow.once("ready-to-show", () => {
+    applySystemThemeToStaticWindow(startupWindow);
+    applyMotionToStartupWindow(startupWindow);
+    startupWindow.show();
+  });
+}
+
+function createMainWindow(port) {
+  const initialTheme = currentSystemTheme();
+  const rendererSession = electronSession.fromPartition(
+    "persist:security-toolbox-desktop-v2",
+  );
+  const handleLoopbackHeaders = (details, callback) => {
+    const headers = { ...details.requestHeaders };
+    if (
+      !headers.Origin ||
+      headers.Origin === "null" ||
+      headers.Origin.startsWith("file://")
+    ) {
+      headers.Origin = "http://localhost:5173";
+    }
+    callback({ requestHeaders: headers });
+  };
+  rendererSession.webRequest.onBeforeSendHeaders(
+    { urls: ["http://127.0.0.1:*/*", "http://localhost:*/*"] },
+    handleLoopbackHeaders,
+  );
+  electronSession.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: ["http://127.0.0.1:*/*", "http://localhost:*/*"] },
+    handleLoopbackHeaders,
+  );
+  mainWindow = new BrowserWindow({
+    title: "獬豸授权安全测试平台",
+    icon: path.join(__dirname, "icon.png"),
+    width: 1380,
+    height: 860,
+    minWidth: 1000,
+    minHeight: 700,
+    show: false,
+    titleBarStyle: "hidden",
+    titleBarOverlay: titleBarOverlay(initialTheme),
+    backgroundColor: windowBackgroundColor(initialTheme),
+    backgroundMaterial:
+      initialTheme.transparencyEnabled && !initialTheme.highContrast
+        ? initialTheme.windowMaterial
+        : "none",
+    autoHideMenuBar: true,
+    webPreferences: {
+      devTools: !app.isPackaged,
+      preload: path.join(__dirname, "preload.cjs"),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      partition: "persist:security-toolbox-desktop-v2",
+      additionalArguments: [`--backend-url=http://127.0.0.1:${port}/api`],
+    },
+  });
+  const publishMaximizedState = () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(
+        "toolbox:window-maximized-changed",
+        mainWindow.isMaximized(),
+      );
+    }
+  };
+  mainWindow.on("maximize", publishMaximizedState);
+  mainWindow.on("unmaximize", publishMaximizedState);
+  const guardMainNavigation = (event, url) => {
+    if (isTrustedMainRendererUrl(url)) return;
+    event.preventDefault();
+    if (/^https?:\/\//i.test(String(url))) void shell.openExternal(url);
+  };
+  mainWindow.webContents.on("will-navigate", guardMainNavigation);
+  mainWindow.webContents.on("will-redirect", guardMainNavigation);
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(String(url))) void shell.openExternal(url);
+    return { action: "deny" };
+  });
+  mainWindow.webContents.on(
+    "did-fail-load",
+    (_event, errorCode, errorDescription, validatedURL) => {
+      if (errorCode === -3) return;
+      writeDesktopStartupDiagnostic("renderer-load", errorDescription, {
+        errorCode,
+        validatedURL: String(validatedURL || "").slice(0, 2048),
+      });
+      if (startupWindow && !startupWindow.isDestroyed()) {
+        updateStartup(
+          "工作区加载失败",
+          "前端页面或资源无法载入。",
+          "工作区页面加载失败，请重新启动应用或查看桌面日志。",
+        );
+      }
+    },
+  );
+  const devUrl = process.env.TOOLBOX_DEV_URL;
+  const backendUrl = `http://127.0.0.1:${port}/api`;
+  if (devUrl) {
+    const rendererUrl = new URL(devUrl);
+    rendererUrl.searchParams.set("desktop", "1");
+    rendererUrl.searchParams.set("backend", backendUrl);
+    rendererUrl.hash = "/setup?startup=1&redirect=%2F";
+    mainWindow.loadURL(rendererUrl.toString());
+  } else {
+    mainWindow.loadFile(path.join(app.getAppPath(), "dist", "index.html"), {
+      query: { desktop: "1", backend: backendUrl },
+      hash: "/setup?startup=1&redirect=%2F",
+    });
+  }
+  mainWindow.once("ready-to-show", async () => {
+    const showTheme = currentSystemTheme();
+    if (!mainWindow.webContents.isDestroyed()) {
+      const surface = JSON.stringify(sharedChromeSurface(showTheme));
+      await mainWindow.webContents
+        .executeJavaScript(
+          `document.documentElement.style.setProperty('--shared-chrome-surface', ${surface})`,
+        )
+        .catch(() => {});
+    }
+    mainWindow.show();
+    if (startupWindow && !startupWindow.isDestroyed()) startupWindow.close();
+  });
+  mainWindow.on("closed", () => {
+    mainWindow = undefined;
+    void closeCaptureBrowser().catch(() => {});
+    closeIcpBrowser();
+  });
+  // Keep the native title bar fully owned by DWM. Setting an overlay/caption
+  // color here would take precedence over the user's Windows personalization.
+}
+
+async function boot() {
+  desktopLoginCredentialsIssued = false;
+  let mitmCaMigration;
+  applyThemeMode(configuredThemeMode());
+  createStartupWindow();
+  try {
+    updateStartup("检查并启动运行环境", "正在检查本地运行环境和服务文件。");
+    ensureDesktopCredentials();
+    const java = resolveJava();
+    const jar = resolveServerJar();
+
+    // 待 AI 进程被 spawn 之后会立刻 import langchain/langgraph/llama_index 并占满
+    // CPU，把 Spring Boot 冷启动从约 12 秒拖到约 24 秒。这里把后端当成启动期的唯一
+    // 重负载：先预分配 AI 运行时的回环端口与令牌，让 JVM 启动时就能绑定运行时客户端
+    // 配置；AI 进程延迟到主窗口打开之后再 spawn，让图在后台编译。后端的
+    // AiAgentRuntimeClient 在运行时健康检查通过前会降级为静态训练，所以把 AI 启动
+    // 推迟到窗口之后不会影响正确性。
+    backendPort = await findFreePort();
+    mitmCaMigration = prepareDesktopMitmCaMigration();
+    const aiSlot = await allocateAiRuntimeSlot();
+    // 本地 PostgreSQL 可执行文件若缺失/启动失败，不应阻塞整体启动：
+    // 自动回退 H2 并清除启用标记，让用户能进入工作区，再到依赖页重新安装/迁移。
+    try {
+      await ensureDesktopPostgresRunning();
+    } catch (error) {
+      const pgMissing = /未检测到本地 PostgreSQL|安装不完整|未初始化 PostgreSQL/i.test(
+        String(error?.message || error),
+      );
+      if (pgMissing) {
+        disableDesktopPostgres();
+        writeDesktopStartupDiagnostic(
+          "postgres-unavailable-fallback",
+          error,
+          { hint: "PostgreSQL 不可用，已回退 H2；可在依赖页重新安装后再迁移" },
+        );
+      } else {
+        throw error;
+      }
+    }
+    startBackend(java, jar, backendPort, {
+      url: `http://127.0.0.1:${aiSlot.port}`,
+      port: aiSlot.port,
+      token: aiSlot.token,
+      signingSecret: aiSlot.signingSecret,
+    });
+    updateStartup("检查并启动运行环境", "本地服务正在初始化，请稍候…");
+    await waitForBackend(backendPort);
+    completeDesktopMitmCaMigration(mitmCaMigration);
+    mitmCaMigration = undefined;
+    updateStartup("检测工具依赖", "本地服务已就绪，正在打开依赖检测与安装页面。");
+    createMainWindow(backendPort);
+    // 主窗口打开后再启动 AI，使其绝不阻塞启动窗与后端冷启动；图在后台编译。
+    setImmediate(() => {
+      spawnAiRuntime(aiSlot)
+        .then((spawned) => waitForAiRuntimeReady(spawned.port))
+        .catch((error) => {
+          writeAiRuntimeDiagnostic(error);
+          stopAiRuntime();
+        });
+    });
+    // 漏洞知识库保持显式同步语义：启动时不自动联网下载或导入模板。
+  } catch (error) {
+    stopAiRuntime();
+    await stopBackend();
+    let recoveryError;
+    try {
+      rollbackDesktopMitmCaMigration(mitmCaMigration);
+    } catch (failure) {
+      recoveryError = failure;
+    }
+    writeDesktopStartupDiagnostic("boot", error);
+    if (recoveryError)
+      writeDesktopStartupDiagnostic("mitm-ca-recovery", recoveryError);
+    // The relay settings validator deliberately hides the original crypto error
+    // behind this fixed message. Restore only that known, safe attribution;
+    // arbitrary Error.message values may contain credentials or provider URLs.
+    const startupError = error?.message === "无法读取线路密钥，请重新保存密钥"
+      ? new UserFacingError(
+          "已保存的 AI 中转线路密钥无法读取。请使用保存密钥时的 Windows 用户，或恢复可用的桌面配置备份后重新启动。",
+        )
+      : error;
+    updateStartup(
+      "启动失败",
+      "无法进入工具工作区。",
+      publicErrorMessage(
+        startupError,
+        "本地服务启动失败，请查看桌面日志确认原因，排除问题后重新启动桌面程序。",
+      ),
+    );
+  }
+}
+
+if (hasSingleInstanceLock) {
+  app.setAppUserModelId("com.bachelor.securitytoolbox");
+  app.whenReady().then(() => {
+    systemPreferences.on("accent-color-changed", handleSystemThemeChanged);
+    systemPreferences.on("color-changed", handleSystemThemeChanged);
+    nativeTheme.on("updated", handleSystemThemeChanged);
+    return boot();
+  });
+}
+app.on("second-instance", () => {
+  const window = mainWindow || startupWindow;
+  if (!window || window.isDestroyed()) return;
+  if (window.isMinimized()) window.restore();
+  window.focus();
+});
+app.on("before-quit", (event) => {
+  quitting = true;
+  for (const session of activeInstalls.values()) {
+    if (
+      session.state === "running" &&
+      ["downloading-package", "downloading-templates"].includes(session.phase)
+    ) {
+      session.intent = "pause";
+      session.controller?.abort();
+    }
+  }
+  systemPreferences.off("accent-color-changed", handleSystemThemeChanged);
+  systemPreferences.off("color-changed", handleSystemThemeChanged);
+  nativeTheme.off("updated", handleSystemThemeChanged);
+  void closeCaptureBrowser().catch(() => {});
+  closeIcpBrowser();
+  stopAiRuntime();
+  event.preventDefault();
+  Promise.allSettled([stopBackend(), aiRelay?.close()])
+    .catch(() => {})
+    .finally(async () => {
+      await runtimeLogManager?.close();
+      quitting = true;
+      app.exit(0);
+    });
+});
+app.on("window-all-closed", () => app.quit());
+app.on("activate", () => {
+  if (!mainWindow && !startupWindow) boot();
+});
