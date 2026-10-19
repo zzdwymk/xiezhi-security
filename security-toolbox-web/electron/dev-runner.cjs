@@ -71,14 +71,17 @@ function createDesktopDevRunner({
         throw new Error("桌面开发服务未取得有效监听端口");
       vite.httpServer.once("error", (error) => void finish(1, error));
 
+      const childEnv = {
+        ...runtime.env,
+        TOOLBOX_DEV_URL: `http://127.0.0.1:${address.port}`,
+        TOOLBOX_PROJECT_ROOT: projectDir,
+      };
+      delete childEnv.ELECTRON_RUN_AS_NODE;
+
       desktop = spawnProcess(electronPath || require("electron"), ["."], {
         cwd: projectDir,
         stdio: "inherit",
-        env: {
-          ...runtime.env,
-          TOOLBOX_DEV_URL: `http://127.0.0.1:${address.port}`,
-          TOOLBOX_PROJECT_ROOT: projectDir,
-        },
+        env: childEnv,
         windowsHide: false,
       });
       desktop.once("error", (error) => void finish(1, error));

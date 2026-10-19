@@ -12,8 +12,12 @@ import {
 } from "../api";
 import AssetTopology from "../components/AssetTopology.vue";
 import FluentIcon from "../components/FluentIcon.vue";
+import OfflineState from "../components/OfflineState.vue";
 import { toErrorMessage } from "../utils/errorMessage";
 import { ElMessage } from "element-plus";
+import { useRouter } from "vue-router";
+
+const router = useRouter();
 
 const projects = ref<AssessmentProject[]>([]);
 const projectId = ref<number | "all">("all");
@@ -429,15 +433,23 @@ onMounted(async () => {
         @change="loadAssets"
       />
 
-      <el-empty
+      <OfflineState
         v-else
-        :description="projectsOffline ? '项目列表暂时不可用' : '暂无评估项目，请先创建项目'"
+        :title="projectsOffline ? '项目列表暂时不可用' : '暂无评估项目'"
+        :description="
+          projectsOffline
+            ? '无法读取评估项目，请检查本地引擎连接后重试。'
+            : '请先在「评估项目」中创建项目，再回到这里查看资产拓扑。'
+        "
         class="empty-project-prompt"
       >
         <el-button v-if="projectsOffline" type="primary" @click="refreshTopology">
           重试
         </el-button>
-      </el-empty>
+        <el-button v-else type="primary" @click="router.push('/projects')">
+          创建评估项目
+        </el-button>
+      </OfflineState>
     </div>
   </section>
 </template>
@@ -531,9 +543,17 @@ onMounted(async () => {
   flex-direction: column;
 }
 
-.empty-project-prompt {
-  margin: auto;
+/*
+  空状态在 .topology-wrapper（column flex）里占满剩余高度并居中。
+ */
+.topology-wrapper > .empty-project-prompt {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
   max-width: 100%;
+  margin: 0;
+  box-sizing: border-box;
+  justify-content: center;
 }
 
 @media (max-width: 640px) {

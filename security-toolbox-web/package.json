@@ -23,6 +23,7 @@
     "test:setup-auto-continue": "node scripts/test-setup-auto-continue-browser.cjs",
     "test:startup-navigation": "node scripts/test-startup-navigation-browser.cjs",
     "test:desktop-dev-runner": "node scripts/test-desktop-dev-runner.cjs",
+    "test:desktop-packaged": "node scripts/test-desktop-packaged-e2e.cjs",
     "test:ai-relay": "node scripts/test-ai-relay-settings.cjs && node scripts/test-ai-relay.cjs && node scripts/test-ai-relay-models.cjs",
     "test:ai-relay-runtime": "node scripts/test-ai-relay-runtime.cjs",
     "test:offline": "node scripts/verify-offline-tools.cjs",

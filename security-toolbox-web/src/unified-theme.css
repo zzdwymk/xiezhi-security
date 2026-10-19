@@ -1382,7 +1382,7 @@ body:not(:has(.desktop-v2-native-frame))
    所以改成：水平居中（相对于工作区），但整体再往下挪 60px，
    悬在 section-head 下方，既醒目又不遮挡任何页面元素。 */
 body:has(.desktop-v2-native-frame) .el-message {
-  top: calc(var(--desktop-titlebar-height, 38px) + 44px) !important;
+  top: calc(var(--desktop-titlebar-height, 38px) + 48px) !important;
   left: calc(var(--desktop-sidebar-width, 260px) + (100% - var(--desktop-sidebar-width, 260px) - var(--desktop-workspace-gap, 5px)) / 2) !important;
   transform: translateX(-50%) !important;
   margin-top: 0 !important;
@@ -1393,7 +1393,7 @@ body:has(.desktop-v2-native-frame) .el-message {
 
 /* Web（无原生标题栏）同样下移，避免盖住页面头部。 */
 body:not(:has(.desktop-v2-native-frame)) .el-message {
-  top: 44px !important;
+  top: 48px !important;
   left: 50% !important;
   transform: translateX(-50%) !important;
   -webkit-app-region: no-drag;
@@ -1405,10 +1405,17 @@ body:not(:has(.desktop-v2-native-frame)) .el-message {
 body:has(.login-page) {
   --desktop-workspace-gap: 0px;
 }
-body:has(.login-page) .el-message {
+/* 网页端登录页 */
+body:has(.login-page):not(:has(.desktop-v2-native-frame)) .el-message {
   left: 50% !important;
   transform: translateX(-50%) !important;
-  top: 24px !important;
+  top: 48px !important;
+}
+/* 桌面端登录页：没有侧边栏，不要走 workspace 居中的 left 计算式 */
+body:has(.desktop-v2-native-frame):has(.login-page) .el-message {
+  top: calc(var(--desktop-titlebar-height, 38px) + 48px) !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
 }
 
 .desktop-v2-content,
@@ -1497,20 +1504,55 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 28px;
+  padding: 32px 28px;
   color: var(--app-muted);
   text-align: center;
 }
 
+/* 空态里的操作按钮：与说明文字保持间距 */
+.empty-state .el-button + .el-button {
+  margin-left: 0;
+}
+.empty-state > .el-button {
+  margin-top: 16px;
+}
+.empty-state.is-compact > .el-button {
+  margin-top: 12px;
+}
+
+/* 表格、卡片、对话框等局部区块里的紧凑空态 */
+.empty-state.is-compact {
+  min-height: 120px;
+  padding: 18px 16px;
+}
+
+/* 作为 flex 容器的子项时占满剩余空间并双向居中（顶层 margin 避免与其他空态样式冲突） */
+.topology-wrapper > .empty-state {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+}
+
+/* 全站统一空态图案：圆形描边 + 破折号 */
 .empty-mark {
   display: grid;
-  width: 44px;
-  height: 44px;
-  margin-bottom: 12px;
+  width: 56px;
+  height: 56px;
+  margin-bottom: 14px;
   place-items: center;
   border: 1px solid var(--app-border);
   border-radius: 50%;
   background: var(--app-surface-soft);
+  color: var(--app-muted);
+  font-size: 20px;
+  line-height: 1;
+}
+
+.empty-state.is-compact .empty-mark {
+  width: 44px;
+  height: 44px;
+  margin-bottom: 10px;
+  font-size: 16px;
 }
 
 .empty-state strong {
@@ -1524,6 +1566,15 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
   color: var(--app-muted);
   font-size: 12px;
   line-height: 1.6;
+}
+.empty-state.is-compact strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+.empty-state.is-compact p {
+  max-width: 360px;
+  margin-top: 4px;
+  font-size: 12px;
 }
 
 /* Fluent WinUI 3 control language */

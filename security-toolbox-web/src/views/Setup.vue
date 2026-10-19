@@ -14,6 +14,7 @@ import {
   Warning,
 } from "../components/fluentIcons";
 import { endpoints } from "../api";
+import OfflineState from "../components/OfflineState.vue";
 import { getApiUrl } from "../apiClient";
 import { toErrorMessage } from "../utils/errorMessage";
 import { taskbarProgress } from "../utils/taskbarProgress";
@@ -47,6 +48,7 @@ interface Dependency {
   logs?: string[];
   message?: string;
   elapsedSeconds?: number;
+  output?: string;
 }
 
 const router = useRouter();
@@ -151,6 +153,11 @@ function dependencyTooltipText(item: Dependency) {
     return item.message || "已在系统环境中检测通过，登录后可查看详细安装路径";
   }
   return item.message || "未检测到安装路径";
+}
+
+function dependencyVersionTooltip(item: Dependency) {
+  if (isChecking(item)) return "";
+  return item.output?.trim() || item.version || "";
 }
 
 async function check(forceRefresh = false) {
@@ -547,7 +554,8 @@ async function requestPostgresMigration() {
   try {
     await ElMessageBox.confirm(
       "将使用随包安装的 PostgreSQL 初始化一个本地私有数据库，并把应用数据源切换过去。\n\n" +
-        "旧数据会保留在 H2 文件中，之后可随时回退。切换需要重启后端服务。",
+        "注意：此操作会重建本地数据库实例（旧实例会先备份到数据目录旁）。" +
+        "若之前已启用过 PostgreSQL 且其中有新数据，请勿重复迁移。切换需要重启后端服务。",
       "迁移到 PostgreSQL",
       {
         confirmButtonText: "开始迁移",
@@ -623,13 +631,46 @@ async function reimportPostgresData() {
     ElMessage.error("当前运行时未提供重新导入能力");
     return;
   }
+  let sourceFile = "";
   try {
+    // 让用户显式选择导入源：H2 源选错就会把空库/旧库盖进 PG。
+    const sources =
+      (await window.toolboxDesktop.getH2ImportSources?.()) || [];
+    if (sources.length > 1) {
+      const options = sources.map((s: any) => ({
+        label: `${s.label}（${(s.size / 1024).toFixed(0)} KB，${new Date(
+          s.lastWriteTime,
+        ).toLocaleString()}）`,
+        value: s.file,
+      }));
+      const { value } = await ElMessageBox.prompt(
+        "请确认导入源文件路径（复制以下候选之一）：\n" +
+          options.map((o: any) => `· ${o.label}`).join("\n"),
+        "选择 H2 导入源",
+        {
+          confirmButtonText: "导入",
+          cancelButtonText: "取消",
+          inputPlaceholder: options[0]?.value || "",
+          inputValue: options[0]?.value || "",
+          type: "warning",
+          inputValidator: (v: string) => {
+            if (!v) return "必须提供源文件路径";
+            return options.some((o: any) => o.value === v)
+              ? true
+              : "路径不在候选列表中";
+          },
+        },
+      );
+      sourceFile = value;
+    }
     await ElMessageBox.confirm(
       "将从本地 H2 库把历史数据重新导入当前 PostgreSQL（需重启后端）。H2 与 PG 原有数据均不会被删除。",
       "重新导入 H2 数据到 PostgreSQL",
       { confirmButtonText: "导入", cancelButtonText: "取消", type: "warning" },
     );
-    await window.toolboxDesktop.reimportH2ToPostgres();
+    await window.toolboxDesktop.reimportH2ToPostgres(
+      sourceFile ? { sourceFile } : undefined,
+    );
     ElMessage.success("已触发导入，后端将迁移 H2 历史数据到 PostgreSQL");
   } catch (reimportError: any) {
     if (reimportError === "cancel" || reimportError === "close") return;
@@ -1069,12 +1110,13 @@ onUnmounted(() => {
                 {{ grouped.core.length }} 可用</em
               >
             </div>
-            <div
+            <OfflineState
               v-if="!grouped.core.length && !loading"
               class="dependency-empty"
-            >
-              暂无检查结果
-            </div>
+              size="compact"
+              icon="wrench"
+              title="暂无检查结果"
+            />
             <div
               v-for="item in grouped.core"
               :key="item.name"
@@ -1145,15 +1187,15 @@ onUnmounted(() => {
                 </div>
               </div>
               <el-tooltip
-                :disabled="!item.version"
+                :disabled="!dependencyVersionTooltip(item)"
                 placement="top"
-                :show-after="350"
+                :show-after="200"
                 popper-class="dependency-path-tooltip"
               >
                 <template #content
-                  ><span class="dependency-path-tooltip-content">{{
-                    item.version
-                  }}</span></template
+                  ><div class="dependency-version-tooltip-content">{{
+                    dependencyVersionTooltip(item)
+                  }}</div></template
                 >
                 <span class="dep-version">{{ item.version || "--" }}</span>
               </el-tooltip>
@@ -1261,12 +1303,13 @@ onUnmounted(() => {
                 {{ grouped.optional.length }} 可用</em
               >
             </div>
-            <div
+            <OfflineState
               v-if="!grouped.optional.length && !loading"
               class="dependency-empty"
-            >
-              未配置可选工具
-            </div>
+              size="compact"
+              icon="wrench"
+              title="未配置可选工具"
+            />
             <div
               v-for="item in grouped.optional"
               :key="item.name"
@@ -1348,15 +1391,15 @@ onUnmounted(() => {
                 </div>
               </div>
               <el-tooltip
-                :disabled="!item.version"
+                :disabled="!dependencyVersionTooltip(item)"
                 placement="top"
-                :show-after="350"
+                :show-after="200"
                 popper-class="dependency-path-tooltip"
               >
                 <template #content
-                  ><span class="dependency-path-tooltip-content">{{
-                    item.version
-                  }}</span></template
+                  ><div class="dependency-version-tooltip-content">{{
+                    dependencyVersionTooltip(item)
+                  }}</div></template
                 >
                 <span class="dep-version">{{ item.version || "--" }}</span>
               </el-tooltip>

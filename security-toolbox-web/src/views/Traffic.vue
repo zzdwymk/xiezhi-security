@@ -28,6 +28,7 @@ import {
 } from "../components/fluentIcons";
 import { api, streamSqlmapScan, streamXrayScan, streamZapScan, type Target } from "../api";
 import AppPagination from "../components/AppPagination.vue";
+import OfflineState from "../components/OfflineState.vue";
 import { useClientPagination } from "../composables/useClientPagination";
 import { useCopilotStore } from "../stores/copilot";
 import { toErrorMessage } from "../utils/errorMessage";
@@ -2995,10 +2996,14 @@ onUnmounted(() => {
             clearable
           />
         </header>
-        <div v-if="!filteredSessions.length" class="traffic-empty">
-          <el-icon><Connection /></el-icon><strong>等待流量</strong>
-          <p>打开抓包浏览器并开始记录，也可让其他客户端经过本机代理。</p>
-        </div>
+        <OfflineState
+          v-if="!filteredSessions.length"
+          class="traffic-empty"
+          size="compact"
+          icon="arrow-bidirectional"
+          title="等待流量"
+          description="打开抓包浏览器并开始记录，也可让其他客户端经过本机代理。"
+        />
         <el-dropdown
           v-for="item in pagedSessions"
           v-else
@@ -3131,10 +3136,14 @@ onUnmounted(() => {
       </section>
 
       <section class="traffic-detail-pane packet-editor-pane">
-        <div v-if="!selected" class="traffic-detail-empty">
-          <el-icon><Connection /></el-icon><strong>选择一条流量会话</strong
-          ><span>请求和响应内容会显示在这里</span>
-        </div>
+        <OfflineState
+          v-if="!selected"
+          class="traffic-detail-empty"
+          size="compact"
+          icon="arrow-bidirectional"
+          title="选择一条流量会话"
+          description="请求和响应内容会显示在这里"
+        />
         <template v-else>
           <header class="traffic-detail-head">
             <div class="packet-title">
@@ -3287,6 +3296,8 @@ onUnmounted(() => {
                   placement="top"
                   :show-arrow="false"
                   :show-after="350"
+                  :hide-after="0"
+                  :enterable="false"
                   popper-class="traffic-tooltip"
                 >
                   <b aria-label="关闭标签" @click.stop="closeReplayTab(tab.id)"
@@ -3299,6 +3310,8 @@ onUnmounted(() => {
                 placement="top"
                 :show-arrow="false"
                 :show-after="350"
+                :hide-after="0"
+                :enterable="false"
                 popper-class="traffic-tooltip"
               >
                 <button
@@ -3404,10 +3417,13 @@ onUnmounted(() => {
                 </div>
               </section>
             </template>
-            <div v-else class="replay-empty-state">
-              <strong>暂无重放请求</strong
-              ><span>点击“新建请求”，或从流量会话点击“发包”创建标签。</span>
-            </div>
+            <OfflineState
+              v-else
+              size="compact"
+              icon="send"
+              title="暂无重放请求"
+              description="点击“新建请求”，或从流量会话点击“发包”创建标签。"
+            />
           </section>
           <section v-else-if="packetTab === 'fuzz'" class="inline-replay-editor fuzz-workspace">
             <header class="fuzz-toolbar">
@@ -4459,7 +4475,7 @@ onUnmounted(() => {
   min-height: 32px;
   margin: 0;
   padding: 0;
-  align-items: flex-start;
+  align-items: center;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -4604,26 +4620,7 @@ onUnmounted(() => {
   position: absolute;
   inset: 0;
   min-height: 0;
-  gap: 8px;
   pointer-events: none;
-}
-.traffic-empty > :deep(.el-icon),
-.traffic-detail-empty > :deep(.el-icon) {
-  font-size: 24px;
-}
-.traffic-empty > strong,
-.traffic-detail-empty > strong {
-  margin: 0;
-  color: var(--app-text);
-  font-size: 13px;
-  line-height: 1.3;
-}
-.traffic-empty > p,
-.traffic-detail-empty > span {
-  margin: 0;
-  color: var(--app-muted);
-  font-size: 11px;
-  line-height: 1.5;
 }
 .session-rail-header > div {
   display: flex;
@@ -4838,6 +4835,21 @@ onUnmounted(() => {
 }
 .traffic-session-rail > .traffic-empty {
   transform: translateY(-24px);
+  /* 与中栏 .traffic-detail-empty 的内部几何完全一致：相同 gap、相同 padding。
+     此前左栏带 compact 空态默认的 padding-top:18px，内容整体被推低，
+     flex 居中后左栏图标/标题会比中栏低约 9px。 */
+  gap: 8px;
+  padding-top: 0;
+}
+/* 左右两块空态的图标/标题必须落在同一水平线上：左栏窄、描述折成两行，
+   且老样式给左栏标题加了 margin-top，导致整块 flex 居中后左栏图标比中栏低约 5px。
+   统一去掉标题附加边距、给描述固定两行高度，两块内容高度一致后居中结果完全相同。 */
+.traffic-session-rail > .traffic-empty :deep(strong) {
+  margin-top: 0;
+}
+.traffic-session-rail > .traffic-empty :deep(p),
+.traffic-detail-empty :deep(p) {
+  min-height: 39px;
 }
 .traffic-detail-head {
   position: static;
@@ -5127,7 +5139,6 @@ onUnmounted(() => {
 .inline-replay-editor .replay-packet-editor {
   margin-top: 20px !important;
 }
-.replay-empty-state,
 .replay-response-state {
   display: flex;
   min-height: 190px;
@@ -5139,12 +5150,10 @@ onUnmounted(() => {
   color: var(--app-muted);
   text-align: center;
 }
-.replay-empty-state strong,
 .replay-response-state strong {
   color: var(--app-text);
   font-size: 12px;
 }
-.replay-empty-state span,
 .replay-response-state span {
   max-width: 440px;
   font-size: 11px;
@@ -6361,7 +6370,7 @@ onUnmounted(() => {
 .codex-traffic-toolbar {
   min-height: 32px;
   padding: 0;
-  align-items: flex-start;
+  align-items: center;
   border: 0;
   background: transparent;
   box-shadow: none;

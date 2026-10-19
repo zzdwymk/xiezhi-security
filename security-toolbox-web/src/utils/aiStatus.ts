@@ -49,6 +49,23 @@ export function aiStatusIcon(tone: ProgressTone | string): string {
   return tone === "success" ? "checkmark-circle" : tone === "failed" ? "dismiss" : tone === "warning" ? "warning" : tone === "neutral" ? "info" : "clock";
 }
 
+/**
+ * Sidebar badge for a conversation thread. It must read the same computed progress as the
+ * in-card header, because a raw `modelStreamStatus === "running"` check cannot tell a live
+ * stream from one whose connection already ended without a page reload.
+ */
+export function conversationStatusBadge(message: ConversationMessage, tasks: AiProgressTask[], now: number): { label: string; type: "running" | "completed" | "failed" } | null {
+  const progress = buildAiProgress(message, tasks, now);
+  const tone = progress.tone;
+  if (progress.active) return { label: "回答中", type: "running" };
+  if (progress.interrupted) return { label: "连接已结束", type: "failed" };
+  if (progress.failed || tone === "failed") return { label: "失败", type: "failed" };
+  if (progress.waitingApproval) return { label: "等待确认", type: "running" };
+  const completed = message.status === "completed" && tone === "success";
+  if (completed) return { label: "已完成", type: "completed" };
+  return null;
+}
+
 // A finished answer keeps its status stamp with the message chrome rather than
 // inside the answer surface. A turn that can expand a model decision summary
 // keeps the header in the card, so its toggle stays next to the summary it

@@ -9,6 +9,7 @@ import { targetedScanPresentation } from "../utils/targetedScanPresentation";
 import { toErrorMessage } from "../utils/errorMessage";
 import { InfoCircle, Refresh } from "./fluentIcons";
 import AppPagination from "./AppPagination.vue";
+import OfflineState from "./OfflineState.vue";
 
 interface ScanRecord {
   id: number; engine: string; packetId: number; targetId: number;
@@ -166,7 +167,7 @@ onBeforeUnmount(() => {
         <el-button :loading="loading" :icon="Refresh" @click="refresh">刷新记录</el-button>
       </div>
     </div>
-    <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
+    <el-alert v-if="error" class="traffic-record-error" :title="error" type="error" :closable="false" show-icon />
     <el-table
       v-loading="loading"
       :data="rows"
@@ -246,22 +247,16 @@ onBeforeUnmount(() => {
 
       <template #empty>
         <div class="traffic-empty-container">
-          <el-empty :image-size="76">
-            <template #description>
-              <div class="traffic-empty-desc">
-                <p class="traffic-empty-title">
-                  {{ isFindings ? '暂无包含告警的流量检测' : '暂无流量检测记录' }}
-                </p>
-                <p class="traffic-empty-sub">
-                  {{
-                    isFindings
-                      ? '当流量定向检测或模糊测试命中安全告警后，将在此聚合展示'
-                      : '通过流量定向检测或模糊测试下发任务后，执行状态与请求证据将在此展示'
-                  }}
-                </p>
-              </div>
-            </template>
-          </el-empty>
+          <OfflineState
+            size="compact"
+            :icon="isFindings ? 'warning' : 'globe-search'"
+            :title="isFindings ? '暂无包含告警的流量检测' : '暂无流量检测记录'"
+            :description="
+              isFindings
+                ? '当流量定向检测或模糊测试命中安全告警后，将在此聚合展示'
+                : '通过流量定向检测或模糊测试下发任务后，执行状态与请求证据将在此展示'
+            "
+          />
         </div>
       </template>
     </el-table>
@@ -331,7 +326,7 @@ onBeforeUnmount(() => {
   gap: 16px;
   align-items: center;
   justify-content: space-between;
-  margin: 12px 0 16px;
+  margin: 20px 0 16px;
   padding: 12px 16px;
   background: var(--app-surface-soft, rgba(0, 0, 0, 0.02));
   border: 1px solid var(--app-border, #e2e8f0);
@@ -366,6 +361,9 @@ onBeforeUnmount(() => {
   color: var(--app-muted);
   margin: 14px 0;
   font-size: 12.5px;
+}
+.traffic-record-error {
+  margin: 4px 0 10px;
 }
 .traffic-records-table {
   width: 100%;
@@ -444,25 +442,9 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 .traffic-empty-container {
-  padding: 36px 0 32px;
+  padding: 8px 0 4px;
   display: flex;
   justify-content: center;
-}
-.traffic-empty-desc {
-  margin-top: 8px;
-}
-.traffic-empty-title {
-  margin: 0 0 6px;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--app-text, #1e293b);
-}
-.traffic-empty-sub {
-  margin: 0;
-  font-size: 12.5px;
-  color: var(--app-muted, #64748b);
-  max-width: 440px;
-  line-height: 1.5;
 }
 .traffic-record-dialog :deep(.el-table) {
   font-size: 13px;

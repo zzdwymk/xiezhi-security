@@ -547,6 +547,20 @@ body:has(.setup-page) {
   word-break: break-all;
   user-select: text;
 }
+.dependency-version-tooltip-content {
+  display: block;
+  max-width: min(720px, calc(80vw - 32px));
+  max-height: 380px;
+  overflow-y: auto;
+  color: var(--app-hover-popup-text) !important;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 0;
+}
 .setup-content > footer {
   display: flex;
   flex: none;

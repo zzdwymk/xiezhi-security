@@ -33,6 +33,7 @@ import {
   type AiDispatchStreamEvent,
   type AgentStreamEvent,
   type AssessmentProject,
+  type JudgeVerdictDocument,
   type ProjectTarget,
   type ProjectTaskRecord,
   type Target,
@@ -81,7 +82,7 @@ import { createAiApprovalPromptGate, isAwaitingAiApproval, isAwaitingAiDispatch,
 import { aiEventStepStatus, findMatchingAiStep, mergeAiStep } from "../utils/aiStepState";
 import { mergeTaskDetailSnapshot } from "../utils/taskDetail";
 import { aiExecutionRequest } from "../utils/aiIntent";
-import { isAiStatusOutsideCard } from "../utils/aiStatus";
+import { isAiStatusOutsideCard, conversationStatusBadge } from "../utils/aiStatus";
 import { aiAnswerSource, isLocalAiAnswer, requireAiAnswer } from "../utils/aiAnswer";
 import { resolveAuditConversationScope } from "../utils/auditConversationScope";
 import { aiProgressFailureText, isPublicAiProgressEvent, publicAiProgressText } from "../utils/aiPresentation";
@@ -167,20 +168,13 @@ const currentThreadStatus = computed(() => {
   if (!t || !t.messages?.length) return null;
   const lastAssistant = [...t.messages].reverse().find((m) => m.role === "assistant");
   if (!lastAssistant) return null;
-  if (
-    ["sending", "planning", "running", "answering"].includes(lastAssistant.status) ||
-    lastAssistant.modelStreamStatus === "running" ||
-    activeSendingThreadIds.value.has(t.id)
-  ) {
-    return { label: "回答中", type: "running" };
+  const badge = conversationStatusBadge(lastAssistant, relatedTasks(lastAssistant), Date.now());
+  // A live send in this window is authoritative even before its row is persisted.
+  if (activeSendingThreadIds.value.has(t.id) && badge?.type !== "failed") {
+    return { label: "回答中", type: "running" as const };
   }
-  if (lastAssistant.status === "completed" || lastAssistant.modelStreamStatus === "completed") {
-    return { label: "已完成", type: "completed" };
-  }
-  if (lastAssistant.status === "failed" || lastAssistant.modelStreamStatus === "failed") {
-    return { label: "失败", type: "failed" };
-  }
-  return null;
+  if (badge && badge.type === "completed" && lastAssistant.completionSeen) return null;
+  return badge;
 });
 const messagesElement = ref<HTMLElement>();
 const answeringMessages = new Set<string>();
@@ -887,6 +881,10 @@ function jumpToTurn(turnId: string) {
   if (!target) return;
 
   target.scrollIntoView({ behavior: "smooth", block: "start" });
+  // 点击后立刻移除焦点，防止 focus 残留让旧 tooltip 常驻。
+  if (document.activeElement instanceof HTMLElement) {
+    document.activeElement.blur();
+  }
   activeTurnId.value = turnId;
 
   highlightedTurnId.value = turnId;
@@ -1497,6 +1495,7 @@ function applyAgentEvent(
         : message.modelStreamStatus,
     approvalId: event.approvalId || message.approvalId,
     approvalStatus: event.approvalStatus || message.approvalStatus,
+    judge: (event.judge as JudgeVerdictDocument | undefined) || message.judge,
     executionDecision: event.executionDecision || message.executionDecision,
     // 终态事件会带回本轮是否真的派发了任务；无任务时保持空数组，
     // 使界面呈现"等待确认/未创建任务"而不是永久进行中。
@@ -1718,14 +1717,18 @@ watch(() => selectedThread.value?.id, () => { approvalDialogMessageId.value = nu
 function reopenApproval(message: ConversationMessage) {
   if (isAwaitingAiApproval(message)) approvalDialogMessageId.value = message.id;
 }
-function decideDialogApproval(decision: "APPROVED" | "REJECTED") {
+function decideDialogApproval(
+  decision: "APPROVED" | "REJECTED",
+  overrides?: Array<Record<string, unknown>>,
+) {
   const message = approvalDialogMessage.value;
-  if (message) void handleAgentApprovalDecision(message, decision);
+  if (message) void handleAgentApprovalDecision(message, decision, overrides);
 }
 
 async function handleAgentApprovalDecision(
   message: ConversationMessage,
   decision: "APPROVED" | "REJECTED",
+  overrides?: Array<Record<string, unknown>>,
 ) {
   if (approvingMessageId.value || sending.value) return;
   const thread = selectedThread.value;
@@ -1751,13 +1754,14 @@ async function handleAgentApprovalDecision(
         decision === "APPROVED"
           ? "管理员在 AI 助手交互卡片中审核通过并授权执行"
           : "管理员在 AI 助手交互卡片中驳回执行",
+      stepOverrides: overrides,
     });
 
     if (decision === "REJECTED") {
       conversations.updateMessage(thread.id, message.id, {
         approvalStatus: "REJECTED",
         planningStatus: "管理员已驳回执行方案",
-        content: message.content + "\n\n❌ **管理员已驳回本次行动方案**（确认记录 #" + approvalId + "）。未派发任何受控任务。",
+        content: message.content + "\n\n**管理员已驳回本次行动方案**（确认记录 #" + approvalId + "）。未派发任何受控任务。",
       });
       ElMessage.info("已驳回该行动方案");
       return;
@@ -2267,7 +2271,16 @@ async function load() {
   focusComposer();
 }
 
+function acknowledgeThreadCompletion(thread: ConversationThread | undefined) {
+  const lastAssistant = [...(thread?.messages || [])]
+    .reverse()
+    .find((message) => message.role === "assistant");
+  if (!thread || !lastAssistant || lastAssistant.status !== "completed" || lastAssistant.completionSeen) return;
+  conversations.updateMessage(thread.id, lastAssistant.id, { completionSeen: true });
+}
+
 function startNewConversation() {
+  acknowledgeThreadCompletion(selectedThread.value);
   editingMessage.value = undefined;
   prompt.value = "";
   activeDraft.value = undefined;
@@ -2332,6 +2345,7 @@ async function clearConversations() {
 
 watch(selectedThread, (thread) => {
   if (thread) {
+    acknowledgeThreadCompletion(thread);
     for (const msg of thread.messages) {
       if (msg.role === "assistant" && typedMessageContent.value[msg.id] === undefined) {
         typedMessageContent.value[msg.id] = displayedMessageContent(msg);
@@ -2964,6 +2978,8 @@ onBeforeUnmount(() => {
             :key="turn.id"
             placement="left"
             :show-after="80"
+            :hide-after="0"
+            :enterable="false"
             popper-class="turn-rail-tooltip"
           >
             <template #content>
@@ -3233,7 +3249,7 @@ onBeforeUnmount(() => {
         </div>
       </footer>
     </template>
-    <AiApprovalDialog v-model:visible="approvalDialogVisible" :message="approvalDialogMessage" :target-name="displayKnownTestName(approvalTarget?.name || selectedThread?.targetName)" :target-value="approvalTarget?.targetValue || `目标 #${selectedThread?.targetId || ''}`" :allowed-ports="approvalTarget?.allowedPorts || ''" :busy="sending || approvingMessageId !== null" @decide="decideDialogApproval" />
+    <AiApprovalDialog v-model:visible="approvalDialogVisible" :message="approvalDialogMessage" :target-name="displayKnownTestName(approvalTarget?.name || selectedThread?.targetName)" :target-value="approvalTarget?.targetValue || `目标 #${selectedThread?.targetId || ''}`" :allowed-ports="approvalTarget?.allowedPorts || ''" :busy="approvingMessageId !== null" @decide="decideDialogApproval" />
   </div>
 </template>
 
@@ -3685,7 +3701,7 @@ onBeforeUnmount(() => {
   width: min(850px, 100%);
   flex: none;
   margin: 0 auto;
-  padding: 8px 22px 12px;
+  padding: 8px 22px 5px;
   background: transparent;
 }
 .thread-target {
@@ -3740,7 +3756,9 @@ onBeforeUnmount(() => {
 }
 .composer-hint {
   display: block;
-  margin-top: 3px;
+  /* 与 .composer-stats-bar 的 padding-top 配平：提示语在输入框与统计栏之间
+     视觉等距（各约 9px，含行高半行距）。改这里要同步改 stats 的 padding-top。 */
+  margin-top: 7px;
   color: var(--app-muted);
   font-size: 9px;
   text-align: center;
@@ -3792,7 +3810,7 @@ onBeforeUnmount(() => {
     max-width: 96%;
   }
   .chat-composer-wrap {
-    padding: 9px 11px 14px;
+    padding: 9px 11px 7px;
   }
   .thread-target small {
     display: none;
@@ -4983,7 +5001,7 @@ a.agent-citation-bubble {
   border-radius: 8px;
 }
 .chat-composer-wrap {
-  padding: 8px 22px 12px;
+  padding: 8px 22px 5px;
 }
 .thread-composer {
   border-radius: 12px;
@@ -5638,14 +5656,20 @@ a.agent-citation-bubble {
 }
 
 /* DSH 同款底部性能与用量统计栏 */
-/* 上下等间距：上方间距 = 本栏 padding-top；下方间距 = 本栏 padding-bottom
-   + .chat-composer-wrap 的 padding-bottom。两者须保持相等。 */
+/* 上下等间距：本栏与上方提示语、下方卡片底边的视觉间距必须相等。
+     上方间距 = 提示语下方行高半行距 + 本栏 padding-top；
+     下方间距 = 本栏 padding-bottom + .chat-composer-wrap 的 padding-bottom。
+   改任何一个都要重新配平另外两个（含 .composer-hint 的 margin-top）。
+   当前配平值（headless Edge 实测）：
+     提示语上方 9px = 7（margin-top）+ 2（提示语行高半行距）
+     提示语下方 8.5px = 2（提示语行高半行距）+ 6（padding-top）+ 0.5（pill 行高余量）
+     栏底 10.5px = 4 + 5 + 0.5（pill 行高余量） */
 .composer-stats-bar {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 16px;
-  padding: 8px 0 4px;
+  padding: 6px 0 4px;
   user-select: none;
 }
 

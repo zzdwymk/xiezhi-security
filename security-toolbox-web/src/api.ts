@@ -202,6 +202,7 @@ export interface DependencyStatus {
   message?: string;
   hash?: string;
   dirHash?: string;
+  output?: string;
 }
 
 export interface SystemDependenciesResponse {
@@ -799,11 +800,42 @@ export interface ProjectFindingRecord {
   createdAt: string;
 }
 
+/** One step's verdict from the semantic judge. */
+export interface JudgeStepVerdict {
+  workflowNodeId?: string | null;
+  toolCode: string;
+  /** true only when the judge positively cleared this step. */
+  allow: boolean;
+  behaviour: string;
+  risk: "SAFE" | "CAUTION" | "HIGH" | "CRITICAL" | string;
+  confidence: number;
+  summary: string;
+  degraded: boolean;
+  degradedReason?: string;
+}
+
+/**
+ * The judge's verdict document for a whole plan.
+ *
+ * `degraded` means the judge could not reach a trustworthy answer (timeout, provider error,
+ * low confidence). Callers must treat degraded exactly like "not cleared" — never as approval.
+ */
+export interface JudgeVerdictDocument {
+  degraded: boolean;
+  steps: JudgeStepVerdict[];
+  worstRisk: string;
+  requiresHumanReview: boolean;
+  headline?: string;
+  degradedReason?: string;
+}
+
 export interface AiApprovalPlanDetail {
   targetId: number;
   plan: Omit<AiPlan, "targetId" | "objective">;
   status: string;
   dispatch: AiDispatch | null;
+  /** Raw JSON string of the judge verdict, or null on legacy tickets. */
+  judge?: string | null;
 }
 
 export interface ProjectApproval {
@@ -1013,7 +1045,7 @@ export const endpoints = {
   dashboard: () => api.get("/dashboard/summary"),
   clearBusinessData: () =>
     api.delete<ClearBusinessDataResponse>("/settings/data", {
-      data: { confirmation: "CLEAR" },
+      data: { confirmation: "永久清空" },
       timeout: 30_000,
     }),
   changePassword: (payload: { currentPassword: string; newPassword: string }) =>
@@ -1307,7 +1339,7 @@ export const endpoints = {
   decideProjectApproval: (
     projectId: number,
     approvalId: number,
-    payload: { status: string; comment?: string },
+    payload: { status: string; comment?: string; stepOverrides?: Array<Record<string, unknown>> },
   ) =>
     api.post<ProjectApproval>(
       `/projects/${projectId}/approvals/${approvalId}/decision`,
@@ -1430,6 +1462,8 @@ export const endpoints = {
       subdomainWords?: string[];
       enumeratePaths?: boolean;
       pathWords?: string[];
+      pathDictionaryId?: string;
+      pathConcurrency?: number;
       crawlSite?: boolean;
       aggregateProxyPaths?: boolean;
       activeNetworkProbe?: boolean;
@@ -1477,6 +1511,17 @@ export const endpoints = {
     ),
   pathDictionary: () =>
     api.get<SubdomainDictionaryView>("/recon/path-dictionary"),
+  pathDictionaryLibrary: () =>
+    api.get<{
+      defaultDictionaryId: string;
+      dictionaries: Array<{
+        id: string;
+        displayName: string;
+        source: string;
+        entryCount: number;
+        description: string;
+      }>;
+    }>("/recon/path-dictionary/library"),
   pathDictionaryWords: (
     query = "",
     page = 1,
@@ -2061,6 +2106,12 @@ export function normalizeAgentEvent(
     maxAttempts: raw.maxAttempts ?? raw.max_retries,
     approvalId: raw.approvalId || raw.approval_id || responseRaw?.approvalId,
     approvalStatus: raw.approvalStatus || raw.approval_status || responseRaw?.approvalStatus,
+    judge:
+      raw.judge && typeof raw.judge === "object"
+        ? (raw.judge as JudgeVerdictDocument)
+        : responseRaw?.judge && typeof responseRaw.judge === "object"
+          ? (responseRaw.judge as JudgeVerdictDocument)
+          : undefined,
     executionDecision: normalizeAiExecutionDecision(raw.executionDecision),
     modelUsage,
     citation,

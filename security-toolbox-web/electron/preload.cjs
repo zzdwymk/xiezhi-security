@@ -75,6 +75,8 @@ contextBridge.exposeInMainWorld(
       }),
     rollbackFromPostgres: () =>
       ipcRenderer.invoke("toolbox:rollback-from-postgres"),
+    getH2ImportSources: () =>
+      ipcRenderer.invoke("toolbox:get-h2-import-sources"),
     setPostgresPassword: (password) =>
       ipcRenderer.invoke("toolbox:set-postgres-password", { password }),
     onPostgresMigrationProgress: (callback) => {
@@ -116,8 +118,10 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.invoke("toolbox:init-desktop-login", { password }),
     resetRandomDesktopLogin: () =>
       ipcRenderer.invoke("toolbox:reset-random-desktop-login"),
-    reimportH2ToPostgres: () =>
-      ipcRenderer.invoke("toolbox:reimport-h2-to-postgres"),
+    reimportH2ToPostgres: (options) =>
+      ipcRenderer.invoke("toolbox:reimport-h2-to-postgres", {
+        sourceFile: options?.sourceFile || "",
+      }),
     testAiSettings: (settings, prompt) =>
       ipcRenderer.invoke("toolbox:test-ai-settings", settings, prompt),
     getAiRelaySettings: () => ipcRenderer.invoke("toolbox:get-ai-relay-settings"),

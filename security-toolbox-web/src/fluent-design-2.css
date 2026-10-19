@@ -515,8 +515,11 @@ body,
 }
 
 /* Navigation tabs also occur in dialogs teleported outside the app frame. */
+/* Keep padding symmetric and font-weight constant so tab spacing stays
+   equal in both states; active state is conveyed by color + active bar. */
 .el-tabs .el-tabs__item {
   min-height: var(--fluent-control-height);
+  padding: 0 calc(var(--fluent-control-height) / 4);
   color: color-mix(in srgb, var(--app-text) 78%, transparent);
   font-size: var(--fluent-body1-size);
   font-weight: var(--fluent-weight-medium);
@@ -530,7 +533,7 @@ body,
   color: var(--fluent-link-fg);
 }
 .el-tabs .el-tabs__item.is-active {
-  font-weight: var(--fluent-weight-semibold);
+  color: var(--fluent-link-fg);
 }
 .el-tabs .el-tabs__item.is-disabled {
   color: var(--el-disabled-text-color);
@@ -3063,7 +3066,7 @@ html
 .desktop-v2-app-frame .desktop-v2-content .codex-traffic-toolbar {
   min-height: 32px;
   padding: 0 !important;
-  align-items: flex-start;
+  align-items: center;
   border: 0;
   background: transparent;
   box-shadow: none;

@@ -3,6 +3,23 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
+
+// These modules are browser code that reads `window.location` at import time (apiClient builds
+// its base URL from the query string). Running them under Node needs a minimal browser shell,
+// otherwise the whole suite dies before reaching the assertions it was written to make.
+if (typeof globalThis.window === 'undefined') {
+  const location = new URL('http://localhost/');
+  globalThis.window = {
+    location,
+    localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+    sessionStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => true,
+  };
+  globalThis.location = location;
+}
+
 const cache = new Map();
 function load(file) {
   file = path.resolve(file);

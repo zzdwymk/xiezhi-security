@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { endpoints, safeGet, type AssessmentProject } from "../api";
 import AppPagination from "../components/AppPagination.vue";
+import OfflineState from "../components/OfflineState.vue";
 import { useClientPagination } from "../composables/useClientPagination";
 import { formatDateTime } from "../utils/dateTime";
 
@@ -108,14 +109,21 @@ onMounted(load);
       <span>选择项目后将直接打开"信息收集"工作区</span>
     </div>
 
-    <el-empty
+    <OfflineState
       v-if="!loading && !filteredRows.length"
-      :description="
+      :title="
         offline
-          ? '本地服务暂不可用，无法读取评估项目'
+          ? '本地服务暂不可用'
           : rows.length
             ? '没有匹配的项目'
-            : '暂无评估项目，请先创建项目并加入授权目标'
+            : '暂无评估项目'
+      "
+      :description="
+        offline
+          ? '无法读取评估项目，请检查本地引擎连接后重试。'
+          : rows.length
+            ? '换个关键词试试，或清空搜索框查看全部项目。'
+            : '请先创建评估项目并加入授权目标，再进行信息收集。'
       "
     >
       <el-button
@@ -124,7 +132,7 @@ onMounted(load);
         @click="router.push('/projects')"
         >创建评估项目</el-button
       >
-    </el-empty>
+    </OfflineState>
 
     <el-table v-else v-loading="loading" :data="pagedRows" stripe>
       <el-table-column

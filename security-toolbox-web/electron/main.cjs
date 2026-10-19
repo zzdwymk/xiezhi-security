@@ -3148,9 +3148,25 @@ async function refreshPortableDependencyCatalog({
 function msfInstallPaths(definition, toolsDir) {
   assertInside(toolsDir, path.join(toolsDir, definition.installRelativeDir));
   const installDir = path.join(toolsDir, definition.installRelativeDir);
-  const binDir = path.join(installDir, definition.binRelativeDir);
-  const executable = path.join(binDir, definition.executable);
-  return { installDir, binDir, executable };
+  // Rapid7 MSI places the payload in an additional same-named directory when
+  // INSTALLLOCATION itself is named "metasploit-framework". Keep installDir as
+  // the stable user-facing/managed root, but resolve the executable in either layout.
+  const directBinDir = path.join(installDir, definition.binRelativeDir);
+  const directExecutable = path.join(directBinDir, definition.executable);
+  const nestedInstallDir = path.join(installDir, definition.installRelativeDir);
+  const nestedBinDir = path.join(nestedInstallDir, definition.binRelativeDir);
+  const nestedExecutable = path.join(nestedBinDir, definition.executable);
+  const directExists = (() => {
+    try {
+      return fs.statSync(directExecutable).isFile();
+    } catch {
+      return false;
+    }
+  })();
+  const payloadDir = directExists ? installDir : nestedInstallDir;
+  const binDir = directExists ? directBinDir : nestedBinDir;
+  const executable = directExists ? directExecutable : nestedExecutable;
+  return { installDir, payloadDir, binDir, executable };
 }
 
 function isMsfInstallPresent(definition, toolsDir) {
@@ -3163,13 +3179,17 @@ function isMsfInstallPresent(definition, toolsDir) {
 }
 
 function msfInstalledVersion(definition, toolsDir) {
-  const metadata = readJsonFile(
-    path.join(
-      msfInstallPaths(definition, toolsDir).installDir,
-      ".toolbox-source.json",
-    ),
-  );
-  return metadata?.version || "latest";
+  const paths = msfInstallPaths(definition, toolsDir);
+  const metadata = readJsonFile(path.join(paths.installDir, ".toolbox-source.json"));
+  if (metadata?.version) return metadata.version;
+  try {
+    const manifest = fs
+      .readFileSync(path.join(paths.payloadDir, "version-manifest.txt"), "utf8")
+      .split(/\r?\n/, 1)[0]
+      .trim();
+    if (manifest) return manifest;
+  } catch {}
+  return "latest";
 }
 
 // MSI（OLE 复合文档）文件头魔数，用于校验下载的安装包是有效 MSI。
@@ -3212,10 +3232,11 @@ async function installMsfFramework(
 ) {
   const toolsDir = resolveToolsDirectory();
   // 用户可见路径 = <tools>\metasploit-framework（始终不变）。
-  const { installDir, binDir, executable } = msfInstallPaths(definition, toolsDir);
+  const initialPaths = msfInstallPaths(definition, toolsDir);
+  const { installDir } = initialPaths;
   assertInside(toolsDir, installDir);
-  assertInside(toolsDir, binDir);
-  assertInside(toolsDir, executable);
+  assertInside(toolsDir, initialPaths.binDir);
+  assertInside(toolsDir, initialPaths.executable);
   assertSafeInstallDirectory(toolsDir);
   // 兜底判定：tools 路径若含空格/中文等 MSI FastUnzip 禁忌字符，则无法直接安装，
   // 回退到 D 盘无空格真实根 + junction；否则直接装进 tools。
@@ -3233,6 +3254,20 @@ async function installMsfFramework(
   }
 
   if (isMsfInstallPresent(definition, toolsDir)) {
+    const existingPaths = msfInstallPaths(definition, toolsDir);
+    const currentState = portableDependencyInstallState(definition, toolsDir);
+    if (!currentState.managed) {
+      writeJsonFileAtomic(path.join(installDir, ".toolbox-source.json"), {
+        repository: "rapid7/metasploit-framework",
+        version: msfVersionFromExecutable(existingPaths.executable),
+        source: "official-nightly-msi",
+        installLocation: existingPaths.payloadDir,
+        direct: true,
+        installedAt: new Date().toISOString(),
+        platform: "windows",
+        architecture: "x64",
+      });
+    }
     reportProgress({
       packageId: definition.id,
       stage: "已安装",
@@ -3244,7 +3279,7 @@ async function installMsfFramework(
     return {
       packageId: definition.id,
       version: msfInstalledVersion(definition, toolsDir),
-      path: executable,
+      path: existingPaths.executable,
       installDirectory: installDir,
       status: "up-to-date",
       updated: false,
@@ -3409,10 +3444,12 @@ async function installMsfFramework(
       clearInterval(installTicker);
     }
 
-    // 校验安装是否成功。
+    // 校验安装是否成功。MSI 在 INSTALLLOCATION 已命名为 Metasploit 的情况下
+    // 会把 payload 放入额外同名子目录，msfInstallPaths 同时兼容该布局。
     const verified = useRealRoot
       ? isRealMsfInstalled()
       : isMsfInstallPresent(definition, toolsDir);
+    const installedPaths = msfInstallPaths(definition, toolsDir);
     if (!verified) {
       throw new UserFacingError(
         useRealRoot
@@ -3428,9 +3465,9 @@ async function installMsfFramework(
         path.join(installDir, ".toolbox-source.json"),
         {
           repository: "rapid7/metasploit-framework",
-          version: msfVersionFromExecutable(executable),
+          version: msfVersionFromExecutable(installedPaths.executable),
           source: "official-nightly-msi",
-          installLocation: useRealRoot ? msfRealInstallDir() : realInstallDir,
+          installLocation: useRealRoot ? msfRealInstallDir() : installedPaths.payloadDir,
           direct: !useRealRoot,
           installedAt: new Date().toISOString(),
           platform: "windows",
@@ -3456,7 +3493,7 @@ async function installMsfFramework(
     return {
       packageId: definition.id,
       version: msfInstalledVersion(definition, toolsDir),
-      path: executable,
+      path: installedPaths.executable,
       toolsDirectory: toolsDir,
       status: "installed",
       updated: true,
@@ -3476,12 +3513,17 @@ async function installMsfFramework(
 }
 
 function isMsfInstalled(_installerPath, installDir) {
-  const candidate = path.join(installDir, "bin", "msfconsole.bat");
-  try {
-    return fs.statSync(candidate).isFile();
-  } catch {
-    return false;
-  }
+  const candidates = [
+    path.join(installDir, "bin", "msfconsole.bat"),
+    path.join(installDir, "metasploit-framework", "bin", "msfconsole.bat"),
+  ];
+  return candidates.some((candidate) => {
+    try {
+      return fs.statSync(candidate).isFile();
+    } catch {
+      return false;
+    }
+  });
 }
 
 // Metasploit 没有类似 nuclei -version 的单一精确版本文件；为避免冷启动 Ruby /
@@ -4095,41 +4137,30 @@ async function installPortableDependency(
 function portableDependencyInstallState(definition, toolsDir) {
   if (definition.installer === "msi") {
     const paths = msfInstallPaths(definition, toolsDir);
-    // 兼容直装与 junction 两种布局：
-    //  - 直装：<tools>\metasploit-framework 就是真实安装目录（普通目录）。
-    //  - 兜底：tools 下是指向 D 盘无空格真实目录的 junction。
+    // 兼容 MSI 直装、同名嵌套直装与 junction 三种布局。
     const junctionPresent = isDirectoryLink(paths.installDir);
     const directPresent = !junctionPresent && isMsfInstallPresent(definition, toolsDir);
     let metadata = readJsonFile(
       path.join(paths.installDir, ".toolbox-source.json"),
     );
-    // 自愈：工具已安装但元数据丢失（例如重新打包清掉了 win-unpacked 下的文件），
-    // 补一份默认元数据，保证应用能识别为已安装。
-    const payloadInstalled =
-      directPresent || (junctionPresent && isRealMsfInstalled());
+    // 自愈：工具已安装但元数据丢失（例如 MSI 成功、仅布局与预期不同，或
+    // 重新打包清掉了 win-unpacked 下的文件），补元数据以识别为受管安装。
+    const realPresent = junctionPresent && isRealMsfInstalled();
+    const payloadInstalled = directPresent || realPresent;
     if (!metadata && payloadInstalled) {
       try {
-        const metaDir =
-          junctionPresent && isRealMsfInstalled()
-            ? msfRealFrameworkDir()
-            : paths.installDir;
-        writeJsonFileAtomic(
-          path.join(metaDir, ".toolbox-source.json"),
-          {
-            repository: "rapid7/metasploit-framework",
-            version: msfVersionFromExecutable(
-              junctionPresent ? msfRealFrameworkDir() : paths.executable,
-            ),
-            source: "official-nightly-msi",
-            installLocation: junctionPresent
-              ? msfRealInstallDir()
-              : paths.installDir,
-            direct: !junctionPresent,
-            installedAt: new Date().toISOString(),
-            platform: "windows",
-            architecture: "x64",
-          },
-        );
+        // MSI 既可能直接写在 installDir，也可能嵌套在同名子目录；元数据
+        // 始终放稳定的 installDir 根，以兼容卸载器及工具目录迁移逻辑。
+        writeJsonFileAtomic(path.join(paths.installDir, ".toolbox-source.json"), {
+          repository: "rapid7/metasploit-framework",
+          version: msfVersionFromExecutable(paths.executable),
+          source: "official-nightly-msi",
+          installLocation: paths.installDir,
+          direct: true,
+          installedAt: new Date().toISOString(),
+          platform: "windows",
+          architecture: "x64",
+        });
         metadata = readJsonFile(
           path.join(paths.installDir, ".toolbox-source.json"),
         );
@@ -4283,6 +4314,60 @@ function desktopPostgresBinDir() {
 
 function desktopPostgresDataDir() {
   return path.join(app.getPath("userData"), "postgresql-cluster");
+}
+
+// 回退 H2 前，把 PG 业务库整体 pg_dump 快照到 userData 下（保留最近 N 份）。
+// 这样回退后用户在 H2 里继续写数据也不会丢失 PG 侧的最终状态；
+// 重新迁移时可以把快照作为导入源。
+const POSTGRES_SNAPSHOT_KEEP = 3;
+
+function desktopPostgresSnapshotDir() {
+  return path.join(app.getPath("userData"), "postgresql-snapshots");
+}
+
+async function snapshotDesktopPostgres(reason = "rollback") {
+  const config = desktopPostgresConfig();
+  if (!config) return null;
+  const binDir = desktopPostgresBinDir();
+  if (!binDir) return null;
+  const dumpPath = path.join(binDir, "pg_dump.exe");
+  if (!fs.existsSync(dumpPath)) return null;
+  const snapshotDir = desktopPostgresSnapshotDir();
+  fs.mkdirSync(snapshotDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const target = path.join(snapshotDir, `security-toolbox-${reason}-${stamp}.sql`);
+  await pgRun(
+    dumpPath,
+    [
+      ...psqlBaseArgs(config, config.database, []),
+      "--no-password",
+      "--format=custom",
+      "--file", target,
+    ],
+    { env: pgEnv(config), timeoutMs: 300000 },
+  );
+  const size = fs.existsSync(target) ? fs.statSync(target).size : 0;
+  writeDesktopStartupDiagnostic("postgres-snapshot", null, {
+    step: "saved",
+    reason,
+    target,
+    size,
+  });
+  // 清理旧快照，仅保留最近 POSTGRES_SNAPSHOT_KEEP 份。
+  try {
+    const stale = fs
+      .readdirSync(snapshotDir)
+      .filter((name) => name.endsWith(".sql"))
+      .sort()
+      .reverse()
+      .slice(POSTGRES_SNAPSHOT_KEEP);
+    for (const name of stale) {
+      try {
+        fs.rmSync(path.join(snapshotDir, name), { force: true });
+      } catch {}
+    }
+  } catch {}
+  return { target, size };
 }
 
 // 读取加密持久化的私有实例配置；未配置/未启用/无法解密时返回 undefined。
@@ -4451,6 +4536,48 @@ function requirePostgresBinaries() {
     }
   }
   return binDir;
+}
+
+// 重建前把旧数据簇整体移到同级的带时间戳备份目录（而非直接删除）。
+// 移动同盘rename几乎零成本；备份保留最近 N 份，更早的自动清理。
+const POSTGRES_CLUSTER_BACKUP_KEEP = 3;
+
+async function backupDesktopPostgresCluster(dataDir) {
+  if (!fs.existsSync(dataDir)) return;
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupDir = `${dataDir}.bak-${stamp}`;
+  try {
+    fs.renameSync(dataDir, backupDir);
+  } catch (error) {
+    // rename 失败（跨卷/句柄占用）时退回复制，源目录交给后续删除流程。
+    writeDesktopStartupDiagnostic(
+      "postgres-cluster-backup",
+      error,
+      { step: "rename-failed-copying", dataDir, backupDir },
+    );
+    fs.cpSync(dataDir, backupDir, { recursive: true, force: true });
+  }
+  writeDesktopStartupDiagnostic("postgres-cluster-backup", null, {
+    step: "backed-up",
+    dataDir,
+    backupDir,
+  });
+  // 清理旧备份，仅保留最近 POSTGRES_CLUSTER_BACKUP_KEEP 份。
+  const parent = path.dirname(dataDir);
+  const prefix = `${path.basename(dataDir)}.bak-`;
+  try {
+    const stale = fs
+      .readdirSync(parent)
+      .filter((name) => name.startsWith(prefix))
+      .sort()
+      .reverse()
+      .slice(POSTGRES_CLUSTER_BACKUP_KEEP);
+    for (const name of stale) {
+      try {
+        fs.rmSync(path.join(parent, name), { recursive: true, force: true });
+      } catch {}
+    }
+  } catch {}
 }
 
 // 用随机密码初始化私有数据簇（超级用户账号 = 应用账号，自带 LOGIN/CREATEDB）。
@@ -4836,18 +4963,32 @@ async function migrateDesktopToPostgres({ copyH2 } = {}) {
   const binDir = requirePostgresBinaries();
   const dataDir = desktopPostgresDataDir();
 
+  // 已启用且数据簇可连接时拒绝重复迁移：迁移会重建数据簇，此时旧簇里的
+  // 业务数据（上次迁移后新产生的记录）无法从 H2 找回，属于不可逆操作。
+  // 回退 H2 后想再次迁移属于合理场景（enabled=false），不受此限制。
+  const existingConfig = desktopPostgresConfig();
+  if (existingConfig?.enabled === true) {
+    throw new UserFacingError(
+      "当前已启用 PostgreSQL，重复迁移会重建数据库并可能丢失其中尚未导出的数据。" +
+        "如需重置，请先在设置中回退到 H2，或在数据库连接对话框中管理现有实例。",
+    );
+  }
+
 let config = undefined;
   // 迁移是“一次性建立本地可用的 PostgreSQL”操作：为避免之前留下的集群密码与
-  // 配置不一致导致认证失败，这里总是以全新随机密码重建数据簇（数据从 H2 导入），
+  // 配置不一致导致认证失败，这里以全新随机密码重建数据簇（数据从 H2 导入），
   // 并在启动+认证成功之后才持久化凭据。
   // 先停掉任何仍按旧配置运行的本地实例，确保端口与数据目录都不被旧进程占用，
   // 否则 initdb 会因目录被旧实例锁定而“重建了个还在跑旧密码的实例”。
+  // 旧数据簇内可能含有尚未导出/未被 H2 覆盖的业务数据（例如上次迁移后新产生的
+  // 记录），删除前先整目录备份，避免二次迁移时静默清空 PG 数据。
   await stopDesktopPostgres();
   writeDesktopStartupLog("postgres-migrate-stopped-old", { dataDir });
+  await backupDesktopPostgresCluster(dataDir);
   const password = generatedDesktopSecret(24);
   const username = DESKTOP_PG_USERNAME;
   const port = await pickDesktopPostgresPort();
-  reportPgMigrationProgress("cleaning", "清理旧数据目录并初始化新数据簇");
+  reportPgMigrationProgress("cleaning", "备份旧数据目录后初始化新数据簇");
   writeDesktopStartupDiagnostic(
     "postgres-migrate-init",
     null,
@@ -6255,6 +6396,19 @@ handleRendererIpc("toolbox:migrate-to-postgres", async (event, payload = {}) => 
 });
 handleRendererIpc("toolbox:rollback-from-postgres", async (event) => {
   assertMainRenderer(event);
+  // 回退前先给 PG 数据做快照：回退后用户在 H2 上的新写入会与 PG 分叉，
+  // 这份快照是重新迁移时找回 PG 侧最终状态的唯一途径。
+  let snapshot = null;
+  try {
+    snapshot = await snapshotDesktopPostgres("rollback");
+  } catch (error) {
+    reportPgMigrationProgress(
+      "error",
+      "回退前快照失败：" +
+        (error instanceof Error ? error.message : String(error)),
+    );
+    throw error;
+  }
   const settings = readDesktopSettings();
   writeDesktopSettings({
     ...settings,
@@ -6265,7 +6419,7 @@ handleRendererIpc("toolbox:rollback-from-postgres", async (event) => {
   });
   await stopDesktopPostgres();
   await restartBackend();
-  return publicPostgresMigrationState();
+  return { ...publicPostgresMigrationState(), snapshotPath: snapshot?.target || null };
 });
 handleRendererIpc("toolbox:set-postgres-password", async (event, payload = {}) => {
   assertMainRenderer(event);
@@ -6326,7 +6480,13 @@ handleRendererIpc("toolbox:get-desktop-login-credentials", (event) => {
   assertDesktopLoginRenderer(event);
   // 本机安全凭据 = 这台设备自己的首登材料；首次没有任何密码时也允许用它进入，避免首登死结。
   // 绑定只是把账号密码与本机/PIN 关联的选项。解除绑定后不再提供本机凭据，仅保留账号密码。
-  if (!desktopQuickLoginAllowed()) {
+  const allowed = desktopQuickLoginAllowed();
+  writeRuntimeDiagnostic("desktop-login", {
+    at: new Date().toISOString(),
+    step: "ipc-get-credentials",
+    allowed,
+  });
+  if (!allowed) {
     return null;
   }
   const credentials = ensureDesktopCredentials();
@@ -6714,16 +6874,66 @@ handleRendererIpc("toolbox:change-desktop-admin-password", async (event, payload
 });
 // 手动把 H2 历史数据重新导入当前 PostgreSQL。设置一次性迁移 URL 后重启后端，
 // postgres profile 下的 LegacyPostgresMigrationRunner 会把 H2 白名单核心表拷进 PG。
-handleRendererIpc("toolbox:reimport-h2-to-postgres", async (event) => {
+// 可选的 H2 导入源候选：桌面模式常规文件 + 开发模式文件（存在才列出），
+// 按最后写入时间排序。导入源错了就会把空库/旧库盖进 PG，必须让用户显式选择。
+function desktopH2SourceCandidates() {
+  const candidates = [
+    {
+      id: "desktop",
+      label: "桌面模式数据（AppData）",
+      file: path.join(app.getPath("userData"), "data", "security-toolbox.mv.db"),
+    },
+    {
+      id: "dev",
+      label: "开发模式数据（项目目录 security-toolbox-server\\data）",
+      file: path.join(
+        "D:\\study\\work\\Bachelor_Degree\\Graduation_Project",
+        "security-toolbox-server",
+        "data",
+        "security-toolbox.mv.db",
+      ),
+    },
+  ];
+  return candidates
+    .filter((c) => fs.existsSync(c.file))
+    .map((c) => ({
+      ...c,
+      size: fs.statSync(c.file).size,
+      lastWriteTime: fs.statSync(c.file).lastWriteTime.toISOString(),
+    }))
+    .sort((a, b) => b.lastWriteTime.localeCompare(a.lastWriteTime));
+}
+
+// 把选中的 .mv.db 临时拷贝到独立目录再生成 JDBC URL，避免源文件被 H2 锁文件阻塞。
+// （拷贝是只读安全的：H2 在非 AUTO_SERVER 连接下只读打开也不会写源文件。）
+function desktopH2MigrateUrlFor(file) {
+  const normalized = path.resolve(String(file || ""));
+  const known = desktopH2SourceCandidates().some((c) => path.resolve(c.file) === normalized);
+  if (!known) {
+    throw new UserFacingError("导入源不在允许的候选列表中，已拒绝");
+  }
+  return `jdbc:h2:file:${normalized.replace(/\\/g, "/").replace(/\.mv\.db$/i, "")};MODE=PostgreSQL;AUTO_SERVER=TRUE`;
+}
+
+handleRendererIpc("toolbox:get-h2-import-sources", (event) => {
+  assertMainRenderer(event);
+  return desktopH2SourceCandidates();
+});
+
+handleRendererIpc("toolbox:reimport-h2-to-postgres", async (event, payload = {}) => {
   assertMainRenderer(event);
   const config = activeDesktopPostgresConfig();
   if (!config || config.enabled !== true) {
     throw new UserFacingError("当前未启用 PostgreSQL，请先完成迁移");
   }
-  desktopPgMigrateH2Url = desktopH2MigrateUrl();
+  const options = typeof payload === "object" && payload ? payload : {};
+  const sourceFile = String(options.sourceFile || "").trim();
+  // 未指定源时保持旧行为（桌面模式默认文件）；指定时必须是候选之一。
+  const h2Url = sourceFile ? desktopH2MigrateUrlFor(sourceFile) : desktopH2MigrateUrl();
+  desktopPgMigrateH2Url = h2Url;
   writeDesktopStartupDiagnostic("postgres-reimport", null, {
     action: "restart-and-copy",
-    h2Url: desktopH2MigrateUrl(),
+    h2Url,
   });
 await restartBackend();
   return { status: "restarted" };
@@ -6934,19 +7144,21 @@ function resolveJava() {
 }
 
 function resolveServerJar() {
-  const candidate = app.isPackaged
-    ? path.join(process.resourcesPath, "server", "security-toolbox-server.jar")
-    : path.resolve(
-        __dirname,
-        "..",
-        "..",
-        "security-toolbox-server",
-        "target",
-        "security-toolbox-server-0.1.0.jar",
-      );
-  if (!fs.existsSync(candidate))
-    throw new Error(`未找到后端服务文件：${candidate}`);
-  return candidate;
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, "server", "security-toolbox-server.jar");
+  }
+  const targetDir = path.resolve(
+    __dirname,
+    "..",
+    "..",
+    "security-toolbox-server",
+    "target",
+  );
+  for (const name of ["security-toolbox-server-1.0.0.jar", "security-toolbox-server-0.1.0.jar"]) {
+    const candidate = path.join(targetDir, name);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  throw new Error(`未找到后端服务文件：${path.join(targetDir, "security-toolbox-server-1.0.0.jar")}`);
 }
 
 async function findFreePort(start = 18080, end = 18120) {
@@ -7366,6 +7578,7 @@ function launchAiRuntimeProcess(slot) {
   fs.mkdirSync(logDir, { recursive: true });
 
   const aiSettings = effectiveAiSettings();
+  recordRuntimeModelConfiguration(aiSettings);
   const child = spawn(
     launch.command,
     [
@@ -7396,6 +7609,10 @@ function launchAiRuntimeProcess(slot) {
         ),
         AI_RUNTIME_EMBEDDING_API_KEY: aiSettings.effectiveEmbeddingApiKey,
         AI_RUNTIME_EMBEDDING_MODEL: aiSettings.embeddingModel,
+        // The semantic judge shares the planner's provider. A relay-fronted upstream can need
+        // several seconds for its first token; 6s made the judge trip into Fail-Closed on every
+        // call, which is safe but noisy. 15s keeps the judge far below the 45s planner budget.
+        AI_RUNTIME_JUDGE_TIMEOUT_SECONDS: "15",
       },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
@@ -7427,6 +7644,32 @@ function launchAiRuntimeProcess(slot) {
   aiRuntimeSpawn = { port, token, signingSecret };
   return aiRuntimeSpawn;
 }
+/**
+ * The runtime silently fail-closes every turn with MODEL_NOT_CONFIGURED when the model
+ * environment is incomplete, and the Java layer can only report a generic stop. Record the
+ * shape of the configuration once per launch (never the key itself) so a false "engine
+ * connected" report can be traced back to the launch that produced it.
+ */
+function recordRuntimeModelConfiguration(settings) {
+  const apiKey = String(settings?.apiKey || "");
+  const model = String(settings?.model || "");
+  const baseUrl = String(settings?.baseUrl || "");
+  const relayEnabled = Boolean(readDesktopSettings().aiRelay?.enabled);
+  const relayReady = Boolean(aiRelayConnection);
+  const llmEnabled = Boolean(settings?.enabled && (apiKey || settings?.proxyMode));
+  const modelUsable = Boolean(llmEnabled && /^https?:\/\//i.test(baseUrl) && model);
+  if (!modelUsable) {
+    writeDesktopStartupDiagnostic("ai-runtime-model-not-usable", undefined, {
+      modelConfigured: Boolean(model),
+      baseUrlConfigured: /^https?:\/\//i.test(baseUrl),
+      apiKeyConfigured: Boolean(apiKey),
+      proxyMode: Boolean(settings?.proxyMode),
+      relayEnabled,
+      relayReady,
+    });
+  }
+}
+
 async function waitForAiRuntimeReady(port) {
   const health = await waitForAiRuntime(port);
   aiRuntimeConfig = {
