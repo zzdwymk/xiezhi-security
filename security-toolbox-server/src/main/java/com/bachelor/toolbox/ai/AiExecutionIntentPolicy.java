@@ -27,6 +27,15 @@ final class AiExecutionIntentPolicy {
   private static final Pattern DIRECT_ACTION = Pattern.compile(
       "(?i)(?:扫描|扫一下|扫一遍|检测|探测|检查|执行|运行|开始|确认执行|继续执行)"
           + "|\\b(?:scan|check|probe|run|execute|start|test)\\b");
+  /**
+   * A short standalone confirmation ("确认" "那就用" "同意" "按这个来" "执行吧") refers to the
+   * single plan the assistant just produced; the model resolves it against that plan. Only a
+   * whole-message confirmation counts — the same words inside a longer sentence still need an
+   * explicit action verb, and any negation elsewhere still vetoes via {@link #NON_EXECUTION}.
+   */
+  private static final Pattern SHORT_CONFIRMATION = Pattern.compile(
+      "^(?:好|好吧|好的|行|行吧|可以|可以了|确认|确认执行|同意|同意执行|就用|就用这个|就这个|那就用|"
+          + "按这个|按这个来|按计划|照这个|这样执行|这么办|执行吧|开始吧|去执行|跑吧|干吧|没问题|ok|OK|Ok|okay)\\s*[吧呢啊。.!！]?$");
   private static final Pattern REPORTED_INSTRUCTION = Pattern.compile(
       "(?i)^\\s*(?:根据|按照|关于|来自|在)?(?:转述|摘录|日志|文档|网页|资料|原文|邮件|报告|工具输出|历史|之前的回复|系统消息|模型回复|他说|她说|他们说|别人|对方|同事)"
           + "|^\\s*(?:the\\s+)?(?:log|document|webpage|report|email|output|previous reply)\\b"
@@ -65,6 +74,6 @@ final class AiExecutionIntentPolicy {
     return !REPORTED_INSTRUCTION.matcher(direct).find()
         && !NON_EXECUTION.matcher(direct).find()
         && !ANALYSIS_START.matcher(direct).find()
-        && DIRECT_ACTION.matcher(direct).find();
+        && (DIRECT_ACTION.matcher(direct).find() || SHORT_CONFIRMATION.matcher(direct.strip()).find());
   }
 }
