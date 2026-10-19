@@ -53,6 +53,9 @@ export function approvalParameterRows(parameters: Record<string, unknown> = {}) 
     ajaxSpider: "动态页面爬取", openApiUrl: "接口文档地址", authType: "认证方式",
     authLoginUrl: "登录地址", authUsername: "认证用户名", authPassword: "认证密码",
     authUsernameField: "用户名字段", authPasswordField: "密码字段",
+    concurrency: "并发请求数", depth: "探测深度", dictionary: "枚举字典",
+    extensions: "匹配扩展名", workers: "工作线程数", timeout: "请求超时",
+    customDictionary: "自定义字典",
   };
   // Translate enumerated settings only; literal paths, payloads and module options must stay exact.
   const values: Record<string, Record<string, string>> = {
@@ -61,6 +64,22 @@ export function approvalParameterRows(parameters: Record<string, unknown> = {}) 
     strength: { LOW: "低", MEDIUM: "中", HIGH: "高", INSANE: "极高" },
     check: { cookies: "Cookie 安全属性", cors: "CORS 跨域策略", methods: "危险 HTTP 方法", disclosure: "技术栈信息泄露" },
     authType: { form: "表单认证", json: "JSON 认证" },
+    dictionary: {
+      "dirb-common": "内置常用字典 (dirb-common)",
+      "dirb-big": "大字典 (dirb-big)",
+      "dirb-small": "精简字典 (dirb-small)",
+      "dirb-best1050": "高频1050字典 (dirb-best1050)",
+      "dirbuster-2.3-small": "DirBuster精简字典",
+      custom: "用户自定义字典",
+    },
+    technique: {
+      BEUT: "全技术检测 (布尔/报错/时间/联合)",
+      B: "布尔盲注 (Boolean-based)",
+      E: "报错注入 (Error-based)",
+      U: "联合查询注入 (Union query)",
+      T: "时间盲注 (Time-based blind)",
+      S: "堆叠注入 (Stacked queries)",
+    },
     scanPolicy: {
       "Default Policy": "默认策略", Developer: "开发者策略", "Security Baseline": "安全基线",
       Manager: "管理者策略", "Testing - HIGH": "高强度测试", "Testing - MEDIUM": "中强度测试", "Testing - LOW": "低强度测试",

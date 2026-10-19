@@ -203,6 +203,41 @@ export function formatAuditDetail(detail?: string): string {
   let text = String(detail).trim();
   if (!text) return "-";
 
+  // 清空业务数据：结构化 JSON 渲染为中文摘要，不暴露数据库 schema。
+  if (text.startsWith("{") && text.includes("deletedByCategory")) {
+    try {
+      const parsed = JSON.parse(text) as {
+        deletedRecords?: number;
+        deletedProjects?: number;
+        runtimeDocumentsDeleted?: number;
+        deletedByCategory?: Record<string, number>;
+        preservedData?: string[];
+      };
+      const parts: string[] = [];
+      if (typeof parsed.deletedProjects === "number") {
+        parts.push(`评估项目 ${parsed.deletedProjects} 个`);
+      }
+      if (typeof parsed.deletedRecords === "number") {
+        parts.push(`业务记录 ${parsed.deletedRecords} 条`);
+      }
+      if (typeof parsed.runtimeDocumentsDeleted === "number" && parsed.runtimeDocumentsDeleted > 0) {
+        parts.push(`运行时索引文档 ${parsed.runtimeDocumentsDeleted} 条`);
+      }
+      const cleared = Object.entries(parsed.deletedByCategory || {})
+        .filter(([, count]) => count > 0)
+        .map(([category, count]) => `${category} ${count} 条`);
+      if (cleared.length > 0) {
+        parts.push(`其中：${cleared.join("、")}`);
+      }
+      if (parsed.preservedData && parsed.preservedData.length > 0) {
+        parts.push(`已保留：${parsed.preservedData.join("、")}`);
+      }
+      return `已清空全部业务数据（${parts.join("；")}）`;
+    } catch {
+      // JSON 解析失败则回退到通用处理。
+    }
+  }
+
   // 常见操作用完整短句展示，同时兼容已有审计记录。
   text = text.replace(
     /^status\s*=\s*([A-Z_]+)\s*[,;]\s*hits\s*=\s*(\d+)$/i,

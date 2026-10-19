@@ -2854,13 +2854,13 @@ onUnmounted(() => {
         <span class="state-copy">正在加载资产…</span>
       </div>
 
-      <!-- 空数据提示 -->
+      <!-- 空数据提示：与全站空状态共用 empty-mark 破折号图案 -->
       <div v-else-if="!assets.length" class="topology-state-overlay">
-        <div class="empty-icon-wrap">
-          <FluentIcon name="globe-search" :size="36" />
-        </div>
-        <h4>暂无资产节点</h4>
-        <p>{{ props.projectId === 'all' ? '全部项目暂无资产记录' : '当前项目暂无资产记录' }}</p>
+        <span class="empty-mark" aria-hidden="true">—</span>
+        <strong class="state-title">暂无资产节点</strong>
+        <p>
+          {{ props.projectId === 'all' ? '全部项目暂无资产记录' : '当前项目暂无资产记录' }}
+        </p>
       </div>
 
       <!-- SVG 拓扑网络画布 -->
@@ -3432,19 +3432,19 @@ onUnmounted(() => {
 
       <div v-if="assets.length" class="canvas-controls" @mousedown.stop @dblclick.stop @wheel.stop>
         <div class="zoom-controls">
-          <el-tooltip content="缩小" placement="top" :show-after="200">
+          <el-tooltip content="缩小" placement="top" :show-after="200" :hide-after="0" :enterable="false">
             <button class="fluent-command-btn" aria-label="缩小" @click="zoomOut">
               <FluentIcon name="subtract" />
             </button>
           </el-tooltip>
           <span class="zoom-level">{{ Math.round(zoom * 100) }}%</span>
-          <el-tooltip content="放大" placement="top" :show-after="200">
+          <el-tooltip content="放大" placement="top" :show-after="200" :hide-after="0" :enterable="false">
             <button class="fluent-command-btn" aria-label="放大" @click="zoomIn">
               <FluentIcon name="add" />
             </button>
           </el-tooltip>
           <span class="divider-v" />
-          <el-tooltip content="适应画布" placement="top" :show-after="200">
+          <el-tooltip content="适应画布" placement="top" :show-after="200" :hide-after="0" :enterable="false">
             <button class="fluent-command-btn" aria-label="适应画布" @click="fitView">
               <FluentIcon name="fit" />
             </button>
@@ -3675,6 +3675,8 @@ onUnmounted(() => {
                   :content="f.title"
                   placement="top"
                   :show-after="250"
+                  :hide-after="0"
+                  :enterable="false"
                 >
                   <span class="finding-card-title">{{ f.title }}</span>
                 </el-tooltip>
@@ -4296,16 +4298,25 @@ html.dark .zoom-controls .divider-v,
   padding: 20px;
 }
 
-.empty-icon-wrap {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 64px;
-  height: 64px;
+.empty-mark {
+  display: grid;
+  width: 56px;
+  height: 56px;
+  margin-bottom: 14px;
+  place-items: center;
+  border: 1px solid var(--app-border, #d8dadd);
   border-radius: 50%;
-  background: var(--app-accent-soft);
-  color: var(--app-accent);
-  margin-bottom: 4px;
+  background: var(--app-surface-soft, #f8fafc);
+  color: var(--app-muted, #94a3b8);
+  font-size: 20px;
+  line-height: 1;
+}
+
+.topology-state-overlay .state-title {
+  margin: 0;
+  font-size: var(--fluent-body1-size, 14px);
+  font-weight: var(--fluent-weight-semibold, 600);
+  color: var(--app-text);
 }
 
 .topology-state-overlay h4 {

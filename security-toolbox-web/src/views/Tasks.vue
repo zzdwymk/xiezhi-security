@@ -1582,17 +1582,25 @@ onUnmounted(() => {
                 v-if="scheduleForm.pocCodes.length"
                 class="poc-selected-tags"
               >
-                <el-tag
+                <el-tooltip
                   v-for="code in scheduleForm.pocCodes.slice(0, 4)"
                   :key="code"
-                  size="small"
-                  closable
-                  type="success"
-                  class="poc-tag-item"
-                  @close="removeSchedulePoc(code)"
+                  :content="getSchedulePocName(code)"
+                  placement="top"
+                  :show-after="200"
+                  :hide-after="0"
+                  :enterable="false"
                 >
-                  {{ getSchedulePocName(code) }}
-                </el-tag>
+                  <el-tag
+                    size="small"
+                    closable
+                    type="success"
+                    class="poc-tag-item"
+                    @close="removeSchedulePoc(code)"
+                  >
+                    {{ getSchedulePocName(code) }}
+                  </el-tag>
+                </el-tooltip>
                 <el-tag
                   v-if="scheduleForm.pocCodes.length > 4"
                   size="small"
@@ -1696,6 +1704,8 @@ onUnmounted(() => {
                 :content="scheduleProjectName(scope.row.projectId)"
                 placement="top"
                 :show-after="250"
+                :hide-after="0"
+                :enterable="false"
               >
                 <strong>{{ scheduleProjectName(scope.row.projectId) }}</strong>
               </el-tooltip>
@@ -1703,6 +1713,8 @@ onUnmounted(() => {
                 :content="scheduleTargetName(scope.row.targetId)"
                 placement="top"
                 :show-after="250"
+                :hide-after="0"
+                :enterable="false"
               >
                 <small>{{ scheduleTargetName(scope.row.targetId) }}</small>
               </el-tooltip>
@@ -1716,6 +1728,8 @@ onUnmounted(() => {
                 :content="scheduleToolLabel(scope.row.toolCode)"
                 placement="top"
                 :show-after="250"
+                :hide-after="0"
+                :enterable="false"
               >
                 <strong>{{ scheduleToolLabel(scope.row.toolCode) }}</strong>
               </el-tooltip>
@@ -1724,6 +1738,8 @@ onUnmounted(() => {
                 :content="scheduleParameterSummary(scope.row)"
                 placement="top"
                 :show-after="250"
+                :hide-after="0"
+                :enterable="false"
               >
                 <small>{{ scheduleParameterSummary(scope.row) }}</small>
               </el-tooltip>
@@ -1752,6 +1768,8 @@ onUnmounted(() => {
                 :content="scope.row.lastError"
                 placement="top"
                 :show-after="250"
+                :hide-after="0"
+                :enterable="false"
               >
                 <small>{{ scope.row.lastError }}</small>
               </el-tooltip>
@@ -1796,10 +1814,12 @@ onUnmounted(() => {
         :total="schedules.length"
       />
     </template>
-    <el-empty
+    <OfflineState
       v-else
+      size="compact"
+      icon="clock"
+      title="暂无定时任务"
       description="还没有定时任务，可在上方创建"
-      :image-size="64"
     />
     <template #footer
       ><el-button @click="scheduleVisible = false">取消</el-button
@@ -2345,18 +2365,31 @@ onUnmounted(() => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   margin-top: 6px;
 }
 .poc-tag-item {
-  max-width: 140px;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  font-size: 11px;
+}
+.poc-tag-item :deep(.el-tag__content) {
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 11px;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.poc-tag-item :deep(.el-tag__close) {
+  flex-shrink: 0;
+  margin-left: 3px;
 }
 .poc-tag-more {
   cursor: pointer;
   font-size: 11px;
+  flex-shrink: 0;
 }
 .poc-picker-filters {
   display: flex;

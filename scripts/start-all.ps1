@@ -36,8 +36,11 @@ $frontendDir = Join-Path $workspace 'security-toolbox-web'
 $runDir = Join-Path $workspace '.run'
 $logDir = Join-Path $runDir 'logs'
 $pidFile = Join-Path $runDir 'processes.json'
-$developmentSecretsFile = Join-Path $runDir 'development-secrets.json'
-$jar = Join-Path $backendDir 'target\security-toolbox-server-0.1.0.jar'
+$developmentSecretsFile = Join-Path $runDir 'development-secrets-v2.json'
+$jar = Join-Path $backendDir 'target\security-toolbox-server-1.0.0.jar'
+if (-not (Test-Path $jar)) {
+    $jar = Join-Path $backendDir 'target\security-toolbox-server-0.1.0.jar'
+}
 
 New-Item -ItemType Directory -Force -Path $runDir, $logDir | Out-Null
 
@@ -190,9 +193,11 @@ function Save-DevelopmentSecrets($Secrets) {
 }
 
 function Get-DevelopmentSecrets {
+    $readable = $false
+    $secrets = $null
     if (Test-Path -LiteralPath $developmentSecretsFile) {
         try {
-            $saved = Get-Content -Raw -LiteralPath $developmentSecretsFile -Encoding UTF8 | ConvertFrom-Json
+            $saved = Get-Content -Raw -LiteralPath $developmentSecretsFile -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
             if ($saved.schemaVersion -ne 1 -and $saved.schemaVersion -ne 2) { throw 'unsupported schema' }
             if ($saved.schemaVersion -eq 2 -and $saved.legacyMigrationPending -isnot [bool]) {
                 throw 'invalid migration state'
@@ -207,9 +212,12 @@ function Get-DevelopmentSecrets {
                     $false
                 }
             }
+            $readable = $true
         } catch {
-            throw 'The protected local development credential file cannot be decrypted by the current user.'
+            Write-Warning "Existing protected development secret cannot be read by current user ($($_.Exception.Message)). Regenerating development secrets."
         }
+    }
+    if ($readable -and $secrets) {
         foreach ($entry in @(
             @('ADMIN_PASSWORD', 'adminPassword'),
             @('JWT_SECRET', 'jwtSecret'),
@@ -272,8 +280,33 @@ if (-not $env:POSTGRES_PASSWORD -and $postgresEnabled) {
     $postgresEnabled = $false
     Write-Warning 'PostgreSQL 已检测到，但未设置 POSTGRES_PASSWORD，回退使用内置 H2 数据库。'
 }
+
+# 桌面端内置 PostgreSQL（127.0.0.1:15432，security_toolbox 账号）优先：
+# 桌面端迁移到 PG 后，开发模式也应直连同一权威库，避免开发模式落到自己的
+# H2 文件形成第三份分叉数据（曾导致"数据不见了"的误判）。
+$desktopSettingsPath = Join-Path $env:APPDATA 'security-toolbox-desktop\desktop-settings.json'
+$desktopPgEnabled = $false
+if (-not $postgresEnabled -and -not $postgresForcedOff -and (Test-Path $desktopSettingsPath)) {
+    try {
+        $desktopSettings = Get-Content $desktopSettingsPath -Raw | ConvertFrom-Json
+        $desktopPg = $desktopSettings.postgres
+        if ($desktopPg -and $desktopPg.enabled -eq $true -and $desktopPg.port) {
+            $desktopPgPort = [int]$desktopPg.port
+            if (Test-TcpEndpoint '127.0.0.1' $desktopPgPort) {
+                $desktopPgEnabled = $true
+                Write-Host ("检测到桌面端内置 PostgreSQL（127.0.0.1:{0}）已启用，开发模式将直连同一数据库。" -f $desktopPgPort) -ForegroundColor Cyan
+                Write-Warning '数据库密码保存在桌面端的 Windows 安全存储中，请设置 DB_URL/DB_USERNAME/DB_PASSWORD 环境变量，或使用 TOOLBOX_USE_POSTGRES=0 明确指定回退 H2。'
+            }
+        }
+    } catch {
+        Write-Warning ("读取桌面端设置失败，忽略内置 PostgreSQL 检测：{0}" -f $_.Exception.Message)
+    }
+}
+
 if ($postgresEnabled) {
     Write-Host ("检测到 PostgreSQL（{0}:{1}），后端将自动切换使用 PostgreSQL。" -f $postgresHost, $postgresPort) -ForegroundColor Cyan
+} elseif ($desktopPgEnabled) {
+    Write-Host '开发模式将使用桌面端内置 PostgreSQL（见上方说明）。' -ForegroundColor Cyan
 } else {
     Write-Host '未检测到可用的 PostgreSQL，后端将使用内置 H2 数据库。' -ForegroundColor DarkGray
 }
@@ -320,8 +353,12 @@ $backendOutLog = Join-Path $logDir 'backend.out.log'
 $backendErrLog = Join-Path $logDir 'backend.err.log'
 try {
     [Environment]::SetEnvironmentVariable('ADMIN_PASSWORD', $developmentSecrets.adminPassword, 'Process')
+    [Environment]::SetEnvironmentVariable('TOOLBOX_AUTH_DESKTOP_SEED_ADMIN_PASSWORD', $developmentSecrets.adminPassword, 'Process')
     [Environment]::SetEnvironmentVariable('JWT_SECRET', $developmentSecrets.jwtSecret, 'Process')
     [Environment]::SetEnvironmentVariable('TRAFFIC_MITM_CA_PASSWORD', $developmentSecrets.mitmCaPassword, 'Process')
+    [Environment]::SetEnvironmentVariable('AI_RUNTIME_ENABLED', 'true', 'Process')
+    [Environment]::SetEnvironmentVariable('AI_RUNTIME_TOKEN', 'dev-runtime-token-secret-12345', 'Process')
+    [Environment]::SetEnvironmentVariable('AI_RUNTIME_PROJECT_SIGNING_SECRET', 'dev-signing-secret-67890-abcdef', 'Process')
     [Environment]::SetEnvironmentVariable('ALLOW_INSECURE_DEVELOPMENT_CREDENTIALS', 'false', 'Process')
     [Environment]::SetEnvironmentVariable(
         'MIGRATE_LEGACY_DEVELOPMENT_CREDENTIALS',

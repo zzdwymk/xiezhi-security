@@ -410,10 +410,26 @@ html.dark .hash-results header button.is-copied,
   gap: 16px;
 }
 .timestamp-tools article {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
   padding: 19px;
   border: 1px solid var(--app-border);
   border-radius: 8px;
   background: var(--app-surface);
+}
+/* `el-input`/`el-button` render as inline-level custom elements; without a
+   wrapper they collapse onto one line (zero-width input + button stuck
+   together). Make the input a full-width block row and keep the button on
+   its own line, left-aligned. */
+.timestamp-tools article > el-input {
+  display: block;
+  width: 100%;
+}
+.timestamp-tools article > .el-button {
+  align-self: flex-start;
+  width: auto;
 }
 .timestamp-tools h3 {
   margin: 0;
@@ -421,16 +437,16 @@ html.dark .hash-results header button.is-copied,
   font-size: 15px;
 }
 .timestamp-tools p {
-  margin: 5px 0 14px;
+  margin: 0;
   color: var(--app-muted);
   font-size: 12px;
 }
 .timestamp-tools .el-button {
-  margin-top: 10px;
+  margin-top: 0;
 }
 .timestamp-tools pre {
   min-height: 82px;
-  margin: 14px 0 0;
+  margin: 0;
   padding: 12px;
   border-radius: 6px;
   background: var(--app-surface-soft);

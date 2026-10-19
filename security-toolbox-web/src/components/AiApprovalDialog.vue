@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import type { ConversationMessage } from "../stores/conversations";
+import type { JudgeVerdictDocument } from "../api";
 import { aiToolLabel } from "../utils/aiPresentation";
-import { approvalParameterRows } from "../utils/aiApproval";
 import FluentIcon from "./FluentIcon.vue";
 
 const props = defineProps<{
@@ -14,9 +14,9 @@ const props = defineProps<{
   busy: boolean;
 }>();
 
-defineEmits<{
+const emit = defineEmits<{
   (event: "update:visible", value: boolean): void;
-  (event: "decide", decision: "APPROVED" | "REJECTED"): void;
+  (event: "decide", decision: "APPROVED" | "REJECTED", overrides?: Array<Record<string, any>>): void;
 }>();
 
 const hasCautionStep = computed(() =>
@@ -24,6 +24,124 @@ const hasCautionStep = computed(() =>
     (step) => step.requiresApproval || step.risk === "CAUTION",
   ),
 );
+
+const judge = computed<JudgeVerdictDocument | null>(() => props.message?.judge ?? null);
+
+const judgeSeverity = computed<"critical" | "warning" | "clear">(() => {
+  const doc = judge.value;
+  if (!doc) return "clear";
+  if (doc.degraded || doc.worstRisk === "CRITICAL") return "critical";
+  if (doc.requiresHumanReview) return "warning";
+  return "clear";
+});
+
+const judgeTitle = computed(() => {
+  const doc = judge.value;
+  if (!doc) return "";
+  if (doc.degraded) {
+    const rawHeadline = doc.headline || "无法判定";
+    const cleanHeadline = rawHeadline.startsWith("判官熔断")
+      ? rawHeadline.replace(/^判官熔断[（(]?/, "").replace(/[)）]?$/, "")
+      : rawHeadline;
+    return `安全审查预警（判官熔断）· ${cleanHeadline || "未能自动识别行为模式"}`;
+  }
+  if (doc.requiresHumanReview) return `行为透视识别 · 疑似 ${doc.headline || "需人工审核的动作"}`;
+  return "安全审查通过 · 判官未发现需要拦截的行为";
+});
+
+const judgeSeverityIcon = computed(() => {
+  if (judgeSeverity.value === "critical") return "dismiss";
+  if (judgeSeverity.value === "warning") return "warning";
+  return "checkmark-circle";
+});
+
+const judgePrimaryStep = computed(() => {
+  const steps = judge.value?.steps;
+  if (steps && steps.length > 0) return steps[0];
+  return null;
+});
+
+function judgeRiskTagType(risk: string): "success" | "warning" | "danger" | "info" {
+  if (risk === "SAFE") return "success";
+  if (risk === "CAUTION") return "warning";
+  if (risk === "HIGH" || risk === "CRITICAL") return "danger";
+  return "info";
+}
+
+function judgeBehaviourLabel(behaviour?: string): string {
+  const b = String(behaviour || "").trim();
+  if (!b || b === "判官熔断（无法判定）" || b === "无法判定") {
+    return "需人工确认";
+  }
+  return b;
+}
+
+// ------------------------------------------------------------------ 可交互参数编辑与选项元数据
+const editableParameters = ref<Array<Record<string, any>>>([]);
+
+watch(
+  () => props.message?.steps,
+  (steps) => {
+    if (steps && Array.isArray(steps)) {
+      editableParameters.value = steps.map((s) => ({ ...(s.parameters || {}) }));
+    } else {
+      editableParameters.value = [];
+    }
+  },
+  { immediate: true, deep: true },
+);
+
+const DICTIONARY_OPTIONS = [
+  { value: "dirb-common", label: "内置常用字典 (dirb-common · 4429条)" },
+  { value: "dirb-small", label: "精简高频字典 (dirb-small · 928条)" },
+  { value: "dirb-big", label: "大字典 (dirb-big · 20226条)" },
+  { value: "dirb-best1050", label: "Top 1050 字典 (dirb-best1050)" },
+  { value: "dirbuster-2.3-small", label: "DirBuster 深度字典 (81522条)" },
+  { value: "custom", label: "用户自定义字典" },
+];
+
+const TECHNIQUE_OPTIONS = [
+  { value: "BEUT", label: "全技术综合检测 (布尔/报错/联合/时间)" },
+  { value: "B", label: "布尔盲注 (Boolean-based blind)" },
+  { value: "E", label: "报错注入 (Error-based)" },
+  { value: "U", label: "联合查询注入 (Union query)" },
+  { value: "T", label: "时间盲注 (Time-based blind)" },
+];
+
+const LEVEL_OPTIONS = [
+  { value: 1, label: "1 级 (标准 GET/POST 参数)" },
+  { value: 2, label: "2 级 (包含 Cookie 注入)" },
+  { value: 3, label: "3 级 (包含 User-Agent 注入)" },
+  { value: 4, label: "4 级 (包含 Referer 注入)" },
+  { value: 5, label: "5 级 (包含 Host 头深度探测)" },
+];
+
+const RISK_OPTIONS = [
+  { value: 1, label: "1 级 (默认无害测试，不破坏数据)" },
+  { value: 2, label: "2 级 (包含重负载时间盲注)" },
+  { value: 3, label: "3 级 (高风险，可能触发更新或堆叠查询)" },
+];
+
+const PARAM_LABELS: Record<string, string> = {
+  concurrency: "并发请求数",
+  workers: "并发工作线程",
+  depth: "探测深度",
+  dictionary: "枚举字典",
+  ports: "扫描端口",
+  path: "请求路径",
+  level: "检测级别",
+  risk: "风险级别",
+  technique: "检测技术",
+  timeout: "超时时间 (秒)",
+  extensions: "匹配扩展名",
+  vulnMode: "扫描模式",
+  mode: "识别模式",
+};
+
+function onApprove() {
+  const overrides = editableParameters.value.map((p) => ({ ...p }));
+  emit("decide", "APPROVED", overrides);
+}
 </script>
 
 <template>
@@ -31,7 +149,7 @@ const hasCautionStep = computed(() =>
     :model-value="visible"
     title="确认 AI 行动方案"
     class="app-dialog ai-approval-modal"
-    style="--app-dialog-width: 600px"
+    style="--app-dialog-width: 640px"
     align-center
     append-to-body
     :close-on-click-modal="false"
@@ -39,17 +157,30 @@ const hasCautionStep = computed(() =>
     :show-close="!busy"
     @update:model-value="$emit('update:visible', $event)"
   >
+    <template #header>
+      <div class="approval-dialog-header">
+        <div class="approval-header-title-row">
+          <FluentIcon name="shield" class="approval-header-icon" aria-hidden="true" />
+          <h2 class="approval-header-title">检测操作授权审批</h2>
+          <span class="approval-header-subtag">AI 建议行动方案</span>
+        </div>
+        <p class="approval-header-desc">
+          AI 智能体基于当前分析建议执行以下探测动作，须由管理员审核具体动作与核对参数后授权执行。
+        </p>
+      </div>
+    </template>
+
     <section
       v-if="message"
       class="ai-approval-dialog"
       :data-approval-id="message.approvalId"
     >
-      <!-- 1. 方案摘要与授权目标元数据卡片 (Fluent Card) -->
+      <!-- 1. 方案摘要与授权目标元数据卡片 (Fluent 2 Card) -->
       <section class="approval-overview-card" aria-label="授权目标与范围">
         <header class="approval-overview-head">
           <div class="approval-id-wrap">
-            <span class="approval-id-badge">方案 #{{ message.approvalId }}</span>
-            <span class="approval-scope-label">仅本次执行</span>
+            <span class="approval-id-badge">待审方案 #{{ message.approvalId }}</span>
+            <span class="approval-scope-label">单次授权有效</span>
           </div>
           <span
             class="approval-risk-tag"
@@ -59,20 +190,20 @@ const hasCautionStep = computed(() =>
               :name="hasCautionStep ? 'warning' : 'shield'"
               aria-hidden="true"
             />
-            <span>{{ hasCautionStep ? "需人工确认" : "受控检测" }}</span>
+            <span>{{ hasCautionStep ? "需人工审核" : "受控常规操作" }}</span>
           </span>
         </header>
 
         <dl class="approval-meta-grid">
           <div class="approval-meta-item is-target">
-            <dt>授权目标</dt>
+            <dt>申请执行目标</dt>
             <dd>
               <strong class="approval-target-name">{{ targetName }}</strong>
               <code class="approval-target-addr">{{ targetValue }}</code>
             </dd>
           </div>
           <div class="approval-meta-item">
-            <dt>授权端口</dt>
+            <dt>允许端口范围</dt>
             <dd>
               <span class="approval-port-badge">{{
                 allowedPorts || "以登记的授权范围为准"
@@ -82,11 +213,58 @@ const hasCautionStep = computed(() =>
         </dl>
       </section>
 
-      <!-- 2. 执行步骤清单 (Fluent List / Sub-cards) -->
-      <section class="approval-steps-section" aria-label="执行动作清单">
+      <!-- 2. 系统安全风险初审横幅 (Fluent 2 InfoBar，无内嵌多层杂乱方框) -->
+      <section
+        v-if="judge"
+        class="approval-judge-banner"
+        :class="`approval-judge-banner--${judgeSeverity}`"
+        aria-label="系统安全风险初审"
+      >
+        <header class="approval-judge-head">
+          <div class="approval-judge-icon-wrap" :class="`is-${judgeSeverity}`">
+            <FluentIcon :name="judgeSeverityIcon" aria-hidden="true" />
+          </div>
+          <strong class="approval-judge-title">{{ judgeTitle }}</strong>
+          <el-tag size="small" :type="judgeRiskTagType(judge.worstRisk)">
+            最高风险 {{ judge.worstRisk }}
+          </el-tag>
+          <el-tag v-if="judge.degraded" size="small" type="danger" effect="dark">
+            熔断拦截
+          </el-tag>
+        </header>
+
+        <p v-if="judge.degraded" class="approval-judge-note">
+          语义判官未能给出可信判定（{{ judge.degradedReason || "原因未知" }}）。
+          按 Fail-Closed 原则，系统已按最坏情况标记为高风险，请人工逐项核对下方具体参数后再决定。
+        </p>
+
+        <!-- 纯净通透的行为解读，彻底移除内嵌杂乱嵌套灰框 -->
+        <div v-if="judgePrimaryStep" class="approval-judge-narrative">
+          <p class="approval-judge-summary-lead">
+            {{ judgePrimaryStep.summary }}
+          </p>
+          <div class="approval-judge-meta-row">
+            <el-tag size="small" :type="judgeRiskTagType(judgePrimaryStep.risk)" effect="plain">
+              {{ judgeBehaviourLabel(judgePrimaryStep.behaviour) }}
+            </el-tag>
+            <span class="approval-judge-tool-lead">{{ aiToolLabel(judgePrimaryStep.toolCode) }}</span>
+            <span class="approval-judge-conf-badge">
+              置信度 {{ Math.round((judgePrimaryStep.confidence || 0) * 100) }}%
+            </span>
+          </div>
+        </div>
+
+        <p v-else-if="judge.degraded" class="approval-judge-note">
+          本次没有可用的逐项判定结果，全部步骤均需人工判断。
+        </p>
+      </section>
+
+      <!-- 3. 拟执行检测方案清单 (Fluent 2 List，参数支持管理员直接交互调整) -->
+      <section class="approval-steps-section" aria-label="拟执行检测方案清单">
         <h3 class="approval-steps-title">
-          <span>拟执行计划</span>
-          <span class="approval-steps-count">{{ message.steps.length }} 步</span>
+          <span>待授权检测方案</span>
+          <span class="approval-steps-count">拟执行计划 {{ message.steps.length }} 步</span>
+          <span class="approval-steps-tip">（参数支持管理员直接微调）</span>
         </h3>
 
         <ol class="approval-step-list">
@@ -123,19 +301,137 @@ const hasCautionStep = computed(() =>
             </header>
 
             <div class="approval-step-body">
+              <!-- 交互式参数编辑表单：支持用户在审批时直接选择/微调参数 -->
               <dl
-                v-if="Object.keys(step.parameters || {}).length"
+                v-if="editableParameters[index] && Object.keys(editableParameters[index]).length"
                 class="approval-parameters"
               >
                 <div
-                  v-for="row in approvalParameterRows(step.parameters)"
-                  :key="row.label"
+                  v-for="(val, key) in editableParameters[index]"
+                  :key="key"
                   class="approval-param-row"
                 >
-                  <dt>{{ row.label }}</dt>
-                  <dd><code>{{ row.value }}</code></dd>
+                  <dt class="approval-param-label">{{ PARAM_LABELS[key] || key }}</dt>
+                  <dd class="approval-param-control-cell">
+                    <!-- 1. 字典选择型参数 -->
+                    <el-select
+                      v-if="key === 'dictionary'"
+                      v-model="editableParameters[index][key]"
+                      size="small"
+                      class="param-interactive-control"
+                      :disabled="busy"
+                    >
+                      <el-option
+                        v-for="opt in DICTIONARY_OPTIONS"
+                        :key="opt.value"
+                        :label="opt.label"
+                        :value="opt.value"
+                      />
+                    </el-select>
+
+                    <!-- 2. 探测深度步进器 (1~3层) -->
+                    <el-input-number
+                      v-else-if="key === 'depth'"
+                      v-model="editableParameters[index][key]"
+                      :min="1"
+                      :max="3"
+                      size="small"
+                      controls-position="right"
+                      class="param-interactive-number"
+                      :disabled="busy"
+                    />
+
+                    <!-- 3. 并发请求数步进器 (1~50) -->
+                    <el-input-number
+                      v-else-if="key === 'concurrency' || key === 'workers'"
+                      v-model="editableParameters[index][key]"
+                      :min="1"
+                      :max="50"
+                      :step="5"
+                      size="small"
+                      controls-position="right"
+                      class="param-interactive-number"
+                      :disabled="busy"
+                    />
+
+                    <!-- 4. 检测技术下拉选择 -->
+                    <el-select
+                      v-else-if="key === 'technique'"
+                      v-model="editableParameters[index][key]"
+                      size="small"
+                      class="param-interactive-control"
+                      :disabled="busy"
+                    >
+                      <el-option
+                        v-for="opt in TECHNIQUE_OPTIONS"
+                        :key="opt.value"
+                        :label="opt.label"
+                        :value="opt.value"
+                      />
+                    </el-select>
+
+                    <!-- 5. 检测级别下拉选择 -->
+                    <el-select
+                      v-else-if="key === 'level'"
+                      v-model="editableParameters[index][key]"
+                      size="small"
+                      class="param-interactive-control"
+                      :disabled="busy"
+                    >
+                      <el-option
+                        v-for="opt in LEVEL_OPTIONS"
+                        :key="opt.value"
+                        :label="opt.label"
+                        :value="opt.value"
+                      />
+                    </el-select>
+
+                    <!-- 6. 风险级别下拉选择 -->
+                    <el-select
+                      v-else-if="key === 'risk'"
+                      v-model="editableParameters[index][key]"
+                      size="small"
+                      class="param-interactive-control"
+                      :disabled="busy"
+                    >
+                      <el-option
+                        v-for="opt in RISK_OPTIONS"
+                        :key="opt.value"
+                        :label="opt.label"
+                        :value="opt.value"
+                      />
+                    </el-select>
+
+                    <!-- 7. 布尔开关 -->
+                    <el-switch
+                      v-else-if="typeof val === 'boolean'"
+                      v-model="editableParameters[index][key]"
+                      size="small"
+                      :disabled="busy"
+                    />
+
+                    <!-- 8. 其他数字输入 -->
+                    <el-input-number
+                      v-else-if="typeof val === 'number'"
+                      v-model="editableParameters[index][key]"
+                      size="small"
+                      controls-position="right"
+                      class="param-interactive-number"
+                      :disabled="busy"
+                    />
+
+                    <!-- 9. 通用文本输入 (端口、路径等) -->
+                    <el-input
+                      v-else
+                      v-model="editableParameters[index][key]"
+                      size="small"
+                      class="param-interactive-input"
+                      :disabled="busy"
+                    />
+                  </dd>
                 </div>
               </dl>
+
               <div v-else class="approval-defaults-hint">
                 <FluentIcon name="info" aria-hidden="true" />
                 <span>{{
@@ -149,11 +445,11 @@ const hasCautionStep = computed(() =>
         </ol>
       </section>
 
-      <!-- 3. 安全策略提示 (Fluent InfoBar) -->
+      <!-- 4. 安全策略提示 (Fluent InfoBar) -->
       <div class="approval-policy-infobar" role="note">
         <FluentIcon name="info" class="approval-policy-icon" aria-hidden="true" />
         <p class="approval-policy-text">
-          允许后将执行以上计划。关闭窗口会继续等待，不会创建检测任务。
+          授权后系统将严格按照上述目标范围与核对参数派发任务；拒绝将终止本次方案。允许后将执行以上计划。
         </p>
       </div>
     </section>
@@ -169,17 +465,15 @@ const hasCautionStep = computed(() =>
           :disabled="busy"
           @click="$emit('decide', 'REJECTED')"
         >
-          <FluentIcon name="dismiss" aria-hidden="true" />
-          <span>拒绝执行</span>
+          拒绝执行
         </el-button>
         <el-button
           type="primary"
           :loading="busy"
           :disabled="busy"
-          @click="$emit('decide', 'APPROVED')"
+          @click="onApprove"
         >
-          <FluentIcon v-if="!busy" name="checkmark" aria-hidden="true" />
-          <span>允许执行</span>
+          允许执行
         </el-button>
       </div>
     </template>
@@ -187,17 +481,63 @@ const hasCautionStep = computed(() =>
 </template>
 
 <style scoped>
+.approval-dialog-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.approval-header-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.approval-header-icon {
+  width: 20px;
+  height: 20px;
+  color: var(--app-accent, #0f6cbd);
+  flex: none;
+}
+
+.approval-header-title {
+  margin: 0;
+  font-family: var(--fluent-font, system-ui, sans-serif);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--app-text);
+  line-height: 24px;
+}
+
+.approval-header-subtag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 4px;
+  background: var(--app-accent-soft);
+  color: var(--app-accent);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.approval-header-desc {
+  margin: 2px 0 0;
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .ai-approval-dialog {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  font-family: var(--fluent-font);
+  font-family: var(--fluent-font, system-ui, -apple-system, sans-serif);
   font-size: var(--fluent-body1-size, 14px);
   line-height: var(--fluent-body1-line, 20px);
   color: var(--app-text);
 }
 
-/* 1. 方案摘要卡片 */
+/* 1. 方案摘要卡片 (Fluent 2 Card) */
 .approval-overview-card {
   display: flex;
   flex-direction: column;
@@ -206,6 +546,7 @@ const hasCautionStep = computed(() =>
   border: 1px solid var(--app-border);
   border-radius: var(--fluent-radius-card, 8px);
   background: var(--app-surface-soft);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 
 .approval-overview-head {
@@ -213,6 +554,8 @@ const hasCautionStep = computed(() =>
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--app-border) 60%, transparent);
 }
 
 .approval-id-wrap {
@@ -229,24 +572,24 @@ const hasCautionStep = computed(() =>
   border-radius: var(--fluent-radius-control, 4px);
   background: var(--app-surface-strong);
   color: var(--app-text);
-  font-size: var(--fluent-caption1-size, 12px);
-  font-weight: var(--fluent-weight-semibold, 600);
+  font-size: 12px;
+  font-weight: 600;
   line-height: 1.4;
 }
 
 .approval-scope-label {
   color: var(--app-muted);
-  font-size: var(--fluent-caption1-size, 12px);
+  font-size: 12px;
 }
 
 .approval-risk-tag {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
+  gap: 5px;
+  padding: 2px 10px;
   border-radius: var(--fluent-radius-circular, 999px);
-  font-size: var(--fluent-caption1-size, 12px);
-  font-weight: var(--fluent-weight-medium, 500);
+  font-size: 12px;
+  font-weight: 500;
   line-height: 1.4;
 }
 
@@ -270,7 +613,7 @@ const hasCautionStep = computed(() =>
 .approval-meta-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px 16px;
+  gap: 10px 20px;
   margin: 0;
   padding: 0;
 }
@@ -283,29 +626,33 @@ const hasCautionStep = computed(() =>
 
 .approval-meta-item dt {
   color: var(--app-muted);
-  font-size: var(--fluent-caption1-size, 12px);
+  font-size: 12px;
   line-height: 16px;
 }
 
 .approval-meta-item dd {
   margin: 0;
   color: var(--app-text);
-  font-size: var(--fluent-body1-size, 14px);
+  font-size: 14px;
   line-height: 20px;
   overflow-wrap: anywhere;
 }
 
 .approval-target-name {
   display: block;
-  font-weight: var(--fluent-weight-semibold, 600);
+  font-weight: 600;
 }
 
 .approval-target-addr {
-  display: block;
+  display: inline-block;
   margin-top: 2px;
-  color: var(--app-muted);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--app-surface);
+  border: 1px solid color-mix(in srgb, var(--app-border) 60%, transparent);
+  color: var(--app-text);
   font-family: var(--font-mono, monospace);
-  font-size: var(--fluent-caption1-size, 12px);
+  font-size: 12px;
 }
 
 .approval-port-badge {
@@ -316,11 +663,123 @@ const hasCautionStep = computed(() =>
   background: var(--app-surface-strong);
   color: var(--app-text);
   font-family: var(--font-mono, monospace);
-  font-size: var(--fluent-caption1-size, 12px);
+  font-size: 12px;
   white-space: nowrap;
 }
 
-/* 2. 执行步骤部分 */
+/* 2. 智能安全风险初审横幅 (Fluent 2 InfoBar 规范：四边等宽 1px 描边 + 柔和底色 + 状态图标) */
+.approval-judge-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--fluent-radius-card, 8px);
+  background: var(--app-surface-soft);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  transition: border-color var(--fluent-fast, 120ms) ease, background-color var(--fluent-fast, 120ms) ease;
+}
+
+.approval-judge-banner--critical {
+  border-color: color-mix(in srgb, var(--fluent-error-bg, #a4262c) 35%, var(--app-border));
+  background: color-mix(in srgb, var(--fluent-error-bg, #a4262c) 6%, var(--app-surface));
+}
+
+.approval-judge-banner--warning {
+  border-color: color-mix(in srgb, var(--fluent-warning-bg, #8a4b08) 35%, var(--app-border));
+  background: color-mix(in srgb, var(--fluent-warning-bg, #8a4b08) 6%, var(--app-surface));
+}
+
+.approval-judge-banner--clear {
+  border-color: color-mix(in srgb, #107c41 35%, var(--app-border));
+  background: color-mix(in srgb, #107c41 6%, var(--app-surface));
+}
+
+.approval-judge-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.approval-judge-icon-wrap {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+}
+
+.approval-judge-icon-wrap .fluent-system-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.approval-judge-icon-wrap.is-critical {
+  color: var(--fluent-error-bg, #a4262c);
+}
+
+.approval-judge-icon-wrap.is-warning {
+  color: var(--fluent-warning-bg, #8a4b08);
+}
+
+.approval-judge-icon-wrap.is-clear {
+  color: #107c41;
+}
+
+.approval-judge-title {
+  flex: 1;
+  min-width: 140px;
+  color: var(--app-text);
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.approval-judge-note {
+  margin: 0;
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+/* 纯净通透的行为解读 */
+.approval-judge-narrative {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+}
+
+.approval-judge-summary-lead {
+  margin: 0;
+  color: var(--app-text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.approval-judge-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.approval-judge-tool-lead {
+  font-weight: 600;
+  color: var(--app-text);
+}
+
+.approval-judge-conf-badge {
+  color: var(--app-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+/* 3. 执行动作清单 (Fluent 2 List) */
 .approval-steps-section {
   display: flex;
   flex-direction: column;
@@ -333,14 +792,20 @@ const hasCautionStep = computed(() =>
   gap: 8px;
   margin: 0;
   color: var(--app-text);
-  font-size: var(--fluent-body1-size, 14px);
-  font-weight: var(--fluent-weight-semibold, 600);
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .approval-steps-count {
   color: var(--app-muted);
-  font-size: var(--fluent-caption1-size, 12px);
-  font-weight: var(--fluent-weight-regular, 400);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.approval-steps-tip {
+  color: var(--app-accent, #0f6cbd);
+  font-size: 12px;
+  font-weight: 400;
 }
 
 .approval-step-list {
@@ -355,15 +820,16 @@ const hasCautionStep = computed(() =>
   overflow: hidden;
   border: 1px solid var(--app-border);
   border-radius: var(--fluent-radius-card, 8px);
-  background: var(--app-surface-strong);
+  background: var(--app-surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
 }
 
 .approval-step-head {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 9px 12px;
-  border-bottom: 1px solid var(--app-border);
+  padding: 8px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--app-border) 60%, transparent);
   background: var(--app-surface-soft);
 }
 
@@ -376,7 +842,7 @@ const hasCautionStep = computed(() =>
   border-radius: 50%;
   background: var(--app-accent-soft);
   color: var(--app-accent);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   line-height: 1;
 }
@@ -385,8 +851,8 @@ const hasCautionStep = computed(() =>
   flex: 1;
   min-width: 0;
   color: var(--app-text);
-  font-size: var(--fluent-body1-size, 14px);
-  font-weight: var(--fluent-weight-semibold, 600);
+  font-size: 14px;
+  font-weight: 600;
   line-height: 20px;
   overflow-wrap: anywhere;
 }
@@ -397,9 +863,9 @@ const hasCautionStep = computed(() =>
   gap: 4px;
   padding: 2px 8px;
   border-radius: var(--fluent-radius-circular, 999px);
-  font-size: var(--fluent-caption1-size, 12px);
-  font-weight: var(--fluent-weight-medium, 500);
-  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
 }
 
 .approval-step-risk .fluent-system-icon {
@@ -408,95 +874,84 @@ const hasCautionStep = computed(() =>
 }
 
 .approval-step-risk.is-caution {
-  border: 1px solid color-mix(in srgb, var(--fluent-warning-bg, #8a4b08) 28%, transparent);
-  background: color-mix(in srgb, var(--fluent-warning-bg, #8a4b08) 10%, transparent);
+  background: color-mix(in srgb, var(--fluent-warning-bg, #8a4b08) 12%, transparent);
   color: var(--fluent-warning-bg, #8a4b08);
 }
 
 .approval-step-risk.is-controlled {
-  border: 1px solid var(--app-border);
-  background: var(--app-surface-soft);
-  color: var(--app-muted);
+  background: color-mix(in srgb, var(--app-accent) 12%, transparent);
+  color: var(--app-accent);
 }
 
 .approval-step-body {
-  padding: 10px 12px;
-  font-size: var(--fluent-caption1-size, 12px);
-  line-height: 18px;
+  padding: 10px 14px;
 }
 
 .approval-parameters {
   display: grid;
-  gap: 6px;
+  gap: 10px;
   margin: 0;
   padding: 0;
 }
 
 .approval-param-row {
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
-  align-items: baseline;
-  gap: 8px 12px;
-  padding: 4px 0;
-  border-top: 1px solid color-mix(in srgb, var(--app-border) 60%, transparent);
+  grid-template-columns: 105px 1fr;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
 }
 
-.approval-param-row:first-child {
-  border-top: 0;
-  padding-top: 0;
-}
-
-.approval-param-row:last-child {
-  padding-bottom: 0;
-}
-
-.approval-param-row dt {
+.approval-param-label {
   color: var(--app-muted);
-  font-size: var(--fluent-caption1-size, 12px);
+  font-weight: 500;
+  font-size: 13px;
 }
 
-.approval-param-row dd {
+.approval-param-control-cell {
   margin: 0;
-  overflow-wrap: anywhere;
 }
 
-.approval-param-row dd code {
-  padding: 2px 6px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--fluent-radius-control, 4px);
-  background: var(--app-surface-soft);
-  color: var(--app-text);
-  font-family: var(--font-mono, monospace);
-  font-size: var(--fluent-caption1-size, 12px);
-  word-break: break-all;
+.param-interactive-control {
+  width: 100%;
+  max-width: 320px;
+}
+
+.param-interactive-number {
+  width: 140px;
+}
+
+.param-interactive-input {
+  width: 100%;
+  max-width: 340px;
 }
 
 .approval-defaults-hint {
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
   color: var(--app-muted);
-  font-size: var(--fluent-caption1-size, 12px);
-  line-height: 18px;
+  font-size: 13px;
 }
 
 .approval-defaults-hint .fluent-system-icon {
   width: 16px;
   height: 16px;
   flex: none;
-  margin-top: 1px;
-  color: var(--app-muted);
 }
 
-/* 3. 安全策略提示栏 (Fluent InfoBar) */
+/* 4. 底部安全策略提示 (Fluent InfoBar) */
 .approval-policy-infobar {
   display: flex;
   align-items: flex-start;
   gap: 10px;
   padding: 10px 14px;
-  border: 1px solid color-mix(in srgb, var(--app-accent) 18%, var(--app-border));
-  border-radius: var(--fluent-radius-control, 4px);
-  background: color-mix(in srgb, var(--app-accent) 6%, var(--app-surface-soft));
+  border: 1px solid color-mix(in srgb, var(--app-accent) 25%, var(--app-border));
+  border-radius: var(--fluent-radius-card, 8px);
+  background: var(--app-accent-soft);
+  color: var(--app-text);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .approval-policy-icon {
@@ -509,37 +964,13 @@ const hasCautionStep = computed(() =>
 
 .approval-policy-text {
   margin: 0;
-  color: var(--app-text);
-  font-size: var(--fluent-caption1-size, 12px);
-  line-height: 18px;
+  flex: 1;
 }
 
-/* 4. 底部按钮 Fluent 样式微调 */
 .app-dialog__footer-row {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
-}
-
-.app-dialog__footer-row .el-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin: 0;
-  min-height: 32px;
-}
-
-.app-dialog__footer-row .el-button .fluent-system-icon {
-  width: 14px;
-  height: 14px;
-}
-
-@media (max-width: 520px) {
-  .approval-meta-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
+  gap: 10px;
 }
 </style>
-

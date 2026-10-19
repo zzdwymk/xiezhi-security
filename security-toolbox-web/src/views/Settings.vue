@@ -455,17 +455,17 @@ async function clearBusinessData() {
       },
     );
     await ElMessageBox.prompt(
-      "请输入 CLEAR 确认永久清空。存在等待中或运行中的任务、正在启动或运行的流量代理时，系统会拒绝操作。",
+      "请输入“永久清空”确认永久清空。存在等待中或运行中的任务、正在启动或运行的流量代理时，系统会拒绝操作。",
       "最终确认",
       {
         confirmButtonText: "永久清空",
         cancelButtonText: "取消",
         type: "error",
-        inputPlaceholder: "CLEAR",
-        inputPattern: /^CLEAR$/,
-        inputErrorMessage: "请输入大写 CLEAR",
+        inputPlaceholder: "永久清空",
+        inputPattern: /^永久清空$/,
+        inputErrorMessage: "请输入“永久清空”",
         inputValidator: (value) =>
-          value === "CLEAR" ? true : "请输入大写 CLEAR",
+          value === "永久清空" ? true : "请输入“永久清空”",
       },
     );
 

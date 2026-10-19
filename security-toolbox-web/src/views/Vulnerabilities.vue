@@ -323,11 +323,10 @@ function normalizedPorts() {
   return [...new Set(tokens)].join(",");
 }
 
-function severityType(severity: string) {
-  if (severity === "CRITICAL" || severity === "HIGH") return "danger";
-  if (severity === "MEDIUM") return "warning";
-  if (severity === "LOW") return "info";
-  return "success";
+/** Fluent 风格 severity 徽章：色点 + 柔和底色，区分 CRITICAL/HIGH 视觉层级。 */
+function severityClass(severity?: string) {
+  const key = String(severity || "").trim().toUpperCase();
+  return ["sev-tag", `sev-tag--${key.toLowerCase() || "info"}`];
 }
 
 function safetyType(safety?: string) {
@@ -1383,6 +1382,7 @@ watch(targetId, () => {
       .targetDiscoveredPaths(targetId.value)
       .then(({ data }) => {
         discoveredPaths.value = Array.isArray(data) ? data : [];
+        selectedPaths.value = discoveredPaths.value.map((p) => p.path || p.url);
       })
       .catch(() => {
         discoveredPaths.value = [];
@@ -1661,9 +1661,10 @@ onUnmounted(() => {
           @click="selected = item"
         >
           <span class="catalog-item-meta"
-            ><el-tag size="small" :type="severityType(item.severity)">{{
-              severityLabel(item.severity)
-            }}</el-tag
+            ><span :class="severityClass(item.severity)"
+              ><i aria-hidden="true" />{{
+                severityLabel(item.severity)
+              }}</span
             ><span :class="sourceChipClass(item.sourceType)">{{
               sourceLabel(item.sourceType)
             }}</span
@@ -1718,9 +1719,11 @@ onUnmounted(() => {
           <div class="detail-badges">
             <el-tag v-if="selected.knownExploited" type="danger"
               >CISA KEV</el-tag
-            ><el-tag :type="severityType(selected.severity)">{{
-              severityLabel(selected.severity)
-            }}</el-tag>
+            ><span :class="severityClass(selected.severity)"
+              ><i aria-hidden="true" />{{
+                severityLabel(selected.severity)
+              }}</span
+            >
           </div>
         </header>
         <div class="source-facts">
@@ -1940,17 +1943,25 @@ onUnmounted(() => {
                 v-if="selectedPocCodes[source].length"
                 class="poc-selected-tags"
               >
-                <el-tag
+                <el-tooltip
                   v-for="code in selectedPocCodes[source].slice(0, 4)"
                   :key="code"
-                  size="small"
-                  closable
-                  type="info"
-                  class="poc-tag-item"
-                  @close="removeSelectedPoc(source, code)"
+                  :content="getPocDisplayName(source, code)"
+                  placement="top"
+                  :show-after="200"
+                  :hide-after="0"
+                  :enterable="false"
                 >
-                  {{ getPocDisplayName(source, code) }}
-                </el-tag>
+                  <el-tag
+                    size="small"
+                    closable
+                    type="info"
+                    class="poc-tag-item"
+                    @close="removeSelectedPoc(source, code)"
+                  >
+                    {{ getPocDisplayName(source, code) }}
+                  </el-tag>
+                </el-tooltip>
                 <el-tag
                   v-if="selectedPocCodes[source].length > 4"
                   size="small"
@@ -2013,7 +2024,13 @@ onUnmounted(() => {
           </p>
         </template>
         <template v-if="discoveredPaths.length">
-          <label>扫描路径范围（已发现子路径 {{ discoveredPaths.length }} 条）</label>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <label style="margin-bottom: 0;">扫描路径范围（已发现子路径 {{ discoveredPaths.length }} 条，已选 {{ selectedPaths.length }} 条）</label>
+            <div>
+              <el-button link type="primary" size="small" @click="selectedPaths = discoveredPaths.map(p => p.path || p.url)">全选</el-button>
+              <el-button link type="info" size="small" @click="selectedPaths = []">清空</el-button>
+            </div>
+          </div>
           <el-select
             v-model="selectedPaths"
             multiple
@@ -2168,9 +2185,10 @@ onUnmounted(() => {
         </el-table-column>
         <el-table-column label="严重度" width="90" align="center">
           <template #default="{ row }">
-            <el-tag size="small" :type="severityType(row.severity)">
+            <span :class="severityClass(row.severity)">
+              <i aria-hidden="true" />
               {{ severityLabel(row.severity) }}
-            </el-tag>
+            </span>
           </template>
         </el-table-column>
         <el-table-column label="执行分级" width="90" align="center">
@@ -2514,12 +2532,12 @@ onUnmounted(() => {
 .rule-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
 }
 .rule-list :deep(.el-checkbox) {
   height: auto;
   margin: 0;
-  padding: 9px;
+  padding: 10px 12px;
   border: 1px solid #e4e8ee;
   border-radius: 4px;
   background: #fff;
@@ -2534,7 +2552,7 @@ onUnmounted(() => {
   font-size: 11px;
 }
 .rule-list small {
-  margin-top: 3px;
+  margin-top: 5px;
   color: #94a3b8;
   font-size: 9px;
 }
@@ -2750,6 +2768,76 @@ onUnmounted(() => {
   border-color: color-mix(in srgb, var(--app-accent) 34%, var(--app-border));
   background: var(--app-accent-soft);
   color: var(--app-accent);
+}
+
+/* Severity badge: colored dot + soft tinted fill, replacing the default
+   el-tag outline which read as flat. Colors match SEVERITY_COLORS used by
+   the project report severity legend for cross-page consistency. */
+.sev-tag {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 9px 0 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 20px;
+  white-space: nowrap;
+}
+.sev-tag i {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+}
+.sev-tag--critical {
+  border-color: color-mix(in srgb, #d03050 32%, transparent);
+  background: color-mix(in srgb, #d03050 10%, transparent);
+  color: #c02c48;
+}
+.sev-tag--high {
+  border-color: color-mix(in srgb, #f56c6c 32%, transparent);
+  background: color-mix(in srgb, #f56c6c 10%, transparent);
+  color: #d84848;
+}
+.sev-tag--medium {
+  border-color: color-mix(in srgb, #e6a23c 36%, transparent);
+  background: color-mix(in srgb, #e6a23c 12%, transparent);
+  color: #b58224;
+}
+.sev-tag--low {
+  border-color: color-mix(in srgb, #409eff 32%, transparent);
+  background: color-mix(in srgb, #409eff 10%, transparent);
+  color: #337ec4;
+}
+.sev-tag--info {
+  border-color: color-mix(in srgb, #909399 30%, transparent);
+  background: color-mix(in srgb, #909399 10%, transparent);
+  color: #7a7d85;
+}
+:root[data-system-theme="dark"] .sev-tag--critical {
+  color: #ff8896;
+  background: color-mix(in srgb, #d03050 22%, transparent);
+}
+:root[data-system-theme="dark"] .sev-tag--high {
+  color: #ff9c9c;
+  background: color-mix(in srgb, #f56c6c 22%, transparent);
+}
+:root[data-system-theme="dark"] .sev-tag--medium {
+  color: #f0b45c;
+  background: color-mix(in srgb, #e6a23c 22%, transparent);
+}
+:root[data-system-theme="dark"] .sev-tag--low {
+  color: #79b8ff;
+  background: color-mix(in srgb, #409eff 22%, transparent);
+}
+:root[data-system-theme="dark"] .sev-tag--info {
+  color: #a6a9b0;
+  background: color-mix(in srgb, #909399 22%, transparent);
 }
 .catalog-item-meta .source-chip {
   flex: none;
@@ -3126,18 +3214,31 @@ onUnmounted(() => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   margin-top: 6px;
 }
 .poc-tag-item {
-  max-width: 140px;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  font-size: 11px;
+}
+.poc-tag-item :deep(.el-tag__content) {
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 11px;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.poc-tag-item :deep(.el-tag__close) {
+  flex-shrink: 0;
+  margin-left: 3px;
 }
 .poc-tag-more {
   cursor: pointer;
   font-size: 11px;
+  flex-shrink: 0;
 }
 .poc-picker-filters {
   display: flex;
@@ -3190,7 +3291,7 @@ onUnmounted(() => {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 .rule-list small > span {
   min-width: 0;

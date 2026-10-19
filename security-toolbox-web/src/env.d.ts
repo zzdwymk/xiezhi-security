@@ -177,7 +177,18 @@ interface ToolboxDesktopBridge {
     available?: boolean;
     reason?: string;
   }>;
-  readonly reimportH2ToPostgres?: () => Promise<{ status: string }>;
+  readonly reimportH2ToPostgres?: (
+    options?: { sourceFile?: string },
+  ) => Promise<{ status: string }>;
+  readonly getH2ImportSources?: () => Promise<
+    Array<{
+      id: string;
+      label: string;
+      file: string;
+      size: number;
+      lastWriteTime: string;
+    }>
+  >;
   readonly testAiSettings?: (
     settings: AiSettingsInput,
     prompt?: string,

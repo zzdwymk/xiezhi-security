@@ -32,7 +32,7 @@ async function check(name,run){await run();results.push({name,status:'PASS'});co
   assert.equal(await dialog.isVisible(),false);await page.evaluate(()=>window.deliver('other'));assert.equal(await dialog.isVisible(),false);
   await page.evaluate(()=>window.deliver('current'));await dialog.waitFor();
   assert.equal(await dialog.locator('[data-approval-id]').getAttribute('data-approval-id'),'40');
-  const text=await dialog.innerText();assert.match(text,/行动方案 #40/);assert.match(text,/192\.168\.136\.132/);assert.match(text,/默认安全模板/);assert.match(text,/需人工确认/);
+  const text=await dialog.innerText();assert.match(text,/方案 #40/);assert.match(text,/192\.168\.136\.132/);assert.match(text,/默认安全模板/);assert.match(text,/需人工确认/);
   assert.match(await page.locator('.ai-progress-panel').innerText(),/等待确认执行计划/);
   await page.screenshot({path:path.join(out,'approval-nuclei.png'),fullPage:true,animations:'disabled'});
  });

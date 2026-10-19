@@ -19,6 +19,7 @@ async function run(page, H, ctx) {
     return `标题=${title}`;
   }, { page });
 
+  await sleep(2500);
   await H.shot(page, "A-初始页面");
 
   // ---------- A2 依赖检查页 ----------

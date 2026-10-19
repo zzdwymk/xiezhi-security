@@ -32,6 +32,7 @@ import {
 } from "./components/fluentIcons";
 import { useAuthStore } from "./stores/auth";
 import { useConversationStore } from "./stores/conversations";
+import { conversationStatusBadge } from "./utils/aiStatus";
 import { useEngineStore } from "./stores/engine";
 import { AUTH_EXPIRED_EVENT } from "./authToken";
 import { endpoints } from "./api";
@@ -414,6 +415,17 @@ function rerunSetup() {
 }
 
 function openConversation(id: string) {
+  const conversation = conversations.items.find((item) => item.id === id);
+  const lastAssistant = [...(conversation?.messages || [])]
+    .reverse()
+    .find((message) => message.role === "assistant");
+  if (
+    conversation &&
+    (lastAssistant?.status === "completed" || lastAssistant?.modelStreamStatus === "completed") &&
+    !lastAssistant.completionSeen
+  ) {
+    conversations.updateMessage(conversation.id, lastAssistant.id, { completionSeen: true });
+  }
   router.push({ path: "/", query: { conversation: id } });
 }
 
@@ -422,19 +434,9 @@ function conversationStatus(conversation: any): { label: string; type: "running"
   if (!messages.length) return null;
   const lastAssistant = [...messages].reverse().find((m: any) => m.role === "assistant");
   if (!lastAssistant) return null;
-  if (
-    ["sending", "planning", "running", "answering"].includes(lastAssistant.status) ||
-    lastAssistant.modelStreamStatus === "running"
-  ) {
-    return { label: "回答中", type: "running" };
-  }
-  if (lastAssistant.status === "completed" || lastAssistant.modelStreamStatus === "completed") {
-    return { label: "已完成", type: "completed" };
-  }
-  if (lastAssistant.status === "failed" || lastAssistant.modelStreamStatus === "failed") {
-    return { label: "失败", type: "failed" };
-  }
-  return null;
+  const badge = conversationStatusBadge(lastAssistant, [], Date.now());
+  if (badge && badge.type === "completed" && lastAssistant.completionSeen) return null;
+  return badge;
 }
 
 async function removeConversation(id: string) {

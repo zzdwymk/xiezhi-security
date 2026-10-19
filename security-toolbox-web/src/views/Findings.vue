@@ -595,7 +595,12 @@ onBeforeUnmount(() => {
     <template v-else>
     <!-- 多维组合检索与过滤栏 -->
     <div class="findings-filter-toolbar">
-      <el-tag v-if="taskFilter !== undefined" closable @close="clearTaskFilter">
+      <el-tag
+        v-if="taskFilter !== undefined"
+        closable
+        class="finding-task-filter-tag"
+        @close="clearTaskFilter"
+      >
         来源任务 #{{ taskFilter }}
       </el-tag>
       <el-input
@@ -603,13 +608,13 @@ onBeforeUnmount(() => {
         :prefix-icon="Search"
         clearable
         placeholder="搜索名称、等级、工具、规则..."
-        style="width: 290px"
+        class="finding-filter-search"
       />
       <el-select
         v-model="categoryFilter"
         placeholder="全部类型"
         clearable
-        style="width: 120px"
+        class="finding-filter-category"
       >
         <el-option label="全部类型" value="" />
         <el-option label="漏洞发现" value="vulnerability" />
@@ -620,7 +625,7 @@ onBeforeUnmount(() => {
         placeholder="全部目标"
         filterable
         clearable
-        style="width: 170px"
+        class="finding-filter-target"
       >
         <el-option
           v-for="t in targets"
@@ -633,7 +638,7 @@ onBeforeUnmount(() => {
         v-model="severityFilter"
         placeholder="全部等级"
         clearable
-        style="width: 110px"
+        class="finding-filter-severity"
       >
         <el-option label="严重" value="CRITICAL" />
         <el-option label="高危" value="HIGH" />
@@ -645,7 +650,7 @@ onBeforeUnmount(() => {
         v-model="statusFilter"
         placeholder="全部状态"
         clearable
-        style="width: 110px"
+        class="finding-filter-status"
       >
         <el-option label="待确认" value="OPEN" />
         <el-option label="已确认" value="CONFIRMED" />
@@ -655,7 +660,7 @@ onBeforeUnmount(() => {
       <el-select
         v-model="findingSort"
         placeholder="排序"
-        style="width: 150px"
+        class="finding-filter-sort"
       >
         <el-option
           v-for="opt in FINDING_SORT_OPTIONS"
@@ -669,6 +674,7 @@ onBeforeUnmount(() => {
         link
         type="primary"
         size="small"
+        class="finding-filter-reset-btn"
         @click="resetFilters"
       >
         重置筛选
@@ -1067,18 +1073,108 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px 10px;
   margin: 12px 0 16px;
-  padding: 12px 14px;
+  padding: 10px 14px;
   background: var(--app-surface-soft, rgba(0, 0, 0, 0.02));
   border: 1px solid var(--app-border, #e2e8f0);
   border-radius: var(--fluent-radius-card, 8px);
 }
+/* 来源任务筛选：与同排输入框统一 32px 高度，主色描边让它一眼可辨，
+   圆角与筛选控件保持一致（不再使用胶囊形）。 */
+.finding-task-filter-tag.el-tag {
+  --el-tag-bg-color: var(--app-accent-soft);
+  --el-tag-border-color: color-mix(in srgb, var(--app-accent) 32%, transparent);
+  --el-tag-text-color: var(--app-accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  height: 32px;
+  margin: 0;
+  padding: 0 6px 0 11px;
+  border-radius: var(--fluent-radius-control);
+  font-family: var(--fluent-font);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+.finding-task-filter-tag.el-tag > span {
+  display: inline-flex;
+  align-items: center;
+}
+.finding-task-filter-tag.el-tag :deep(.el-tag__close) {
+  margin-left: 6px;
+  color: var(--app-accent);
+  flex-shrink: 0;
+}
+.finding-task-filter-tag.el-tag :deep(.el-tag__close:hover) {
+  background-color: var(--app-accent);
+  color: var(--app-surface);
+}
+.finding-filter-search {
+  flex: 1 1 260px;
+  min-width: 170px;
+  max-width: 340px;
+}
+.finding-filter-category {
+  flex: 0 0 auto;
+  width: 112px;
+}
+.finding-filter-target {
+  flex: 0 1 150px;
+  width: 150px;
+  min-width: 112px;
+}
+.finding-filter-severity {
+  flex: 0 0 auto;
+  width: 100px;
+}
+.finding-filter-status {
+  flex: 0 0 auto;
+  width: 100px;
+}
+.finding-filter-sort {
+  flex: 0 0 auto;
+  width: 136px;
+}
+.finding-filter-reset-btn {
+  font-size: 12px;
+  padding: 0 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
 .finding-filter-count-badge {
   margin-left: auto;
+  display: inline-flex;
+  align-items: center;
   font-size: 12px;
   color: var(--app-muted, #64748b);
   font-weight: 500;
+  padding: 3px 10px;
+  background: var(--app-surface-strong, rgba(0, 0, 0, 0.03));
+  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+@media (max-width: 1180px) {
+  .finding-filter-search {
+    flex: 1 1 220px;
+    max-width: none;
+  }
+  .finding-filter-target {
+    flex: 1 1 130px;
+  }
+}
+@media (max-width: 860px) {
+  .finding-filter-search {
+    flex: 1 1 100%;
+  }
+  .finding-filter-count-badge {
+    margin-left: 0;
+  }
 }
 .diff-form {
   display: flex;
@@ -1284,6 +1380,9 @@ onBeforeUnmount(() => {
 .post-scan-steps h4 {
   margin: 16px 0 9px;
   font-size: 13px;
+  padding-left: 8px;
+  border-left: 3px solid var(--el-color-primary);
+  line-height: 1.3;
 }
 .post-scan-paths article,
 .post-scan-steps article {
@@ -1341,10 +1440,22 @@ onBeforeUnmount(() => {
 .post-scan-steps article.manual {
   background: var(--app-surface-soft);
 }
+.post-scan-steps article {
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+.post-scan-steps article:hover {
+  border-color: var(--el-color-primary-light-5);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+}
 .post-scan-steps :deep(.el-checkbox) {
   width: 100%;
   height: auto;
   align-items: flex-start;
+}
+.post-scan-steps :deep(.el-checkbox__input) {
+  margin-top: 5px;
 }
 .post-scan-steps :deep(.el-checkbox__label) {
   width: calc(100% - 25px);
@@ -1356,15 +1467,24 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  min-height: 24px;
+  margin-bottom: 2px;
 }
 .post-step-title > b {
   color: var(--app-text);
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 24px;
 }
 .post-step-title > span {
   display: flex;
   flex: none;
   gap: 5px;
+}
+.post-step-title > span .el-tag {
+  vertical-align: middle;
+}
+.post-step-title > span {
+  line-height: 24px;
 }
 .blocked-reason {
   margin-top: 5px;

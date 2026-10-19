@@ -11,7 +11,10 @@
     <style>
       :root {
         color-scheme: light;
-        --desktop-workspace-gap: 3px;
+        /* Must match unified-theme.css --desktop-workspace-gap so the splash
+           workspace sits the same distance from the window frame as the main
+           app's workspace (and the setup wizard's content card). */
+        --desktop-workspace-gap: 5px;
         --fluent-workspace-radius: 8px;
         --system-accent: AccentColor;
         --system-caption-color: AccentColor;

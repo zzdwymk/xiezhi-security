@@ -27,6 +27,7 @@ import {
   Setting,
 } from "../components/fluentIcons";
 import FluentIcon from "../components/FluentIcon.vue";
+import OfflineState from "../components/OfflineState.vue";
 import FluentCodeBlock from "../components/FluentCodeBlock.vue";
 import MarkdownBody from "../components/MarkdownBody.vue";
 import ProjectEvidenceResult from "../components/ProjectEvidenceResult.vue";
@@ -248,6 +249,14 @@ const SUBAGENTS: {
     desc: "检查 HTTPS、证书和 TLS 基础配置",
     risk: "SAFE",
     phase: "mapping",
+  },
+  {
+    tool: "dir_scan",
+    name: "目录与路径枚举",
+    icon: "folder",
+    desc: "使用内置 dirb/dirbuster 字典枚举授权 Web 目标的目录与路径，并发可配置",
+    risk: "CAUTION",
+    phase: "discovery",
   },
   {
     tool: "nuclei_scan",
@@ -1577,6 +1586,7 @@ function phaseToolMap(code: PresetCode): Record<PhaseCode, string[]> {
       recon: ["retrieve_project_context"],
       mapping: ["http_headers", "tls_config"],
       discovery: [
+        "dir_scan",
         "http_security_check",
         "fscan_scan",
         "msf_scan",
@@ -4850,7 +4860,7 @@ onBeforeUnmount(() => {
               />
             </template>
             <div class="workflow-zoom-controls" aria-label="画布缩放">
-              <el-tooltip content="放大" placement="right" :show-after="350"
+              <el-tooltip content="放大" placement="right" :show-after="350" :hide-after="0" :enterable="false"
                 ><button
                   type="button"
                   aria-label="放大"
@@ -4858,7 +4868,7 @@ onBeforeUnmount(() => {
                 >
                   <FluentIcon name="add" /></button
               ></el-tooltip>
-              <el-tooltip content="缩小" placement="right" :show-after="350"
+              <el-tooltip content="缩小" placement="right" :show-after="350" :hide-after="0" :enterable="false"
                 ><button
                   type="button"
                   aria-label="缩小"
@@ -4866,7 +4876,7 @@ onBeforeUnmount(() => {
                 >
                   <FluentIcon name="subtract" /></button
               ></el-tooltip>
-              <el-tooltip content="适应画布" placement="right" :show-after="350"
+              <el-tooltip content="适应画布" placement="right" :show-after="350" :hide-after="0" :enterable="false"
                 ><button
                   type="button"
                   aria-label="适应画布"
@@ -4878,6 +4888,8 @@ onBeforeUnmount(() => {
                 :content="isFullscreen ? '退出全屏' : '全屏显示'"
                 placement="right"
                 :show-after="350"
+                :hide-after="0"
+                :enterable="false"
               >
                 <button
                   type="button"
@@ -5655,17 +5667,23 @@ onBeforeUnmount(() => {
                       v-if="selectedPocCodesList.length"
                       class="poc-selected-tags"
                     >
-                      <el-tag
+                      <el-tooltip
                         v-for="code in selectedPocCodesList.slice(0, 4)"
                         :key="code"
-                        size="small"
-                        closable
-                        type="info"
-                        class="poc-tag-item"
-                        @close="removeWorkflowPoc(code)"
+                        :content="getWorkflowPocName(code)"
+                        placement="top"
+                        :show-after="200"
                       >
-                        {{ getWorkflowPocName(code) }}
-                      </el-tag>
+                        <el-tag
+                          size="small"
+                          closable
+                          type="info"
+                          class="poc-tag-item"
+                          @close="removeWorkflowPoc(code)"
+                        >
+                          {{ getWorkflowPocName(code) }}
+                        </el-tag>
+                      </el-tooltip>
                       <el-tag
                         v-if="selectedPocCodesList.length > 4"
                         size="small"
@@ -6369,13 +6387,16 @@ onBeforeUnmount(() => {
           :max-rows="16"
           wrap
         />
-        <el-empty
+        <OfflineState
           v-if="
             !nodeDetailRun.summary &&
             !nodeDetailRun.output &&
             !nodeDetailRun.log
           "
-          description="暂无结构化输出"
+          size="compact"
+          icon="document"
+          title="暂无结构化输出"
+          description="该节点执行后没有生成结构化输出。"
         />
       </div>
     </el-dialog>
@@ -8060,10 +8081,18 @@ onBeforeUnmount(() => {
   white-space: normal;
   line-height: 1.4;
   font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
 }
 .poc-tag-item :deep(.el-tag__content) {
   min-width: 0;
   overflow-wrap: anywhere;
+  flex: 1 1 auto;
+}
+.poc-tag-item :deep(.el-tag__close) {
+  flex-shrink: 0;
+  margin-left: 3px;
 }
 .poc-tag-more {
   cursor: pointer;

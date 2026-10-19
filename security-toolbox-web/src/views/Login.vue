@@ -190,9 +190,14 @@ async function loginWithDesktopCredentials() {
     }
     await auth.login(credentials.username, credentials.password, false);
     await enterWorkspace();
-  } catch {
-    desktopLoginError.value =
-      "本机安全登录未完成，请重新启动桌面应用；也可使用已有账号手动登录。";
+  } catch (error) {
+    // 区分"取凭据失败"与"后端拒绝登录"：前者要重启应用，后者说明本机凭据与后端账号
+    // 不一致（典型场景是数据库重置后旧凭据仍留在配置里），提示用户用账号密码或生成初始密码。
+    const message = String((error as Error)?.message || "");
+    const rejected = /401|用户名或密码|Unauthorized/i.test(message);
+    desktopLoginError.value = rejected
+      ? "本机安全凭据与当前后端账号不一致（数据库可能已重置）。请使用「生成初始密码」或直接输入账号密码登录。"
+      : "本机安全登录未完成，请重新启动桌面应用；也可使用已有账号手动登录。";
   } finally {
     credentials = undefined;
     activeAction.value = "";

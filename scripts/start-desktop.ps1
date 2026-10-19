@@ -1,5 +1,8 @@
 $ErrorActionPreference = 'Stop'
 
+$env:ELECTRON_RUN_AS_NODE = $null
+[Environment]::SetEnvironmentVariable('ELECTRON_RUN_AS_NODE', $null, 'Process')
+
 $utf8 = [System.Text.UTF8Encoding]::new($false)
 [Console]::InputEncoding = $utf8
 [Console]::OutputEncoding = $utf8

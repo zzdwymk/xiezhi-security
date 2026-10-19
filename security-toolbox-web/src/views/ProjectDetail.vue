@@ -15,6 +15,8 @@ import {
   type MemoryDoc,
   type ProjectApproval,
   type AiApprovalPlanDetail,
+  type JudgeStepVerdict,
+  type JudgeVerdictDocument,
   type ProjectFindingRecord,
   type ProjectReportSummary,
   type ProjectTaskRecord,
@@ -55,6 +57,7 @@ import { useAuthStore } from "../stores/auth";
 import { useCopilotStore } from "../stores/copilot";
 import AppPagination from "../components/AppPagination.vue";
 import AssetTopology from "../components/AssetTopology.vue";
+import OfflineState from "../components/OfflineState.vue";
 import DictionaryPanel from "../components/DictionaryPanel.vue";
 import type { DictionaryApi } from "../components/dictionaryTypes";
 import FluentCodeBlock from "../components/FluentCodeBlock.vue";
@@ -177,6 +180,11 @@ const includeHttp = ref(true);
 const includeTls = ref(true);
 const enumerateSubdomains = ref(true);
 const enumeratePaths = ref(true);
+const reconPathDictionary = ref("dirb-common");
+const reconPathConcurrency = ref(10);
+const pathDictLibrary = ref<
+  Array<{ id: string; displayName: string; entryCount: number; description?: string }>
+>([]);
 const crawlSite = ref(true);
 const aggregateProxyPaths = ref(true);
 const reconRows = ref<ReconResult[]>([]);
@@ -477,6 +485,64 @@ const planReviewVisible = ref(false);
 const planReview = ref<AiApprovalPlanDetail>();
 const planReviewApproval = ref<ProjectApproval>();
 const planReviewTarget = computed(() => targets.value.find(target => target.id === planReview.value?.targetId));
+
+/**
+ * Parsed semantic-judge verdict for the plan under review.
+ *
+ * Returns null when the ticket has no verdict (legacy) or the stored JSON is unusable. Callers must
+ * treat null as "not judged", never as "cleared".
+ */
+const planReviewJudge = computed<JudgeVerdictDocument | null>(() => {
+  const raw = planReview.value?.judge;
+  if (!raw) return null;
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!parsed || typeof parsed !== "object") return null;
+    return {
+      degraded: Boolean(parsed.degraded),
+      steps: Array.isArray(parsed.steps) ? (parsed.steps as JudgeStepVerdict[]) : [],
+      worstRisk: String(parsed.worstRisk || "SAFE"),
+      requiresHumanReview: Boolean(parsed.requiresHumanReview),
+      headline: parsed.headline ? String(parsed.headline) : undefined,
+      degradedReason: parsed.degradedReason ? String(parsed.degradedReason) : undefined,
+    };
+  } catch {
+    return null;
+  }
+});
+
+/** Judge banner severity: circuit-breaker is red, non-cleared is amber, cleared is quiet. */
+const planReviewJudgeSeverity = computed<"critical" | "warning" | "clear" | "unknown">(() => {
+  const judge = planReviewJudge.value;
+  if (!judge) return "unknown";
+  if (judge.degraded || judge.worstRisk === "CRITICAL") return "critical";
+  if (judge.requiresHumanReview) return "warning";
+  return "clear";
+});
+
+const planReviewJudgeTitle = computed(() => {
+  const judge = planReviewJudge.value;
+  if (!judge) return "";
+  if (judge.degraded) {
+    return `判官熔断 · ${judge.headline || "无法判定"}`;
+  }
+  if (judge.requiresHumanReview) {
+    return `疑似 ${judge.headline || "需人工确认的行为"}`;
+  }
+  return "判官未发现需要拦截的行为";
+});
+
+function judgeRiskTagType(risk: string): "success" | "warning" | "danger" | "info" {
+  if (risk === "SAFE") return "success";
+  if (risk === "CAUTION") return "warning";
+  if (risk === "HIGH" || risk === "CRITICAL") return "danger";
+  return "info";
+}
+
+function judgeStepFor(nodeId: string | null | undefined): JudgeStepVerdict | undefined {
+  if (!nodeId) return undefined;
+  return planReviewJudge.value?.steps.find(step => step.workflowNodeId === nodeId);
+}
 const planReviewText = computed(() => {
   const detail = planReview.value;
   const approval = planReviewApproval.value;
@@ -3083,6 +3149,14 @@ async function collectRecon(options: LinkedStepOptions = {}): Promise<boolean> {
       enumerateSubdomains: enumerateSubdomains.value,
       subdomainWords: [],
       enumeratePaths: reconMode.value === "ACTIVE" && enumeratePaths.value,
+      pathDictionaryId:
+        reconMode.value === "ACTIVE" && enumeratePaths.value
+          ? reconPathDictionary.value
+          : undefined,
+      pathConcurrency:
+        reconMode.value === "ACTIVE" && enumeratePaths.value
+          ? reconPathConcurrency.value
+          : undefined,
       crawlSite: reconMode.value === "ACTIVE" && crawlSite.value,
       aggregateProxyPaths: aggregateProxyPaths.value,
       pathWords: [],
@@ -4051,6 +4125,12 @@ watch(() => [route.query.approvalId, route.query._notice], () => { void openNoti
 watch(approvalDecision, value => { if (!value) void openNotificationApproval(); });
 
 onMounted(() => {
+  void endpoints.pathDictionaryLibrary().then(({ data }) => {
+    pathDictLibrary.value = data.dictionaries || [];
+    if (data.defaultDictionaryId) {
+      reconPathDictionary.value = data.defaultDictionaryId;
+    }
+  }).catch(() => {});
   stopTaskFeed = connectTaskEventFeed(applyProjectTaskEvent);
   void load().then(() => { notificationApprovalReady = true; return openNotificationApproval(); });
   if (window.toolboxDesktop?.onIcpBrowserClosed) {
@@ -4157,7 +4237,7 @@ onUnmounted(() => {
           }}</el-descriptions-item>
         </el-descriptions>
       </el-tab-pane>
-      <el-tab-pane label="授权目标" name="targets">
+      <el-tab-pane label="授权目标" name="targets" class="targets-pane">
         <div class="toolbar">
           <el-select
             v-model="selected"
@@ -4190,8 +4270,11 @@ onUnmounted(() => {
             >批量移出项目 ({{ selectedLinkedTargets.length }})</el-button
           >
         </div>
-        <el-empty
+        <OfflineState
           v-if="!linkedTargets.length"
+          size="compact"
+          icon="target"
+          title="暂无授权目标"
           description="项目暂无授权目标，先新建或加入一个目标"
         />
         <el-table
@@ -4907,7 +4990,13 @@ onUnmounted(() => {
           @change="loadDiscovery"
         />
         <template v-if="!showDiscoveryTopology">
-          <el-empty v-if="!discoveryRows.length" description="暂无探测结果" />
+          <OfflineState
+            v-if="!discoveryRows.length"
+            size="compact"
+            icon="data"
+            title="暂无探测结果"
+            description="执行信息收集后，这里会展示探测到的资产。"
+          />
         <el-table v-else :data="pagedDiscoveryRows" stripe>
           <el-table-column label="目标" min-width="120" show-overflow-tooltip
             ><template #default="s">{{
@@ -5030,9 +5119,12 @@ onUnmounted(() => {
             :closable="false"
             show-icon
           />
-          <el-empty
+          <OfflineState
             v-else-if="!pocRecommendations.length"
-            description="没有匹配的安全模板建议"
+            size="compact"
+            icon="sparkle"
+            title="没有匹配的安全模板建议"
+            description="调整筛选条件后再试。"
           />
           <el-table
             v-else
@@ -5209,6 +5301,30 @@ onUnmounted(() => {
             <el-checkbox v-model="enumeratePaths" :disabled="reconMode !== 'ACTIVE'"
               >目录/路径枚举</el-checkbox
             >
+            <template v-if="reconMode === 'ACTIVE' && enumeratePaths">
+              <el-select
+                v-model="reconPathDictionary"
+                placeholder="扫描字典"
+                size="small"
+                style="width: 190px"
+              >
+                <el-option
+                  v-for="d in pathDictLibrary"
+                  :key="d.id"
+                  :label="`${d.displayName} (${d.entryCount > 0 ? d.entryCount : '未计'})`"
+                  :value="d.id"
+                />
+              </el-select>
+              <el-input-number
+                v-model="reconPathConcurrency"
+                :min="1"
+                :max="50"
+                size="small"
+                style="width: 110px"
+                controls-position="right"
+                title="并发请求数 (1-50)"
+              />
+            </template>
             <el-checkbox v-model="crawlSite" :disabled="reconMode !== 'ACTIVE'"
               >站点爬取</el-checkbox
             >
@@ -5596,10 +5712,15 @@ onUnmounted(() => {
               : "执行受控 DNS、HTTP/TLS 探测；同网段发现必须显式开启且仍受项目授权范围约束。"
           }}
         </p>
-        <el-empty
+        <OfflineState
           v-if="!filteredReconRows.length"
+          size="compact"
+          icon="globe-search"
+          :title="reconRows.length ? '没有匹配的结果' : '暂无信息收集记录'"
           :description="
-            reconRows.length ? '没有匹配的结果' : '暂无信息收集记录'
+            reconRows.length
+              ? '换个关键词试试，或清空搜索框查看全部记录。'
+              : '对项目授权目标执行信息收集后，结果会汇总在这里。'
           "
         />
         <el-collapse v-else class="recon-results">
@@ -5923,13 +6044,19 @@ onUnmounted(() => {
           :closable="false"
           show-icon
         />
-        <el-empty
+        <OfflineState
           v-if="!projectTasks.length"
-          description="本项目暂无检测任务"
+          size="compact"
+          icon="clipboard-task"
+          title="暂无检测任务"
+          description="本项目暂无检测任务，可在「检测任务」中创建。"
         />
-        <el-empty
+        <OfflineState
           v-else-if="!filteredProjectTasks.length"
-          description="没有符合筛选条件的任务"
+          size="compact"
+          icon="filter"
+          title="没有符合筛选条件的任务"
+          description="调整筛选条件后再试。"
         />
         <el-table
           v-else
@@ -6150,13 +6277,19 @@ onUnmounted(() => {
             {{ projectFindings.length }} 条
           </span>
         </div>
-        <el-empty
+        <OfflineState
           v-if="!projectFindings.length"
-          description="本项目暂无漏洞发现"
+          size="compact"
+          icon="warning"
+          title="暂无漏洞发现"
+          description="本项目暂无漏洞发现，完成检测任务后自动汇总。"
         />
-        <el-empty
+        <OfflineState
           v-else-if="!filteredProjectFindings.length"
-          description="没有符合筛选条件的漏洞"
+          size="compact"
+          icon="filter"
+          title="没有符合筛选条件的漏洞"
+          description="调整筛选条件后再试。"
         />
         <el-table
           v-else
@@ -6269,7 +6402,13 @@ onUnmounted(() => {
         <h4 class="project-subtitle">
           行动方案与确认记录（{{ projectApprovals.length }}）
         </h4>
-        <el-empty v-if="!projectApprovals.length" description="暂无待确认方案，请在 AI 安全助手中生成行动方案" />
+        <OfflineState
+          v-if="!projectApprovals.length"
+          size="compact"
+          icon="clipboard-text"
+          title="暂无待确认方案"
+          description="暂无待确认方案，请在 AI 安全助手中生成行动方案"
+        />
         <el-table
           v-else
           :data="pagedProjectApprovals"
@@ -6371,9 +6510,12 @@ onUnmounted(() => {
             show-icon
           />
         </div>
-        <el-empty
+        <OfflineState
           v-if="!securityActionLoading && !securityActions.length"
-          description="暂无历史人工行动记录"
+          size="compact"
+          icon="wrench"
+          title="暂无历史人工行动记录"
+          description="确认执行 AI 行动方案后，这里会记录每一次人工处置。"
         />
         <el-table
           v-else
@@ -6509,10 +6651,15 @@ onUnmounted(() => {
         />
 
         <h4 class="project-subtitle">操作审计（{{ projectAuditTotal }}）</h4>
-        <el-empty
+        <OfflineState
           v-if="auditLoading || !projectAudits.length"
+          size="compact"
+          icon="clipboard-task"
+          :title="auditLoading ? '正在加载审计记录' : '暂无项目审计记录'"
           :description="
-            auditLoading ? '正在加载审计记录…' : '暂无匹配的项目审计记录'
+            auditLoading
+              ? '请稍候，正在读取操作审计…'
+              : '在项目中执行操作后，这里会留下审计记录。'
           "
         />
         <el-table
@@ -6620,9 +6767,12 @@ onUnmounted(() => {
             >
           </div>
         </div>
-        <el-empty
+        <OfflineState
           v-if="!memoryLoading && !memoryRows.length && !memoryLoadError"
-          description="暂无项目级 AI 记忆"
+          size="compact"
+          icon="sparkle"
+          title="暂无项目级 AI 记忆"
+          description="与 AI 助手协作处理本项目后，重要结论会沉淀为项目记忆。"
         />
         <el-table
           v-else
@@ -7012,7 +7162,13 @@ onUnmounted(() => {
             ></el-table
           >
         </template>
-        <el-empty v-else description="暂无项目报告摘要" />
+        <OfflineState
+        v-else
+        size="compact"
+        icon="document-multiple"
+        title="暂无项目报告摘要"
+        description="生成检测报告后，摘要会在这里展示。"
+      />
       </el-tab-pane>
     </el-tabs>
 
@@ -7328,7 +7484,13 @@ onUnmounted(() => {
           :total="diffItems.length"
         />
       </template>
-      <el-empty v-else description="选择两个成功任务后比较扫描变化" />
+      <OfflineState
+        v-else
+        size="compact"
+        icon="data"
+        title="暂无可比较的扫描"
+        description="选择两个成功任务后比较扫描变化"
+      />
       <template #footer>
         <el-button @click="diffVisible = false">关闭</el-button>
       </template>
@@ -7353,6 +7515,48 @@ onUnmounted(() => {
         <section class="plan-review-summary" aria-label="方案说明">
           <h3>方案说明</h3>
           <p>{{ planReview.plan.summary }}</p>
+        </section>
+        <section
+          v-if="planReviewJudgeSeverity !== 'unknown'"
+          class="plan-review-judge"
+          :class="`plan-review-judge--${planReviewJudgeSeverity}`"
+          aria-label="语义判官审查结论"
+        >
+          <header class="plan-review-judge-heading">
+            <span class="plan-review-judge-icon" :class="`is-${planReviewJudgeSeverity}`" aria-hidden="true">
+              <FluentIcon :name="planReviewJudgeSeverity === 'critical' ? 'dismiss' : planReviewJudgeSeverity === 'warning' ? 'warning' : 'checkmark-circle'" />
+            </span>
+            <h3>{{ planReviewJudgeTitle }}</h3>
+            <el-tag
+              v-if="planReviewJudge"
+              size="small"
+              :type="judgeRiskTagType(planReviewJudge.worstRisk)"
+            >
+              最高风险 {{ planReviewJudge.worstRisk }}
+            </el-tag>
+            <el-tag v-if="planReviewJudge?.degraded" size="small" type="danger" effect="dark">
+              熔断拦截
+            </el-tag>
+          </header>
+          <p v-if="planReviewJudge?.degraded" class="plan-review-judge-note">
+            语义判官未能给出可信判定（{{ planReviewJudge.degradedReason || '原因未知' }}）。
+            按 Fail-Closed 原则，系统已按最坏情况标记为高风险，请人工逐项核对下方原始参数后再决定。
+          </p>
+          <ul v-if="planReviewJudge?.steps.length" class="plan-review-judge-steps">
+            <li v-for="item in planReviewJudge.steps" :key="item.workflowNodeId || item.toolCode">
+              <el-tag size="small" :type="judgeRiskTagType(item.risk)" effect="plain">
+                {{ item.behaviour }}
+              </el-tag>
+              <span class="plan-review-judge-tool">{{ aiToolLabel(item.toolCode) }}</span>
+              <span class="plan-review-judge-summary">{{ item.summary }}</span>
+              <span class="plan-review-judge-conf">
+                置信度 {{ Math.round((item.confidence || 0) * 100) }}%
+              </span>
+            </li>
+          </ul>
+          <p v-else-if="planReviewJudge?.degraded" class="plan-review-judge-note">
+            本次没有可用的逐项判定结果，全部步骤均需人工判断。
+          </p>
         </section>
         <section class="plan-review-execution" aria-label="执行步骤">
           <h3>执行步骤 <span>{{ planReview.plan.steps.length }} 项</span></h3>
@@ -7611,6 +7815,59 @@ onUnmounted(() => {
   color: var(--app-muted);
 }
 .plan-review-summary, .plan-review-execution { display: grid; gap: 10px; }
+
+/* Semantic judge banner: the human's first read of what the plan actually does. */
+.plan-review-judge {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--app-border);
+  background: var(--app-surface-soft);
+}
+.plan-review-judge--critical {
+  border-color: color-mix(in srgb, #d93025 55%, transparent);
+  background: color-mix(in srgb, #d93025 9%, var(--app-surface));
+}
+.plan-review-judge--warning {
+  border-color: color-mix(in srgb, #d97706 55%, transparent);
+  background: color-mix(in srgb, #d97706 9%, var(--app-surface));
+}
+.plan-review-judge--clear {
+  border-color: color-mix(in srgb, #1a7f37 45%, transparent);
+}
+.plan-review-judge-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.plan-review-judge-heading h3 { flex: 1; min-width: 120px; margin: 0; overflow-wrap: anywhere; }
+.plan-review-judge-icon { flex: none; font-size: 15px; line-height: 1; }
+.plan-review-judge-note {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--app-muted);
+  overflow-wrap: anywhere;
+}
+.plan-review-judge-steps {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.plan-review-judge-steps > li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+.plan-review-judge-tool { font-weight: 600; }
+.plan-review-judge-summary { flex: 1; min-width: 140px; overflow-wrap: anywhere; }
+.plan-review-judge-conf { color: var(--app-muted); font-variant-numeric: tabular-nums; }
 .plan-review-execution > h3 { display: flex; align-items: baseline; gap: 8px; }
 .plan-review-execution > h3 > span { font-size: 12px; font-weight: 400; color: var(--app-muted); }
 .plan-review-steps { display: grid; gap: 12px; list-style: none; padding: 0; margin: 0; }
@@ -8950,6 +9207,26 @@ onUnmounted(() => {
   flex: none;
   margin-bottom: 12px;
 }
+/* 缓解页签拥挤：拉大间距、收窄字重区域，让激活下划线有呼吸感 */
+.project-tabs :deep(.el-tabs__nav-wrap)::after {
+  height: 1px;
+  background: var(--fluent-border, #e5e7eb);
+}
+.project-tabs :deep(.el-tabs__item) {
+  height: 44px;
+  padding: 0 6px;
+  margin-right: 22px;
+  font-size: 14px;
+  line-height: 44px;
+  transition: color 0.2s ease;
+}
+.project-tabs :deep(.el-tabs__item.is-active) {
+  font-weight: 600;
+}
+.project-tabs :deep(.el-tabs__active-bar) {
+  height: 2px;
+  border-radius: 2px;
+}
 .project-tabs :deep(.el-tabs__content) {
   flex: 1;
   min-height: 0;
@@ -8996,6 +9273,14 @@ onUnmounted(() => {
   gap: 18px;
   margin-bottom: 18px;
   font-size: 13px;
+}
+/* 各 tab 的空态：占满工具栏/副标题以下的剩余空间并垂直居中 */
+.project-tabs :deep(.el-tab-pane) {
+  display: flex;
+  flex-direction: column;
+}
+.project-tabs :deep(.el-tab-pane > .empty-state) {
+  flex: 1 1 auto;
 }
 .project-tabs .toolbar-inline {
   gap: 10px;

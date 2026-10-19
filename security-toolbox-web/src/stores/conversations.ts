@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { endpoints } from "../api";
+import type { JudgeVerdictDocument } from "../api";
 import type { CopilotReference } from "../types/copilot";
 import type { CopilotMode } from "../types/copilot";
 import { isPublicAiProgressEvent, publicAiProgressText, publicProgressProvenance } from "../utils/aiPresentation";
@@ -205,6 +206,8 @@ export interface ConversationMessage {
   progressStartedAt?: string;
   progressFinishedAt?: string;
   modelStreamStatus?: "running" | "completed" | "failed" | "interrupted";
+  /** True after the user has opened this thread's latest completed turn. */
+  completionSeen?: boolean;
   reference?: ConversationReference;
   references?: ConversationReference[];
   copilotMode?: CopilotMode;
@@ -213,6 +216,8 @@ export interface ConversationMessage {
   executionDecision?: AiExecutionDecision;
   approvalId?: number | string;
   approvalStatus?: string;
+  /** Semantic-judge verdict document attached to this approval, when available. */
+  judge?: JudgeVerdictDocument | null;
   replyToId?: string;
   /** Execution request state is separate from the model answer and approval decision. */
   approvalDispatchStatus?: "dispatching" | "rejected" | "unknown" | "dispatched";

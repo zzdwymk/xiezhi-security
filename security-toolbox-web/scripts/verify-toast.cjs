@@ -104,9 +104,9 @@ let browser;
   await page.screenshot({ path: path.join(out, 'toast.png'), animations: 'disabled' });
 
   assert.deepEqual(errors, [], 'no page errors');
-  // 新位置：水平居中，top = 标题栏(38) + 60 = 98px，避开 section-head（约 y=58~79）
-  assert.ok(geo.message.y >= 38 + 40, `toast top ${geo.message.y} should be below caption+44 (~82)`);
-  assert.ok(geo.message.y <= 38 + 50, `toast top ${geo.message.y} should be around caption+44`);
+  // 新位置：水平居中，top = 标题栏(38) + 48 = 86px，避开 section-head（约 y=58~79）
+  assert.ok(geo.message.y >= 38 + 45, `toast top ${geo.message.y} should be below caption+48 (~86)`);
+  assert.ok(geo.message.y <= 38 + 52, `toast top ${geo.message.y} should be around caption+48`);
   const center = (geo.message.x + geo.message.right) / 2;
   const contentCenter = (geo.content.x + geo.content.right) / 2;
   assert.ok(Math.abs(center - contentCenter) < 80, `toast center ${center} should align with content center ${contentCenter}`);
