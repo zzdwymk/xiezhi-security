@@ -14,6 +14,7 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -294,20 +295,22 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
             DetectionStatus.AVAILABLE,
             version,
             safePath,
-            msg);
+            msg,
+            output);
       }
       return buildStatus(
           descriptor,
           DetectionStatus.TIMEOUT,
           version,
           safePath,
-          String.format(Locale.ROOT, "版本检测超过 %.1f 秒，进程已终止。", descriptor.timeout().toMillis() / 1000.0));
+          String.format(Locale.ROOT, "版本检测超过 %.1f 秒，进程已终止。", descriptor.timeout().toMillis() / 1000.0),
+          output);
     }
     if (result.errorMessage() != null) {
       if (descriptor.timeoutResolvesAsAvailable() && !UNKNOWN_VERSION.equals(version)) {
-        return buildStatus(descriptor, DetectionStatus.AVAILABLE, version, safePath, "可用。");
+        return buildStatus(descriptor, DetectionStatus.AVAILABLE, version, safePath, "可用。", output);
       }
-      return buildStatus(descriptor, DetectionStatus.ERROR, null, safePath, "已找到，但无法执行版本检测。");
+      return buildStatus(descriptor, DetectionStatus.ERROR, null, safePath, "已找到，但无法执行版本检测。", output);
     }
     if (!output.isBlank() && !descriptor.outputValidator().test(output)) {
       return buildStatus(
@@ -315,21 +318,23 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
           DetectionStatus.INCOMPATIBLE,
           version,
           safePath,
-          descriptor.incompatibleMessage());
+          descriptor.incompatibleMessage(),
+          output);
     }
     if (result.exitCode() != 0) {
       if (descriptor.timeoutResolvesAsAvailable() && !UNKNOWN_VERSION.equals(version)) {
-        return buildStatus(descriptor, DetectionStatus.AVAILABLE, version, safePath, "可用。");
+        return buildStatus(descriptor, DetectionStatus.AVAILABLE, version, safePath, "可用。", output);
       }
       return buildStatus(
           descriptor,
           DetectionStatus.ERROR,
           version,
           safePath,
-          "版本命令执行失败，退出码 " + result.exitCode() + "。");
+          "版本命令执行失败，退出码 " + result.exitCode() + "。",
+          output);
     }
     return buildStatus(
-        descriptor, DetectionStatus.AVAILABLE, version, safePath, "可用。");
+        descriptor, DetectionStatus.AVAILABLE, version, safePath, "可用。", output);
   }
 
   private String resolveVersion(DependencyDescriptor descriptor, String safePath, String output) {
@@ -349,6 +354,16 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
       String version,
       String path,
       String message) {
+    return buildStatus(descriptor, status, version, path, message, null);
+  }
+
+  private DependencyStatus buildStatus(
+      DependencyDescriptor descriptor,
+      DetectionStatus status,
+      String version,
+      String path,
+      String message,
+      String output) {
     String name = descriptor.name();
     String statusName = status.name();
     boolean available = status == DetectionStatus.AVAILABLE;
@@ -365,7 +380,8 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
         descriptor.category(),
         message.trim(),
         capabilityHash,
-        available ? toolDirHash(path) : null);
+        available ? toolDirHash(path) : null,
+        output);
   }
 
   /**
@@ -519,31 +535,37 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
             "DATABASE",
             output -> containsIgnoreCase(output, "psql"),
             "检测到的命令不是 PostgreSQL psql。"),
-        descriptor(
+        descriptorWithExtractor(
             "Nuclei",
             scannerCandidates("NUCLEI_PATH", "nuclei"),
             List.of("-disable-update-check", "-version"),
             false,
             "SCANNER",
             output -> containsIgnoreCase(output, "nuclei"),
-            "检测到的命令不是 ProjectDiscovery Nuclei。"),
-        descriptor(
+            "检测到的命令不是 ProjectDiscovery Nuclei。",
+            COMMAND_TIMEOUT,
+            this::nucleiVersion),
+        descriptorWithExtractor(
             "Afrog",
             scannerCandidates("AFROG_PATH", "afrog"),
             List.of("-disable-update-check", "-version"),
             false,
             "SCANNER_ADAPTER",
             output -> containsIgnoreCase(output, "afrog"),
-            "检测到的命令不是 Afrog。当前仅检测版本，不默认执行。"),
-        descriptor(
+            "检测到的命令不是 Afrog。当前仅检测版本，不默认执行。",
+            COMMAND_TIMEOUT,
+            this::afrogVersion),
+        descriptorWithExtractor(
             "Xray",
             scannerCandidates("XRAY_PATH", "xray", "xray_windows_amd64.exe"),
             List.of("version"),
             false,
             "SCANNER_ADAPTER",
             output -> containsIgnoreCase(output, "xray"),
-            "检测到的命令不是 Xray。当前仅检测版本，不默认执行。"),
-        descriptor(
+            "检测到的命令不是 Xray。当前仅检测版本，不默认执行。",
+            COMMAND_TIMEOUT,
+            this::xrayVersion),
+        descriptorWithExtractor(
             "fscan",
             scannerCandidates("FSCAN_PATH", "fscan"),
             // fscan 的 `-h` 是「目标主机」参数（缺参会报错并以非零退出码退出），
@@ -556,15 +578,19 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
                     && (containsIgnoreCase(output, "扫描")
                         || containsIgnoreCase(output, "usage")
                         || containsIgnoreCase(output, "host")),
-            "检测到的命令不是 fscan。当前仅检测版本，不默认执行。"),
-        descriptor(
+            "检测到的命令不是 fscan。当前仅检测版本，不默认执行。",
+            COMMAND_TIMEOUT,
+            this::fscanVersion),
+        descriptorWithExtractor(
             "ProjectDiscovery httpx",
             scannerCandidates("HTTPX_PATH", "httpx"),
             List.of("-disable-update-check", "-version"),
             false,
             "SCANNER",
             this::isProjectDiscoveryHttpx,
-            "检测到同名命令，但不是 ProjectDiscovery httpx。"),
+            "检测到同名命令，但不是 ProjectDiscovery httpx。",
+            COMMAND_TIMEOUT,
+            this::httpxVersion),
         descriptorWithExtractor(
             "Metasploit",
             scannerCandidates("MSF_PATH", "msfconsole", "msfconsole.bat"),
@@ -574,7 +600,8 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
             output -> containsIgnoreCase(output, "metasploit"),
             "检测到的命令不是 MetasploitFramework。当前仅检测版本，不默认执行。",
             MSF_COMMAND_TIMEOUT,
-            this::metasploitVersion),
+            this::metasploitVersion,
+            true),
         descriptorWithExtractor(
             "OWASP ZAP",
             zapCandidates(windows),
@@ -584,7 +611,8 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
             output -> containsIgnoreCase(output, "zap") || containsIgnoreCase(output, "2.") || output.matches("(?s).*\\d+\\.\\d+.*"),
             "检测到的命令不是 OWASP ZAP。当前仅检测版本，不默认执行。",
             ZAP_COMMAND_TIMEOUT,
-            this::zapVersion));
+            this::zapVersion,
+            true));
   }
 
   private boolean isWindows() {
@@ -686,13 +714,64 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
   }
 
   private List<String> scannerCandidates(String envName, String... fallback) {
-    List<String> candidates = new ArrayList<>();
-    String explicit = System.getenv(envName);
+    LinkedHashSet<String> candidates = new LinkedHashSet<>();
+    String explicit = environment.getProperty(envName);
+    if (explicit == null || explicit.isBlank()) {
+      explicit = System.getenv(envName);
+    }
     if (explicit != null && !explicit.isBlank()) {
       candidates.add(explicit.trim());
     }
+    addScannerCandidatesFromToolsDir(candidates, envName);
     candidates.addAll(List.of(fallback));
-    return candidates;
+    return List.copyOf(candidates);
+  }
+
+  private void addScannerCandidatesFromToolsDir(Set<String> candidates, String envName) {
+    Path toolsDir = toolsRoot();
+    if (toolsDir == null || !Files.isDirectory(toolsDir)) {
+      return;
+    }
+    String toolDirectory = switch (envName) {
+      case "HTTPX_PATH" -> "httpx";
+      case "NUCLEI_PATH" -> "nuclei";
+      case "AFROG_PATH" -> "afrog";
+      case "XRAY_PATH" -> "xray";
+      case "FSCAN_PATH" -> "fscan";
+      case "SQLMAP_PATH" -> "sqlmap";
+      case "MSF_PATH" -> "metasploit";
+      default -> null;
+    };
+    if (toolDirectory == null) {
+      return;
+    }
+    Path directory = toolsDir.resolve(toolDirectory);
+    if (!Files.isDirectory(directory)) {
+      return;
+    }
+    try (var paths = Files.walk(directory, 3)) {
+      paths.filter(Files::isRegularFile)
+          .filter(path -> isScannerExecutableName(envName, path.getFileName().toString()))
+          .sorted()
+          .map(path -> path.toAbsolutePath().normalize().toString())
+          .forEach(candidates::add);
+    } catch (Exception ex) {
+      log.debug("扫描工具安装目录定位失败，tool={}", toolDirectory, ex);
+    }
+  }
+
+  private boolean isScannerExecutableName(String envName, String fileName) {
+    String name = fileName.toLowerCase(Locale.ROOT);
+    return switch (envName) {
+      case "HTTPX_PATH" -> name.equals("httpx.exe") || name.equals("httpx");
+      case "NUCLEI_PATH" -> name.equals("nuclei.exe") || name.equals("nuclei");
+      case "AFROG_PATH" -> name.equals("afrog.exe") || name.equals("afrog");
+      case "XRAY_PATH" -> name.equals("xray.exe") || name.equals("xray_windows_amd64.exe") || name.equals("xray");
+      case "FSCAN_PATH" -> name.equals("fscan.exe") || name.equals("fscan");
+      case "SQLMAP_PATH" -> name.equals("sqlmap.exe") || name.equals("sqlmap.bat") || name.equals("sqlmap.py");
+      case "MSF_PATH" -> name.equals("msfconsole.exe") || name.equals("msfconsole.bat") || name.equals("msfconsole");
+      default -> false;
+    };
   }
 
   private List<String> zapCandidates(boolean windows) {
@@ -820,8 +899,23 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
       String incompatibleMessage,
       Duration timeout,
       Function<String, String> versionExtractor) {
+    return descriptorWithExtractor(
+        name, candidates, arguments, required, category, validator, incompatibleMessage, timeout, versionExtractor, false);
+  }
+
+  private DependencyDescriptor descriptorWithExtractor(
+      String name,
+      List<String> candidates,
+      List<String> arguments,
+      boolean required,
+      String category,
+      Predicate<String> validator,
+      String incompatibleMessage,
+      Duration timeout,
+      Function<String, String> versionExtractor,
+      boolean timeoutResolvesAsAvailable) {
     return new DependencyDescriptor(
-        name, candidates, arguments, required, category, validator, incompatibleMessage, timeout, versionExtractor, true);
+        name, candidates, arguments, required, category, validator, incompatibleMessage, timeout, versionExtractor, timeoutResolvesAsAvailable);
   }
 
   private List<String> paths(String... values) {
@@ -851,9 +945,17 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
   }
 
   private boolean isProjectDiscoveryHttpx(String output) {
-    return containsIgnoreCase(output, "projectdiscovery")
-        || containsIgnoreCase(output, "current version")
-        || containsIgnoreCase(output, "httpx version");
+    if (output == null || output.isBlank()) {
+      return false;
+    }
+    String firstLine = firstNonBlankLine(output);
+    boolean hasHttpxVersion = output.lines()
+        .map(String::trim)
+        .anyMatch(line -> containsIgnoreCase(line, "current version")
+            || containsIgnoreCase(line, "httpx version"));
+    boolean hasProjectDiscoveryHttpxBanner = containsIgnoreCase(firstLine, "projectdiscovery")
+        && output.lines().anyMatch(line -> line.contains("|"));
+    return hasHttpxVersion || hasProjectDiscoveryHttpxBanner;
   }
 
   private boolean containsIgnoreCase(String value, String expected) {
@@ -877,6 +979,68 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
 
   private static String firstNonBlankLine(String output) {
     return output.lines().map(String::trim).filter(line -> !line.isBlank()).findFirst().orElse(UNKNOWN_VERSION);
+  }
+
+  private String nucleiVersion(String output) {
+    if (output == null || output.isBlank()) {
+      return UNKNOWN_VERSION;
+    }
+    return output
+        .lines()
+        .map(String::trim)
+        .filter(line -> containsIgnoreCase(line, "nuclei engine version") || containsIgnoreCase(line, "current version") || containsIgnoreCase(line, "engine version"))
+        .findFirst()
+        .orElseGet(() -> firstNonBlankLine(output));
+  }
+
+  private String afrogVersion(String output) {
+    if (output == null || output.isBlank()) {
+      return UNKNOWN_VERSION;
+    }
+    return output
+        .lines()
+        .map(String::trim)
+        .filter(line -> containsIgnoreCase(line, "afrog version") || containsIgnoreCase(line, "afrog "))
+        .findFirst()
+        .orElseGet(() -> firstNonBlankLine(output));
+  }
+
+  private String xrayVersion(String output) {
+    if (output == null || output.isBlank()) {
+      return UNKNOWN_VERSION;
+    }
+    return output
+        .lines()
+        .map(String::trim)
+        .filter(line -> containsIgnoreCase(line, "version:") || containsIgnoreCase(line, "xray version") || containsIgnoreCase(line, "community") || containsIgnoreCase(line, "xray/"))
+        .findFirst()
+        .orElseGet(() -> firstNonBlankLine(output));
+  }
+
+  private String fscanVersion(String output) {
+    if (output == null || output.isBlank()) {
+      return UNKNOWN_VERSION;
+    }
+    return output
+        .lines()
+        .map(String::trim)
+        .filter(line -> containsIgnoreCase(line, "fscan version") || containsIgnoreCase(line, "fscan "))
+        .findFirst()
+        .orElseGet(() -> firstNonBlankLine(output));
+  }
+
+  private String httpxVersion(String output) {
+    if (output == null || output.isBlank()) {
+      return UNKNOWN_VERSION;
+    }
+    return output.lines()
+        .map(String::trim)
+        .filter(line -> containsIgnoreCase(line, "current version")
+            || containsIgnoreCase(line, "httpx version"))
+        .findFirst()
+        .orElseGet(() -> UNKNOWN_VERSION.equals(firstNonBlankLine(output))
+            ? UNKNOWN_VERSION
+            : firstNonBlankLine(output));
   }
 
   // Metasploit 的 msfconsole --version 会先打印一串 Ruby 弃用警告（第一行往往是

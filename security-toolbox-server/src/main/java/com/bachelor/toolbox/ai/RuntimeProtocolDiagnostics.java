@@ -1,7 +1,5 @@
 package com.bachelor.toolbox.ai;
 
-import java.util.Set;
-
 /** Bounded server diagnostics. Never log the input message, its fields, or its cause. */
 final class RuntimeProtocolDiagnostics {
   enum Stage { RUNTIME_TERMINAL, JAVA_LEDGER, JAVA_SEMANTIC, JAVA_FIELDS, JAVA_STREAM, JAVA_PROTOCOL }
@@ -18,19 +16,55 @@ final class RuntimeProtocolDiagnostics {
 
   record Failure(Stage stage, Code code) {}
 
-  private static final Set<Code> TERMINAL_CODES = Set.of(
-      Code.ROUTE_FAILED, Code.GROUNDED_GENERATION_FAILED, Code.GROUNDED_REFERENCE_INVALID, Code.EVIDENCE_ASSESSMENT_FAILED,
-      Code.RETRIEVAL_FAILED, Code.RETRIEVAL_GUARD_DENIED, Code.TURN_TIMEOUT,
-      Code.MODEL_NOT_CONFIGURED, Code.MODEL_ACCESS_DENIED, Code.MODEL_RATE_LIMITED, Code.MODEL_TIMEOUT,
-      Code.MODEL_SERVICE_UNAVAILABLE, Code.MODEL_REQUEST_FAILED);
+  /**
+   * Short SHA-256 fingerprint of the rejection message template. Every message thrown here is a
+   * developer-authored constant without request data, so the fingerprint lets an operator match
+   * the log line to a template without exposing input text, tool parameters or causes.
+   */
+  static String fingerprint(AiAgentRuntimeClient.RuntimeProtocolException failure) {
+    String message = failure.getMessage();
+    if (message == null) return "null";
+    try {
+      byte[] digest =
+          java.security.MessageDigest.getInstance("SHA-256")
+              .digest(message.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+      return java.util.HexFormat.of().formatHex(digest, 0, 8).substring(0, 16);
+    } catch (java.security.GeneralSecurityException ex) {
+      return "unavailable";
+    }
+  }
+
+  private static final String TERMINAL_PREFIX = "AI Runtime 本轮未完成：";
+  private static final String TERMINAL_ALT_PREFIX = "AI Runtime 返回失败终态：";
 
   private RuntimeProtocolDiagnostics() {}
+
+  /** Returns the terminal code printed after the runtime-terminal prefix, or {@code null}. */
+  private static String terminalSuffix(String message) {
+    String suffix = message.startsWith(TERMINAL_PREFIX)
+        ? message.substring(TERMINAL_PREFIX.length())
+        : message.substring(TERMINAL_ALT_PREFIX.length());
+    // The code must be a bare identifier: trailing text means the message is not the runtime's
+    // own template, so it can never be promoted to a known cause or leak into any label.
+    return suffix.matches("[A-Z][A-Z0-9_]{0,63}") ? suffix : null;
+  }
+
+  private static Code terminalCode(String suffix) {
+    if (suffix == null) return null;
+    for (Code code : Code.values()) {
+      if (code.name().equals(suffix)) return code;
+    }
+    return null;
+  }
 
   static String userMessage(Failure failure) {
     String stopped = "本轮已安全停止，尚未提交审批申请，未创建检测任务，未执行任何检测。";
     if (failure.stage() != Stage.RUNTIME_TERMINAL) {
+      if (failure.code() == Code.MODEL_REQUEST_FAILED) {
+        return "模型服务拒绝了本次请求，" + stopped + "请查看 AI 诊断记录后重试";
+      }
       return "智能服务返回内容未通过完整性校验，"
-          + stopped + "请检查模型连接后重试";
+          + stopped + "请查看 AI 诊断记录后重试";
     }
     return switch (failure.code()) {
       case EVIDENCE_ASSESSMENT_FAILED ->
@@ -66,15 +100,15 @@ final class RuntimeProtocolDiagnostics {
   static Failure classify(AiAgentRuntimeClient.RuntimeProtocolException failure) {
     String message = failure.getMessage();
     if (message == null) return new Failure(Stage.JAVA_PROTOCOL, Code.UNKNOWN_PROTOCOL_FAILURE);
-    for (Code code : TERMINAL_CODES) {
-      if (message.equals("AI Runtime 本轮未完成：" + code.name())
-          || message.equals("AI Runtime 返回失败终态：" + code.name())) {
-        return new Failure(Stage.RUNTIME_TERMINAL, code);
-      }
+    // The two runtime-terminal templates append the runtime's failure code after a fixed prefix.
+    // Match on the prefix first: an exact-suffix lookup silently turns every code outside the
+    // previous allow-list (for example MODEL_NOT_CONFIGURED) into UNKNOWN_PROTOCOL_FAILURE, which
+    // is then reported to the operator as a bogus "integrity check" failure.
+    if (message.startsWith(TERMINAL_PREFIX) || message.startsWith(TERMINAL_ALT_PREFIX)) {
+      Code known = terminalCode(terminalSuffix(message));
+      return new Failure(Stage.RUNTIME_TERMINAL, known == null ? Code.UNKNOWN_RUNTIME_TERMINAL : known);
     }
-    if (message.startsWith("AI Runtime 本轮未完成：")
-        || message.startsWith("AI Runtime 返回失败终态：")
-        || message.equals("AI Runtime Harness 拒绝了本轮计划")) {
+    if (message.equals("AI Runtime Harness 拒绝了本轮计划")) {
       return new Failure(Stage.RUNTIME_TERMINAL, Code.UNKNOWN_RUNTIME_TERMINAL);
     }
     return switch (message) {
@@ -125,13 +159,44 @@ final class RuntimeProtocolDiagnostics {
   }
 
   private static Failure classifyFieldContract(String message) {
+    // Stream-shape and ordering failures are checked first: some of their templates end in
+    // "无效" and would otherwise be swallowed by the field-contract suffix rules below.
+    if (message.equals("AI Runtime 事件超过大小限制")
+        || message.equals("AI Runtime 事件数量超过限制")
+        || message.equals("AI Runtime 检索链路在完成前进入 plan/finish")
+        || message.equals("AI Runtime 在 plan 之前发送 finish")
+        || message.equals("AI Runtime 在 authorization_guard 之前发送 finish")
+        || message.equals("AI Runtime 生命周期在 review 前提前结束")
+        || message.equals("AI Runtime 生命周期阶段顺序无效")
+        || message.equals("AI Runtime 事件 node/stage/legacyNode 映射无效")
+        || message.equals("AI Runtime 流在终态前中断")
+        || message.equals("AI Runtime 重复发送 finish 终态")
+        || message.equals("AI Runtime 在终态后继续发送事件")
+        || message.equals("AI Runtime 混合了不完整的 SSE 与 NDJSON 事件")) {
+      return new Failure(Stage.JAVA_STREAM, Code.STREAM_INCOMPLETE);
+    }
+    // Project-evidence retrieval failures: index/read problems, not model output problems.
+    if (message.startsWith("项目依据")) {
+      return new Failure(Stage.JAVA_SEMANTIC, Code.RETRIEVAL_FAILED);
+    }
+    // HTTP 4xx from the runtime itself: a request-side problem, not corrupted output.
+    if (message.startsWith("AI Runtime 拒绝了 Harness 请求")) {
+      return new Failure(Stage.JAVA_PROTOCOL, Code.MODEL_REQUEST_FAILED);
+    }
     // These are the fixed validation message templates. Labels are deliberately discarded:
     // even a forged field name or unknown terminal reason can never reach the logger.
     if (message.startsWith("AI Runtime ")
         && (message.endsWith(" 格式无效") || message.endsWith(" 标识格式无效")
             || message.endsWith(" 必须是正整数") || message.endsWith(" 超出范围")
             || message.endsWith(" 必须是对象") || message.endsWith(" 包含未知字段")
-            || message.contains(" 缺少字段 ") || message.endsWith(" 无效")
+            || message.endsWith(" 必须是布尔值") || message.endsWith(" 必须是字符串列表")
+            || message.endsWith(" 必须是整数") || message.endsWith(" 类型无效")
+            || message.endsWith(" 文本无效")
+            || message.endsWith("无效") || message.endsWith("参数必须是对象")
+            || message.contains(" 缺少字段 ")
+            || message.contains("计划包含未知工具")
+            || message.contains("计划包含重复工作流节点")
+            || message.endsWith("高风险工具计划必须要求审批")
             || message.equals("AI Runtime 返回未知事件类型")
             || message.equals("AI Runtime 返回了未知流字段"))) {
       return new Failure(Stage.JAVA_FIELDS, Code.FIELD_CONTRACT_INVALID);

@@ -332,7 +332,7 @@ public class ReconService {
 
     // ---- 主动目录枚举（仅 ACTIVE 且勾选）----
     if (request.activeMode() && Boolean.TRUE.equals(request.enumeratePaths())) {
-      enumerateWebPaths(projectId, target, base, request.pathWords(), client, discovered, evidence);
+      enumerateWebPaths(projectId, target, base, request, client, discovered, evidence);
     }
     // ---- 站点链接提取 / 爬取（抓根页面，提取同源链接）----
     if (request.activeMode() && Boolean.TRUE.equals(request.crawlSite())) {
@@ -373,38 +373,75 @@ public class ReconService {
       Long projectId,
       AuthorizedTarget target,
       String base,
-      List<String> requestedWords,
+      ReconRequest request,
       HttpClient client,
       java.util.LinkedHashSet<String> discovered,
       List<Map<String, Object>> evidence) {
-    List<String> words = expandPathWords(requestedWords);
+    List<String> words = expandPathWords(request.pathWords(), request.pathDictionaryId());
     if (words.isEmpty()) return;
     // 软-404 基线：请求一个几乎不可能存在的路径。
     long[] baseline = probePath(client, base + "/xzy404-" + Long.toHexString(System.nanoTime()) + "/");
-    int found = 0;
-    int limit = 400;
-    for (String word : words) {
-      if (limit-- <= 0) break;
-      String url = base + "/" + word.replaceFirst("^/+", "");
-      long[] r = probePath(client, url);
-      if (r == null) continue;
-      int status = (int) r[0];
-      long len = r[1];
-      boolean exists;
-      if (baseline == null) {
-        exists = status > 0 && status < 400;
-      } else {
-        exists = status != (int) baseline[0] || Math.abs(len - baseline[1]) > 24;
+    int concurrency =
+        request.pathConcurrency() != null
+            ? Math.max(1, Math.min(50, request.pathConcurrency()))
+            : 10;
+    int budget = 5000;
+    List<String> planned = words.size() > budget ? words.subList(0, budget) : words;
+    java.util.concurrent.atomic.AtomicInteger found = new java.util.concurrent.atomic.AtomicInteger();
+    java.util.concurrent.ExecutorService pool =
+        java.util.concurrent.Executors.newFixedThreadPool(
+            Math.min(concurrency, Math.max(1, planned.size())),
+            runnable -> {
+              Thread thread = new Thread(runnable);
+              thread.setName("recon-path-" + thread.getId());
+              thread.setDaemon(true);
+              return thread;
+            });
+    List<java.util.concurrent.Future<?>> futures = new ArrayList<>(planned.size());
+    try {
+      for (String word : planned) {
+        futures.add(
+            pool.submit(
+                () -> {
+                  String url = base + "/" + word.replaceFirst("^/+", "");
+                  long[] r = probePath(client, url);
+                  if (r == null) return;
+                  int status = (int) r[0];
+                  long len = r[1];
+                  boolean exists;
+                  if (baseline == null) {
+                    exists = status > 0 && status < 400;
+                  } else {
+                    exists = status != (int) baseline[0] || Math.abs(len - baseline[1]) > 24;
+                  }
+                  if (exists && status > 0 && status < 500 && status != 404) {
+                    if (discoveredPaths.record(target, projectId, url, "ACTIVE_ENUM", status, len, "目录字典枚举")) {
+                      synchronized (discovered) {
+                        discovered.add(url);
+                      }
+                      found.incrementAndGet();
+                    }
+                  }
+                }));
       }
-      if (exists && status > 0 && status < 500 && status != 404) {
-        if (discoveredPaths.record(target, projectId, url, "ACTIVE_ENUM", status, len, "目录字典枚举")) {
-          discovered.add(url);
-          found++;
+      for (java.util.concurrent.Future<?> future : futures) {
+        try {
+          future.get();
+        } catch (Exception ignored) {
         }
       }
+    } finally {
+      pool.shutdownNow();
     }
     evidence.add(
-        Map.of("source", "PATH_ENUM", "available", true, "candidates", words.size(), "found", found));
+        Map.of(
+            "source", "PATH_ENUM",
+            "available", true,
+            "dictionary", request.pathDictionaryId() != null ? request.pathDictionaryId() : "default",
+            "candidates", words.size(),
+            "planned", planned.size(),
+            "concurrency", concurrency,
+            "found", found.get()));
   }
 
   private void crawlLinks(
@@ -645,10 +682,12 @@ public class ReconService {
     }
   }
 
-  private List<String> expandPathWords(List<String> requested) {
+  private List<String> expandPathWords(List<String> requested, String dictionaryId) {
     List<String> raw =
         (requested == null || requested.isEmpty())
-            ? pathDictionary.currentWords()
+            ? (dictionaryId != null && !dictionaryId.isBlank()
+                ? pathDictionary.words(dictionaryId)
+                : pathDictionary.currentWords())
             : requested;
     java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<>();
     Pattern range = Pattern.compile("(.*?)\\[(\\d+)-(\\d+)\\](.*)");
@@ -667,7 +706,7 @@ public class ReconService {
       } else {
         out.add(word);
       }
-      if (out.size() >= 600) break;
+      if (out.size() >= 10000) break;
     }
     return List.copyOf(out);
   }

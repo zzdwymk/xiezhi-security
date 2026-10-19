@@ -20,7 +20,21 @@ public record SystemDependenciesResponse(
       String category,
       String message,
       String hash,
-      String dirHash) {
+      String dirHash,
+      String output) {
+
+    public DependencyStatus(
+        String name,
+        String status,
+        String version,
+        String path,
+        boolean required,
+        String category,
+        String message,
+        String hash,
+        String dirHash) {
+      this(name, status, version, path, required, category, message, hash, dirHash, null);
+    }
 
     public static String hashOf(String name, String status, String version) {
       String source = String.join("|", name, status, version == null ? "" : version);

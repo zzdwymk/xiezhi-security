@@ -35,13 +35,16 @@ class AiProjectIndexServiceTests {
   private final FindingRepository findings = mock(FindingRepository.class);
   private final ReconResultRepository recon = mock(ReconResultRepository.class);
   private final ProbeResultRepository probes = mock(ProbeResultRepository.class);
+  private final com.bachelor.toolbox.asset.DiscoveredPathService discoveredPaths =
+      mock(com.bachelor.toolbox.asset.DiscoveredPathService.class);
   private AiProjectIndexService service;
 
   @BeforeEach
   void setUp() {
     service =
         new AiProjectIndexService(
-            runtime, projects, projectTargets, targets, tasks, findings, recon, probes);
+            runtime, projects, projectTargets, targets, tasks, findings, recon, probes,
+            discoveredPaths);
     AssessmentProject project = new AssessmentProject();
     project.setId(1L);
     project.setName("Example assessment");
@@ -55,6 +58,7 @@ class AiProjectIndexServiceTests {
     when(tasks.findAllByProjectIdOrderByCreatedAtAsc(1L)).thenReturn(List.of());
     when(recon.findByProjectIdOrderByCollectedAtDesc(1L)).thenReturn(List.of());
     when(probes.findByProjectIdOrderByDetectedAtDesc(1L)).thenReturn(List.of());
+    when(discoveredPaths.listByProject(1L)).thenReturn(List.of());
     when(runtime.enabled()).thenReturn(true);
   }
 

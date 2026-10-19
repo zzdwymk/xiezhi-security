@@ -31,21 +31,21 @@ class SettingsControllerTests {
   @Test
   void clearsDataWithExplicitConfirmation() throws Exception {
     Instant clearedAt = Instant.parse("2026-08-07T12:00:00Z");
-    when(service.clear("CLEAR"))
+    when(service.clear("永久清空"))
         .thenReturn(new BusinessDataResetService.ResetResult(clearedAt, 12, true, 2, 5));
 
     mockMvc
         .perform(
             delete("/api/settings/data")
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"confirmation\":\"CLEAR\"}"))
+                .content("{\"confirmation\":\"永久清空\"}"))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.deletedRecords").value(12))
         .andExpect(jsonPath("$.auditLogRetained").value(true))
         .andExpect(jsonPath("$.clearedProjects").value(2))
         .andExpect(jsonPath("$.runtimeDocumentsDeleted").value(5));
 
-    verify(service).clear("CLEAR");
+    verify(service).clear("永久清空");
   }
 
   @Test
@@ -56,6 +56,6 @@ class SettingsControllerTests {
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"confirmation\":\"\"}"))
         .andExpect(status().isBadRequest())
-        .andExpect(jsonPath("$.message").value("请输入 CLEAR 确认清空数据"));
+        .andExpect(jsonPath("$.message").value("请输入“永久清空”确认清空数据"));
   }
 }

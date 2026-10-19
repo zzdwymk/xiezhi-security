@@ -1367,6 +1367,8 @@ public class AiAgentRuntimeClient {
           case "msf_scan" -> Set.of("module", "modules", "options");
           case "sqlmap_scan" -> Set.of("path", "level", "risk", "technique");
           case "zap_fuzz" -> ZapFuzzAiParameters.KEYS;
+          case "dir_scan" -> Set.of("dictionary", "concurrency", "depth", "maxRequests", "extensions");
+          case "site_crawl" -> Set.of();
           case "http_headers", "tls_config" -> Set.of();
           default -> throw new RuntimeProtocolException("AI Runtime 工具不在白名单");
         };
@@ -1437,6 +1439,35 @@ public class AiAgentRuntimeClient {
             throw new RuntimeProtocolException("AI Runtime zap_scan strength 无效");
           }
           result.put("strength", strength);
+        }
+      }
+      case "dir_scan" -> {
+        if (raw.has("dictionary")) copyStrictText(raw, result, "dictionary", 64);
+        if (raw.has("concurrency")) {
+          int concurrency = raw.get("concurrency").asInt();
+          ToolParameterSpec.requireDirScanConcurrency(concurrency);
+          result.put("concurrency", concurrency);
+        }
+        if (raw.has("depth")) {
+          int depth = raw.get("depth").asInt();
+          ToolParameterSpec.requireDirScanDepth(depth);
+          result.put("depth", depth);
+        }
+        if (raw.has("maxRequests")) {
+          int maxRequests = raw.get("maxRequests").asInt();
+          ToolParameterSpec.requireDirScanMaxRequests(maxRequests);
+          result.put("maxRequests", maxRequests);
+        }
+        if (raw.has("extensions")) {
+          JsonNode extensions = raw.get("extensions");
+          if (!extensions.isArray()) {
+            throw new RuntimeProtocolException("AI Runtime dir_scan extensions 必须是字符串列表");
+          }
+          List<String> values = new ArrayList<>();
+          for (JsonNode extension : extensions) {
+            values.add(extension.isTextual() ? extension.textValue() : extension.toString());
+          }
+          result.put("extensions", ToolParameterSpec.requireDirScanExtensions(values));
         }
       }
       case "http_headers", "tls_config" -> {}

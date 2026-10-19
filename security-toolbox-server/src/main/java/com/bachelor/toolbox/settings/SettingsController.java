@@ -22,5 +22,5 @@ public class SettingsController {
     return resetService.clear(request.confirmation());
   }
 
-  public record ClearDataRequest(@NotBlank(message = "请输入 CLEAR 确认清空数据") String confirmation) {}
+  public record ClearDataRequest(@NotBlank(message = "请输入“永久清空”确认清空数据") String confirmation) {}
 }

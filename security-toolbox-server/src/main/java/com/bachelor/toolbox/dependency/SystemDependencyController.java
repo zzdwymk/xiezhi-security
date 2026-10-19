@@ -107,7 +107,8 @@ public class SystemDependencyController {
         dependency.category(),
         dependency.message(),
         dependency.hash(),
-        dependency.dirHash());
+        dependency.dirHash(),
+        dependency.output());
   }
 
   /** 去除依赖项的绝对路径，保留名称、状态、版本等页面必需信息 */
@@ -125,7 +126,8 @@ public class SystemDependencyController {
                         dependency.category(),
                         dependency.message(),
                         dependency.hash(),
-                        dependency.dirHash()))
+                        dependency.dirHash(),
+                        dependency.output()))
             .toList();
     return new SystemDependenciesResponse(
         response.os(), response.arch(), response.database(), sanitized);

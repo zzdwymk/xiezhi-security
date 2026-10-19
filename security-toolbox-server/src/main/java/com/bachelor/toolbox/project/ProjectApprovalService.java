@@ -4,7 +4,10 @@ import com.bachelor.toolbox.audit.AuditService;
 import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.common.PageRequests;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.springframework.data.domain.Sort;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -27,21 +30,26 @@ public class ProjectApprovalService {
   private final AuditService audit;
   private final ProjectAuthorizationService authorization;
   private final com.bachelor.toolbox.target.TargetService targets;
+  /** Optional: null in unit tests and when the local runtime is unavailable. */
+  private final com.bachelor.toolbox.ai.SemanticJudgeClient semanticJudge;
   @jakarta.persistence.PersistenceContext
   private jakarta.persistence.EntityManager entityManager;
 
   @org.springframework.beans.factory.annotation.Autowired
   public ProjectApprovalService(ProjectApprovalRepository repository, AuditService audit,
-      ProjectAuthorizationService authorization, com.bachelor.toolbox.target.TargetService targets) {
+      ProjectAuthorizationService authorization, com.bachelor.toolbox.target.TargetService targets,
+      @org.springframework.beans.factory.annotation.Autowired(required = false)
+          com.bachelor.toolbox.ai.SemanticJudgeClient semanticJudge) {
     this.repository = repository;
     this.audit = audit;
     this.authorization = authorization;
     this.targets = targets;
+    this.semanticJudge = semanticJudge;
   }
 
   public ProjectApprovalService(ProjectApprovalRepository repository, AuditService audit,
       ProjectAuthorizationService authorization) {
-    this(repository, audit, authorization, null);
+    this(repository, audit, authorization, null, null);
   }
 
   public List<ProjectApproval> list(Long projectId) {
@@ -107,6 +115,20 @@ public class ProjectApprovalService {
       approval.setAiTargetBinding(targetBinding);
       approval.setAiRequestJson(requestJson);
       approval.setAiPlanJson(planJson);
+      // Judge the plan before it is shown to anyone. The verdict is advisory metadata for the
+      // approval dialog; it never changes the approval decision itself, and a judge failure is
+      // stored as a degraded (blocking) verdict rather than dropped.
+      if (semanticJudge != null) {
+        try {
+          approval.setAiJudgeJson(
+              mapper.writeValueAsString(
+                  semanticJudge.judgePlan(plan.steps(), request.targetId())));
+        } catch (RuntimeException ex) {
+          approval.setAiJudgeJson(
+              "{\"degraded\":true,\"requiresHumanReview\":true,\"worstRisk\":\"CRITICAL\","
+                  + "\"headline\":\"判官熔断（无法判定）\",\"steps\":[]}");
+        }
+      }
       if (recoveryAnchor != null) approval.setAiRecoveryJson(mapper.writeValueAsString(recoveryAnchor));
       ProjectApproval saved = repository.save(approval);
       recordRequest(saved, saved.getAuthorizationSnapshotHash());
@@ -147,6 +169,12 @@ public class ProjectApprovalService {
 
   @org.springframework.transaction.annotation.Transactional
   public ProjectApproval decide(Long projectId, Long approvalId, String status, String comment) {
+    return decide(projectId, approvalId, status, comment, null);
+  }
+
+  @org.springframework.transaction.annotation.Transactional
+  public ProjectApproval decide(Long projectId, Long approvalId, String status, String comment,
+      List<Map<String, Object>> stepOverrides) {
     authorization.requireAdmin();
     authorization.requireAccess(projectId);
     if ("ai-agent".equals(currentOperator())) throw new ApiException("AI 不能确认自己的方案");
@@ -162,6 +190,34 @@ public class ProjectApprovalService {
         || approval.getAiPlanJson() == null || approval.getAiRequestJson() == null) {
       throw new ApiException("历史手动申请不再支持审批，请由 AI 重新提交方案后确认执行");
     }
+
+    if (stepOverrides != null && !stepOverrides.isEmpty() && "APPROVED".equals(status)) {
+      try {
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();
+        var plan = mapper.readValue(approval.getAiPlanJson(), com.bachelor.toolbox.ai.AiPlanResponse.class);
+        List<com.bachelor.toolbox.ai.AiPlanResponse.PlanStep> updatedSteps = new ArrayList<>();
+        for (int i = 0; i < plan.steps().size(); i++) {
+          var step = plan.steps().get(i);
+          Map<String, Object> override = i < stepOverrides.size() ? stepOverrides.get(i) : null;
+          if (override != null && !override.isEmpty()) {
+            Map<String, Object> merged = new LinkedHashMap<>(step.parameters());
+            merged.putAll(override);
+            updatedSteps.add(new com.bachelor.toolbox.ai.AiPlanResponse.PlanStep(
+                step.toolCode(), step.title(), step.reason(), merged,
+                step.workflowNodeId(), step.group(), step.dependsOnNodeIds(),
+                step.risk(), step.requiresApproval(), step.evidenceRefs()));
+          } else {
+            updatedSteps.add(step);
+          }
+        }
+        var updatedPlan = new com.bachelor.toolbox.ai.AiPlanResponse(
+            plan.provider(), plan.model(), plan.summary(), plan.requiresConfirmation(), updatedSteps);
+        approval.setAiPlanJson(mapper.writeValueAsString(updatedPlan));
+      } catch (Exception ex) {
+        throw new ApiException("无法合并管理员自定义参数：" + ex.getMessage());
+      }
+    }
+
     applyDecision(approval, status, comment);
 
     ProjectApproval saved = repository.save(approval);
@@ -169,8 +225,16 @@ public class ProjectApprovalService {
     return saved;
   }
 
+  /**
+   * The saved plan plus the semantic judge's verdict.
+   *
+   * <p>{@code judge} is the raw stored JSON document (may be null for legacy tickets). The dialog
+   * renders it as a warning banner; a null or degraded verdict must be presented as "not judged"
+   * rather than as clearance.
+   */
   public record PlanDetail(Long approvalId, Long projectId, Long targetId, String status,
-      com.bachelor.toolbox.ai.AiPlanResponse plan, com.bachelor.toolbox.ai.AiDispatchResponse dispatch) {}
+      com.bachelor.toolbox.ai.AiPlanResponse plan, com.bachelor.toolbox.ai.AiDispatchResponse dispatch,
+      String judge) {}
 
   public PlanDetail planDetail(Long projectId, Long approvalId) {
     authorization.requireAccess(projectId);
@@ -184,7 +248,8 @@ public class ProjectApprovalService {
       var plan = mapper.readValue(approval.getAiPlanJson(), com.bachelor.toolbox.ai.AiPlanResponse.class);
       var dispatch = approval.getAiDispatchJson() == null ? null
           : mapper.readValue(approval.getAiDispatchJson(), com.bachelor.toolbox.ai.AiDispatchResponse.class);
-      return new PlanDetail(approvalId, projectId, request.targetId(), approval.getStatus(), plan, dispatch);
+      return new PlanDetail(approvalId, projectId, request.targetId(), approval.getStatus(), plan, dispatch,
+          approval.getAiJudgeJson());
     } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
       throw new ApiException("无法读取已保存的 AI 原方案，请由 AI 重新提交方案");
     }

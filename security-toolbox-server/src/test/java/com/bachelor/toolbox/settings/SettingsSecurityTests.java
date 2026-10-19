@@ -45,14 +45,14 @@ class SettingsSecurityTests {
     regular.setRole("USER");
     regular = users.save(regular);
     mockMvc.perform(clearRequest(jwt.createToken(regular))).andExpect(status().isForbidden());
-    verify(resetService, never()).clear("CLEAR");
+    verify(resetService, never()).clear("永久清空");
 
     User admin = users.findByUsername("admin").orElseThrow();
-    when(resetService.clear("CLEAR"))
+    when(resetService.clear("永久清空"))
         .thenReturn(
             new BusinessDataResetService.ResetResult(Instant.now(), 0, true, 0, 0));
     mockMvc.perform(clearRequest(jwt.createToken(admin))).andExpect(status().isOk());
-    verify(resetService).clear("CLEAR");
+    verify(resetService).clear("永久清空");
   }
 
   private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder clearRequest(
@@ -60,7 +60,7 @@ class SettingsSecurityTests {
     var request =
         delete("/api/settings/data")
             .contentType(MediaType.APPLICATION_JSON)
-            .content("{\"confirmation\":\"CLEAR\"}");
+            .content("{\"confirmation\":\"永久清空\"}");
     return token == null ? request : request.header("Authorization", "Bearer " + token);
   }
 }

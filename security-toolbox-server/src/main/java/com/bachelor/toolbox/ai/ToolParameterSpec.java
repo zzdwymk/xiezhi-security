@@ -58,6 +58,110 @@ public final class ToolParameterSpec {
   /** MSF 模块允许的前缀。 */
   public static final List<String> MSF_MODULE_PREFIXES = List.of("auxiliary/", "exploit/");
 
+  // ------------------------------------------------------------------ dir_scan 取值规格
+
+  /**
+   * {@code dir_scan} 的并发上限。
+   *
+   * <p>与 {@link com.bachelor.toolbox.tool.DirScanTool#MAX_WORKERS} 保持一致：并发只改变请求速率，
+   * 不改变可达面，因此护栏侧与执行侧必须是同一个数字——高并发不构成越权，但过低的上限会让用户配置无效。
+   */
+  public static final int DIR_SCAN_MAX_CONCURRENCY = 50;
+
+  /** {@code dir_scan} 的默认并发。 */
+  public static final int DIR_SCAN_DEFAULT_CONCURRENCY = 10;
+
+  /** {@code dir_scan} 的递归深度上限。 */
+  public static final int DIR_SCAN_MAX_DEPTH = 3;
+
+  /** {@code dir_scan} 的单轮请求总数上限（与 ai-runtime DirScanParameters.maxRequests 对齐）。 */
+  public static final int DIR_SCAN_MAX_REQUESTS = 200_000;
+
+  // ------------------------------------------------------------------ 校验方法（两侧共用）
+
+  /**
+   * 校验 {@code dir_scan} 的 {@code concurrency} 取值（D-7）。
+   *
+   * <p>并发数决定向授权目标发送请求的速率。它<strong>不</strong>改变授权边界（每个请求仍逐条校验
+   * host + 授权端口），因此护栏侧与执行侧采用同一区间即可，不需要一侧更严格。
+   *
+   * <p>与 {@link #requireNmapMode} 同样区分"缺失"与"显式 null"：后者应拒绝。
+   */
+  public static int requireDirScanConcurrency(Object rawConcurrency) {
+    if (rawConcurrency == null) {
+      throw new ApiException("dir_scan 的 concurrency 不能为 null");
+    }
+    int value;
+    try {
+      value = Integer.parseInt(String.valueOf(rawConcurrency).trim());
+    } catch (NumberFormatException ex) {
+      throw new ApiException("dir_scan 的 concurrency 必须是整数: " + rawConcurrency);
+    }
+    if (value < 1 || value > DIR_SCAN_MAX_CONCURRENCY) {
+      throw new ApiException(
+          "dir_scan 的 concurrency 必须在 1-" + DIR_SCAN_MAX_CONCURRENCY + " 之间: " + value);
+    }
+    return value;
+  }
+
+  /** 校验 {@code dir_scan} 的 {@code depth} 取值（D-7）。 */
+  public static int requireDirScanDepth(Object rawDepth) {
+    if (rawDepth == null) {
+      throw new ApiException("dir_scan 的 depth 不能为 null");
+    }
+    int value;
+    try {
+      value = Integer.parseInt(String.valueOf(rawDepth).trim());
+    } catch (NumberFormatException ex) {
+      throw new ApiException("dir_scan 的 depth 必须是整数: " + rawDepth);
+    }
+    if (value < 0 || value > DIR_SCAN_MAX_DEPTH) {
+      throw new ApiException(
+          "dir_scan 的 depth 必须在 0-" + DIR_SCAN_MAX_DEPTH + " 之间: " + value);
+    }
+    return value;
+  }
+
+  /** 校验 {@code dir_scan} 的 {@code maxRequests} 取值（与 ai-runtime 1..200000 对齐）。 */
+  public static int requireDirScanMaxRequests(Object rawMaxRequests) {
+    if (rawMaxRequests == null) {
+      throw new ApiException("dir_scan 的 maxRequests 不能为 null");
+    }
+    int value;
+    try {
+      value = Integer.parseInt(String.valueOf(rawMaxRequests).trim());
+    } catch (NumberFormatException ex) {
+      throw new ApiException("dir_scan 的 maxRequests 必须是整数: " + rawMaxRequests);
+    }
+    if (value < 1 || value > DIR_SCAN_MAX_REQUESTS) {
+      throw new ApiException(
+          "dir_scan 的 maxRequests 必须在 1-" + DIR_SCAN_MAX_REQUESTS + " 之间: " + value);
+    }
+    return value;
+  }
+
+  /**
+   * 校验 {@code dir_scan} 的 {@code extensions} 列表（与 ai-runtime 对齐：最多 10 个、
+   * 每个 1-10 个字母数字字符）。
+   */
+  public static java.util.List<String> requireDirScanExtensions(Object rawExtensions) {
+    if (!(rawExtensions instanceof java.util.List<?> list)) {
+      throw new ApiException("dir_scan 的 extensions 必须是字符串列表");
+    }
+    if (list.isEmpty() || list.size() > 10) {
+      throw new ApiException("dir_scan 的 extensions 必须包含 1-10 个条目: " + list.size());
+    }
+    java.util.List<String> values = new java.util.ArrayList<>();
+    for (Object item : list) {
+      String value = String.valueOf(item == null ? "" : item).trim();
+      if (value.isEmpty() || value.length() > 10 || !value.matches("[A-Za-z0-9]+")) {
+        throw new ApiException("dir_scan 的 extensions 条目必须是 1-10 位字母数字: " + value);
+      }
+      values.add(value);
+    }
+    return java.util.List.copyOf(values);
+  }
+
   // ------------------------------------------------------------------ 校验方法（两侧共用）
 
   /**

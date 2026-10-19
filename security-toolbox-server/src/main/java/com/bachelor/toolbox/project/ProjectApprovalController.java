@@ -45,11 +45,18 @@ public class ProjectApprovalController {
   public ProjectApproval decide(
       @PathVariable Long projectId,
       @PathVariable Long approvalId,
-      @RequestBody Map<String, String> body) {
+      @RequestBody Map<String, ?> body) {
+    String status = body.get("status") != null ? String.valueOf(body.get("status")) : DEFAULT_DECISION;
+    String comment = body.get("comment") != null ? String.valueOf(body.get("comment")) : null;
+    @SuppressWarnings("unchecked")
+    List<Map<String, Object>> stepOverrides = body.get("stepOverrides") instanceof List<?> list
+        ? (List<Map<String, Object>>) list
+        : null;
     return service.decide(
         projectId,
         approvalId,
-        body.getOrDefault("status", DEFAULT_DECISION),
-        body.get("comment"));
+        status,
+        comment,
+        stepOverrides);
   }
 }

@@ -336,7 +336,9 @@ public class TaskExecutionService {
     try {
       result = tool instanceof com.bachelor.toolbox.tool.ProjectContextRetrievalTool retrieval
           ? retrieval.executeScoped(task.getProjectId(), target, parameters, observer)
-          : tool.execute(target, parameters, observer);
+          : tool instanceof com.bachelor.toolbox.tool.SiteCrawlTool crawler
+              ? crawler.executeScoped(task.getProjectId(), target, parameters, observer)
+              : tool.execute(target, parameters, observer);
     } catch (ToolExecutionTimeoutException timeout) {
       if (observer.isCancellationRequested()) {
         throw new TaskCancelledException();

@@ -129,7 +129,7 @@ class BusinessDataResetServiceTests {
     when(runtime.clearProjectIndex(project.getId())).thenReturn(3);
     entityManager.flush();
 
-    BusinessDataResetService.ResetResult result = service.clear("CLEAR");
+    BusinessDataResetService.ResetResult result = service.clear("永久清空");
 
     assertThat(result.deletedRecords()).isEqualTo(6);
     assertThat(notifications.count()).isZero();
@@ -156,7 +156,7 @@ class BusinessDataResetServiceTests {
     tasks.save(task(project.getId(), target.getId(), "PENDING"));
     entityManager.flush();
 
-    assertThatThrownBy(() -> service.clear("CLEAR"))
+    assertThatThrownBy(() -> service.clear("永久清空"))
         .isInstanceOf(ApiException.class)
         .hasMessageContaining("任务");
 
@@ -168,7 +168,7 @@ class BusinessDataResetServiceTests {
   void rejectsResetWhileTrafficProxyIsRunning() {
     when(trafficProxy.status()).thenReturn(proxyStatus(true));
 
-    assertThatThrownBy(() -> service.clear("CLEAR"))
+    assertThatThrownBy(() -> service.clear("永久清空"))
         .isInstanceOf(ApiException.class)
         .hasMessageContaining("流量代理");
     verify(runtime, never()).clearProjectIndex(org.mockito.ArgumentMatchers.anyLong());
@@ -185,7 +185,7 @@ class BusinessDataResetServiceTests {
     trafficSessions.save(session);
     entityManager.flush();
 
-    assertThatThrownBy(() -> service.clear("CLEAR"))
+    assertThatThrownBy(() -> service.clear("永久清空"))
         .isInstanceOf(ApiException.class)
         .hasMessageContaining("流量代理");
 
@@ -200,7 +200,7 @@ class BusinessDataResetServiceTests {
     when(runtime.clearProjectIndex(project.getId()))
         .thenThrow(new AiAgentRuntimeClient.RuntimeUnavailableException("runtime down"));
 
-    assertThatThrownBy(() -> service.clear("CLEAR"))
+    assertThatThrownBy(() -> service.clear("永久清空"))
         .isInstanceOf(AiAgentRuntimeClient.RuntimeUnavailableException.class);
 
     assertThat(projects.count()).isEqualTo(1);
@@ -234,7 +234,7 @@ class BusinessDataResetServiceTests {
             failingAudit,
             transactionManager);
 
-    assertThatThrownBy(() -> failingService.clear("CLEAR"))
+    assertThatThrownBy(() -> failingService.clear("永久清空"))
         .isInstanceOf(IllegalStateException.class)
         .hasMessage("audit unavailable");
 
@@ -244,9 +244,12 @@ class BusinessDataResetServiceTests {
 
   @Test
   void requiresExactConfirmationPhrase() {
+    assertThatThrownBy(() -> service.clear("永久清空 "))
+        .isInstanceOf(ApiException.class)
+        .hasMessageContaining("永久清空");
     assertThatThrownBy(() -> service.clear("clear"))
         .isInstanceOf(ApiException.class)
-        .hasMessageContaining("CLEAR");
+        .hasMessageContaining("永久清空");
     verify(trafficProxy, never()).status();
   }
 

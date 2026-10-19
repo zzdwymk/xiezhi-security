@@ -38,6 +38,14 @@ class RuntimeProtocolDiagnosticsTests {
         Arguments.of("AI Runtime 本轮未完成：EVIDENCE_ASSESSMENT_FAILED", "RUNTIME_TERMINAL", "EVIDENCE_ASSESSMENT_FAILED"),
         Arguments.of("AI Runtime 返回失败终态：TURN_TIMEOUT", "RUNTIME_TERMINAL", "TURN_TIMEOUT"),
         Arguments.of("AI Runtime 本轮未完成：MODEL_ACCESS_DENIED", "RUNTIME_TERMINAL", "MODEL_ACCESS_DENIED"),
+        Arguments.of("AI Runtime 本轮未完成：MODEL_NOT_CONFIGURED", "RUNTIME_TERMINAL", "MODEL_NOT_CONFIGURED"),
+        Arguments.of("AI Runtime 返回失败终态：MODEL_NOT_CONFIGURED", "RUNTIME_TERMINAL", "MODEL_NOT_CONFIGURED"),
+        Arguments.of("AI Runtime 本轮未完成：MODEL_SERVICE_UNAVAILABLE", "RUNTIME_TERMINAL", "MODEL_SERVICE_UNAVAILABLE"),
+        Arguments.of("AI Runtime 返回失败终态：MODEL_REQUEST_FAILED", "RUNTIME_TERMINAL", "MODEL_REQUEST_FAILED"),
+        Arguments.of("AI Runtime 本轮未完成：MODEL_TIMEOUT", "RUNTIME_TERMINAL", "MODEL_TIMEOUT"),
+        Arguments.of("AI Runtime 本轮未完成：UNKNOWN", "RUNTIME_TERMINAL", "UNKNOWN_RUNTIME_TERMINAL"),
+        Arguments.of("AI Runtime 本轮未完成：MODEL_NOT_CONFIGURED extra", "RUNTIME_TERMINAL", "UNKNOWN_RUNTIME_TERMINAL"),
+        Arguments.of("AI Runtime 返回失败终态：MODEL_NOT_CONFIGURED\\nEXFILTRATE", "RUNTIME_TERMINAL", "UNKNOWN_RUNTIME_TERMINAL"),
         Arguments.of("AI Runtime SQLMap 计划必须要求审批", "JAVA_SEMANTIC", "AUTHORIZATION_MISMATCH"),
         Arguments.of("AI Runtime 候选 Ledger 摘要链无效", "JAVA_LEDGER", "LEDGER_DIGEST_INVALID"),
         Arguments.of("Java Ledger 未完整持久化 Runtime 事件流", "JAVA_LEDGER", "LEDGER_PERSISTENCE_INVALID"),
@@ -54,10 +62,120 @@ class RuntimeProtocolDiagnosticsTests {
   }
 
   @Test
+  void modelProviderTerminalCodesAreNeverReportedAsIntegrityFailures() {
+    // Regression: the runtime answers MODEL_NOT_CONFIGURED with a well-formed fail-closed turn,
+    // so the operator must be told to configure the model — not that the response was corrupt.
+    for (var message : List.of(
+        "AI Runtime 本轮未完成：MODEL_NOT_CONFIGURED",
+        "AI Runtime 返回失败终态：MODEL_NOT_CONFIGURED")) {
+      var failure = RuntimeProtocolDiagnostics.classify(
+          new AiAgentRuntimeClient.RuntimeProtocolException(message));
+      assertThat(failure.stage()).isEqualTo(RuntimeProtocolDiagnostics.Stage.RUNTIME_TERMINAL);
+      assertThat(failure.code()).isEqualTo(RuntimeProtocolDiagnostics.Code.MODEL_NOT_CONFIGURED);
+      assertThat(RuntimeProtocolDiagnostics.userMessage(failure))
+          .contains("AI 模型未配置或未启用", "系统设置", "尚未提交审批申请", "未创建检测任务", "未执行任何检测")
+          .doesNotContain("完整性校验", "完整性", "检查模型连接");
+    }
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "AI Runtime 本轮未完成：MODEL_ACCESS_DENIED",
+      "AI Runtime 本轮未完成：MODEL_RATE_LIMITED",
+      "AI Runtime 返回失败终态：MODEL_TIMEOUT",
+      "AI Runtime 返回失败终态：MODEL_SERVICE_UNAVAILABLE",
+      "AI Runtime 本轮未完成：MODEL_REQUEST_FAILED",
+      "AI Runtime 本轮未完成：TURN_TIMEOUT"
+  })
+  void everyRuntimeTerminalCodeExplainsTheActualCause(String message) {
+    var failure = RuntimeProtocolDiagnostics.classify(
+        new AiAgentRuntimeClient.RuntimeProtocolException(message));
+    assertThat(failure.stage()).isEqualTo(RuntimeProtocolDiagnostics.Stage.RUNTIME_TERMINAL);
+    assertThat(failure.code()).isNotIn(
+        RuntimeProtocolDiagnostics.Code.UNKNOWN_PROTOCOL_FAILURE,
+        RuntimeProtocolDiagnostics.Code.UNKNOWN_RUNTIME_TERMINAL);
+    assertThat(RuntimeProtocolDiagnostics.userMessage(failure))
+        .contains("本轮已安全停止", "尚未提交审批申请", "未创建检测任务", "未执行任何检测")
+        .doesNotContain("完整性校验", "完整性");
+  }
+
+  @Test
   void nullMessageIsUnknown() {
     assertThat(RuntimeProtocolDiagnostics.classify(
         new AiAgentRuntimeClient.RuntimeProtocolException(null)).code())
         .isEqualTo(RuntimeProtocolDiagnostics.Code.UNKNOWN_PROTOCOL_FAILURE);
+  }
+
+  @Test
+  void unknownProtocolFailureNoLongerBlamesTheModelConnection() {
+    // Regression: JAVA_PROTOCOL failures were shown with "请检查模型连接后重试" even though the
+    // model connection had been verified as healthy, misleading operators into reconnecting.
+    var failure = RuntimeProtocolDiagnostics.classify(
+        new AiAgentRuntimeClient.RuntimeProtocolException("unrecognized internal failure"));
+    assertThat(failure.stage()).isEqualTo(RuntimeProtocolDiagnostics.Stage.JAVA_PROTOCOL);
+    assertThat(RuntimeProtocolDiagnostics.userMessage(failure))
+        .contains("完整性校验", "AI 诊断记录")
+        .doesNotContain("检查模型连接");
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "AI Runtime 计划包含未知工具",
+      "AI Runtime 计划包含重复工作流节点",
+      "AI Runtime 高风险工具计划必须要求审批",
+      "AI Runtime action 风险或分组无效",
+      "AI Runtime dir_scan concurrency 必须是整数",
+      "AI Runtime 字段 extensions 类型无效",
+      "AI Runtime tool status 无效",
+      "AI Runtime 终态无效",
+      "AI Runtime modelUsage source 无效",
+      "AI Runtime knowledgeMode 无效"
+  })
+  void planAndFieldValidationFailuresAreClassifiedInsteadOfUnknown(String message) {
+    // Regression: 122 of 172 validation templates fell into UNKNOWN_PROTOCOL_FAILURE, so real
+    // plan-contract violations (e.g. a new tool or field mismatch) surfaced as a vague
+    // "integrity check" error with no actionable cause.
+    var failure = RuntimeProtocolDiagnostics.classify(
+        new AiAgentRuntimeClient.RuntimeProtocolException(message));
+    assertThat(failure.code()).isNotEqualTo(RuntimeProtocolDiagnostics.Code.UNKNOWN_PROTOCOL_FAILURE);
+    assertThat(failure.stage()).isEqualTo(RuntimeProtocolDiagnostics.Stage.JAVA_FIELDS);
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "AI Runtime 在 plan 之前发送 finish",
+      "AI Runtime 检索链路在完成前进入 plan/finish",
+      "AI Runtime 事件超过大小限制",
+      "AI Runtime 生命周期阶段顺序无效"
+  })
+  void streamOrderFailuresMapToStreamStage(String message) {
+    var failure = RuntimeProtocolDiagnostics.classify(
+        new AiAgentRuntimeClient.RuntimeProtocolException(message));
+    assertThat(failure.stage()).isEqualTo(RuntimeProtocolDiagnostics.Stage.JAVA_STREAM);
+    assertThat(failure.code()).isEqualTo(RuntimeProtocolDiagnostics.Code.STREAM_INCOMPLETE);
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "项目依据检索未返回完整结果",
+      "项目依据字段 title 格式无效",
+      "项目依据包含重复证据编号"
+  })
+  void evidenceRetrievalFailuresMapToRetrievalStage(String message) {
+    var failure = RuntimeProtocolDiagnostics.classify(
+        new AiAgentRuntimeClient.RuntimeProtocolException(message));
+    assertThat(failure.stage()).isEqualTo(RuntimeProtocolDiagnostics.Stage.JAVA_SEMANTIC);
+    assertThat(failure.code()).isEqualTo(RuntimeProtocolDiagnostics.Code.RETRIEVAL_FAILED);
+  }
+
+  @Test
+  void harnessRejectionMapsToModelRequestFailure() {
+    var failure = RuntimeProtocolDiagnostics.classify(
+        new AiAgentRuntimeClient.RuntimeProtocolException("AI Runtime 拒绝了 Harness 请求（HTTP 403）"));
+    assertThat(failure.code()).isEqualTo(RuntimeProtocolDiagnostics.Code.MODEL_REQUEST_FAILED);
+    assertThat(RuntimeProtocolDiagnostics.userMessage(failure))
+        .contains("模型服务拒绝了本次请求")
+        .doesNotContain("完整性校验");
   }
 
   @ParameterizedTest
@@ -182,11 +300,15 @@ class RuntimeProtocolDiagnosticsTests {
           .isInstanceOf(ApiException.class).hasMessageContaining("本轮已安全停止")
           .hasMessageNotContaining("EXFILTRATE");
       assertThat(appender.list).singleElement().satisfies(event -> {
-        assertThat(event.getMessage()).isEqualTo("AI_RUNTIME_PROTOCOL_REJECTED stage={} code={}");
+        assertThat(event.getMessage())
+            .isEqualTo("AI_RUNTIME_PROTOCOL_REJECTED stage={} code={} fp={}");
         assertThat(event.getFormattedMessage()).doesNotContain("EXFILTRATE", "password", "sk-secret", "\n");
-        assertThat(event.getArgumentArray()).hasSize(2);
+        // The fingerprint is a hex prefix of a SHA-256 over the fixed template — it never
+        // carries request text and cannot reverse to the forged content in this test.
+        assertThat(event.getArgumentArray()).hasSize(3);
         assertThat(event.getArgumentArray()[0]).isInstanceOf(RuntimeProtocolDiagnostics.Stage.class);
         assertThat(event.getArgumentArray()[1]).isInstanceOf(RuntimeProtocolDiagnostics.Code.class);
+        assertThat((String) event.getArgumentArray()[2]).matches("[0-9a-f]{16}|null|unavailable");
         assertThat(event.getThrowableProxy()).isNull();
       });
       verifyNoInteractions(planner, guard, reviewer);

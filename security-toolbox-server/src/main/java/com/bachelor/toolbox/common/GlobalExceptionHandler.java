@@ -34,8 +34,13 @@ public class GlobalExceptionHandler {
   private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
   @ExceptionHandler(ApiException.class)
-  public ResponseEntity<ApiErrorResponse> handleApi(ApiException ex) {
+  public ResponseEntity<ApiErrorResponse> handleApi(
+      ApiException ex, HttpServletRequest request, HttpServletResponse response) {
     log.warn("API 请求处理异常: {}", localizedMessage(ex.getMessage(), ""), ex);
+    if (isEventStream(request, response)) {
+      log.debug("流式请求在事件流阶段失败，已终止事件流而不追写 JSON 错误体");
+      return null;
+    }
     return error(HttpStatus.BAD_REQUEST, localizedMessage(ex.getMessage(), "请求处理失败"));
   }
 
@@ -104,21 +109,40 @@ public class GlobalExceptionHandler {
     // A started event stream has already sent its status and media type. Never
     // append an API JSON error to it or try to change a committed response.
     if (response.isCommitted()) return null;
-    boolean eventStream =
-        response.getContentType() != null
-            && MediaType.TEXT_EVENT_STREAM.includes(MediaType.parseMediaType(response.getContentType()));
-    // DispatcherServlet clears the producible-media-types attribute before
-    // exception resolution, so a stream that has not sent its first event must
-    // be identified from the original handler rather than that attribute.
-    Object originalHandler = request.getAttribute(HandlerMapping.BEST_MATCHING_HANDLER_ATTRIBUTE);
-    if (originalHandler instanceof HandlerMethod handler) {
-      eventStream |= SseEmitter.class.isAssignableFrom(handler.getReturnType().getParameterType());
-    }
-    if (eventStream) {
+    if (isEventStream(request, response)) {
       response.setStatus(HttpStatus.SERVICE_UNAVAILABLE.value());
       return null;
     }
     return error(HttpStatus.SERVICE_UNAVAILABLE, "请求处理超时，请稍后重试");
+  }
+
+  /**
+   * True when the failing request is an SSE stream. Writing an {@link ApiErrorResponse} to a stream
+   * raises {@link org.springframework.http.converter.HttpMessageNotWritableException} because the
+   * response carries {@code text/event-stream}, which hides the real failure and emits a cascade of
+   * secondary errors. Such requests must only be terminated, never answered with JSON.
+   */
+  private boolean isEventStream(HttpServletRequest request, HttpServletResponse response) {
+    if (request == null || response == null) return false;
+    if (response.isCommitted()) return true;
+    boolean eventStream = false;
+    String contentType = response.getContentType();
+    if (contentType != null) {
+      try {
+        eventStream = MediaType.TEXT_EVENT_STREAM.includes(MediaType.parseMediaType(contentType));
+      } catch (RuntimeException ignored) {
+        eventStream = false;
+      }
+    }
+    // DispatcherServlet clears the producible-media-types attribute before exception
+    // resolution, so a stream that has not sent its first event must be identified
+    // from the original handler rather than that attribute.
+    Object originalHandler = request.getAttribute(HandlerMapping.BEST_MATCHING_HANDLER_ATTRIBUTE);
+    if (originalHandler instanceof HandlerMethod handler) {
+      Class<?> returnType = handler.getReturnType().getParameterType();
+      eventStream |= SseEmitter.class.isAssignableFrom(returnType);
+    }
+    return eventStream;
   }
 
   @ExceptionHandler(ConnectException.class)
@@ -128,13 +152,23 @@ public class GlobalExceptionHandler {
   }
 
   @ExceptionHandler(UncheckedIOException.class)
-  public ResponseEntity<ApiErrorResponse> handleUncheckedIo(UncheckedIOException ex) {
+  public ResponseEntity<ApiErrorResponse> handleUncheckedIo(
+      UncheckedIOException ex, HttpServletRequest request, HttpServletResponse response) {
+    if (isEventStream(request, response)) {
+      log.debug("流式响应写入中断，已终止事件流而不追写 JSON 错误体");
+      return null;
+    }
     log.error("本地文件读写失败", ex);
     return error(HttpStatus.INTERNAL_SERVER_ERROR, "本地文件读写失败，请检查磁盘空间和访问权限后重试");
   }
 
   @ExceptionHandler(IOException.class)
-  public ResponseEntity<ApiErrorResponse> handleIo(IOException ex) {
+  public ResponseEntity<ApiErrorResponse> handleIo(
+      IOException ex, HttpServletRequest request, HttpServletResponse response) {
+    if (isEventStream(request, response)) {
+      log.debug("流式响应写入中断，已终止事件流而不追写 JSON 错误体");
+      return null;
+    }
     log.error("本地文件或流处理失败", ex);
     return error(HttpStatus.INTERNAL_SERVER_ERROR, "本地文件或流处理失败，请检查磁盘空间和访问权限后重试");
   }
@@ -147,7 +181,13 @@ public class GlobalExceptionHandler {
   }
 
   @ExceptionHandler(Exception.class)
-  public ResponseEntity<ApiErrorResponse> handleUnexpected(Exception ex) {
+  public ResponseEntity<ApiErrorResponse> handleUnexpected(
+      Exception ex, HttpServletRequest request, HttpServletResponse response) {
+    if (isEventStream(request, response)) {
+      // 事件流已建立或已判定为 SSE：保留原始异常，绝不追写 JSON。
+      log.error("流式请求在事件流阶段发生未预期异常，已终止事件流", ex);
+      return null;
+    }
     log.error("服务器处理请求时发生未预期异常", ex);
     return error(HttpStatus.INTERNAL_SERVER_ERROR, "服务器处理失败，请稍后重试");
   }

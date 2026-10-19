@@ -406,7 +406,14 @@ public class AgentOrchestrator {
           } catch (AiAgentRuntimeClient.RuntimeProtocolException ex) {
             provenance.markProtocolRejected();
             RuntimeProtocolDiagnostics.Failure failure = RuntimeProtocolDiagnostics.classify(ex);
-            log.warn("AI_RUNTIME_PROTOCOL_REJECTED stage={} code={}", failure.stage(), failure.code());
+            // Log only the finite enums plus a fingerprint of the fixed message template.
+            // The templates are developer-authored constants, so the fingerprint identifies
+            // which validation fired without logging request text, tool parameters or causes.
+            log.warn(
+                "AI_RUNTIME_PROTOCOL_REJECTED stage={} code={} fp={}",
+                failure.stage(),
+                failure.code(),
+                RuntimeProtocolDiagnostics.fingerprint(ex));
             throw new ApiException(RuntimeProtocolDiagnostics.userMessage(failure));
           } catch (AiAgentRuntimeClient.RuntimeUnavailableException ex) {
             provenance.markFallback("RUNTIME_UNAVAILABLE");
@@ -532,6 +539,7 @@ public class AgentOrchestrator {
             : planContinuity.prepare(executionRequest, session.id(), decision.normalizedPlan(), planBaseline);
         if (deliveredCandidate != null) planContinuity.stage(deliveredCandidate);
         Long autoApprovalId = null;
+        String autoApprovalJudgeJson = null;
         if ("REQUIRED".equals(decision.approvalStatus())) {
           if (approvalService == null) {
             throw new ApiException("执行确认服务不可用，未保存方案，未派发任务");
@@ -542,6 +550,7 @@ public class AgentOrchestrator {
               throw new ApiException("执行确认记录未保存");
             }
             autoApprovalId = approvalRecord.getId();
+            autoApprovalJudgeJson = approvalRecord.getAiJudgeJson();
           } catch (Exception ex) {
             throw new ApiException("无法保存待确认原计划，未派发任务，请重试");
           }
@@ -567,6 +576,19 @@ public class AgentOrchestrator {
         if (request.automaticExecutionIntent()) approvalEventData.put("executionDecision", provenance.executionDecision);
         if (autoApprovalId != null) {
           approvalEventData.put("approvalId", autoApprovalId);
+        }
+        if (autoApprovalJudgeJson != null && !autoApprovalJudgeJson.isBlank()) {
+          // The judge verdict is advisory metadata for the confirmation dialog; it never changes
+          // the approval decision. Sent here so the chat dialog can show "疑似 xxx 行为" without
+          // an extra round-trip to the plan endpoint.
+          try {
+            approvalEventData.put(
+                "judge",
+                new com.fasterxml.jackson.databind.ObjectMapper()
+                    .readValue(autoApprovalJudgeJson, Object.class));
+          } catch (com.fasterxml.jackson.core.JsonProcessingException ignored) {
+            // A malformed stored verdict must never abort the approval flow; omit it.
+          }
         }
         emit(
             sink,

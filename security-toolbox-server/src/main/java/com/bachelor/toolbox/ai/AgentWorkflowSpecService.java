@@ -143,13 +143,87 @@ public class AgentWorkflowSpecService {
   }
 
   private AgentWorkflowSpec upgradeLegacyDefault(Long scopeId, AgentWorkflowSpec stored) {
-    // Only migrate the exact shipped default. Custom graphs and frozen revisions
-    // retain their original dependency semantics and identity. Reading latest is
-    // included because the UI sends that explicit identity when starting a turn.
-    if (stored.getSpecDigest().equals(digest(write(canonicalize(normalize(legacyDefaultSpec())))))) {
+    // Only migrate an exact shipped default. Custom graphs and frozen revisions retain their
+    // original dependency semantics and identity. Reading latest is included because the UI sends
+    // that explicit identity when starting a turn.
+    //
+    // Every shipped default version is matched, not just the current one: when the shipped default
+    // gains a node, an existing project still holds the *previous* shipped default, and matching
+    // only the current digest would silently stop upgrading it (the node would never reach it).
+    if (shippedDefaultDigests().contains(stored.getSpecDigest())) {
       return appendSnapshot(scopeId, defaultSpec()).stored();
     }
     return stored;
+  }
+
+  /** Digests of every shipped default generation, current first. */
+  private java.util.Set<String> shippedDefaultDigests() {
+    java.util.Set<String> digests = new java.util.LinkedHashSet<>();
+    digests.add(digest(write(canonicalize(normalize(legacyDefaultSpec())))));
+    for (Map<String, Object> retired : retiredLegacyDefaultSpecs()) {
+      digests.add(digest(write(canonicalize(normalize(retired)))));
+    }
+    return java.util.Set.copyOf(digests);
+  }
+
+  /**
+   * Shipped defaults from earlier releases, kept only so their owners can be upgraded.
+   *
+   * <p>Append a new entry here whenever {@link #legacyDefaultSpec()} gains or changes a step;
+   * otherwise projects created on the older default are never migrated and keep missing the newer
+   * capability (for example {@code dir_scan}).
+   */
+  private List<Map<String, Object>> retiredLegacyDefaultSpecs() {
+    List<Map<String, Object>> retired = new ArrayList<>();
+
+    // Generation 1: the original 8-step default, before any enumeration tool existed.
+    retired.add(
+        presetOne(
+            defaultStep("context", "retrieve_project_context", 0, "SAFE", false),
+            defaultStep("service-scan", "nmap_service_scan", 1, "SAFE", false),
+            defaultStep("headers", "http_headers", 1, "SAFE", false),
+            defaultStep("tls", "tls_config", 1, "SAFE", false),
+            defaultStep("http-security", "http_security_check", 2, "SAFE", false),
+            defaultStep("nuclei", "nuclei_scan", 3, "CAUTION", true),
+            defaultStep("afrog", "afrog_scan", 4, "CAUTION", true),
+            defaultStep("xray", "xray_scan", 5, "CAUTION", true)));
+
+    // Generation 2: 9 steps, dir_scan added but still marked SAFE and still only a subset of tools.
+    retired.add(
+        presetOne(
+            defaultStep("context", "retrieve_project_context", 0, "SAFE", false),
+            defaultStep("service-scan", "nmap_service_scan", 1, "SAFE", false),
+            defaultStep("headers", "http_headers", 1, "SAFE", false),
+            defaultStep("tls", "tls_config", 1, "SAFE", false),
+            defaultStep("dir-scan", "dir_scan", 2, "SAFE", false),
+            defaultStep("http-security", "http_security_check", 2, "SAFE", false),
+            defaultStep("nuclei", "nuclei_scan", 3, "CAUTION", true),
+            defaultStep("afrog", "afrog_scan", 4, "CAUTION", true),
+            defaultStep("xray", "xray_scan", 5, "CAUTION", true)));
+
+    // Generation 3: 10 steps, site_crawl (页面链接爬取) added as the automatic recon step.
+    retired.add(
+        presetOne(
+            defaultStep("context", "retrieve_project_context", 0, "SAFE", false),
+            defaultStep("service-scan", "nmap_service_scan", 1, "SAFE", false),
+            defaultStep("headers", "http_headers", 1, "SAFE", false),
+            defaultStep("tls", "tls_config", 1, "SAFE", false),
+            defaultStep("site-crawl", "site_crawl", 2, "SAFE", false),
+            defaultStep("dir-scan", "dir_scan", 2, "SAFE", false),
+            defaultStep("http-security", "http_security_check", 2, "SAFE", false),
+            defaultStep("nuclei", "nuclei_scan", 3, "CAUTION", true),
+            defaultStep("afrog", "afrog_scan", 4, "CAUTION", true),
+            defaultStep("xray", "xray_scan", 5, "CAUTION", true)));
+
+    return retired;
+  }
+
+  private Map<String, Object> presetOne(Map<String, Object>... steps) {
+    Map<String, Object> value = new LinkedHashMap<>();
+    value.put("version", 1);
+    value.put("preset", "runtime-default");
+    value.put("steps", List.of(steps));
+    return value;
   }
 
   /** Keeps the selected immutable revision visible to legacy runtime calls for exactly one turn. */
@@ -708,6 +782,28 @@ public class AgentWorkflowSpecService {
     return value;
   }
 
+  /**
+   * The shipped default workflow.
+   *
+   * <p><strong>It lists every executable tool.</strong> A tool missing from the snapshot is
+   * invisible to the model ({@code build_workflow_capability_manifest} only explains nodes that
+   * exist), so omitting a tool here does not make the platform safer — it makes the assistant
+   * unable to answer "does this platform support X", and unable to propose X when the operator asks
+   * for it.
+   *
+   * <p>Safety is expressed through {@code requiresApproval}, not through absence:
+   *
+   * <ul>
+   *   <li>Whole-target, read-mostly tools (ports, service scan, headers, TLS, path enumeration) are
+   *       {@code SAFE} and need no extra confirmation beyond the per-turn plan confirmation.
+   *   <li>Everything intrusive or scanner-driven is {@code CAUTION} with
+   *       {@code requiresApproval=true}, so the administrator sees exactly what will run and
+   *       approves it through the 执行确认与审计 flow before any task is created.
+   * </ul>
+   *
+   * <p>Nodes are grouped by phase so the default graph stays readable: group 0 context, 1 mapping,
+   * 2 discovery, 3 scanning, 4 validation.
+   */
   private Map<String, Object> legacyDefaultSpec() {
     Map<String, Object> value = new LinkedHashMap<>();
     value.put("version", 1);
@@ -715,14 +811,27 @@ public class AgentWorkflowSpecService {
     value.put(
         "steps",
         List.of(
+            // ---- group 0: context (read-only, produces no action)
             defaultStep("context", "retrieve_project_context", 0, "SAFE", false),
+            // ---- group 1: mapping
             defaultStep("service-scan", "nmap_service_scan", 1, "SAFE", false),
+            defaultStep("port-probe", "tcp_ports", 1, "SAFE", false),
             defaultStep("headers", "http_headers", 1, "SAFE", false),
             defaultStep("tls", "tls_config", 1, "SAFE", false),
+            // ---- group 2: discovery (site crawl first: 页面链接自动提取；dir_scan 为可选字典枚举)
+            defaultStep("site-crawl", "site_crawl", 2, "SAFE", false),
+            defaultStep("dir-scan", "dir_scan", 2, "CAUTION", true),
             defaultStep("http-security", "http_security_check", 2, "SAFE", false),
+            // ---- group 3: scanning (all intrusive, all administrator-confirmed)
             defaultStep("nuclei", "nuclei_scan", 3, "CAUTION", true),
-            defaultStep("afrog", "afrog_scan", 4, "CAUTION", true),
-            defaultStep("xray", "xray_scan", 5, "CAUTION", true)));
+            defaultStep("afrog", "afrog_scan", 3, "CAUTION", true),
+            defaultStep("xray", "xray_scan", 3, "CAUTION", true),
+            defaultStep("zap-scan", "zap_scan", 3, "CAUTION", true),
+            defaultStep("fscan", "fscan_scan", 3, "CAUTION", true),
+            // ---- group 4: validation
+            defaultStep("msf", "msf_scan", 4, "CAUTION", true),
+            defaultStep("sqlmap", "sqlmap_scan", 4, "CAUTION", true),
+            defaultStep("zap-fuzz", "zap_fuzz", 4, "CAUTION", true)));
     return value;
   }
 

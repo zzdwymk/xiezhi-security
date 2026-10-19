@@ -7,6 +7,7 @@ import static org.mockito.Mockito.when;
 import com.bachelor.toolbox.dependency.CommandRunner.CommandResult;
 import com.bachelor.toolbox.dependency.SystemDependenciesResponse.DependencyStatus;
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
@@ -307,13 +308,52 @@ class DependencyDetectionServiceTests {
           assertThat(arguments).containsExactly("-disable-update-check", "-version");
           return executable.getFileName().toString().startsWith("nuclei")
               ? CommandResult.completed(0, "Nuclei Engine Version: 3.5.0")
-              : CommandResult.completed(0, "Current Version: v1.7.1 httpx");
+              : CommandResult.completed(0, "[INF] Current Version: v1.7.1");
         };
 
     SystemDependenciesResponse response = service(locator, runner).detect();
 
-    assertThat(find(response, "Nuclei").status()).isEqualTo("AVAILABLE");
-    assertThat(find(response, "ProjectDiscovery httpx").status()).isEqualTo("AVAILABLE");
+    DependencyStatus nuclei = find(response, "Nuclei");
+    DependencyStatus httpx = find(response, "ProjectDiscovery httpx");
+    assertThat(nuclei.status()).isEqualTo("AVAILABLE");
+    assertThat(httpx.status()).isEqualTo("AVAILABLE");
+    assertThat(httpx.version()).isEqualTo("[INF] Current Version: v1.7.1");
+  }
+
+  @Test
+  void extractsActualProjectDiscoveryHttpxCurrentVersionLine() {
+    ExecutableLocator locator = locateCandidate("httpx", Path.of("test-data/tools/httpx"));
+    DependencyStatus httpx =
+        find(
+            service(
+                    locator,
+                    (executable, arguments, timeout) ->
+                        CommandResult.completed(
+                            0,
+                            "[INF] Current Version: v1.7.1\n"))
+                .detect(),
+            "ProjectDiscovery httpx");
+
+    assertThat(httpx.status()).isEqualTo("AVAILABLE");
+    assertThat(httpx.version()).isEqualTo("[INF] Current Version: v1.7.1");
+    assertThat(httpx.output()).contains("Current Version: v1.7.1");
+  }
+
+  @Test
+  void doesNotTreatGenericProjectDiscoveryBannerAsVersionOrProofOfHttpx() {
+    ExecutableLocator locator = locateCandidate("httpx", Path.of("test-data/tools/httpx"));
+    DependencyStatus httpx =
+        find(
+            service(
+                    locator,
+                    (executable, arguments, timeout) ->
+                        CommandResult.completed(
+                            0,
+                            "\n    projectdiscovery.io\n\n   _   _   _\n"))
+                .detect(),
+            "ProjectDiscovery httpx");
+
+    assertThat(httpx.status()).isEqualTo("INCOMPATIBLE");
   }
 
   @Test
@@ -368,6 +408,31 @@ class DependencyDetectionServiceTests {
         .isEqualTo("依赖检测执行失败。")
         .doesNotContain("private", "IllegalStateException");
     assertThat(find(response, "Nuclei").status()).isEqualTo("MISSING");
+  }
+
+  @Test
+  void discoversPackagedProjectDiscoveryHttpxUnderConfiguredToolsDirectory() throws Exception {
+    Path toolsRoot = Files.createTempDirectory("toolbox-tools");
+    Path executable = toolsRoot.resolve("httpx").resolve("httpx.exe");
+    Files.createDirectories(executable.getParent());
+    Files.write(executable, new byte[] {0x01});
+    AtomicReference<Path> executed = new AtomicReference<>();
+    ExecutableLocator locator = candidates ->
+        candidates.stream()
+            .filter(candidate -> candidate.equals(executable.toString()))
+            .findFirst()
+            .map(Path::of);
+    CommandRunner runner = (path, arguments, timeout) -> {
+      executed.set(path);
+      assertThat(arguments).contains("-version");
+      return CommandResult.completed(0, "projectdiscovery.io\n[INF] Current Version: v1.12.0");
+    };
+
+    DependencyStatus httpx = find(service(locator, runner, toolsRoot).detect(), "ProjectDiscovery httpx");
+
+    assertThat(executed.get()).isEqualTo(executable.toAbsolutePath().normalize());
+    assertThat(httpx.status()).isEqualTo("AVAILABLE");
+    assertThat(httpx.version()).isEqualTo("[INF] Current Version: v1.12.0");
   }
 
   @Test
@@ -435,8 +500,16 @@ class DependencyDetectionServiceTests {
   }
 
   private DependencyDetectionService service(ExecutableLocator locator, CommandRunner runner) {
+    return service(locator, runner, null);
+  }
+
+  private DependencyDetectionService service(
+      ExecutableLocator locator, CommandRunner runner, Path toolsRoot) {
     Environment environment = mock(Environment.class);
     when(environment.getProperty("spring.datasource.url", "")).thenReturn("jdbc:h2:test");
+    if (toolsRoot != null) {
+      when(environment.getProperty("TOOLBOX_TOOLS_DIR")).thenReturn(toolsRoot.toString());
+    }
     return new DependencyDetectionService(
         locator, runner, new NmapExecutableResolver(locator, "nmap"), environment, mock(ToolDirectoryHasher.class));
   }

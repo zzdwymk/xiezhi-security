@@ -85,6 +85,15 @@ public class ProjectApproval {
   @Column(columnDefinition = "text")
   private String aiProjectBinding;
 
+  /**
+   * Semantic judge verdict for this plan, serialised as JSON.
+   *
+   * <p>Null on legacy tickets and on plans created while the judge was disabled. The approval
+   * dialog treats null as "not judged" and shows the action as needing review rather than implying
+   * it was cleared.
+   */
+  @Column(columnDefinition = "text")
+  private String aiJudgeJson;
 
   @PrePersist
   void prePersist() {

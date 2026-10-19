@@ -50,7 +50,8 @@ class AgentContinuationWorkerTests {
             executions,
             workflows,
             authorization,
-            true);
+            true,
+            3);
   }
 
   @Test
@@ -100,6 +101,76 @@ class AgentContinuationWorkerTests {
     assertThat(request.getValue().workflowDigest()).isEqualTo(claim.workflowDigest());
   }
 
+  /**
+   * The continuation turn must be allowed to *propose* a next step, otherwise the whole loop is a
+   * dead end (tasks finish, the model summarises, nothing can ever follow up). Guarding still
+   * happens downstream, so the prompt only has to avoid two things: forbidding proposals, and
+   * inviting endless work.
+   */
+  @Test
+  void continuationPromptAsksForNextStepProposalInsteadOfForbiddingAction() {
+    CrossTurnRecoveryService.ContinuationClaim claim = claim();
+    arrangeReady(claim);
+    when(executions.prepare(claim))
+        .thenReturn(
+            new AgentContinuationExecutionService.Preparation(
+                AgentContinuationExecutionService.Preparation.Kind.EXECUTE,
+                null,
+                AgentContinuationExecution.STARTED));
+    when(orchestrator.run(any(AiAgentRequest.class))).thenReturn(response());
+    when(executions.execute(any(), any()))
+        .thenAnswer(
+            invocation -> {
+              @SuppressWarnings("unchecked")
+              Supplier<AiAgentResponse> operation = invocation.getArgument(1);
+              return operation.get();
+            });
+
+    worker.drain();
+
+    ArgumentCaptor<AiAgentRequest> request = ArgumentCaptor.forClass(AiAgentRequest.class);
+    verify(orchestrator).run(request.capture());
+    String prompt = request.getValue().prompt();
+    // It must invite a proposal...
+    assertThat(prompt).contains("提出下一步检测动作");
+    // ...while making clear the proposal needs administrator confirmation.
+    assertThat(prompt).contains("管理员在执行确认中逐次批准");
+    // The old blanket prohibition must be gone.
+    assertThat(prompt).doesNotContain("不要创建任务、执行工具或提出未授权动作");
+    // And it must explicitly offer the option to stop.
+    assertThat(prompt).contains("结束");
+  }
+
+  /** At the round budget the prompt must forbid new work, so a loop can never run forever. */
+  @Test
+  void finalAllowedRoundForbidsFurtherActions() {
+    CrossTurnRecoveryService.ContinuationClaim claim = claimAtAttempt(2, 3);
+    arrangeReady(claim);
+    when(executions.prepare(claim))
+        .thenReturn(
+            new AgentContinuationExecutionService.Preparation(
+                AgentContinuationExecutionService.Preparation.Kind.EXECUTE,
+                null,
+                AgentContinuationExecution.STARTED));
+    when(orchestrator.run(any(AiAgentRequest.class))).thenReturn(response());
+    when(executions.execute(any(), any()))
+        .thenAnswer(
+            invocation -> {
+              @SuppressWarnings("unchecked")
+              Supplier<AiAgentResponse> operation = invocation.getArgument(1);
+              return operation.get();
+            });
+
+    worker.drain();
+
+    ArgumentCaptor<AiAgentRequest> request = ArgumentCaptor.forClass(AiAgentRequest.class);
+    verify(orchestrator).run(request.capture());
+    String prompt = request.getValue().prompt();
+    assertThat(prompt).contains("已达到允许的最大轮次");
+    assertThat(prompt).contains("禁止再提出任何新的检测动作");
+    assertThat(prompt).doesNotContain("提出下一步检测动作");
+  }
+
   private void arrangeReady(CrossTurnRecoveryService.ContinuationClaim claim) {
     when(recovery.candidateIds()).thenReturn(List.of(claim.tombstoneId()));
     when(recovery.claim(claim.tombstoneId())).thenReturn(claim);
@@ -115,6 +186,11 @@ class AgentContinuationWorkerTests {
   }
 
   private static CrossTurnRecoveryService.ContinuationClaim claim() {
+    return claimAtAttempt(1, 3);
+  }
+
+  private static CrossTurnRecoveryService.ContinuationClaim claimAtAttempt(
+      int attempt, int maxRounds) {
     String workflowDigest = "sha256:" + "a".repeat(64);
     AgentWorkflowSpecService.WorkflowSnapshot snapshot =
         new AgentWorkflowSpecService.WorkflowSnapshot(
@@ -143,7 +219,7 @@ class AgentContinuationWorkerTests {
         "sha256:" + "b".repeat(64),
         "sha256:" + "c".repeat(64),
         List.of(31L),
-        1,
+        attempt,
         snapshot);
   }
 
