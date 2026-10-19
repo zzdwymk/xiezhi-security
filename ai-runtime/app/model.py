@@ -27,6 +27,7 @@ from .schemas import (
     ActionPlanPlannerOutput,
     AutoIntentDecision,
     ClarificationPlannerOutput,
+    DirScanParameters,
     EmptyToolParameters,
     EvidenceBundle,
     EvidenceDecision,
@@ -118,6 +119,7 @@ SAFE_TOOLS = {
     "http_headers",
     "http_security_check",
     "tls_config",
+    "dir_scan",
     "nuclei_scan",
     "afrog_scan",
     "xray_scan",
@@ -126,6 +128,7 @@ SAFE_TOOLS = {
     "msf_scan",
     "sqlmap_scan",
     "zap_fuzz",
+    "site_crawl",
 }
 HIGH_RISK_TOOLS: set[str] = {"sqlmap_scan", "zap_fuzz"}
 EXTERNAL_WORKFLOW_TOOLS = SAFE_TOOLS - {"retrieve_project_context"}
@@ -136,6 +139,7 @@ _ACTION_PARAMETER_MODELS: dict[str, type[BaseModel]] = {
     "http_headers": EmptyToolParameters,
     "http_security_check": HttpSecurityParameters,
     "tls_config": EmptyToolParameters,
+    "dir_scan": DirScanParameters,
     "nuclei_scan": NucleiParameters,
     "afrog_scan": PocSelectionParameters,
     "xray_scan": PocSelectionParameters,
@@ -144,6 +148,7 @@ _ACTION_PARAMETER_MODELS: dict[str, type[BaseModel]] = {
     "msf_scan": MsfParameters,
     "sqlmap_scan": SqlmapParameters,
     "zap_fuzz": ZapFuzzParameters,
+    "site_crawl": EmptyToolParameters,
 }
 
 _PARAMETER_SCHEMAS: dict[str, dict[str, Any]] = {
@@ -194,6 +199,26 @@ _PARAMETER_SCHEMAS: dict[str, dict[str, Any]] = {
     "tls_config": {
         "type": "object",
         "properties": {},
+        "additionalProperties": False,
+    },
+    "site_crawl": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+    },
+    "dir_scan": {
+        "type": "object",
+        "properties": {
+            "dictionary": {"type": "string", "minLength": 1, "maxLength": 64},
+            "concurrency": {"type": "integer", "minimum": 1, "maximum": 50},
+            "depth": {"type": "integer", "minimum": 0, "maximum": 3},
+            "maxRequests": {"type": "integer", "minimum": 1, "maximum": 200000},
+            "extensions": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 10},
+                "maxItems": 10,
+            },
+        },
         "additionalProperties": False,
     },
     "nuclei_scan": {
@@ -1636,7 +1661,7 @@ SYSTEM_PROMPT = (
     "4. 意图含糊时先用上下文推断；仍不够再 clarify。不要把明确执行请求误判成咨询。\n"
     "5. “能扫的都扫”→ 按白名单组合低风险工具。\n\n"
     "安全边界：只能使用白名单工具；禁止 HIGH 风险、shell、利用、爆破和任意命令参数。\n"
-    "白名单：retrieve_project_context, nmap_service_scan, tcp_ports, http_headers, http_security_check, tls_config, nuclei_scan, afrog_scan, xray_scan, zap_scan, fscan_scan, msf_scan, sqlmap_scan, zap_fuzz\n\n"
+    "白名单：retrieve_project_context, nmap_service_scan, tcp_ports, http_headers, http_security_check, tls_config, dir_scan, nuclei_scan, afrog_scan, xray_scan, zap_scan, fscan_scan, msf_scan, sqlmap_scan, zap_fuzz\n\n"
     'JSON：{{"summary":string,"answer":string,"intent":"answer|plan|clarify","actions":[{{"tool":白名单枚举,"parameters":对应工具的严格对象,"risk":"SAFE|CAUTION","requiresApproval":boolean,"group":integer}}]}}'
     + "\n" + _CHINESE_STATUS_DISPLAY_GUIDANCE + _ANSWER_REFERENCE_GUIDANCE
 )

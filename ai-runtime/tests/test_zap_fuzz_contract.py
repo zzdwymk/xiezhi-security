@@ -20,7 +20,12 @@ PARAMETERS = {
 
 def test_catalog_matches_java_and_all_python_contract_surfaces():
     catalog = (Path(__file__).resolve().parents[2] / "security-toolbox-server/src/main/java/com/bachelor/toolbox/ai/AiToolCatalog.java").read_text(encoding="utf-8")
-    java_codes = set(re.findall(r'"([a-z_]+)"', catalog))
+    # Only parse the EXECUTABLE_CODES list body. Reading every string literal in the file also
+    # picks up display names, phase names and enum values, which made this assertion fail as soon
+    # as the catalog gained descriptive metadata.
+    body = re.search(r"EXECUTABLE_CODES\s*=\s*List\.of\((.*?)\);", catalog, re.S)
+    assert body is not None, "cannot locate EXECUTABLE_CODES in AiToolCatalog.java"
+    java_codes = {"retrieve_project_context", *re.findall(r'"([a-z_]+)"', body.group(1))}
     assert java_codes == model.SAFE_TOOLS
     assert set(WorkflowStep._PARAMETER_MODELS) == model.SAFE_TOOLS
     assert set(model._ACTION_PARAMETER_MODELS) == model.EXTERNAL_WORKFLOW_TOOLS

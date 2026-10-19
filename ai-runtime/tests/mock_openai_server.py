@@ -290,6 +290,25 @@ def _workflow_node_id(text: str) -> str:
     return "service-scan-01"
 
 
+def _find_workflow_node(text: str, tool_name: str) -> str | None:
+    match = _WORKFLOW_BLOCK.search(text)
+    if match:
+        try:
+            manifest = json.loads(match.group("payload"))
+        except json.JSONDecodeError:
+            manifest = {}
+        nodes = manifest.get("nodes") if isinstance(manifest, dict) else None
+        if isinstance(nodes, list):
+            for node in nodes:
+                if (
+                    isinstance(node, dict)
+                    and node.get("tool") == tool_name
+                    and isinstance(node.get("nodeId"), str)
+                ):
+                    return node["nodeId"]
+    return None
+
+
 def _grounded_response(text: str, bundle: dict[str, Any]) -> dict[str, Any]:
     trusted = _trusted_prompt_text(text)
     refs = _evidence_refs(bundle)
@@ -323,6 +342,22 @@ def _grounded_response(text: str, bundle: dict[str, Any]) -> dict[str, Any]:
             "knowledgeMode": "PROJECT_EVIDENCE",
             "evidenceRefs": refs,
             "actions": [],
+        }
+    dir_node = _find_workflow_node(text, "dir_scan")
+    if dir_node and ("目录" in trusted or "dir" in trusted.lower() or "路径" in trusted):
+        return {
+            "summary": "已根据项目证据生成授权目录枚举与路径扫描方案",
+            "answer": "授权目录与路径扫描方案已准备就绪，使用内置 dirb-small 字典和 20 并发探测。",
+            "intent": "plan",
+            "knowledgeMode": "PROJECT_EVIDENCE",
+            "evidenceRefs": refs,
+            "actions": [
+                {
+                    "workflowNodeId": dir_node,
+                    "parameters": {"concurrency": 20, "dictionary": "dirb-small"},
+                    "evidenceRefs": refs,
+                }
+            ],
         }
     return {
         "summary": "已根据项目证据生成授权服务扫描计划",

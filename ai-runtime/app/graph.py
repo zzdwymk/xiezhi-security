@@ -96,10 +96,12 @@ RED_TEAM_STAGE_IDS = (
 
 TOOL_STAGE = {
     "retrieve_project_context": "recon",
+    "site_crawl": "recon",
     "tcp_ports": "map",
     "nmap_service_scan": "map",
     "http_headers": "map",
     "tls_config": "map",
+    "dir_scan": "map",
     "http_security_check": "validate",
     "nuclei_scan": "validate",
     "afrog_scan": "validate",

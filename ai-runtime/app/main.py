@@ -37,6 +37,7 @@ from .schemas import (
     QueryProjectEvidenceRequest,
 )
 from .security import require_project_authorization, require_runtime_token
+from .semantic_judge import BEHAVIOUR_LABELS, RISK_LEVELS, evaluate_action
 from .tools import LANGCHAIN_TOOLS_AVAILABLE
 
 logger = logging.getLogger(__name__)
@@ -159,6 +160,25 @@ async def health() -> dict:
 async def agent_graph() -> dict:
     """Public outer graph. LedgerAgent internals are intentionally opaque."""
     return agent_runtime.graph_structure()
+
+
+@app.get("/agent/judge/vocabulary")
+async def judge_vocabulary() -> dict:
+    """Closed label sets the judge can emit, so the UI never hard-codes them."""
+    return {"behaviours": list(BEHAVIOUR_LABELS), "riskLevels": list(RISK_LEVELS)}
+
+
+@app.post("/agent/judge/evaluate", dependencies=[Depends(require_runtime_token)])
+async def agent_judge_evaluate(payload: dict) -> dict:
+    """Judge one proposed action.
+
+    Deliberately returns HTTP 200 for every outcome, including judge failures: the verdict body
+    carries ``allow=false`` plus a ``degraded`` reason, and turning that into an error status would
+    make callers treat "cannot judge" as "transport problem to retry" rather than "block it".
+    """
+    action = payload.get("action") if isinstance(payload.get("action"), dict) else payload
+    verdict = await evaluate_action(action or {})
+    return verdict.to_dict()
 
 
 @app.get("/agent/graph/debug", dependencies=[Depends(require_runtime_token)])
