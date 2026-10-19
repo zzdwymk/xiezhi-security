@@ -215,6 +215,28 @@ public class AgentWorkflowSpecService {
             defaultStep("afrog", "afrog_scan", 4, "CAUTION", true),
             defaultStep("xray", "xray_scan", 5, "CAUTION", true)));
 
+    // Generation 4: 16 steps, site_crawl added but appended after dir_scan (so it ran last in
+    // group 2 instead of first). Kept so projects created on that shipped default — including the
+    // upgrade applied to generation-3 projects — still migrate to the current order.
+    retired.add(
+        presetOne(
+            defaultStep("context", "retrieve_project_context", 0, "SAFE", false),
+            defaultStep("service-scan", "nmap_service_scan", 1, "SAFE", false),
+            defaultStep("port-probe", "tcp_ports", 1, "SAFE", false),
+            defaultStep("headers", "http_headers", 1, "SAFE", false),
+            defaultStep("tls", "tls_config", 1, "SAFE", false),
+            defaultStep("dir-scan", "dir_scan", 2, "CAUTION", true),
+            defaultStep("http-security", "http_security_check", 2, "SAFE", false),
+            defaultStep("nuclei", "nuclei_scan", 3, "CAUTION", true),
+            defaultStep("afrog", "afrog_scan", 3, "CAUTION", true),
+            defaultStep("xray", "xray_scan", 3, "CAUTION", true),
+            defaultStep("zap-scan", "zap_scan", 3, "CAUTION", true),
+            defaultStep("fscan", "fscan_scan", 3, "CAUTION", true),
+            defaultStep("msf", "msf_scan", 4, "CAUTION", true),
+            defaultStep("sqlmap", "sqlmap_scan", 4, "CAUTION", true),
+            defaultStep("zap-fuzz", "zap_fuzz", 4, "CAUTION", true),
+            defaultStep("site-crawl", "site_crawl", 2, "SAFE", false)));
+
     return retired;
   }
 
@@ -803,6 +825,12 @@ public class AgentWorkflowSpecService {
    *
    * <p>Nodes are grouped by phase so the default graph stays readable: group 0 context, 1 mapping,
    * 2 discovery, 3 scanning, 4 validation.
+   *
+   * <p><strong>Step order is the execution order inside a group.</strong> Group 2 runs site_crawl
+   * before dir_scan on purpose: the crawl is the read-only automatic recon step that discovers live
+   * pages and their parameters, while dir_scan is an intrusive, administrator-confirmed dictionary
+   * enumeration whose candidates are far more useful once the crawl has registered the site's
+   * fingerprint. {@code AiToolCatalog.RUNTIME_CODES} is a code set, not an ordering contract.
    */
   private Map<String, Object> legacyDefaultSpec() {
     Map<String, Object> value = new LinkedHashMap<>();
@@ -818,7 +846,7 @@ public class AgentWorkflowSpecService {
             defaultStep("port-probe", "tcp_ports", 1, "SAFE", false),
             defaultStep("headers", "http_headers", 1, "SAFE", false),
             defaultStep("tls", "tls_config", 1, "SAFE", false),
-            // ---- group 2: discovery (site crawl first: 页面链接自动提取；dir_scan 为可选字典枚举)
+            // ---- group 2: discovery (自动侦察先做站点爬取提取页面链接；dir_scan 是需要管理员确认的可选字典枚举)
             defaultStep("site-crawl", "site_crawl", 2, "SAFE", false),
             defaultStep("dir-scan", "dir_scan", 2, "CAUTION", true),
             defaultStep("http-security", "http_security_check", 2, "SAFE", false),

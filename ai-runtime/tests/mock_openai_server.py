@@ -309,6 +309,22 @@ def _find_workflow_node(text: str, tool_name: str) -> str | None:
     return None
 
 
+def _requests_web_path_enumeration(text: str) -> bool:
+    """True only when the operator asked for directory/path enumeration.
+
+    The planner prompt is not just the operator's sentence: it also carries the
+    authorization summary ("授权工具：...dir_scan, site_crawl..."), which names
+    every permitted tool. Matching the raw prompt therefore let an enumeration
+    tool answer "请扫描端口和服务" purely because the tool list mentioned it,
+    which is exactly the prompt-fidelity failure a real model must not make.
+    Only the current request line is classified.
+    """
+    match = re.search(r"currentUserRequest（本轮原句）：\s*\r?\n(?P<request>.*?)(?:\r?\n|$)", text)
+    request = match.group("request") if match else text
+    lowered = request.lower()
+    return any(word in request for word in ("目录", "路径")) or "dir" in lowered
+
+
 def _grounded_response(text: str, bundle: dict[str, Any]) -> dict[str, Any]:
     trusted = _trusted_prompt_text(text)
     refs = _evidence_refs(bundle)
@@ -344,7 +360,7 @@ def _grounded_response(text: str, bundle: dict[str, Any]) -> dict[str, Any]:
             "actions": [],
         }
     dir_node = _find_workflow_node(text, "dir_scan")
-    if dir_node and ("目录" in trusted or "dir" in trusted.lower() or "路径" in trusted):
+    if dir_node and _requests_web_path_enumeration(trusted):
         return {
             "summary": "已根据项目证据生成授权目录枚举与路径扫描方案",
             "answer": "授权目录与路径扫描方案已准备就绪，使用内置 dirb-small 字典和 20 并发探测。",

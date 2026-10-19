@@ -34,9 +34,14 @@ public class ProjectApprovalController {
   @PostMapping
   public ProjectApproval request(
       @PathVariable Long projectId, @RequestBody Map<String, String> body) {
+    // An absent key means "use the documented default". An explicitly present null is a
+    // client-chosen value and is passed through unchanged, so the service (not the controller)
+    // decides whether it is acceptable. Collapsing the two would silently turn a malformed
+    // request into a broad SCAN request.
+    String action = body.containsKey("action") ? body.get("action") : DEFAULT_ACTION;
     return service.request(
         projectId,
-        body.getOrDefault("action", DEFAULT_ACTION),
+        action,
         body.get("comment"),
         body.get("authorizationSnapshotHash"));
   }
@@ -46,17 +51,12 @@ public class ProjectApprovalController {
       @PathVariable Long projectId,
       @PathVariable Long approvalId,
       @RequestBody Map<String, ?> body) {
-    String status = body.get("status") != null ? String.valueOf(body.get("status")) : DEFAULT_DECISION;
     String comment = body.get("comment") != null ? String.valueOf(body.get("comment")) : null;
-    @SuppressWarnings("unchecked")
-    List<Map<String, Object>> stepOverrides = body.get("stepOverrides") instanceof List<?> list
-        ? (List<Map<String, Object>>) list
-        : null;
-    return service.decide(
-        projectId,
-        approvalId,
-        status,
-        comment,
-        stepOverrides);
+    // Same rule: only a missing status defaults to APPROVED. An explicit null must reach the
+    // service and be rejected there — defaulting it would approve a plan the caller never
+    // explicitly approved. The service validates the status value.
+    Object rawStatus = body.containsKey("status") ? body.get("status") : DEFAULT_DECISION;
+    String status = rawStatus == null ? null : String.valueOf(rawStatus);
+    return service.decide(projectId, approvalId, status, comment);
   }
 }

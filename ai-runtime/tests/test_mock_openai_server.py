@@ -16,7 +16,12 @@ from app.model import (
     parse_intent_decision,
 )
 from app.schemas import IntentDecision
-from mock_openai_server import PLAN, _extract_evidence_bundle, _select_response
+from mock_openai_server import (
+    PLAN,
+    _extract_evidence_bundle,
+    _requests_web_path_enumeration,
+    _select_response,
+)
 
 
 def _messages(kind: str, request: str, *, round_number: int = 0, items=None):
@@ -202,6 +207,68 @@ def test_deployed_intent_prompt_drives_grounded_plan_with_actions():
     assert response["actions"][0]["workflowNodeId"] == "nmap-service-scan"
     assert response["evidenceRefs"] == ["ev-real"]
 
+
+
+def test_authorization_tool_list_does_not_reinterpret_a_port_scan_request():
+    """Regression: the authorized-tool list names dir_scan for every turn.
+
+    The deployed grounded prompt carries "授权工具：...dir_scan,site_crawl" next to
+    the operator's sentence. Classifying the whole prompt made the mock answer
+    "请扫描端口和服务" with dir_scan, which the Java harness then executed as a
+    directory enumeration instead of the requested port and service scan.
+    """
+    tool_list = "授权工具：nmap_service_scan,tcp_ports,http_headers,tls_config,dir_scan,site_crawl\n"
+    port_scan = ("currentUserRequest（本轮原句）：\n请扫描端口和服务\n路由决定："
+                 '{"intent":"ACTION_PLAN"}')
+    enumeration = "currentUserRequest（本轮原句）：\n请枚举授权网站的目录和路径\n"
+
+    assert _requests_web_path_enumeration(tool_list + port_scan) is False
+    assert _requests_web_path_enumeration(tool_list + enumeration) is True
+
+
+def test_grounded_plan_follows_the_current_request_not_the_tool_list():
+    manifest = (
+        "授权工具：nmap_service_scan,dir_scan\n"
+        "BEGIN_SERVER_WORKFLOW_CAPABILITIES\n"
+        + json.dumps(
+            {
+                "nodes": [
+                    {"nodeId": "service-scan", "tool": "nmap_service_scan"},
+                    {"nodeId": "dir-scan", "tool": "dir_scan"},
+                ]
+            },
+            ensure_ascii=False,
+        )
+        + "\nEND_SERVER_WORKFLOW_CAPABILITIES"
+    )
+    bundle = {
+        "projectId": 71,
+        "targetId": 91,
+        "conversationId": None,
+        "query": "请扫描端口和服务",
+        "round": 0,
+        "retrievalMethod": "bm25",
+        "indexRevision": "sha256:" + "f" * 64,
+        "items": [_evidence("ev-real")],
+    }
+    evidence = json.dumps(bundle, ensure_ascii=False, separators=(",", ":"))
+    messages = [
+        {"role": "system", "content": GROUNDED_SYSTEM_PROMPT.format()},
+        {
+            "role": "user",
+            "content": (
+                '路由决定：{"intent":"ACTION_PLAN"}\n'
+                "executionIntent：AUTO\n"
+                "currentUserRequest（本轮原句）：\n请扫描端口和服务\n\n"
+                + manifest
+                + f"\n\nBEGIN_UNTRUSTED_EVIDENCE\n{evidence}\nEND_UNTRUSTED_EVIDENCE"
+            ),
+        },
+    ]
+
+    response = _select_response(messages)
+
+    assert [action["workflowNodeId"] for action in response["actions"]] == ["service-scan"]
 
 
 def test_general_qa_skips_retrieval():

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useSelectionIndicator } from "../composables/useSelectionIndicator";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
@@ -110,12 +111,141 @@ const router = useRouter();
 const route = useRoute();
 const auth = useAuthStore();
 const canReadTraffic = computed(() => auth.user?.role === "ADMIN");
+// 发现来源页签：项目发现（本页表格）与流量发现（TrafficScanRecords）。
+const FINDING_SOURCES = [
+  { name: "project", label: "项目发现" },
+  { name: "traffic", label: "流量发现" },
+] as const;
 const recordSource = computed({
   get: () => canReadTraffic.value && route.query.source === "traffic" ? "traffic" : "project",
   set: (source: string) => { void router.replace({ query: {
     ...route.query, source: source === "traffic" ? "traffic" : undefined, scanId: undefined,
   } }); },
 });
+
+/* 页签切换动效
+   - 选中条：复用 `useSelectionIndicator` 计算位置（与左侧导航同一套定位规则），
+     但滑动由本文件的 glideIndicator() 推算：切换时把指示条从旧页签一路插值
+     到新页签（220ms Fluent decelerate 缓动），页面重渲染时指示条不会被重建，
+     所以看到的是"滑过去"而不是"跳过去"。
+   - 内容切换：<Transition> 旧内容淡出、新内容淡入并轻微上移（只动
+     opacity/transform，不触发重排）。
+   - 两者都属于「装饰性动画」：设置 → 界面动画关闭，或系统开启"减少动态效果"
+     时直接跳到终点。 */
+const tabsWrap = ref<HTMLElement | null>(null);
+const { positionSelectionIndicator } = useSelectionIndicator({
+  container: tabsWrap,
+  activeSelector: ".findings-source-tab.is-active",
+  indicatorSelector: ".findings-source-indicator",
+  dependencies: [recordSource, canReadTraffic],
+  orientation: "horizontal",
+  // 下划线铺满页签宽度（与评估项目详情页的下划线等宽等位）。
+  sizeRatio: 1,
+  minSize: 0,
+  thickness: 2,
+  edgeInset: 1,
+});
+
+const TAB_GLIDE_MS = 220;
+const tabGlideQuery =
+  typeof window === "undefined" || typeof window.matchMedia !== "function"
+    ? null
+    : window.matchMedia("(prefers-reduced-motion: reduce)");
+
+function animationsEnabled() {
+  return (
+    !tabGlideQuery?.matches &&
+    document.documentElement.getAttribute("data-anim-decorative") !== "off"
+  );
+}
+
+let tabGlideFrame = 0;
+
+function cancelTabGlide() {
+  if (tabGlideFrame) window.cancelAnimationFrame(tabGlideFrame);
+  tabGlideFrame = 0;
+}
+
+/** 把选中条从 fromX 滑到当前激活页签的 x（Fluent decelerate 曲线）。 */
+function glideIndicator(fromX?: number, fromWidth?: number) {
+  const root = tabsWrap.value;
+  const indicatorEl =
+    root?.querySelector<HTMLElement>(".findings-source-indicator");
+  const activeEl = root?.querySelector<HTMLElement>(
+    ".findings-source-tab.is-active",
+  );
+  if (!root || !indicatorEl || !activeEl) return;
+  const rootLeft = root.getBoundingClientRect().left;
+  const activeRect = activeEl.getBoundingClientRect();
+  const toX = activeRect.left - rootLeft;
+  const toWidth = activeRect.width;
+  const currentX = parseFloat(
+    indicatorEl.style.getPropertyValue("--selection-indicator-x") || "0",
+  );
+  const startX = fromX ?? currentX;
+  const startWidth =
+    fromWidth ??
+    parseFloat(
+      getComputedStyle(indicatorEl).getPropertyValue(
+        "--selection-indicator-width",
+      ) || String(toWidth),
+    );
+
+  cancelTabGlide();
+  if (!animationsEnabled()) {
+    positionSelectionIndicator();
+    return;
+  }
+  const startedAt = performance.now();
+  const ease = (t: number) => (t >= 1 ? 1 : 1 - (1 - t) ** 3);
+  const step = (now: number) => {
+    const t = Math.min(1, (now - startedAt) / TAB_GLIDE_MS);
+    const k = ease(t);
+    indicatorEl.style.setProperty(
+      "--selection-indicator-x",
+      `${(startX + (toX - startX) * k).toFixed(2)}px`,
+    );
+    indicatorEl.style.setProperty(
+      "--selection-indicator-width",
+      `${(startWidth + (toWidth - startWidth) * k).toFixed(2)}px`,
+    );
+    if (t < 1) {
+      tabGlideFrame = window.requestAnimationFrame(step);
+      return;
+    }
+    tabGlideFrame = 0;
+    positionSelectionIndicator();
+  };
+  tabGlideFrame = window.requestAnimationFrame(step);
+}
+
+watch(
+  recordSource,
+  (next, previous) => {
+    const root = tabsWrap.value;
+    const indicatorEl =
+      root?.querySelector<HTMLElement>(".findings-source-indicator") ?? null;
+    // 旧页签在本次渲染后仍留在 DOM 里（新页签只是多了 is-active），
+    // 切换前它的位置就是选中条的起点。
+    const previousEl =
+      previous && previous !== next
+        ? root?.querySelector<HTMLElement>(
+            `.findings-source-tab[data-source="${previous}"]`,
+          )
+        : null;
+    if (!root || !indicatorEl) return;
+    const startX = previousEl
+      ? previousEl.getBoundingClientRect().left - root.getBoundingClientRect().left
+      : undefined;
+    const startWidth = previousEl?.getBoundingClientRect().width;
+    void nextTick(() => glideIndicator(startX, startWidth));
+  },
+  { flush: "post" },
+);
+
+const tabGlideCleanup = () => cancelTabGlide();
+onBeforeUnmount(tabGlideCleanup);
+
 
 interface FindingRow {
   id: number;
@@ -587,12 +717,40 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <el-tabs v-if="canReadTraffic" v-model="recordSource" aria-label="发现来源">
-      <el-tab-pane label="项目发现" name="project" />
-      <el-tab-pane label="流量发现" name="traffic" />
-    </el-tabs>
-    <TrafficScanRecords v-if="recordSource === 'traffic'" mode="findings" />
-    <template v-else>
+    <div
+      v-if="canReadTraffic"
+      ref="tabsWrap"
+      class="findings-source-tabs"
+      role="tablist"
+      aria-label="发现来源"
+    >
+      <button
+        v-for="item in FINDING_SOURCES"
+        :key="item.name"
+        type="button"
+        role="tab"
+        class="findings-source-tab"
+        :class="{ 'is-active': recordSource === item.name }"
+        :aria-selected="recordSource === item.name"
+        :data-source="item.name"
+        @click="recordSource = item.name"
+      >
+        {{ item.label }}
+      </button>
+      <!-- 页签选中条：与左侧导航共用 .fluent-selection-indicator，
+           位置由 useSelectionIndicator 写入 CSS 变量，切换时平滑滑动。 -->
+      <span
+        class="fluent-selection-indicator findings-source-indicator"
+        aria-hidden="true"
+      />
+    </div>
+    <Transition name="findings-pane" mode="out-in">
+      <div v-if="recordSource === 'traffic'" key="traffic" class="findings-source-pane">
+        <!-- 流量发现与项目发现各自占满页签下方空间：两者共用一条页签栏，
+             内容区贴近页签栏，不再让固定的筛选工具栏把“流量发现”的表格往下压。 -->
+        <TrafficScanRecords mode="findings" />
+      </div>
+      <div v-else key="project" class="findings-source-pane">
     <!-- 多维组合检索与过滤栏 -->
     <div class="findings-filter-toolbar">
       <el-tag
@@ -792,7 +950,8 @@ onBeforeUnmount(() => {
         load();
       "
     />
-    </template>
+      </div>
+    </Transition>
   </section>
 
   <el-dialog
@@ -1069,12 +1228,120 @@ onBeforeUnmount(() => {
 .findings-page .section-head h3 {
   font-size: var(--type-section-title);
 }
+/* 来源页签（项目发现 / 流量发现）
+   原先是两个空内容的 <el-tab-pane>：Element Plus 仍会生成一条铺满整行、
+   带底部分割线的内容区，再叠上页签栏自身 15px 底边距和筛选栏 12px 上边距，
+   页签与内容之间就空出一大截。这里改成一条自绘的页签栏——结构可控、间距
+   全部显式给出，内容区紧随其下。
+   间距/字重/下划线刻意与「评估项目」详情页的 .project-tabs 对齐：
+   页签高 44px、左右内边距 6px、相邻页签间隔 22px、激活项加粗，
+   这样两个页面切换时页签的观感一致。 */
+.findings-source-tabs {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+  margin: 16px 0 0;
+  border-bottom: 1px solid var(--fluent-border, #e5e7eb);
+}
+.findings-source-tab {
+  position: relative;
+  box-sizing: border-box;
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 44px;
+  min-height: 44px;
+  margin: 0;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: color-mix(in srgb, var(--app-text) 78%, transparent);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 44px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--fluent-fast, 100ms);
+}
+/* 间隔 22px 与 .project-tabs 的 margin-right: 22px 等价，只是不依赖相邻兄弟
+   选择器，省得末项还要单独清零。 */
+.findings-source-tab + .findings-source-tab {
+  margin-left: 22px;
+}
+.findings-source-tab:hover,
+.findings-source-tab.is-active {
+  color: var(--app-accent, #0078d4);
+}
+.findings-source-tab.is-active {
+  font-weight: 600;
+}
+/* 页签选中条：2px 主色下划线，宽度与位置由 useSelectionIndicator 写入内联样式，
+   切换时由脚本平滑推算（坐标变化 + 对应时长/缓动），与评估项目详情页的下划线
+   同宽同高。背景色取自 --fluent3-slider-accent，和左侧导航的选中条同色。 */
+.findings-source-indicator.findings-source-indicator {
+  width: var(--selection-indicator-width, 68px);
+  height: 2px;
+  border-radius: 3px;
+  background: var(--fluent3-slider-accent, var(--app-accent, #0078d4));
+}
+.findings-source-tab:focus-visible {
+  outline: 2px solid var(--app-text);
+  outline-offset: -2px;
+  border-radius: var(--fluent-radius-control, 4px);
+}
+/* 内容切换：旧内容先淡出（120ms），新内容再淡入并轻微上移（180ms）；
+   只动 opacity/transform，不触发重排，表格较多的"项目发现"也不掉帧。 */
+.findings-source-pane {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+.findings-pane-enter-active {
+  transition:
+    opacity 180ms var(--fluent-curve-decelerate, cubic-bezier(0.1, 0.9, 0.2, 1)),
+    transform 180ms var(--fluent-curve-decelerate, cubic-bezier(0.1, 0.9, 0.2, 1));
+}
+.findings-pane-leave-active {
+  transition:
+    opacity 120ms var(--fluent-curve-standard, cubic-bezier(0.33, 0, 0.67, 1)),
+    transform 120ms var(--fluent-curve-standard, cubic-bezier(0.33, 0, 0.67, 1));
+}
+.findings-pane-enter-from {
+  opacity: 0;
+  transform: translateY(6px);
+}
+.findings-pane-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+/* 设置里关闭"界面动画"后（motion.css 使用同一属性），内容切换即时完成；
+   选中条的滑动由脚本读取该属性跳过。 */
+html[data-anim-decorative="off"] .findings-pane-enter-active,
+html[data-anim-decorative="off"] .findings-pane-leave-active {
+  transition: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .findings-pane-enter-active,
+  .findings-pane-leave-active {
+    transition: none !important;
+  }
+  .findings-pane-enter-from,
+  .findings-pane-leave-to {
+    transform: none;
+  }
+}
+/* 页签下方的空白只由内容区自己的上外边距提供，不再叠加多段间距。 */
 .findings-filter-toolbar {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px 10px;
-  margin: 12px 0 16px;
+  margin: 16px 0;
   padding: 10px 14px;
   background: var(--app-surface-soft, rgba(0, 0, 0, 0.02));
   border: 1px solid var(--app-border, #e2e8f0);
