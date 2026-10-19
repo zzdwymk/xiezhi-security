@@ -60,6 +60,32 @@ class AiExecutionIntentPolicyTests {
     assertThat(AiExecutionIntentPolicy.mayExecute(automatic(prompt), result("EXECUTE", "langchain-grounded", false))).isFalse();
   }
 
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "确认", "确认。", "那就用", "就用这个", "同意", "按这个来", "执行吧", "没问题", "OK"
+  })
+  void shortStandaloneConfirmationsResolveToTheLatestAssistantPlan(String prompt) {
+    // A bare confirmation refers to the single plan the assistant just produced; the model
+    // resolves it to that plan. Java accepts it as a direct request, while the approval gate
+    // for approval-required tools remains fully intact.
+    assertThat(AiExecutionIntentPolicy.hasExplicitRequest(automatic(prompt),
+        result("EXECUTE", "langchain-grounded", false))).isTrue();
+    assertThat(AiExecutionIntentPolicy.mayExecute(automatic(prompt),
+        result("EXECUTE", "langchain-grounded", false))).isTrue();
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "确认，但先别执行", "就用这个吧，不过先给方案", "确认，不要扫描其他端口",
+      "那就用低风险以外的工具", "先别执行，确认参数"
+  })
+  void confirmationWithConditionsOrNegationIsNeverShortCircuited(String prompt) {
+    // Conditional or negated confirmations are not standalone confirmations, and any
+    // prohibition inside the sentence still vetoes through the NON_EXECUTION rules.
+    assertThat(AiExecutionIntentPolicy.mayExecute(automatic(prompt),
+        result("EXECUTE", "langchain-grounded", false))).isFalse();
+  }
+
   @Test
   void modelDecisionSourceAndApprovalRemainNecessary() {
     var request = automatic("现在扫描当前授权目标");
