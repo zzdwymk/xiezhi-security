@@ -1,5 +1,6 @@
 package com.bachelor.toolbox.ai;
 
+import com.bachelor.toolbox.asset.DiscoveredPathService;
 import com.bachelor.toolbox.finding.Finding;
 import com.bachelor.toolbox.finding.FindingRepository;
 import com.bachelor.toolbox.probe.ProbeResult;
@@ -49,6 +50,7 @@ public class AiProjectIndexService {
   private final FindingRepository findings;
   private final ReconResultRepository recon;
   private final ProbeResultRepository probes;
+  private final DiscoveredPathService discoveredPaths;
 
   public AiProjectIndexService(
       AiAgentRuntimeClient runtime,
@@ -58,7 +60,8 @@ public class AiProjectIndexService {
       SecurityTaskRepository tasks,
       FindingRepository findings,
       ReconResultRepository recon,
-      ProbeResultRepository probes) {
+      ProbeResultRepository probes,
+      DiscoveredPathService discoveredPaths) {
     this.runtime = runtime;
     this.projects = projects;
     this.projectTargets = projectTargets;
@@ -67,6 +70,7 @@ public class AiProjectIndexService {
     this.findings = findings;
     this.recon = recon;
     this.probes = probes;
+    this.discoveredPaths = discoveredPaths;
   }
 
   /** Returns false on any indexing failure; agent planning must continue with direct context. */
@@ -247,6 +251,60 @@ public class AiProjectIndexService {
                         item.getTargetId().toString(),
                         "kind",
                         "recon")));
+    // 爬虫发现的端点资产：这是「页面源码链接提取 + 疑似可注入参数候选」的真实产出，
+    // 必须写入索引，模型才能基于真实发现的端点规划下一步检测（而不是凭空猜测路径）。
+    discoveredPaths.listByProject(projectId).stream()
+        .limit(10)
+        .forEach(
+            item ->
+                output.add(
+                    "已发现端点资产（目标 #" + item.getTargetId() + "）",
+                    String.join(
+                        "\n",
+                        "目标编号：" + item.getTargetId(),
+                        "URL：" + safe(item.getUrl()),
+                        "路径：" + safe(item.getPath()),
+                        "来源：" + safe(item.getSource()),
+                        "备注：" + safe(item.getNote()),
+                        "发现时间：" + time(item.getDiscoveredAt()),
+                        "只用于在授权范围内选择下一步检测目标；不得对本清单之外的地址发起任何请求。"),
+                    "asset",
+                    Map.of(
+                        "targetId",
+                        item.getTargetId().toString(),
+                        "kind",
+                        "discovered-path")));
+    // 全部端点的紧凑清单（一条文档聚合，便于模型一次性看到可选拾目标）
+    List<com.bachelor.toolbox.asset.DiscoveredPath> allPaths =
+        discoveredPaths.listByProject(projectId);
+    if (!allPaths.isEmpty()) {
+      Map<Long, List<com.bachelor.toolbox.asset.DiscoveredPath>> byTarget =
+          allPaths.stream().collect(Collectors.groupingBy(com.bachelor.toolbox.asset.DiscoveredPath::getTargetId));
+      for (Map.Entry<Long, List<com.bachelor.toolbox.asset.DiscoveredPath>> entry
+          : byTarget.entrySet()) {
+        List<String> lines = new ArrayList<>();
+        lines.add("目标编号：" + entry.getKey());
+        lines.add("以下为信息收集（站点爬取/链接提取/参数候选探测）真实发现的全部端点：");
+        entry.getValue().stream()
+            .limit(80)
+            .forEach(
+                path ->
+                    lines.add(
+                        "- "
+                            + safe(path.getPath())
+                            + (path.getNote() == null || path.getNote().isBlank()
+                                ? ""
+                                : "  （" + AiContextService.redact(path.getNote(), 120) + "）")));
+        lines.add(
+            "共 " + entry.getValue().size() + " 条。选择下一步检测目标时只能从本清单内选择；"
+                + "注入验证（sqlmap）只适用于带查询参数且在授权范围内的端点。");
+        output.add(
+            "目标 #" + entry.getKey() + " 的已发现端点清单",
+            String.join("\n", lines),
+            "asset",
+            Map.of("targetId", entry.getKey().toString(), "kind", "discovered-paths-summary"));
+      }
+    }
     probes.findByProjectIdOrderByDetectedAtDesc(projectId).stream()
         .limit(15)
         .forEach(

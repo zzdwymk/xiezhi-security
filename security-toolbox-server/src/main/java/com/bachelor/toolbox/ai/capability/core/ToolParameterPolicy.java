@@ -46,7 +46,7 @@ public final class ToolParameterPolicy {
       List.of(
           "nmap_service_scan", "tcp_ports", "http_headers", "http_security_check", "tls_config",
           "nuclei_scan", "afrog_scan", "xray_scan", "zap_scan", "fscan_scan", "sqlmap_scan",
-          "msf_scan", "zap_fuzz");
+          "msf_scan", "zap_fuzz", "site_crawl");
 
   /** 项目内只读检索工具（非执行类，无工具参数）。 */
   public static final List<String> READ_ONLY_TOOLS = List.of("retrieve_project_context");
@@ -66,6 +66,7 @@ public final class ToolParameterPolicy {
           Map.entry("http_security_check", Set.of("check")),
           Map.entry("http_headers", Set.of()),
           Map.entry("tls_config", Set.of()),
+          Map.entry("site_crawl", Set.of()),
           Map.entry("retrieve_project_context", Set.of("query")));
 
   /** 取值枚举（对齐 dispatch 层的逐个 case 校验）。 */

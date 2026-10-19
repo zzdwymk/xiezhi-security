@@ -93,6 +93,12 @@ public final class SecurityToolCapability implements AgentCapability {
   /** 是否为项目内只读检索类能力（不触及授权目标，无需确认）。 */
   private static final Set<String> READ_ONLY_TOOL_CODES = Set.of("retrieve_project_context");
 
+  /**
+   * 只读信息收集类工具：触及授权目标但仅做 GET 类只读请求（页面爬取/链接提取），不发送攻击载荷、
+   * 不产生漏洞发现，因此按 SAFE 处理、无需逐次审批（仍受授权目标与端口守卫约束）。
+   */
+  private static final Set<String> READ_ONLY_RECON_CODES = Set.of("site_crawl");
+
   /** 需要逐次人工确认的高风险工具，与 {@code AiToolCatalog#requiresApproval} 的既有判定保持一致。 */
   private static final Set<String> MANDATORY_APPROVAL_CODES = Set.of("sqlmap_scan", "zap_fuzz");
 
@@ -139,7 +145,8 @@ public final class SecurityToolCapability implements AgentCapability {
               "http_security_check",
               property("check", "string", "检查类型：cookies、cors、methods 或 disclosure")),
           Map.entry("http_headers", Map.of()),
-          Map.entry("tls_config", Map.of()));
+          Map.entry("tls_config", Map.of()),
+          Map.entry("site_crawl", Map.of()));
 
   // ---------------------------------------------------------------- 策略推导
 
@@ -148,7 +155,9 @@ public final class SecurityToolCapability implements AgentCapability {
   }
 
   static RiskLevel inferRisk(String code) {
-    if (READ_ONLY_TOOL_CODES.contains(code)) return RiskLevel.SAFE;
+    if (READ_ONLY_TOOL_CODES.contains(code) || READ_ONLY_RECON_CODES.contains(code)) {
+      return RiskLevel.SAFE;
+    }
     if (DESTRUCTIVE_CODES.contains(code)) return RiskLevel.DESTRUCTIVE;
     return RiskLevel.SENSITIVE;
   }
@@ -163,7 +172,9 @@ public final class SecurityToolCapability implements AgentCapability {
 
   /** 该工具码是否被本适配器识别（未识别时仍可适配，只是走最保守的默认策略）。 */
   public static boolean isKnown(String code) {
-    return READ_ONLY_TOOL_CODES.contains(code) || EXTRA_SCHEMA.containsKey(code);
+    return READ_ONLY_TOOL_CODES.contains(code)
+        || READ_ONLY_RECON_CODES.contains(code)
+        || EXTRA_SCHEMA.containsKey(code);
   }
 
   // ---------------------------------------------------------------- 能力接口

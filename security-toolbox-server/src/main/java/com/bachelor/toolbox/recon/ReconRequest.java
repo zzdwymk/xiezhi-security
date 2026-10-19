@@ -15,9 +15,42 @@ public record ReconRequest(
     Boolean aggregateProxyPaths,
     Boolean activeNetworkProbe,
     String mode,
-    Boolean includeSameSubnet) {
+    Boolean includeSameSubnet,
+    String pathDictionaryId,
+    Integer pathConcurrency) {
 
-  /** 兼容旧签名（无子路径发现字段）的构造器；新字段默认关闭。 */
+  /** 兼容 12 参构造器（无显式字典 id 与并发字段）。 */
+  public ReconRequest(
+      Long targetId,
+      Boolean includeHttp,
+      Boolean includeTls,
+      Boolean enumerateSubdomains,
+      List<String> subdomainWords,
+      Boolean enumeratePaths,
+      List<String> pathWords,
+      Boolean crawlSite,
+      Boolean aggregateProxyPaths,
+      Boolean activeNetworkProbe,
+      String mode,
+      Boolean includeSameSubnet) {
+    this(
+        targetId,
+        includeHttp,
+        includeTls,
+        enumerateSubdomains,
+        subdomainWords,
+        enumeratePaths,
+        pathWords,
+        crawlSite,
+        aggregateProxyPaths,
+        activeNetworkProbe,
+        mode,
+        includeSameSubnet,
+        null,
+        null);
+  }
+
+  /** 兼容旧 8 参签名（无子路径发现字段）的构造器；新字段默认关闭。 */
   public ReconRequest(
       Long targetId,
       Boolean includeHttp,
@@ -39,7 +72,9 @@ public record ReconRequest(
         false,
         activeNetworkProbe,
         mode,
-        includeSameSubnet);
+        includeSameSubnet,
+        null,
+        null);
   }
 
   public boolean activeMode() {

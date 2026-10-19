@@ -35,6 +35,7 @@ public class AgentContinuationWorker {
   private final AgentWorkflowSpecService workflows;
   private final ProjectAuthorizationService authorization;
   private final boolean enabled;
+  private final int maxContinuationRounds;
 
   public AgentContinuationWorker(
       CrossTurnRecoveryService recovery,
@@ -44,7 +45,8 @@ public class AgentContinuationWorker {
       AgentContinuationExecutionService executions,
       AgentWorkflowSpecService workflows,
       ProjectAuthorizationService authorization,
-      @Value("${toolbox.ai.agent.continuation-enabled:true}") boolean enabled) {
+      @Value("${toolbox.ai.agent.continuation-enabled:true}") boolean enabled,
+      @Value("${toolbox.ai.agent.max-continuation-rounds:3}") int maxContinuationRounds) {
     this.recovery = recovery;
     this.tasks = tasks;
     this.runtime = runtime;
@@ -53,6 +55,7 @@ public class AgentContinuationWorker {
     this.workflows = workflows;
     this.authorization = authorization;
     this.enabled = enabled;
+    this.maxContinuationRounds = Math.max(1, Math.min(maxContinuationRounds, 10));
   }
 
   @EventListener
@@ -128,10 +131,7 @@ public class AgentContinuationWorker {
 
   private AiAgentResponse runReadOnlyContinuation(CrossTurnRecoveryService.ContinuationClaim claim) {
     List<Long> ids = claim.taskIds();
-    String prompt =
-        "原 Agent 回合创建的受控任务已经全部进入终态。请仅读取服务端任务、Finding 和审计上下文，"
-            + "总结结果、失败原因和后续人工处置建议；不要创建任务、执行工具或提出未授权动作。任务 ID："
-            + ids.stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(","));
+    String prompt = continuationPrompt(claim, ids);
     AiPlanRequest.ContextRefs refs =
         new AiPlanRequest.ContextRefs(claim.targetId(), ids, List.of(), List.of(), List.of(), List.of());
     String turnId = continuationTurnId(claim, ids);
@@ -161,6 +161,45 @@ public class AgentContinuationWorker {
             throw new ApiException("Agent 续接回合执行失败");
           }
         });
+  }
+
+  /**
+   * Builds the prompt for one continuation turn.
+   *
+   * <h2>Why this text is the difference between "summary" and "loop"</h2>
+   *
+   * <p>This method used to forbid any action outright ("不要创建任务、执行工具或提出未授权动作"),
+   * which made the whole continuation pipeline a dead end: tasks finished, the model summarised,
+   * and nothing could ever follow up. The result was a single-shot platform whose "agent" could
+   * never act on what it had just learned.
+   *
+   * <p>It now asks for a *next step proposal* instead — but a proposal only. The safety property
+   * does not come from the model declining to act; it comes from the fact that anything it
+   * proposes still has to pass the four-layer gate, get judged, and be confirmed by an
+   * administrator before a single packet is sent. Removing the prohibition does not remove any
+   * guard, it only stops the pipeline from stalling.
+   *
+   * <p>Two hard stops remain: the round budget (see {@link #maxContinuationRounds}) and the
+   * explicit instruction that a completed assessment must end rather than invent more work.
+   */
+  private String continuationPrompt(
+      CrossTurnRecoveryService.ContinuationClaim claim, List<Long> ids) {
+    String taskList =
+        ids.stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(","));
+    int round = claim.attempt() + 1;
+    if (round >= maxContinuationRounds) {
+      return "原 Agent 回合创建的受控任务已经全部进入终态。本轮是自动续接的第 "
+          + round
+          + " 轮，已达到允许的最大轮次，禁止再提出任何新的检测动作。"
+          + "请读取服务端任务、Finding 和审计上下文，输出最终总结与后续人工处置建议。任务 ID："
+          + taskList;
+    }
+    return "原 Agent 回合创建的受控任务已经全部进入终态。请先读取服务端任务结果、Finding 与审计上下文，"
+        + "判断是否还需要进一步验证。如果需要，请按当前工作流可用的工具提出下一步检测动作，"
+        + "说明依据的是哪一条已有证据；如果证据已充分或继续测试没有价值，请直接给出总结并结束，不要为了继续而编造步骤。"
+        + "说明：你提出的任何动作都不会直接执行，会先经过授权与参数护栏校验、语义风险判定，"
+        + "并由管理员在执行确认中逐次批准；未被批准的动作不会产生任何任务。任务 ID："
+        + taskList;
   }
 
   private List<Map<String, Object>> callbackBodies(

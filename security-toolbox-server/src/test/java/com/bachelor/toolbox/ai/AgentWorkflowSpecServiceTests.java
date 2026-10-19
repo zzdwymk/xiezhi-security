@@ -2,6 +2,7 @@ package com.bachelor.toolbox.ai;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -298,26 +299,39 @@ class AgentWorkflowSpecServiceTests {
     AgentWorkflowSpecService.WorkflowSnapshot snapshot = service.freezeSnapshot(303L);
 
     assertEquals("runtime-default", snapshot.spec().get("preset"));
-    assertEquals(
-        List.of(
-            "retrieve_project_context",
-            "nmap_service_scan",
-            "http_headers",
-            "tls_config",
-            "http_security_check",
-            "nuclei_scan",
-            "afrog_scan",
-            "xray_scan"),
-        snapshot.executableSteps().stream().map(step -> step.get("tool")).toList());
-    assertEquals(1, snapshot.executableSteps().get(1).get("group"));
-    assertEquals(List.of("context"), snapshot.executableSteps().get(1).get("dependsOnNodeIds"));
-    assertEquals("CAUTION", snapshot.executableSteps().get(5).get("risk"));
-    assertEquals(true, snapshot.executableSteps().get(5).get("requiresApproval"));
-    assertEquals(Map.of("allPocs", true), snapshot.executableSteps().get(6).get("parameters"));
-    assertEquals(Map.of("allPocs", true), snapshot.executableSteps().get(7).get("parameters"));
-    assertEquals(1, snapshot.executableSteps().get(7).get("group"));
-    assertTrue(snapshot.executableSteps().subList(1, 8).stream()
-        .allMatch(step -> List.of("context").equals(step.get("dependsOnNodeIds"))));
+    // The shipped default must expose every executable tool, otherwise the model cannot discover
+    // what the platform supports. Safety comes from requiresApproval, not from omission.
+    List<String> toolSequence =
+        snapshot.executableSteps().stream().map(step -> String.valueOf(step.get("tool"))).toList();
+    assertEquals(AiToolCatalog.RUNTIME_CODES, toolSequence);
+    assertTrue(
+        toolSequence.containsAll(AiToolCatalog.EXECUTABLE_CODES),
+        "shipped default must list every executable tool");
+
+    Map<String, Map<String, Object>> byTool = new LinkedHashMap<>();
+    for (Map<String, Object> step : snapshot.executableSteps()) {
+      byTool.put(String.valueOf(step.get("tool")), step);
+    }
+    // Read-mostly tools stay SAFE and unconfirmed.
+    assertEquals("SAFE", byTool.get("nmap_service_scan").get("risk"));
+    assertEquals(false, byTool.get("nmap_service_scan").get("requiresApproval"));
+    assertEquals(1, byTool.get("nmap_service_scan").get("group"));
+    // Intrusive tools are visible but require the administrator to confirm before any task.
+    for (String intrusive :
+        List.of("dir_scan", "nuclei_scan", "afrog_scan", "xray_scan", "zap_scan",
+            "fscan_scan", "msf_scan", "sqlmap_scan", "zap_fuzz")) {
+      Map<String, Object> step = byTool.get(intrusive);
+      assertNotNull(step, "default workflow missing " + intrusive);
+      assertEquals("CAUTION", step.get("risk"), intrusive + " must be CAUTION");
+      assertEquals(true, step.get("requiresApproval"), intrusive + " must require approval");
+    }
+    assertEquals(Map.of("allPocs", true), byTool.get("afrog_scan").get("parameters"));
+    assertEquals(Map.of("allPocs", true), byTool.get("xray_scan").get("parameters"));
+    // Everything except the context node depends on the context node.
+    assertTrue(
+        snapshot.executableSteps().stream()
+            .filter(step -> !"retrieve_project_context".equals(step.get("tool")))
+            .allMatch(step -> List.of("context").equals(step.get("dependsOnNodeIds"))));
   }
 
   @Test
@@ -336,10 +350,16 @@ class AgentWorkflowSpecServiceTests {
     assertEquals(2L, upgraded.revision());
     assertEquals(frozen.workflowId(), upgraded.workflowId());
     assertNotEquals(frozen.specDigest(), upgraded.specDigest());
-    assertEquals(List.of("context"), upgraded.executableSteps().get(4).get("dependsOnNodeIds"));
+    Map<String, Map<String, Object>> byTool = new LinkedHashMap<>();
+    for (Map<String, Object> step : upgraded.executableSteps()) {
+      byTool.put(String.valueOf(step.get("tool")), step);
+    }
+    assertEquals(List.of("context"), byTool.get("dir_scan").get("dependsOnNodeIds"));
+    assertEquals(List.of("context"), byTool.get("http_security_check").get("dependsOnNodeIds"));
     assertEquals(2L, service.freezeSnapshot(303L).revision());
     assertEquals(frozen.specDigest(), service.freezeSnapshot(
         303L, frozen.workflowId(), 1L, frozen.specDigest()).specDigest());
+    // save(rev 1) + upgrade(rev 2); explicit-identity freezes never append.
     assertEquals(2, stored.size());
   }
 

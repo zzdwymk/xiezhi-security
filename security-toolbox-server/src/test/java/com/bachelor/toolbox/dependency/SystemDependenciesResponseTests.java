@@ -35,7 +35,7 @@ class SystemDependenciesResponseTests {
     assertThat(json.path("database").asText()).isEqualTo("PostgreSQL");
 
     JsonNode item = json.path("dependencies").get(0);
-    assertThat(item.size()).isEqualTo(9);
+    assertThat(item.size()).isEqualTo(10);
     assertThat(item.path("name").asText()).isEqualTo("Nmap");
     assertThat(item.path("status").asText()).isEqualTo("AVAILABLE");
     assertThat(item.path("version").asText()).isEqualTo("Nmap version 7.99");
@@ -45,5 +45,6 @@ class SystemDependenciesResponseTests {
     assertThat(item.path("message").asText()).isEqualTo("可用。");
     assertThat(item.path("hash").asText()).isNotBlank();
     assertThat(item.path("dirHash").asText()).isEqualTo("dir-hash");
+    assertThat(item.path("output").isNull()).isTrue();
   }
 }

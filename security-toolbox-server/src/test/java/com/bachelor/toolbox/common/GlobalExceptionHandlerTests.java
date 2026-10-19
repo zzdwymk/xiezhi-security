@@ -1,6 +1,7 @@
 package com.bachelor.toolbox.common;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -11,6 +12,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpMethod;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
@@ -27,15 +30,48 @@ class GlobalExceptionHandlerTests {
 
   @Test
   void doesNotExposeUnexpectedExceptionDetails() {
-    var response = handler.handleUnexpected(new IllegalStateException("sensitive internal detail"));
+    var response =
+        handler.handleUnexpected(new IllegalStateException("sensitive internal detail"), null, null);
 
     assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, response.getStatusCode());
     assertEquals("服务器处理失败，请稍后重试", response.getBody().message());
   }
 
   @Test
+  void neverWritesJsonBodyToAnEventStream() {
+    var request = new MockHttpServletRequest();
+    var committedStream = new MockHttpServletResponse();
+    committedStream.setContentType("text/event-stream;charset=UTF-8");
+    committedStream.setCommitted(true);
+
+    assertNull(
+        handler.handleUnexpected(new IllegalStateException("boom"), request, committedStream),
+        "已提交的 SSE 响应不得追写 JSON 错误体");
+    assertNull(
+        handler.handleApi(new ApiException("boom"), request, committedStream),
+        "已提交的 SSE 响应不得追写 JSON 错误体");
+    assertNull(
+        handler.handleIo(new IOException("broken pipe"), request, committedStream),
+        "已提交的 SSE 响应不得追写 JSON 错误体");
+    assertNull(
+        handler.handleUncheckedIo(new UncheckedIOException(new IOException("broken pipe")), request,
+            committedStream),
+        "已提交的 SSE 响应不得追写 JSON 错误体");
+  }
+
+  @Test
+  void neverWritesJsonBodyToAnUncommittedEventStream() {
+    var request = new MockHttpServletRequest();
+    var stream = new MockHttpServletResponse();
+    stream.setContentType("text/event-stream;charset=UTF-8");
+
+    assertNull(handler.handleUnexpected(new IllegalStateException("boom"), request, stream));
+    assertNull(handler.handleIo(new IOException("broken pipe"), request, stream));
+  }
+
+  @Test
   void replacesEnglishBusinessErrorsWithChineseFallback() {
-    var response = handler.handleApi(new ApiException("internal detail"));
+    var response = handler.handleApi(new ApiException("internal detail"), null, null);
 
     assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
     assertEquals("请求处理失败", response.getBody().message());
@@ -93,7 +129,7 @@ class GlobalExceptionHandlerTests {
 
   @Test
   void localizesIoFailureWithoutLeakingInternals() {
-    var response = handler.handleIo(new IOException("disk full"));
+    var response = handler.handleIo(new IOException("disk full"), null, null);
 
     assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, response.getStatusCode());
     assertEquals(
@@ -102,7 +138,8 @@ class GlobalExceptionHandlerTests {
 
   @Test
   void localizesUncheckedIoFailureWithoutLeakingInternals() {
-    var response = handler.handleUncheckedIo(new UncheckedIOException(new IOException("locked")));
+    var response =
+        handler.handleUncheckedIo(new UncheckedIOException(new IOException("locked")), null, null);
 
     assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, response.getStatusCode());
     assertEquals("本地文件读写失败，请检查磁盘空间和访问权限后重试", response.getBody().message());

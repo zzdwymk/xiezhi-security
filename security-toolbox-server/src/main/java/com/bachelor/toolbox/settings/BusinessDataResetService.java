@@ -47,6 +47,35 @@ public class BusinessDataResetService {
           "assessment_projects",
           "authorized_targets");
 
+  // 物理表名 → 中文业务类别。审计日志只记录业务含义，不暴露数据库 schema：
+  // 审计记录可能被导出/截图传播，超出"管理员本人"的信任边界，展示层不应成为 schema 查询接口。
+  private static final Map<String, String> TABLE_TO_CATEGORY =
+      Map.ofEntries(
+          Map.entry("system_notifications", "系统通知"),
+          Map.entry("traffic_scan_ledger", "流量扫描台账"),
+          Map.entry("agent_ledger_records", "AI 执行台账"),
+          Map.entry("ai_agent_dispatches", "AI 任务分发"),
+          Map.entry("ai_conversation_sessions", "AI 对话会话"),
+          Map.entry("traffic_suggestions", "流量修复建议"),
+          Map.entry("traffic_packets", "流量报文"),
+          Map.entry("traffic_sessions", "流量会话"),
+          Map.entry("security_actions", "安全处置操作"),
+          Map.entry("post_scan_paths", "后渗透路径"),
+          Map.entry("findings", "漏洞发现"),
+          Map.entry("scan_schedules", "扫描计划"),
+          Map.entry("project_approvals", "项目审批"),
+          Map.entry("recon_results", "信息收集结果"),
+          Map.entry("probe_results", "指纹探测结果"),
+          Map.entry("audit_logs", "审计日志"),
+          Map.entry("workflow_runs", "工作流运行记录"),
+          Map.entry("security_tasks", "检测任务"),
+          Map.entry("assessment_project_targets", "项目目标关联"),
+          Map.entry("assessment_projects", "评估项目"),
+          Map.entry("authorized_targets", "授权目标"));
+
+  private static final List<String> PRESERVED_CATEGORIES =
+      List.of("用户账号", "AI 工作流定义", "检测规则", "漏洞知识库", "流量捕获过滤器");
+
   private final EntityManager entityManager;
   private final SecurityTaskRepository tasks;
   private final AssessmentProjectRepository projects;
@@ -107,8 +136,8 @@ public class BusinessDataResetService {
   }
 
   public ResetResult clear(String confirmation) {
-    if (!"CLEAR".equals(confirmation)) {
-      throw new ApiException("请输入 CLEAR 确认清空数据");
+    if (!"永久清空".equals(confirmation)) {
+      throw new ApiException("请输入“永久清空”确认清空数据");
     }
 
     // Reject known long-running operations before requesting the exclusive lock. A queued fair
@@ -154,11 +183,12 @@ public class BusinessDataResetService {
   private ResetResult clearDatabase(int projectCount, int runtimeDocumentsDeleted) {
     assertIdle();
     entityManager.flush();
-    Map<String, Integer> deletedByTable = new LinkedHashMap<>();
+    // 键为业务类别而非物理表名：审计日志面向查看者只暴露业务语义，不暴露数据库 schema。
+    Map<String, Integer> deletedByCategory = new LinkedHashMap<>();
     int total = 0;
     for (String table : BUSINESS_TABLES_IN_DELETE_ORDER) {
       int deleted = entityManager.createNativeQuery("delete from " + table).executeUpdate();
-      deletedByTable.put(table, deleted);
+      deletedByCategory.merge(TABLE_TO_CATEGORY.getOrDefault(table, table), deleted, Integer::sum);
       total += deleted;
     }
     entityManager.clear();
@@ -172,14 +202,8 @@ public class BusinessDataResetService {
             "deletedRecords", total,
             "deletedProjects", projectCount,
             "runtimeDocumentsDeleted", runtimeDocumentsDeleted,
-            "deletedByTable", deletedByTable,
-            "preservedData",
-                List.of(
-                    "app_users",
-                    "agent_workflow_spec",
-                    "detection_rules",
-                    "vulnerability_definitions",
-                    "traffic_capture_filters")),
+            "deletedByCategory", deletedByCategory,
+            "preservedData", PRESERVED_CATEGORIES),
         "SUCCESS");
     return new ResetResult(clearedAt, total, true, projectCount, runtimeDocumentsDeleted);
   }

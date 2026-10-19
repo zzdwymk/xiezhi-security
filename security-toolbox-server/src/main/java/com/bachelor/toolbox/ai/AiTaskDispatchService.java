@@ -247,6 +247,9 @@ public class AiTaskDispatchService {
           case "zap_fuzz" -> ZapFuzzAiParameters.KEYS;
           case "nuclei_scan" -> Set.of("pocCodes", "allPocs");
           case "http_security_check" -> Set.of("check");
+          case "dir_scan" ->
+              Set.of("dictionary", "concurrency", "depth", "maxRequests", "extensions");
+          case "site_crawl" -> Set.of();
           case "http_headers", "tls_config" -> Set.of();
           default -> throw new ApiException("AI 工具不在安全白名单内");
         };
@@ -329,6 +332,31 @@ public class AiTaskDispatchService {
           String strength = ToolParameterSpec.requireZapStrength(parameters.get("strength"));
           parameters.put("strength", strength);
         }
+      }
+      case "dir_scan" -> {
+        // 目录枚举只发 HTTP GET，因此必须有可达的 Web 基址与授权主机校验。
+        targetPolicyService.validatedHttpUri(target);
+        // D-7：并发与深度取值规格与护栏侧共用 ToolParameterSpec（单一事实来源）。
+        int concurrency =
+            ToolParameterSpec.requireDirScanConcurrency(
+                parameters.getOrDefault(
+                    "concurrency", ToolParameterSpec.DIR_SCAN_DEFAULT_CONCURRENCY));
+        parameters.put("concurrency", concurrency);
+        if (parameters.containsKey("depth")) {
+          int depth = ToolParameterSpec.requireDirScanDepth(parameters.get("depth"));
+          parameters.put("depth", depth);
+        }
+        Object dictionary = parameters.get("dictionary");
+        if (dictionary instanceof String text && text.length() > 64) {
+          throw new ApiException("dir_scan 的 dictionary 名称过长");
+        }
+        if (dictionary != null && !(dictionary instanceof String)) {
+          throw new ApiException("dir_scan 的 dictionary 必须是字符串");
+        }
+      }
+      case "site_crawl" -> {
+        // 站点爬取只发只读 GET，校验存在可达 Web 基址即可（授权校验在 ReconService 内部再做一次）。
+        targetPolicyService.validatedHttpUri(target);
       }
       case "msf_scan" -> {
         targetPolicyService.validatedHost(target);

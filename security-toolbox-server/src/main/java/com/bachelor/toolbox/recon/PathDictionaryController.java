@@ -18,18 +18,30 @@ public class PathDictionaryController {
     this.dictionary = dictionary;
   }
 
+  /** Metadata of the configured default dictionary (legacy shape). */
   @GetMapping
   public PathDictionaryService.DictionaryView view() {
     return dictionary.view();
   }
 
+  /** All selectable dictionaries with entry counts, for the scan options UI. */
+  @GetMapping("/library")
+  public DictionaryLibraryResponse library() {
+    return new DictionaryLibraryResponse(dictionary.defaultDictionaryId(), dictionary.library());
+  }
+
+  /** Paginated words of a named dictionary; falls back to the default when {@code dictionaryId} is blank. */
   @GetMapping("/words")
   public PathDictionaryService.WordPage words(
+      @RequestParam(name = "dictionary", required = false) String dictionaryId,
       @RequestParam(required = false) String query,
       @RequestParam(defaultValue = "1") int page,
       @RequestParam(defaultValue = "30") int size) {
-    return dictionary.pageWords(query, page, size);
+    return dictionary.pageWords(dictionaryId, query, page, size);
   }
+
+  public record DictionaryLibraryResponse(
+      String defaultDictionaryId, List<PathDictionaryService.DictionaryView> dictionaries) {}
 
   /** Validates a set of words without persisting. Returns a list of offending-word messages. */
   @PostMapping("/validate")

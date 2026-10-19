@@ -455,7 +455,10 @@ class SecurityAgentToolsTransactionTests {
   void aiCatalogAndProductGuideCoverEveryRegisteredExecutableTool() {
     assertThat(toolRegistry.all()).extracting(com.bachelor.toolbox.tool.SecurityTool::code)
         .containsExactlyInAnyOrderElementsOf(AiToolCatalog.RUNTIME_CODES);
-    assertThat(ToolboxProgramGuide.context()).contains("白名单工具有 13 类")
+    // The count in the guide is derived from the catalog, so it must not be hard-coded here:
+    // a literal number turns every newly added tool into an unrelated test failure.
+    assertThat(ToolboxProgramGuide.context())
+        .contains("白名单工具有 " + AiToolCatalog.EXECUTABLE_CODES.size() + " 类")
         .contains(AiToolCatalog.EXECUTABLE_CODES.toArray(String[]::new));
   }
 
