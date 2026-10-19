@@ -150,6 +150,22 @@ class Settings:
         "AI_RUNTIME_RECOVERY_MAX_CALLBACKS_PER_RECORD", 128, 16, 512
     )
     internal_graph_debug: bool = _bool("AI_RUNTIME_INTERNAL_GRAPH_DEBUG", False)
+    # ------------------------------------------------------------------ semantic judge
+    #
+    # The judge is a "System One"-style typed decision model: it does not chat, it classifies a
+    # proposed action into allow/deny plus a human-readable "suspected behaviour" label. It reuses
+    # the same provider as the planner so no extra credential is required.
+    judge_enabled: bool = _bool("AI_RUNTIME_JUDGE_ENABLED", True)
+    # Hard deadline for one judge call. Deliberately very small: the judge sits in the execution
+    # path, and a slow judge must degrade into "ask the human", never into "wait longer".
+    judge_timeout_seconds: float = _bounded_float(
+        "AI_RUNTIME_JUDGE_TIMEOUT_SECONDS", 6.0, 1.0, 30.0
+    )
+    # Below this confidence the judge is treated as "unsure", which is fail-closed.
+    judge_min_confidence: float = _bounded_float(
+        "AI_RUNTIME_JUDGE_MIN_CONFIDENCE", 0.75, 0.0, 1.0
+    )
+    judge_model: str = os.getenv("AI_RUNTIME_JUDGE_MODEL", "")[:128]
 
     def prepare(self) -> "Settings":
         self.data_dir.mkdir(parents=True, exist_ok=True)

@@ -143,6 +143,30 @@ class ZapParameters(BaseModel):
     strength: Literal["LOW", "MEDIUM", "HIGH", "INSANE"] | None = None
 
 
+class DirScanParameters(BaseModel):
+    """Directory/path enumeration.
+
+    ``concurrency`` and ``maxRequests`` are deliberately bounded here as well as in the Java
+    guard: the runtime must never emit a value the server would reject, and the server must never
+    accept a value the runtime would not emit (the two sides use the same 1..50 / depth 0..3
+    bounds, mirroring ToolParameterSpec on the Java side).
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    dictionary: StrictStr | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    concurrency: StrictInt | None = Field(default=None, ge=1, le=50)
+    depth: StrictInt | None = Field(default=None, ge=0, le=3)
+    maxRequests: StrictInt | None = Field(default=None, ge=1, le=200000)
+    extensions: list[
+        Annotated[StrictStr, Field(min_length=1, max_length=10, pattern=r"^[A-Za-z0-9]+$")]
+    ] | None = Field(default=None, max_length=10)
+
+
 class WorkflowZapFuzzParameters(BaseModel):
     """A saved node may defer fields; a final action must describe one concrete request."""
 
@@ -312,6 +336,7 @@ WorkflowToolParameters = Union[
     PortScanParameters,
     NmapParameters,
     WorkflowHttpSecurityParameters,
+    DirScanParameters,
     PocSelectionParameters,
     FscanParameters,
     ZapParameters,
@@ -325,6 +350,7 @@ GroundedParameterPatch = Union[
     PortScanParameters,
     NmapParameters,
     WorkflowHttpSecurityParameters,
+    DirScanParameters,
     PocSelectionParameters,
     FscanParameters,
     ZapParameters,
@@ -369,6 +395,16 @@ class HttpSecurityCheckAction(_PlanAction):
 class TlsConfigAction(_PlanAction):
     tool: Literal["tls_config"]
     parameters: EmptyToolParameters
+
+
+class SiteCrawlAction(_PlanAction):
+    tool: Literal["site_crawl"]
+    parameters: EmptyToolParameters
+
+
+class DirScanAction(_PlanAction):
+    tool: Literal["dir_scan"]
+    parameters: DirScanParameters
 
 
 class NucleiScanAction(_PlanAction):
@@ -421,6 +457,8 @@ PlanAction = Annotated[
         HttpHeadersAction,
         HttpSecurityCheckAction,
         TlsConfigAction,
+        SiteCrawlAction,
+        DirScanAction,
         NucleiScanAction,
         AfrogScanAction,
         XrayScanAction,
@@ -716,6 +754,8 @@ class WorkflowStep(BaseModel):
         "http_headers",
         "http_security_check",
         "tls_config",
+        "site_crawl",
+        "dir_scan",
         "nuclei_scan",
         "afrog_scan",
         "xray_scan",
@@ -744,6 +784,8 @@ class WorkflowStep(BaseModel):
         "http_headers": EmptyToolParameters,
         "http_security_check": WorkflowHttpSecurityParameters,
         "tls_config": EmptyToolParameters,
+        "site_crawl": EmptyToolParameters,
+        "dir_scan": DirScanParameters,
         "nuclei_scan": NucleiParameters,
         "afrog_scan": PocSelectionParameters,
         "xray_scan": PocSelectionParameters,
