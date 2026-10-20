@@ -195,7 +195,9 @@ final class RuntimeProtocolDiagnostics {
             || message.endsWith("无效") || message.endsWith("参数必须是对象")
             || message.contains(" 缺少字段 ")
             || message.contains("计划包含未知工具")
+            || message.startsWith("AI Runtime 计划包含未知工具 ")
             || message.contains("计划包含重复工作流节点")
+            || message.contains("工具不在白名单")
             || message.endsWith("高风险工具计划必须要求审批")
             || message.equals("AI Runtime 返回未知事件类型")
             || message.equals("AI Runtime 返回了未知流字段"))) {
