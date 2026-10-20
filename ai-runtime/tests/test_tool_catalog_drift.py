@@ -186,3 +186,41 @@ def typing_args(annotation) -> list:
             return typing_args(annotation.__args__[0])
         return list(annotation.__args__)
     return []
+
+
+def java_strict_parameters_switches() -> tuple[set[str], set[str]]:
+    """Extract the tool codes handled by both strictParameters switches in Java."""
+    source = (
+        REPO_ROOT
+        / "security-toolbox-server"
+        / "src"
+        / "main"
+        / "java"
+        / "com"
+        / "bachelor"
+        / "toolbox"
+        / "ai"
+        / "AiAgentRuntimeClient.java"
+    ).read_text(encoding="utf-8")
+    start = source.index("private Map<String, Object> strictParameters(")
+    end = source.index("private Map<String, Object> strictMsfParameters(")
+    body = source[start:end]
+    keys_match = re.search(r"Set<String> allowed =\s*switch \(toolCode\) \{(.*?)\};", body, re.S)
+    assert keys_match, "cannot locate allowed-keys switch in strictParameters"
+    keys = set(re.findall(r'"([a-z_]+)"', keys_match.group(1)))
+    values_start = body.index("switch (toolCode) {", body.index("Map<String, Object> result"))
+    values_body = body[values_start:]
+    values = set(re.findall(r'"([a-z_]+)"', values_body))
+    return keys, values
+
+
+def test_java_strict_parameters_covers_every_code() -> None:
+    """The Java value-parsing switch must handle every tool the catalog offers.
+
+    This is the exact drift that shipped site_crawl: whitelisted in the keys switch, missing
+    from the value switch, so any plan proposing site_crawl died as "unknown tool".
+    """
+    keys, values = java_strict_parameters_switches()
+    codes = set(java_runtime_codes())
+    assert codes <= keys, f"missing from Java allowed-keys switch: {sorted(codes - keys)}"
+    assert codes <= values, f"missing from Java value-parsing switch: {sorted(codes - values)}"
