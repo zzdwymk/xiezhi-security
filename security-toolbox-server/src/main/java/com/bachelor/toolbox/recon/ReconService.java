@@ -112,6 +112,28 @@ public class ReconService {
           .connectTimeout(PASSIVE_CONNECT_TIMEOUT)
           .followRedirects(HttpClient.Redirect.NEVER)
           .build();
+
+  /**
+   * 主动探测（目录枚举 / 站点爬取 / 参数探测）共用的 HTTP 客户端。
+   *
+   * <p>每次 new HttpClient 都会创建并长期保留自己的 SelectorManager 与工作线程池；枚举一次可能
+   * 触发上千次请求，逐次新建会持续累积线程并拖垮 JVM，也会让连接复用失效。这里统一复用一个实例，
+   * 并显式固定 HTTP/1.1 与不跟随重定向（避免授权私有目标被重定向到未授权主机）。
+   */
+  private final HttpClient activeClient =
+      HttpClient.newBuilder()
+          .connectTimeout(Duration.ofSeconds(4))
+          .version(HttpClient.Version.HTTP_1_1)
+          .followRedirects(HttpClient.Redirect.NEVER)
+          .build();
+
+  /** 参数探测需要跟随同源目录重定向，单独复用另一个实例。 */
+  private final HttpClient paramProbeClient =
+      HttpClient.newBuilder()
+          .connectTimeout(Duration.ofSeconds(4))
+          .version(HttpClient.Version.HTTP_1_1)
+          .followRedirects(HttpClient.Redirect.NORMAL)
+          .build();
   private final PassiveResponseCache passiveCache =
       new PassiveResponseCache(PASSIVE_CACHE_MAX_ENTRIES);
 
@@ -138,6 +160,43 @@ public class ReconService {
 
   @Value("${toolbox.recon.param-probe-max-findings:8}")
   private int paramProbeMaxFindings;
+
+  /**
+   * 参数探测的总时间预算（秒）。参数探测串行发送请求，若不设上限，最坏情况下会拖到十分钟以上，
+   * 让整个信息收集请求被前端 HTTP 超时判为失败，从而丢弃已完成的目录枚举成果。
+   */
+  @Value("${toolbox.recon.param-probe-time-budget-seconds:45}")
+  private int paramProbeTimeBudgetSeconds;
+
+  /**
+   * 子域名枚举的总时间预算（秒）。DNS 解析串行执行，数千个不存在的候选会累积大量解析超时，
+   * 足以让整个同步的信息收集请求超过客户端超时；到点即停止并在证据中标注 timedOut。
+   */
+  @Value("${toolbox.recon.subdomain-enum-time-budget-seconds:30}")
+  private int subdomainEnumTimeBudgetSeconds;
+
+  /**
+   * 目录枚举的总时间预算（秒）。即使单个请求设置了超时，对端把连接挂起时仍可能长时间不返回；
+   * 没有整体截止时间会让同步请求永久阻塞。到点后取消在途请求并在证据中记录 timedOut。
+   */
+  @Value("${toolbox.recon.path-enum-time-budget-seconds:120}")
+  private int pathEnumTimeBudgetSeconds;
+
+  /** 爬虫最大爬取深度（1 = 仅根页；2 = 根页 + 其链接页；依此类推）。 */
+  @Value("${toolbox.recon.crawl-max-depth:2}")
+  private int crawlMaxDepth;
+
+  /** 爬虫整个会话最多真实访问的页面数（含根页），防止在大型站点上放大请求。 */
+  @Value("${toolbox.recon.crawl-max-pages:60}")
+  private int crawlMaxPages;
+
+  /** 爬虫并发工作线程数上限。 */
+  @Value("${toolbox.recon.crawl-concurrency:8}")
+  private int crawlConcurrency;
+
+  /** 爬虫总墙钟预算（秒）。 */
+  @Value("${toolbox.recon.crawl-time-budget-seconds:90}")
+  private int crawlTimeBudgetSeconds;
 
   public ReconService(
       ReconResultRepository results,
@@ -274,9 +333,30 @@ public class ReconService {
       subdomains.addAll(crtSh(rootDomain, evidence));
     }
     if (Boolean.TRUE.equals(request.enumerateSubdomains())) {
-      enumerate(rootDomain, request.subdomainWords(), subdomains);
+      // 子域名枚举只对域名有意义。对 IP 目标（如 192.168.222.139）逐个拼接 "word.192.168.222.139"
+      // 做 DNS 解析既不可能命中，又会让每个不存在的名字各等一次 DNS 超时（默认上限 2000 个），
+      // 把整个同步的信息收集请求拖到客户端超时。这里直接跳过并如实记录原因。
+      if (isIpLiteral(rootDomain)) {
+        evidence.add(
+            Map.of(
+                "source", "SUBDOMAIN_ENUM",
+                "available", false,
+                "skipped", true,
+                "reason", "目标是 IP 地址，子域名枚举不适用"));
+      } else {
+        enumerate(rootDomain, request.subdomainWords(), subdomains, evidence);
+      }
     }
     return subdomains;
+  }
+
+  /** 是否为 IPv4/IPv6 字面量（此时子域名枚举无意义）。 */
+  private boolean isIpLiteral(String value) {
+    if (value == null || value.isBlank()) {
+      return false;
+    }
+    return value.indexOf(':') >= 0
+        || value.matches("^\\d{1,3}(\\.\\d{1,3}){3}$");
   }
 
   private ReconResult createResult(
@@ -323,12 +403,8 @@ public class ReconService {
       return mergeKnownPaths(projectId, target.getId(), discovered);
     }
     String base = endpoint.scheme() + "://" + host + ":" + endpoint.port();
-    HttpClient client =
-        HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(4))
-            .version(HttpClient.Version.HTTP_1_1)
-            .followRedirects(HttpClient.Redirect.NEVER)
-            .build();
+    // 复用共享客户端：目录枚举会发出上千次请求，逐次 new HttpClient 会累积线程与连接。
+    HttpClient client = activeClient;
 
     // ---- 主动目录枚举（仅 ACTIVE 且勾选）----
     if (request.activeMode() && Boolean.TRUE.equals(request.enumeratePaths())) {
@@ -398,6 +474,13 @@ public class ReconService {
               return thread;
             });
     List<java.util.concurrent.Future<?>> futures = new ArrayList<>(planned.size());
+    // 墙钟预算：即便单个请求设置了超时，连接被对端挂起时仍可能长期不返回，
+    // 而 future.get() 无超时会一直阻塞，导致整个同步请求永不返回。
+    // 这里给出全局截止时间，到点后取消在途任务并如实记录截断情况。
+    long deadline =
+        System.nanoTime() + Duration.ofSeconds(Math.max(5, pathEnumTimeBudgetSeconds)).toNanos();
+    boolean timedOut = false;
+    int completed = 0;
     try {
       for (String word : planned) {
         futures.add(
@@ -425,12 +508,39 @@ public class ReconService {
                 }));
       }
       for (java.util.concurrent.Future<?> future : futures) {
+        long remaining = deadline - System.nanoTime();
+        if (remaining <= 0) {
+          timedOut = true;
+          break;
+        }
         try {
-          future.get();
-        } catch (Exception ignored) {
+          future.get(remaining, java.util.concurrent.TimeUnit.NANOSECONDS);
+          completed++;
+          if (completed % 200 == 0) {
+            log.info(
+                "目录枚举进度：{}/{}（并发 {}，已耗时 {}ms）",
+                completed,
+                planned.size(),
+                concurrency,
+                (pathEnumTimeBudgetSeconds * 1000L) - (remaining / 1_000_000));
+          }
+        } catch (java.util.concurrent.TimeoutException timeout) {
+          timedOut = true;
+          break;
+        } catch (InterruptedException interrupted) {
+          Thread.currentThread().interrupt();
+          timedOut = true;
+          break;
+        } catch (java.util.concurrent.ExecutionException ignored) {
+          completed++;
         }
       }
     } finally {
+      if (timedOut) {
+        for (java.util.concurrent.Future<?> future : futures) {
+          future.cancel(true);
+        }
+      }
       pool.shutdownNow();
     }
     evidence.add(
@@ -441,9 +551,26 @@ public class ReconService {
             "candidates", words.size(),
             "planned", planned.size(),
             "concurrency", concurrency,
-            "found", found.get()));
+            "found", found.get(),
+            "timeBudgetSeconds", Math.max(5, pathEnumTimeBudgetSeconds),
+            "timedOut", timedOut));
   }
 
+  /**
+   * 递归站点爬虫（广度优先）。
+   *
+   * <p>与旧实现的区别：旧版只请求根页一次，把页面源码里的链接<strong>直接登记</strong>——
+   * 链接从未被真实访问过，状态码为空，也不存在任何递归。这里改为真正的爬取：
+   *
+   * <ol>
+   *   <li>每条链接先<strong>真实访问</strong>（与字典枚举共用软-404 基线判活），
+   *       只有可达的页面才入库并作为下一层爬取的种子；</li>
+   *   <li>可达页面的源码被再次解析出链接，进入下一层（BFS），直到达到
+   *       {@code crawl-max-depth}；</li>
+   *   <li>页数、深度、并发、墙钟全部有硬上限，保证同步请求总能返回；</li>
+   *   <li>全程同源约束（host 一致），端口授权由 {@code discoveredPaths.record} 兜底。</li>
+   * </ol>
+   */
   private void crawlLinks(
       Long projectId,
       AuthorizedTarget target,
@@ -451,34 +578,194 @@ public class ReconService {
       HttpClient client,
       java.util.LinkedHashSet<String> discovered,
       List<Map<String, Object>> evidence) {
-    int found = 0;
+    int maxDepth = Math.max(1, crawlMaxDepth);
+    int maxPages = Math.max(1, crawlMaxPages);
+    int concurrency = Math.max(1, Math.min(16, crawlConcurrency));
+    long deadline =
+        System.nanoTime() + Duration.ofSeconds(Math.max(5, crawlTimeBudgetSeconds)).toNanos();
+
+    // 软-404 基线与字典枚举共用：返回"与不存在路径相同响应"的页面视为不可达。
+    long[] baseline = probePath(client, base + "/xzy404-" + Long.toHexString(System.nanoTime()) + "/");
+
+    Set<String> visited = new java.util.HashSet<>();
+    Set<String> enqueued = new java.util.HashSet<>();
+    java.util.Deque<QueueItem> queue = new java.util.ArrayDeque<>();
+    queue.add(new QueueItem(stripTrailingSlash(base) + "/", 1));
+    enqueued.add(stripTrailingSlash(base) + "/");
+
+    int pagesFetched = 0;
+    int pagesAlive = 0;
+    int linksFound = 0;
+    boolean timedOut = false;
+    Pattern linkPattern = Pattern.compile("(?i)(?:href|src|action)\\s*=\\s*[\"']([^\"'#>]+)[\"']");
+
+    java.util.concurrent.ExecutorService pool =
+        java.util.concurrent.Executors.newFixedThreadPool(
+            Math.min(concurrency, maxPages),
+            runnable -> {
+              Thread thread = new Thread(runnable);
+              thread.setName("recon-crawl-" + thread.getId());
+              thread.setDaemon(true);
+              return thread;
+            });
+
+    try {
+      while (!queue.isEmpty() && pagesFetched < maxPages) {
+        if (System.nanoTime() > deadline) {
+          timedOut = true;
+          break;
+        }
+        // 取出当前层的全部候选项（BFS 逐层），过滤已访问/重复的
+        List<QueueItem> layer = new ArrayList<>();
+        while (!queue.isEmpty() && layer.size() < maxPages) {
+          QueueItem item = queue.poll();
+          if (item == null || visited.contains(item.url())) continue;
+          visited.add(item.url());
+          layer.add(item);
+        }
+        if (layer.isEmpty()) break;
+
+        List<java.util.concurrent.Future<List<QueueItem>>> futures = new ArrayList<>();
+        for (QueueItem item : layer) {
+          if (pagesFetched >= maxPages || System.nanoTime() > deadline) {
+            timedOut = System.nanoTime() > deadline;
+            break;
+          }
+          futures.add(
+              pool.submit(
+                  () -> {
+                    List<QueueItem> next = new ArrayList<>();
+                    long[] resp = probePath(client, item.url());
+                    if (resp == null) return next;
+                    int status = (int) resp[0];
+                    long len = resp[1];
+                    boolean alive;
+                    if (baseline == null) {
+                      alive = status > 0 && status < 400;
+                    } else {
+                      alive =
+                          status != (int) baseline[0]
+                              || Math.abs(len - baseline[1]) > 24;
+                    }
+                    if (!alive || status >= 400) return next;
+                    // 测活通过：登记为已验证路径（带真实状态码，区别于旧版的 null）
+                    if (discoveredPaths.record(
+                        target,
+                        projectId,
+                        item.url(),
+                        "CRAWL",
+                        status,
+                        len,
+                        "递归爬虫（第 " + item.depth() + " 层，已测活）")) {
+                      synchronized (discovered) {
+                        discovered.add(item.url());
+                      }
+                    }
+                    // 深度允许时抓取页面源码，解析下一层同源链接
+                    if (item.depth() < maxDepth) {
+                      String html = fetchBody(client, item.url());
+                      if (html != null) {
+                        Matcher matcher = linkPattern.matcher(html);
+                        int cap = 200;
+                        while (matcher.find() && cap-- > 0) {
+                          String link = matcher.group(1).trim();
+                          if (link.isBlank()
+                              || link.startsWith("javascript:")
+                              || link.startsWith("mailto:")
+                              || link.startsWith("data:")
+                              || link.startsWith("#")) {
+                            continue;
+                          }
+                          String url = resolveLink(item.url(), link);
+                          if (url == null) continue;
+                          String normalized = stripFragment(url);
+                          synchronized (enqueued) {
+                            if (enqueued.add(normalized)) {
+                              next.add(new QueueItem(normalized, item.depth() + 1));
+                            }
+                          }
+                        }
+                      }
+                    }
+                    return next;
+                  }));
+        }
+
+        for (java.util.concurrent.Future<List<QueueItem>> future : futures) {
+          long remaining = deadline - System.nanoTime();
+          if (remaining <= 0) {
+            timedOut = true;
+            break;
+          }
+          try {
+            for (QueueItem next : future.get(remaining, java.util.concurrent.TimeUnit.NANOSECONDS)) {
+              queue.add(next);
+              linksFound++;
+            }
+            pagesFetched++;
+            pagesAlive++;
+          } catch (java.util.concurrent.TimeoutException timeout) {
+            timedOut = true;
+            break;
+          } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            timedOut = true;
+            break;
+          } catch (java.util.concurrent.ExecutionException ignored) {
+            pagesFetched++;
+          }
+        }
+      }
+    } finally {
+      pool.shutdownNow();
+    }
+
+    evidence.add(
+        Map.of(
+            "source", "SITE_CRAWL",
+            "available", true,
+            "maxDepth", maxDepth,
+            "pagesFetched", pagesFetched,
+            "pagesAlive", pagesAlive,
+            "linksFound", linksFound,
+            "timeBudgetSeconds", Math.max(5, crawlTimeBudgetSeconds),
+            "timedOut", timedOut));
+  }
+
+  /** 爬取队列条目：目标 URL 与其在 BFS 中的层级。 */
+  private record QueueItem(String url, int depth) {}
+
+  /** 抓取页面正文（仅用于解析链接），失败返回 null。 */
+  private String fetchBody(HttpClient client, String url) {
     try {
       HttpRequest req =
-          HttpRequest.newBuilder(URI.create(base + "/"))
+          HttpRequest.newBuilder(URI.create(url))
               .timeout(Duration.ofSeconds(8))
               .header("User-Agent", USER_AGENT)
               .GET()
               .build();
       HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
+      if (resp.statusCode() / 100 != 2) return null;
       String body = resp.body() == null ? "" : resp.body();
-      Matcher m =
-          Pattern.compile("(?i)(?:href|src|action)\\s*=\\s*[\"']([^\"'#>]+)[\"']").matcher(body);
-      int limit = 200;
-      while (m.find() && limit-- > 0) {
-        String link = m.group(1).trim();
-        if (link.isBlank() || link.startsWith("javascript:") || link.startsWith("mailto:")
-            || link.startsWith("data:")) continue;
-        String url = resolveLink(base, link);
-        if (url == null) continue;
-        if (discoveredPaths.record(target, projectId, url, "PASSIVE_LINK", null, null, "页面源码链接提取")) {
-          discovered.add(url);
-          found++;
-        }
-      }
+      return body.length() > 1_000_000 ? body.substring(0, 1_000_000) : body;
+    } catch (InterruptedException interrupted) {
+      Thread.currentThread().interrupt();
+      return null;
     } catch (Exception ex) {
-      log.debug("站点链接提取失败 base={} : {}", base, ex.getMessage());
+      return null;
     }
-    evidence.add(Map.of("source", "SITE_CRAWL", "available", true, "found", found));
+  }
+
+  private String stripTrailingSlash(String url) {
+    return url != null && url.endsWith("/") && url.length() > 1
+        ? url.substring(0, url.length() - 1)
+        : url;
+  }
+
+  /** 去掉 URL 的 #fragment（爬取去重以资源为准）。 */
+  private String stripFragment(String url) {
+    int index = url.indexOf('#');
+    return index >= 0 ? url.substring(0, index) : url;
   }
 
   /**
@@ -496,13 +783,8 @@ public class ReconService {
     if (!paramProbeEnabled || paramProbeMaxEndpoints <= 0 || paramProbeMaxFindings <= 0) {
       return;
     }
-    HttpClient client =
-        HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(4))
-            .version(HttpClient.Version.HTTP_1_1)
-            // 跟随同源目录 301（如 /Less-2 → /Less-2/），否则注入报错会被重定向掩盖。
-            .followRedirects(HttpClient.Redirect.NORMAL)
-            .build();
+    // 复用共享客户端（跟随同源目录 301，如 /Less-2 → /Less-2/），避免逐次新建累积线程。
+    HttpClient client = paramProbeClient;
 
     // 候选端点：基址本身 + 本次已发现、非静态资源的 URL。
     // 端点数受 maxPathsPerScan 上限约束，直接按发现顺序截断会漏掉排在后面的可注入端点，
@@ -527,15 +809,28 @@ public class ReconService {
     int tested = 0;
     int found = 0;
     int budget = paramProbeMaxEndpoints * 6 + 24; // 请求预算兜底，避免探测放大。
+    // 时间预算：参数探测是串行请求，最坏情况下 budget * 6 秒会远超前端 HTTP 超时，
+    // 使整个信息收集请求被判超时并丢弃已完成的目录枚举结果。这里给它一个硬性时间上限，
+    // 到点即停止并把「已探测/已命中/是否截断」写进证据，保证目录枚举成果不会因后置步骤被吞掉。
+    long deadline = System.nanoTime() + Duration.ofSeconds(Math.max(5, paramProbeTimeBudgetSeconds)).toNanos();
+    boolean timedOut = false;
     outer:
     for (String endpoint : endpoints) {
       if (found >= paramProbeMaxFindings) break;
       for (String param : MINE_PARAM_NAMES) {
         if (found >= paramProbeMaxFindings) break outer;
         if (budget-- <= 0) break outer;
+        if (System.nanoTime() > deadline) {
+          timedOut = true;
+          break outer;
+        }
         MineResponse baseResp = mineProbe(client, appendParam(endpoint, param, "1"), targetHost);
         if (baseResp == null || baseResp.status() >= 500) continue;
         tested++;
+        if (System.nanoTime() > deadline) {
+          timedOut = true;
+          break outer;
+        }
         MineResponse brkResp = mineProbe(client, appendParam(endpoint, param, "1'"), targetHost);
         if (brkResp == null) continue;
         boolean errorTriggered =
@@ -561,7 +856,13 @@ public class ReconService {
       }
     }
     evidence.add(
-        Map.of("source", "PARAM_PROBE", "available", true, "tested", tested, "found", found));
+        Map.of(
+            "source", "PARAM_PROBE",
+            "available", true,
+            "tested", tested,
+            "found", found,
+            "timeBudgetSeconds", Math.max(5, paramProbeTimeBudgetSeconds),
+            "timedOut", timedOut));
   }
 
   /** 参数探测的单次响应快照（状态码、跟随重定向后的最终 URL、受限正文）。 */
@@ -651,8 +952,14 @@ public class ReconService {
     evidence.add(Map.of("source", "PROXY_PATHS", "available", true, "found", found));
   }
 
+  /** 目录枚举失败计数（用于抽样日志，帮助现场判断是目标不可达还是网络被劫持）。 */
+  private final java.util.concurrent.atomic.AtomicLong probeFailureCounter =
+      new java.util.concurrent.atomic.AtomicLong();
+
   private long[] probePath(HttpClient client, String url) {
     try {
+      // 目录枚举只需要状态码和长度；用 discarding 不保证能读完整正文，
+      // 这里仍读字节但限制上限，避免超大页面把内存与时间吃掉。
       HttpRequest req =
           HttpRequest.newBuilder(URI.create(url))
               .timeout(Duration.ofSeconds(6))
@@ -662,7 +969,22 @@ public class ReconService {
       HttpResponse<byte[]> resp = client.send(req, HttpResponse.BodyHandlers.ofByteArray());
       long len = resp.body() == null ? 0 : resp.body().length;
       return new long[] {resp.statusCode(), len};
+    } catch (InterruptedException interrupted) {
+      // 取消在途枚举时必须恢复中断标志，让线程池能立刻退出，
+      // 否则 shutdownNow 之后线程仍会卡在 I/O 上。
+      Thread.currentThread().interrupt();
+      return null;
     } catch (Exception ex) {
+      // 连接层失败（超时/拒绝/代理劫持）会被静默吞掉，导致“全部 found=0 却看不到原因”。
+      // 抽样打印前几条与每 100 条一次的失败原因，便于在授权现场判断网络状况。
+      int sample = (int) probeFailureCounter.incrementAndGet();
+      if (sample <= 3 || sample % 100 == 0) {
+        log.warn(
+            "目录枚举请求失败（第 {} 次）：{} -> {}",
+            sample,
+            url,
+            ex.getClass().getSimpleName() + ": " + ex.getMessage());
+      }
       return null;
     }
   }
@@ -974,12 +1296,7 @@ public class ReconService {
     }
 
     URI uri = new URI(endpoint.scheme(), null, host, endpoint.port(), "/", null, null);
-    HttpClient client =
-        HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(5))
-            .version(HttpClient.Version.HTTP_1_1)
-            .followRedirects(HttpClient.Redirect.NEVER)
-            .build();
+    HttpClient client = activeClient;
     HttpRequest request =
         HttpRequest.newBuilder(uri)
             .timeout(Duration.ofSeconds(10))
@@ -998,7 +1315,11 @@ public class ReconService {
         "redirect", response.headers().firstValue("location").orElse(""));
   }
 
-  private void enumerate(String rootDomain, List<String> requested, Set<String> output) {
+  private void enumerate(
+      String rootDomain,
+      List<String> requested,
+      Set<String> output,
+      List<Map<String, Object>> evidence) {
     List<String> words =
         (requested == null || requested.isEmpty())
             ? loadSubdomainWords().stream().limit(SUBDOMAIN_ENUM_LIMIT).toList()
@@ -1010,11 +1331,22 @@ public class ReconService {
                 .limit(SUBDOMAIN_ENUM_LIMIT)
                 .toList();
 
+    // DNS 解析是串行的，每个不存在的名字都可能要等一次解析超时。没有墙钟上限时，
+    // 数千个候选会把整个同步请求拖过客户端超时并丢弃已完成的结果。
+    long deadline =
+        System.nanoTime() + Duration.ofSeconds(Math.max(5, subdomainEnumTimeBudgetSeconds)).toNanos();
+    int attempted = 0;
+    boolean timedOut = false;
     for (String word : words) {
+      if (System.nanoTime() > deadline) {
+        timedOut = true;
+        break;
+      }
       String host = word + "." + rootDomain;
       if (!withinRoot(host, rootDomain)) {
         continue;
       }
+      attempted++;
       try {
         if (InetAddress.getAllByName(host).length > 0) {
           output.add(host);
@@ -1023,6 +1355,15 @@ public class ReconService {
         // 无法解析的候选子域不计入结果。
       }
     }
+    evidence.add(
+        Map.of(
+            "source", "SUBDOMAIN_ENUM",
+            "available", true,
+            "candidates", words.size(),
+            "attempted", attempted,
+            "found", output.size(),
+            "timeBudgetSeconds", Math.max(5, subdomainEnumTimeBudgetSeconds),
+            "timedOut", timedOut));
   }
 
   private List<String> loadSubdomainWords() {
@@ -1102,13 +1443,39 @@ public class ReconService {
       String scheme = explicitPort == 443 || explicitPort == 8443 ? "https" : "http";
       return allowedPort(target, explicitPort) ? new HttpEndpoint(scheme, explicitPort) : null;
     }
-    if (allowedPort(target, 443)) {
+    // 未声明 scheme 且无显式端口时，不能只凭"443 在授权范围内"就认定目标提供 HTTPS：
+    // 全端口授权（1-65535）几乎总是包含 443，但靶机很可能只有 80。此前所有枚举请求
+    // 都会打向不可达的 443 并逐个等到连接超时，把整个同步请求拖死（found=0）。
+    // 这里对候选端口做一次轻量 TCP 探测，选择真正可达的端口；两者都不通时回退 80。
+    if (allowedPort(target, 443) && portReachable(targetHostOf(target.getTargetValue()), 443)) {
       return new HttpEndpoint("https", 443);
     }
     if (allowedPort(target, 80)) {
       return new HttpEndpoint("http", 80);
     }
     return null;
+  }
+
+  /** TCP 连通性探测（短超时），用于在多个候选端口中选择真正可达的那个。 */
+  private boolean portReachable(String host, int port) {
+    if (host == null || host.isBlank()) {
+      return false;
+    }
+    try (var socket = new java.net.Socket()) {
+      socket.connect(new java.net.InetSocketAddress(host, port), 1500);
+      return true;
+    } catch (Exception ex) {
+      return false;
+    }
+  }
+
+  private String targetHostOf(String targetValue) {
+    try {
+      URI uri = URI.create(targetValue.contains("://") ? targetValue : "//" + targetValue);
+      return uri.getHost();
+    } catch (RuntimeException ex) {
+      return null;
+    }
   }
 
   private int tlsPort(AuthorizedTarget target) {

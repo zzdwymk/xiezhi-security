@@ -61,7 +61,7 @@ final class AiToolCatalog {
       case "sqlmap_scan" -> "sqlmap SQL 注入检测";
       case "zap_fuzz" -> "ZAP 单次参数变异验证";
       case "tcp_ports" -> "授权端口探测";
-      case "dir_scan" -> "授权目录/路径枚举";
+      case "dir_scan" -> "授权目录/路径探测（线索）";
       case "http_headers" -> "HTTP 安全响应头检查";
       case "http_security_check" -> "HTTP 常见安全检查";
       case "tls_config" -> "TLS 基础配置检查";
@@ -84,7 +84,7 @@ final class AiToolCatalog {
       case "sqlmap_scan" -> "对已有授权 URL 查询参数做受控 SQL 注入检测";
       case "zap_fuzz" -> "向授权请求发送一次参数变异，验证单点输入处理";
       case "tcp_ports" -> "仅在授权端口范围内探测 TCP 连通性";
-      case "dir_scan" -> "用内置 dirb/dirbuster 字典枚举授权 Web 目标的目录与路径，并发数可配置";
+      case "dir_scan" -> "用内置字典探测授权 Web 目标的目录与路径；命中仅为待核实线索，不单独作为漏洞确认";
       case "http_headers" -> "采集 HTTP 响应头并检查常见浏览器安全头";
       case "http_security_check" -> "检查 cookies、CORS、HTTP 方法与信息泄露";
       case "tls_config" -> "检查 HTTPS 证书与 TLS 基础配置";

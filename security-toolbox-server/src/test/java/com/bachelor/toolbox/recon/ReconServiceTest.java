@@ -295,6 +295,14 @@ class ReconServiceTest {
     // 模拟 sqli-labs Less-2：/Less-2 目录 301 到 /Less-2/；带单引号触发 MySQL 报错回显，
     // 合法值不报错。/safe 端点对任何取值都不报错，用于校验不会误报。
     HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    // 软-404 基线路径必须返回真实的 404，否则爬虫的"全站同响应"判定会把所有页面
+    // 都当成不存在（基线与正常页完全一致），后续链接提取就不会发生。
+    server.createContext(
+        "/xzy404-",
+        exchange -> {
+          exchange.sendResponseHeaders(404, -1);
+          exchange.close();
+        });
     server.createContext(
         "/",
         exchange -> {
@@ -390,6 +398,13 @@ class ReconServiceTest {
     StringBuilder links = new StringBuilder("<html>");
     for (int i = 1; i <= 8; i++) links.append("<a href=\"dir").append(i).append("\">d</a>");
     links.append("<a href=\"product.php?id=1\">p</a></html>");
+    // 软-404 基线必须真实 404（"/" 是通配 handler，否则基线与正常页一致，爬虫判全站不可达）
+    server.createContext(
+        "/xzy404-",
+        exchange -> {
+          exchange.sendResponseHeaders(404, -1);
+          exchange.close();
+        });
     server.createContext(
         "/",
         exchange -> {
@@ -469,6 +484,15 @@ class ReconServiceTest {
     ReflectionTestUtils.setField(service, "paramProbeEnabled", true);
     ReflectionTestUtils.setField(service, "paramProbeMaxEndpoints", maxEndpoints);
     ReflectionTestUtils.setField(service, "paramProbeMaxFindings", 8);
+    // 爬虫的深度/页数/预算字段在生产由 @Value 注入；手工构造时 Spring 不会赋值（全为 0），
+    // 会让 maxDepth=max(1,0)=1——爬虫只访问根页、从不解析链接。这里显式给生产默认值。
+    ReflectionTestUtils.setField(service, "crawlMaxDepth", 2);
+    ReflectionTestUtils.setField(service, "crawlMaxPages", 60);
+    ReflectionTestUtils.setField(service, "crawlConcurrency", 8);
+    ReflectionTestUtils.setField(service, "crawlTimeBudgetSeconds", 90);
+    ReflectionTestUtils.setField(service, "pathEnumTimeBudgetSeconds", 120);
+    ReflectionTestUtils.setField(service, "paramProbeTimeBudgetSeconds", 45);
+    ReflectionTestUtils.setField(service, "subdomainEnumTimeBudgetSeconds", 30);
     return service;
   }
 

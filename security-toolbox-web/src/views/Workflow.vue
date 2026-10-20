@@ -147,9 +147,9 @@ const PHASES: PhaseMeta[] = [
   },
   {
     code: "discovery",
-    label: "漏洞发现",
-    shortLabel: "漏洞发现",
-    desc: "结合指纹与规则筛选潜在风险。",
+    label: "风险线索发现",
+    shortLabel: "线索发现",
+    desc: "结合指纹与规则发现潜在风险线索；结果需验证后再定性为漏洞。",
     icon: "beaker",
   },
   {
@@ -252,11 +252,11 @@ const SUBAGENTS: {
   },
   {
     tool: "dir_scan",
-    name: "目录与路径枚举",
+    name: "Web 目录与路径探测",
     icon: "folder",
-    desc: "使用内置 dirb/dirbuster 字典枚举授权 Web 目标的目录与路径，并发可配置",
+    desc: "使用内置字典枚举授权 Web 目标路径；命中仅作为待核实线索和资产记录，不直接判定为漏洞",
     risk: "CAUTION",
-    phase: "discovery",
+    phase: "mapping",
   },
   {
     tool: "nuclei_scan",
@@ -348,7 +348,7 @@ const SUGGESTION_TERM_LABELS: Record<string, string> = {
   engagement: "项目启动与范围",
   recon: "被动侦察",
   mapping: "资产与服务发现",
-  discovery: "漏洞发现",
+  discovery: "风险线索发现",
   validation: "安全验证",
   impact: "影响评估",
   retest: "复测与修复确认",
@@ -817,8 +817,15 @@ function goToSetupDependencies() {
 }
 
 const sortedPhases = computed(() => PHASES);
+function toolPhase(tool?: string): PhaseCode | undefined {
+  const phase = SUBAGENTS.find((agent) => agent.tool === tool)?.phase;
+  if (tool === "dir_scan") return "discovery";
+  return phase ? (phase as PhaseCode) : undefined;
+}
 const filteredAgents = computed(() => {
-  let list = SUBAGENTS.filter((agent) => agent.phase === selectedPhase.value);
+  let list = SUBAGENTS.filter(
+    (agent) => toolPhase(agent.tool) === selectedPhase.value,
+  );
   if (onlyAvailableCapabilities.value) {
     list = list.filter((agent) => isToolDependencyReady(agent.tool));
   }
@@ -903,11 +910,12 @@ function nodeData(
   tool?: string,
   parameters?: Record<string, unknown>,
 ): EditorNodeData {
-  const meta = phaseOf(phase);
   const agent = agentOf(tool);
+  const effectivePhase = tool ? (toolPhase(tool) || phase) : phase;
+  const meta = phaseOf(effectivePhase);
   return {
     nodeKind: kind,
-    phase,
+    phase: effectivePhase,
     label: label || agent?.name || meta.label,
     desc: agent?.desc || meta.desc,
     icon: agent?.icon || meta.icon,
@@ -1584,9 +1592,8 @@ function phaseToolMap(code: PresetCode): Record<PhaseCode, string[]> {
     return {
       engagement: [],
       recon: ["retrieve_project_context"],
-      mapping: ["http_headers", "tls_config"],
+      mapping: ["http_headers", "tls_config", "dir_scan"],
       discovery: [
-        "dir_scan",
         "http_security_check",
         "fscan_scan",
         "msf_scan",
@@ -1772,6 +1779,7 @@ function buildPreset(code: PresetCode, retainedSteps?: WorkflowStepSpec[]) {
 
 function inferPhase(tool?: string): PhaseCode {
   if (tool === "retrieve_project_context") return "recon";
+  if (tool === "dir_scan") return "discovery";
   if (
     tool === "http_security_check" ||
     tool === "nuclei_scan" ||
@@ -1782,7 +1790,7 @@ function inferPhase(tool?: string): PhaseCode {
     tool === "msf_scan"
   )
     return "discovery";
-  if (tool) return "mapping";
+  if (tool) return toolPhase(tool) || "mapping";
   return "validation";
 }
 
@@ -1801,7 +1809,7 @@ function graphSpecNodes(): WorkflowGraphNodeSpec[] {
     id: node.id,
     type: node.data.nodeKind,
     label: node.data.label,
-    phase: node.data.phase,
+    phase: node.data.tool ? (toolPhase(node.data.tool) || node.data.phase) : node.data.phase,
     ...(node.data.tool ? { tool: node.data.tool } : {}),
     position: {
       x: Math.round(node.position.x),
@@ -3179,6 +3187,9 @@ function addToolNode(
 ) {
   const agent = agentOf(tool);
   if (!agent) return;
+  // Capabilities are always inserted in their canonical phase, even if an
+  // old drag payload or legacy graph suggests another phase.
+  phase = agent.phase;
   const id = uniqueId(`tool-${safeId(tool)}-${phase}`);
   const phaseAnchor = nodes.value.find(
     (node) => node.id === phaseNodeId(phase),
@@ -4792,7 +4803,7 @@ onBeforeUnmount(() => {
                     <span class="node-icon"
                       ><FluentIcon :name="data.icon" /></span
                     ><span class="node-phase">{{
-                      phaseOf(data.phase).shortLabel
+                      phaseOf(data.tool ? (toolPhase(data.tool) || data.phase) : data.phase).shortLabel
                     }}</span
                     ><button
                       v-if="nodeRuns[id]"

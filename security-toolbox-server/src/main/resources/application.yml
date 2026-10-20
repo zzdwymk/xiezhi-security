@@ -68,6 +68,26 @@ toolbox:
     param-probe-enabled: ${RECON_PARAM_PROBE_ENABLED:true}
     param-probe-max-endpoints: ${RECON_PARAM_PROBE_MAX_ENDPOINTS:16}
     param-probe-max-findings: ${RECON_PARAM_PROBE_MAX_FINDINGS:8}
+    # Parameter probing sends requests serially. Without a wall-clock cap the worst case can exceed
+    # ten minutes, which makes the whole (synchronous) recon request time out on the client and
+    # discards the enumeration results that had already been collected.
+    param-probe-time-budget-seconds: ${RECON_PARAM_PROBE_TIME_BUDGET_SECONDS:45}
+    # Subdomain enumeration resolves DNS names serially. With thousands of candidates that do not
+    # exist, the accumulated resolver timeouts can push the whole synchronous recon request past
+    # the client timeout. Cap the wall-clock time and report the truncation in the evidence.
+    subdomain-enum-time-budget-seconds: ${RECON_SUBDOMAIN_ENUM_TIME_BUDGET_SECONDS:30}
+    # Directory enumeration is concurrent, but a peer can hold a connection open indefinitely.
+    # A wall-clock cap guarantees the synchronous recon request always returns and the result
+    # is persisted instead of being dropped by a client-side timeout.
+    path-enum-time-budget-seconds: ${RECON_PATH_ENUM_TIME_BUDGET_SECONDS:120}
+    # Recursive site crawl. Every discovered link is really fetched (liveness-checked with the
+    # same soft-404 baseline as the dictionary pass) before being recorded, and pages are crawled
+    # breadth-first up to crawl-max-depth. All bounds are hard caps so the synchronous recon
+    # request always returns.
+    crawl-max-depth: ${RECON_CRAWL_MAX_DEPTH:2}
+    crawl-max-pages: ${RECON_CRAWL_MAX_PAGES:60}
+    crawl-concurrency: ${RECON_CRAWL_CONCURRENCY:8}
+    crawl-time-budget-seconds: ${RECON_CRAWL_TIME_BUDGET_SECONDS:90}
   auth:
     admin-password: ${ADMIN_PASSWORD:admin123}
     jwt-secret: ${JWT_SECRET:development-only-jwt-secret-change-me-32-bytes}

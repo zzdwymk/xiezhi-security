@@ -11,8 +11,9 @@ const detail = computed(() => aiProgressFailureText(props.message.content, hasTa
 </script>
 
 <template>
+  <!-- 只承担"错误详情"的展开入口。重试/配置诊断按钮已常驻消息操作区，
+       这里不再重复引导文案，避免同一句话出现两遍。 -->
   <section class="ai-failure-notice" aria-label="回复失败说明">
-    <p>{{ hasTasks ? '可重新生成回复，已有任务保留。' : '可重试；如持续失败，请查看配置诊断。' }}</p>
     <details class="failure-details">
       <summary><FluentIcon name="chevron-right" />错误详情</summary>
       <p>{{ detail }}</p>
