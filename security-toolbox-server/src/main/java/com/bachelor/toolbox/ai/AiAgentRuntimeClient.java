@@ -1253,7 +1253,9 @@ public class AiAgentRuntimeClient {
       String toolCode = strictText(action, "tool", 64);
       String workflowNodeId = strictText(action, "workflowNodeId", 128);
       if (!ALLOWED_RUNTIME_TOOLS.contains(toolCode)) {
-        throw new RuntimeProtocolException("AI Runtime 计划包含未知工具");
+        // The tool code is a bounded protocol identifier from a fixed enum space, not free
+        // text; naming it pinpoints which proposal the whitelist rejected.
+        throw new RuntimeProtocolException("AI Runtime 计划包含未知工具 " + toolCode);
       }
       String risk = strictText(action, "risk", 16);
       if (!Set.of("SAFE", "CAUTION").contains(risk)
@@ -1370,7 +1372,7 @@ public class AiAgentRuntimeClient {
           case "dir_scan" -> Set.of("dictionary", "concurrency", "depth", "maxRequests", "extensions");
           case "site_crawl" -> Set.of();
           case "http_headers", "tls_config" -> Set.of();
-          default -> throw new RuntimeProtocolException("AI Runtime 工具不在白名单");
+          default -> throw new RuntimeProtocolException("AI Runtime 计划包含未知工具 " + toolCode);
         };
     requireFields(raw, allowed, Set.of(), "parameters");
     Map<String, Object> result = new LinkedHashMap<>();
@@ -1470,8 +1472,8 @@ public class AiAgentRuntimeClient {
           result.put("extensions", ToolParameterSpec.requireDirScanExtensions(values));
         }
       }
-      case "http_headers", "tls_config" -> {}
-      default -> throw new RuntimeProtocolException("AI Runtime 工具不在白名单");
+      case "site_crawl", "http_headers", "tls_config" -> {}
+      default -> throw new RuntimeProtocolException("AI Runtime 计划包含未知工具 " + toolCode);
     }
     return Map.copyOf(result);
   }
@@ -3100,3 +3102,5 @@ public class AiAgentRuntimeClient {
     }
   }
 }
+
+

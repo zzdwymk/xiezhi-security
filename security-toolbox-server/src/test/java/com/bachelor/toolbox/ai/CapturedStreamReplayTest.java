@@ -45,6 +45,10 @@ class CapturedStreamReplayTest {
   static boolean fixtureExists() {
     return Files.exists(fixture());
   }
+  private static String readConversationId() throws Exception {
+    Path marker = Path.of(System.getProperty("java.io.tmpdir"), "convid.txt");
+    return Files.exists(marker) ? Files.readString(marker, StandardCharsets.UTF_8).trim() : "replica-session";
+  }
 
   @Test
   @EnabledIf("fixtureExists")
@@ -68,7 +72,7 @@ class CapturedStreamReplayTest {
         20,
         null);
     AiAgentRequest request = new AiAgentRequest(
-        129L, 129L, "diag-16auth",
+        129L, 129L, readConversationId(),
         "192.168.222.139 这个目标，接下来你觉得该怎么推进？",
         true, null, java.util.List.of(), "standard", "turn-replica",
         "9f11ce0e-0722-4624-a321-d5cab66a89c8", 1L, workflowDigest, "ledger-agent", nodeRunId);
@@ -79,8 +83,11 @@ class CapturedStreamReplayTest {
           + " decision=" + result.executionDecision());
     } catch (AiAgentRuntimeClient.RuntimeProtocolException ex) {
       // Print the exact rejection message to the test output — this is the whole point.
-      System.out.println("REPLAY REJECTED: " + ex.getMessage());
+      System.out.println("REPLAY REJECTED: " + ex.getMessage()); for (String line : ndjson.split("\n")) { if (line.contains("\"tool\"") && !line.contains("\"type\":\"plan\"")) continue; if (line.contains("workflowNodeId")) { /* find tools */ } } System.out.println("--- plan tools ---"); for (String line : ndjson.split("\n")) { java.util.regex.Matcher mm = java.util.regex.Pattern.compile("\"tool\":\"([a-z_]+)\"").matcher(line); while (mm.find()) System.out.println("tool=" + mm.group(1)); }
       throw ex;
     }
   }
 }
+
+
+
