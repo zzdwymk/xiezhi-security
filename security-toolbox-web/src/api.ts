@@ -1470,7 +1470,10 @@ export const endpoints = {
     },
   ) =>
     api.post<ReconResult>(`/projects/${projectId}/recon/collect`, payload, {
-      timeout: 180_000,
+      // 主动信息收集是同步请求，包含目录枚举（并发）、站点爬取和参数探测。
+      // 用大字典（如 dirbuster 8 万条）或目标响应较慢时，180 秒会误判超时并丢弃已完成的结果；
+      // 后端已对参数探测设独立时间预算，这里把总超时放宽到 10 分钟。
+      timeout: 600_000,
     }),
   targetDiscoveredPaths: (targetId: number) =>
     api.get<DiscoveredPath[]>(`/targets/${targetId}/discovered-paths`),

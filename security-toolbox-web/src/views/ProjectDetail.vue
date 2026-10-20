@@ -5288,47 +5288,73 @@ onUnmounted(() => {
             </el-radio-group>
           </div>
           <div class="recon-controls-row recon-controls-row--options">
-            <el-checkbox v-model="includeHttp">HTTP 信息</el-checkbox>
-            <el-checkbox v-model="includeTls">TLS/证书</el-checkbox>
-            <el-checkbox v-model="enumerateSubdomains"
-              >字典枚举子域名</el-checkbox
+            <div class="recon-option-group">
+              <span class="recon-option-group__label">收集项</span>
+              <div class="recon-option-group__items">
+                <el-checkbox v-model="includeHttp">HTTP 信息</el-checkbox>
+                <el-checkbox v-model="includeTls">TLS/证书</el-checkbox>
+                <el-checkbox v-model="enumerateSubdomains"
+                  >字典枚举子域名</el-checkbox
+                >
+                <el-checkbox
+                  v-model="includeSameSubnet"
+                  :disabled="reconMode !== 'ACTIVE'"
+                  >受限同网段发现</el-checkbox
+                >
+                <el-checkbox
+                  v-model="enumeratePaths"
+                  :disabled="reconMode !== 'ACTIVE'"
+                  >目录/路径枚举</el-checkbox
+                >
+                <el-checkbox v-model="crawlSite" :disabled="reconMode !== 'ACTIVE'"
+                  >站点爬取</el-checkbox
+                >
+                <el-checkbox v-model="aggregateProxyPaths"
+                  >代理会话路径聚合</el-checkbox
+                >
+              </div>
+            </div>
+            <div
+              class="recon-option-group recon-option-group--params"
+              :class="{ 'is-inactive': reconMode !== 'ACTIVE' || !enumeratePaths }"
             >
-            <el-checkbox
-              v-model="includeSameSubnet"
-              :disabled="reconMode !== 'ACTIVE'"
-              >受限同网段发现</el-checkbox
-            >
-            <el-checkbox v-model="enumeratePaths" :disabled="reconMode !== 'ACTIVE'"
-              >目录/路径枚举</el-checkbox
-            >
-            <template v-if="reconMode === 'ACTIVE' && enumeratePaths">
-              <el-select
-                v-model="reconPathDictionary"
-                placeholder="扫描字典"
-                size="small"
-                style="width: 190px"
-              >
-                <el-option
-                  v-for="d in pathDictLibrary"
-                  :key="d.id"
-                  :label="`${d.displayName} (${d.entryCount > 0 ? d.entryCount : '未计'})`"
-                  :value="d.id"
-                />
-              </el-select>
-              <el-input-number
-                v-model="reconPathConcurrency"
-                :min="1"
-                :max="50"
-                size="small"
-                style="width: 110px"
-                controls-position="right"
-                title="并发请求数 (1-50)"
-              />
-            </template>
-            <el-checkbox v-model="crawlSite" :disabled="reconMode !== 'ACTIVE'"
-              >站点爬取</el-checkbox
-            >
-            <el-checkbox v-model="aggregateProxyPaths">代理会话路径聚合</el-checkbox>
+              <span class="recon-option-group__label">路径枚举参数</span>
+              <div class="recon-option-group__items">
+                <template v-if="reconMode === 'ACTIVE' && enumeratePaths">
+                  <label class="recon-param-field">
+                    <span class="recon-param-field__label">枚举字典</span>
+                    <el-select
+                      v-model="reconPathDictionary"
+                      placeholder="选择字典"
+                      size="small"
+                      class="recon-dict-select"
+                    >
+                      <el-option
+                        v-for="d in pathDictLibrary"
+                        :key="d.id"
+                        :label="`${d.displayName} (${d.entryCount > 0 ? d.entryCount : '未计'})`"
+                        :value="d.id"
+                      />
+                    </el-select>
+                  </label>
+                  <label class="recon-param-field">
+                    <span class="recon-param-field__label">并发请求数</span>
+                    <el-input-number
+                      v-model="reconPathConcurrency"
+                      :min="1"
+                      :max="50"
+                      size="small"
+                      class="recon-concurrency-input"
+                      controls-position="right"
+                      title="并发请求数 (1-50)"
+                    />
+                  </label>
+                </template>
+                <span v-else class="recon-option-group__hint"
+                  >切换到主动收集并勾选「目录/路径枚举」后可配置</span
+                >
+              </div>
+            </div>
           </div>
           <div class="recon-controls-row recon-controls-row--actions">
             <el-button
@@ -8126,6 +8152,70 @@ onUnmounted(() => {
       var(--app-border, var(--el-border-color)) 80%,
       transparent
     );
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px 16px;
+}
+.recon-option-group {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 4px 12px;
+}
+.recon-option-group__label {
+  padding-top: 1px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 24px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+}
+.recon-option-group__items {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  min-width: 0;
+}
+.recon-option-group__hint {
+  font-size: 12px;
+  line-height: 24px;
+  color: var(--el-text-color-placeholder);
+}
+.recon-param-field {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.recon-param-field__label {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.recon-option-group--params .recon-option-group__items {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(220px, 0.75fr);
+  gap: 10px 18px;
+  width: min(100%, 740px);
+}
+.recon-option-group--params .recon-param-field {
+  grid-template-columns: 88px minmax(0, 1fr);
+}
+.recon-option-group--params .recon-dict-select,
+.recon-option-group--params .recon-concurrency-input {
+  width: 100%;
+  min-width: 0;
+}
+.recon-option-group--params.is-inactive .recon-option-group__label {
+  color: var(--el-text-color-placeholder);
+}
+.recon-dict-select {
+  width: 200px;
+}
+.recon-concurrency-input {
+  width: 110px;
 }
 .recon-controls-row--actions {
   padding-top: 2px;
@@ -9319,6 +9409,22 @@ onUnmounted(() => {
 }
 .project-tabs .recon-controls-row {
   gap: 14px 16px;
+}
+.project-tabs .recon-controls-row--options {
+  gap: 12px 20px;
+}
+.project-tabs .recon-option-group {
+  gap: 4px 14px;
+}
+.project-tabs .recon-option-group--params .recon-option-group__items {
+  grid-template-columns: minmax(280px, 1fr) minmax(240px, 0.85fr);
+  width: min(100%, 820px);
+}
+@media (max-width: 900px) {
+  .recon-option-group--params .recon-option-group__items {
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+  }
 }
 .project-tabs .mode-hint {
   margin: 16px 0 22px;

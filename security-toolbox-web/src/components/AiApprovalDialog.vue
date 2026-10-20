@@ -918,7 +918,8 @@ function onApprove() {
 }
 
 .param-interactive-number {
-  width: 140px;
+  width: 100%;
+  max-width: 320px;
 }
 
 .param-interactive-input {

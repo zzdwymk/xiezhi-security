@@ -10,8 +10,9 @@ import java.util.regex.Pattern;
  * asset-exposure observation (a 风险点 / 信息项)?".
  *
  * <p>Open ports produced by tcp_ports / nmap_service_scan are recorded as INFO findings with no
- * vulnerabilityCode: they describe attack surface, not a confirmed vulnerability, and must not
- * inflate the "漏洞发现" count. Nuclei INFO matches DO carry a vulnerabilityCode and therefore remain
+ * vulnerabilityCode: they describe attack surface, not a confirmed vulnerability. Directory hits
+ * (STB-DIR-001) are likewise enumeration leads until independently verified. Neither should inflate
+ * the vulnerability count. Nuclei INFO matches DO carry a vulnerabilityCode and therefore remain
  * counted as vulnerabilities. Keeping this decision in one place lets every counter and report
  * label agree without deleting any historical finding rows.
  */
@@ -20,7 +21,13 @@ public final class FindingClassification {
       Set.of("http_headers", "tcp_ports", "nmap_service_scan");
 
   private static final Set<String> RISK_POINT_CODES =
-      Set.of("STB-WEB-001", "STB-WEB-005", "STB-TLS-001", "STB-NET-001", "STB-SMB-SMBV1");
+      Set.of(
+          "STB-WEB-001",
+          "STB-WEB-005",
+          "STB-TLS-001",
+          "STB-NET-001",
+          "STB-SMB-SMBV1",
+          "STB-DIR-001");
 
   /** 命中即为缺少浏览器安全响应头（加固/配置缺陷），不论来源工具一律归为风险点。 */
   private static final String MISSING_HEADER_PATTERN =

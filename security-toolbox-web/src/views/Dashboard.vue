@@ -849,6 +849,28 @@ const activeTurnId = ref<string>("");
 const highlightedTurnId = ref<string>("");
 let turnHighlightTimer: ReturnType<typeof setTimeout> | undefined;
 
+/* 轮次导航的预览卡片是单例：整条导航条共用一个受控 el-tooltip。
+   每个横条各挂一个实例时，Element Plus 会在每个实例里各跑一套
+   show-after / hide-after 计时器与渐隐过渡，鼠标在两个只隔 17px 的横条之间
+   划过，前一个实例还在渐隐、后一个实例已经弹出，于是两张卡片并存叠在一起。
+   改成单例后「哪一轮被悬停」是唯一状态，卡片只会在两处内容之间切换。 */
+const hoveredTurn = ref<UserTurnItem | null>(null);
+const turnTooltipAnchor = ref<HTMLElement | null>(null);
+const turnTooltipVisible = computed(
+  () => hoveredTurn.value !== null && turnTooltipAnchor.value !== null,
+);
+
+function showTurnTooltip(event: Event, turn: UserTurnItem) {
+  const mark = event.currentTarget as HTMLElement | null;
+  if (mark) turnTooltipAnchor.value = mark;
+  hoveredTurn.value = turn;
+}
+
+function clearTurnTooltip() {
+  hoveredTurn.value = null;
+  turnTooltipAnchor.value = null;
+}
+
 function updateActiveTurn() {
   const container = messagesElement.value;
   if (!container || !userTurns.value.length) return;
@@ -885,6 +907,7 @@ function jumpToTurn(turnId: string) {
   if (document.activeElement instanceof HTMLElement) {
     document.activeElement.blur();
   }
+  clearTurnTooltip();
   activeTurnId.value = turnId;
 
   highlightedTurnId.value = turnId;
@@ -1917,7 +1940,15 @@ async function sendPrompt() {
         .find((item) => item.id === activeThread.id)
         ?.messages.find((item) => item.id === activeAssistantMessage.id);
       const streamed = String(existing?.content || "").trim();
-      const alreadyAnswered = Boolean(streamed) && !/^(正在|思考中|分析中)/.test(streamed);
+      // applyAgentEvent 的 error 分支会先把失败文案写入 content。若只看
+      // "content 非空且不是占位句"，失败轮会被误判成"模型已作答"，
+      // 状态被改成 completed，导致状态戳显示"已完成"且重试按钮消失。
+      // 真正"已流式作答后传输中断"的场景里，done 终态事件已把
+      // modelStreamStatus 置为 completed；error 路径则是 failed。
+      const alreadyAnswered =
+        Boolean(streamed) &&
+        !/^(正在|思考中|分析中)/.test(streamed) &&
+        existing?.modelStreamStatus !== "failed";
       if (alreadyAnswered) {
         // 已有回答：保留回答正文，仅把状态标为已完成，避免"重试回复"按钮误现。
         conversations.updateMessage(activeThread.id, activeAssistantMessage.id, {
@@ -1946,7 +1977,9 @@ async function retryConversationMessage(message: ConversationMessage) {
     !thread ||
     sending.value ||
     message.role !== "assistant" ||
-    message.status !== "failed" ||
+    // 失败的回答允许重试；已完成的回答允许"重新生成"。其余状态（发送中、
+    // 排队、等待审批等）不提供入口，避免与进行中的流程互相干扰。
+    !["failed", "completed"].includes(message.status) ||
     retryingMessageIds.value.has(message.id)
   )
     return;
@@ -2669,7 +2702,6 @@ onBeforeUnmount(() => {
                   :status-outside="isStatusOutsideAnswerCard(message)"
                   @open-tasks="router.push('/tasks')"
                 >
-                  <AiFailureNotice v-if="message.status === 'failed'" :message="message" />
                   <div
                     v-if="displayedContentForMessage(message) && message.status !== 'failed'"
                     class="message-bubble markdown-body"
@@ -2677,6 +2709,9 @@ onBeforeUnmount(() => {
                     <div v-html="renderMarkdown(displayedContentForMessage(message), { localizeToolCodes: true })" />
                   </div>
                 </AiProgressPanel>
+                <!-- 失败说明放在进度面板之后：状态头（本轮处理未完成）在上，
+                     错误详情在下，最后是操作按钮，避免说明文本盖在状态头上方。 -->
+                <AiFailureNotice v-if="message.status === 'failed'" :message="message" />
                 <div
                   v-else-if="message.role === 'user'"
                   class="message-bubble markdown-body"
@@ -2940,13 +2975,13 @@ onBeforeUnmount(() => {
                     </el-dropdown-menu>
                   </template>
                 </el-dropdown>
-                <template v-if="message.role === 'assistant' && message.status === 'failed'">
-                  <el-tooltip :content="message.taskIds.length ? '重新生成回复' : '重试回复'" placement="top" :show-after="350">
-                    <button type="button" class="message-action" :aria-label="message.taskIds.length ? '重新生成回复' : '重试回复'" :disabled="sending || retryingMessageIds.has(message.id)" @click="retryConversationMessage(message)">
+                <template v-if="message.role === 'assistant' && ['failed', 'completed'].includes(message.status)">
+                  <el-tooltip :content="message.taskIds.length ? '重新生成回复' : message.status === 'failed' ? '重试回复' : '重新生成回复'" placement="top" :show-after="350">
+                    <button type="button" class="message-action" :aria-label="message.taskIds.length ? '重新生成回复' : message.status === 'failed' ? '重试回复' : '重新生成回复'" :disabled="sending || retryingMessageIds.has(message.id)" @click="retryConversationMessage(message)">
                       <FluentIcon name="arrow-clockwise" aria-hidden="true" />
                     </button>
                   </el-tooltip>
-                  <el-tooltip content="配置诊断" placement="top" :show-after="350">
+                  <el-tooltip v-if="message.status === 'failed'" content="配置诊断" placement="top" :show-after="350">
                     <button type="button" class="message-action" aria-label="配置诊断" :disabled="sending || retryingMessageIds.has(message.id)" @click="openAiDiagnostics">
                       <FluentIcon name="settings" aria-hidden="true" />
                     </button>
@@ -2966,46 +3001,60 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <!-- 对话轮次快速导航条（DSH 风格右侧小横条） -->
+      <!-- 对话轮次快速导航条（DSH 风格右侧小横条）
+           整个导航条只用一个受控 tooltip 实例：卡片内容跟着 hoveredTurn 切换，
+           相邻横条的鼠标划过不可能产生两张卡片并存（每个横条各挂一个实例时，
+           前一个实例的隐藏与后一个实例的显示是两个互不相干的计时器）。 -->
       <nav
         v-if="userTurns.length > 1"
         class="turn-rail"
         aria-label="对话轮次快速导航"
+        @mouseleave="clearTurnTooltip"
       >
         <div class="turn-rail-track">
-          <el-tooltip
+          <button
             v-for="turn in userTurns"
             :key="turn.id"
-            placement="left"
-            :show-after="80"
-            :hide-after="0"
-            :enterable="false"
-            popper-class="turn-rail-tooltip"
+            type="button"
+            class="turn-rail-mark"
+            :class="{
+              'is-active': activeTurnId === turn.id,
+              'is-target': highlightedTurnId === turn.id,
+            }"
+            :aria-label="`跳转到第 ${turn.turn} 轮提问: ${turn.preview}`"
+            :aria-describedby="hoveredTurn?.id === turn.id ? 'turn-rail-tooltip' : undefined"
+            @mouseenter="showTurnTooltip($event, turn)"
+            @focus="showTurnTooltip($event, turn)"
+            @blur="clearTurnTooltip"
+            @click="jumpToTurn(turn.id)"
           >
-            <template #content>
-              <div class="turn-tooltip-content">
-                <div class="turn-tooltip-header">
-                  <strong>第 {{ turn.turn }} 轮提问</strong>
-                  <span v-if="turn.timeText">{{ turn.timeText }}</span>
-                </div>
-                <div class="turn-tooltip-body">{{ turn.preview }}</div>
-                <div class="turn-tooltip-tip">点击快速跳转</div>
-              </div>
-            </template>
-            <button
-              type="button"
-              class="turn-rail-mark"
-              :class="{
-                'is-active': activeTurnId === turn.id,
-                'is-target': highlightedTurnId === turn.id,
-              }"
-              :aria-label="`跳转到第 ${turn.turn} 轮提问: ${turn.preview}`"
-              @click="jumpToTurn(turn.id)"
-            >
-              <span class="turn-rail-bar" />
-            </button>
-          </el-tooltip>
+            <span class="turn-rail-bar" />
+          </button>
         </div>
+        <!-- virtual-triggering 模式下默认插槽不会渲染，锚点由 turnTooltipAnchor
+             直接指向被悬停的横条按钮，卡片就贴在真实触发元素上。 -->
+        <el-tooltip
+          :visible="turnTooltipVisible"
+          placement="left"
+          :show-after="0"
+          :hide-after="0"
+          :enterable="false"
+          :offset="10"
+          popper-class="turn-rail-tooltip"
+          virtual-triggering
+          :virtual-ref="turnTooltipAnchor ?? undefined"
+        >
+          <template #content>
+            <div v-if="hoveredTurn" class="turn-tooltip-content">
+              <div class="turn-tooltip-header">
+                <strong>第 {{ hoveredTurn.turn }} 轮提问</strong>
+                <span v-if="hoveredTurn.timeText">{{ hoveredTurn.timeText }}</span>
+              </div>
+              <div class="turn-tooltip-body">{{ hoveredTurn.preview }}</div>
+              <div class="turn-tooltip-tip">点击快速跳转</div>
+            </div>
+          </template>
+        </el-tooltip>
       </nav>
     </div>
 

@@ -82,6 +82,28 @@ public class DiscoveredPathService {
     }
     Long targetId = target.getId();
     if (repository.existsByProjectIdAndTargetIdAndUrl(projectId, targetId, normalized)) {
+      // 已有记录不丢弃新证据：像站点爬虫这类"后验证"来源会带着真实状态码回来，
+      // 而早前未测活的记录（如纯链接提取，statusCode 为空）不该永久遮蔽它。
+      // 仅当新记录提供了旧记录缺失的状态码时才就地升级，其余情况维持去重。
+      if (statusCode != null) {
+        DiscoveredPath existing =
+            repository
+                .findByProjectIdAndTargetIdAndUrl(projectId, targetId, normalized)
+                .orElse(null);
+        if (existing != null && existing.getStatusCode() == null) {
+          existing.setStatusCode(statusCode);
+          existing.setResponseBytes(responseBytes);
+          existing.setSource(source);
+          existing.setNote(note);
+          try {
+            repository.save(existing);
+            return true;
+          } catch (RuntimeException ex) {
+            log.debug("升级已发现路径失败 url={} : {}", normalized, ex.getMessage());
+            return false;
+          }
+        }
+      }
       return false;
     }
     if (repository.countByProjectIdAndTargetId(projectId, targetId) >= MAX_PATHS_PER_TARGET) {

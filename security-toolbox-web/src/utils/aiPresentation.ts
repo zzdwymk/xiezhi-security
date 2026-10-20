@@ -14,7 +14,7 @@ const AI_TOOL_LABELS: Readonly<Record<string, string>> = {
   zap_scan: "OWASP ZAP 主动扫描",
   zap_fuzz: "ZAP 单次参数变异验证",
   sqlmap_scan: "sqlmap SQL 注入检测",
-  dir_scan: "Web 目录与路径枚举",
+  dir_scan: "Web 目录与路径探测",
   fscan_scan: "fscan 主机扫描",
   msf_scan: "Metasploit 模块执行",
 };
