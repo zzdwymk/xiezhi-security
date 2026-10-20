@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>turn rail tooltip</title>
+<style>
+html, body { margin: 0; height: 100%; }
+#app { height: 100vh; }
+.rail-host { position: relative; width: 760px; height: 640px; background: #ffffff; }
+/* PROBE_STYLES */
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+import { createApp, computed, defineComponent, ref } from 'vue';
+import ElementPlus from 'element-plus';
+import 'element-plus/dist/index.css';
+import '/src/unified-theme.css';
+
+const turns = Array.from({ length: 5 }, (_, i) => ({
+  id: 'turn-' + (i + 1),
+  turn: i + 1,
+  preview: '第 ' + (i + 1) + ' 轮的提问预览：请扫描授权目标的相关端口并给出结论。',
+  timeText: '2026-10-18 23:0' + i + ':47',
+}));
+
+createApp({
+  setup() {
+    const activeTurnId = ref('turn-2');
+    const highlightedTurnId = ref('');
+    const hoveredTurn = ref(null);
+    const turnTooltipAnchor = ref(null);
+    const turnTooltipVisible = computed(() => hoveredTurn.value !== null && turnTooltipAnchor.value !== null);
+    function showTurnTooltip(event, turn) {
+      const mark = event.currentTarget;
+      if (mark) turnTooltipAnchor.value = mark;
+      hoveredTurn.value = turn;
+    }
+    function clearTurnTooltip() {
+      hoveredTurn.value = null;
+      turnTooltipAnchor.value = null;
+    }
+    return { turns, activeTurnId, highlightedTurnId, hoveredTurn, turnTooltipAnchor, turnTooltipVisible, showTurnTooltip, clearTurnTooltip };
+  },
+  template: `
+  <div class="rail-host">
+    <nav class="turn-rail" aria-label="对话轮次快速导航" @mouseleave="clearTurnTooltip">
+      <div class="turn-rail-track">
+        <button
+          v-for="turn in turns"
+          :key="turn.id"
+          type="button"
+          class="turn-rail-mark"
+          :class="{ 'is-active': activeTurnId === turn.id, 'is-target': highlightedTurnId === turn.id }"
+          :data-turn="turn.turn"
+          @mouseenter="showTurnTooltip($event, turn)"
+          @focus="showTurnTooltip($event, turn)"
+          @blur="clearTurnTooltip"
+          @click="activeTurnId = turn.id"
+        ><span class="turn-rail-bar" /></button>
+      </div>
+      <el-tooltip
+        :visible="turnTooltipVisible"
+        placement="left"
+        :show-after="0"
+        :hide-after="0"
+        :enterable="false"
+        :offset="10"
+        popper-class="turn-rail-tooltip"
+        virtual-triggering
+        :virtual-ref="turnTooltipAnchor"
+      >
+        <template #content>
+          <div v-if="hoveredTurn" class="turn-tooltip-content">
+            <div class="turn-tooltip-header">
+              <strong>第 {{ hoveredTurn.turn }} 轮提问</strong>
+              <span v-if="hoveredTurn.timeText">{{ hoveredTurn.timeText }}</span>
+            </div>
+            <div class="turn-tooltip-body">{{ hoveredTurn.preview }}</div>
+            <div class="turn-tooltip-tip">点击快速跳转</div>
+          </div>
+        </template>
+      </el-tooltip>
+    </nav>
+  </div>`,
+}).use(ElementPlus).mount('#app');
+window.__railReady = true;
+
+</script>
+</body>
+</html>

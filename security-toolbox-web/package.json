@@ -14,6 +14,7 @@
     "test:ai-settings": "node scripts/test-ai-settings.cjs",
     "test:ai-progress": "node scripts/test-ai-progress.cjs",
     "test:ai-progress-view": "node scripts/test-ai-progress-view.cjs",
+    "test:turn-rail-tooltip": "node scripts/test-turn-rail-tooltip-browser.cjs",
     "test:ai-progress-browser": "node scripts/test-ai-progress-browser.cjs",
     "test:ai-intent-request": "node scripts/test-ai-intent-request.cjs",
     "test:stream-auth": "node scripts/test-stream-auth.cjs",
