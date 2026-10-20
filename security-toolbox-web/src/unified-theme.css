@@ -1,3 +1,7 @@
+/* Window frame geometry shared with the static splash (electron/startup.html).
+   Declared first so the design-token layer below can reference it. */
+@import "../electron/desktop-chrome.css";
+
 :root {
   color-scheme: light dark;
   /* ================================================================
@@ -65,16 +69,17 @@
   --fluent-radius-control: var(--fluent-radius-medium);
   --fluent-radius-card: var(--fluent-radius-xlarge);
   --fluent-radius-overlay: var(--fluent-radius-xlarge);
-  --fluent-workspace-radius: var(--fluent-radius-xlarge);
-  --desktop-workspace-gap: 5px;
+  /* --fluent-workspace-radius and --desktop-workspace-gap live in
+     electron/desktop-chrome.css (shared with the splash); intentionally not
+     redeclared here so there is only one source of truth. */
 
   /* Control metrics + stroke widths (heights unchanged to preserve layout) */
   --fluent-control-height: 32px;
   --fluent-control-height-large: 40px;
   --fluent-stroke-thin: 1px;
   --fluent-stroke-thick: 2px;
-  /* Native desktop caption bar height (see .desktop-v2-native-titlebar). */
-  --desktop-titlebar-height: 38px;
+  /* --desktop-titlebar-height is declared in electron/desktop-chrome.css
+     (shared with the splash). See .desktop-v2-native-titlebar. */
 
   /* Elevation — Fluent 2 dual-layer (directional key + ambient) shadows */
   --fluent-shadow-2:
@@ -1294,7 +1299,7 @@ body:has(.desktop-v2-native-frame) :is(.el-overlay.is-message-box, .el-overlay.i
   top: var(--desktop-titlebar-height, 38px);
   right: var(--desktop-workspace-gap);
   bottom: var(--desktop-workspace-gap);
-  left: var(--desktop-sidebar-width, 260px);
+  left: var(--desktop-sidebar-width, var(--desktop-default-sidebar-width));
   width: auto;
   /* Element's mask sets height:100%; clear it so top+bottom (not top+height)
      define the box. Otherwise the 38px caption offset overflows the viewport
@@ -1312,7 +1317,7 @@ body:has(.desktop-v2-native-frame) .el-overlay:has(> .el-overlay-dialog) {
   top: var(--desktop-titlebar-height, 38px);
   right: var(--desktop-workspace-gap);
   bottom: var(--desktop-workspace-gap);
-  left: var(--desktop-sidebar-width, 260px);
+  left: var(--desktop-sidebar-width, var(--desktop-default-sidebar-width));
   width: auto;
   /* See the mask note above: clear the inherited height:100% so the dialog is
      centered symmetrically between the caption and the window bottom. */
@@ -1342,7 +1347,7 @@ body:has(.desktop-v2-native-frame)
 body:not(:has(.desktop-v2-native-frame)) :is(.el-overlay.is-message-box, .el-overlay.is-drawer, .el-overlay:has(> .el-drawer)) {
   right: var(--desktop-workspace-gap);
   bottom: var(--desktop-workspace-gap);
-  left: var(--desktop-sidebar-width, 260px);
+  left: var(--desktop-sidebar-width, var(--desktop-default-sidebar-width));
   width: auto;
   height: auto;
   border-radius: var(--fluent-workspace-radius);
@@ -1357,7 +1362,7 @@ body:not(:has(.desktop-v2-native-frame))
   .el-overlay:has(> .el-overlay-dialog) {
   right: var(--desktop-workspace-gap);
   bottom: var(--desktop-workspace-gap);
-  left: var(--desktop-sidebar-width, 260px);
+  left: var(--desktop-sidebar-width, var(--desktop-default-sidebar-width));
   width: auto;
   height: auto;
   border-radius: var(--fluent-workspace-radius);
@@ -1383,7 +1388,7 @@ body:not(:has(.desktop-v2-native-frame))
    悬在 section-head 下方，既醒目又不遮挡任何页面元素。 */
 body:has(.desktop-v2-native-frame) .el-message {
   top: calc(var(--desktop-titlebar-height, 38px) + 48px) !important;
-  left: calc(var(--desktop-sidebar-width, 260px) + (100% - var(--desktop-sidebar-width, 260px) - var(--desktop-workspace-gap, 5px)) / 2) !important;
+  left: calc(var(--desktop-sidebar-width, var(--desktop-default-sidebar-width)) + (100% - var(--desktop-sidebar-width, var(--desktop-default-sidebar-width)) - var(--desktop-workspace-gap)) / 2) !important;
   transform: translateX(-50%) !important;
   margin-top: 0 !important;
   -webkit-app-region: no-drag;

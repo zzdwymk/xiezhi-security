@@ -1,0 +1,44 @@
+/*
+ * Desktop window chrome geometry — single source of truth.
+ *
+ * Two different renderers ship this one file:
+ *   - the Vue app bundles it through src/unified-theme.css (@import), so the
+ *     values end up in dist/ and in the hashed app CSS;
+ *   - electron/startup.html loads it with <link rel="stylesheet">, because the
+ *     splash is a plain static file loaded with loadFile() and never goes
+ *     through Vite, so it cannot see the design-token layer at all.
+ *
+ * Only add tokens here that BOTH surfaces actually render with. Everything
+ * that needs the full design-token layer (colors, surfaces, motion, typography)
+ * stays in unified-theme.css. Keeping the window frame geometry in one file is
+ * what stops the splash from silently drifting away from the app frame — the
+ * workspace gap had already diverged to 3px vs 5px.
+ *
+ * Loaded by:
+ *   - electron/startup.html:14  <link rel="stylesheet" href="./desktop-chrome.css">
+ *   - src/unified-theme.css      @import "../electron/desktop-chrome.css";
+ */
+
+:root {
+  /* Gap between the workspace card and the window frame on the right and
+     bottom edges. The workspace is deliberately flush with the caption bar on
+     top and with the sidebar on the left, so there is no top/left counterpart.
+     Read by: .desktop-v2-workspace, .setup-content, the startup splash
+     .workspace, and every dialog/overlay mask that insets itself to match. */
+  --desktop-workspace-gap: 5px;
+
+  /* Native caption band drawn by the DOM (.desktop-v2-native-titlebar and the
+     startup .titlebar). Both windows use titleBarStyle: "hidden", so this is a
+     DOM height rather than a real OS caption, but dialogs and toasts still
+     offset themselves by it. */
+  --desktop-titlebar-height: 38px;
+
+  /* Left navigation rail width before the user drags the resizer. The app
+     overrides it per render with the persisted --desktop-sidebar-width; the
+     dependency setup wizard pins it to --setup-sidebar-width. */
+  --desktop-default-sidebar-width: 260px;
+
+  /* Corner radius of the workspace card, the setup content card and the
+     startup workspace. Mirrors --fluent-radius-xlarge (8px). */
+  --fluent-workspace-radius: 8px;
+}
