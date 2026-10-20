@@ -1,4 +1,4 @@
-param(
+﻿param(
     [switch]$SkipComponentBuild,
     [switch]$Force,
     [string]$Python,
