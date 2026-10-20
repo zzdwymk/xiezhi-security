@@ -4,18 +4,18 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+      content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Window frame geometry (workspace gap, caption height, workspace radius)
+         is shared with the Vue app via desktop-chrome.css, which the app pulls
+         in through src/unified-theme.css. This splash never goes through Vite,
+         so it links the same file directly instead of redeclaring the tokens. -->
+    <link rel="stylesheet" href="./desktop-chrome.css" />
     <title>启动獬豸</title>
     <style>
       :root {
         color-scheme: light;
-        /* Must match unified-theme.css --desktop-workspace-gap so the splash
-           workspace sits the same distance from the window frame as the main
-           app's workspace (and the setup wizard's content card). */
-        --desktop-workspace-gap: 5px;
-        --fluent-workspace-radius: 8px;
         --system-accent: AccentColor;
         --system-caption-color: AccentColor;
         --system-theme-accent: var(--system-accent);
