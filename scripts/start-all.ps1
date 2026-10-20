@@ -1,4 +1,4 @@
-param(
+﻿param(
     [switch]$NoBrowser,
     [ValidateRange(1, 3600)]
     [int]$BackendStartupTimeoutSeconds = 90,
