@@ -231,8 +231,8 @@ try {
   );
   assert.match(
     workflowSource,
-    /SUBAGENTS\.filter\(\(agent\) => agent\.phase === selectedPhase\.value\)/,
-    "workflow capability library must filter cards by the selected phase",
+    /SUBAGENTS\.filter\([\s\S]{0,100}toolPhase\(agent\.tool\) === selectedPhase\.value/,
+    "workflow capability library must filter cards by the selected phase and tool overrides",
   );
   assert.match(workflowSource, /v-for="agent in filteredAgents"/);
   assert.doesNotMatch(workflowSource, /v-for="agent in SUBAGENTS"/);
