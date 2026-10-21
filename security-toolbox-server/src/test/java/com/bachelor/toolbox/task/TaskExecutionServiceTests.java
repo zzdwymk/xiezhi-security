@@ -37,6 +37,8 @@ class TaskExecutionServiceTests {
         "外部工具执行超时：token=secret|TIMEOUT|TIMEOUT|任务执行超时，请稍后重试|任务执行超时",
         "HTTP connect timed out: token=secret|TIMEOUT|TIMEOUT|任务执行超时，请稍后重试|任务执行超时",
         "Wrapped MSF deadline: token=secret|TIMEOUT|TIMEOUT|任务执行超时，请稍后重试|任务执行超时",
+        "java.io.IOException: HTTP/1.1 header parser received no bytes|TIMEOUT|TIMEOUT|任务执行超时，请稍后重试|任务执行超时",
+        "java.io.IOException: Connection reset by peer|TIMEOUT|TIMEOUT|任务执行超时，请稍后重试|任务执行超时",
         "请求端口超出授权目标的允许端口范围|FAILED|FAILED|任务执行失败，请稍后重试|任务执行失败",
         "授权快照不一致：hash=secret|FAILED|AUTHORIZATION_CHANGED|任务授权状态已变更，请重新确认授权后再试|任务授权状态已变更"
       },

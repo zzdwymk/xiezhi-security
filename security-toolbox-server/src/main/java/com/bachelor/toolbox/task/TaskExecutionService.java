@@ -711,6 +711,16 @@ public class TaskExecutionService {
             || lower.contains("timeout")) {
           return true;
         }
+        // 连接已建立，但对端一个字节都不回。JDK HttpClient 在这种情况下抛的是普通
+        // IOException（"HTTP/1.1 header parser received no bytes"），而不是超时异常；
+        // 若不在这里识别，用户看到的会是更费解的「任务执行失败」，掩盖了「目标不响应」这一事实。
+        // 本质仍是目标在规定时间内没有任何响应，按超时归类比按失败归类更准确、更可操作。
+        if (lower.contains("header parser received no bytes")
+            || lower.contains("received no bytes")
+            || lower.contains("connection reset by peer")
+            || lower.contains("premature end of content")) {
+          return true;
+        }
       }
     }
     return false;

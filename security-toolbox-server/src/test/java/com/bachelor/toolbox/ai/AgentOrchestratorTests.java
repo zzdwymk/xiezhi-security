@@ -840,6 +840,114 @@ class AgentOrchestratorTests {
     assertThat(guardEvent.data().get("approvalId")).isEqualTo(777L);
   }
 
+  /**
+   * A continuation turn runs with no client event sink. A new approval it produces must still
+   * reach the user, so it is published through the polled notification feed instead.
+   */
+  @Test
+  void continuationApprovalWithoutSinkIsPublishedToNotificationFeed() throws Exception {
+    AiConversationMemoryService memory = new AiConversationMemoryService(20, 20, 120);
+    SecurityAgentTools tools = mock(SecurityAgentTools.class);
+    AiAgentRuntimeClient runtime = mock(AiAgentRuntimeClient.class);
+    AiProjectIndexService index = mock(AiProjectIndexService.class);
+    AiPlanningService planner = mock(AiPlanningService.class);
+    AiAuthorizationGuard guard = mock(AiAuthorizationGuard.class);
+    AiExecutionReviewer reviewer = mock(AiExecutionReviewer.class);
+    AiContextService context = mock(AiContextService.class);
+    AuditService audit = mock(AuditService.class);
+    com.bachelor.toolbox.project.ProjectApprovalService approvalService =
+        mock(com.bachelor.toolbox.project.ProjectApprovalService.class);
+    com.bachelor.toolbox.notification.NotificationService notifications =
+        mock(com.bachelor.toolbox.notification.NotificationService.class);
+
+    AiPlanResponse plan = actionablePlan("runtime-grounded");
+    // A continuation request: execute=false, review mode.
+    AiAgentRequest request =
+        new AiAgentRequest(5L, 8L, "continuation-session", "读取结果后继续验证", false, null,
+            List.of(), "review", "resume-turn");
+    AiAuthorizationGuard.GuardDecision decision =
+        new AiAuthorizationGuard.GuardDecision(
+            "AWAITING_APPROVAL", "REQUIRED", "needs approval", plan, 0, 0);
+
+    com.bachelor.toolbox.project.ProjectApproval ticket =
+        new com.bachelor.toolbox.project.ProjectApproval();
+    ticket.setId(888L);
+    when(tools.inspectProjectContext(5L, 8L)).thenReturn("authorized context");
+    when(runtime.enabled()).thenReturn(false);
+    when(planner.planStreaming(any(AiPlanRequest.class), any())).thenReturn(plan);
+    when(guard.evaluate(any(), any())).thenReturn(decision);
+    when(approvalService.requestAiPlan(any(), any(), any())).thenReturn(ticket);
+    when(reviewer.review(5L, 8L, List.of()))
+        .thenReturn(
+            new AiAgentResponse.AgentReview(
+                "NOT_REQUIRED", "本轮未执行工具，无需复核", false, List.of()));
+
+    AgentOrchestrator orchestrator =
+        new AgentOrchestrator(
+            memory, tools, runtime, index, planner, guard, reviewer, context, audit,
+            new com.bachelor.toolbox.settings.BusinessDataOperationGate(), approvalService);
+    orchestrator.setNotifications(notifications);
+
+    // No sink: exactly the continuation path.
+    orchestrator.run(request);
+
+    verify(notifications)
+        .publish(
+            eq("ai-approval:888"),
+            eq(5L),
+            eq(false),
+            eq("ai"),
+            eq("approval"),
+            anyString(),
+            anyString(),
+            eq("/projects/5"),
+            any());
+  }
+
+  @Test
+  void missingNotificationServiceNeverBreaksAnApprovalTurn() throws Exception {
+    AiConversationMemoryService memory = new AiConversationMemoryService(20, 20, 120);
+    SecurityAgentTools tools = mock(SecurityAgentTools.class);
+    AiAgentRuntimeClient runtime = mock(AiAgentRuntimeClient.class);
+    AiProjectIndexService index = mock(AiProjectIndexService.class);
+    AiPlanningService planner = mock(AiPlanningService.class);
+    AiAuthorizationGuard guard = mock(AiAuthorizationGuard.class);
+    AiExecutionReviewer reviewer = mock(AiExecutionReviewer.class);
+    AiContextService context = mock(AiContextService.class);
+    AuditService audit = mock(AuditService.class);
+    com.bachelor.toolbox.project.ProjectApprovalService approvalService =
+        mock(com.bachelor.toolbox.project.ProjectApprovalService.class);
+
+    AiPlanResponse plan = actionablePlan("runtime-grounded");
+    AiAgentRequest request =
+        new AiAgentRequest(5L, 8L, "continuation-session", "读取结果后继续验证", false, null,
+            List.of(), "review", "resume-turn");
+    AiAuthorizationGuard.GuardDecision decision =
+        new AiAuthorizationGuard.GuardDecision(
+            "AWAITING_APPROVAL", "REQUIRED", "needs approval", plan, 0, 0);
+    com.bachelor.toolbox.project.ProjectApproval ticket =
+        new com.bachelor.toolbox.project.ProjectApproval();
+    ticket.setId(889L);
+    when(tools.inspectProjectContext(5L, 8L)).thenReturn("authorized context");
+    when(runtime.enabled()).thenReturn(false);
+    when(planner.planStreaming(any(AiPlanRequest.class), any())).thenReturn(plan);
+    when(guard.evaluate(any(), any())).thenReturn(decision);
+    when(approvalService.requestAiPlan(any(), any(), any())).thenReturn(ticket);
+    when(reviewer.review(5L, 8L, List.of()))
+        .thenReturn(
+            new AiAgentResponse.AgentReview(
+                "NOT_REQUIRED", "本轮未执行工具，无需复核", false, List.of()));
+
+    AgentOrchestrator orchestrator =
+        new AgentOrchestrator(
+            memory, tools, runtime, index, planner, guard, reviewer, context, audit,
+            new com.bachelor.toolbox.settings.BusinessDataOperationGate(), approvalService);
+    // notifications deliberately not set: the turn must still succeed.
+    AiAgentResponse response = orchestrator.run(request);
+    assertThat(response.approvalId()).isEqualTo(889L);
+    assertThat(response.approvalStatus()).isEqualTo("REQUIRED");
+  }
+
   @org.junit.jupiter.params.ParameterizedTest
   @org.junit.jupiter.params.provider.ValueSource(strings = {
       "已创建审批申请，等待管理员批准后执行。",
