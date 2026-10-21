@@ -11,12 +11,12 @@ import '/src/unified-theme.css';
 import Dialog from '/src/components/AiApprovalDialog.vue';import Panel from '/src/components/AiProgressPanel.vue';
 import {createAiApprovalPromptGate,isAwaitingAiApproval} from '/src/utils/aiApproval.ts';
 const gate=createAiApprovalPromptGate();
-const state=reactive({visible:false,busy:false,native:false,active:'current',decisions:[],message:{id:'answer',role:'assistant',content:'请审核',status:'completed',approvalId:40,approvalStatus:'REQUIRED',taskIds:[],steps:[{toolCode:'nuclei_scan',parameters:{},requiresApproval:true,risk:'CAUTION'}],createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()}});
+const state=reactive({visible:false,busy:false,native:false,active:'current',decisions:[],overrides:[],message:{id:'answer',role:'assistant',content:'请审核',status:'completed',approvalId:40,approvalStatus:'REQUIRED',taskIds:[],steps:[{toolCode:'nuclei_scan',parameters:{},requiresApproval:true,risk:'CAUTION'}],createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()}});
 window.fixture=state;window.deliver=(thread)=>{if(gate(state.active,thread,state.message))state.visible=true;};
 createApp({setup:()=>()=>h('main',[
 h('div',{class:state.native?'desktop-v2-native-frame':undefined,style:{display:'none'}}),
 h('button',{onClick:()=>state.visible=true},'查看审批详情'),h(Panel,{message:state.message,tasks:[]}),
-h(Dialog,{visible:state.visible,message:state.message,targetName:'本地验收目标',targetValue:'192.168.136.132',allowedPorts:'80',busy:state.busy,'onUpdate:visible':v=>state.visible=v,onDecide:d=>{state.decisions.push(d);state.visible=false;}})
+h(Dialog,{visible:state.visible,message:state.message,targetName:'本地验收目标',targetValue:'192.168.136.132',allowedPorts:'80',busy:state.busy,'onUpdate:visible':v=>state.visible=v,onDecide:(d,overrides)=>{state.decisions.push(d);state.overrides=overrides||[];state.visible=false;}})
 ])}).use(ElementPlus).mount('#app');
 </script></body></html>`;
 let browser,server;const results=[];const errors=[];
@@ -27,7 +27,7 @@ async function check(name,run){await run();results.push({name,status:'PASS'});co
  await server.listen();browser=await chromium.launch({executablePath:'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',headless:true});
  const page=await browser.newPage({viewport:{width:720,height:850}});page.on('pageerror',e=>errors.push(e.message));
  await page.goto('http://127.0.0.1:'+server.httpServer.address().port+'/__approval');await page.getByRole('button',{name:'查看审批详情'}).waitFor();
- const dialog=page.getByRole('dialog',{name:'确认 AI 行动方案',exact:true});
+ const dialog=page.getByRole('dialog').filter({has:page.locator('.ai-approval-dialog')});
  await check('history restoration does not auto-open; newly delivered current approval opens with exact identity',async()=>{
   assert.equal(await dialog.isVisible(),false);await page.evaluate(()=>window.deliver('other'));assert.equal(await dialog.isVisible(),false);
   await page.evaluate(()=>window.deliver('current'));await dialog.waitFor();
@@ -54,10 +54,14 @@ async function check(name,run){await run();results.push({name,status:'PASS'});co
   await page.getByRole('button',{name:'查看审批详情'}).click();await dialog.getByRole('button',{name:'拒绝执行',exact:true}).click();await dialog.waitFor({state:'hidden'});
   assert.deepEqual(await page.evaluate(()=>window.fixture.decisions),['APPROVED','REJECTED']);
  });
- await check('actual plan parameters retain false/LOW and ports/SAFE as readable Chinese at 320px',async()=>{
+ await check('editable plan parameters retain exact false/LOW and ports/SAFE at 320px',async()=>{
   await page.evaluate(()=>{window.fixture.message.approvalId=41;window.fixture.message.approvalStatus='PENDING';window.fixture.message.steps=[{toolCode:'fscan_scan',parameters:{ports:'80',vulnMode:'SAFE'},requiresApproval:true},{toolCode:'zap_scan',parameters:{spider:false,strength:'LOW'},requiresApproval:true}];window.deliver('current');});
   await page.setViewportSize({width:320,height:900});await dialog.waitFor();
-  const text=await dialog.innerText();for(const pattern of [/扫描端口/,/80/,/扫描模式/,/安全/,/自动爬取/,/否/,/扫描强度/,/低/])assert.match(text,pattern);
+  const rows=dialog.locator('.approval-param-row');
+  assert.equal(await rows.filter({hasText:'扫描端口'}).getByRole('textbox').inputValue(),'80');
+  assert.equal(await rows.filter({hasText:'扫描模式'}).getByRole('textbox').inputValue(),'SAFE');
+  assert.equal(await rows.filter({hasText:'spider'}).getByRole('switch').getAttribute('aria-checked'),'false');
+  assert.equal(await rows.filter({hasText:'strength'}).getByRole('textbox').inputValue(),'LOW');
   assert.equal(await dialog.locator('[data-approval-id]').getAttribute('data-approval-id'),'41');
   const rect=await dialog.boundingBox();assert.ok(rect.x>=0&&rect.x+rect.width<=321);
   await page.screenshot({path:path.join(out,'approval-320.png'),fullPage:true,animations:'disabled'});
@@ -76,7 +80,7 @@ async function check(name,run){await run();results.push({name,status:'PASS'});co
    await new Promise(requestAnimationFrame);
   },scenario);
   await dialog.waitFor();
-  assert.match(await dialog.innerText(),/模块参数/);
+  assert.ok(await dialog.locator('.approval-param-row').count()>0);
   const layout=await dialog.evaluate(element=>{
    const rect=value=>{const r=value.getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height};};
    element=element.matches('.el-dialog')?element:element.querySelector('.el-dialog');
@@ -98,6 +102,25 @@ async function check(name,run){await run();results.push({name,status:'PASS'});co
   assert.ok(layout.documentWidth<=scenario.width,JSON.stringify(layout));
   await page.screenshot({path:path.join(out,'layout-'+scenario.width+'-'+scenario.height+'-'+(scenario.native?'native':'web')+'.png'),fullPage:true,animations:'disabled'});
   results.push({name:'layout measurements: '+scenario.name,status:'PASS',layout});
+ });
+ await check('a new directory-scan revision opens a fresh approval and local edits do not mutate stored plan parameters',async()=>{
+  await dialog.getByRole('button',{name:'关闭，继续等待',exact:true}).click();await dialog.waitFor({state:'hidden'});
+  await page.setViewportSize({width:1100,height:900});
+  await page.evaluate(()=>{
+   window.fixture.native=false;document.documentElement.style.setProperty('--desktop-sidebar-width','0px');
+   window.fixture.message.approvalId=42;
+   window.fixture.message.steps=[{toolCode:'http_headers',parameters:{},risk:'SAFE',requiresApproval:false},{toolCode:'dir_scan',parameters:{concurrency:10,dictionary:'dirb-small',depth:1},risk:'CAUTION',requiresApproval:true}];
+   window.deliver('current');
+  });
+  await dialog.waitFor();assert.equal(await dialog.locator('[data-approval-id]').getAttribute('data-approval-id'),'42');
+  assert.match(await dialog.innerText(),/Web 目录与路径探测/);
+  const concurrency=dialog.locator('.approval-param-row').filter({hasText:'并发请求数'}).getByRole('spinbutton');
+  assert.equal(await concurrency.inputValue(),'10');await concurrency.fill('5');await concurrency.press('Tab');
+  await page.screenshot({path:path.join(out,'approval-directory-revision.png'),fullPage:true,animations:'disabled'});
+  await dialog.getByRole('button',{name:'允许执行',exact:true}).click();await dialog.waitFor({state:'hidden'});
+  assert.deepEqual(await page.evaluate(()=>window.fixture.overrides),[{}, {concurrency:5,dictionary:'dirb-small',depth:1}]);
+  assert.equal(await page.evaluate(()=>window.fixture.message.steps[1].parameters.concurrency),10);
+  assert.deepEqual(await page.evaluate(()=>window.fixture.message.taskIds),[]);
  });
  assert.deepEqual(errors,[]);console.log('EVIDENCE '+out);
 })().catch(e=>{results.push({status:'FAIL',error:e.stack});console.error(e);process.exitCode=1;}).finally(async()=>{fs.writeFileSync(path.join(out,'results.json'),JSON.stringify({scope:'isolated real Vue and Element Plus; no actual approval API',results,errors},null,2));if(browser)await browser.close();if(server)await server.close();});

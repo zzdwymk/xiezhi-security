@@ -146,6 +146,7 @@ test('actual successful Dashboard dispatch is not changed to an error when termi
     projectIdForTarget: () => 140, buildContextPrompt: () => u.content, messageReferences: () => [], agentContextReferences: () => [],
     latestWorkflowIdentity: async () => ({}), aiExecutionRequest: () => ({ executionIntent: 'AUTO', userPrompt: u.content }),
     recordThinkingProgress: (threadId, messageId) => f.store.updateMessage(threadId, messageId, { content: '完整成功回答', status: 'completed' }),
+    normalizeAgentEvent: value => value,
     dispatchAiStreaming: async (_payload, onEvent) => { trace.push('done'); onEvent({ type: 'done' }); return {
       answer: '完整成功回答', plan: { provider: 'langgraph-runtime', steps: [] }, taskIds: [], citations: [] }; },
     requireAiAnswer: text => text, publicCitation: value => value, shouldPromptApproval: () => false, isLocalAiAnswer: () => false,

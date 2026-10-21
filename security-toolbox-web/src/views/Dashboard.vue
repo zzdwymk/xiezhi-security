@@ -73,12 +73,13 @@ import { taskbarProgress } from "../utils/taskbarProgress";
 import AiProgressPanel from "../components/AiProgressPanel.vue";
 import AiStatusStamp from "../components/AiStatusStamp.vue";
 import AiFailureNotice from "../components/AiFailureNotice.vue";
+import AiDispatchNotice from "../components/AiDispatchNotice.vue";
 import FluentIcon from "../components/FluentIcon.vue";
 import MarkdownComposerPreview from "../components/MarkdownComposerPreview.vue";
 import ConversationAvatar from "../components/ConversationAvatar.vue";
 import AiApprovalDialog from "../components/AiApprovalDialog.vue";
 import FluentCodeBlock from "../components/FluentCodeBlock.vue";
-import { createAiApprovalPromptGate, isAwaitingAiApproval, isAwaitingAiDispatch, isAiDispatchRejected, aiDispatchFailureStatus } from "../utils/aiApproval";
+import { createAiApprovalPromptGate, isAwaitingAiApproval, isAwaitingAiDispatch, isAiDispatchRejected, aiDispatchFailureStatus, aiDispatchRejectedTitle, aiDispatchQuotaFailure } from "../utils/aiApproval";
 import { aiEventStepStatus, findMatchingAiStep, mergeAiStep } from "../utils/aiStepState";
 import { mergeTaskDetailSnapshot } from "../utils/taskDetail";
 import { aiExecutionRequest } from "../utils/aiIntent";
@@ -92,6 +93,59 @@ import databaseIcon from "@fluentui/svg-icons/icons/database_20_regular.svg?url"
 const messageQuoteStyle = { maskImage: `url("${messageQuoteIcon}")` };
 const gaugeIconStyle = { maskImage: `url("${gaugeIcon}")`, WebkitMaskImage: `url("${gaugeIcon}")` };
 const databaseIconStyle = { maskImage: `url("${databaseIcon}")`, WebkitMaskImage: `url("${databaseIcon}")` };
+
+/**
+ * 底部统计栏的三张卡片互斥展开。
+ *
+ * Element Plus 的 click 触发弹层只靠 document 上的"点到外面"判定来收起，
+ * 而这个判定用的是触发元素的矩形。统计卡片是向上弹出的，展开后正好盖住
+ * 相邻胶囊：第二次点击命中的是已展开的卡片而不是胶囊，触发元素与弹层
+ * 都不认为自己点到了"外面"，于是两张卡片会同时留在屏幕上（1024~1440px
+ * 宽度下必然复现）。
+ *
+ * 因此这三个弹层改为 trigger="manual"，可见性完全由 openStatsCard 决定：
+ * 点胶囊切换唯一展开项，点页面空白或按 Esc 收起，从根本上杜绝两张同开。
+ */
+type StatsCardKey = "session" | "tokens" | "context";
+const openStatsCard = ref<StatsCardKey | null>(null);
+
+function statsCardVisible(key: StatsCardKey) {
+  return openStatsCard.value === key;
+}
+
+// 点击胶囊切换该卡片；点开其它卡片会把当前这张顶掉，保证互斥。
+function toggleStatsCardOnPillClick(key: StatsCardKey) {
+  openStatsCard.value = openStatsCard.value === key ? null : key;
+}
+
+function closeStatsCards() {
+  openStatsCard.value = null;
+}
+
+// 统计栏用 trigger="manual" 完全掌控可见性，避免 Element Plus 自带的 document
+// 点击判定（它只认触发元素的矩形）在卡片向上弹出盖住相邻胶囊时误判，导致
+// 两张卡片同时留在屏幕上。因此点击事件完全由这里处理：
+//   - 点击胶囊：切换状态；
+//   - 点击栏内其它空白：收起。
+function handleStatsBarPointerDown(event: PointerEvent) {
+  const target = event.target as Element | null;
+  if (!target) return;
+  if (target.closest(".stats-pill")) return; // 交给胶囊的 click 切换
+  closeStatsCards();
+}
+
+// 点击页面其它空白处统一收起；胶囊和弹出卡片内部的点击不在此列。
+function handleDocumentPointerDown(event: MouseEvent) {
+  if (!openStatsCard.value) return;
+  const target = event.target as Element | null;
+  if (!target) return;
+  if (target.closest(".composer-stats-bar") || target.closest(".stats-pill-popover")) return;
+  closeStatsCards();
+}
+
+function handleDocumentKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape" && openStatsCard.value) closeStatsCards();
+}
 
 interface TaskRow {
   id: number;
@@ -261,7 +315,13 @@ function taskLogs(message: ConversationMessage) {
 // A finished answer shows its status stamp with the message chrome, below the
 // answer card, instead of inside the answer surface.
 function isStatusOutsideAnswerCard(message: ConversationMessage) {
-  return isAiStatusOutsideCard(message, relatedTasks(message), Date.now());
+  return !hasDispatchNotice(message) && isAiStatusOutsideCard(message, relatedTasks(message), Date.now());
+}
+
+function hasDispatchNotice(message: ConversationMessage) {
+  return message.role === "assistant" && message.steps.length > 0
+    && message.status !== "failed" && !["failed", "interrupted"].includes(message.modelStreamStatus || "")
+    && (isAwaitingAiDispatch(message) || isAiDispatchRejected(message));
 }
 
 function displayAgentValue(value: unknown, limit = 1600) {
@@ -272,7 +332,7 @@ function displayAgentValue(value: unknown, limit = 1600) {
 
 function taskState(message: ConversationMessage) {
   if (isAwaitingAiApproval(message)) return { label: "等待审批", progress: 0, className: "waiting", indeterminate: false };
-  if (isAiDispatchRejected(message)) return { label: "执行已拒绝，未派发任务", progress: 0, className: "failed", indeterminate: false };
+  if (isAiDispatchRejected(message)) return { label: aiDispatchRejectedTitle(message), progress: 0, className: "failed", indeterminate: false };
   if (isAwaitingAiDispatch(message) && message.approvalDispatchStatus === "unknown") return { label: "派发结果待核实", progress: 0, className: "waiting", indeterminate: false };
   if (isAwaitingAiDispatch(message)) return { label: "已批准，等待派发确认", progress: 0, className: "waiting", indeterminate: false };
   if (message.approvalStatus === "REJECTED" && !message.taskIds.length) return { label: "方案已驳回", progress: 0, className: "failed", indeterminate: false };
@@ -437,14 +497,25 @@ function messageContextContent(message: ConversationMessage) {
   const quote = message.quote
     ? `[引用的${message.quote.role === "user" ? "用户" : "助手"}消息]\n${message.quote.content.slice(0, 4000)}\n[引用结束]\n\n`
     : "";
-  const content = `${quote}${message.content}`;
-  return context ? `${content}\n\n${context}` : content;
+  const supporting = [quote.trim(), context].filter(Boolean).join("\n\n");
+  const bounded = supporting.length > 12000
+    ? `${supporting.slice(0, 12000)}\n[引用与上下文已截断]` : supporting;
+  return bounded ? `${message.content}\n\n${bounded}` : message.content;
 }
 
 function quoteMessage(message: ConversationMessage) {
   if (sending.value) return;
   quotedMessage.value = message;
   focusComposer();
+}
+
+function adjustDispatchPlan(message: ConversationMessage) {
+  if (sending.value || editingMessage.value) return;
+  const limit = aiDispatchQuotaFailure(message.approvalDispatchError)?.limit;
+  if (!prompt.value.trim()) {
+    prompt.value = `请将引用的原方案拆分为更小的计划${limit ? `，每份不超过 ${limit} 步` : "，避免超出目标或项目的任务额度"}。先给方案，不执行；新方案需要重新确认。`;
+  }
+  quoteMessage(message);
 }
 
 function cloneMessageDraft<T>(value: T): T {
@@ -698,7 +769,9 @@ function targetHoverText(name?: string, value?: string): string {
 }
 
 function displayedStepReason(step: ConversationStep) {
-  return publicAiProgressText(step.reason || aiToolLabel(step.toolCode));
+  const reason = publicAiProgressText(step.reason);
+  return !reason || reason === displayedStepTitle(step) || reason === aiToolLabel(step.toolCode)
+    || /^智能助手根据项目上下文提出[。.]?$/.test(reason) ? "" : reason;
 }
 
 function citationSummaryLength(citation: ConversationCitation) {
@@ -806,9 +879,16 @@ function buildContextPrompt(thread: ConversationThread, userMessageId: string) {
     (item) =>
       `${item.role === "user" ? "用户" : "助手"}：${messageContextContent(item)}`,
   );
-  const latest = entries[entries.length - 1];
-  const history = entries.slice(0, -1).join("\n").slice(-12000);
-  return `这是同一授权目标下的连续对话，请结合上下文理解用户当前要求。\n${history}${history ? "\n" : ""}${latest}`;
+  const latest = entries[entries.length - 1]!;
+  const heading = "这是同一授权目标下的连续对话，请结合上下文理解用户当前要求。历史和引用不代表本轮执行许可。\n";
+  const history: string[] = [];
+  let characters = heading.length + latest.length;
+  for (const entry of entries.slice(0, -1).reverse()) {
+    if (characters + entry.length + 1 > 20000) break;
+    history.unshift(entry);
+    characters += entry.length + 1;
+  }
+  return `${heading}${history.length ? history.join("\n") + "\n" : ""}${latest}`;
 }
 
 async function scrollToBottom() {
@@ -1464,7 +1544,8 @@ function applyAgentEvent(
   const recordedEvent = event.recorded || event.eventTiming === "VERIFIED_RECORD";
   // 终态事件（done / error）代表这一轮模型交互已经结束，无论是否携带 answer
   // 正文都必须收尾；否则无关联任务的一轮会永久停留在进行中。
-  const terminalDone = event.type === "done" && event.status !== "FAILED";
+  const terminalDone = !recordedEvent && event.type === "done"
+    && !["FAILED", "RECORDED"].includes(event.status || "");
   const status = recordedEvent ? message.status :
     event.type === "error"
       ? "failed"
@@ -1486,14 +1567,14 @@ function applyAgentEvent(
   // (event.data as any)?.response 是死代码，永远得到 undefined。
   // 正文顺序：event.answer（已由 api.ts 优先取 response.message）→ 计划摘要 → 事件消息。
   const doneAnswer = String(
-    event.answer || event.plan?.summary || event.message || "",
+    event.answer || event.plan?.summary || "",
   ).trim();
   if (event.type === "error" && !recordedEvent)
     content = readableAiConversationError(
       event.message || event.summary,
       "智能体执行失败。",
     ).slice(0, 2000);
-  else if (event.type === "done" && doneAnswer)
+  else if (terminalDone && doneAnswer)
     content = doneAnswer;
   else if (
     progressSummary &&
@@ -1516,14 +1597,14 @@ function applyAgentEvent(
       : event.type === "error" && !recordedEvent
         ? "failed"
         : message.modelStreamStatus,
-    approvalId: event.approvalId || message.approvalId,
-    approvalStatus: event.approvalStatus || message.approvalStatus,
+    approvalId: !recordedEvent && event.approvalId || message.approvalId,
+    approvalStatus: !recordedEvent && event.approvalStatus || message.approvalStatus,
     judge: (event.judge as JudgeVerdictDocument | undefined) || message.judge,
     executionDecision: event.executionDecision || message.executionDecision,
     // 终态事件会带回本轮是否真的派发了任务；无任务时保持空数组，
     // 使界面呈现"等待确认/未创建任务"而不是永久进行中。
     taskIds:
-      Array.isArray(event.taskIds) && event.taskIds.length
+      !recordedEvent && Array.isArray(event.taskIds) && event.taskIds.length
         ? event.taskIds
         : message.taskIds,
     planningStage:
@@ -1571,6 +1652,7 @@ async function dispatchConversationMessage(
     modelStreamStatus: "running", progressStartedAt: new Date().toISOString(), progressFinishedAt: undefined,
   });
   let data;
+  let streamedAnswer = "";
   try {
     data = await dispatchAiStreaming(
     {
@@ -1584,7 +1666,16 @@ async function dispatchConversationMessage(
       mode: userMessage.copilotMode,
       refs: agentContextReferences(refs),
     },
-    (event) => recordThinkingProgress(thread.id, assistantMessage.id, event),
+    (incoming) => {
+      recordThinkingProgress(thread.id, assistantMessage.id, incoming);
+      const event = normalizeAgentEvent(incoming);
+      if (event?.type === "done" && !event.recorded &&
+          event.eventTiming !== "VERIFIED_RECORD" &&
+          !["FAILED", "RECORDED"].includes(event.status || "")) {
+        streamedAnswer = [event.answer, event.plan?.summary]
+          .find(value => typeof value === "string" && value.trim())?.trim() || "";
+      }
+    },
   );
     conversations.updateMessage(thread.id, assistantMessage.id, {
       modelStreamStatus: "completed", progressFinishedAt: new Date().toISOString(),
@@ -1652,19 +1743,21 @@ async function dispatchConversationMessage(
     );
   });
   const planSummary = data.plan.summary?.trim();
-  const answerText = data.answer?.trim() || planSummary;
+  const answerText = data.answer?.trim() || planSummary || streamedAnswer;
   const operationalReceipt = !answerText && (data.taskIds.length > 0 || data.approvalId || streamedMessage?.approvalId);
-  // 兜底顺序：最终答案字段 → 计划摘要 → 已经流式写入的消息正文。
-  // 终端 done 事件里 event.answer 常为空（模型正文在 data.response.message，
-  // 由 applyAgentEvent 先一步写入 content）。若这里直接 requireAiAnswer(answerText)
-  // 抛错，sendPrompt 的 catch 会把已经渲染好的回答覆盖成错误提示——
-  // 用户明明看到了模型回答，界面却变成"未获得模型回答"。
-  const streamedFallback = String(streamedMessage?.content || "").trim();
-  const finalContent = operationalReceipt
-    ? data.taskIds.length
-      ? `已按授权范围派发 ${data.taskIds.length} 个任务。执行状态以任务记录为准，结束后将生成检测结论。`
-      : "方案已提交确认，请查看本次操作和授权范围。"
-    : requireAiAnswer(answerText || streamedFallback);
+  // Only a live terminal answer qualifies as a fallback, never stored progress
+  // text or a replayed plan from an earlier turn.
+  let finalContent: string;
+  try {
+    finalContent = operationalReceipt
+      ? data.taskIds.length
+        ? `已按授权范围派发 ${data.taskIds.length} 个任务。执行状态以任务记录为准，结束后将生成检测结论。`
+        : "方案已提交确认，请查看本次操作和授权范围。"
+      : requireAiAnswer(answerText);
+  } catch (error) {
+    conversations.updateMessage(thread.id, assistantMessage.id, { modelStreamStatus: "failed" });
+    throw error;
+  }
   conversations.updateMessage(thread.id, assistantMessage.id, {
     content: finalContent,
     status: data.taskIds.length ? "running" : "completed",
@@ -1932,23 +2025,16 @@ async function sendPrompt() {
       // 也避免闭包内再次读取可变变量。
       const activeThread = thread;
       const activeAssistantMessage = assistantMessage;
-      // 关键：模型回答可能已经通过流式事件写入 content（见 applyAgentEvent 的
-      // doneAnswer 分支）。若此处无条件用错误信息覆盖，用户已经看到的回答会被
-      // 抹掉，并显示成"未获得模型回答"——即使模型其实已经正常回答。
-      // 因此只在 content 仍为空/仍是占位时才写入错误。
+      // A task-list refresh can fail after a valid terminal answer was saved.
+      // Preserve that answer, but never promote an initial or progress placeholder.
       const existing = conversations.items
         .find((item) => item.id === activeThread.id)
         ?.messages.find((item) => item.id === activeAssistantMessage.id);
       const streamed = String(existing?.content || "").trim();
-      // applyAgentEvent 的 error 分支会先把失败文案写入 content。若只看
-      // "content 非空且不是占位句"，失败轮会被误判成"模型已作答"，
-      // 状态被改成 completed，导致状态戳显示"已完成"且重试按钮消失。
-      // 真正"已流式作答后传输中断"的场景里，done 终态事件已把
-      // modelStreamStatus 置为 completed；error 路径则是 failed。
       const alreadyAnswered =
         Boolean(streamed) &&
-        !/^(正在|思考中|分析中)/.test(streamed) &&
-        existing?.modelStreamStatus !== "failed";
+        existing?.modelStreamStatus === "completed" &&
+        (existing.status === "completed" || existing.taskIds.length > 0);
       if (alreadyAnswered) {
         // 已有回答：保留回答正文，仅把状态标为已完成，避免"重试回复"按钮误现。
         conversations.updateMessage(activeThread.id, activeAssistantMessage.id, {
@@ -2441,12 +2527,16 @@ onMounted(() => {
   focusComposer();
   void load();
   void loadDashboardStats();
+  document.addEventListener("pointerdown", handleDocumentPointerDown, true);
+  document.addEventListener("keydown", handleDocumentKeydown);
 });
 onBeforeUnmount(() => {
   if (pollTimer) clearInterval(pollTimer);
   if (typewriterInterval) clearInterval(typewriterInterval);
   if (turnHighlightTimer) clearTimeout(turnHighlightTimer);
   stopTaskFeed?.();
+  document.removeEventListener("pointerdown", handleDocumentPointerDown, true);
+  document.removeEventListener("keydown", handleDocumentKeydown);
 });
 </script>
 
@@ -2694,24 +2784,35 @@ onBeforeUnmount(() => {
                 class="message-response"
                 :class="{ 'is-failed': message.role === 'assistant' && message.status === 'failed' }"
               >
+                <div
+                  v-if="message.status === 'failed' && message.role === 'assistant'"
+                  class="failed-response-card"
+                >
+                  <AiProgressPanel
+                    :message="message"
+                    :tasks="relatedTasks(message)"
+                    :hide-attention="true"
+                    :status-outside="isStatusOutsideAnswerCard(message)"
+                    @open-tasks="router.push('/tasks')"
+                  >
+                    <AiFailureNotice :message="message" />
+                  </AiProgressPanel>
+                </div>
                 <AiProgressPanel
-                  v-if="message.role === 'assistant'"
+                  v-else-if="message.role === 'assistant'"
                   :message="message"
                   :tasks="relatedTasks(message)"
-                  :hide-attention="message.status === 'failed'"
                   :status-outside="isStatusOutsideAnswerCard(message)"
+                  :status-in-plan="hasDispatchNotice(message)"
                   @open-tasks="router.push('/tasks')"
                 >
                   <div
-                    v-if="displayedContentForMessage(message) && message.status !== 'failed'"
+                    v-if="displayedContentForMessage(message)"
                     class="message-bubble markdown-body"
                   >
                     <div v-html="renderMarkdown(displayedContentForMessage(message), { localizeToolCodes: true })" />
                   </div>
                 </AiProgressPanel>
-                <!-- 失败说明放在进度面板之后：状态头（本轮处理未完成）在上，
-                     错误详情在下，最后是操作按钮，避免说明文本盖在状态头上方。 -->
-                <AiFailureNotice v-if="message.status === 'failed'" :message="message" />
                 <div
                   v-else-if="message.role === 'user'"
                   class="message-bubble markdown-body"
@@ -2827,7 +2928,7 @@ onBeforeUnmount(() => {
                   message.steps.length
                 "
                 class="execution-plan-card"
-                :class="{ 'is-awaiting-approval': isAwaitingAiApproval(message) }"
+                :class="{ 'is-awaiting-approval': isAwaitingAiApproval(message), 'has-dispatch-notice': hasDispatchNotice(message) }"
                 :open="isAwaitingAiApproval(message) || isAwaitingAiDispatch(message) || isAiDispatchRejected(message)"
               >
                 <!-- Fluent 2 card: the disclosure row is the card's only header.
@@ -2838,7 +2939,7 @@ onBeforeUnmount(() => {
                     <span>执行计划</span>
                     <span class="execution-plan-count">{{ message.steps.length }} 项</span>
                   </span>
-                  <span class="execution-plan-state" :class="taskState(message).className">{{ taskState(message).label }}</span>
+                  <span class="execution-plan-state" :class="taskState(message).className">{{ hasDispatchNotice(message) ? isAiDispatchRejected(message) ? '未派发' : '待确认' : taskState(message).label }}</span>
                 </summary>
 
                 <!-- One decision surface for the approval gate. It states the
@@ -2888,15 +2989,15 @@ onBeforeUnmount(() => {
                   </div>
                 </div>
 
-                <el-alert v-if="isAiDispatchRejected(message)" class="approval-dispatch-error" type="error" :closable="false" show-icon title="执行已拒绝，未派发任务" :description="message.approvalDispatchError" />
-                <p v-if="isAiDispatchRejected(message)" class="muted">
-                  原方案和批准记录已保留。请先核对授权；再次确认仍使用原审批并重新校验当前范围。
-                  <el-button :disabled="sending || approvingMessageId !== null" @click="handleAgentApprovalDecision(message, 'APPROVED')">重新校验原方案</el-button>
-                </p>
-                <p v-else-if="isAwaitingAiDispatch(message)" class="muted">
-                  {{ message.approvalDispatchStatus === "unknown" ? "派发结果尚未核实，请查看任务记录或恢复原审批确认。" : "方案已确认，尚未收到任务派发结果。" }}
-                  <el-button :disabled="sending || approvingMessageId !== null" @click="handleAgentApprovalDecision(message, 'APPROVED')">恢复原计划执行</el-button>
-                </p>
+                <AiDispatchNotice
+                  v-if="hasDispatchNotice(message)"
+                  :message="message"
+                  :disabled="sending || approvingMessageId !== null"
+                  :loading="approvingMessageId === message.id"
+                  @open-tasks="router.push('/tasks')"
+                  @resume="handleAgentApprovalDecision(message, 'APPROVED')"
+                  @adjust-plan="adjustDispatchPlan(message)"
+                />
 
                 <ol v-if="message.steps.length" class="execution-plan-list">
                   <li
@@ -2920,7 +3021,7 @@ onBeforeUnmount(() => {
                     </span>
                     <div>
                       <strong>{{ displayedStepTitle(step) }}</strong
-                      ><small>{{ displayedStepReason(step) }}</small
+                      ><small v-if="displayedStepReason(step)">{{ displayedStepReason(step) }}</small
                       ><el-progress
                         v-if="planStepState(message, index).state === 'running'"
                         :percentage="planStepState(message, index).progress"
@@ -2932,7 +3033,7 @@ onBeforeUnmount(() => {
                         :duration="1.2"
                       />
                     </div>
-                    <span class="plan-step-status">{{
+                    <span v-if="!hasDispatchNotice(message)" class="plan-step-status">{{
                       planStepState(message, index).label
                     }}</span>
                   </li>
@@ -3127,19 +3228,24 @@ onBeforeUnmount(() => {
         >
 
         <!-- 会话性能与用量统计底栏（DSH 同款设计） -->
-        <div v-if="sessionStats" class="composer-stats-bar" aria-label="会话性能与用量统计">
+        <!-- trigger="manual" + 胶囊 click 切换：三张卡片共用 openStatsCard，保证互斥
+             展开，卡片向上弹出盖住相邻胶囊时也不会两张同时保留。 -->
+        <div v-if="sessionStats" class="composer-stats-bar" aria-label="会话性能与用量统计" @pointerdown="handleStatsBarPointerDown">
           <!-- 1. 轮次、步数与输出速度 -->
           <el-popover
+            :visible="statsCardVisible('session')"
             placement="top"
             :width="260"
-            trigger="click"
+            trigger="manual"
             popper-class="stats-pill-popover"
           >
             <template #reference>
               <button
                 type="button"
                 class="stats-pill"
+                :aria-pressed="statsCardVisible('session') ? 'true' : 'false'"
                 :aria-label="`${sessionStats.turns} 轮 ${sessionStats.steps} 步${sessionStats.tps > 0 ? ` · ${sessionStats.tps} tok/s` : ''}`"
+                @click="toggleStatsCardOnPillClick('session')"
               >
                 <span class="pill-icon pill-icon--gauge" :style="gaugeIconStyle" aria-hidden="true" />
                 <span>{{ sessionStats.turns }} 轮 {{ sessionStats.steps }} 步</span>
@@ -3175,16 +3281,19 @@ onBeforeUnmount(() => {
           <!-- 2. Token 用量与缓存命中率 -->
           <el-popover
             v-if="sessionStats.totalTokens > 0"
+            :visible="statsCardVisible('tokens')"
             placement="top"
             :width="260"
-            trigger="click"
+            trigger="manual"
             popper-class="stats-pill-popover"
           >
             <template #reference>
               <button
                 type="button"
                 class="stats-pill"
+                :aria-pressed="statsCardVisible('tokens') ? 'true' : 'false'"
                 :aria-label="`Token 用量: ${formatTokensCompact(sessionStats.totalTokens)}`"
+                @click="toggleStatsCardOnPillClick('tokens')"
               >
                 <span class="pill-icon pill-icon--database" :style="databaseIconStyle" aria-hidden="true" />
                 <span>{{ formatTokensCompact(sessionStats.totalTokens) }}</span>
@@ -3223,16 +3332,19 @@ onBeforeUnmount(() => {
           <!-- 3. 上下文窗口占用率 (Context Meter Ring) -->
           <el-popover
             v-if="sessionStats.contextWindowTokens > 0 || sessionStats.contextPercent > 0"
+            :visible="statsCardVisible('context')"
             placement="top"
             :width="260"
-            trigger="click"
+            trigger="manual"
             popper-class="stats-pill-popover"
           >
             <template #reference>
               <button
                 type="button"
                 class="stats-pill"
+                :aria-pressed="statsCardVisible('context') ? 'true' : 'false'"
                 :aria-label="`上下文占用: ${sessionStats.contextPercent}%`"
+                @click="toggleStatsCardOnPillClick('context')"
               >
                 <svg class="context-ring" viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">
                   <circle
@@ -3872,7 +3984,9 @@ onBeforeUnmount(() => {
    section, never a second stacked banner with its own heading.
    ================================================================= */
 .execution-plan-card {
-  width: min(660px, 94%);
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   margin-top: 10px;
   padding: 0;
   border: 1px solid var(--app-border);
@@ -3931,16 +4045,18 @@ onBeforeUnmount(() => {
   transform: rotate(90deg);
 }
 .execution-plan-count {
+  white-space: nowrap;
   color: var(--app-muted);
   font-size: var(--fluent-caption1-size, 12px);
   font-weight: var(--fluent-weight-regular, 400);
 }
 .execution-plan-state {
-  flex: none;
+  flex: 0 1 auto;
   color: var(--app-muted);
   font-size: var(--fluent-caption1-size, 12px);
   line-height: 16px;
-  white-space: nowrap;
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 .execution-plan-state.waiting {
   color: var(--fluent-warning-bg, #8a4b08);
@@ -4005,15 +4121,13 @@ onBeforeUnmount(() => {
   margin: 0;
   min-height: 32px;
 }
-.execution-plan-card > .muted,
-.execution-plan-card > .approval-dispatch-error {
-  margin: 10px 14px 0;
-}
-.execution-plan-card > .muted + .execution-plan-list {
-  margin-top: 8px;
-}
 .execution-plan-list {
   display: grid;
+  /* `minmax(0, 1fr)` (not the implicit `auto` track): an auto track is sized to
+     the longest unbreakable word, so one long progress message (e.g.
+     `DIR_SCAN dictionary=… bases=[http://…]`) widened the whole card and squeezed
+     the title column down to a single character per line. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 0;
   margin: 0;
   padding: 0;
@@ -4059,11 +4173,16 @@ onBeforeUnmount(() => {
   gap: 3px;
 }
 .execution-plan-list li strong {
+  display: block;
   color: var(--app-text);
   font-size: var(--fluent-body1-size, 14px);
   font-weight: var(--fluent-weight-medium, 500);
   line-height: 20px;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
+.has-dispatch-notice .execution-plan-list li { grid-template-columns: 20px minmax(0, 1fr); align-items: center; }
+.has-dispatch-notice .execution-plan-state { padding: 3px 8px; border: 1px solid var(--app-border); border-radius: 4px; color: var(--app-text-muted); background: var(--app-surface-soft); }
 .execution-plan-list li small {
   color: var(--app-muted);
   font-size: var(--fluent-caption1-size, 12px);
@@ -5231,23 +5350,13 @@ a.agent-citation-bubble {
   background: transparent !important;
   box-shadow: none;
 }
-.chat-message.assistant .message-response.is-failed {
-  padding: 0;
-  overflow: hidden;
-  /* The action bar closes the failure card, so their shared outline is drawn
-     once: the card keeps the top, the footer keeps the bottom. */
-  border-bottom: 0;
-  border-radius: 8px 8px 0 0;
+.failed-response-card {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
-.message-response.is-failed :deep(.ai-progress-panel) { width: auto; margin: 0; padding: 0; border: 0; background: transparent; }
-.message-response.is-failed :deep(.progress-header) { min-height: 32px; margin: 12px 16px 0; flex-wrap: wrap; }
-.message-response.is-failed :deep(.progress-execution) { margin: 8px 16px; }
-.message-response.is-failed :deep(.progress-timeline-wrap) { margin: 0 16px 12px; }
-.message-response.is-failed :deep(.progress-heading strong) { font-weight: 600; }
-.message-response.is-failed :deep(.progress-toggle) { min-height: 32px; padding: 0 6px; }
-.message-response.is-failed + .message-actions { display: flex; justify-content: flex-start; gap: 4px; margin: 0; padding: 8px 12px; min-height: 32px; border: 1px solid var(--app-border); border-radius: 0 0 8px 8px; opacity: 1; pointer-events: auto; background: var(--app-surface-soft); }
-.message-response.is-failed + .message-actions .message-action { border: 1px solid transparent; }
-.message-response.is-failed + .message-actions .message-action:hover:not(:disabled) { border-color: var(--app-border); }
+.failed-response-card :deep(.progress-header) { flex-wrap: wrap; }
+.failed-response-card :deep(.progress-heading) { flex-basis: 160px; }
 /* The finished-answer status stamp and the action bar belong to the message
    chrome: they sit outside the answer card, aligned with its outer edge, so the
    card holds only the answer. The card's own bottom padding separates the stamp

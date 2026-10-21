@@ -13,7 +13,12 @@ function load(file) {
   if (cache.has(file)) return cache.get(file).exports;
   const module = { exports: {} }; cache.set(file, module);
   const code = ts.transpileModule(fs.readFileSync(file, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
-  const localRequire = name => name.startsWith('.') ? load(path.resolve(path.dirname(file), name + '.ts')) : require(name);
+  const localRequire = name => {
+    if (name === '../api' && file.endsWith(path.join('stores', 'conversations.ts'))) {
+      return { endpoints: { saveConversation: async () => ({}), deleteConversation: async () => ({}), clearAllConversations: async () => ({}) } };
+    }
+    return name.startsWith('.') ? load(path.resolve(path.dirname(file), name + '.ts')) : require(name);
+  };
   vm.runInThisContext(`(function(require,module,exports){${code}\n})`, { filename: file })(localRequire, module, module.exports);
   return module.exports;
 }
@@ -50,7 +55,7 @@ const steps = load(path.join(root, 'src/utils/aiStepState.ts'));
 function fixture() {
   const current = message({});
   const conversations = { items: [{ id: 'thread', messages: [current] }], updateMessage(threadId, messageId, patch) { Object.assign(current, patch); } };
-  const context = vm.createContext({ ...presentation, ...steps, conversations, normalizeAgentEvent: createClient({}).normalizeAgentEvent, scrollToBottom: async () => {}, Date });
+  const context = vm.createContext({ ...presentation, ...steps, conversations, normalizeAgentEvent: createClient({}).normalizeAgentEvent, scrollToBottom: async () => {}, nextTick: async run => run(), reconcileTaskMessages() {}, Date });
   vm.runInContext(code, context, { filename });
   return { current, apply: event => context.applyAgentEvent('thread', 'message', event) };
 }
@@ -75,10 +80,12 @@ test('Dashboard still accepts real live done and error lifecycle events', () => 
   }
 });
 
-test('Dashboard does not complete from an empty terminal event without an answer', () => {
+test('empty done closes the transport without promoting a lifecycle message to an answer', () => {
   const { current, apply } = fixture();
   apply({ type: 'done', message: 'live event' });
-  assert.equal(current.status, 'running');
+  assert.equal(current.status, 'completed');
+  assert.equal(current.modelStreamStatus, 'completed');
+  assert.equal(current.content, 'existing answer');
 });
 test('model decision provenance survives wire parsing, Dashboard storage and history reload', () => {
   const { current, apply } = fixture();

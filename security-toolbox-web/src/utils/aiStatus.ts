@@ -66,11 +66,11 @@ export function conversationStatusBadge(message: ConversationMessage, tasks: AiP
   return null;
 }
 
-// A finished answer keeps its status stamp with the message chrome rather than
-// inside the answer surface. A turn that can expand a model decision summary
+// A finished turn keeps its status stamp with the message chrome rather than
+// inside the response surface. A turn that can expand a model decision summary
 // keeps the header in the card, so its toggle stays next to the summary it
 // controls; that choice never depends on the clock.
 export function isAiStatusOutsideCard(message: ConversationMessage, tasks: AiProgressTask[], now: number): boolean {
-  if (message.role !== "assistant" || message.status !== "completed") return false;
+  if (message.role !== "assistant" || !["completed", "failed"].includes(message.status)) return false;
   return buildAiStatusSummary(message, tasks, now).progress.modelEntries.length === 0;
 }

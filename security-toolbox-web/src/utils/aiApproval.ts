@@ -8,15 +8,34 @@ export function isAwaitingAiApproval(message?: ConversationMessage): boolean {
 /** Approval alone does not prove that the server has created any tasks. */
 export function isAwaitingAiDispatch(message?: ConversationMessage): boolean {
   return Boolean(message?.approvalId && message.steps.length && !message.taskIds.length
-    && message.approvalStatus === "APPROVED" && message.approvalDispatchStatus !== "rejected");
+    && message.approvalStatus === "APPROVED" && !isAiDispatchRejected(message));
 }
 
 export function isAiDispatchRejected(message?: ConversationMessage): boolean {
   return Boolean(message?.approvalId && message.approvalStatus === "APPROVED"
-    && !message.taskIds.length && message.approvalDispatchStatus === "rejected");
+    && !message.taskIds.length && (message.approvalDispatchStatus === "rejected"
+      // Old clients saved these definite pre-dispatch refusals as unknown.
+      || (message.approvalDispatchStatus === "unknown" && aiDispatchQuotaFailure(message.approvalDispatchError))));
 }
 
-/** These exact server errors occur before executeApprovedPlan; other failures leave the result unknown. */
+export function aiDispatchQuotaFailure(detail: unknown) {
+  if (typeof detail !== "string") return undefined;
+  const oversized = /^(项目|目标) AI 计划超出任务配额（本次 (\d+) 项，上限 (\d+) 项），请拆分方案后重新确认$/.exec(detail);
+  if (oversized) return { oversized: true, legacy: false, requested: Number(oversized[2]), limit: Number(oversized[3]) };
+  const occupied = /^(项目|目标) AI 任务配额不足（本次 (\d+) 项，未结束 (\d+) 项，上限 (\d+) 项），请等待现有任务完成后重试$/.exec(detail);
+  if (occupied) return { oversized: false, legacy: false, requested: Number(occupied[2]), limit: Number(occupied[4]) };
+  if (/^(项目|目标) AI 任务配额不足，请等待现有任务完成$/.test(detail)) {
+    return { oversized: false, legacy: true, requested: undefined, limit: undefined };
+  }
+  return undefined;
+}
+
+export function aiDispatchRejectedTitle(message: ConversationMessage): string {
+  const quota = aiDispatchQuotaFailure(message.approvalDispatchError);
+  return quota ? quota.oversized ? "方案超出任务额度，未派发" : "任务额度不足，未派发" : "执行已拒绝，未派发任务";
+}
+
+/** Only known server refusals before task creation prove that nothing was dispatched. */
 export function aiDispatchFailureStatus(error: unknown): "rejected" | "unknown" {
   const response = (error as { response?: { status?: unknown; data?: { message?: unknown } } } | undefined)?.response;
   const beforeDispatchErrors = new Set([
@@ -25,7 +44,7 @@ export function aiDispatchFailureStatus(error: unknown): "rejected" | "unknown" 
     "目标地址或授权范围已变化，原审批不能继续执行，请重新申请",
   ]);
   return response?.status === 400 && typeof response.data?.message === "string"
-    && beforeDispatchErrors.has(response.data.message) ? "rejected" : "unknown";
+    && (beforeDispatchErrors.has(response.data.message) || aiDispatchQuotaFailure(response.data.message)) ? "rejected" : "unknown";
 }
 
 /** Called only from a newly received turn, never while restoring chat history. */

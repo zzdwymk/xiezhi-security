@@ -296,8 +296,8 @@ export function aiElapsedLabel(milliseconds: number): string {
   return seconds % 60 ? `${minutes} 分 ${seconds % 60} 秒` : `${minutes} 分`;
 }
 
-export function aiProgressFailureText(value: unknown, hasTasks: boolean): string {
-  const text = publicAiProgressText(typeof value === "string" ? localizeAiRuntimeFailure(value) : "");
+export function aiProgressFailureText(value: unknown, hasTasks: boolean, limit = 480): string {
+  const text = publicAiProgressText(typeof value === "string" ? localizeAiRuntimeFailure(value) : "", limit);
   if (!hasTasks) return text;
   // Persisted error text may predate task creation. The linked task records are
   // authoritative; do not repeat an old claim that no approval/task exists.
