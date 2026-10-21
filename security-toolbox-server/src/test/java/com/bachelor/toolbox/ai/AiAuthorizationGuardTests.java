@@ -191,6 +191,39 @@ class AiAuthorizationGuardTests {
         projects, targets, tasks, proposed);
   }
 
+  /**
+   * A continuation round re-evaluates a finished batch and may propose the next step. It never
+   * asks to execute ({@code execute=false}), so its proposal must land in the approval queue
+   * rather than being dropped as "just a preview" or auto-run. This pins that contract: the
+   * loop keeps turning only because each new proposal reaches an administrator.
+   */
+  @Test
+  void continuationProposalEntersApprovalQueueInsteadOfExecuting() {
+    AssessmentProjectService projects = mock(AssessmentProjectService.class);
+    TargetService targets = mock(TargetService.class);
+    AiTaskDispatchService dispatcher = mock(AiTaskDispatchService.class);
+    SecurityTaskRepository tasks = mock(SecurityTaskRepository.class);
+    AiAuthorizationGuard guard =
+        new AiAuthorizationGuard(projects, targets, dispatcher, tasks, 20, 4);
+
+    AiPlanResponse proposed = plan();
+    when(dispatcher.prepare(any(), any())).thenReturn(proposed);
+    // A continuation carries execute=false and a non-AUTO intent, so it is a preview.
+    AiAgentRequest request =
+        new AiAgentRequest(
+            7L, 9L, "continuation-session", "读取结果后继续验证", false, null, List.of(),
+            "review", "resume-turn");
+    assertThat(request.automaticExecutionIntent()).isFalse();
+    assertThat(request.executionRequested()).isFalse();
+
+    AiAuthorizationGuard.GuardDecision decision = guard.evaluate(request, proposed);
+
+    assertThat(decision.status()).isEqualTo("AWAITING_APPROVAL");
+    assertThat(decision.approvalStatus()).isEqualTo("REQUIRED");
+    assertThat(decision.mayExecute()).isFalse();
+    assertThat(decision.normalizedPlan().steps()).hasSize(1);
+  }
+
   private void verifyCountQueriesOnly(SecurityTaskRepository tasks) {
     verify(tasks).countByProjectIdAndStatusIn(7L, List.of("BLOCKED", "PENDING", "RUNNING"));
     verify(tasks).countByTargetIdAndStatusIn(9L, List.of("BLOCKED", "PENDING", "RUNNING"));
