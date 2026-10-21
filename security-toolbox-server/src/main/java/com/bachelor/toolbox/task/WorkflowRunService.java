@@ -218,7 +218,9 @@ public class WorkflowRunService {
             .sorted(
                 Comparator.comparingInt((Map<String, Object> step) -> integer(step.get("group")))
                     .thenComparing(step -> WorkflowTaskSchedule.requiresSerialExecution(
-                        text(step.get("risk"), "SAFE"), Boolean.TRUE.equals(step.get("requiresApproval"))))
+                        text(step.get("risk"), "SAFE"),
+                        Boolean.TRUE.equals(step.get("requiresApproval")),
+                        text(step.get("tool"), "")))
                     .thenComparing(step -> requiredText(step, "nodeId")))
             .toList();
 
@@ -230,7 +232,7 @@ public class WorkflowRunService {
           resolveDependencyTaskIds(step, stepByNode, taskByNode, new LinkedHashSet<>());
       WorkflowTaskSchedule.Scheduled scheduled = schedule.schedule(
           integer(step.get("group")), text(step.get("risk"), "SAFE"),
-          Boolean.TRUE.equals(step.get("requiresApproval")), dependencyTaskIds);
+          Boolean.TRUE.equals(step.get("requiresApproval")), dependencyTaskIds, toolCode);
       Map<String, Object> createParameters = skipped.contains(nodeId)
           ? new LinkedHashMap<>(parameters(step)) : executionParameters(step, allowedPorts);
       List<String> resolvedBases = preflight.resolvedTargets().get(nodeId);

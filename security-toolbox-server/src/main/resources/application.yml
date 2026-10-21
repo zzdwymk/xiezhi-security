@@ -123,7 +123,10 @@ toolbox:
       max-retrieval-rounds: ${AI_AGENT_MAX_RETRIEVAL_ROUNDS:3}
   execution:
     max-concurrent-tasks: ${MAX_CONCURRENT_TASKS:3}
-    max-concurrent-tasks-per-target: ${MAX_CONCURRENT_TASKS_PER_TARGET:1}
+    # 单目标并发上限。真正的并行编排由任务执行组决定：独占型工具（Nmap 全端口、
+    # 爬虫、nuclei 等）单独成组，只有轻量只读探测（端口、响应头、TLS）才会同组并行。
+    # 这里保持与全局一致即可，改成 1 会把已经分好组的轻量并行重新压回串行。
+    max-concurrent-tasks-per-target: ${MAX_CONCURRENT_TASKS_PER_TARGET:3}
     connect-timeout-seconds: 3
     # http_headers / http_security_check 本质是对授权目标发一次 GET。原先把两者硬编码为
     # 连接 5 秒、响应 10 秒；目标 Web 服务假死时会在 5 秒左右被判 TIMEOUT，用户既改不了

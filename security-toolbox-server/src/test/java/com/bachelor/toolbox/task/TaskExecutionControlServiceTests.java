@@ -2,8 +2,10 @@ package com.bachelor.toolbox.task;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 import com.bachelor.toolbox.common.ApiException;
+import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -11,6 +13,19 @@ import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.Test;
 
 class TaskExecutionControlServiceTests {
+  /** Scheme-B default: the per-target cap must allow light probes to overlap on one target. */
+  @Test
+  void defaultPerTargetCapLetsLightProbesOverlapOnTheSameTarget() throws Exception {
+    // Mirrors the shipped defaults (global 3, per-target 3).
+    TaskExecutionControlService control = new TaskExecutionControlService(3, 3);
+    TaskExecutionControlService.Permit first = control.acquire(1L, 9L);
+    // A second task on the same target must acquire immediately rather than block.
+    TaskExecutionControlService.Permit second =
+        assertTimeoutPreemptively(Duration.ofSeconds(2), () -> control.acquire(2L, 9L));
+    try { first.close(); } catch (Exception ignored) {}
+    try { second.close(); } catch (Exception ignored) {}
+  }
+
   @Test
   void interruptedTargetWaitReturnsGlobalPermit() throws Exception {
     TaskExecutionControlService control = new TaskExecutionControlService(2, 1);

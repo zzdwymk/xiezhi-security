@@ -19,10 +19,14 @@ public class TaskExecutionControlService {
 
   public TaskExecutionControlService(
       @Value("${toolbox.execution.max-concurrent-tasks:3}") int globalLimit,
-      @Value("${toolbox.execution.max-concurrent-tasks-per-target:1}") int perTargetLimit) {
+      @Value("${toolbox.execution.max-concurrent-tasks-per-target:3}") int perTargetLimit) {
     int initial = Math.max(TaskExecutionSetting.MAX_CONCURRENT_LOWER_BOUND, globalLimit);
     this.maxConcurrentTasks = new AtomicInteger(initial);
     this.global = new AdjustableSemaphore(initial);
+    // This is the last-resort cap, not the primary ordering rule. Task grouping already keeps a
+    // barrier tool (port sweep, crawler, exploit) alone on the target and only batches light
+    // read-only probes together; capping per-target at 1 here would re-serialize that batch and
+    // silently defeat the grouping. It still bounds runaway concurrency on one host.
     this.perTargetLimit = Math.max(1, perTargetLimit);
   }
 

@@ -17,9 +17,31 @@ public final class WorkflowTaskSchedule {
     return approvalRequired || !"SAFE".equalsIgnoreCase(risk);
   }
 
+  /**
+   * Decide serial vs parallel from both the risk gate and the tool's real target occupancy.
+   *
+   * <p>Approval or non-SAFE risk still forces serial (unchanged). Beyond that, a tool that sweeps
+   * the target (Nmap, crawler, nuclei…) is also a barrier even when its risk label is SAFE, because
+   * running a header probe next to a full-port sweep yields misleading timing and can trip rate
+   * limits. Light read-only probes are the only tasks allowed to batch.
+   */
+  public static boolean requiresSerialExecution(
+      String risk, boolean approvalRequired, String toolCode) {
+    if (requiresSerialExecution(risk, approvalRequired)) return true;
+    return ToolConcurrency.isBarrier(toolCode);
+  }
+
   public Scheduled schedule(
       int topologyGroup, String risk, boolean approvalRequired, List<Long> graphDependencies) {
-    boolean serial = requiresSerialExecution(risk, approvalRequired);
+    return schedule(topologyGroup, risk, approvalRequired, graphDependencies, null);
+  }
+
+  public Scheduled schedule(
+      int topologyGroup, String risk, boolean approvalRequired,
+      List<Long> graphDependencies, String toolCode) {
+    boolean serial = requiresSerialExecution(risk, approvalRequired, toolCode);
+    // A LIGHT task that follows another LIGHT task stays in the same execution group, so the two
+    // become parallel siblings; any barrier starts a fresh group.
     if (topologyGroup != previousTopologyGroup || serial || previousWasSerial) executionGroup++;
     previousTopologyGroup = topologyGroup;
     previousWasSerial = serial;
