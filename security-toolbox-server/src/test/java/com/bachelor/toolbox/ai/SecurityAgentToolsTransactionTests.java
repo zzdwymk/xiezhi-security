@@ -342,8 +342,14 @@ class SecurityAgentToolsTransactionTests {
   }
 
   @Test
-  void independentSafeDefaultNodesStayParallel() throws Exception {
-    Invocation invocation = defaultInvocation("safe-parallel", "headers", "service-scan");
+  void independentLightReadOnlyNodesStayParallel() throws Exception {
+    // Two bounded read-only probes in the same topology group: they may run together.
+    authorization.callWithSystemAccess(() -> workflows.save(project.getId(), Map.of("steps", List.of(
+        Map.of("nodeId", "headers", "tool", "http_headers", "parameters", Map.of(),
+            "risk", "SAFE", "requiresApproval", false, "group", 1),
+        Map.of("nodeId", "port-probe", "tool", "tcp_ports", "parameters", Map.of(),
+            "risk", "SAFE", "requiresApproval", false, "group", 1)))));
+    Invocation invocation = defaultInvocation("safe-parallel", "headers", "port-probe");
     AiDispatchResponse response = execute(invocation.request(), invocation.plan());
     List<SecurityTask> created = tasks.findAllById(response.taskIds());
     assertThat(created).allSatisfy(task -> {
@@ -352,6 +358,19 @@ class SecurityAgentToolsTransactionTests {
     });
     assertThat(created).extracting(SecurityTask::getWorkflowGroup).containsOnly(0);
     verify(taskExecutionService, times(2)).executeAsync(anyLong());
+  }
+
+  @Test
+  void portSweepIsBarrierAndNeverRunsBesideAProbe() throws Exception {
+    // A full-port Nmap sweep distorts any concurrent probe, so it must not share the target.
+    Invocation invocation = defaultInvocation("sweep-serial", "headers", "service-scan");
+    AiDispatchResponse response = execute(invocation.request(), invocation.plan());
+    List<SecurityTask> created = tasks.findAllById(response.taskIds());
+    long pending = created.stream().filter(t -> "PENDING".equals(t.getStatus())).count();
+    long blocked = created.stream().filter(t -> "BLOCKED".equals(t.getStatus())).count();
+    assertThat(pending).isEqualTo(1);
+    assertThat(blocked).isEqualTo(1);
+    verify(taskExecutionService, times(1)).executeAsync(anyLong());
   }
 
   @Test

@@ -225,7 +225,8 @@ public class SecurityAgentTools {
         throw new ApiException("工作流任务依赖顺序无效");
       }
       WorkflowTaskSchedule.Scheduled scheduled = schedule.schedule(
-          step.group(), step.risk(), step.requiresApproval(), graphDependencyTaskIds);
+          step.group(), step.risk(), step.requiresApproval(), graphDependencyTaskIds,
+          step.toolCode());
       CreateTaskRequest createRequest =
           new CreateTaskRequest(
               request.projectId(), request.targetId(), step.toolCode(), step.parameters());
@@ -290,16 +291,26 @@ public class SecurityAgentTools {
     java.util.Map<Integer, List<AiPlanResponse.PlanStep>> byGroup =
         steps.stream().collect(java.util.stream.Collectors.groupingBy(AiPlanResponse.PlanStep::group));
     for (List<AiPlanResponse.PlanStep> group : byGroup.values()) {
-      if (group.size() > 1
-          && group.stream()
-              .anyMatch(SecurityAgentTools::requiresSerialExecution)) {
-        throw new ApiException("同一拓扑层仅允许独立低风险节点并行执行");
+      if (group.size() <= 1) continue;
+      // Parallel siblings are allowed only when every one of them is a light, read-only probe.
+      // A port sweep, crawler, or request-mutating tool in the same group would contend for the
+      // target and make results non-reproducible, so it must be planned in its own group.
+      boolean allLight =
+          group.stream().allMatch(step -> !SecurityAgentTools.isBarrierTool(step));
+      if (!allLight) {
+        throw new ApiException("同一拓扑层仅允许互不干扰的轻量只读节点并行执行");
       }
     }
   }
 
+  private static boolean isBarrierTool(AiPlanResponse.PlanStep step) {
+    return WorkflowTaskSchedule.requiresSerialExecution(
+        step.risk(), step.requiresApproval(), step.toolCode());
+  }
+
   private static boolean requiresSerialExecution(AiPlanResponse.PlanStep step) {
-    return WorkflowTaskSchedule.requiresSerialExecution(step.risk(), step.requiresApproval());
+    return WorkflowTaskSchedule.requiresSerialExecution(
+        step.risk(), step.requiresApproval(), step.toolCode());
   }
 
   private AiPlanResponse prepareForHarness(AiAgentRequest request, AiPlanResponse plan) {
