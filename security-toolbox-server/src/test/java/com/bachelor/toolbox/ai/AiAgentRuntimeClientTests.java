@@ -603,4 +603,37 @@ class AiAgentRuntimeClientTests {
         .isInstanceOf(AiAgentRuntimeClient.RuntimeProtocolException.class)
         .hasMessageContaining("终态后继续发送事件");
   }
+
+  @Test
+  void plannerBudgetSendsTheConfiguredRetrievalCeilingNotAStaleHardcode() {
+    // Default constructor path uses 3; the payload must reflect it rather than the old 2.
+    assertThat(newClient().plannerBudget())
+        .containsEntry("maxRetrievalRounds", 3)
+        .containsEntry("maxLlmCalls", 4)
+        .containsEntry("timeoutSeconds", 90);
+
+    assertThat(budgetClient(4).plannerBudget()).containsEntry("maxRetrievalRounds", 4);
+    // Out-of-range values clamp to what the runtime schema accepts (1..4).
+    assertThat(budgetClient(99).plannerBudget()).containsEntry("maxRetrievalRounds", 4);
+    assertThat(budgetClient(0).plannerBudget()).containsEntry("maxRetrievalRounds", 1);
+  }
+
+  private AiAgentRuntimeClient budgetClient(int maxRetrievalRounds) {
+    return new AiAgentRuntimeClient(
+        mapper,
+        mock(AssessmentProjectService.class),
+        mock(TargetService.class),
+        mock(SecurityTaskRepository.class),
+        mock(AgentWorkflowSpecService.class),
+        false,
+        "http://127.0.0.1:8090",
+        8090,
+        "test-token",
+        "test-signing-secret",
+        30,
+        20,
+        4,
+        maxRetrievalRounds,
+        null);
+  }
 }

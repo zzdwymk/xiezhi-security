@@ -701,13 +701,7 @@ public class AiAgentRuntimeClient {
     body.put("nodeRunId", request.nodeRunId());
     body.put(
         "budget",
-        Map.of(
-            "maxRetrievalRounds",
-            maxRetrievalRounds,
-            "maxLlmCalls",
-            RUNTIME_MAX_LLM_CALLS,
-            "timeoutSeconds",
-            90));
+        plannerBudget());
 
     List<Map<String, Object>> workflowSteps = loadWorkflowSteps();
     if (!workflowSteps.isEmpty()) body.put("workflow", workflowSteps);
@@ -888,6 +882,20 @@ public class AiAgentRuntimeClient {
     // Keep the existing runtime contract, but encode the tightest shared budget.
     // This is only a planning snapshot; the locked execution guard rechecks it.
     return Map.of("maxActions", capacity, "usedActions", capacity - (int) remaining);
+  }
+
+  /**
+   * Expose the planner budget actually sent to the runtime. Kept package-visible so a test can
+   * assert the configured retrieval ceiling reaches the wire instead of a stale hardcode.
+   */
+  Map<String, Object> plannerBudget() {
+    return Map.of(
+        "maxRetrievalRounds",
+        maxRetrievalRounds,
+        "maxLlmCalls",
+        RUNTIME_MAX_LLM_CALLS,
+        "timeoutSeconds",
+        90);
   }
 
   private List<Map<String, Object>> buildPlannerMessages(
