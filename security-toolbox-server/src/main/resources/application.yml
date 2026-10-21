@@ -121,6 +121,12 @@ toolbox:
     max-concurrent-tasks: ${MAX_CONCURRENT_TASKS:3}
     max-concurrent-tasks-per-target: ${MAX_CONCURRENT_TASKS_PER_TARGET:1}
     connect-timeout-seconds: 3
+    # http_headers / http_security_check 本质是对授权目标发一次 GET。原先把两者硬编码为
+    # 连接 5 秒、响应 10 秒；目标 Web 服务假死时会在 5 秒左右被判 TIMEOUT，用户既改不了
+    # 也看不出是「连不上」还是「连上了但不回包」。现在做成可配置，且响应超时始终不短于
+    # 连接超时（HttpProbeTimeouts 保证），这样慢目标不会在连接阶段就被误判为超时。
+    http-connect-timeout-seconds: ${HTTP_CONNECT_TIMEOUT_SECONDS:10}
+    http-request-timeout-seconds: ${HTTP_REQUEST_TIMEOUT_SECONDS:20}
     max-ports-per-task: 65535
     max-nmap-ports-per-task: 65535
     max-authorized-ports: 65535
