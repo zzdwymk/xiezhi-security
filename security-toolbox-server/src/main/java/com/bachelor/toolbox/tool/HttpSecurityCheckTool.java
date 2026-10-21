@@ -20,6 +20,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Pattern;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -40,15 +42,37 @@ public class HttpSecurityCheckTool implements SecurityTool {
           "x-generator", "内容生成器");
 
   private final TargetPolicyService policyService;
-  private final HttpClient httpClient =
-      HttpClient.newBuilder()
-          .connectTimeout(Duration.ofSeconds(5))
-          .version(HttpClient.Version.HTTP_1_1)
-          .followRedirects(HttpClient.Redirect.NEVER)
-          .build();
+  private final Duration connectTimeout;
+  private final Duration requestTimeout;
+  private final HttpClient httpClient;
 
+  /**
+   * 单参构造保留给测试/手工装配，使用默认超时。
+   *
+   * <p>必须显式标注 {@code @Autowired}：本类有两个构造器时，Spring 会认为不存在可用的
+   * 自动装配构造器，退回「无参构造」并在启动期抛 {@code No default constructor found}。
+   */
   public HttpSecurityCheckTool(TargetPolicyService policyService) {
+    this(
+        policyService,
+        HttpProbeTimeouts.DEFAULT_CONNECT_TIMEOUT_SECONDS,
+        HttpProbeTimeouts.DEFAULT_REQUEST_TIMEOUT_SECONDS);
+  }
+
+  @Autowired
+  public HttpSecurityCheckTool(
+      TargetPolicyService policyService,
+      @Value("${toolbox.execution.http-connect-timeout-seconds:10}") int connectTimeoutSeconds,
+      @Value("${toolbox.execution.http-request-timeout-seconds:20}") int requestTimeoutSeconds) {
     this.policyService = policyService;
+    this.connectTimeout = HttpProbeTimeouts.connectTimeout(connectTimeoutSeconds);
+    this.requestTimeout = HttpProbeTimeouts.requestTimeout(requestTimeoutSeconds, connectTimeout);
+    this.httpClient =
+        HttpClient.newBuilder()
+            .connectTimeout(connectTimeout)
+            .version(HttpClient.Version.HTTP_1_1)
+            .followRedirects(HttpClient.Redirect.NEVER)
+            .build();
   }
 
   @Override
@@ -90,7 +114,7 @@ public class HttpSecurityCheckTool implements SecurityTool {
       URI uri = join(base, path);
       HttpRequest.Builder request =
           HttpRequest.newBuilder(uri)
-              .timeout(Duration.ofSeconds(10))
+              .timeout(requestTimeout)
               .header("User-Agent", "Xiezhi-Authorized-Security/0.2");
       if ("cors".equals(check)) {
         request.header("Origin", TEST_ORIGIN).GET();

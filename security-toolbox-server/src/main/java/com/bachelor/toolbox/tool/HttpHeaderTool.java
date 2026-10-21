@@ -9,6 +9,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -24,17 +26,39 @@ public class HttpHeaderTool implements SecurityTool {
               "HTTPS 站点设置 Strict-Transport-Security，并在确认所有子域均支持 HTTPS 后考虑 includeSubDomains。");
 
   private final TargetPolicyService policyService;
-  private final HttpClient httpClient =
-      HttpClient.newBuilder()
-          .connectTimeout(Duration.ofSeconds(5))
-          .version(HttpClient.Version.HTTP_1_1)
-          // Never follow redirects automatically: a private authorized URL must not
-          // be able to redirect the scanner to an unapproved public or metadata host.
-          .followRedirects(HttpClient.Redirect.NEVER)
-          .build();
+  private final Duration connectTimeout;
+  private final Duration requestTimeout;
+  private final HttpClient httpClient;
 
+  /**
+   * 单参构造保留给测试/手工装配，使用默认超时。
+   *
+   * <p>必须显式标注 {@code @Autowired}：本类有两个构造器时，Spring 会认为不存在可用的
+   * 自动装配构造器，退回「无参构造」并在启动期抛 {@code No default constructor found}。
+   */
   public HttpHeaderTool(TargetPolicyService policyService) {
+    this(
+        policyService,
+        HttpProbeTimeouts.DEFAULT_CONNECT_TIMEOUT_SECONDS,
+        HttpProbeTimeouts.DEFAULT_REQUEST_TIMEOUT_SECONDS);
+  }
+
+  @Autowired
+  public HttpHeaderTool(
+      TargetPolicyService policyService,
+      @Value("${toolbox.execution.http-connect-timeout-seconds:10}") int connectTimeoutSeconds,
+      @Value("${toolbox.execution.http-request-timeout-seconds:20}") int requestTimeoutSeconds) {
     this.policyService = policyService;
+    this.connectTimeout = HttpProbeTimeouts.connectTimeout(connectTimeoutSeconds);
+    this.requestTimeout = HttpProbeTimeouts.requestTimeout(requestTimeoutSeconds, connectTimeout);
+    this.httpClient =
+        HttpClient.newBuilder()
+            .connectTimeout(connectTimeout)
+            .version(HttpClient.Version.HTTP_1_1)
+            // Never follow redirects automatically: a private authorized URL must not
+            // be able to redirect the scanner to an unapproved public or metadata host.
+            .followRedirects(HttpClient.Redirect.NEVER)
+            .build();
   }
 
   @Override
@@ -75,7 +99,7 @@ public class HttpHeaderTool implements SecurityTool {
       URI uri = resolverJoin(base, path);
       HttpRequest request =
           HttpRequest.newBuilder(uri)
-              .timeout(Duration.ofSeconds(10))
+              .timeout(requestTimeout)
               .header("User-Agent", "Xiezhi-Authorized-Security/0.2")
               .GET()
               .build();
