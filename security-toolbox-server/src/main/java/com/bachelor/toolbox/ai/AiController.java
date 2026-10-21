@@ -31,6 +31,13 @@ public class AiController {
   private final ProjectAuthorizationService authorization;
   private final AssessmentProjectService projects;
   private final AiConversationMemoryService memoryService;
+  private com.bachelor.toolbox.ai.CrossTurnRecoveryService recoveryService;
+
+  /** Optional: lets a user stop the automatic continuation loop for one session. */
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  public void setRecoveryService(com.bachelor.toolbox.ai.CrossTurnRecoveryService value) {
+    this.recoveryService = value;
+  }
 
   public AiController(
       AiPlanningService service,
@@ -295,6 +302,25 @@ public class AiController {
   @DeleteMapping("/agent/sessions/{sessionId}")
   public Map<String, Object> clearAgentSession(@PathVariable String sessionId) {
     return Map.of("sessionId", sessionId, "cleared", agentOrchestrator.clearSession(sessionId));
+  }
+
+  /**
+   * Stop the automatic continuation loop for one session.
+   *
+   * <p>Repeated continuation is convenient until it is not: each round proposes new work, and a
+   * user who has seen enough should be able to end it without deleting the conversation. This
+   * only cancels continuations that have not run yet; work already dispatched is untouched.
+   */
+  @PostMapping("/agent/sessions/{sessionId}/continuation/stop")
+  public Map<String, Object> stopContinuation(@PathVariable String sessionId) {
+    AiConversationMemoryService.SessionScope scope = memoryService.scope(sessionId);
+    if (scope == null) {
+      throw new org.springframework.web.server.ResponseStatusException(
+          org.springframework.http.HttpStatus.NOT_FOUND, "AI 会话不存在");
+    }
+    authorization.requireAccess(scope.projectId());
+    int cancelled = recoveryService == null ? 0 : recoveryService.cancelSession(sessionId);
+    return Map.of("sessionId", sessionId, "cancelled", cancelled);
   }
 
   @GetMapping("/sessions/{sessionId}/usage")

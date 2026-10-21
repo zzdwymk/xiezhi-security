@@ -254,10 +254,31 @@ public class CrossTurnRecoveryService {
     });
   }
 
+  /**
+   * Stop further automatic continuation for one session.
+   *
+   * <p>Only records that have not yet run are cancelled; a continuation already in
+   * {@code PROCESSING} is left to the worker's own crash-fence handling rather than yanked
+   * mid-flight. Cancelling is the user's escape hatch from the loop, so it is idempotent and
+   * never undoes work already done.
+   *
+   * @return number of pending continuations cancelled.
+   */
+  @Transactional
+  public int cancelSession(String sessionId) {
+    if (sessionId == null || sessionId.isBlank()) return 0;
+    List<Long> ids =
+        tombstones.findIdsBySessionIdAndStatusIn(
+            sessionId, List.of(ConversationTombstone.WAITING_TASKS));
+    for (Long id : ids) {
+      markSkipped(id, "用户已停止自动续接");
+    }
+    return ids.size();
+  }
+
   /** Close an in-doubt execution without retrying a model call whose outcome is unknown. */
   @Transactional
-  public void markSkipped(Long id, String reason) {
-    tombstones.findLockedById(id).ifPresent(tombstone -> {
+  public void markSkipped(Long id, String reason) {    tombstones.findLockedById(id).ifPresent(tombstone -> {
       if (ConversationTombstone.CONTINUED.equals(tombstone.getStatus())
           || ConversationTombstone.SKIPPED.equals(tombstone.getStatus())) return;
       tombstone.setStatus(ConversationTombstone.SKIPPED);

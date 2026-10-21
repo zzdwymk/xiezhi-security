@@ -22,4 +22,10 @@ public interface ConversationTombstoneRepository extends JpaRepository<Conversat
   @Lock(LockModeType.PESSIMISTIC_WRITE)
   @Query("select t from ConversationTombstone t where t.id = :id")
   Optional<ConversationTombstone> findLockedById(@Param("id") Long id);
+
+  /** Active (still pending) continuations for one session, so a user can stop the loop. */
+  @Query("select t.id from ConversationTombstone t where t.sessionId = :sessionId"
+      + " and t.status in :statuses order by t.id")
+  List<Long> findIdsBySessionIdAndStatusIn(
+      @Param("sessionId") String sessionId, @Param("statuses") Collection<String> statuses);
 }
