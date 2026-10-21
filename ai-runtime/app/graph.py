@@ -927,6 +927,9 @@ class LedgerAgentRuntime:
             normalized = self._normalize_query(rewritten)
             prior = {self._normalize_query(item) for item in state.get("retrievalQueries", [])}
             if state.get("retrievalRound", 0) != 0:
+                # The round budget is spent: stop rewriting, but do not decide the
+                # turn here. Hand the last bundle to the model so it can still answer
+                # or propose from what it has.
                 update.update(
                     {
                         "evidenceDecision": {
@@ -935,9 +938,6 @@ class LedgerAgentRuntime:
                             "evidenceRefs": [],
                         },
                         "terminationReason": "REWRITE_LIMIT_REACHED",
-                        "plan": self._clarify_plan(
-                            "两轮项目检索仍不足以支持可靠结论，请补充更具体的项目信息。"
-                        ),
                     }
                 )
             elif not normalized or len(rewritten) > 2000 or normalized in prior:
@@ -949,9 +949,6 @@ class LedgerAgentRuntime:
                             "evidenceRefs": [],
                         },
                         "terminationReason": "REWRITE_REJECTED",
-                        "plan": self._clarify_plan(
-                            "证据不足且查询改写无实质变化，请补充更具体的项目信息。"
-                        ),
                         "event": _event(
                             "rewrite",
                             "recon",
@@ -969,14 +966,7 @@ class LedgerAgentRuntime:
                     }
                 )
         elif decision.get("decision") == "CLARIFY":
-            update.update(
-                {
-                    "terminationReason": "EVIDENCE_INSUFFICIENT",
-                    "plan": self._clarify_plan(
-                        "当前项目资料不足以支持可靠结论，请补充项目事实或缩小问题范围。"
-                    ),
-                }
-            )
+            update.update({"terminationReason": "EVIDENCE_INSUFFICIENT"})
         # The model's validated assessment precedes rewrite limits/deduplication.
         # Preserve both decisions so a system override cannot look like a model
         # change of mind. No rewritten query, answer, or free-form reasoning is
@@ -991,14 +981,28 @@ class LedgerAgentRuntime:
         return update
 
     def _route_after_assessment(self, state: AgentState) -> str:
-        if state.get("plan") or state.get("terminationReason"):
+        if state.get("plan"):
+            return "engage"
+        # A spent rewrite budget or an unusable rewrite is a retry-limit note, not a
+        # reason to discard the turn: grounding still gets the last bundle and the
+        # model decides. Only genuine provider/contract failures end here, and those
+        # carry their own terminal plan.
+        if state.get("terminalStatus") == "FAILED" or state.get("terminalStatus") == "DENIED":
             return "engage"
         decision = state.get("evidenceDecision", {}).get("decision")
-        if decision == "REWRITE_QUERY":
+        if decision == "REWRITE_QUERY" and state.get("terminationReason") not in {
+            "REWRITE_LIMIT_REACHED",
+            "REWRITE_REJECTED",
+        }:
             return "rewrite"
         if decision == "FINALIZE":
             return "generate"
-        return "engage"
+        # The assessor reports that the retrieved material does not settle the
+        # request. That is a fact about the evidence, not a verdict about the user's
+        # turn: the model still gets to reason over it and decide whether to propose
+        # a reviewable plan, answer from platform knowledge, or ask for the one
+        # missing detail. Only the retrieval round budget itself stays hard.
+        return "generate"
 
     async def _rewrite_node(self, state: AgentState) -> AgentState:
         decision = state.get("evidenceDecision", {})
@@ -1856,6 +1860,9 @@ class LedgerAgentRuntime:
             # Presentation telemetry only; it never authorizes or changes a plan.
             "modelUsage": usage_snapshot(),
         }
+        if state.get("request", {}).get("executionIntent") == "AUTO":
+            routed = state.get("intentDecision", {})
+            final["planRelation"] = routed.get("planRelation") or "NONE"
         return {
             "final": final,
             "event": _event("finish", "finish", {
@@ -1989,6 +1996,7 @@ class LedgerAgentRuntime:
                     if isinstance(termination_reason, str) and termination_reason
                     else None
                 ),
+                "planRelation": data.get("planRelation"),
                 "ledgerDigest": terminal.get("ledgerEntryDigest"),
             }
         )

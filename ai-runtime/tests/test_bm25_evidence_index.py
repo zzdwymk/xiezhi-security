@@ -46,7 +46,9 @@ def test_security_tokenizer_preserves_identifiers_and_adds_chinese_ngrams():
 def test_rag_runtime_limits_and_bm25_health_defaults():
     assert settings.rag_enabled is True
     assert settings.retrieval_backend == "bm25"
-    assert settings.max_retrieval_rounds == 2
+    # Three rounds let the model recover from one unlucky first query before it has
+    # to settle the turn on partial evidence.
+    assert settings.max_retrieval_rounds == 3
     assert settings.max_evidence_items == 5
     assert settings.max_evidence_chars == 10_000
     assert settings.retrieval_timeout_seconds == 5

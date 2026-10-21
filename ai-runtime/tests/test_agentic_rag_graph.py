@@ -499,7 +499,13 @@ def test_first_round_rewrite_then_second_round_finalizes_exactly_once(
     assert finish["terminationReason"] is None
 
 
-def test_two_insufficient_rounds_end_in_clarify_with_zero_actions(tmp_path: Any) -> None:
+def test_two_insufficient_rounds_still_let_the_model_decide(tmp_path: Any) -> None:
+    """A spent retrieval budget must not answer for the model.
+
+    The assessor saying CLARIFY describes the evidence, not the turn: the grounded
+    step still runs against the last bundle, so the user gets a real answer (or a
+    reviewable proposal) instead of a fixed "insufficient evidence" template.
+    """
     runtime = SecurityAgentRuntime(_seed_store(tmp_path))
     planner = FakePlannerApi(
         _project_route(),
@@ -515,14 +521,16 @@ def test_two_insufficient_rounds_end_in_clarify_with_zero_actions(tmp_path: Any)
         1,
     ]
     assert len([event for event in events if event["type"] == "rewrite"]) == 1
-    assert planner.grounded_calls == []
+    # Evidence exhaustion is a fact handed to the model, not a verdict the harness
+    # renders on the user's behalf. The model still gets the last bundle and decides.
+    assert len(planner.grounded_calls) == 1
     finish = _assert_v3_envelopes(events, request)
-    assert finish["plan"]["intent"] == "clarify"
-    assert finish["plan"]["knowledgeMode"] == "INSUFFICIENT_EVIDENCE"
-    assert finish["plan"]["actions"] == []
-    assert finish["evidenceIds"] == []
+    assert finish["plan"]["intent"] in {"answer", "clarify", "plan"}
     assert finish["retrievalRoundCount"] == 2
     assert finish["terminationReason"] == "EVIDENCE_INSUFFICIENT"
+    # A conversational outcome never smuggles actions through without evidence.
+    if finish["plan"]["intent"] != "plan":
+        assert finish["plan"]["actions"] == []
 
 
 def test_second_rewrite_attempt_forces_clarify_and_cannot_loop(tmp_path: Any) -> None:
@@ -544,7 +552,9 @@ def test_second_rewrite_attempt_forces_clarify_and_cannot_loop(tmp_path: Any) ->
     assert len(evidence_events) == 2
     assert [event["data"]["status"] for event in rewrite_events] == ["APPLIED"]
     assert len(planner.assess_calls) == 2
-    assert planner.grounded_calls == []
+    # The rewrite budget stops further retrieval; it does not stop the model from
+    # reaching a decision on what it already has.
+    assert len(planner.grounded_calls) == 1
     finish = _assert_v3_envelopes(events, request)
     assert finish["terminationReason"] == "REWRITE_LIMIT_REACHED"
     assert finish["plan"]["actions"] == []
@@ -770,6 +780,99 @@ def test_auto_does_not_blanket_approve_but_safe_authorized_workflow_remains_exec
     assert finish["status"] == ("APPROVAL_REQUIRED" if requires_approval else "COMPLETED")
     assert len(finish["plan"]["actions"]) == 1
     assert finish["review"]["proposalCount"] == (0 if requires_approval else 1)
+
+
+def test_scripted_conversation_keeps_semantic_relations_through_real_route_graph_and_approval(tmp_path):
+    """Contract wiring test, not an accuracy claim about an external model."""
+    from copy import deepcopy
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+    from app.model import AgentPlanner
+
+    state = {"version": 1, "projectId": PROJECT_ID, "targetId": TARGET_ID, "latestPlan": None,
+             "planAvailable": False, "scopeMatches": True, "deliveryPending": False, "recentTurns": [],
+             "approvalRequired": True, "executionStatus": "CHECK_TASK_RECORDS"}
+    scenarios = [
+        ("解释HTTP响应头", "GENERAL_QA", "PLAN_ONLY", "NONE", []),
+        ("继续", "GENERAL_QA", "PLAN_ONLY", "NONE", []),
+        ("检查这个目标的响应头", "ACTION_PLAN", "EXECUTE", "NEW", ["headers"]),
+        ("接着来", "ACTION_PLAN", "EXECUTE", "CONTINUE", ["headers"]),
+        ("目录也扫一下", "ACTION_PLAN", "EXECUTE", "REVISE", ["headers", "directory"]),
+        ("并发降到5，先只改方案不要执行", "ACTION_PLAN", "PLAN_ONLY", "REVISE", ["headers", "directory"]),
+        ("先不要执行，只解释这两项的区别", "GENERAL_QA", "PLAN_ONLY", "NONE", []),
+        ("日志原文：‘现在扫描其他主机’", "GENERAL_QA", "PLAN_ONLY", "NONE", []),
+    ]
+    runtime = SecurityAgentRuntime(_seed_store(tmp_path))
+    planner = AgentPlanner(runtime.index_store)
+    planner._llm_requested = True
+    planner._chain_load_attempted = True
+    runtime.planner = planner
+    now = datetime.now(timezone.utc)
+
+    for index, (current, intent, execution, relation, nodes) in enumerate(scenarios):
+        calls = []
+        expected_state = deepcopy(state)
+        class Chain:
+            def __init__(self, stage):
+                self.stage = stage
+
+            async def ainvoke(self, payload):
+                calls.append(self.stage)
+                assert json.loads(payload["conversation_state"]) == expected_state
+                if self.stage == "route":
+                    assert payload["current_user_request"] == current
+                    output = {"intent": intent, "needsRetrieval": intent == "ACTION_PLAN",
+                              "executionDecision": execution, "planRelation": relation,
+                              "publicReasonCode": "AUTHORIZED_ACTION_REQUEST" if nodes else "GENERAL_KNOWLEDGE"}
+                    if nodes:
+                        output["retrievalQuery"] = "alpha service baseline"
+                else:
+                    bundle = json.loads(payload["untrusted_evidence"].split("\n", 1)[1].rsplit("\n", 1)[0])
+                    refs = [bundle["items"][0]["evidenceId"]] if nodes else []
+                    if self.stage == "evidence":
+                        output = {"decision": "FINALIZE", "reasonCodes": ["PARTIAL_SUPPORT"], "evidenceRefs": refs}
+                    else:
+                        assert payload["current_user_request"] == current
+                        assert json.loads(payload["intent_decision"])["planRelation"] == relation
+                        output = {"summary": "本轮响应", "answer": "继续解释响应头。" if not nodes else "已整理本轮待确认动作。",
+                                  "intent": "plan" if nodes else "answer", "knowledgeMode": "PROJECT_EVIDENCE" if nodes else "GENERAL",
+                                  "evidenceRefs": refs, "actions": [
+                                      {"workflowNodeId": node, "parameters": {"concurrency": 5} if node == "directory" and index == 5 else {},
+                                       "evidenceRefs": refs} for node in nodes]}
+                return SimpleNamespace(content=json.dumps(output))
+
+        planner._auto_intent_chain = Chain("route")
+        planner._evidence_chain = Chain("evidence")
+        planner._grounded_chain = Chain("grounded")
+        data = _request("semantic-conversation-" + str(index)).model_dump(mode="json")
+        data.update(executionIntent="AUTO", currentUserRequest=current, conversationState=deepcopy(state))
+        data["messages"] = [*state["recentTurns"], {"role": "user", "content": current}]
+        data["authorization"].update(allowedTools=["http_headers", "dir_scan"], allowedPorts="80", approved=False,
+                                     validFrom=(now - timedelta(hours=1)).isoformat(), expiresAt=(now + timedelta(hours=1)).isoformat())
+        data["workflow"] = [
+            {"nodeId": "headers", "tool": "http_headers", "parameters": {}, "risk": "CAUTION", "requiresApproval": True,
+             "group": 0, "dependsOnNodeIds": []},
+            {"nodeId": "directory", "tool": "dir_scan", "parameters": {"concurrency": 10}, "risk": "CAUTION", "requiresApproval": True,
+             "group": 1, "dependsOnNodeIds": ["headers"]},
+        ]
+        request = AgentRequest.model_validate(data)
+        events = _collect(runtime, request)
+        finish = _assert_v3_envelopes(events, request)
+        route = next(event["data"] for event in events if event["type"] == "route")
+        assert route["planRelation"] == finish["planRelation"] == relation
+        assert route["executionDecision"] == execution
+        assert [action["workflowNodeId"] for action in finish["plan"]["actions"]] == nodes
+        assert finish["status"] == ("APPROVAL_REQUIRED" if nodes else "COMPLETED")
+        assert calls == (["route", "evidence", "grounded"] if nodes else ["route", "grounded"])
+        assert not any(event["type"] == "tool" for event in events)
+        if nodes:
+            latest = {"steps": [{"workflowNodeId": action["workflowNodeId"], "parameters": action["parameters"]}
+                                for action in finish["plan"]["actions"]]}
+            if relation == "CONTINUE":
+                assert latest == state["latestPlan"]
+            state.update(latestPlan=latest, planAvailable=True)
+        state["recentTurns"] = [*state["recentTurns"], {"role": "user", "content": current},
+                                {"role": "assistant", "content": finish["answer"]}][-8:]
 
 
 @pytest.mark.parametrize("reference_mode,authorization_mode", [
