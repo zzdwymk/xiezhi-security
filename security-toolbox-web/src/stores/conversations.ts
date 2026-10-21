@@ -485,6 +485,32 @@ export function normalizeConversations(
 export const useConversationStore = defineStore("conversations", () => {
   const items = ref<ConversationThread[]>(loadConversations());
   const recent = computed(() => items.value.slice(0, 8));
+  // 共享的任务状态快照：任务轮询由 Dashboard 负责，写回这里；
+  // 侧边栏悬浮会话状态（App.vue）据此读取，避免两侧使用不一致的任务状态。
+  const taskStates = ref<Record<number, {
+    id: number;
+    toolCode: string;
+    status: string;
+    progressMessage?: string;
+    errorMessage?: string;
+    startedAt?: string;
+    finishedAt?: string;
+    createdAt: string;
+  }>>({});
+  function setTaskStates(list: Array<{
+    id: number;
+    toolCode: string;
+    status: string;
+    progressMessage?: string;
+    errorMessage?: string;
+    startedAt?: string;
+    finishedAt?: string;
+    createdAt: string;
+  }>) {
+    const next: Record<number, (typeof taskStates.value)[number]> = {};
+    for (const task of list) next[task.id] = task;
+    taskStates.value = next;
+  }
   const persistenceError = ref<{
     message: string;
     operation: string;
@@ -699,6 +725,8 @@ export const useConversationStore = defineStore("conversations", () => {
   return {
     items,
     recent,
+    taskStates,
+    setTaskStates,
     persistenceError,
     hasUnsavedChanges,
     retryPersist,

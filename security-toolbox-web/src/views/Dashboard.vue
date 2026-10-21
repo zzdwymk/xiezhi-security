@@ -2308,6 +2308,18 @@ async function loadTasks() {
       }))
     : [];
   taskbarProgress.syncTasks(tasks.value);
+  conversations.setTaskStates(
+    tasks.value.map((task) => ({
+      id: task.id,
+      toolCode: task.toolCode,
+      status: task.status,
+      progressMessage: task.progressMessage,
+      errorMessage: task.errorMessage,
+      startedAt: task.startedAt,
+      finishedAt: task.finishedAt,
+      createdAt: task.createdAt,
+    })),
+  );
   if (!result.offline) reconcileTaskMessages();
 }
 
