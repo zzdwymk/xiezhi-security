@@ -120,7 +120,7 @@ class Settings:
         "AI_RUNTIME_EMBEDDING_MAX_INPUT_CHARS", 12_000, 500, 50_000
     )
     max_retrieval_rounds: int = _bounded_int(
-        "AI_RUNTIME_MAX_RETRIEVAL_ROUNDS", 2, 1, 2
+        "AI_RUNTIME_MAX_RETRIEVAL_ROUNDS", 3, 1, 4
     )
     max_evidence_items: int = _bounded_int(
         "AI_RUNTIME_MAX_EVIDENCE_ITEMS", 5, 1, 10

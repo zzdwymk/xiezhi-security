@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 import re
 from typing import Annotated, Any, ClassVar, Literal, Union
 from urllib.parse import unquote_plus, urlsplit
@@ -515,6 +516,7 @@ class IntentDecision(BaseModel):
         "AMBIGUOUS_REQUEST",
     ]
     executionDecision: Literal["EXECUTE", "PLAN_ONLY", "CLARIFY"] | None = None
+    planRelation: Literal["NEW", "CONTINUE", "REVISE", "NONE"] | None = None
 
     @model_validator(mode="after")
     def validate_retrieval_contract(self) -> "IntentDecision":
@@ -539,12 +541,15 @@ class IntentDecision(BaseModel):
             raise ValueError("CLARIFY execution decision requires CLARIFY intent")
         if self.intent == "CLARIFY" and self.executionDecision not in {None, "CLARIFY"}:
             raise ValueError("CLARIFY intent cannot authorize execution or a plan")
+        if self.intent != "ACTION_PLAN" and self.planRelation not in {None, "NONE"}:
+            raise ValueError("only ACTION_PLAN may relate to an executable plan")
         return self
 
 
 class AutoIntentDecision(IntentDecision):
     """AUTO requires an explicit, finite decision from the model route boundary."""
     executionDecision: Literal["EXECUTE", "PLAN_ONLY", "CLARIFY"]
+    planRelation: Literal["NEW", "CONTINUE", "REVISE", "NONE"] = "NONE"
 
 
 class EvidenceItem(BaseModel):
@@ -688,13 +693,24 @@ class GroundedPlannerOutput(BaseModel):
         elif self.knowledgeMode == "INSUFFICIENT_EVIDENCE":
             if self.intent != "clarify" or self.actions or self.evidenceRefs:
                 raise ValueError("INSUFFICIENT_EVIDENCE must produce only clarification")
-        elif not self.evidenceRefs and not aggregate_selected_refs:
+        elif (
+            self.knowledgeMode == "PROJECT_EVIDENCE"
+            and not self.evidenceRefs
+            and not aggregate_selected_refs
+            and self.intent != "plan"
+        ):
+            # A grounded *claim* still needs a citation. A grounded-mode *proposal*
+            # may stand on the request alone: the plan is what the human reviews, and
+            # the server re-checks authorization and parameters regardless.
             raise ValueError("PROJECT_EVIDENCE requires evidenceRefs")
         known_refs = set(self.evidenceRefs)
         action_nodes: set[str] = set()
         for action in self.actions:
-            if self.knowledgeMode == "PROJECT_EVIDENCE" and not action.evidenceRefs:
-                raise ValueError("grounded actions require evidenceRefs")
+            # An action may only cite references the output actually declared. It is
+            # not forced to cite one: a proposal that needs no project evidence (a
+            # first-time service scan of an authorized target) is still a proposal the
+            # human reviews before anything runs. Fabricated or smuggled references
+            # stay rejected, which is the property that matters for grounding.
             if not aggregate_selected_refs and not set(action.evidenceRefs).issubset(known_refs):
                 raise ValueError("action evidenceRefs must be declared by the output")
             if action.workflowNodeId in action_nodes:
@@ -735,7 +751,25 @@ class ProjectQaPlannerOutput(EvidenceOrClarificationPlannerOutput):
 
 
 class ActionPlanPlannerOutput(EvidenceOrClarificationPlannerOutput):
+    """An action route always proposes a reviewable plan, with or without evidence.
+
+    A proposal is not an execution permit: every action still passes the server's
+    authorization, parameter, dependency-closure and human-approval checks before
+    anything runs. Requiring retrieved project evidence *before the model may even
+    propose a scan* turned ordinary requests into a fixed "insufficient evidence"
+    template, so the contract lets the model think and propose, and reserves
+    ``clarify`` for a request that is genuinely under-specified.
+    """
+
     intent: Literal["plan", "clarify"]
+
+    @model_validator(mode="after")
+    def validate_action_route_evidence(self) -> "ActionPlanPlannerOutput":
+        if self.knowledgeMode == "INSUFFICIENT_EVIDENCE" and self.intent != "clarify":
+            raise ValueError("action route lacks evidence; propose a plan or clarify")
+        if self.intent == "plan" and not self.actions:
+            raise ValueError("plan intent requires at least one action")
+        return self
 
 
 class WorkflowStep(BaseModel):
@@ -841,6 +875,7 @@ class LedgerAgentContext(BaseModel):
     mode: str = Field(default="plan", max_length=40)
     executionIntent: Literal["AUTO"] | None = None
     currentUserRequest: StrictStr | None = Field(default=None, min_length=1, max_length=4000)
+    conversationState: dict[str, Any] | None = None
     maxRetries: int | None = Field(default=None, ge=0, le=3)
     workflow: list[WorkflowStep] = Field(default_factory=list, max_length=16)
     runId: str | None = Field(default=None, min_length=8, max_length=80, pattern=r"^[A-Za-z0-9_-]{8,80}$")
@@ -881,6 +916,13 @@ class LedgerAgentContext(BaseModel):
             self.currentUserRequest is None or not self.currentUserRequest.strip()
         ):
             raise ValueError("AUTO requires a separate currentUserRequest")
+        if self.conversationState is not None:
+            if len(json.dumps(self.conversationState, ensure_ascii=False)) > 40_000:
+                raise ValueError("conversation state exceeds its context budget")
+            for key, expected in (("projectId", self.projectId), ("targetId", self.targetId)):
+                actual = self.conversationState.get(key)
+                if actual != expected or (expected is not None and type(actual) is not int):
+                    raise ValueError("conversation state must match the request scope")
         metadata = (
             self.workflowId,
             self.workflowRevision,
@@ -1014,4 +1056,5 @@ class LedgerAgentResult(BaseModel):
     evidenceIds: list[EvidenceRef] = Field(default_factory=list, max_length=20)
     proposedActions: list[LedgerAgentProposedAction] = Field(default_factory=list, max_length=8)
     terminationReason: StrictStr | None = Field(default=None, min_length=1, max_length=64)
+    planRelation: Literal["NEW", "CONTINUE", "REVISE", "NONE"] | None = None
     ledgerDigest: StrictStr = Field(pattern=r"^sha256:[0-9a-f]{64}$")

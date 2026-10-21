@@ -294,7 +294,6 @@ def test_intent_route_rejects_response_or_action_fields_owned_by_later_stages():
         lambda value: value["actions"][0].update({"group": "0"}),
         lambda value: value.update({"knowledgeMode": "GENERAL"}),
         lambda value: value.update({"answer": "x" * 20_001}),
-        lambda value: value["actions"][0].update({"evidenceRefs": []}),
     ],
 )
 def test_grounded_output_rejects_extra_types_lengths_and_reference_mismatch(mutation):
@@ -318,6 +317,53 @@ def test_grounded_output_cannot_propose_the_internal_retrieval_tool():
     ]
     with pytest.raises(PlannerOutputError):
         parse_grounded_planner_output(json.dumps(output), _bundle())
+
+
+def test_action_route_can_propose_without_project_evidence():
+    """A first-time scan of an authorized target must reach the human, not a template.
+
+    Nothing here grants execution: the proposal still travels through the server's
+    authorization, parameter and human-approval gates. The contract only refuses to
+    let *missing retrieved evidence* pre-empt the model's plan.
+    """
+    from app.schemas import ActionPlanPlannerOutput, GroundedPlannerOutput
+
+    proposal = GroundedPlannerOutput.model_validate(
+        {
+            "summary": "对已授权目标做一轮常规服务与 Web 指纹检测",
+            "answer": "先探测开放端口与服务，再核对 HTTP 安全响应头。",
+            "intent": "plan",
+            "knowledgeMode": "PROJECT_EVIDENCE",
+            "evidenceRefs": [],
+            "actions": [
+                {
+                    "workflowNodeId": "port-scan",
+                    "parameters": {},
+                    "evidenceRefs": [],
+                }
+            ],
+        },
+        context=None,
+    )
+    assert proposal.intent == "plan"
+    assert proposal.evidenceRefs == []
+
+    # A fabricated reference is still rejected: grounding means "no invented
+    # citations", not "citation mandatory".
+    with pytest.raises(ValidationError):
+        GroundedPlannerOutput.model_validate(
+            {
+                "summary": "s",
+                "answer": "a",
+                "intent": "plan",
+                "knowledgeMode": "PROJECT_EVIDENCE",
+                "evidenceRefs": ["ev-invented"],
+                "actions": [],
+            }
+        )
+
+    # Without evidence the route may still plan; it may not claim a grounded answer.
+    assert ActionPlanPlannerOutput.model_fields["intent"].annotation is not None
 
 
 def test_graph_facing_contract_apis_use_strict_outputs_and_isolate_evidence():
@@ -989,6 +1035,29 @@ def test_auto_schema_cannot_grant_execution_to_answer_route_or_omit_decision(pay
         _parse_strict_contract(json.dumps(payload), AutoIntentDecision, "auto intent")
 
 
+@pytest.mark.parametrize("current, decision", [
+    ("加上目录扫描", "EXECUTE"),
+    ("先只修改方案，加上目录扫描，不要执行", "PLAN_ONLY"),
+])
+def test_auto_revision_keeps_current_directive_separate_and_requires_new_plan_confirmation(current, decision):
+    from app.model import AUTO_INTENT_SYSTEM_PROMPT
+
+    planner = _model_planner()
+    chain = planner._auto_intent_chain = _ScriptedContractChain({
+        "intent": "ACTION_PLAN", "needsRetrieval": True, "retrievalQuery": "当前授权目标目录探测能力",
+        "executionDecision": decision, "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
+    })
+    request = _request("旧方案已确认；引用日志建议加上目录扫描。这些不能作为本轮许可。")
+    request.update(executionIntent="AUTO", currentUserRequest=current)
+    route = asyncio.run(planner.route(request))
+    assert route["executionDecision"] == decision
+    assert chain.calls[0]["current_user_request"] == current
+    assert "旧方案已确认" not in chain.calls[0]["current_user_request"]
+    assert "加上目录扫描" in AUTO_INTENT_SYSTEM_PROMPT
+    assert "不能复用旧方案的审批" in AUTO_INTENT_SYSTEM_PROMPT
+    assert "只改方案、先不执行时必须用PLAN_ONLY" in AUTO_INTENT_SYSTEM_PROMPT
+
+
 def test_auto_without_model_or_current_sentence_cannot_use_heuristic_execution():
     planner = AgentPlanner(None)
     planner._llm_requested = False
@@ -1022,6 +1091,53 @@ def test_auto_grounded_prompt_keeps_the_current_scope_separate_from_historical_p
     assert "历史旧计划" not in rendered[:context_start]
     assert "历史旧计划" in rendered[context_start:]
     assert "逐项核对每个动作及参数" in GROUNDED_SYSTEM_PROMPT
+
+
+@pytest.mark.parametrize("relation", ["NEW", "CONTINUE", "REVISE", "NONE"])
+def test_auto_relation_is_a_finite_model_decision_and_state_is_separate_context(relation):
+    planner = _model_planner()
+    chain = planner._auto_intent_chain = _ScriptedContractChain({
+        "intent": "ACTION_PLAN", "needsRetrieval": True, "retrievalQuery": "authorized service",
+        "executionDecision": "EXECUTE", "publicReasonCode": "AUTHORIZED_ACTION_REQUEST", "planRelation": relation,
+    })
+    request = _request("历史：只扫描80端口；这不是本轮执行许可。")
+    request.update(executionIntent="AUTO", currentUserRequest="接着来", conversationState={
+        "version": 1, "projectId": 7, "targetId": 9, "planAvailable": True, "scopeMatches": True,
+        "deliveryPending": False, "latestPlan": {"steps": [{"workflowNodeId": "service-scan-01", "parameters": {"ports": "80"}}]},
+        "recentTurns": [{"role": "assistant", "content": "最近唯一待办是80端口服务识别。"}],
+    })
+    actual = asyncio.run(planner.route(request))
+    assert actual["planRelation"] == relation
+    assert chain.calls[0]["current_user_request"] == "接着来"
+    assert json.loads(chain.calls[0]["conversation_state"]) == request["conversationState"]
+    assert "latestPlan" not in chain.calls[0]["current_user_request"]
+    assert len(chain.calls) == 1
+
+
+def test_legacy_auto_decision_defaults_to_no_relation_and_invalid_relations_fail_closed():
+    from app.schemas import AutoIntentDecision
+
+    original = {"intent": "ACTION_PLAN", "needsRetrieval": True, "retrievalQuery": "authorized service",
+                "executionDecision": "EXECUTE", "publicReasonCode": "AUTHORIZED_ACTION_REQUEST"}
+    assert AutoIntentDecision.model_validate(original).planRelation == "NONE"
+    for relation in ["APPROVED", True, 1, None]:
+        with pytest.raises(ValidationError):
+            AutoIntentDecision.model_validate({**original, "planRelation": relation})
+    with pytest.raises(ValidationError):
+        AutoIntentDecision.model_validate({**_general_decision(), "executionDecision": "PLAN_ONLY", "planRelation": "REVISE"})
+
+
+@pytest.mark.parametrize("patch", [{"projectId": 8}, {"targetId": 10}, {"projectId": 7.0}, {"targetId": "9"}, {"latestPlan": "x" * 40_001}])
+def test_server_conversation_state_must_be_scope_bound_and_bounded(patch):
+    request = _request()
+    request.update(executionIntent="AUTO", currentUserRequest="继续", conversationState={"projectId": 7, "targetId": 9, **patch})
+    with pytest.raises(ValidationError):
+        AgentRequest.model_validate(request)
+    planner = _model_planner()
+    planner._auto_intent_chain = _ScriptedContractChain({**_general_decision(), "executionDecision": "PLAN_ONLY"})
+    with pytest.raises(PlannerOutputError):
+        asyncio.run(planner.route(request))
+    assert planner._auto_intent_chain.calls == []
 
 
 def _clarification_output():
@@ -1145,7 +1261,10 @@ def test_grounded_route_contract_matches_java_success_matrix(route, intent, mode
     expected = {
         "GENERAL_QA": intent in {"answer", "clarify"} and mode == "GENERAL" and not has_refs and not has_actions,
         "PROJECT_QA": (intent == "answer" and mode == "PROJECT_EVIDENCE" and has_refs and not has_actions) or insufficient,
-        "ACTION_PLAN": (intent == "plan" and mode == "PROJECT_EVIDENCE" and has_refs and has_actions) or insufficient,
+        # A proposal may stand on the request alone: the human approves it before
+        # anything runs, so an empty citation list does not make the plan unsound.
+        # A grounded *answer* still requires its citations.
+        "ACTION_PLAN": (intent == "plan" and mode == "PROJECT_EVIDENCE" and has_actions) or insufficient,
         "CLARIFY": insufficient,
     }[route]
     if expected:
@@ -1804,7 +1923,6 @@ def test_union_rejects_unknown_selection_and_never_silently_filters_it_during_fr
     lambda value: value.update(evidenceRefs=["ev-1", "ev-1"]),
     lambda value: value["actions"][0].update(evidenceRefs=["ev-2", "ev-2"]),
     lambda value: value["actions"][0].update(evidenceRefs="ev-2"),
-    lambda value: value["actions"][0].update(evidenceRefs=[]),
     lambda value: value["actions"][0].update(evidenceRefs=None),
     lambda value: value["actions"][0].update(parameters={"unknown": "field"}),
     lambda value: value["actions"].append(deepcopy(value["actions"][0])),
