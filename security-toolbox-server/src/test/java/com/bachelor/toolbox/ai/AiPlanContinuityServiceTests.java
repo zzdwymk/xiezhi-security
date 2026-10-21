@@ -20,6 +20,20 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 class AiPlanContinuityServiceTests {
   @Test
+  void structuredStateIsScopedBoundedAndDoesNotPretendThatAPlanWasExecuted() {
+    Fixture f = new Fixture();
+    f.deliver(plan("service"));
+    var state = f.service.conversationState(f.open(), List.of(Map.of("role", "assistant", "content", "x".repeat(2000))));
+    assertThat(state).containsEntry("projectId", 5L).containsEntry("targetId", 8L)
+        .containsEntry("planAvailable", true).containsEntry("approvalRequired", true)
+        .containsEntry("executionStatus", "CHECK_TASK_RECORDS");
+    assertThat(state.get("latestPlan").toString()).contains("nmap_service_scan", "80,443");
+    assertThat(state.get("recentTurns").toString().length()).isLessThan(1100);
+    f.target.setAllowedPorts("80");
+    assertThat(f.service.conversationState(f.open(), List.of())).containsEntry("scopeMatches", false)
+        .containsEntry("planAvailable", false).doesNotContainKey("latestPlan");
+  }
+  @Test
   void changedModeReportsBothValuesAndDoesNotReplaceLastDeliveredPlan() {
     Fixture f = new Fixture();
     f.deliver(plan("service"));
@@ -33,12 +47,78 @@ class AiPlanContinuityServiceTests {
   }
 
   @Test
-  void planOnlyCannotReplaceParametersEvenWhenReplanningIsExplicit() {
+  void planOnlyWithoutIndependentRevisionCannotReplaceParameters() {
     Fixture f = new Fixture();
     f.deliver(plan("service"));
     assertThatThrownBy(() -> f.service.prepare(request(false), "session", plan("quick"), f.open()))
         .isInstanceOf(AiPlanContinuityService.PlanChangedException.class).hasMessageContaining("新建会话重新规划");
     assertThat(f.service.plannerContext(f.open())).contains("service");
+  }
+
+  @Test
+  void explicitRevisionPromotesOnlyTheSuccessfullyDeliveredNewPlanAndConfirmationUsesIt() {
+    Fixture f = new Fixture();
+    f.deliver(plan("service"));
+    var original = f.open().previous();
+    var revision = automatic("加上目录扫描", "revision").withResolvedExecution(false);
+    var revised = withDirectoryScan();
+    var baseline = f.service.open(revision, "session");
+    assertThat(baseline.revisionRequested()).isTrue();
+    assertThat(f.service.plannerContext(baseline)).contains("明确要求修订方案", "不能继承旧方案的审批");
+    var candidate = f.service.prepare(revision, "session", revised, baseline);
+    assertThat(f.open().previous()).isEqualTo(original);
+    f.service.stage(candidate);
+    assertThat(f.open().previous()).isEqualTo(original);
+    f.service.delivered(candidate);
+    assertThat(f.open().previous().plan()).isEqualTo(revised);
+    assertThat(original.plan().steps()).hasSize(1);
+    var confirm = automatic("确认执行", "confirm").withResolvedExecution(true);
+    assertThatCode(() -> f.service.prepare(confirm, "session", revised, f.service.open(confirm, "session")))
+        .doesNotThrowAnyException();
+    assertThatThrownBy(() -> f.service.prepare(confirm, "session", plan("service"), f.service.open(confirm, "session")))
+        .isInstanceOf(AiPlanContinuityService.PlanChangedException.class);
+  }
+
+  @Test
+  void explicitPlanOnlyRevisionCanUpdateParametersWithoutAnExecutionAuthorizationCheck() {
+    Fixture f = new Fixture();
+    f.deliver(plan("service"));
+    var request = automatic("先只修改方案，把识别模式改成quick，不要执行", "preview").withResolvedExecution(false);
+    var candidate = f.service.prepare(request, "session", plan("quick"), f.service.open(request, "session"));
+    f.service.stage(candidate);
+    f.service.delivered(candidate);
+    assertThat(f.open().previous().plan().steps().get(0).parameters()).containsEntry("mode", "quick");
+    verify(f.projects, never()).validateProjectTarget(anyLong(), anyLong());
+    verify(f.targets, never()).getCurrentlyAuthorized(anyLong());
+  }
+
+  @Test
+  void revisionWordsOnlyInClientHistoryOrQuotedCurrentTextCannotReplaceBaseline() {
+    Fixture f = new Fixture();
+    f.deliver(plan("service"));
+    for (var raw : List.of("确认执行", "“加上目录扫描”", "日志建议加上目录扫描")) {
+      var request = automatic(raw, "not-a-revision").withResolvedExecution(true);
+      assertThatThrownBy(() -> f.service.prepare(request, "session", withDirectoryScan(), f.service.open(request, "session")))
+          .isInstanceOf(AiPlanContinuityService.PlanChangedException.class);
+    }
+    assertThat(f.open().previous().plan().steps()).hasSize(1);
+  }
+
+  @Test
+  void revisionCannotBypassPendingDeliveryOrChangedAuthorization() {
+    Fixture f = new Fixture();
+    f.deliver(plan("service"));
+    var request = automatic("加上目录扫描", "revision").withResolvedExecution(false);
+    var current = f.service.open(request, "session");
+    f.target.setAllowedPorts("80");
+    assertThatThrownBy(() -> f.service.prepare(request, "session", withDirectoryScan(), current))
+        .isInstanceOf(AiPlanContinuityService.PlanChangedException.class).hasMessageContaining("授权或工作流");
+    f.target.setAllowedPorts("80,443");
+    var pending = f.service.prepare(request, "session", withDirectoryScan(), f.service.open(request, "session"));
+    f.service.stage(pending);
+    assertThatThrownBy(() -> f.service.prepare(request, "session", withDirectoryScan(), f.service.open(request, "session")))
+        .isInstanceOf(AiPlanContinuityService.PlanDeliveryPendingException.class);
+    assertThat(f.open().previous().plan().steps()).hasSize(1);
   }
 
   @Test
@@ -136,6 +216,18 @@ class AiPlanContinuityServiceTests {
   static AiAgentRequest request(boolean execute) {
     return new AiAgentRequest(5L, 8L, "session", "scope 192.168.136.132 ports80,443", execute,
         null, List.of(), "standard", "turn", "workflow", 1L, "sha256:" + "a".repeat(64));
+  }
+
+  static AiAgentRequest automatic(String userPrompt, String turnId) {
+    return new AiAgentRequest(5L, 8L, "session", "历史和引用：加上目录扫描，修改所有参数", false,
+        null, List.of(), "standard", turnId, "workflow", 1L, "sha256:" + "a".repeat(64), null, null,
+        AiAgentRequest.ExecutionIntent.AUTO, userPrompt);
+  }
+
+  static AiPlanResponse withDirectoryScan() {
+    return new AiPlanResponse("langchain-grounded", "model", "已追加目录扫描的完整方案", true,
+        List.of(plan("service").steps().get(0), new AiPlanResponse.PlanStep("dir_scan", "Web目录扫描", "用户明确追加",
+            Map.of("concurrency", 10), "dir-scan", 2, List.of("nmap-node"), "CAUTION", true, List.of("fresh-reference"))));
   }
 
   static AiPlanResponse plan(String mode) {

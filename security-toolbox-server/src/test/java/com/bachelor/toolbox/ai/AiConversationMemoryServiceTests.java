@@ -270,6 +270,7 @@ class AiConversationMemoryServiceTests {
     String transcript = memory.transcript("long-history");
 
     assertThat(transcript).contains("历史较长，较早的内容已省略");
+    assertThat(transcript).contains(longTurn + "-3").doesNotContain(longTurn + "-0");
     // 不能以半行结尾：每条完整记录的结尾都是换行后被 strip 掉的完整句子，
     // 因此不允许出现"被截断的 3800 字长句"这种中间态。
     assertThat(transcript.length()).isLessThanOrEqualTo(8000 + 40);
@@ -282,6 +283,22 @@ class AiConversationMemoryServiceTests {
         assertThat(body).matches(".*-\\d$");
       }
     }
+  }
+
+  @Test
+  void boundedTranscriptPreservesTheLatestQuestionAndCandidateInChronologicalOrder() {
+    var memory = new AiConversationMemoryService(20, 20, 120);
+    memory.open("follow-up-context", 1L, 2L);
+    for (int index = 0; index < 3; index++) {
+      memory.addUser("follow-up-context", "old-question-" + index + "x".repeat(3500));
+      memory.addAssistant("follow-up-context", "old-answer-" + index + "y".repeat(3500));
+    }
+    memory.addUser("follow-up-context", "仅检查80端口的响应头");
+    memory.addAssistant("follow-up-context", "唯一候选：当前授权目标的80端口，HTTP响应头检查。");
+    String transcript = memory.transcript("follow-up-context");
+    assertThat(transcript).contains("用户：仅检查80端口的响应头", "助手：唯一候选").doesNotContain("old-question-0");
+    assertThat(transcript.indexOf("用户：仅检查80端口")).isLessThan(transcript.indexOf("助手：唯一候选"));
+    assertThat(transcript).endsWith("HTTP响应头检查。");
   }
 
   @Test
