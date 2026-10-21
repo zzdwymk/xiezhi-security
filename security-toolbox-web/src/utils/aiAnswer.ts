@@ -6,7 +6,7 @@ export function requireAiAnswer(answer: unknown, summary?: unknown): string {
 }
 
 export function aiAnswerSource(provider?: string, failed = false): string {
-  if (failed) return "未获得模型回答";
+  if (failed) return "本轮未完成";
   const source = String(provider || "").trim().toLowerCase();
   if (source === "operation-receipt") return "操作回执";
   if (["local", "local-rule", "local-rules", "local-rule-fallback", "local-summary", "verified-audit-record"].includes(source))

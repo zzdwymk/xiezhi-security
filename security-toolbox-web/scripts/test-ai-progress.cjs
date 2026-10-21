@@ -275,4 +275,16 @@ test('interrupted approval dispatch becomes unknown after reload and never inven
   const restored = normalizeConversations([{ messages: [message({ status: 'completed', modelStreamStatus: 'completed', approvalId: 63, approvalStatus: 'APPROVED', approvalDispatchStatus: 'dispatching', steps: [{ toolCode: 'nmap_service_scan' }] })] }])[0].messages[0];
   assert.equal(restored.approvalDispatchStatus, 'unknown'); const p = buildAiProgress(restored, [], origin + 90000); assert.equal(p.currentTitle, '派发结果待核实'); assert(!p.currentDetail.includes('未派发任务')); assert.equal(p.tone, 'warning');
 });
+test('success and failure share outside status placement unless a genuine model summary needs its in-card control', () => {
+  const { isAiStatusOutsideCard } = load(path.join(__dirname, '../src/utils/aiStatus.ts'));
+  const assessment = { type: 'progress', stage: 'ASSESSED', source: 'runtime-public-progress', eventTiming: 'LIVE', assessmentSource: 'MODEL', modelDecision: 'FINALIZE', evidenceDecision: 'FINALIZE', reasonCodes: ['DIRECT_SUPPORT'], summary: '已有证据足以生成当前方案。', createdAt: at(2) };
+  for (const status of ['completed', 'failed']) {
+    const reply = message({ status, modelStreamStatus: status, progressFinishedAt: at(4) });
+    assert.equal(isAiStatusOutsideCard(reply, [], origin + 9000), true);
+    assert.equal(isAiStatusOutsideCard({ ...reply, agentEvents: [assessment] }, [], origin + 9000), false);
+    assert.equal(isAiStatusOutsideCard({ ...reply, agentEvents: [{ type: 'state', summary: '普通阶段反馈' }] }, [], origin + 9000), true);
+    assert.equal(isAiStatusOutsideCard({ ...reply, role: 'user' }, [], origin + 9000), false);
+  }
+  assert.equal(isAiStatusOutsideCard(message(), [], origin + 9000), false);
+});
 console.log(`${passed} AI progress behavior checks passed.`);

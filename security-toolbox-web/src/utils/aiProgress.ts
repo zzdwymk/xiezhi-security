@@ -1,6 +1,6 @@
 import type { ConversationAgentEvent, ConversationMessage } from "../stores/conversations";
 import { aiToolLabel, aiProgressFailureText, isPublicAiProgressEvent, publicAiProgressText } from "./aiPresentation";
-import { isAwaitingAiDispatch, isAiDispatchRejected } from "./aiApproval";
+import { isAwaitingAiDispatch, isAiDispatchRejected, aiDispatchRejectedTitle, aiDispatchQuotaFailure } from "./aiApproval";
 
 export interface AiProgressTask {
   id: number;
@@ -226,13 +226,13 @@ export function buildAiProgress(message: ConversationMessage, tasks: AiProgressT
   const summaryEntries = summarizeAiProgress(entries, active && !failed && !waitingApproval);
   const latestUseful = [...entries].reverse().find(entry => !isRoutineProgress(entry));
   const latestIsRecord = latestUseful?.event.recorded || latestUseful?.event.eventTiming === "VERIFIED_RECORD";
-  const currentTitle = interrupted && !activeTasks.length ? "连接已结束，结果待确认" : failed ? message.taskIds.length ? "回答中断，请查看检测任务状态" : "本轮处理未完成" : rejectedDispatch ? "执行已拒绝，未派发任务" : rejectedApproval ? "执行方案已驳回" : waitingApproval ? "等待确认执行计划" : awaitingDispatch ? message.approvalDispatchStatus === "unknown" ? "派发结果待核实" : "审批已通过，等待派发确认"
+  const currentTitle = interrupted && !activeTasks.length ? "连接已结束，结果待确认" : failed ? message.taskIds.length ? "回答中断，请查看检测任务状态" : "本轮处理未完成" : rejectedDispatch ? aiDispatchRejectedTitle(message) : rejectedApproval ? "执行方案已驳回" : waitingApproval ? "等待确认执行计划" : awaitingDispatch ? message.approvalDispatchStatus === "unknown" ? "派发结果待核实" : "审批已通过，等待派发确认"
     : message.status === "answering" && modelActive ? "等待模型回答"
     : activeTasks.length && active ? `${activeTasks.length} 个任务正在推进`
     : unresolvedTasks ? "正在同步检测任务状态"
     : !active ? unsuccessfulTasks.length ? "任务已结束，部分步骤未成功" : "本轮处理完成" : latestIsRecord ? "等待模型回答" : latestUseful?.title || "等待处理反馈";
   const currentDetail = interrupted ? "页面重载后无法恢复此前的模型连接；该轮是否完成尚未确认，请查看回答及关联任务。" : failed ? aiProgressFailureText(message.content, message.taskIds.length > 0)
-    : rejectedDispatch ? `${message.approvalDispatchError || "执行请求未通过校验"}。原方案及批准记录已保留，请核对授权后再决定下一步。`
+    : rejectedDispatch ? `${message.approvalDispatchError || "执行请求未通过校验"}。原方案及批准记录已保留，${aiDispatchQuotaFailure(message.approvalDispatchError) ? "请核对任务额度后再决定下一步。" : "请核对授权后再决定下一步。"}`
     : rejectedApproval ? "该方案未获批准；如需调整，请在对话中说明新的要求。"
     : waitingApproval ? "计划已生成，确认后才会继续受控操作。"
     : awaitingDispatch ? message.approvalDispatchStatus === "unknown" ? `${message.approvalDispatchError || "未收到完整派发回执"}。结果尚未确认，请查看任务记录，或使用原审批恢复确认。` : "尚未确认任务派发结果。若一直没有任务，可在执行计划中点击“恢复原计划执行”。"

@@ -7,7 +7,7 @@ import { AI_STATUS_LABELS, aiStatusIcon, buildAiStatusSummary } from "../utils/a
 import FluentIcon from "./FluentIcon.vue";
 // statusOutside: the parent renders this turn's status stamp with the message
 // chrome instead of inside the answer surface (see AiStatusStamp).
-const props = defineProps<{ message: ConversationMessage; tasks: AiProgressTask[]; hideAttention?: boolean; statusOutside?: boolean }>();
+const props = defineProps<{ message: ConversationMessage; tasks: AiProgressTask[]; hideAttention?: boolean; statusOutside?: boolean; statusInPlan?: boolean }>();
 const emit = defineEmits<{ (event: "open-tasks"): void }>();
 const now = ref(Date.now());
 const expanded = ref(false);
@@ -46,7 +46,7 @@ const title = computed(() => summary.value.title);
 const taskLabels: Record<string, string> = { SUCCESS: "成功", FAILED: "失败", TIMEOUT: "超时", REJECTED: "已拒绝", CANCELLED: "已取消", SKIPPED: "已跳过", BLOCKED: "等待前置任务", PENDING: "排队中", RUNNING: "执行中" };
 const taskTones: Record<string, ProgressTone> = { SUCCESS: "success", FAILED: "failed", TIMEOUT: "failed", REJECTED: "warning", CANCELLED: "warning", SKIPPED: "neutral", BLOCKED: "neutral", PENDING: "neutral", RUNNING: "active" };
 const attention = computed(() => {
-  if (props.hideAttention) return "";
+  if (props.hideAttention || props.statusInPlan) return "";
   const p = progress.value;
   if (dispatchConcern.value) return publicAiProgressText(props.message.approvalDispatchError)
     || "尚未确认本次任务的派发结果，请核对原审批及任务记录。";
@@ -60,7 +60,7 @@ const attention = computed(() => {
   }
   return p.unresolvedTasks ? p.currentDetail : "";
 });
-const activity = computed(() => !props.hideAttention && progress.value.active && !attention.value ? progress.value.currentDetail : "");
+const activity = computed(() => !props.hideAttention && !props.statusInPlan && progress.value.active && !attention.value ? progress.value.currentDetail : "");
 let timer: ReturnType<typeof setInterval> | undefined;
 watch(() => progress.value.active, active => {
   if (timer) clearInterval(timer);
@@ -106,10 +106,10 @@ function receivedAt(at: number) {
       </div>
     </details>
     <div v-if="$slots.default" class="progress-response-content"><slot /></div>
-    <header v-if="!statusOutside" class="progress-header">
-      <span v-if="spinning" class="progress-spinner" role="progressbar" :aria-labelledby="`${message.id}-progress-title`" />
-      <FluentIcon v-else :name="aiStatusIcon(displayTone)" :label="AI_STATUS_LABELS[displayTone]" class="progress-status-icon" />
-      <div class="progress-heading" role="status" aria-live="polite" aria-atomic="true"><strong :id="`${message.id}-progress-title`">{{ title }}</strong></div>
+    <header v-if="!statusOutside && (!statusInPlan || progress.modelEntries.length)" class="progress-header" :class="{ 'is-summary-only': statusInPlan }">
+      <span v-if="spinning && !statusInPlan" class="progress-spinner" role="progressbar" :aria-labelledby="`${message.id}-progress-title`" />
+      <FluentIcon v-else-if="!statusInPlan" :name="aiStatusIcon(displayTone)" :label="AI_STATUS_LABELS[displayTone]" class="progress-status-icon" />
+      <div v-if="!statusInPlan" class="progress-heading" role="status" aria-live="polite" aria-atomic="true"><strong :id="`${message.id}-progress-title`">{{ title }}</strong></div>
       <span v-if="progress.elapsed !== undefined" class="progress-elapsed" title="从本轮请求开始计时，不代表模型思考耗时">{{ progress.elapsed < 1000 ? '不足 1 秒' : aiElapsedLabel(progress.elapsed) }}</span>
       <button v-if="progress.modelEntries.length" class="progress-toggle" type="button" :aria-label="expanded ? '收起模型决策摘要' : '查看模型决策摘要'" :aria-expanded="expanded" :aria-controls="`${message.id}-progress-timeline`" @click="expanded = !expanded">
         <span>模型摘要</span><FluentIcon :name="expanded ? 'chevron-up' : 'chevron-down'" />
@@ -153,6 +153,8 @@ function receivedAt(at: number) {
 .progress-heading strong { font-size: var(--fontSizeBase400); line-height: var(--lineHeightBase400); font-weight: 600; overflow-wrap: anywhere; }
 .progress-response-content { min-width: 0; color: var(--colorNeutralForeground1); }
 .has-response > .progress-header { margin-top: 14px; }
+.progress-header.is-summary-only { justify-content: flex-end; min-height: 28px; gap: 10px; }
+.is-summary-only > .progress-toggle { min-height: 28px; font-size: 12px; }
 .is-completed > .progress-header { min-height: 28px; gap: 6px; }
 .is-completed > .progress-header > .progress-heading { flex: 0 1 auto; color: var(--colorNeutralForeground2); }
 .is-completed > .progress-header .progress-heading strong { font-size: 13px; line-height: 18px; font-weight: 400; }
