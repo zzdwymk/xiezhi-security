@@ -239,6 +239,27 @@ class AiAgentRuntimeClientTests {
   }
 
   @Test
+  void semanticRelationIsFiniteRouteBoundAndMustMatchTheFinishReceipt() {
+    ObjectNode[] events = legalRoutedGeneralQaStream();
+    events[0].withObject("data").put("executionDecision", "PLAN_ONLY").put("planRelation", "NONE");
+    events[3].withObject("data").put("planRelation", "NONE");
+    resign(events);
+    assertThat(newClient().consumeStream(RUN_ID, toNdjson(events), autoRequest(), null).planRelation()).isEqualTo("NONE");
+    events[3].withObject("data").put("planRelation", "REVISE");
+    resign(events);
+    assertThatThrownBy(() -> newClient().consumeStream(RUN_ID, toNdjson(events), autoRequest(), null))
+        .isInstanceOf(AiAgentRuntimeClient.RuntimeProtocolException.class).hasMessageContaining("planRelation");
+    events[0].withObject("data").put("planRelation", "BYPASS");
+    resign(events);
+    assertThatThrownBy(() -> newClient().consumeStream(RUN_ID, toNdjson(events), autoRequest(), null))
+        .isInstanceOf(AiAgentRuntimeClient.RuntimeProtocolException.class).hasMessageContaining("planRelation");
+    events[0].withObject("data").put("planRelation", "NEW");
+    resign(events);
+    assertThatThrownBy(() -> newClient().consumeStream(RUN_ID, toNdjson(events), autoRequest(), null))
+        .isInstanceOf(AiAgentRuntimeClient.RuntimeProtocolException.class).hasMessageContaining("planRelation");
+  }
+
+  @Test
   void autoCannotUseLegacyPlannerEvenWithAnExecutionDecision() {
     ObjectNode[] events = legalGeneralQaStream();
     events[0].withObject("data").put("executionDecision", "PLAN_ONLY");

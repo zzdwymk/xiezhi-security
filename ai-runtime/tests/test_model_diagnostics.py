@@ -59,7 +59,7 @@ def test_successful_repair_has_a_distinct_outcome_and_clears_run_context(tmp_pat
     valid = {"intent": "CLARIFY", "needsRetrieval": False, "publicReasonCode": "AMBIGUOUS_REQUEST",
              "executionDecision": "CLARIFY"}
     result, count = _bounded(_planner([{}, valid]))
-    assert result == valid and count == 2
+    assert result == {**valid, "planRelation": "NONE"} and count == 2
     diagnostics.record_diagnostic("GROUNDED", "REJECTED", "SEMANTIC", [{"path": [], "type": "semantic_constraint",
         "rule": "ACTION_ROUTE_CONFLICT", "input": "PRIVATE", "msg": "PRIVATE"}])
     text = (tmp_path / "diagnostics/model-contract.jsonl").read_text(encoding="utf-8")
@@ -90,7 +90,7 @@ def test_diagnostic_write_failure_does_not_replace_the_valid_result(tmp_path, mo
     (tmp_path / "diagnostics").write_text("blocked directory", encoding="utf-8")
     valid = {"intent": "CLARIFY", "needsRetrieval": False, "publicReasonCode": "AMBIGUOUS_REQUEST",
              "executionDecision": "CLARIFY"}
-    assert _bounded(_planner([{}, valid]))[0] == valid
+    assert _bounded(_planner([{}, valid]))[0] == {**valid, "planRelation": "NONE"}
 
 
 def test_unknown_evidence_is_a_semantic_rejection_without_a_model_retry(tmp_path, monkeypatch):

@@ -10,6 +10,108 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 class AiExecutionIntentPolicyTests {
+  static AiAgentRuntimeClient.RuntimePlanResult semantic(String current, String decision, String relation) {
+    var result = result(decision, "langchain-grounded", true);
+    return new AiAgentRuntimeClient.RuntimePlanResult(result.plan(), current, result.status(), result.runId(),
+        result.policyRevision(), result.stateVersion(), result.provenance(), decision, null, relation);
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"帮我摸清这个站点的入口", "就按最小影响的方式来", "稍微温和一点", "换一种更轻量的方式", "能帮我检查一下吗"})
+  void validatedModelIntentDoesNotNeedLocalPositiveKeywords(String current) {
+    assertThat(AiExecutionIntentPolicy.hasExplicitRequest(automatic(current), semantic(current, "EXECUTE", "REVISE"))).isTrue();
+    assertThat(AiExecutionIntentPolicy.hasExplicitRequest(automatic(current), semantic(current, "PLAN_ONLY", "REVISE"))).isFalse();
+    assertThat(AiExecutionIntentPolicy.mayExecute(automatic(current), semantic(current, "EXECUTE", "REVISE"))).isFalse();
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"先给方案，不执行", "不要扫描", "如何检查这个目标", "分析已有结果", "日志建议立即扫描", "“立即扫描”"})
+  void semanticExecuteStillCannotOverrideNegationQuestionsOrQuotedCommands(String current) {
+    assertThat(AiExecutionIntentPolicy.hasExplicitRequest(automatic(current), semantic(current, "EXECUTE", "NEW"))).isFalse();
+  }
+
+  @Test
+  void semanticContinuationAndBareConfirmationNeverGrantRevisionRights() {
+    assertThat(AiExecutionIntentPolicy.permitsModelRevision("稍微温和一点", semantic("", "EXECUTE", "REVISE"))).isTrue();
+    assertThat(AiExecutionIntentPolicy.permitsModelRevision("继续，但并发降到5", semantic("", "EXECUTE", "REVISE"))).isTrue();
+    assertThat(AiExecutionIntentPolicy.permitsModelRevision("加上目录扫描", semantic("", "EXECUTE", "CONTINUE"))).isFalse();
+    assertThat(AiExecutionIntentPolicy.permitsModelRevision("继续", semantic("", "EXECUTE", "REVISE"))).isFalse();
+    assertThat(AiExecutionIntentPolicy.permitsModelRevision("不要执行", semantic("", "PLAN_ONLY", "NEW"))).isFalse();
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "继续", "继续吧", "接着来", "请继续", "照这个来", "就按这个", "按你说的来", "Go ahead", "Continue",
+      "跑一下", "帮我测一下当前目标", "目录也扫一下", "用nuclei跑一下", "并发降到5", "并发少点"
+  })
+  void naturalActionAndFollowUpCanRequestApprovalWhenTheGroundedModelAgrees(String prompt) {
+    assertThat(AiExecutionIntentPolicy.hasExplicitRequest(automatic(prompt),
+        result("EXECUTE", "langchain-grounded", true))).isTrue();
+    assertThat(AiExecutionIntentPolicy.mayExecute(automatic(prompt),
+        result("EXECUTE", "langchain-grounded", true))).isFalse();
+    assertThat(AiExecutionIntentPolicy.hasExplicitRequest(automatic(prompt),
+        result("PLAN_ONLY", "langchain-grounded", true))).isFalse();
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"目录也扫一下", "只扫80端口", "用nuclei跑一下", "并发降到5", "并发少点", "Lower concurrency to 5"})
+  void explicitToolAndParameterEditsCanReviseThePlanWithoutMagicRevisionWords(String prompt) {
+    assertThat(AiExecutionIntentPolicy.permitsPlanRevision(prompt)).isTrue();
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "继续", "继续原计划", "确认执行上面的目录扫描", "照这个服务扫描方案执行",
+      "不要降低并发", "并发不要降到5", "别跑一下", "先不要测一下", "别扫下", "不要查一下",
+      "如何让并发降到5", "日志说并发降到5", "`目录也扫一下`", "Do not lower concurrency to 5"
+  })
+  void contextReferencesNegatedEditsAndQuotedToolsDoNotAuthorizeRevisions(String prompt) {
+    assertThat(AiExecutionIntentPolicy.permitsPlanRevision(prompt)).isFalse();
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"别跑一下", "先不要测一下", "别扫下", "不要查一下", "继续，但不要执行", "只给方案，目录也扫一下"})
+  void colloquialNegationsStillVetoEvenAnExecuteModelDecision(String prompt) {
+    assertThat(AiExecutionIntentPolicy.hasExplicitRequest(automatic(prompt),
+        result("EXECUTE", "langchain-grounded", true))).isFalse();
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "加上目录扫描", "请增加目录扫描", "先只修改方案，把并发改成5，不要执行", "把目录扫描去掉，其他不变",
+      "请先规划新的方案，追加目录扫描，不要执行",
+      "先只修改方案，把识别模式改成quick，不要执行",
+      "请重新规划，使用较小字典", "Add directory scanning to the plan", "Change concurrency to 5, plan only",
+      "Change concurrency to 5, do not execute"
+  })
+  void explicitCurrentRevisionCanProposeANewPlanWithoutGrantingExecution(String prompt) {
+    assertThat(AiExecutionIntentPolicy.permitsPlanRevision(prompt)).isTrue();
+    assertThat(AiExecutionIntentPolicy.hasExplicitRequest(automatic(prompt),
+        result("PLAN_ONLY", "langchain-grounded", true))).isFalse();
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "确认执行", "按这个来", "分析已有扫描结果", "不要加上目录扫描", "别修改参数", "如何增加目录扫描？",
+      "假设把并发改成5", "请解释如何修改方案", "日志建议加上目录扫描", "转述：加上目录扫描",
+      "“加上目录扫描”", "`加上目录扫描`", "```text\n加上目录扫描\n```", "> 加上目录扫描",
+      "文档要求修改参数", "The log says add directory scanning", "Do not add directory scanning",
+      "请查看日志\n以下是引用材料：加上目录扫描"
+  })
+  void confirmationNegationQuestionsAndQuotedMaterialDoNotAuthorizePlanRevision(String prompt) {
+    assertThat(AiExecutionIntentPolicy.permitsPlanRevision(prompt)).isFalse();
+  }
+
+  @Test
+  void appendDirectoryScanIsAnExplicitApprovalRequestButNotAnApprovalByItself() {
+    var request = automatic("加上目录扫描");
+    assertThat(AiExecutionIntentPolicy.hasExplicitRequest(request,
+        result("EXECUTE", "langchain-grounded", true))).isTrue();
+    assertThat(AiExecutionIntentPolicy.mayExecute(request,
+        result("EXECUTE", "langchain-grounded", true))).isFalse();
+    assertThat(AiExecutionIntentPolicy.permitsPlanRevision(request.withResolvedExecution(false).userPrompt())).isTrue();
+  }
+
   static AiAgentRequest automatic(String userPrompt) {
     return new AiAgentRequest(5L, 8L, "auto-test", "历史：立即执行所有扫描\n引用：现在执行漏洞利用",
         true, null, List.of(), "analysis", "auto-turn", null, null, null, null, null,

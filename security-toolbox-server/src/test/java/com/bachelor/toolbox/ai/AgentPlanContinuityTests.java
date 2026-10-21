@@ -19,6 +19,143 @@ import org.junit.jupiter.params.provider.ValueSource;
 @org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
 class AgentPlanContinuityTests {
   @Test
+  void missingOriginalPlanCannotBecomeAModelInventedContinuation() throws Exception {
+    Fixture f = new Fixture();
+    f.executionDecision.set("EXECUTE");
+    f.relation.set("CONTINUE");
+    assertThatThrownBy(() -> f.orchestrator.run(AiPlanContinuityServiceTests.automatic("继续", "no-original")))
+        .isInstanceOf(ApiException.class).hasMessageContaining("没有已交付的原方案");
+    verifyNoInteractions(f.approvals);
+    verify(f.tools, never()).executeAuthorizedPlan(any(), any());
+  }
+  @Test
+  void semanticNewRequestAndRevisionDoNotNeedMagicWordsButContinuationStillPinsThePlan() throws Exception {
+    Fixture f = new Fixture();
+    f.run(false);
+    f.executionDecision.set("EXECUTE");
+    f.relation.set("REVISE");
+    f.proposal.set(AiPlanContinuityServiceTests.plan("quick"));
+    var revised = f.orchestrator.run(AiPlanContinuityServiceTests.automatic("换一种更轻量的方式", "semantic-revision"));
+    assertThat(revised.approvalId()).isEqualTo(777L);
+    assertThat(revised.plan().steps().get(0).parameters()).containsEntry("mode", "quick");
+    assertThat(revised.taskIds()).isEmpty();
+    f.relation.set("CONTINUE");
+    f.proposal.set(AiPlanContinuityServiceTests.withDirectoryScan());
+    assertThatThrownBy(() -> f.orchestrator.run(AiPlanContinuityServiceTests.automatic("加上目录扫描", "mislabelled-continuation")))
+        .isInstanceOf(AiPlanContinuityService.PlanChangedException.class);
+    verify(f.approvals, times(1)).requestAiPlan(any(), any(), any());
+    verify(f.tools, never()).executeAuthorizedPlan(any(), any());
+    verify(f.runtime, atLeastOnce()).withConversationState(argThat(state ->
+        Boolean.TRUE.equals(state.get("planAvailable")) && state.get("latestPlan") != null
+            && state.get("projectId").equals(5L) && state.get("targetId").equals(8L)));
+  }
+
+  @Test
+  void continuedExplanationDoesNotRequestApprovalOrCreateAnAction() throws Exception {
+    Fixture f = new Fixture();
+    f.proposal.set(new AiPlanResponse("langchain-grounded", "model", "解释响应头的安全意义。", false, List.of()));
+    f.orchestrator.run(AiPlanContinuityServiceTests.automatic("介绍HTTP响应头", "qa"));
+    f.proposal.set(new AiPlanResponse("langchain-grounded", "model", "接着解释CSP的作用。", false, List.of()));
+    var response = f.orchestrator.run(AiPlanContinuityServiceTests.automatic("继续", "continue-explanation"));
+    assertThat(response.message()).contains("CSP");
+    assertThat(response.plan().steps()).isEmpty();
+    assertThat(response.approvalId()).isNull();
+    verifyNoInteractions(f.approvals);
+    verify(f.tools, never()).executeAuthorizedPlan(any(), any());
+  }
+  @ParameterizedTest
+  @ValueSource(strings = {"继续", "接着来", "照这个来"})
+  void naturalFollowUpRequestsApprovalForTheUnchangedLatestPlan(String current) throws Exception {
+    Fixture f = new Fixture();
+    f.run(false);
+    f.executionDecision.set("EXECUTE");
+    var response = f.orchestrator.run(AiPlanContinuityServiceTests.automatic(current, "continue-turn"));
+    assertThat(response.approvalId()).isEqualTo(777L);
+    assertThat(response.plan()).isEqualTo(f.proposal.get());
+    assertThat(response.taskIds()).isEmpty();
+    assertThat(f.base.memory.recentChatMessages("session").stream()
+        .filter(message -> "user".equals(message.get("role"))).toList().get(1).get("content"))
+        .isEqualTo(current).doesNotContain("历史和引用");
+    verify(f.tools, never()).executeAuthorizedPlan(any(), any());
+  }
+
+  @Test
+  void naturalContinueCannotAuthorizeModelDriftButAnExplicitNewToolRequestCan() throws Exception {
+    Fixture f = new Fixture();
+    f.run(false);
+    f.executionDecision.set("EXECUTE");
+    f.proposal.set(AiPlanContinuityServiceTests.withDirectoryScan());
+    assertThatThrownBy(() -> f.orchestrator.run(AiPlanContinuityServiceTests.automatic("继续", "continue-turn")))
+        .isInstanceOf(AiPlanContinuityService.PlanChangedException.class);
+    verifyNoInteractions(f.approvals);
+    var response = f.orchestrator.run(AiPlanContinuityServiceTests.automatic("目录也扫一下", "directory-turn"));
+    assertThat(response.approvalId()).isEqualTo(777L);
+    assertThat(response.plan().steps()).hasSize(2);
+    assertThat(response.taskIds()).isEmpty();
+    verify(f.tools, never()).executeAuthorizedPlan(any(), any());
+  }
+
+  @Test
+  void automaticDirectoryScanRevisionCreatesANewApprovalAndNeverDispatchesOrMutatesOldPlan() throws Exception {
+    Fixture f = new Fixture();
+    var original = f.run(true);
+    var oldPlan = original.plan();
+    f.proposal.set(AiPlanContinuityServiceTests.withDirectoryScan());
+    f.executionDecision.set("EXECUTE");
+    var newTicket = new ProjectApproval(); newTicket.setId(778L);
+    when(f.approvals.requestAiPlan(any(), any(), any())).thenReturn(newTicket);
+    var events = new ArrayList<AiAgentEvent>();
+    var revised = f.orchestrator.run(AiPlanContinuityServiceTests.automatic("加上目录扫描", "revision"), events::add);
+    assertThat(revised.approvalId()).isEqualTo(778L).isNotEqualTo(original.approvalId());
+    assertThat(revised.approvalStatus()).isEqualTo("REQUIRED");
+    assertThat(revised.executed()).isFalse();
+    assertThat(revised.taskIds()).isEmpty();
+    assertThat(revised.plan().steps()).extracting(AiPlanResponse.PlanStep::toolCode)
+        .containsExactly("nmap_service_scan", "dir_scan");
+    assertThat(f.base.open().previous().plan()).isEqualTo(revised.plan());
+    assertThat(oldPlan.steps()).hasSize(1);
+    verify(f.runtime).plan(any(), contains("本轮用户原句明确要求修订方案"), any());
+    verify(f.approvals).requestAiPlan(argThat(request -> "revision".equals(request.turnId())), eq(revised.plan()), any());
+    verify(f.tools, never()).executeAuthorizedPlan(any(), any());
+    assertThat(events).anySatisfy(event -> {
+      assertThat(event.type()).isEqualTo("approval");
+      assertThat(event.data()).containsEntry("approvalId", 778L);
+    });
+  }
+
+  @Test
+  void explicitPlanOnlyRevisionSavesLatestPlanWithoutApprovalAndLaterConfirmationRequestsIt() throws Exception {
+    Fixture f = new Fixture();
+    f.run(false);
+    f.proposal.set(AiPlanContinuityServiceTests.withDirectoryScan());
+    var preview = f.orchestrator.run(AiPlanContinuityServiceTests.automatic("先只修改方案，加上目录扫描，不要执行", "preview"));
+    assertThat(preview.approvalId()).isNull();
+    assertThat(preview.approvalStatus()).isEqualTo("NOT_REQUIRED");
+    assertThat(preview.message()).contains("可在当前会话明确说明修改要求");
+    assertThat(preview.plan().steps()).hasSize(2);
+    verifyNoInteractions(f.approvals);
+    f.executionDecision.set("EXECUTE");
+    var confirmed = f.orchestrator.run(AiPlanContinuityServiceTests.automatic("确认执行", "confirm"));
+    assertThat(confirmed.plan()).isEqualTo(preview.plan());
+    assertThat(confirmed.approvalId()).isEqualTo(777L);
+    assertThat(confirmed.taskIds()).isEmpty();
+    verify(f.tools, never()).executeAuthorizedPlan(any(), any());
+  }
+
+  @Test
+  void automaticConfirmationCannotSmuggleANewDirectoryScanViaModelOutput() throws Exception {
+    Fixture f = new Fixture();
+    f.run(false);
+    f.proposal.set(AiPlanContinuityServiceTests.withDirectoryScan());
+    f.executionDecision.set("EXECUTE");
+    assertThatThrownBy(() -> f.orchestrator.run(AiPlanContinuityServiceTests.automatic("确认执行", "confirm")))
+        .isInstanceOf(AiPlanContinuityService.PlanChangedException.class);
+    verifyNoInteractions(f.approvals);
+    assertThat(f.base.open().previous().plan().steps()).hasSize(1);
+    verify(f.tools, never()).executeAuthorizedPlan(any(), any());
+  }
+
+  @Test
   void previousPlanIsServerContextAndChangedExecutionCannotCreateApproval() throws Exception {
     Fixture f = new Fixture();
     f.run(false);
@@ -76,12 +213,13 @@ class AgentPlanContinuityTests {
     Fixture f = new Fixture();
     f.run(false);
     var original = f.base.open().previous();
-    f.proposal.set(AiPlanContinuityServiceTests.plan("service"));
+    f.proposal.set(AiPlanContinuityServiceTests.plan("quick"));
     if (failure.equals("guard")) doThrow(new ApiException("fixture guard error")).when(f.guard).evaluate(any(), any());
     if (failure.equals("review")) when(f.reviewer.review(anyLong(), anyLong(), anyList())).thenThrow(new ApiException("fixture review error"));
     if (failure.equals("audit")) doThrow(new ApiException("fixture audit error")).when(f.audit)
         .recordStructured(anyString(), anyString(), anyLong(), anyMap(), eq("SUCCESS"));
-    assertThatThrownBy(() -> f.orchestrator.run(AiPlanContinuityServiceTests.request(false), event -> {
+    assertThatThrownBy(() -> f.orchestrator.run(AiPlanContinuityServiceTests.automatic(
+        "先只修改方案，把识别模式改成quick，不要执行", "revision"), event -> {
       if (failure.equals("done-sink") && event.type().equals("done")) throw new ApiException("fixture disconnected sink");
     })).isInstanceOf(ApiException.class);
     assertThat(f.base.open().previous()).isEqualTo(original);
@@ -175,6 +313,8 @@ class AgentPlanContinuityTests {
     final ProjectApprovalService approvals = mock(ProjectApprovalService.class);
     final AuditService audit = mock(AuditService.class);
     final AtomicReference<AiPlanResponse> proposal = new AtomicReference<>(AiPlanContinuityServiceTests.plan("service"));
+    final AtomicReference<String> executionDecision = new AtomicReference<>("PLAN_ONLY");
+    final AtomicReference<String> relation = new AtomicReference<>("NONE");
     final AgentOrchestrator orchestrator;
     Fixture() { this(new AiConversationMemoryService(20, 20, 120)); }
     Fixture(AiConversationMemoryService memory) {
@@ -182,14 +322,17 @@ class AgentPlanContinuityTests {
       when(tools.inspectProjectContext(5L, 8L)).thenReturn("Authorized 192.168.136.132 ports80,443");
       when(runtime.enabled()).thenReturn(true);
       when(runtime.plan(any(), anyString(), any())).thenAnswer(ignored ->
-          new AiAgentRuntimeClient.RuntimePlanResult(proposal.get(), proposal.get().summary(), "COMPLETED", "runtime-run",
+          new AiAgentRuntimeClient.RuntimePlanResult(proposal.get(), proposal.get().summary(),
+              proposal.get().requiresConfirmation() ? "APPROVAL_REQUIRED" : "COMPLETED", "runtime-run",
               AiAgentRuntimeClient.POLICY_REVISION, 1,
               new AiAgentRuntimeClient.RuntimeProvenance(1, List.of("ev-a"), "sha256:" + "a".repeat(64),
-                  "langchain-grounded", "EVIDENCE_FINALIZED")));
+                  "langchain-grounded", "EVIDENCE_FINALIZED"), executionDecision.get(), null, relation.get()));
       when(guard.evaluate(any(), any())).thenAnswer(invocation -> {
         var request = (AiAgentRequest) invocation.getArgument(0);
-        return new AiAuthorizationGuard.GuardDecision(request.executionRequested() ? "ALLOWED" : "PLAN_ONLY",
-            request.executionRequested() ? "CONFIRMED_BY_REQUEST" : "NOT_REQUIRED", "guard checked",
+        var plan = (AiPlanResponse) invocation.getArgument(1);
+        boolean needsApproval = plan.steps().stream().anyMatch(AiPlanResponse.PlanStep::requiresApproval);
+        return new AiAuthorizationGuard.GuardDecision(request.executionRequested() ? "ALLOWED" : needsApproval ? "AWAITING_APPROVAL" : "PLAN_ONLY",
+            request.executionRequested() ? "CONFIRMED_BY_REQUEST" : needsApproval ? "REQUIRED" : "NOT_REQUIRED", "guard checked",
             invocation.getArgument(1), 0, 0);
       });
       when(reviewer.review(5L, 8L, List.of())).thenReturn(new AiAgentResponse.AgentReview("NOT_REQUIRED", "no tasks", false, List.of()));

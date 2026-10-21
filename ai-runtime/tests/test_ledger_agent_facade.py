@@ -315,6 +315,7 @@ def test_result_excludes_sensitive_data(tmp_path: Any) -> None:
         "evidenceIds",
         "proposedActions",
         "terminationReason",
+        "planRelation",
         "ledgerDigest",
     }
 

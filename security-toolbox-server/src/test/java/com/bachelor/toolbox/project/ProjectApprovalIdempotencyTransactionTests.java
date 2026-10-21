@@ -176,6 +176,42 @@ class ProjectApprovalIdempotencyTransactionTests {
   }
 
   @Test
+  void directoryScanRevisionGetsANewPendingTicketWithoutChangingAnyEarlierDecision() {
+    for (String status : List.of("PENDING", "APPROVED", "REJECTED")) {
+      var original = service.requestAiPlan(
+          request(project.getId(), target.getId(), "original-" + status), plan(Map.of()), null);
+      if (!"PENDING".equals(status)) {
+        service.decide(project.getId(), original.getId(), status, "Original human decision");
+      }
+      var before = approvals.findById(original.getId()).orElseThrow();
+      var originalRequest = before.getAiRequestJson();
+      var originalPlan = before.getAiPlanJson();
+      var originalComment = before.getComment();
+      var revision = new AiPlanResponse("fixture", "model", "Added directory scan; approval required", true,
+          List.of(plan(Map.of()).steps().get(0),
+              new AiPlanResponse.PlanStep("dir_scan", "Directory scan", "Explicit follow-up request",
+                  Map.of("concurrency", 10), "dir-scan", 1, List.of(), "CAUTION", true, List.of())));
+      var updated = service.requestAiPlan(
+          request(project.getId(), target.getId(), "revision-" + status), revision, null);
+
+      assertThat(updated.getId()).isNotEqualTo(original.getId());
+      assertThat(updated.getAiRequestKey()).isNotEqualTo(before.getAiRequestKey());
+      assertThat(updated.getStatus()).isEqualTo("PENDING");
+      assertThat(updated.getAiDispatchJson()).isNull();
+      assertThat(service.planDetail(project.getId(), updated.getId()).plan().steps())
+          .extracting(AiPlanResponse.PlanStep::toolCode).containsExactly("http_headers", "dir_scan");
+      var unchanged = approvals.findById(original.getId()).orElseThrow();
+      assertThat(unchanged.getStatus()).isEqualTo(status);
+      assertThat(unchanged.getComment()).isEqualTo(originalComment);
+      assertThat(unchanged.getAiRequestJson()).isEqualTo(originalRequest);
+      assertThat(unchanged.getAiPlanJson()).isEqualTo(originalPlan);
+      assertThat(unchanged.getAiDispatchJson()).isNull();
+      assertThat(service.planDetail(project.getId(), original.getId()).plan().steps()).hasSize(1);
+    }
+    assertThat(approvals.count()).isEqualTo(6);
+  }
+
+  @Test
   void sameTurnCannotReuseChangedProjectOrTargetAuthorization() {
     var request = request(project.getId(), target.getId(), "authorization-change");
     service.requestAiPlan(request, plan(Map.of()), null);

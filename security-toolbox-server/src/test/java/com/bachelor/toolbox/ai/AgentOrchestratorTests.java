@@ -818,7 +818,7 @@ class AgentOrchestratorTests {
     // 审批工单号被透传，供前端渲染 HITL 审核卡片。
     assertThat(response.approvalId()).isEqualTo(777L);
     assertThat(response.message()).startsWith("本轮实际状态：已保存执行确认申请 #777，等待管理员确认，尚未创建检测任务。")
-        .contains("http_headers", "本轮已核对的方案参数").doesNotContain("未提交审批申请");
+        .contains("Inspect authorized headers").doesNotContain("未提交审批申请", "```json");
     assertThat(events).noneMatch(event -> event.phase() == AgentPhase.RETEST && "RUNNING".equals(event.status()));
 
     verify(approvalService)
@@ -845,7 +845,8 @@ class AgentOrchestratorTests {
       "已创建审批申请，等待管理员批准后执行。",
       "已生成高风险行动申请，等待管理员审批。建议仅对18888端口进行安全模式检查。",
       "建议仅对18888端口进行安全模式检查。需要审批后才能执行。",
-      "历史审批已申请成功。本轮未申请。\n```text\napprovalId=52\n```"
+      "历史审批已申请成功。本轮未申请。\n```text\napprovalId=52\n```",
+      "响应头检查不会修改目标内容。\n已创建审批申请，等待执行。"
   })
   void planOnlyPreservesStructuredPlanWithoutRepeatingUnverifiedActionClaims(String answer) throws Exception {
     var memory = new AiConversationMemoryService(20, 20, 120);
@@ -875,7 +876,9 @@ class AgentOrchestratorTests {
     var response = orchestrator.run(request, events::add);
 
     assertThat(response.message()).startsWith("本轮实际状态：仅生成方案，尚未提交审批申请，未创建检测任务。")
-        .doesNotContain(answer);
+        .doesNotContain("已创建审批申请", "已生成高风险行动申请", "历史审批已申请成功", "approvalId=52");
+    if (answer.startsWith("建议")) assertThat(response.message()).contains(answer);
+    if (answer.startsWith("响应头")) assertThat(response.message()).contains("响应头检查不会修改目标内容。");
     assertThat(response.plan()).isEqualTo(plan);
     assertThat(response.approvalId()).isNull();
     assertThat(response.executed()).isFalse();
