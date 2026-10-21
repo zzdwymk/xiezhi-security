@@ -237,6 +237,7 @@ venv/
 .tmp-*/
 
 # 本地调试页面与运行截图，非应用入口或构建资源。
+/security-toolbox-web/popover-repro/
 /security-toolbox-web/el-tooltip-test.html
 /security-toolbox-web/topology-current.png
 checks.json
