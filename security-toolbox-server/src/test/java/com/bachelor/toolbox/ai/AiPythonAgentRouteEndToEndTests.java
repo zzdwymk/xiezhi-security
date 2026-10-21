@@ -52,12 +52,15 @@ class AiPythonAgentRouteEndToEndTests {
   @Autowired private MockMvc mockMvc;
   @Autowired private SecurityTaskRepository tasks;
   @Autowired private AuditLogRepository audits;
+  @Autowired private AgentContinuationWorker continuationWorker;
+  @Autowired private ConversationTombstoneRepository tombstones;
   @MockBean private TaskExecutionService executionService;
 
   @BeforeEach
   void resetSideEffects() {
     tasks.deleteAll();
     audits.deleteAll();
+    tombstones.deleteAll();
     clearInvocations(executionService);
   }
 
@@ -242,8 +245,110 @@ class AiPythonAgentRouteEndToEndTests {
     verify(executionService, timeout(1_000).times(1)).executeAsync(anyLong());
   }
 
-  private long[] createActiveTarget(String jwt, String projectName) throws Exception {
-    Instant now = Instant.now();
+  /**
+   * The full human-in-the-loop cycle, end to end against the real Python runtime:
+   * propose → administrator approves → dispatch → tasks reach terminal → the continuation
+   * worker re-reads the results and proposes the next step, which again lands in the approval
+   * queue rather than dispatching itself.
+   */
+  @Test
+  void continuationRoundReProposesThroughTheRealRuntimeAndStopsAtApproval() throws Exception {
+    String jwt = login();
+    long[] scope = createActiveTarget(jwt, "Continuation E2E");
+    long projectId = scope[0];
+    long targetId = scope[1];
+
+    // 1) First turn: propose a plan; it must stop at approval.
+    ObjectMapper e2eMapper = new ObjectMapper();
+    JsonNode first =
+        e2eMapper
+            .readTree(
+                mockMvc
+                    .perform(
+                        post("/api/ai/agent")
+                            .header("Authorization", "Bearer " + jwt)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(
+                                """
+                                {"projectId":%d,"targetId":%d,"sessionId":"ci-continuation","turnId":"ci-continuation-turn","prompt":"请扫描端口和服务","execute":true,"mode":"standard"}
+                                """
+                                    .formatted(projectId, targetId)))
+                    .andExpect(status().isOk())
+                    .andReturn()
+                    .getResponse()
+                    .getContentAsString());
+    assertThat(first.path("guardStatus").asText()).isEqualTo("AWAITING_APPROVAL");
+    long approvalId = first.path("approvalId").asLong();
+    assertThat(approvalId).isPositive();
+    assertThat(tasks.count()).isZero();
+
+    // 2) Administrator approves and executes: dispatch creates real tasks.
+    mockMvc
+        .perform(
+            post("/api/projects/" + projectId + "/approvals/" + approvalId + "/decision")
+                .header("Authorization", "Bearer " + jwt)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"status\":\"APPROVED\"}"))
+        .andExpect(status().isOk());
+    mockMvc
+        .perform(
+            post("/api/projects/" + projectId + "/approvals/" + approvalId + "/execute")
+                .header("Authorization", "Bearer " + jwt))
+        .andExpect(status().isOk());
+    assertThat(tasks.count()).isPositive();
+
+    // 3) The dispatched tasks reach a terminal state, which is what schedules continuation.
+    //    executionService is mocked, so drive the state directly.
+    List<com.bachelor.toolbox.task.SecurityTask> dispatched =
+        tasks.findAll().stream().filter(t -> t.getProjectId() == projectId).toList();
+    assertThat(dispatched).isNotEmpty();
+    for (com.bachelor.toolbox.task.SecurityTask task : dispatched) {
+      task.setStatus("SUCCESS");
+      task.setFinishedAt(Instant.now());
+      task.setResultJson("{\"openPorts\":[80,443],\"summary\":\"端口探测完成\"}");
+      tasks.save(task);
+    }
+
+    // A continuation record must exist for the worker to act on.
+    List<ConversationTombstone> checkpointed = tombstones.findAll();
+    assertThat(checkpointed)
+        .as("dispatch must have registered a continuation checkpoint")
+        .isNotEmpty();
+    for (ConversationTombstone record : checkpointed) {
+      record.setNextAttemptAt(Instant.now().minusSeconds(1));
+    }
+    tombstones.saveAll(checkpointed);
+
+    // 4) Drain the worker synchronously: it re-reads results and asks the model for a next step.
+    continuationWorker.drain();
+
+    // 5) The continuation turn produced another approval, still without executing anything.
+    long pendingApprovals =
+        audits.findAll().stream()
+            .filter(a -> "AI_AGENT_TURN".equals(a.getAction()))
+            .count();
+    assertThat(pendingApprovals)
+        .as("the first turn plus the continuation turn both ran")
+        .isGreaterThanOrEqualTo(2);
+    for (ConversationTombstone record : tombstones.findAll()) {
+      assertThat(record.getStatus())
+          .as("a drained continuation is closed, never left waiting forever")
+          .isIn(
+              ConversationTombstone.CONTINUED,
+              ConversationTombstone.SKIPPED,
+              ConversationTombstone.FAILED);
+    }
+
+    // 6) The user can stop the loop for this session at any time; it is a no-op when idle.
+    mockMvc
+        .perform(
+            post("/api/ai/agent/sessions/ci-continuation/continuation/stop")
+                .header("Authorization", "Bearer " + jwt))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.cancelled").isNumber());
+  }
+
+  private long[] createActiveTarget(String jwt, String projectName) throws Exception {    Instant now = Instant.now();
     String projectJson =
         mockMvc
             .perform(

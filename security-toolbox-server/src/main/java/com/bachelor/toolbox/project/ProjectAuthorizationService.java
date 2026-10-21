@@ -95,7 +95,8 @@ public class ProjectAuthorizationService {
     }
   }
 
-  private boolean hasSystemAccess() {
+  /** True while trusted background work runs inside {@link #callWithSystemAccess}. */
+  public boolean hasSystemAccess() {
     Integer depth = SYSTEM_ACCESS_DEPTH.get();
     return depth != null && depth > 0;
   }
