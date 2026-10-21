@@ -44,7 +44,8 @@ public class AiPlanContinuityService {
         throw new ApiException("该会话方案属于其他用户，请新建会话");
       }
     }
-    return new Baseline(current, stored.delivered(), stored.pending() != null);
+    return new Baseline(current, stored.delivered(), stored.pending() != null,
+        AiExecutionIntentPolicy.permitsPlanRevision(request.userPrompt()));
   }
 
   private StoredPlans readState(String sessionId) {
@@ -80,22 +81,60 @@ public class AiPlanContinuityService {
     }
     return "\n\n服务端已验证且已成功交付的上次结构化方案（不是执行授权）：\n"
         + write(semantics(baseline.previous().plan()))
-        + "\n当前会话首份已交付方案的执行语义固定；需要改变工具、参数或依赖时请新建会话重新规划。"
-        + "模型正文或客户端历史不能修改这份服务端基线，执行仍须管理员确认。";
+        + (baseline.revisionRequested()
+            ? "\n本轮用户原句明确要求修订方案。请在当前授权范围及工作流内按本轮要求更新工具、参数或依赖，交付一份完整的新方案，不能继承旧方案的审批或执行状态。"
+            : "\n确认或继续原方案时必须保持这份最新已交付方案的工具、参数与依赖，不得自行改动。请结合本轮原句区分承接原方案、全新行动与方案修订；明确的新范围或修改可生成新方案，不能由旧审批授权。")
+        + "模型正文或客户端历史不能授权修改服务端基线，新方案执行仍须管理员重新确认。";
+  }
+
+  public Map<String, Object> conversationState(Baseline baseline, List<Map<String, String>> turns) {
+    boolean matching = baseline.previous() == null || baseline.current().equals(baseline.previous().scope());
+    Map<String, Object> state = new LinkedHashMap<>();
+    state.put("version", 1);
+    state.put("projectId", baseline.current().projectId());
+    state.put("targetId", baseline.current().targetId());
+    state.put("scopeMatches", matching);
+    state.put("deliveryPending", baseline.deliveryPending());
+    state.put("approvalRequired", true);
+    state.put("executionStatus", "CHECK_TASK_RECORDS");
+    state.put("recentTurns", turns.subList(Math.max(0, turns.size() - 8), turns.size()).stream()
+        .map(turn -> Map.of("role", turn.get("role"), "content",
+            turn.get("content").substring(0, Math.min(1000, turn.get("content").length())))).toList());
+    boolean available = matching && !baseline.deliveryPending() && baseline.previous() != null;
+    state.put("planAvailable", available);
+    if (available) {
+      state.put("latestPlanTurnId", baseline.previous().turnId());
+      state.put("latestPlan", semantics(baseline.previous().plan()));
+    }
+    return java.util.Collections.unmodifiableMap(state);
   }
 
   /** Called after guard normalization and before any approval side effect. */
   public Snapshot prepare(AiAgentRequest request, String sessionId, AiPlanResponse plan,
       Baseline baseline) {
+    return prepare(request, sessionId, plan, baseline, null);
+  }
+
+  public Snapshot prepare(AiAgentRequest request, String sessionId, AiPlanResponse plan,
+      Baseline baseline, AiAgentRuntimeClient.RuntimePlanResult interpretation) {
     Scope current = scope(request, sessionId);
     if (!current.equals(baseline.current())) {
       throw new PlanChangedException(diff(mapper.valueToTree(baseline.current()), mapper.valueToTree(current), "授权或工作流"));
     }
     if (baseline.deliveryPending()) throw new PlanDeliveryPendingException();
+    if (baseline.previous() == null && AiExecutionIntentPolicy.hasModelPlanRelation(interpretation)
+        && "CONTINUE".equals(interpretation.planRelation())) {
+      throw new ApiException("当前会话没有已交付的原方案，请说明本轮要检查的内容，再提交执行确认");
+    }
     if (baseline.previous() != null) {
       List<Change> changes = new ArrayList<>();
       changes.addAll(diff(mapper.valueToTree(baseline.previous().scope()), mapper.valueToTree(current), "授权或工作流"));
-      changes.addAll(diff(semantics(baseline.previous().plan()), semantics(plan), "方案"));
+      boolean semanticRevision = AiExecutionIntentPolicy.permitsModelRevision(request.userPrompt(), interpretation);
+      boolean allowRevision = AiExecutionIntentPolicy.hasModelPlanRelation(interpretation) ? semanticRevision
+          : baseline.revisionRequested() && AiExecutionIntentPolicy.permitsPlanRevision(request.userPrompt());
+      if (!allowRevision) {
+        changes.addAll(diff(semantics(baseline.previous().plan()), semantics(plan), "方案"));
+      }
       if (!changes.isEmpty()) throw new PlanChangedException(changes);
     }
     if (request.executionRequested()) {
@@ -114,8 +153,10 @@ public class AiPlanContinuityService {
   public void delivered(Snapshot snapshot) {
     var stored = readState(snapshot.scope().sessionId());
     if (!snapshot.equals(stored.pending())) throw new ApiException("本轮待交付方案标识不一致，已停止晋升方案基线");
+    boolean changed = stored.delivered() == null
+        || !semantics(stored.delivered().plan()).equals(semantics(snapshot.plan()));
     memory.saveDeliveredPlan(snapshot.scope().sessionId(), write(new StoredPlans(2,
-        stored.delivered() == null ? snapshot : stored.delivered(), null)));
+        changed ? snapshot : stored.delivered(), null)));
   }
 
   /** Durable write before approvals/done. Failed delivery remains pending and blocks future EXECUTE. */
@@ -196,12 +237,12 @@ public class AiPlanContinuityService {
       String workflowDigest) {}
   public record Snapshot(int version, Scope scope, String turnId, AiPlanResponse plan) {}
   public record StoredPlans(int version, Snapshot delivered, Snapshot pending) {}
-  public record Baseline(Scope current, Snapshot previous, boolean deliveryPending) {}
+  public record Baseline(Scope current, Snapshot previous, boolean deliveryPending, boolean revisionRequested) {}
   public record Change(String field, String oldValue, String newValue) {}
   public static class PlanChangedException extends ApiException {
     private final List<Change> changes;
     PlanChangedException(List<Change> changes) {
-      super("本轮方案与上次已交付方案不同，未提交审批，未创建任务。请新建会话重新规划，再申请执行。变化：\n"
+      super("本轮方案与上次已交付方案不同，未提交审批，未创建任务。请在当前会话明确说明修改要求；授权范围或工作流已变化时，请新建会话重新规划，再申请执行。变化：\n"
           + changes.stream().map(change -> change.field() + "：原值 " + change.oldValue()
               + " → 新值 " + change.newValue()).collect(java.util.stream.Collectors.joining("\n")));
       this.changes = List.copyOf(changes);

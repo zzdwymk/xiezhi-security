@@ -23,7 +23,7 @@ public record AiAgentRequest(
     @NotNull(message = "目标 ID 不能为空") Long targetId,
     @Pattern(regexp = "[A-Za-z0-9_-]{1,64}", message = "会话 ID 只能包含字母、数字、下划线和连字符，长度为 1-64 个字符")
         String sessionId,
-    @NotBlank(message = "提示内容不能为空") @Size(max = 4000, message = "提示内容长度不得超过 4000 个字符")
+    @NotBlank(message = "提示内容不能为空") @Size(max = 20000, message = "对话上下文长度不得超过 20000 个字符")
         String prompt,
     Boolean execute,
     AiPlanRequest.ContextRefs contextRefs,

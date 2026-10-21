@@ -38,6 +38,17 @@ import org.springframework.web.client.RestClient;
 @Component
 public class AiAgentRuntimeClient {
   private final ThreadLocal<Consumer<PublicProgress>> publicProgressSink = new ThreadLocal<>();
+  private final ThreadLocal<Map<String, Object>> conversationState = new ThreadLocal<>();
+
+  /** Only the server orchestrator supplies this context; it never carries execution permission. */
+  public ProgressScope withConversationState(Map<String, Object> state) {
+    Map<String, Object> previous = conversationState.get();
+    conversationState.set(Map.copyOf(state));
+    return () -> {
+      if (previous == null) conversationState.remove();
+      else conversationState.set(previous);
+    };
+  }
 
   /** Presentation-only, request-local hints; never a plan, ledger entry, or execution permission. */
   public ProgressScope observePublicProgress(Consumer<PublicProgress> sink) {
@@ -106,6 +117,7 @@ public class AiAgentRuntimeClient {
   private final AgentLedgerService ledger;
   private final ObjectMapper canonicalMapper;
   private final int maxActions;
+  private final int maxTargetActions;
 
   @Autowired
   public AiAgentRuntimeClient(
@@ -122,6 +134,7 @@ public class AiAgentRuntimeClient {
           String projectSigningSecret,
       @Value("${toolbox.ai.agent.runtime-timeout-seconds:120}") int timeoutSeconds,
       @Value("${toolbox.ai.agent.max-active-tasks-per-project:20}") int maxActions,
+      @Value("${toolbox.ai.agent.max-active-tasks-per-target:4}") int maxTargetActions,
       AgentLedgerService ledger) {
     this.objectMapper = objectMapper;
     this.projects = projects;
@@ -137,6 +150,7 @@ public class AiAgentRuntimeClient {
     this.enabled =
         enabled && !this.token.isBlank() && !this.projectSigningSecret.isBlank();
     this.maxActions = Math.max(1, maxActions);
+    this.maxTargetActions = Math.max(1, maxTargetActions);
     String baseUrl =
         configuredBaseUrl == null || configuredBaseUrl.isBlank()
             ? "http://127.0.0.1:" + Math.max(1, Math.min(port, 65535))
@@ -152,6 +166,24 @@ public class AiAgentRuntimeClient {
             .baseUrl(stripTrailingSlash(baseUrl))
             .requestFactory(requestFactory)
             .build();
+  }
+
+  public AiAgentRuntimeClient(
+      ObjectMapper objectMapper,
+      AssessmentProjectService projects,
+      TargetService targets,
+      SecurityTaskRepository tasks,
+      AgentWorkflowSpecService workflowSpecs,
+      boolean enabled,
+      String configuredBaseUrl,
+      int port,
+      String token,
+      String projectSigningSecret,
+      int timeoutSeconds,
+      int maxActions,
+      AgentLedgerService ledger) {
+    this(objectMapper, projects, targets, tasks, workflowSpecs, enabled, configuredBaseUrl,
+        port, token, projectSigningSecret, timeoutSeconds, maxActions, 4, ledger);
   }
 
   public AiAgentRuntimeClient(
@@ -619,7 +651,6 @@ public class AiAgentRuntimeClient {
     Consumer<RuntimeEvent> sink = eventSink == null ? ignored -> {} : eventSink;
     AssessmentProject project = projects.get(request.projectId());
     AuthorizedTarget target = targets.getCurrentlyAuthorized(request.targetId());
-    long usedActions = tasks.countByProjectIdAndStatusIn(request.projectId(), ACTIVE_TASK_STATUSES);
 
     Map<String, Object> authorization = new LinkedHashMap<>();
     authorization.put("status", project.getStatus());
@@ -629,9 +660,7 @@ public class AiAgentRuntimeClient {
     authorization.put("approved", request.executionRequested());
     authorization.put("validFrom", project.getAuthorizationValidFrom());
     authorization.put("expiresAt", project.getAuthorizationExpiresAt());
-    authorization.put(
-        "quota",
-        Map.of("maxActions", maxActions, "usedActions", Math.min(usedActions, maxActions)));
+    authorization.put("quota", planningQuota(request));
     authorization.put("policyRevision", POLICY_REVISION);
 
     Map<String, Object> body = new LinkedHashMap<>();
@@ -650,6 +679,13 @@ public class AiAgentRuntimeClient {
       body.put("currentUserRequest", request.userPrompt());
     }
     body.put("messages", buildPlannerMessages(request, prompt, scopeContext(target, project)));
+    Map<String, Object> state = conversationState.get();
+    if (state != null && !state.isEmpty()) {
+      if (!request.projectId().equals(state.get("projectId")) || !request.targetId().equals(state.get("targetId"))) {
+        throw new RuntimeProtocolException("会话状态与本轮项目或目标不一致");
+      }
+      body.put("conversationState", state);
+    }
     body.put("authorization", authorization);
     body.put("workflowId", request.workflowId());
     body.put("workflowRevision", request.workflowRevision());
@@ -730,7 +766,7 @@ public class AiAgentRuntimeClient {
         runId,
         POLICY_REVISION,
         holder.stateVersion,
-       holder.provenance(), holder.executionDecision, holder.modelUsage);
+       holder.provenance(), holder.executionDecision, holder.modelUsage, holder.planRelation);
  }
 
   /**
@@ -783,7 +819,7 @@ public class AiAgentRuntimeClient {
         runId,
         POLICY_REVISION,
         holder.stateVersion,
-        holder.provenance(), holder.executionDecision, holder.modelUsage);
+        holder.provenance(), holder.executionDecision, holder.modelUsage, holder.planRelation);
   }
 
   /** Persist a bounded continuation tombstone in the local runtime after Java creates tasks. */
@@ -825,6 +861,20 @@ public class AiAgentRuntimeClient {
     } catch (Exception ex) {
       throw new RuntimeUnavailableException("AI Runtime 续接请求失败", ex);
     }
+  }
+
+  Map<String, Integer> planningQuota(AiAgentRequest request) {
+    long projectUsed = Math.max(0,
+        tasks.countByProjectIdAndStatusIn(request.projectId(), ACTIVE_TASK_STATUSES));
+    long targetUsed = Math.max(0,
+        tasks.countByTargetIdAndStatusIn(request.targetId(), ACTIVE_TASK_STATUSES));
+    int capacity = Math.min(AiTaskDispatchService.MAX_TASKS_PER_DISPATCH,
+        Math.min(maxActions, maxTargetActions));
+    long remaining = Math.max(0,
+        Math.min(capacity, Math.min(maxActions - projectUsed, maxTargetActions - targetUsed)));
+    // Keep the existing runtime contract, but encode the tightest shared budget.
+    // This is only a planning snapshot; the locked execution guard rechecks it.
+    return Map.of("maxActions", capacity, "usedActions", capacity - (int) remaining);
   }
 
   private List<Map<String, Object>> buildPlannerMessages(
@@ -1863,15 +1913,22 @@ public class AiAgentRuntimeClient {
       int stateVersion,
       RuntimeProvenance provenance,
       String executionDecision,
-      Map<String, Object> modelUsage) {
+      Map<String, Object> modelUsage,
+      String planRelation) {
+    public RuntimePlanResult(AiPlanResponse plan, String answer, String status, String runId,
+        String policyRevision, int stateVersion, RuntimeProvenance provenance, String executionDecision,
+        Map<String, Object> modelUsage) {
+      this(plan, answer, status, runId, policyRevision, stateVersion, provenance, executionDecision, modelUsage, "NONE");
+    }
+
     public RuntimePlanResult(AiPlanResponse plan, String answer, String status, String runId,
         String policyRevision, int stateVersion, RuntimeProvenance provenance) {
-      this(plan, answer, status, runId, policyRevision, stateVersion, provenance, null, null);
+      this(plan, answer, status, runId, policyRevision, stateVersion, provenance, null, null, "NONE");
     }
 
     public RuntimePlanResult(AiPlanResponse plan, String answer, String status, String runId,
         String policyRevision, int stateVersion, RuntimeProvenance provenance, String executionDecision) {
-      this(plan, answer, status, runId, policyRevision, stateVersion, provenance, executionDecision, null);
+      this(plan, answer, status, runId, policyRevision, stateVersion, provenance, executionDecision, null, "NONE");
     }
   }
 
@@ -1931,6 +1988,7 @@ public class AiAgentRuntimeClient {
     private String routeFailureCode = "";
     private String routeIntent = "";
     private String executionDecision = "";
+    private String planRelation = "NONE";
     private String lastEvidenceQuery = "";
     private String rewrittenQuery = "";
     private String lastEvidenceStatus = "";
@@ -2074,7 +2132,7 @@ public class AiAgentRuntimeClient {
       }
       requireFields(
           data,
-          Set.of("status", "intent", "needsRetrieval", "retrievalQuery", "publicReasonCode", "failureCode", "executionDecision"),
+          Set.of("status", "intent", "needsRetrieval", "retrievalQuery", "publicReasonCode", "failureCode", "executionDecision", "planRelation"),
           Set.of("status", "intent", "needsRetrieval", "publicReasonCode"),
           "route data");
       String status = strictText(data, "status", 16);
@@ -2090,6 +2148,13 @@ public class AiAgentRuntimeClient {
         }
       }
       String intent = strictText(data, "intent", 32);
+      if (data.has("planRelation")) {
+        planRelation = strictText(data, "planRelation", 16);
+        if (!Set.of("NONE", "NEW", "CONTINUE", "REVISE").contains(planRelation)
+            || (!"NONE".equals(planRelation) && !"ACTION_PLAN".equals(intent))) {
+          throw new RuntimeProtocolException("AI Runtime planRelation 与路由不一致");
+        }
+      }
       if (data.has("executionDecision")) {
         executionDecision = strictText(data, "executionDecision", 16);
         if (!Set.of("EXECUTE", "PLAN_ONLY", "CLARIFY").contains(executionDecision)
@@ -2778,7 +2843,7 @@ public class AiAgentRuntimeClient {
               "plannerSource",
               "terminationReason",
               "llmCallCount",
-               "modelUsage"),
+               "modelUsage", "planRelation"),
           Set.of(
               "status",
               "answer",
@@ -2791,6 +2856,9 @@ public class AiAgentRuntimeClient {
               "plannerSource",
               "terminationReason"),
           "finish data");
+      if (data.has("planRelation") && !planRelation.equals(strictText(data, "planRelation", 16))) {
+        throw new RuntimeProtocolException("AI Runtime finish planRelation 与路由不一致");
+      }
       // Older runtimes omit this metric. Current runtimes report the actual
       // model calls, bounded by the same budget sent in the request.
       if (data.has("llmCallCount")) {
