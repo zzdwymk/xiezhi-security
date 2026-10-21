@@ -23,6 +23,7 @@ import {
   Plus,
   Promotion,
   Refresh,
+  VideoPause,
 } from "../components/fluentIcons";
 import {
   connectTaskEventFeed,
@@ -2433,8 +2434,24 @@ async function removeCurrentConversation() {
   }
 }
 
-async function clearConversations() {
-  if (!conversations.items.length) return;
+async function stopContinuation() {
+  const thread = selectedThread.value;
+  if (!thread) return;
+  try {
+    const result = await endpoints.stopAgentContinuation(thread.id);
+    const cancelled = result?.data?.cancelled ?? 0;
+    // Already-dispatched work is untouched, so never imply the whole run was cancelled.
+    ElMessage.success(
+      cancelled > 0
+        ? `已停止自动续接，取消了 ${cancelled} 项尚未执行的续接`
+        : "当前没有待执行的自动续接",
+    );
+  } catch (error) {
+    ElMessage.error(readableAiConversationError(error, "停止自动续接失败，请稍后重试"));
+  }
+}
+
+async function clearConversations() {  if (!conversations.items.length) return;
   try {
     await ElMessageBox.confirm(
       "将清空本机保存的全部对话，已经创建的检测任务不会被删除。",
@@ -2584,10 +2601,22 @@ onBeforeUnmount(() => {
               ><Refresh
             /></el-icon></button
         ></el-tooltip>
+        <el-tooltip
+          v-if="selectedThread"
+          content="停止本会话的自动续接（已完成的任务不受影响）"
+          placement="bottom"
+          :show-after="350"
+          ><button
+            class="header-icon-button"
+            type="button"
+            aria-label="停止自动续接"
+            @click="stopContinuation"
+          >
+            <el-icon><VideoPause /></el-icon></button
+        ></el-tooltip>
         <button type="button" @click="startNewConversation">
           <el-icon><Plus /></el-icon>新对话
-        </button>
-        <button
+        </button>        <button
           v-if="selectedThread"
           type="button"
           class="danger"

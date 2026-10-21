@@ -1072,6 +1072,13 @@ export const endpoints = {
       `/ai/agent/sessions/${encodeURIComponent(sessionId)}`,
       { timeout: 45_000 },
     ),
+  // 停止本会话的自动续接：只取消尚未执行的续接记录，已完成的任务不受影响。
+  stopAgentContinuation: (sessionId: string) =>
+    api.post<{ sessionId: string; cancelled: number }>(
+      `/ai/agent/sessions/${encodeURIComponent(sessionId)}/continuation/stop`,
+      undefined,
+      { timeout: 20_000 },
+    ),
   listConversations: () => api.get<any[]>("/ai/conversations", { timeout: 15_000 }),
   saveConversation: (sessionId: string, payload: any) =>
     api.put(`/ai/conversations/${encodeURIComponent(sessionId)}`, payload, { timeout: 20_000 }),

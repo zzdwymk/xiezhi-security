@@ -124,6 +124,34 @@ class CrossTurnRecoveryServiceTests {
   }
 
   @Test
+  void cancelSessionStopsOnlyPendingContinuationsForThatSession() {
+    ConversationTombstone waiting = tombstone();
+    when(tombstones.findIdsBySessionIdAndStatusIn(
+            "conversation-1", List.of(ConversationTombstone.WAITING_TASKS)))
+        .thenReturn(List.of(5L));
+    when(tombstones.findLockedById(5L)).thenReturn(Optional.of(waiting));
+    when(tombstones.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    int cancelled = service.cancelSession("conversation-1");
+
+    assertThat(cancelled).isEqualTo(1);
+    assertThat(waiting.getStatus()).isEqualTo(ConversationTombstone.SKIPPED);
+    assertThat(waiting.getLastError()).contains("用户已停止自动续接");
+    // A skipped record is terminal, so the worker will not pick it up again.
+    assertThat(waiting.getNextAttemptAt()).isNull();
+  }
+
+  @Test
+  void cancelSessionOnUnknownOrBlankSessionIsANoOp() {
+    assertThat(service.cancelSession(" ")).isZero();
+    assertThat(service.cancelSession(null)).isZero();
+    when(tombstones.findIdsBySessionIdAndStatusIn(
+            "empty-session", List.of(ConversationTombstone.WAITING_TASKS)))
+        .thenReturn(List.of());
+    assertThat(service.cancelSession("empty-session")).isZero();
+  }
+
+  @Test
   void claimRejectsCheckpointCreatedWithAnOlderPolicyRevision() {
     ConversationTombstone tombstone = tombstone();
     tombstone.setPolicyRevision("java-authoritative-v0");
