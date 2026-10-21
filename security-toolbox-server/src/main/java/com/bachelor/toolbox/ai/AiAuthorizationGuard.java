@@ -101,11 +101,22 @@ public class AiAuthorizationGuard {
     // Actual tool execution/task creation is the strict authorization boundary.
     projects.validateProjectTarget(request.projectId(), request.targetId());
     targets.getCurrentlyAuthorized(request.targetId());
+    // Waiting cannot free enough slots for a plan larger than either full quota.
+    if (requestedTasks > maxProjectTasks) {
+      throw new ApiException("项目 AI 计划超出任务配额（本次 " + requestedTasks + " 项，上限 "
+          + maxProjectTasks + " 项），请拆分方案后重新确认");
+    }
+    if (requestedTasks > maxTargetTasks) {
+      throw new ApiException("目标 AI 计划超出任务配额（本次 " + requestedTasks + " 项，上限 "
+          + maxTargetTasks + " 项），请拆分方案后重新确认");
+    }
     if (activeProjectTasks + requestedTasks > maxProjectTasks) {
-      throw new ApiException("项目 AI 任务配额不足，请等待现有任务完成");
+      throw new ApiException("项目 AI 任务配额不足（本次 " + requestedTasks + " 项，未结束 "
+          + activeProjectTasks + " 项，上限 " + maxProjectTasks + " 项），请等待现有任务完成后重试");
     }
     if (activeTargetTasks + requestedTasks > maxTargetTasks) {
-      throw new ApiException("目标 AI 任务配额不足，请等待现有任务完成");
+      throw new ApiException("目标 AI 任务配额不足（本次 " + requestedTasks + " 项，未结束 "
+          + activeTargetTasks + " 项，上限 " + maxTargetTasks + " 项），请等待现有任务完成后重试");
     }
     return new GuardDecision(
         "ALLOWED",

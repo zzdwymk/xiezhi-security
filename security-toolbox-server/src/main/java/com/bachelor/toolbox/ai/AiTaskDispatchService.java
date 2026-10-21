@@ -21,7 +21,7 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class AiTaskDispatchService {
-  private static final int MAX_TASKS_PER_DISPATCH = 8;
+  static final int MAX_TASKS_PER_DISPATCH = 8;
   private static final Set<String> SAFE_AI_TOOLS =
       AiToolCatalog.EXECUTABLE_TOOLS;
 

@@ -137,20 +137,24 @@ public class AiConversationMemoryService {
     synchronized (session.monitor) {
       ensureCurrent(sessionId, session);
       session.lastAccess = Instant.now();
-      StringBuilder output = new StringBuilder();
+      Deque<String> recent = new ArrayDeque<>();
+      int characters = 0;
       boolean truncated = false;
-      for (Turn turn : session.turns) {
+      var turns = session.turns.descendingIterator();
+      while (turns.hasNext()) {
+        Turn turn = turns.next();
         String line = (turn.user ? "用户" : "助手") + "：" + turn.text + "\n";
-        if (output.length() + line.length() > MAX_TRANSCRIPT_CHARS) {
-          // 不再截半行：被切断的句子会被当作"有效历史"拼进规划提示词发给模型，
-          // 让模型看到一段没有上下文、可能断在字符中间的伪造历史。
-          // 宁可整轮丢弃，并显式标注已截断。
+        if (characters + line.length() > MAX_TRANSCRIPT_CHARS) {
           truncated = true;
           break;
         }
-        output.append(line);
+        // Budget from the newest end, then restore chronological order without slicing turns.
+        recent.addFirst(line);
+        characters += line.length();
       }
+      StringBuilder output = new StringBuilder();
       if (truncated) output.append("（历史较长，较早的内容已省略）\n");
+      recent.forEach(output::append);
       persist(sessionId, session);
       return output.toString().strip();
     }

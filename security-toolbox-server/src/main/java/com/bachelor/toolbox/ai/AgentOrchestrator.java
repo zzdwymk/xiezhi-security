@@ -206,7 +206,9 @@ public class AgentOrchestrator {
                 request.targetId()));
 
         String history = memory.transcript(session.id());
-        memory.addUser(session.id(), request.prompt());
+        Map<String, Object> conversationState = planContinuity == null ? Map.of()
+            : planContinuity.conversationState(planBaseline, memory.recentChatMessages(session.id()));
+        memory.addUser(session.id(), request.automaticExecutionIntent() ? request.userPrompt() : request.prompt());
         Optional<String> auditTemplate =
             contextService == null
                 ? Optional.empty()
@@ -279,7 +281,7 @@ public class AgentOrchestrator {
                 indexReady));
 
         String planningPrompt =
-            history.isBlank()
+            request.automaticExecutionIntent() || history.isBlank()
                 ? request.prompt()
                 : "以下是同一项目和目标内最近的对话记忆：\n" + history + "\n\n当前请求：" + request.prompt();
         planningPrompt += referencedContext;
@@ -343,6 +345,7 @@ public class AgentOrchestrator {
         String runtimeAnswer = "";
         boolean automaticExecutionAllowed = false;
         boolean automaticExplicitRequest = false;
+        AiAgentRuntimeClient.RuntimePlanResult interpretation = null;
         if (runtimeClient.enabled()) {
           AiAgentRequest runtimeRequest =
               new AiAgentRequest(
@@ -362,7 +365,8 @@ public class AgentOrchestrator {
                   request.nodeRunId(),
                   request.executionIntent(),
                   request.userPrompt());
-          try (AiAgentRuntimeClient.ProgressScope ignored = runtimeClient.observePublicProgress(
+          try (AiAgentRuntimeClient.ProgressScope contextScope = runtimeClient.withConversationState(conversationState);
+               AiAgentRuntimeClient.ProgressScope ignored = runtimeClient.observePublicProgress(
               progress -> emitPublicProgress(sink, sequence, progress))) {
             AiAgentRuntimeClient.RuntimePlanResult runtimeResult =
                 runtimeClient.plan(
@@ -372,6 +376,7 @@ public class AgentOrchestrator {
                       provenance.accept(runtimeEvent);
                       emitRuntimeEvent(sink, sequence, runtimeEvent);
                     });
+            interpretation = runtimeResult;
             proposed = runtimeResult.plan();
             runtimeAnswer = runtimeResult.answer();
             memory.addModelUsage(session.id(), runtimeResult.modelUsage());
@@ -536,7 +541,8 @@ public class AgentOrchestrator {
               decision.normalizedPlan(), decision.activeProjectTasks(), decision.activeTargetTasks());
         }
         AiPlanContinuityService.Snapshot deliveredCandidate = planContinuity == null || !hasSteps(decision.normalizedPlan()) ? null
-            : planContinuity.prepare(executionRequest, session.id(), decision.normalizedPlan(), planBaseline);
+            : planContinuity.prepare(executionRequest, session.id(), decision.normalizedPlan(), planBaseline,
+                request.automaticExecutionIntent() ? interpretation : null);
         if (deliveredCandidate != null) planContinuity.stage(deliveredCandidate);
         Long autoApprovalId = null;
         String autoApprovalJudgeJson = null;
@@ -859,21 +865,29 @@ public class AgentOrchestrator {
     if (approvalId != null) {
       return "本轮实际状态：已保存执行确认申请 #" + approvalId
           + "，等待管理员确认，尚未创建检测任务。"
-          + "请在项目的执行确认与审计中查看原计划并选择确认并执行或拒绝执行，无需重复发送执行指令。\n\n"
-          + reviewedPlanDetails(decision.normalizedPlan());
+          + "请在本轮审批窗口核对后确认，无需重复发送执行指令。\n\n"
+          + reviewedAnswer(summary, decision.normalizedPlan());
     }
     if ("PLAN_ONLY".equals(decision.status()) && hasSteps(decision.normalizedPlan())) {
-      // The model produced this prose before the guard and approval persistence ran.
-      // Keep the structured plan on the response, without repeating unverified claims
-      // about side effects in the message, event stream, or conversation memory.
       return "本轮实际状态：仅生成方案，尚未提交审批申请，未创建检测任务。"
-          + "申请执行时会核对本轮方案；如需改变参数，请新建会话重新规划。所有聊天检测方案执行前均须管理员确认。\n\n"
-          + reviewedPlanDetails(decision.normalizedPlan());
+          + "如需调整，可在当前会话明确说明修改要求；执行仍须确认。\n\n"
+          + reviewedAnswer(summary, decision.normalizedPlan());
     }
     if ("REQUIRED".equals(decision.approvalStatus())) {
       return summary + "\n\n计划已经授权守卫复核，确认执行后才会创建任务。";
     }
     return summary;
+  }
+
+  private String reviewedAnswer(String answer, AiPlanResponse plan) {
+    // The model cannot know approval/task side effects that happen after its call.
+    String analysis = answer.replaceAll("(?s)```.*?```", "").lines()
+        .filter(line -> !line.matches("(?i).*(?:已(?:经)?(?:创建|生成|执行|提交|保存|申请|派发|完成)|无需.{0,8}(?:审批|确认)|"
+            + "(?:已经|已)(?:扫描|检测|运行)|(?:approval|task)\\s*(?:id\\s*[=:]|created|approved)|"
+            + "(?:have|has)\\s+(?:executed|dispatched|created)|I\\s+(?:ran|executed)).*"))
+        .filter(line -> !line.strip().startsWith("{") && !line.strip().startsWith("["))
+        .collect(java.util.stream.Collectors.joining("\n")).strip();
+    return analysis.isBlank() ? reviewedPlanDetails(plan) : analysis;
   }
 
   private String reviewedPlanDetails(AiPlanResponse plan) {
