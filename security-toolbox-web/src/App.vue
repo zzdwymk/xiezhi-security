@@ -34,7 +34,7 @@ import { useAuthStore } from "./stores/auth";
 import { useConversationStore } from "./stores/conversations";
 import { conversationStatusBadge } from "./utils/aiStatus";
 import { useEngineStore } from "./stores/engine";
-import { AUTH_EXPIRED_EVENT } from "./authToken";
+import { AUTH_EXPIRED_EVENT, readAuthToken } from "./authToken";
 import { endpoints } from "./api";
 import { apiFetch, apiUrl, apiBaseUrl } from "./apiClient";
 import { startNotificationFeed, type NotificationPage } from "./utils/notificationFeed";
@@ -434,9 +434,72 @@ function conversationStatus(conversation: any): { label: string; type: "running"
   if (!messages.length) return null;
   const lastAssistant = [...messages].reverse().find((m: any) => m.role === "assistant");
   if (!lastAssistant) return null;
-  const badge = conversationStatusBadge(lastAssistant, [], Date.now());
+  // 传入真实的关联任务状态：仅凭消息自身的 stream 状态无法反映“回答已结束但检测任务仍在运行”，
+  // 会导致正在进行中的会话在侧边栏没有任何标识。任务状态由 Dashboard 轮询后写入 store。
+  const relatedTasks = (lastAssistant.taskIds || [])
+    .map((id: number) => conversations.taskStates[id])
+    .filter((task: any): task is NonNullable<typeof task> => Boolean(task));
+  const badge = conversationStatusBadge(lastAssistant, relatedTasks, Date.now());
   if (badge && badge.type === "completed" && lastAssistant.completionSeen) return null;
+  if (badge && badge.type === "running") {
+    // 区分“模型仍在作答”与“回答已结束、仅检测任务仍在排队/执行”，让侧边栏标签更准确。
+    const modelStreaming =
+      lastAssistant.modelStreamStatus === "running" ||
+      ["sending", "planning", "running", "answering"].includes(lastAssistant.status);
+    const taskActive = relatedTasks.some(
+      (task: any) => !["SUCCESS", "FAILED", "TIMEOUT", "REJECTED", "CANCELLED", "SKIPPED"].includes(task.status),
+    );
+    if (!modelStreaming && taskActive) return { label: "任务进行中", type: "running" };
+  }
   return badge;
+}
+
+// 侧边栏会话标识依赖任务实时状态。Dashboard 派发任务后会轮询任务列表并写入 store，
+// 但切换到其它路由时 Dashboard 会卸载、轮询停止。这里在应用外壳上做一次轻量补充轮询：
+// 仅当存在尚未结束的关联任务时才拉取，保证侧边栏在任何页面都能反映“任务仍在进行中”。
+const TASK_STATE_POLL_MS = 10_000;
+let taskStatePollTimer: ReturnType<typeof setTimeout> | undefined;
+let taskStatePolling = false;
+
+async function refreshTaskStates() {
+  if (taskStatePolling) return;
+  const hasPending = conversations.items.some((conversation) =>
+    (conversation.messages || []).some(
+      (message: any) =>
+        message.role === "assistant" &&
+        (message.taskIds || []).some((id: number) => {
+          const status = conversations.taskStates[id]?.status;
+          return !status || !["SUCCESS", "FAILED", "TIMEOUT", "REJECTED", "CANCELLED", "SKIPPED"].includes(status);
+        }),
+    ),
+  );
+  if (!hasPending) return;
+  taskStatePolling = true;
+  try {
+    const token = readAuthToken();
+    const response = await apiFetch(apiUrl("tasks"), {
+      headers: token
+        ? { Authorization: `Bearer ${token}`, Accept: "application/json" }
+        : { Accept: "application/json" },
+    });
+    if (response.ok) {
+      const list = (await response.json()) as Array<{
+        id: number;
+        toolCode: string;
+        status: string;
+        progressMessage?: string;
+        errorMessage?: string;
+        startedAt?: string;
+        finishedAt?: string;
+        createdAt: string;
+      }>;
+      if (Array.isArray(list)) conversations.setTaskStates(list);
+    }
+  } catch {
+    // 任务状态补充轮询失败不打断界面；Dashboard 轮询仍会在会话页纠正。
+  } finally {
+    taskStatePolling = false;
+  }
 }
 
 async function removeConversation(id: string) {
@@ -771,10 +834,20 @@ onMounted(() => {
     window.addEventListener("blur", hideFluentTooltip);
     tooltipListenersAttached = true;
   }
+
+  void refreshTaskStates();
+  const scheduleTaskStatePoll = () => {
+    taskStatePollTimer = setTimeout(async () => {
+      await refreshTaskStates();
+      scheduleTaskStatePoll();
+    }, TASK_STATE_POLL_MS);
+  };
+  scheduleTaskStatePoll();
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("pointermove", onGlobalCursorMove);
+  if (taskStatePollTimer) clearTimeout(taskStatePollTimer);
   if (mouseMoveRaf) window.cancelAnimationFrame(mouseMoveRaf);
   notificationSession += 1;
   stopNotifications?.();
