@@ -858,7 +858,9 @@ class LedgerAgentBudget(BaseModel):
     """Finite defensive budgets supplied with one LedgerAgent node run."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
-    maxRetrievalRounds: StrictInt = Field(default=2, ge=1, le=2)
+    # Ceiling matches the runtime's own configurable maximum so a caller cannot
+    # silently pin retrieval below what AI_RUNTIME_MAX_RETRIEVAL_ROUNDS allows.
+    maxRetrievalRounds: StrictInt = Field(default=3, ge=1, le=4)
     maxLlmCalls: StrictInt = Field(default=4, ge=1, le=8)
     timeoutSeconds: StrictInt = Field(default=30, ge=5, le=120)
 

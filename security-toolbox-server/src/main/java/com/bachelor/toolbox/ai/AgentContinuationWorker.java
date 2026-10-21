@@ -46,7 +46,7 @@ public class AgentContinuationWorker {
       AgentWorkflowSpecService workflows,
       ProjectAuthorizationService authorization,
       @Value("${toolbox.ai.agent.continuation-enabled:true}") boolean enabled,
-      @Value("${toolbox.ai.agent.max-continuation-rounds:3}") int maxContinuationRounds) {
+      @Value("${toolbox.ai.agent.max-continuation-rounds:5}") int maxContinuationRounds) {
     this.recovery = recovery;
     this.tasks = tasks;
     this.runtime = runtime;
@@ -195,8 +195,11 @@ public class AgentContinuationWorker {
           + taskList;
     }
     return "原 Agent 回合创建的受控任务已经全部进入终态。请先读取服务端任务结果、Finding 与审计上下文，"
-        + "判断是否还需要进一步验证。如果需要，请按当前工作流可用的工具提出下一步检测动作，"
-        + "说明依据的是哪一条已有证据；如果证据已充分或继续测试没有价值，请直接给出总结并结束，不要为了继续而编造步骤。"
+        + "以这些真实结果为基础重新评估当前目标的安全状况。"
+        + "如果结果中还有值得继续核实的问题，"
+        + "请按当前工作流可用的工具提出下一步检测动作，并说明这一步依据的是哪一条已有证据；"
+        + "如果结果已经足够支撑结论、或继续检测不会带来新信息，再给出总结并结束。"
+        + "是否需要继续由结果本身决定，不要因为「已经扫过一轮」就默认收尾。"
         + "说明：你提出的任何动作都不会直接执行，会先经过授权与参数护栏校验、语义风险判定，"
         + "并由管理员在执行确认中逐次批准；未被批准的动作不会产生任何任务。任务 ID："
         + taskList;

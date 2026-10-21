@@ -91,7 +91,7 @@ class AiPlanningQuotaTests {
       int port = server.getAddress().getPort();
       AiAgentRuntimeClient client = new AiAgentRuntimeClient(mapper, projects, targets, tasks,
           mock(AgentWorkflowSpecService.class), true, "http://127.0.0.1:" + port, port,
-          "test-token", "test-signing-secret", 30, 20, 4, null);
+          "test-token", "test-signing-secret", 30, 20, 4, 3, null);
       AiAgentRequest bound = new AiAgentRequest(7L, 9L, "quota-test", "quota-test", false,
           null, List.of(), "standard", "quota-turn", "quota-workflow", 1L,
           "sha256:" + "a".repeat(64), "quota-node", "quota-node-run");
@@ -129,7 +129,7 @@ class AiPlanningQuotaTests {
     AiAgentRuntimeClient client = new AiAgentRuntimeClient(new ObjectMapper(),
         mock(AssessmentProjectService.class), mock(TargetService.class), tasks,
         mock(AgentWorkflowSpecService.class), false, "http://127.0.0.1:8090", 8090,
-        "", "", 30, projectLimit, targetLimit, null);
+        "", "", 30, projectLimit, targetLimit, 3, null);
     return client.planningQuota(request);
   }
 }

@@ -117,6 +117,10 @@ toolbox:
       session-ttl-minutes: ${AI_AGENT_SESSION_TTL_MINUTES:120}
       max-active-tasks-per-project: ${AI_AGENT_MAX_ACTIVE_TASKS_PER_PROJECT:20}
       max-active-tasks-per-target: ${AI_AGENT_MAX_ACTIVE_TASKS_PER_TARGET:4}
+      # 规划阶段允许的检索轮次上限。原先在 AiAgentRuntimeClient 里硬编码为 2，
+      # 覆盖了 AI Runtime 自己的默认值，导致「一次改写后仍不足」时直接收尾。
+      # 现改为配置，与 AI_RUNTIME_MAX_RETRIEVAL_ROUNDS 采用同一语义区间 1..4。
+      max-retrieval-rounds: ${AI_AGENT_MAX_RETRIEVAL_ROUNDS:3}
   execution:
     max-concurrent-tasks: ${MAX_CONCURRENT_TASKS:3}
     max-concurrent-tasks-per-target: ${MAX_CONCURRENT_TASKS_PER_TARGET:1}
