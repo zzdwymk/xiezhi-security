@@ -118,6 +118,7 @@ public class AiAgentRuntimeClient {
   private final ObjectMapper canonicalMapper;
   private final int maxActions;
   private final int maxTargetActions;
+  private final int maxRetrievalRounds;
 
   @Autowired
   public AiAgentRuntimeClient(
@@ -135,6 +136,7 @@ public class AiAgentRuntimeClient {
       @Value("${toolbox.ai.agent.runtime-timeout-seconds:120}") int timeoutSeconds,
       @Value("${toolbox.ai.agent.max-active-tasks-per-project:20}") int maxActions,
       @Value("${toolbox.ai.agent.max-active-tasks-per-target:4}") int maxTargetActions,
+      @Value("${toolbox.ai.agent.max-retrieval-rounds:3}") int maxRetrievalRounds,
       AgentLedgerService ledger) {
     this.objectMapper = objectMapper;
     this.projects = projects;
@@ -151,6 +153,9 @@ public class AiAgentRuntimeClient {
         enabled && !this.token.isBlank() && !this.projectSigningSecret.isBlank();
     this.maxActions = Math.max(1, maxActions);
     this.maxTargetActions = Math.max(1, maxTargetActions);
+    // Clamp to the runtime's own accepted range; a value outside it would make
+    // every planning request fail schema validation.
+    this.maxRetrievalRounds = Math.max(1, Math.min(maxRetrievalRounds, 4));
     String baseUrl =
         configuredBaseUrl == null || configuredBaseUrl.isBlank()
             ? "http://127.0.0.1:" + Math.max(1, Math.min(port, 65535))
@@ -183,7 +188,7 @@ public class AiAgentRuntimeClient {
       int maxActions,
       AgentLedgerService ledger) {
     this(objectMapper, projects, targets, tasks, workflowSpecs, enabled, configuredBaseUrl,
-        port, token, projectSigningSecret, timeoutSeconds, maxActions, 4, ledger);
+        port, token, projectSigningSecret, timeoutSeconds, maxActions, 4, 3, ledger);
   }
 
   public AiAgentRuntimeClient(
@@ -212,6 +217,8 @@ public class AiAgentRuntimeClient {
         projectSigningSecret,
         timeoutSeconds,
         maxActions,
+        4,
+        3,
         null);
   }
 
@@ -694,7 +701,13 @@ public class AiAgentRuntimeClient {
     body.put("nodeRunId", request.nodeRunId());
     body.put(
         "budget",
-        Map.of("maxRetrievalRounds", 2, "maxLlmCalls", RUNTIME_MAX_LLM_CALLS, "timeoutSeconds", 90));
+        Map.of(
+            "maxRetrievalRounds",
+            maxRetrievalRounds,
+            "maxLlmCalls",
+            RUNTIME_MAX_LLM_CALLS,
+            "timeoutSeconds",
+            90));
 
     List<Map<String, Object>> workflowSteps = loadWorkflowSteps();
     if (!workflowSteps.isEmpty()) body.put("workflow", workflowSteps);

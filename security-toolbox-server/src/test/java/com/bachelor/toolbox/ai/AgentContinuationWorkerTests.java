@@ -139,6 +139,54 @@ class AgentContinuationWorkerTests {
     assertThat(prompt).doesNotContain("不要创建任务、执行工具或提出未授权动作");
     // And it must explicitly offer the option to stop.
     assertThat(prompt).contains("结束");
+    // Continuation re-evaluates by default instead of assuming the round is done,
+    // so a first scan of a fresh target does not silently end the loop.
+    assertThat(prompt).contains("重新评估");
+    assertThat(prompt).contains("是否需要继续由结果本身决定");
+  }
+
+  /** The round budget stays a hard stop even with the wider default. */
+  @Test
+  void widerRoundBudgetStillForbidsActionsAtItsLastRound() {
+    AgentContinuationWorker wider =
+        new AgentContinuationWorker(
+            recovery,
+            tasks,
+            runtime,
+            orchestrator,
+            executions,
+            new AgentWorkflowSpecService(
+                mock(AgentWorkflowSpecRepository.class),
+                new ObjectMapper(),
+                new ProjectAuthorizationService(mock(AssessmentProjectRepository.class))),
+            new ProjectAuthorizationService(mock(AssessmentProjectRepository.class)),
+            true,
+            5);
+    CrossTurnRecoveryService.ContinuationClaim claim = claimAtAttempt(4, 5);
+    arrangeReady(claim);
+    when(executions.prepare(claim))
+        .thenReturn(
+            new AgentContinuationExecutionService.Preparation(
+                AgentContinuationExecutionService.Preparation.Kind.EXECUTE,
+                null,
+                AgentContinuationExecution.STARTED));
+    when(orchestrator.run(any(AiAgentRequest.class))).thenReturn(response());
+    when(executions.execute(any(), any()))
+        .thenAnswer(
+            invocation -> {
+              @SuppressWarnings("unchecked")
+              Supplier<AiAgentResponse> operation = invocation.getArgument(1);
+              return operation.get();
+            });
+
+    wider.drain();
+
+    ArgumentCaptor<AiAgentRequest> request = ArgumentCaptor.forClass(AiAgentRequest.class);
+    verify(orchestrator).run(request.capture());
+    String prompt = request.getValue().prompt();
+    // attempt=4 is the fifth round, so the widened budget must now say stop.
+    assertThat(prompt).contains("已达到允许的最大轮次");
+    assertThat(prompt).contains("禁止再提出任何新的检测动作");
   }
 
   /** At the round budget the prompt must forbid new work, so a loop can never run forever. */
