@@ -1358,7 +1358,7 @@ onUnmounted(() => {
           }}</el-tag></template
         ></el-table-column
       >
-      <el-table-column label="进度" min-width="140"
+      <el-table-column label="进度" min-width="200"
         ><template #default="scope"
           ><div class="live-task-progress">
             <el-progress
@@ -1368,7 +1368,11 @@ onUnmounted(() => {
               :indeterminate="taskProgressIndeterminate(scope.row)"
               :duration="1.2"
               :show-text="false"
-            /><span>{{ taskProgressText(scope.row) }}</span>
+            /><el-tooltip
+              :content="taskProgressText(scope.row)"
+              placement="top"
+              :disabled="!taskProgressText(scope.row)"
+            ><span>{{ taskProgressText(scope.row) }}</span></el-tooltip>
           </div></template
         ></el-table-column
       >
@@ -2246,12 +2250,15 @@ onUnmounted(() => {
 }
 .live-task-progress {
   display: grid;
-  grid-template-columns: minmax(90px, 1fr) minmax(72px, auto);
+  grid-template-columns: minmax(72px, 100px) minmax(0, 1fr);
   align-items: center;
   gap: 9px;
   min-width: 0;
+  width: 100%;
 }
 .live-task-progress > span {
+  display: block;
+  min-width: 0;
   overflow: hidden;
   color: var(--app-text);
   font-size: 12px;
