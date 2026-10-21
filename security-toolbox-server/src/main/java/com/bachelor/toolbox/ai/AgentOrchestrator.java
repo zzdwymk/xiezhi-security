@@ -66,10 +66,22 @@ public class AgentOrchestrator {
   private final BusinessDataOperationGate operationGate;
   private final com.bachelor.toolbox.project.ProjectApprovalService approvalService;
   private AiPlanContinuityService planContinuity;
+  private com.bachelor.toolbox.notification.NotificationService notifications;
 
   @Autowired
   public void setPlanContinuity(AiPlanContinuityService value) {
     planContinuity = value;
+  }
+
+  /**
+   * Optional notification publisher. A continuation turn runs without a client event sink, so
+   * the record it creates would otherwise sit invisible until the user happened to reload. The
+   * existing notification feed already polls, so publishing here is what actually surfaces the
+   * new approval; when the service is absent (tests, headless) the turn still works unchanged.
+   */
+  @Autowired(required = false)
+  public void setNotifications(com.bachelor.toolbox.notification.NotificationService value) {
+    notifications = value;
   }
 
   @Autowired
@@ -557,6 +569,7 @@ public class AgentOrchestrator {
             }
             autoApprovalId = approvalRecord.getId();
             autoApprovalJudgeJson = approvalRecord.getAiJudgeJson();
+            publishApprovalNotification(request, decision.normalizedPlan(), autoApprovalId);
           } catch (Exception ex) {
             throw new ApiException("无法保存待确认原计划，未派发任务，请重试");
           }
@@ -736,6 +749,37 @@ public class AgentOrchestrator {
         }
         throw ex;
       }
+    }
+  }
+
+  /**
+   * Surface a freshly saved approval through the existing notification feed.
+   *
+   * <p>A continuation turn drives the orchestrator without a client event sink, so nothing else
+   * tells the user a new plan is waiting. Publishing is best-effort: the approval is already
+   * committed by this point, and a notification failure must never fail the turn or imply the
+   * plan was rejected.
+   */
+  private void publishApprovalNotification(
+      AiAgentRequest request, AiPlanResponse plan, Long approvalId) {
+    if (notifications == null || approvalId == null) return;
+    try {
+      int steps = plan == null || plan.steps() == null ? 0 : plan.steps().size();
+      String title = request.automaticExecutionIntent() ? "AI 已生成检测方案" : "AI 续接回合生成了新的检测方案";
+      notifications.publish(
+          "ai-approval:" + approvalId,
+          request.projectId(),
+          false,
+          "ai",
+          "approval",
+          title,
+          "共 " + steps + " 个待确认步骤，确认后才会创建检测任务。",
+          // The frontend whitelists routes to /projects/{id} and friends; approvals live on
+          // the project detail page, so that is the only route that actually lands.
+          request.projectId() == null ? null : "/projects/" + request.projectId(),
+          List.of());
+    } catch (RuntimeException ignored) {
+      // Notifying is an aid, not part of the approval contract; the plan stays queued.
     }
   }
 
