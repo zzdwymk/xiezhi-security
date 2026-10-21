@@ -79,19 +79,34 @@ public class AgentContinuationWorker {
     for (Long id : recovery.candidateIds()) {
       CrossTurnRecoveryService.ContinuationClaim claim;
       try {
-        claim = recovery.claim(id);
-      } catch (RuntimeException ignored) {
+        // claim() re-validates project membership and target authorization. Those checks read the
+        // current principal, and this runs on a timer/event thread with no HTTP user — so it must
+        // run under system access or every continuation would fail with "please sign in".
+        claim = authorization.callWithSystemAccess(() -> recovery.claim(id));
+      } catch (Exception ignored) {
         continue;
       }
       if (claim == null) continue;
       try {
-        // Java outbox persistence is independent from Runtime availability. Delivery is retried
-        // here after the row has been committed, and the Python write is idempotent.
-        runtime.checkpointContinuation(recovery.checkpointBody(claim), claim.projectId());
-        String status = "WAITING_TASKS";
-        for (Map<String, Object> callback : callbackBodies(claim)) {
-          Map<String, Object> result = runtime.resumeContinuation(callback, claim.projectId());
-          status = Objects.toString(result.get("status"), "");
+        // Checkpoint delivery and resumption likewise go through the authorized HTTP client and
+        // the same membership checks, so they stay inside system access as well.
+        String status;
+        try {
+          status =
+              authorization.callWithSystemAccess(
+                  () -> {
+                    runtime.checkpointContinuation(
+                        recovery.checkpointBody(claim), claim.projectId());
+                    String delivered = "WAITING_TASKS";
+                    for (Map<String, Object> callback : callbackBodies(claim)) {
+                      Map<String, Object> result =
+                          runtime.resumeContinuation(callback, claim.projectId());
+                      delivered = Objects.toString(result.get("status"), "");
+                    }
+                    return delivered;
+                  });
+        } catch (Exception ex) {
+          throw ex instanceof RuntimeException runtime ? runtime : new ApiException(ex.getMessage());
         }
         if ("WAITING_TASKS".equals(status)) {
           recovery.markFailure(claim.tombstoneId(), "RUNTIME_WAITING_TASKS");

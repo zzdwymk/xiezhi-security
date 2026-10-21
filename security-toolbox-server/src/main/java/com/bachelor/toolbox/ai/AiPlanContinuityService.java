@@ -40,16 +40,37 @@ public class AiPlanContinuityService {
     Scope current = scope(request, sessionId);
     StoredPlans stored = readState(sessionId);
     for (Snapshot snapshot : new Snapshot[] {stored.delivered(), stored.pending()}) {
-      if (snapshot != null && !Objects.equals(snapshot.scope().owner(), current.owner())) {
-        throw new ApiException("该会话方案属于其他用户，请新建会话");
+      if (snapshot == null) continue;
+      if (Objects.equals(snapshot.scope().owner(), current.owner())) continue;
+      // A continuation turn runs under system access, so currentUsername() is the system
+      // principal while the stored plan belongs to the human who started the session. Rejecting
+      // that would break the loop on its second round. Instead, adopt the stored owner only when
+      // this really is that session's continuation — the caller already re-validated project and
+      // target authorization before reaching here.
+      if (authorization.hasSystemAccess()) {
+        current = current.withOwner(snapshot.scope().owner());
+        continue;
       }
+      throw new ApiException("该会话方案属于其他用户，请新建会话");
     }
     return new Baseline(current, stored.delivered(), stored.pending() != null,
         AiExecutionIntentPolicy.permitsPlanRevision(request.userPrompt()));
   }
 
-  private StoredPlans readState(String sessionId) {
-    String json = memory.deliveredPlan(sessionId);
+  /**
+   * Resolve the scope for this turn, adopting the session owner when a continuation runs under
+   * system access. Everything except the owner is still re-validated, so authorization and
+   * workflow changes remain enforced.
+   */
+  private Scope scopeFor(Baseline baseline, AiAgentRequest request, String sessionId) {
+    Scope current = scope(request, sessionId);
+    if (authorization.hasSystemAccess() && baseline != null && baseline.current().owner() != null) {
+      current = current.withOwner(baseline.current().owner());
+    }
+    return current;
+  }
+
+  private StoredPlans readState(String sessionId) {    String json = memory.deliveredPlan(sessionId);
     StoredPlans stored = new StoredPlans(2, null, null);
     if (json != null && !json.isBlank()) {
       try {
@@ -117,7 +138,7 @@ public class AiPlanContinuityService {
 
   public Snapshot prepare(AiAgentRequest request, String sessionId, AiPlanResponse plan,
       Baseline baseline, AiAgentRuntimeClient.RuntimePlanResult interpretation) {
-    Scope current = scope(request, sessionId);
+    Scope current = scopeFor(baseline, request, sessionId);
     if (!current.equals(baseline.current())) {
       throw new PlanChangedException(diff(mapper.valueToTree(baseline.current()), mapper.valueToTree(current), "授权或工作流"));
     }
@@ -234,7 +255,13 @@ public class AiPlanContinuityService {
 
   public record Scope(String owner, String sessionId, Long projectId, Long targetId,
       String projectBinding, String targetBinding, String workflowId, Long workflowRevision,
-      String workflowDigest) {}
+      String workflowDigest) {
+    /** Same scope attributed to another owner; used when a continuation adopts the session owner. */
+    public Scope withOwner(String newOwner) {
+      return new Scope(newOwner, sessionId, projectId, targetId, projectBinding, targetBinding,
+          workflowId, workflowRevision, workflowDigest);
+    }
+  }
   public record Snapshot(int version, Scope scope, String turnId, AiPlanResponse plan) {}
   public record StoredPlans(int version, Snapshot delivered, Snapshot pending) {}
   public record Baseline(Scope current, Snapshot previous, boolean deliveryPending, boolean revisionRequested) {}
