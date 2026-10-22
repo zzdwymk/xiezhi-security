@@ -1074,3 +1074,32 @@ class LedgerAgentResult(BaseModel):
     terminationReason: StrictStr | None = Field(default=None, min_length=1, max_length=64)
     planRelation: Literal["NEW", "CONTINUE", "REVISE", "NONE"] | None = None
     ledgerDigest: StrictStr = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class ConversationSummary(BaseModel):
+    """Structured digest of the turns a long conversation had to drop.
+
+    Deliberately fields, not prose: a paragraph summary silently loses the specific ports,
+    tools and pending approvals that a later turn still depends on. Each list is bounded so a
+    summary can never grow back into the problem it was meant to solve.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    # What the user has asked for and confirmed so far, newest last.
+    userIntents: list[StrictStr] = Field(default_factory=list, max_length=8)
+    # Checks that actually ran, with the outcome worth remembering.
+    completedChecks: list[StrictStr] = Field(default_factory=list, max_length=8)
+    # Findings, exposures or open questions still unresolved.
+    openFindings: list[StrictStr] = Field(default_factory=list, max_length=8)
+    # Plans awaiting approval, or approved but not yet dispatched.
+    pendingApprovals: list[StrictStr] = Field(default_factory=list, max_length=4)
+    # Constraints the user stated explicitly (scope, timing, exclusions).
+    userConstraints: list[StrictStr] = Field(default_factory=list, max_length=6)
+    # One-line state of the authorized target this session is bound to.
+    targetScope: StrictStr | None = Field(default=None, max_length=500)
+
+    @field_validator("userIntents", "completedChecks", "openFindings", "pendingApprovals", "userConstraints")
+    @classmethod
+    def _drop_blank_entries(cls, value: list[str]) -> list[str]:
+        return [item.strip() for item in value if item and item.strip()]
