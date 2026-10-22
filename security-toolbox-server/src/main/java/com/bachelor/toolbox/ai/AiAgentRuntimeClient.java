@@ -1433,7 +1433,7 @@ public class AiAgentRuntimeClient {
         switch (toolCode) {
           case "retrieve_project_context" -> Set.of("query");
           case "tcp_ports" -> Set.of("ports", "mode");
-          case "nmap_service_scan" -> Set.of("ports", "mode");
+          case "nmap_service_scan" -> Set.of("ports", "mode", "consumeOpenPorts");
           case "http_security_check" -> Set.of("check");
           case "afrog_scan", "xray_scan", "nuclei_scan" -> Set.of("pocCodes", "allPocs");
           case "zap_scan" -> Set.of("spider", "strength");

@@ -280,13 +280,24 @@ def _workflow_node_id(text: str) -> str:
             manifest = {}
         nodes = manifest.get("nodes") if isinstance(manifest, dict) else None
         if isinstance(nodes, list):
-            for node in nodes:
-                if (
-                    isinstance(node, dict)
-                    and node.get("tool") == "nmap_service_scan"
-                    and isinstance(node.get("nodeId"), str)
-                ):
+            # A workflow may legitimately carry more than one Nmap node: a fast port-discovery
+            # pass and a later service-identification pass. The mock answers with a service plan,
+            # so it must target the node that actually performs service identification — pick a
+            # nmap node that is not the quick/discovery pass, preferring the last such node.
+            candidates = [
+                node
+                for node in nodes
+                if isinstance(node, dict)
+                and node.get("tool") == "nmap_service_scan"
+                and isinstance(node.get("nodeId"), str)
+            ]
+            for node in reversed(candidates):
+                params = node.get("parameters") if isinstance(node.get("parameters"), dict) else {}
+                mode = str(params.get("mode") or "").strip().lower()
+                if mode not in {"quick", "ping", "quick_trace"}:
                     return node["nodeId"]
+            if candidates:
+                return candidates[-1]["nodeId"]
     return "service-scan-01"
 
 

@@ -10,6 +10,7 @@ import com.bachelor.toolbox.task.SecurityTaskRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.Method;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -49,10 +50,41 @@ class AiToolCatalogContractCoverageTest {
   }
 
   private Object invokeStrictParameters(String toolCode) throws Exception {
+    return invokeStrictParameters(toolCode, new ObjectMapper().createObjectNode());
+  }
+
+  private Object invokeStrictParameters(
+      String toolCode, com.fasterxml.jackson.databind.JsonNode raw) throws Exception {
     Method method = AiAgentRuntimeClient.class.getDeclaredMethod(
         "strictParameters", String.class, com.fasterxml.jackson.databind.JsonNode.class);
     method.setAccessible(true);
-    return method.invoke(client, toolCode, new ObjectMapper().createObjectNode());
+    return method.invoke(client, toolCode, raw);
+  }
+
+  @Test
+  void everyDeclaredParameterKeyIsAcceptedByStrictParameters() throws Exception {
+    // The catalog advertises a set of parameter keys; strictParameters has its own allow-list.
+    // When the two drift, the runtime produces a schema-valid tool call that Java then rejects as
+    // "parameters 包含未知字段" — the failure only shows up end-to-end. This pins them together.
+    ObjectMapper mapper = new ObjectMapper();
+    for (String code : catalogCodes()) {
+      Map<String, Object> schema = AiToolCatalog.parameterSchema(code);
+      Object properties = schema.get("properties");
+      if (!(properties instanceof Map<?, ?> declared)) continue;
+      for (Object key : declared.keySet()) {
+        com.fasterxml.jackson.databind.node.ObjectNode raw = mapper.createObjectNode();
+        raw.put(String.valueOf(key), "x");
+        try {
+          invokeStrictParameters(code, raw);
+        } catch (java.lang.reflect.InvocationTargetException wrapped) {
+          Throwable cause = wrapped.getCause() == null ? wrapped : wrapped.getCause();
+          assertThat(cause)
+              .as("catalog key '%s' of tool '%s' must be accepted by strictParameters",
+                  key, code)
+              .hasMessageNotContaining("包含未知字段");
+        }
+      }
+    }
   }
 
   @Test
