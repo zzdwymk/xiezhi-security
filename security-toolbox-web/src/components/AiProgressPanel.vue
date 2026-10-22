@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import type { ConversationMessage } from "../stores/conversations";
-import { aiTaskElapsed, type AiProgressTask, type ProgressTone } from "../utils/aiProgress";
+import { aiTaskElapsed, type AiAwaitingStatus, type AiProgressTask, type ProgressTone } from "../utils/aiProgress";
 import { aiElapsedLabel, aiToolLabel, publicAiProgressText } from "../utils/aiPresentation";
 import { AI_STATUS_LABELS, aiStatusIcon, buildAiStatusSummary } from "../utils/aiStatus";
 import FluentIcon from "./FluentIcon.vue";
 // statusOutside: the parent renders this turn's status stamp with the message
 // chrome instead of inside the answer surface (see AiStatusStamp).
-const props = defineProps<{ message: ConversationMessage; tasks: AiProgressTask[]; hideAttention?: boolean; statusOutside?: boolean; statusInPlan?: boolean }>();
+const props = defineProps<{ message: ConversationMessage; tasks: AiProgressTask[]; hideAttention?: boolean; statusOutside?: boolean; statusInPlan?: boolean; awaiting?: AiAwaitingStatus }>();
 const emit = defineEmits<{ (event: "open-tasks"): void }>();
 const now = ref(Date.now());
 const expanded = ref(false);
@@ -32,7 +32,7 @@ function formatModelSummaryText(entry: any): string {
   }
   return publicAiProgressText(raw) || "已完成阶段分析。";
 }
-const summary = computed(() => buildAiStatusSummary(props.message, props.tasks, now.value));
+const summary = computed(() => buildAiStatusSummary(props.message, props.tasks, now.value, props.awaiting));
 const progress = computed(() => summary.value.progress);
 const dispatchConcern = computed(() => summary.value.dispatchConcern);
 const needsClarification = computed(() => summary.value.needsClarification);

@@ -105,6 +105,8 @@ public class SecurityConfig {
                     .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.DELETE, "/api/ai/agent/sessions/*")
                     .hasRole("ADMIN")
+                    .requestMatchers(HttpMethod.GET, "/api/ai/agent/sessions/*/status")
+                    .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.DELETE, "/api/settings/data")
                     .hasRole("ADMIN")
                     // 清空全部漏洞结果属破坏性操作，与其它清空类操作保持一致的管理员限制

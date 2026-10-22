@@ -287,4 +287,59 @@ test('success and failure share outside status placement unless a genuine model 
   }
   assert.equal(isAiStatusOutsideCard(message(), [], origin + 9000), false);
 });
+test('backend awaiting scan tasks replaces the vague waiting placeholder', () => {
+  // A turn whose model stream ended and whose tasks are not yet in local rows:
+  // the backend status must drive the text instead of "等待处理反馈".
+  const finished = message({ status: 'completed', modelStreamStatus: 'completed', progressFinishedAt: at(4) });
+  const idle = buildAiProgress(finished, [], origin + 9000);
+  assert.equal(idle.currentTitle, '本轮处理完成');
+
+  const awaiting = { phase: 'waiting_tasks', attempt: 0, tasks: [
+    { id: 41, toolCode: 'tcp_ports', status: 'RUNNING' },
+    { id: 42, toolCode: 'nmap_service_scan', status: 'PENDING' },
+    { id: 43, toolCode: 'http_security_check', status: 'PENDING' },
+  ] };
+  const p = buildAiProgress(finished, [], origin + 9000, awaiting);
+  assert.equal(p.active, true);
+  assert.match(p.currentTitle, /正在执行 3 个扫描任务/);
+  assert.match(p.currentDetail, /TCP 端口探测：执行中/);
+  assert.match(p.currentDetail, /Nmap 服务识别：排队中/);
+  assert.match(p.currentDetail, /完成后将自动规划下一步/);
+  assert.equal(p.currentDetail.includes('等待处理反馈'), false);
+});
+test('awaiting scheduled resume reports the retry countdown without task rows', () => {
+  const finished = message({ status: 'completed', modelStreamStatus: 'completed', progressFinishedAt: at(4) });
+  // nextAttemptAt is compared against the wall clock, so it must be in the future.
+  const soon = new Date(Date.now() + 30000).toISOString();
+  const p = buildAiProgress(finished, [], origin + 9000, {
+    phase: 'waiting_tasks', attempt: 1, tasks: [], nextAttemptAt: soon,
+  });
+  assert.equal(p.active, true);
+  assert.match(p.currentTitle, /等待扫描结果回填/);
+  assert.match(p.currentDetail, /约 \d+ 秒后自动继续/);
+  assert.match(p.currentDetail, /第 2 轮/);
+});
+test('idle awaiting status does not resurrect a completed turn', () => {
+  const finished = message({ status: 'completed', modelStreamStatus: 'completed', progressFinishedAt: at(4) });
+  const p = buildAiProgress(finished, [], origin + 9000, { phase: 'idle', tasks: [] });
+  assert.equal(p.active, false);
+  assert.equal(p.currentTitle, '本轮处理完成');
+});
+test('live local task rows still win over the backend awaiting status', () => {
+  const task = { id: 41, toolCode: 'tcp_ports', status: 'RUNNING', createdAt: at(1), startedAt: at(2), progressMessage: '扫描3个授权端口' };
+  const p = buildAiProgress(message({ taskIds: [41] }), [task], origin + 8000, {
+    phase: 'waiting_tasks', tasks: [{ id: 41, toolCode: 'tcp_ports', status: 'RUNNING' }],
+  });
+  assert.equal(p.active, true);
+  assert.match(p.currentTitle, /1 个任务正在推进/);
+  assert.match(p.currentDetail, /扫描3个授权端口/);
+});
+test('awaiting status is ignored for failed and approval-pending turns', () => {
+  const failed = message({ status: 'failed', modelStreamStatus: 'failed' });
+  const failedP = buildAiProgress(failed, [], origin + 9000, { phase: 'waiting_tasks', tasks: [{ id: 1, toolCode: 'tcp_ports', status: 'RUNNING' }] });
+  assert.match(failedP.currentTitle, /本轮处理未完成/);
+  const approval = message({ status: 'completed', modelStreamStatus: 'completed', approvalStatus: 'REQUIRED', progressFinishedAt: at(4) });
+  const approvalP = buildAiProgress(approval, [], origin + 9000, { phase: 'waiting_tasks', tasks: [{ id: 1, toolCode: 'tcp_ports', status: 'RUNNING' }] });
+  assert.equal(approvalP.currentTitle, '等待确认执行计划');
+});
 console.log(`${passed} AI progress behavior checks passed.`);

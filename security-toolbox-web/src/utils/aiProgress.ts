@@ -13,6 +13,13 @@ export interface AiProgressTask {
   createdAt: string;
 }
 export type ProgressTone = "active" | "success" | "warning" | "failed" | "neutral";
+/** Live "what are we waiting for" status fetched from the backend session endpoint. */
+export interface AiAwaitingStatus {
+  phase: "idle" | "waiting_tasks";
+  nextAttemptAt?: string | null;
+  attempt?: number;
+  tasks?: Array<{ id: number; toolCode: string | null; status: string }>;
+}
 export interface AiProgressEntry {
   key: string;
   title: string;
@@ -172,15 +179,57 @@ export function summarizeAiProgress(entries: AiProgressEntry[], active: boolean)
   })).slice(-5);
 }
 
-export function buildAiProgress(message: ConversationMessage, tasks: AiProgressTask[], now: number) {
+const awaitingTaskStatusText: Record<string, string> = {
+  PENDING: "排队中", QUEUED: "排队中", BLOCKED: "等待前置任务",
+  RUNNING: "执行中", SUCCESS: "已完成", FAILED: "失败",
+  TIMEOUT: "超时", REJECTED: "已拒绝", CANCELLED: "已取消", SKIPPED: "已跳过", UNKNOWN: "状态未知",
+};
+
+/**
+ * Turn a backend "what am I waiting for" status into a concrete header + detail.
+ * Granularity is deliberately task name + status (no percentages), so the chat
+ * can say exactly which scan is running/queued instead of a vague placeholder.
+ */
+function describeAwaiting(awaiting?: AiAwaitingStatus): { title: string; detail: string } | undefined {
+  if (!awaiting || awaiting.phase !== "waiting_tasks") return undefined;
+  const tasks = awaiting.tasks || [];
+  if (tasks.length) {
+    const parts = tasks.map(task =>
+      `${aiToolLabel(task.toolCode || "")}：${awaitingTaskStatusText[task.status] || task.status}`);
+    const running = tasks.filter(task => task.status === "RUNNING").length;
+    return {
+      title: running ? `正在执行 ${tasks.length} 个扫描任务` : `等待 ${tasks.length} 个扫描任务完成`,
+      detail: `${parts.join("；")}。完成后将自动规划下一步。`,
+    };
+  }
+  // No concrete task rows yet (e.g. continuation scheduled, tasks not listed): show resume ETA.
+  let eta = "";
+  if (awaiting.nextAttemptAt) {
+    const at = Date.parse(awaiting.nextAttemptAt);
+    if (Number.isFinite(at)) {
+      const seconds = Math.max(0, Math.round((at - Date.now()) / 1000));
+      if (seconds > 0) eta = `，约 ${seconds} 秒后自动继续`;
+    }
+  }
+  const round = (awaiting.attempt || 0) + 1;
+  return {
+    title: "等待扫描结果回填",
+    detail: `本轮分析已完成，正在等待扫描结果${eta || "后自动续接"}（第 ${round} 轮）。`,
+  };
+}
+
+export function buildAiProgress(message: ConversationMessage, tasks: AiProgressTask[], now: number, awaiting?: AiAwaitingStatus) {
   const start = Date.parse(message.progressStartedAt || message.createdAt);
   const related = tasks.filter(task => message.taskIds.includes(task.id));
   const activeTasks = related.filter(task => !terminalTasks.has(task.status));
   const unresolvedTasks = message.taskIds.filter(id => !related.some(task => task.id === id)).length;
   const interrupted = message.modelStreamStatus === "interrupted";
+  // A session parked on backend scan tasks or a scheduled resume is still "active" from the
+  // user's point of view even though no model stream and (yet) no local task rows exist.
+  const awaitingPending = awaiting?.phase === "waiting_tasks";
   const modelActive = message.status !== "failed" && (message.modelStreamStatus ? message.modelStreamStatus === "running"
     : ["sending", "planning", "running", "answering"].includes(message.status) && !(message.agentEvents || []).some(event => !event.recorded && event.eventTiming !== "VERIFIED_RECORD" && (event.type === "done" || event.type === "error")));
-  const active = modelActive || activeTasks.length > 0;
+  const active = modelActive || activeTasks.length > 0 || awaitingPending;
   const unsuccessfulTasks = related.filter(task => terminalTasks.has(task.status) && task.status !== "SUCCESS");
   const entries: AiProgressEntry[] = [];
   for (const event of (message.agentEvents || []).filter(isPublicAiProgressEvent)) {
@@ -226,11 +275,14 @@ export function buildAiProgress(message: ConversationMessage, tasks: AiProgressT
   const summaryEntries = summarizeAiProgress(entries, active && !failed && !waitingApproval);
   const latestUseful = [...entries].reverse().find(entry => !isRoutineProgress(entry));
   const latestIsRecord = latestUseful?.event.recorded || latestUseful?.event.eventTiming === "VERIFIED_RECORD";
+  // Description of a backend-awaited state (scan tasks / scheduled resume). Only used when
+  // nothing more specific (live tasks, approval, failure) already explains the wait.
+  const awaitingText = describeAwaiting(awaiting);
   const currentTitle = interrupted && !activeTasks.length ? "连接已结束，结果待确认" : failed ? message.taskIds.length ? "回答中断，请查看检测任务状态" : "本轮处理未完成" : rejectedDispatch ? aiDispatchRejectedTitle(message) : rejectedApproval ? "执行方案已驳回" : waitingApproval ? "等待确认执行计划" : awaitingDispatch ? message.approvalDispatchStatus === "unknown" ? "派发结果待核实" : "审批已通过，等待派发确认"
     : message.status === "answering" && modelActive ? "等待模型回答"
     : activeTasks.length && active ? `${activeTasks.length} 个任务正在推进`
     : unresolvedTasks ? "正在同步检测任务状态"
-    : !active ? unsuccessfulTasks.length ? "任务已结束，部分步骤未成功" : "本轮处理完成" : latestIsRecord ? "等待模型回答" : latestUseful?.title || "等待处理反馈";
+    : !active ? unsuccessfulTasks.length ? "任务已结束，部分步骤未成功" : "本轮处理完成" : awaitingText ? awaitingText.title : latestIsRecord ? "等待模型回答" : latestUseful?.title || "等待处理反馈";
   const currentDetail = interrupted ? "页面重载后无法恢复此前的模型连接；该轮是否完成尚未确认，请查看回答及关联任务。" : failed ? aiProgressFailureText(message.content, message.taskIds.length > 0)
     : rejectedDispatch ? `${message.approvalDispatchError || "执行请求未通过校验"}。原方案及批准记录已保留，${aiDispatchQuotaFailure(message.approvalDispatchError) ? "请核对任务额度后再决定下一步。" : "请核对授权后再决定下一步。"}`
     : rejectedApproval ? "该方案未获批准；如需调整，请在对话中说明新的要求。"
@@ -239,7 +291,7 @@ export function buildAiProgress(message: ConversationMessage, tasks: AiProgressT
     : message.status === "answering" && modelActive ? "模型请求尚未完成。"
     : activeTasks.length && active ? activeTasks.map(task => `${aiToolLabel(task.toolCode)}：${task.status === "PENDING" ? "排队中" : task.status === "BLOCKED" ? "等待前置任务" : publicAiProgressText(task.progressMessage) || "执行中"}`).join("；")
     : unresolvedTasks ? `${unresolvedTasks} 个关联任务的状态尚未载入，可在任务中心查看。`
-    : active ? latestIsRecord ? "已收到处理记录，模型请求尚未完成。" : latestUseful?.detail || "尚未收到阶段反馈。"
+    : active ? awaitingText ? awaitingText.detail : latestIsRecord ? "已收到处理记录，模型请求尚未完成。" : latestUseful?.detail || "尚未收到阶段反馈。"
     : `${message.steps.length ? `${message.steps.length} 项计划` : "回答已生成"}${related.length ? `，${related.filter(task => task.status === "SUCCESS").length}/${related.length} 个任务成功` : ""}。可展开回看处理进展。`;
   const modelEntries = entries.filter(entry => isModelAssessment(entry.event)
     && publicAiProgressText(entry.event.summary || entry.event.message));
