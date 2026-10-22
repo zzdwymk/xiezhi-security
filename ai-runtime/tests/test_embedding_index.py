@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -246,3 +248,92 @@ def test_stats_and_health_expose_real_embedding_state(tmp_path, monkeypatch):
     assert health["components"]["llamaIndex"] is True
     assert health["index"]["retrievalMethod"] == "real_embedding"
     assert health["index"]["realEmbeddingAvailable"] is True
+
+
+class _SlowReadStore(ProjectIndexStore):
+    """Sleeps inside the project-locked read path to expose lock contention."""
+
+    def __init__(self, *args, delay: float = 0.4, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.delay = delay
+        self._active = 0
+        self.max_active = 0
+        self._active_lock = threading.Lock()
+
+    def _read_documents(self, project_id):  # type: ignore[override]
+        with self._active_lock:
+            self._active += 1
+            self.max_active = max(self.max_active, self._active)
+        try:
+            time.sleep(self.delay)
+            return super()._read_documents(project_id)
+        finally:
+            with self._active_lock:
+                self._active -= 1
+
+
+def test_same_project_query_is_concurrent_across_targets(tmp_path):
+    """Two targets in the SAME project must retrieve concurrently.
+
+    The read path sleeps while holding the project lock. Under the old exclusive
+    RLock, concurrent retrievals on the same project serialized (3 x delay); with
+    the reader/writer lock they overlap (~1 x delay).
+    """
+    store = _SlowReadStore(
+        tmp_path, retrieval_backend="bm25", delay=0.4
+    )
+    store.index_project(
+        7,
+        [
+            _document("t-a", "closest evidence for target A"),
+            _document("t-b", "related evidence for target B"),
+        ],
+    )
+    # Reset contention counters after the index write.
+    store._active = 0
+    store.max_active = 0
+
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            store.query(7, "evidence", 10)  # same project 7
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(3)]
+    wall_start = time.monotonic()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    wall = time.monotonic() - wall_start
+
+    assert not errors, errors
+    assert wall < store.delay * 2, f"retrieval serialized: wall={wall:.2f}s"
+    assert store.max_active >= 2, "read paths never overlapped"
+
+
+def test_different_project_query_does_not_block_shared_stripe(tmp_path):
+    """Distinct projects must retrieve concurrently even if they hash to a stripe."""
+    store = _SlowReadStore(tmp_path, retrieval_backend="bm25", delay=0.3)
+    for project_id, doc_id in ((200, "p200"), (456, "p456")):
+        store.index_project(project_id, [_document(doc_id, "closest evidence " + doc_id)])
+    store._active = 0
+    store.max_active = 0
+
+    def worker(project_id: int) -> None:
+        store.query(project_id, "evidence", 10)
+
+    threads = [
+        threading.Thread(target=worker, args=(200,)),
+        threading.Thread(target=worker, args=(456,)),
+    ]
+    wall_start = time.monotonic()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    wall = time.monotonic() - wall_start
+
+    assert wall < store.delay * 2, f"distinct projects serialized: wall={wall:.2f}s"
