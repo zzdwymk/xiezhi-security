@@ -3330,8 +3330,17 @@ function serializeGraph(): WorkflowSpecV2 {
   };
 }
 
-async function save(): Promise<WorkflowSpecV2 | undefined> {
-  const projectId = selectedProjectId.value;
+// 步骤上限：服务端按节点数计（同一工具可以不同参数出现多次，例如 Nmap 先快速发现端口、
+// 再对开放端口做服务识别）。这里给一个可见的上限指示与就地调整，避免用户撞到后端报错
+// 却不知道该去哪里改。
+const maxSteps = ref(24);
+const MIN_STEPS = 8;
+const MAX_STEPS_CEILING = 64;
+const stepsOverLimit = computed(
+  () => nodes.value.filter((n) => n.type === "tool").length > maxSteps.value,
+);
+
+async function save(): Promise<WorkflowSpecV2 | undefined> {  const projectId = selectedProjectId.value;
   if (!projectId) {
     ElMessage.warning("请先选择评估项目");
     return undefined;
@@ -3343,6 +3352,12 @@ async function save(): Promise<WorkflowSpecV2 | undefined> {
   const problems = validateGraph();
   if (problems.length) {
     ElMessage.warning(problems[0]);
+    return undefined;
+  }
+  if (stepsOverLimit.value) {
+    ElMessage.warning(
+      `当前工作流有 ${nodes.value.filter((n) => n.type === "tool").length} 个步骤，超过上限 ${maxSteps.value}。请调高「步骤上限」或减少步骤。`,
+    );
     return undefined;
   }
   saving.value = true;
@@ -4630,6 +4645,23 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div class="workflow-actions">
+        <div class="workflow-step-limit" :class="{ over: stepsOverLimit }">
+          <span class="workflow-step-limit-label">步骤上限</span>
+          <el-slider
+            v-model="maxSteps"
+            class="workflow-step-limit-slider"
+            :min="MIN_STEPS"
+            :max="MAX_STEPS_CEILING"
+            :step="1"
+            :show-tooltip="false"
+            :disabled="executing || viewingRunSnapshot"
+            aria-label="工作流步骤上限"
+          />
+          <span class="workflow-step-limit-value">{{ maxSteps }}</span>
+          <span class="workflow-step-limit-hint">
+            同一工具可多次出现（如 Nmap 先探端口再识别服务），故按步骤数计
+          </span>
+        </div>
         <el-button
           type="primary"
           :loading="saving"
@@ -6712,6 +6744,39 @@ onBeforeUnmount(() => {
 }
 .workflow-actions :deep(.el-select__wrapper) {
   min-height: 32px;
+}
+.workflow-step-limit {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.workflow-step-limit.over {
+  border-color: var(--el-color-danger);
+  color: var(--el-color-danger);
+}
+.workflow-step-limit-label {
+  white-space: nowrap;
+}
+.workflow-step-limit-slider {
+  width: 120px;
+}
+.workflow-step-limit-value {
+  min-width: 2ch;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+.workflow-step-limit.over .workflow-step-limit-value {
+  color: var(--el-color-danger);
+}
+.workflow-step-limit-hint {
+  max-width: 260px;
+  line-height: 1.4;
 }
 .preset-select {
   width: 170px;

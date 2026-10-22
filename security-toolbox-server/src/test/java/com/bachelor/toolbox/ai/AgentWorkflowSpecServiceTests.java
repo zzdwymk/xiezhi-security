@@ -60,7 +60,7 @@ class AgentWorkflowSpecServiceTests {
               stored.add(value);
               return value;
             });
-    service = new AgentWorkflowSpecService(repository, new ObjectMapper(), authorization);
+    service = new AgentWorkflowSpecService(repository, new ObjectMapper(), authorization, 24);
   }
 
   @Test

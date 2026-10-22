@@ -1460,7 +1460,7 @@ public class AiAgentRuntimeClient {
           result.put("consumeOpenPorts", raw.path("consumeOpenPorts").asBoolean(false));
         }
         if (result.containsKey("mode")
-            && !Set.of("quick", "service").contains(result.get("mode"))) {
+            && !com.bachelor.toolbox.ai.ToolParameterSpec.NMAP_MODES.contains(result.get("mode"))) {
           throw new RuntimeProtocolException("AI Runtime Nmap mode 无效");
         }
       }

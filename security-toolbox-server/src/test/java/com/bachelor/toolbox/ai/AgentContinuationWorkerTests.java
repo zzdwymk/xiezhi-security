@@ -40,7 +40,7 @@ class AgentContinuationWorkerTests {
         new ProjectAuthorizationService(mock(AssessmentProjectRepository.class));
     AgentWorkflowSpecService workflows =
         new AgentWorkflowSpecService(
-            mock(AgentWorkflowSpecRepository.class), new ObjectMapper(), authorization);
+            mock(AgentWorkflowSpecRepository.class), new ObjectMapper(), authorization, 24);
     worker =
         new AgentContinuationWorker(
             recovery,
@@ -158,7 +158,8 @@ class AgentContinuationWorkerTests {
             new AgentWorkflowSpecService(
                 mock(AgentWorkflowSpecRepository.class),
                 new ObjectMapper(),
-                new ProjectAuthorizationService(mock(AssessmentProjectRepository.class))),
+                new ProjectAuthorizationService(mock(AssessmentProjectRepository.class)),
+                24),
             new ProjectAuthorizationService(mock(AssessmentProjectRepository.class)),
             true,
             5);

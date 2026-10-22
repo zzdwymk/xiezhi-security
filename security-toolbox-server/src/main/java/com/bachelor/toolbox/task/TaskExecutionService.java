@@ -483,7 +483,14 @@ public class TaskExecutionService {
         com.fasterxml.jackson.databind.JsonNode open = root.path("openPorts");
         if (open.isArray()) {
           for (com.fasterxml.jackson.databind.JsonNode port : open) {
-            if (port.canConvertToInt()) ports.add(port.asInt());
+            // tcp_ports reports plain integers; Nmap reports observation objects that carry the
+            // port under a "port" key. Accept both so either probe can feed the next stage.
+            if (port.canConvertToInt()) {
+              ports.add(port.asInt());
+            } else if (port.isObject()) {
+              com.fasterxml.jackson.databind.JsonNode inner = port.path("port");
+              if (inner.canConvertToInt()) ports.add(inner.asInt());
+            }
           }
         }
       } catch (Exception ignored) {
