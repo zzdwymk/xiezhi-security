@@ -116,6 +116,77 @@ const LEVEL_OPTIONS = [
   { value: 5, label: "5 级 (包含 Host 头深度探测)" },
 ];
 
+const NMAP_MODE_OPTIONS = [
+  { value: "quick", label: "快速扫描（仅端口存活，-sT）" },
+  { value: "regular", label: "常规扫描（-sT -v 详细输出）" },
+  { value: "intense", label: "深入扫描（-sT -T4 -A -v 服务/系统/脚本）" },
+  { value: "intense_udp", label: "深入扫描 + UDP（-sU -T4 -A -v）" },
+  { value: "intense_all_tcp", label: "深入扫描 + 全 TCP 端口（-p- -T4 -A -v）" },
+  { value: "intense_no_ping", label: "深入扫描 + 不检测存活（-T4 -A -v -Pn）" },
+  { value: "ping", label: "Ping 主机发现（-sn -PE -PS443 -PA80）" },
+  { value: "quick_plus", label: "快速扫描+（-sV -T4 -O --version-light 版本/系统）" },
+  { value: "quick_trace", label: "快速路由追踪（-sn --traceroute）" },
+  { value: "slow_comprehensive", label: "慢速全面扫描（-sU -T4 -A -v -p- 默认脚本）" },
+  { value: "service", label: "服务识别（-sV -O --version-light 兼容旧值）" },
+];
+
+const MODE_OPTIONS = [
+  { value: "passive", label: "被动扫描（只观察流量，不主动发包）" },
+  { value: "active", label: "主动扫描（主动发送探测请求）" },
+];
+
+const VULN_MODE_OPTIONS = [
+  { value: "SAFE", label: "安全（默认，仅基础探测）" },
+  { value: "FINGERPRINT", label: "指纹（识别目标指纹）" },
+  { value: "FULL", label: "完整（含爆破/弱口令，谨慎使用）" },
+];
+
+const CHECK_OPTIONS = [
+  { value: "cookies", label: "Cookie 安全属性（Secure/HttpOnly/SameSite）" },
+  { value: "cors", label: "CORS 跨域策略（跨域读写放开风险）" },
+  { value: "methods", label: "危险 HTTP 方法（PUT/DELETE/TRACE 等）" },
+  { value: "disclosure", label: "技术栈信息泄露（Server/X-Powered-By 等响应头）" },
+];
+
+// 工具码 -> 下拉型参数枚举，避免把半截枚举映射到错误工具上
+const ENUM_OPTIONS_BY_TOOL: Record<string, Record<string, { value: any; label: string }[]>> = {
+  nmap_service_scan: { mode: NMAP_MODE_OPTIONS },
+  zap_fuzz: { mode: MODE_OPTIONS },
+  fscan_scan: { vulnMode: VULN_MODE_OPTIONS },
+  http_security_check: { check: CHECK_OPTIONS },
+};
+
+function enumOptions(toolCode: string | undefined, key: string) {
+  return ENUM_OPTIONS_BY_TOOL[String(toolCode || "")]?.[key];
+}
+
+// 与后端 NmapServiceScanTool.buildCommand 对齐的“实际执行命令”预览（仅展示，非真正下发）。
+const NMAP_MODE_FLAGS: Record<string, string> = {
+  quick: "",
+  regular: "-v",
+  intense: "-T4 -A -v",
+  intense_udp: "-sU -T4 -A -v",
+  intense_all_tcp: "-T4 -A -v -p-",
+  intense_no_ping: "-T4 -A -v -Pn",
+  ping: "-sn -PE -PS443 -PA80",
+  quick_plus: "-sV -T4 -O --version-light",
+  quick_trace: "-sn --traceroute",
+  slow_comprehensive: "-sU -T4 -A -v -p- --script default",
+  service: "-sV -T4 -O --version-light",
+};
+const NMAP_NO_PORT_MODES = new Set(["ping", "quick_trace"]);
+
+function nmapCommandPreview(parameters: Record<string, any>): string {
+  const mode = String(parameters?.mode || "quick");
+  const ports = String(parameters?.ports || "1-65535").trim();
+  const parts = ["nmap", "-sT", "-n"];
+  const flags = NMAP_MODE_FLAGS[mode] ?? "";
+  if (flags) parts.push(flags);
+  if (!NMAP_NO_PORT_MODES.has(mode)) parts.push(ports === "1-65535" ? "-p-" : `-p ${ports}`);
+  parts.push("--stats-every 1s", "-oX -", "<目标>");
+  return parts.join(" ");
+}
+
 const RISK_OPTIONS = [
   { value: 1, label: "1 级 (默认无害测试，不破坏数据)" },
   { value: 2, label: "2 级 (包含重负载时间盲注)" },
@@ -136,6 +207,7 @@ const PARAM_LABELS: Record<string, string> = {
   extensions: "匹配扩展名",
   vulnMode: "扫描模式",
   mode: "识别模式",
+  check: "检查项目",
 };
 
 function onApprove() {
@@ -313,6 +385,22 @@ function onApprove() {
                 >
                   <dt class="approval-param-label">{{ PARAM_LABELS[key] || key }}</dt>
                   <dd class="approval-param-control-cell">
+                    <!-- 0. 工具原生枚举下拉：Nmap 识别模式 / 扫描模式 / HTTP 检查项等 -->
+                    <el-select
+                      v-if="enumOptions(step.toolCode, key)"
+                      v-model="editableParameters[index][key]"
+                      size="small"
+                      class="param-interactive-control"
+                      :disabled="busy"
+                    >
+                      <el-option
+                        v-for="opt in enumOptions(step.toolCode, key)"
+                        :key="opt.value"
+                        :label="opt.label"
+                        :value="opt.value"
+                      />
+                    </el-select>
+
                     <!-- 1. 字典选择型参数 -->
                     <el-select
                       v-if="key === 'dictionary'"
@@ -432,7 +520,21 @@ function onApprove() {
                 </div>
               </dl>
 
-              <div v-else class="approval-defaults-hint">
+              <div
+                v-if="
+                  step.toolCode === 'nmap_service_scan' &&
+                  editableParameters[index] &&
+                  Object.keys(editableParameters[index]).length
+                "
+                class="approval-command-preview"
+              >
+                <span class="approval-command-preview-label">本轮将执行命令</span>
+                <code class="approval-command-preview-code">{{
+                  nmapCommandPreview(editableParameters[index])
+                }}</code>
+              </div>
+
+              <div v-else-if="!editableParameters[index] || !Object.keys(editableParameters[index]).length" class="approval-defaults-hint">
                 <FluentIcon name="info" aria-hidden="true" />
                 <span>{{
                   step.toolCode === "nuclei_scan"
@@ -925,6 +1027,32 @@ function onApprove() {
 .param-interactive-input {
   width: 100%;
   max-width: 340px;
+}
+
+.approval-command-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--app-border) 70%, transparent);
+  border-radius: var(--fluent-radius-control, 4px);
+  background: var(--app-surface-soft);
+}
+
+.approval-command-preview-label {
+  color: var(--app-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.approval-command-preview-code {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--app-text);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .approval-defaults-hint {

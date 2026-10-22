@@ -30,6 +30,21 @@ import org.springframework.stereotype.Component;
 @Component
 public class NmapServiceScanTool implements SecurityTool {
   private static final int MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
+  /** 与 Zenmap 官方默认扫描配置文件对齐的受控模式；取值与前端下拉、AI 运行时枚举保持一致。 */
+  static final List<String> NMAP_MODES =
+      List.of(
+          "quick",
+          "regular",
+          "intense",
+          "intense_udp",
+          "intense_all_tcp",
+          "intense_no_ping",
+          "ping",
+          "quick_plus",
+          "quick_trace",
+          "slow_comprehensive",
+          // 兼容历史：service 等价于 -sV 轻量服务识别。
+          "service");
   private static final Pattern NATIVE_PERCENT =
       Pattern.compile("(?i)About\\s+([0-9]+(?:\\.[0-9]+)?)%\\s+done");
 
@@ -89,8 +104,8 @@ public class NmapServiceScanTool implements SecurityTool {
     Set<Integer> requested = portRangeParser.parse(canonicalPorts, maxPorts);
     if (!allowed.containsAll(requested)) throw new ApiException("Nmap 请求端口超出目标授权端口范围");
     String mode = Objects.toString(parameters.getOrDefault("mode", "quick"), "");
-    if (!Set.of("quick", "service").contains(mode))
-      throw new ApiException("Nmap mode 仅支持 quick 或 service");
+    if (!NMAP_MODES.contains(mode))
+      throw new ApiException("Nmap 扫描模式无效，仅支持 " + String.join("、", NMAP_MODES));
     Path executable = requireExecutable();
 
     List<String> command = buildCommand(executable, host, canonicalPorts, mode);
@@ -182,10 +197,34 @@ public class NmapServiceScanTool implements SecurityTool {
       Path executable, String host, String canonicalPorts, String mode) {
     List<String> command = new ArrayList<>();
     command.add(executable.toString());
-    command.addAll(List.of("-sT", "-n", "-Pn", "--stats-every", "1s"));
-    if ("service".equals(mode)) command.addAll(List.of("-sV", "--version-light"));
-    if ("1-65535".equals(canonicalPorts)) command.add("-p-");
-    else command.addAll(List.of("-p", canonicalPorts));
+    // 非端口相关参数，按 Zenmap 官方配置文件对齐（连接扫描 -sT、禁用名字解析 -n）。
+    command.addAll(List.of("-sT", "-n"));
+    switch (mode) {
+      case "quick" -> { /* 仅 TCP 连接扫描，无额外汇总或探测开关 */ }
+      case "regular" -> command.add("-v");
+      case "intense" -> command.addAll(List.of("-T4", "-A", "-v"));
+      case "intense_udp" -> command.addAll(List.of("-sU", "-T4", "-A", "-v"));
+      case "intense_all_tcp" -> command.addAll(List.of("-T4", "-A", "-v"));
+      case "intense_no_ping" -> command.addAll(List.of("-T4", "-A", "-v", "-Pn"));
+      case "ping" -> command.addAll(List.of("-sn", "-PE", "-PS443", "-PA80"));
+      case "quick_plus" -> command.addAll(List.of("-sV", "-T4", "-O", "--version-light"));
+      case "quick_trace" -> command.addAll(List.of("-sn", "--traceroute"));
+      case "service" -> command.addAll(List.of("-sV", "-T4", "-O", "--version-light"));
+      case "slow_comprehensive" -> command.addAll(
+          List.of(
+              "-sS", "-sU", "-T4", "-A", "-v", "-PE", "-PS80", "-PA443",
+              "-PP", "-script", "default"));
+      default -> throw new ApiException("Nmap 扫描模式无效：" + mode);
+    }
+    // 端口选择：全端口统一用 -p-；本平台强制的连接扫描参数放在端口参数之后。
+    if ("intense_all_tcp".equals(mode) || "slow_comprehensive".equals(mode)) {
+      command.add("-p-");
+    } else if (!"ping".equals(mode) && !"quick_trace".equals(mode)) {
+      if ("1-65535".equals(canonicalPorts)) command.add("-p-");
+      else command.addAll(List.of("-p", canonicalPorts));
+    }
+    // 本平台安全基线：始终 TCP 连接扫描，避免 raw socket 权限问题；授权端口范围由系统约束。
+    command.addAll(List.of("-sT", "--stats-every", "1s"));
     command.addAll(List.of("-oX", "-", host));
     return List.copyOf(command);
   }

@@ -176,7 +176,11 @@ _PARAMETER_SCHEMAS: dict[str, dict[str, Any]] = {
         "type": "object",
         "properties": {
             "ports": {"type": "string", "maxLength": 200},
-            "mode": {"enum": ["quick", "service"]},
+            "mode": {"enum": [
+                "quick", "regular", "intense", "intense_udp", "intense_all_tcp",
+                "intense_no_ping", "ping", "quick_plus", "quick_trace", "slow_comprehensive",
+                "service",
+            ]},
         },
         "additionalProperties": False,
     },

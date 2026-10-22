@@ -26,7 +26,7 @@ final class AiToolCatalog {
   private AiToolCatalog() {}
 
   static final List<String> EXECUTABLE_CODES = List.of(
-      "nmap_service_scan", "tcp_ports", "http_headers", "tls_config", "site_crawl",
+      "tcp_ports", "nmap_service_scan", "http_headers", "tls_config", "site_crawl",
       "dir_scan", "http_security_check", "nuclei_scan", "afrog_scan", "xray_scan",
       "zap_scan", "fscan_scan", "msf_scan", "sqlmap_scan", "zap_fuzz");
   static final Set<String> EXECUTABLE_TOOLS = Set.copyOf(EXECUTABLE_CODES);

@@ -131,7 +131,19 @@ class PortScanParameters(BaseModel):
 
 
 class NmapParameters(PortScanParameters):
-    mode: Literal["quick", "service"] = "quick"
+    mode: Literal[
+        "quick",
+        "regular",
+        "intense",
+        "intense_udp",
+        "intense_all_tcp",
+        "intense_no_ping",
+        "ping",
+        "quick_plus",
+        "quick_trace",
+        "slow_comprehensive",
+        "service",
+    ] = "quick"
 
 
 class FscanParameters(PortScanParameters):
