@@ -128,6 +128,8 @@ class RetrievalParameters(BaseModel):
 class PortScanParameters(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ports: StrictStr | None = Field(default=None, min_length=1, max_length=200)
+    # "quick" probes only common ports for liveness and discovery; absent sweeps as requested.
+    mode: Literal["quick"] | None = None
 
 
 class NmapParameters(PortScanParameters):

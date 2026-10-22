@@ -148,7 +148,10 @@ final class AiToolCatalog {
                           com.bachelor.toolbox.ai.ToolParameterSpec.NMAP_MODES.stream()
                               .sorted()
                               .toList())));
-      case "tcp_ports" -> object(Map.of("ports", string(1, 200, "授权端口")));
+      case "tcp_ports" -> object(
+          Map.of(
+              "ports", string(1, 200, "授权端口，如 80,443 或 1-1024"),
+              "mode", enumeration("探测方式", List.of("quick"))));
       case "fscan_scan" ->
           object(
               Map.of(

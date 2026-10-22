@@ -237,7 +237,7 @@ public class AiTaskDispatchService {
         rawParameters == null ? new LinkedHashMap<>() : new LinkedHashMap<>(rawParameters);
     Set<String> allowedKeys =
         switch (toolCode) {
-          case "tcp_ports" -> Set.of("ports");
+          case "tcp_ports" -> Set.of("ports", "mode");
           case "nmap_service_scan" -> Set.of("ports", "mode", "consumeOpenPorts");
           case "fscan_scan" -> Set.of("ports", "vulnMode");
           case "afrog_scan", "xray_scan" -> Set.of("pocCodes", "allPocs");
