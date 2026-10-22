@@ -43,7 +43,8 @@ public class AgentWorkflowSpecService {
   private static final int MAX_SPEC_BYTES = 512 * 1024;
   private static final int MAX_NODES = 128;
   private static final int MAX_EDGES = 256;
-  private static final int MAX_STEPS = 16;
+  private static final int DEFAULT_MAX_STEPS = 24;
+  private final int maxSteps;
   private static final Pattern NODE_ID = Pattern.compile("[A-Za-z0-9_-]{1,64}");
   private static final Pattern DIGEST = Pattern.compile("sha256:[0-9a-f]{64}");
   private static final Set<String> SERVER_METADATA =
@@ -78,10 +79,13 @@ public class AgentWorkflowSpecService {
   public AgentWorkflowSpecService(
       AgentWorkflowSpecRepository repository,
       ObjectMapper objectMapper,
-      ProjectAuthorizationService authorization) {
+      ProjectAuthorizationService authorization,
+      @org.springframework.beans.factory.annotation.Value(
+          "${toolbox.ai.workflow.max-steps:24}") int maxSteps) {
     this.repository = repository;
     this.objectMapper = objectMapper;
     this.authorization = authorization;
+    this.maxSteps = Math.max(1, Math.min(maxSteps, 64));
   }
 
   /** Returns the latest revision, upgrading only an unchanged shipped legacy default. */
@@ -450,7 +454,8 @@ public class AgentWorkflowSpecService {
       Map<String, Integer> depth,
       Map<Integer, Integer> groupByDepth) {
     List<Map<String, Object>> rawSteps = objectList(value, "steps");
-    if (rawSteps.size() > MAX_STEPS) throw new ApiException("工作流工具步骤数量超过限制");
+    if (rawSteps.size() > maxSteps)
+      throw new ApiException("工作流工具步骤数量超过限制（最多 " + maxSteps + " 步）");
     List<Map<String, Object>> toolNodes =
         nodes.values().stream().filter(node -> text(node.get("tool")) != null).toList();
     if (toolNodes.size() != rawSteps.size()) {
@@ -500,7 +505,8 @@ public class AgentWorkflowSpecService {
 
   private List<Map<String, Object>> normalizeLegacySteps(Object value) {
     List<Map<String, Object>> raw = objectList(value, "steps");
-    if (raw.size() > MAX_STEPS) throw new ApiException("工作流工具步骤数量超过限制");
+    if (raw.size() > maxSteps)
+      throw new ApiException("工作流工具步骤数量超过限制（最多 " + maxSteps + " 步）");
     List<Map<String, Object>> result = new ArrayList<>();
     Set<String> nodeIds = new HashSet<>();
     for (int index = 0; index < raw.size(); index++) {
@@ -841,11 +847,15 @@ public class AgentWorkflowSpecService {
         List.of(
             // ---- group 0: context (read-only, produces no action)
             defaultStep("context", "retrieve_project_context", 0, "SAFE", false),
-            // ---- group 1: fast TCP port probe first. It is cheap and tells us which ports are
-            // actually open, so the heavier service-identification scan need not sweep 65535 ports.
-            defaultStep("port-probe", "tcp_ports", 1, "SAFE", false),
-            // ---- group 2: service identification reuses the open ports found above; the rest of
-            // the light read-only probes batch in the same group.
+            // ---- group 1: liveness + fast discovery. tcp_ports in quick mode only touches a
+            // handful of common ports (seconds), which proves the host is up and seeds the
+            // open-port list before anything expensive runs.
+            defaultStepWithParameters(
+                "port-probe", "tcp_ports", 1, "SAFE", false,
+                Map.of("mode", "quick")),
+            // ---- group 2: full-range service identification reuses the ports found above. The
+            // same Nmap tool appears twice on purpose — quick discovery first, then -sV on the
+            // open ports only — which is why the step cap counts nodes, not distinct tools.
             defaultStepWithParameters(
                 "service-scan", "nmap_service_scan", 2, "SAFE", false,
                 Map.of("consumeOpenPorts", true)),
@@ -896,7 +906,15 @@ public class AgentWorkflowSpecService {
         parameters.put(String.valueOf(entry.getKey()), entry.getValue());
       }
     }
-    parameters.putAll(extra);
+    for (Map.Entry<String, Object> entry : extra.entrySet()) {
+      // dependsOnNodeId is a graph edge, not a tool parameter: it must not reach parameter
+      // validation or the tool itself.
+      if ("dependsOnNodeId".equals(entry.getKey())) {
+        step.put("dependsOnNodeId", entry.getValue());
+        continue;
+      }
+      parameters.put(entry.getKey(), entry.getValue());
+    }
     step.put("parameters", parameters);
     return step;
   }

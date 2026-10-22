@@ -200,7 +200,12 @@ public class NmapServiceScanTool implements SecurityTool {
     // 非端口相关参数，按 Zenmap 官方配置文件对齐（连接扫描 -sT、禁用名字解析 -n）。
     command.addAll(List.of("-sT", "-n"));
     switch (mode) {
-      case "quick" -> { /* 仅 TCP 连接扫描，无额外汇总或探测开关 */ }
+      case "quick" -> {
+        // 纯 TCP 连接扫描：Nmap 内部按批并行，全段 65535 约 15-30 秒，
+        // 比逐个串行建连快约两个数量级。-Pn 跳过禁 ping 主机的发现等待，
+        // 否则目标不回 ICMP 时光是发现阶段就要耗掉数十秒。
+        command.addAll(List.of("-Pn", "-T4"));
+      }
       case "regular" -> command.add("-v");
       case "intense" -> command.addAll(List.of("-T4", "-A", "-v"));
       case "intense_udp" -> command.addAll(List.of("-sU", "-T4", "-A", "-v"));

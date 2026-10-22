@@ -141,7 +141,13 @@ final class AiToolCatalog {
           object(
               Map.of(
                   "ports", string(1, 200, "授权端口，如 80,443 或 1-1000"),
-                  "mode", enumeration("扫描模式", List.of("quick", "service"))));
+                  // Single source of truth: the tool's own accepted modes.
+                  "mode",
+                      enumeration(
+                          "扫描模式",
+                          com.bachelor.toolbox.ai.ToolParameterSpec.NMAP_MODES.stream()
+                              .sorted()
+                              .toList())));
       case "tcp_ports" -> object(Map.of("ports", string(1, 200, "授权端口")));
       case "fscan_scan" ->
           object(
