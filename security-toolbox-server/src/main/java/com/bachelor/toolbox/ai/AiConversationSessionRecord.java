@@ -45,6 +45,11 @@ public class AiConversationSessionRecord {
   @Column(columnDefinition = "TEXT")
   private String usageJson;
 
+  // Structured digest of turns a long conversation compressed away. Nullable: absent until the
+  // runtime first compacts, and safe to lose (it only affects context recall, never authority).
+  @Column(columnDefinition = "TEXT")
+  private String summaryJson;
+
   @Column
   private Instant createdAt;
 

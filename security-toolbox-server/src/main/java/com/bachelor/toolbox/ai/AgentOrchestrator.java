@@ -219,7 +219,10 @@ public class AgentOrchestrator {
 
         String history = memory.transcript(session.id());
         Map<String, Object> conversationState = planContinuity == null ? Map.of()
-            : planContinuity.conversationState(planBaseline, memory.recentChatMessages(session.id()));
+            : planContinuity.conversationState(
+                planBaseline,
+                memory.recentChatMessages(session.id()),
+                memory.conversationSummary(session.id()));
         memory.addUser(session.id(), request.automaticExecutionIntent() ? request.userPrompt() : request.prompt());
         Optional<String> auditTemplate =
             contextService == null
@@ -392,6 +395,18 @@ public class AgentOrchestrator {
             proposed = runtimeResult.plan();
             runtimeAnswer = runtimeResult.answer();
             memory.addModelUsage(session.id(), runtimeResult.modelUsage());
+            // Keep the digest the runtime produced for the turns it compacted, so the next turn
+            // reuses it rather than recomputing (and re-losing) the same history.
+            Map<String, Object> producedSummary = runtimeResult.conversationSummary();
+            if (producedSummary != null && !producedSummary.isEmpty()) {
+              try {
+                memory.saveConversationSummary(
+                    session.id(), new com.fasterxml.jackson.databind.ObjectMapper()
+                        .writeValueAsString(producedSummary));
+              } catch (RuntimeException | com.fasterxml.jackson.core.JsonProcessingException summaryFailure) {
+                // Persisting recall is an optimization; a failure must not fail the turn.
+              }
+            }
             provenance.apply(runtimeResult.provenance());
             if ("PYTHON_MODEL_FALLBACK".equals(provenance.fallbackReason)) {
               throw new ApiException("智能服务未返回模型生成的回答，请检查模型配置后重试");
