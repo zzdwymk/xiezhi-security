@@ -1392,7 +1392,7 @@ def test_selected_known_action_references_are_aggregated_without_model_correctio
 
 
 def test_user_facing_answer_prompts_translate_statuses_without_translating_contract_fields():
-    from app.model import SYSTEM_PROMPT, _CHINESE_STATUS_DISPLAY_GUIDANCE
+    from app.model import SYSTEM_PROMPT, _CHINESE_STATUS_DISPLAY_GUIDANCE, _USER_FACING_NAMING_GUIDANCE
     from langchain_core.prompts import ChatPromptTemplate
 
     for prompt in (SYSTEM_PROMPT, GROUNDED_SYSTEM_PROMPT):
@@ -1400,11 +1400,29 @@ def test_user_facing_answer_prompts_translate_statuses_without_translating_contr
         assert _CHINESE_STATUS_DISPLAY_GUIDANCE in rendered
         for expected in ("授权有效", "执行成功", "执行失败", "超时", "等待处理", "等待审批"):
             assert expected in rendered
-        assert "不得翻译或改写JSON字段名" in rendered
-        assert "工具代码、参数值、ID和证据引用" in rendered
+        # Machine fields stay verbatim inside JSON, but never leak into prose.
+        assert "JSON字段名" in rendered
+        assert "工具与节点在JSON里用代码，但在自然语言里用中文名" in rendered
         assert '"intent":"answer|plan|clarify"' in rendered
+    # Every user-facing prompt must also carry the naming rule, so a long conversation that
+    # compacts away earlier instructions still keeps the "no internal codes in prose" constraint.
+    assert _USER_FACING_NAMING_GUIDANCE in SYSTEM_PROMPT
+    assert _USER_FACING_NAMING_GUIDANCE in GROUNDED_SYSTEM_PROMPT
     assert '"risk":"SAFE|CAUTION"' in SYSTEM_PROMPT
     assert '"knowledgeMode":"GENERAL|PROJECT_EVIDENCE|INSUFFICIENT_EVIDENCE"' in GROUNDED_SYSTEM_PROMPT
+
+
+def test_naming_guidance_covers_every_executable_tool_in_chinese():
+    """A tool with no Chinese name would still leak its code into the user's reading."""
+    from app.model import _USER_FACING_NAMING_GUIDANCE
+    from app.schemas import WorkflowStep
+
+    for tool in WorkflowStep.model_fields["tool"].annotation.__args__:
+        if tool == "retrieve_project_context":
+            assert "项目上下文检索" in _USER_FACING_NAMING_GUIDANCE
+            continue
+        # The rule must name each tool in prose, not merely forbid the code.
+        assert _USER_FACING_NAMING_GUIDANCE.count("『") >= 16
 
 
 def test_bad_json_then_known_action_reference_completes_in_existing_two_call_budget():

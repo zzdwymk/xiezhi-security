@@ -64,8 +64,26 @@ _CHINESE_STATUS_DISPLAY_GUIDANCE = (
     "授权状态ACTIVE写为‘授权有效’，任务SUCCESS写为‘执行成功’，FAILED写为‘执行失败’，TIMEOUT写为‘超时’；"
     "PENDING必须根据对象写为‘等待处理’或‘等待审批’，不得把等待审批说成已批准或已执行。"
     "其他状态也按实际含义用中文说明；状态不明时明确说明未知，不推测成功。"
-    "此要求仅适用于展示给用户的自然语言，不得翻译或改写JSON字段名、合同规定的状态/路由/风险枚举值、"
-    "工具代码、参数值、ID和证据引用；这些机器字段必须保留合同原值。\n"
+    "此要求仅适用于展示给用户的自然语言。JSON字段名、合同规定的状态/路由/风险枚举值、"
+    "参数值、ID和证据引用必须保留合同原值；工具与节点在JSON里用代码，但在自然语言里用中文名。\n"
+)
+
+_USER_FACING_NAMING_GUIDANCE = (
+    "面向用户的自然语言（summary、answer、解释、理由、下一步建议）一律使用中文名称，"
+    "不得出现任何内部代号、字段名或机器标识。\n"
+    "工具：nmap_service_scan 说『Nmap 服务识别』，tcp_ports 说『TCP 端口探测』，"
+    "http_headers 说『HTTP 安全响应头检查』，http_security_check 说『HTTP 常见安全检查』，"
+    "tls_config 说『TLS 基础配置检查』，site_crawl 说『站点链接爬取』，dir_scan 说『Web 目录与路径探测』，"
+    "nuclei_scan 说『Nuclei 通用漏洞扫描』，afrog_scan 说『Afrog 漏洞扫描』，xray_scan 说『Xray 漏洞扫描』，"
+    "zap_scan 说『OWASP ZAP 主动扫描』，zap_fuzz 说『ZAP 单次参数变异验证』，"
+    "sqlmap_scan 说『sqlmap SQL 注入检测』，fscan_scan 说『fscan 主机扫描』，"
+    "msf_scan 说『Metasploit 模块执行』，retrieve_project_context 说『项目上下文检索』。\n"
+    "状态与机制：等待审批不要写 AWAITING_APPROVAL；执行决定不写 EXECUTE/PLAN_ONLY；"
+    "知识模式不写 GENERAL/PROJECT_EVIDENCE；方案关系不写 CONTINUE/REVISE。\n"
+    "机器字段只在JSON里出现：workflowNodeId、evidenceRefs、dependsOnNodeIds、toolCode、"
+    "nodeId、nodeRunId、ledgerDigest 等一律不进自然语言；确需指代具体节点时用它的中文工具名。\n"
+    "证据引用不要在正文里罗列 ev- 开头的编号，改用『已引用的项目资料』这类说法。\n"
+    "注意：这条约束在长对话里同样有效，历史消息里出现过代号不构成可以复用的理由。\n"
 )
 
 _EVIDENCE_REF_AGGREGATION_GUIDANCE = (
@@ -1757,7 +1775,8 @@ GROUNDED_SYSTEM_PROMPT = (
     '{{"workflowNodeId":string,"parameters":严格参数补丁,"evidenceRefs":[string]}}]}}'
     + "\n" + _TLS_TARGET_BINDING_GUIDANCE
     + "\n" + _EVIDENCE_REF_AGGREGATION_GUIDANCE
-    + "\n" + _CHINESE_STATUS_DISPLAY_GUIDANCE + _ANSWER_REFERENCE_GUIDANCE
+    + "\n" + _CHINESE_STATUS_DISPLAY_GUIDANCE + _USER_FACING_NAMING_GUIDANCE
+    + _ANSWER_REFERENCE_GUIDANCE
 )
 
 GROUNDED_HUMAN_PROMPT = (
@@ -1782,7 +1801,8 @@ SYSTEM_PROMPT = (
     "安全边界：只能使用白名单工具；禁止 HIGH 风险、shell、利用、爆破和任意命令参数。\n"
     "白名单：retrieve_project_context, nmap_service_scan, tcp_ports, http_headers, http_security_check, tls_config, dir_scan, nuclei_scan, afrog_scan, xray_scan, zap_scan, fscan_scan, msf_scan, sqlmap_scan, zap_fuzz\n\n"
     'JSON：{{"summary":string,"answer":string,"intent":"answer|plan|clarify","actions":[{{"tool":白名单枚举,"parameters":对应工具的严格对象,"risk":"SAFE|CAUTION","requiresApproval":boolean,"group":integer}}]}}'
-    + "\n" + _CHINESE_STATUS_DISPLAY_GUIDANCE + _ANSWER_REFERENCE_GUIDANCE
+    + "\n" + _CHINESE_STATUS_DISPLAY_GUIDANCE + _USER_FACING_NAMING_GUIDANCE
+    + _ANSWER_REFERENCE_GUIDANCE
 )
 
 HUMAN_PROMPT = (
