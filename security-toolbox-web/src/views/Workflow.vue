@@ -1052,6 +1052,26 @@ const selectedNmapMode = computed({
   set: (value: string) => updateSelectedToolParameters({ mode: value }),
 });
 
+// 与后端 NmapServiceScanTool.buildCommand 对齐的扫描模式定义（中文标签 + 实际命令参数）。
+const NMAP_MODE_DEFS = [
+  { value: "quick", label: "快速扫描（仅端口存活）", flags: "" },
+  { value: "regular", label: "常规扫描（详细输出）", flags: "-v" },
+  { value: "intense", label: "深入扫描（服务/系统/脚本）", flags: "-T4 -A -v" },
+  { value: "intense_udp", label: "深入扫描 + UDP", flags: "-sU -T4 -A -v" },
+  { value: "intense_all_tcp", label: "深入扫描 + 全 TCP 端口", flags: "-T4 -A -v -p-" },
+  { value: "intense_no_ping", label: "深入扫描 + 不检测存活", flags: "-T4 -A -v -Pn" },
+  { value: "ping", label: "Ping 主机发现（不扫端口）", flags: "-sn -PE -PS443 -PA80" },
+  { value: "quick_plus", label: "快速扫描+（版本/系统识别）", flags: "-sV -T4 -O --version-light" },
+  { value: "quick_trace", label: "快速路由追踪（不扫端口）", flags: "-sn --traceroute" },
+  { value: "slow_comprehensive", label: "慢速全面扫描（含默认脚本）", flags: "-sU -T4 -A -v -p- --script default" },
+  { value: "service", label: "服务识别（兼容旧值）", flags: "-sV -T4 -O --version-light" },
+];
+const NMAP_MODE_VALUES = NMAP_MODE_DEFS.map((m) => m.value);
+const NMAP_NO_PORT_MODES = new Set(["ping", "quick_trace"]);
+function nmapModeFlags(mode: string): string {
+  return NMAP_MODE_DEFS.find((m) => m.value === mode)?.flags ?? "";
+}
+
 const selectedSqlmapPath = computed({
   get: () => String(selectedToolNode.value?.data.parameters?.path || ""),
   set: (value: string) => updateSelectedToolParameters({ path: value.trim() || undefined }),
@@ -3841,9 +3861,9 @@ function validateExecutionInputs(steps: WorkflowStepSpec[]) {
     }
     if (
       step.tool === "nmap_service_scan" &&
-      !["quick", "service"].includes(String(parameters.mode || ""))
+      !NMAP_MODE_VALUES.includes(String(parameters.mode || ""))
     ) {
-      return "Nmap 扫描模式必须是快速探测或服务识别";
+      return "Nmap 扫描模式无效";
     }
     if (
       step.tool === "http_security_check" &&
@@ -5388,10 +5408,24 @@ onBeforeUnmount(() => {
                 v-if="selectedToolNode.data.tool === 'nmap_service_scan'"
                 label="识别模式"
               >
-                <el-radio-group v-model="selectedNmapMode">
-                  <el-radio-button value="quick">快速探测</el-radio-button>
-                  <el-radio-button value="service">服务识别</el-radio-button>
-                </el-radio-group>
+                <el-select v-model="selectedNmapMode" class="workflow-nmap-mode-select">
+                  <el-option
+                    v-for="m in NMAP_MODE_DEFS"
+                    :key="m.value"
+                    :value="m.value"
+                    :label="m.label"
+                  >
+                    <span>{{ m.label }}</span>
+                    <span class="nmap-mode-flags">{{ m.flags || "(无附加参数)" }}</span>
+                  </el-option>
+                </el-select>
+                <small class="input-hint">
+                  本平台固定以 TCP 连接扫描（-sT）执行、端口受授权范围约束。当前将执行：
+                  <code>nmap -sT -n {{ nmapModeFlags(selectedNmapMode) }}{{
+                    NMAP_NO_PORT_MODES.has(selectedNmapMode) ? "" : " -p " + (selectedToolNode.data.parameters?.ports || "1-65535")
+                  }} -oX - &lt;目标&gt;</code>
+                  。全端口统一下发 <code>-p-</code>。
+                </small>
               </el-form-item>
 
               <template v-if="selectedToolNode.data.tool === 'zap_fuzz'">
@@ -7803,6 +7837,22 @@ onBeforeUnmount(() => {
   color: var(--app-muted);
   font-size: var(--type-micro);
   line-height: 1.5;
+}
+.input-hint code {
+  font-family: var(--font-mono, monospace);
+  font-size: inherit;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--app-surface-soft);
+  color: var(--app-text);
+  overflow-wrap: anywhere;
+}
+.nmap-mode-flags {
+  float: right;
+  margin-left: 16px;
+  color: var(--app-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
 }
 .quick-action-toolbar {
   display: flex;

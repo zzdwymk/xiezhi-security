@@ -72,7 +72,7 @@ public final class ToolParameterPolicy {
   /** 取值枚举（对齐 dispatch 层的逐个 case 校验）。 */
   private static final Map<String, Set<String>> VALUE_ENUMS =
       Map.ofEntries(
-          Map.entry("nmap_service_scan.mode", Set.of("quick", "service")),
+          Map.entry("nmap_service_scan.mode", com.bachelor.toolbox.ai.ToolParameterSpec.NMAP_MODES),
           Map.entry("fscan_scan.vulnMode", Set.of("SAFE", "FINGERPRINT", "FULL")),
           Map.entry("zap_scan.strength", Set.of("LOW", "MEDIUM", "HIGH", "INSANE")),
           Map.entry("http_security_check.check", Set.of("cookies", "cors", "methods", "disclosure")));

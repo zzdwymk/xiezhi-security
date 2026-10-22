@@ -26,14 +26,44 @@ class NmapServiceScanToolTests {
   }
 
   @Test
-  void passesOtherSelectionsAsOneCompactRangeArgument() throws Exception {
+  void quickModeRunsPlainTcpConnectScanWithoutVersionProbing() throws Exception {
     NmapServiceScanTool tool = toolWithExecutable(createExecutable("nmap.exe"));
-    List<String> command = tool.buildCommand("127.0.0.1", "80-82,443", "service");
+    List<String> command = tool.buildCommand("127.0.0.1", "80,443", "quick");
 
-    assertThat(command)
-        .containsSubsequence("-sV", "--version-light")
-        .containsSubsequence("--stats-every", "1s")
-        .containsSubsequence("-p", "80-82,443");
+    assertThat(command).contains("-sT", "-n").doesNotContain("-sV", "-A", "-O");
+    assertThat(command).containsSubsequence("-p", "80,443");
+  }
+
+  @Test
+  void regularModeAddsVerboseOutput() throws Exception {
+    NmapServiceScanTool tool = toolWithExecutable(createExecutable("nmap.exe"));
+    List<String> command = tool.buildCommand("127.0.0.1", "80-82,443", "regular");
+
+    assertThat(command).contains("-v").containsSubsequence("-p", "80-82,443");
+  }
+
+  @Test
+  void intenseModeAlignsWithZenmapFlags() throws Exception {
+    NmapServiceScanTool tool = toolWithExecutable(createExecutable("nmap.exe"));
+    List<String> command = tool.buildCommand("127.0.0.1", "80,443", "intense");
+
+    assertThat(command).contains("-T4", "-A", "-v");
+  }
+
+  @Test
+  void intenseAllTcpForcesFullPortRange() throws Exception {
+    NmapServiceScanTool tool = toolWithExecutable(createExecutable("nmap.exe"));
+    List<String> command = tool.buildCommand("127.0.0.1", "80,443", "intense_all_tcp");
+
+    assertThat(command).contains("-T4", "-A", "-v", "-p-");
+  }
+
+  @Test
+  void pingModeUsesHostDiscoveryOnly() throws Exception {
+    NmapServiceScanTool tool = toolWithExecutable(createExecutable("nmap.exe"));
+    List<String> command = tool.buildCommand("127.0.0.1", "80,443", "ping");
+
+    assertThat(command).contains("-sn").doesNotContain("-p", "80,443");
   }
 
   @Test
@@ -66,7 +96,7 @@ class NmapServiceScanToolTests {
           <port protocol="tcp" portid="80"><state state="closed" reason="conn-refused"/></port>
           <port protocol="tcp" portid="443"><state state="filtered" reason="no-response"/></port>
         </ports></host></nmaprun>
-        """, "127.0.0.1", "service", "22,80,443", 3, 0);
+        """, "127.0.0.1", "quick", "22,80,443", 3, 0);
     var json = new ObjectMapper().valueToTree(result);
     var data = json.path("data");
 

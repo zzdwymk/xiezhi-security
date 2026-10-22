@@ -78,7 +78,20 @@ export function approvalParameterRows(parameters: Record<string, unknown> = {}) 
   };
   // Translate enumerated settings only; literal paths, payloads and module options must stay exact.
   const values: Record<string, Record<string, string>> = {
-    mode: { quick: "快速探测", service: "服务识别", passive: "被动扫描", active: "主动扫描" },
+    mode: {
+      quick: "快速扫描（仅端口存活）",
+      regular: "常规扫描（-v 详细输出）",
+      intense: "深入扫描（-T4 -A -v）",
+      intense_udp: "深入扫描 + UDP（-sU -T4 -A -v）",
+      intense_all_tcp: "深入扫描 + 全 TCP 端口（-p- -T4 -A -v）",
+      intense_no_ping: "深入扫描 + 不检测存活（-T4 -A -v -Pn）",
+      ping: "Ping 主机发现（-sn）",
+      quick_plus: "快速扫描+（-sV -T4 -O --version-light）",
+      quick_trace: "快速路由追踪（-sn --traceroute）",
+      slow_comprehensive: "慢速全面扫描（-sS -sU -T4 -A -v -p- 脚本）",
+      service: "服务识别（-sV 轻量版本探测）",
+      passive: "被动扫描", active: "主动扫描",
+    },
     vulnMode: { SAFE: "安全检测", FINGERPRINT: "指纹识别", FULL: "完整检测" },
     strength: { LOW: "低", MEDIUM: "中", HIGH: "高", INSANE: "极高" },
     check: { cookies: "Cookie 安全属性", cors: "CORS 跨域策略", methods: "危险 HTTP 方法", disclosure: "技术栈信息泄露" },

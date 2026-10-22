@@ -1454,6 +1454,11 @@ public class AiAgentRuntimeClient {
       case "nmap_service_scan" -> {
         copyStrictText(raw, result, "ports", 200);
         copyStrictText(raw, result, "mode", 20);
+        // Optional workflow hint: narrow the sweep to ports a prior probe found open. Consumed by
+        // the executor before the tool runs, never passed down to Nmap itself.
+        if (raw.has("consumeOpenPorts")) {
+          result.put("consumeOpenPorts", raw.path("consumeOpenPorts").asBoolean(false));
+        }
         if (result.containsKey("mode")
             && !Set.of("quick", "service").contains(result.get("mode"))) {
           throw new RuntimeProtocolException("AI Runtime Nmap mode 无效");

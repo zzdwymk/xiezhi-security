@@ -40,8 +40,21 @@ public final class ToolParameterSpec {
   public static final Set<String> HTTP_CHECK_TYPES =
       Set.of("cookies", "cors", "methods", "disclosure");
 
-  /** {@code nmap_service_scan} 的 {@code mode} 取值（D-2）。 */
-  public static final Set<String> NMAP_MODES = Set.of("quick", "service");
+  /** {@code nmap_service_scan} 的 {@code mode} 取值（D-2），对齐 Zenmap 默认扫描配置文件。 */
+  public static final Set<String> NMAP_MODES =
+      Set.of(
+          "quick",
+          "regular",
+          "intense",
+          "intense_udp",
+          "intense_all_tcp",
+          "intense_no_ping",
+          "ping",
+          "quick_plus",
+          "quick_trace",
+          "slow_comprehensive",
+          // 兼容历史与既有规则：service 等价于 -sV 轻量服务识别。
+          "service");
 
   /** {@code nmap_service_scan} 的默认 {@code mode}。 */
   public static final String NMAP_DEFAULT_MODE = "quick";
@@ -189,7 +202,7 @@ public final class ToolParameterSpec {
   public static String requireNmapMode(Object rawMode) {
     String mode = Objects.toString(rawMode, "");
     if (!NMAP_MODES.contains(mode)) {
-      throw new ApiException("Nmap mode 仅支持 quick 或 service: " + mode);
+      throw new ApiException("Nmap 扫描模式无效，仅支持 " + String.join("、", NMAP_MODES) + ": " + mode);
     }
     return mode;
   }

@@ -114,7 +114,7 @@ public final class SecurityToolCapability implements AgentCapability {
               "nmap_service_scan",
               merge(
                   property("ports", "string", "授权端口范围"),
-                  property("mode", "string", "扫描模式：quick 或 service"))),
+                  property("mode", "string", "扫描模式，可选：" + String.join("、", com.bachelor.toolbox.ai.ToolParameterSpec.NMAP_MODES.stream().sorted().toList())))),
           Map.entry(
               "fscan_scan",
               merge(

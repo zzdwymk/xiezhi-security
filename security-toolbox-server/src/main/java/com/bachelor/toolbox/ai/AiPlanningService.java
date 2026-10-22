@@ -200,7 +200,7 @@ public class AiPlanningService {
                         Map.of(
                             "type", "string",
                             "description", "Comma-separated authorized port subset"),
-                    "mode", Map.of("type", "string", "enum", List.of("quick", "service"))),
+                    "mode", Map.of("type", "string", "enum", com.bachelor.toolbox.ai.ToolParameterSpec.NMAP_MODES.stream().sorted().toList())),
                 "required",
                 List.of("ports", "mode"),
                 "additionalProperties",
@@ -319,7 +319,7 @@ public class AiPlanningService {
             + " steps。结合历史理解短确认，但以当前请求为主；含糊时先澄清，不要把明确执行请求当成咨询。漏洞扫描/Nuclei 用"
             + " nuclei_scan；Cookie/CORS/方法/信息泄露用 http_security_check。只输出严格 JSON，不要 Markdown。格式："
             + "{\"summary\":\"简短说明\",\"steps\":[{\"toolCode\":\"工具名\",\"title\":\"标题\",\"reason\":\"原因\",\"parameters\":{}}]}。nmap_service_scan"
-            + " parameters 必须包含 ports 和 mode(quick或service)；tcp_ports 必须包含"
+            + " parameters 必须包含 ports 和 mode(q" + "uick/regular/intense/intense_udp/intense_all_tcp/intense_no_ping/ping/quick_plus/quick_trace/slow_comprehensive 之一)；tcp_ports 必须包含"
             + " ports；http_security_check parameters 必须只包含 check，值为 cookies、cors、methods、disclosure"
             + " 之一；nuclei_scan parameters 必须为空对象；http_headers 与 tls_config parameters 必须为空对象。不要同时选择"
             + " nmap_service_scan 和 tcp_ports。";
@@ -554,7 +554,7 @@ public class AiPlanningService {
                   target.getAllowedPorts(),
                   "mode",
                   intent.wantsServiceIdentification() && !intent.fullAuthorization()
-                      ? "service"
+                      ? "intense"
                       : "quick")));
     } else if (intent.wantsPortAssessment()) {
       steps.add(
