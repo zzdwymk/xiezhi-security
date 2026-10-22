@@ -146,6 +146,9 @@ class NmapParameters(PortScanParameters):
         "slow_comprehensive",
         "service",
     ] = "quick"
+    # Saved-workflow hint: narrow this sweep to ports a prior probe found open. It is a workflow
+    # directive consumed before the tool runs, never forwarded to Nmap itself.
+    consumeOpenPorts: StrictBool | None = None
 
 
 class FscanParameters(PortScanParameters):
