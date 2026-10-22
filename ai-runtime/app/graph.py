@@ -1863,6 +1863,11 @@ class LedgerAgentRuntime:
         if state.get("request", {}).get("executionIntent") == "AUTO":
             routed = state.get("intentDecision", {})
             final["planRelation"] = routed.get("planRelation") or "NONE"
+        # Hand a freshly produced digest back to the server so the next turn can reuse it
+        # instead of recomputing. Absent when nothing was compacted this turn.
+        summarized = state.get("request", {}).get("_compactedSummary")
+        if isinstance(summarized, dict) and summarized:
+            final["conversationSummary"] = summarized
         return {
             "final": final,
             "event": _event("finish", "finish", {
