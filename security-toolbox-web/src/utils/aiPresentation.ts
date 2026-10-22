@@ -176,8 +176,16 @@ const AI_DISPLAY_LABELS: Readonly<Record<string, string>> = {
   "python-langgraph-runtime": "智能编排服务",
   nodeId: "节点", nodeIds: "节点列表", dependsOnNodeIds: "前置节点",
   nodeRunId: "节点运行", toolCallId: "工具调用", turnId: "对话轮次",
+  workflowNodeId: "工作流节点", workflowNodeIds: "工作流节点列表",
   workflowDigest: "工作流校验信息", ledgerDigest: "执行记录校验信息",
   ledgerEntryDigest: "执行条目校验信息", evidenceRefIds: "证据引用",
+  toolCode: "工具", toolCodes: "工具列表", parameterSchema: "参数定义",
+  configuredParameters: "已配置参数", requiresApproval: "需要审批",
+  maxActions: "动作上限", publicReasonCode: "公开原因", retrievalQuery: "检索条件",
+  executionDecision: "执行决定", planRelation: "方案关系", knowledgeMode: "知识模式",
+  currentUserRequest: "本轮请求", conversationState: "会话状态", recentTurns: "最近对话",
+  latestPlan: "最近方案", deliveryPending: "等待交付", scopeMatches: "范围一致",
+  planAvailable: "方案可用", executionStatus: "执行状态", approvalRequired: "需要审批",
 };
 
 export interface AiDisplayTextOptions {
@@ -198,7 +206,10 @@ function replaceDisplayTokens(text: string, labels: Readonly<Record<string, stri
   const keys = Object.keys(labels).filter(key => key && labels[key]).sort((a, b) => b.length - a.length);
   const escaped = keys.map(key => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   // Treat filenames, paths and compound identifiers as a whole; do not translate a substring.
-  const pattern = new RegExp(`(^|[^A-Za-z0-9_./@?=&%#$+\\\\-])(${escaped.join("|")})(?=$|[^A-Za-z0-9_./@?=&%#$+\\\\-])`, "g");
+  // '=' is intentionally NOT in the separator set's exclusion list, so a JSON-ish "toolCode=..."
+  // form still matches, while a hyphen inside an identifier (e.g. port-scan) keeps it intact.
+  const separator = "[^A-Za-z0-9_./@?&%#$+\\\\-]";
+  const pattern = new RegExp(`(^|${separator})(${escaped.join("|")})(?=$|${separator})`, "g");
   const prose = text
     .replace(INTERNAL_EVIDENCE_REFERENCE, "$1相关证据")
     .replace(/\bAI\s+Runtime\b/g, "智能服务")
