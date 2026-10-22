@@ -1431,7 +1431,7 @@ public class AiAgentRuntimeClient {
     Set<String> allowed =
         switch (toolCode) {
           case "retrieve_project_context" -> Set.of("query");
-          case "tcp_ports" -> Set.of("ports");
+          case "tcp_ports" -> Set.of("ports", "mode");
           case "nmap_service_scan" -> Set.of("ports", "mode");
           case "http_security_check" -> Set.of("check");
           case "afrog_scan", "xray_scan", "nuclei_scan" -> Set.of("pocCodes", "allPocs");
@@ -1450,7 +1450,11 @@ public class AiAgentRuntimeClient {
     switch (toolCode) {
       case "retrieve_project_context" ->
           result.put("query", strictText(raw, "query", 2000));
-      case "tcp_ports" -> copyStrictText(raw, result, "ports", 200);
+      case "tcp_ports" -> {
+        copyStrictText(raw, result, "ports", 200);
+        // quick = probe only common ports for liveness/discovery; absent = sweep as requested.
+        copyStrictText(raw, result, "mode", 20);
+      }
       case "nmap_service_scan" -> {
         copyStrictText(raw, result, "ports", 200);
         copyStrictText(raw, result, "mode", 20);

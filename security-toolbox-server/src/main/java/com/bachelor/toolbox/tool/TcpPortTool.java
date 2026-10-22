@@ -14,6 +14,14 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class TcpPortTool implements SecurityTool {
+  /**
+   * Ports probed in {@code quick} mode. They cover the overwhelming majority of reachable
+   * services on a host, so a handful of connects both proves liveness and seeds the open-port
+   * list for later stages. Everything here is still intersected with the target's allow-list.
+   */
+  private static final List<Integer> QUICK_PORTS =
+      List.of(80, 443, 22, 21, 3389, 3306, 8080, 8443, 25, 110, 143, 53, 445, 139, 5432, 6379, 27017);
+
   private final TargetPolicyService policyService;
   private final PortRangeParser portRangeParser;
   private final int timeoutMillis;
@@ -55,9 +63,31 @@ public class TcpPortTool implements SecurityTool {
       AuthorizedTarget target, Map<String, Object> parameters, ToolExecutionObserver observer) {
     String host = policyService.validatedHost(target);
     Set<Integer> allowed = portRangeParser.parse(target.getAllowedPorts());
-    String requestedText =
-        Objects.toString(parameters.getOrDefault("ports", target.getAllowedPorts()), "");
-    Set<Integer> requested = portRangeParser.parse(requestedText, maxPorts);
+    String mode = Objects.toString(parameters.getOrDefault("mode", ""), "").trim();
+    Set<Integer> requested;
+    String requestedText;
+    if ("quick".equals(mode)) {
+      // Liveness + fast discovery: only the common ports that are also authorized.
+      requested = new java.util.LinkedHashSet<>();
+      for (Integer port : QUICK_PORTS) {
+        if (allowed.contains(port)) requested.add(port);
+      }
+      if (requested.isEmpty()) {
+        // Nothing common is authorized (e.g. an odd-only range): fall back to the first few
+        // allowed ports so quick mode still has something to try.
+        int guard = 0;
+        for (Integer port : allowed) {
+          requested.add(port);
+          if (++guard >= 8) break;
+        }
+      }
+      requestedText = requested.stream().map(String::valueOf)
+          .collect(java.util.stream.Collectors.joining(","));
+    } else {
+      requestedText =
+          Objects.toString(parameters.getOrDefault("ports", target.getAllowedPorts()), "");
+      requested = portRangeParser.parse(requestedText, maxPorts);
+    }
     if (!allowed.containsAll(requested)) {
       throw new ApiException("请求端口超出授权目标的允许端口范围");
     }
@@ -68,7 +98,8 @@ public class TcpPortTool implements SecurityTool {
             + requestedText
             + " timeout="
             + timeoutMillis
-            + "ms");
+            + "ms"
+            + (mode.isBlank() ? "" : " mode=" + mode));
 
     List<Integer> openPorts = new ArrayList<>();
     Map<Integer, String> states = new LinkedHashMap<>();
