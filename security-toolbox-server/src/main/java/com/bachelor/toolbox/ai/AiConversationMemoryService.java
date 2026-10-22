@@ -216,8 +216,36 @@ public class AiConversationMemoryService {
     }
   }
 
-  void saveDeliveredPlan(String sessionId, String planJson) {
+  /** Structured digest of compacted turns, or null when the session has never compacted. */
+  String conversationSummary(String sessionId) {
     Session session = require(sessionId);
+    synchronized (session.monitor) {
+      ensureCurrent(sessionId, session);
+      return session.summaryJson;
+    }
+  }
+
+  /**
+   * Persist the digest produced by the runtime for the next turn. An older digest is kept if the
+   * new one is absent, so a turn that did not compact cannot erase earlier recall.
+   */
+  void saveConversationSummary(String sessionId, String summaryJson) {
+    if (summaryJson == null || summaryJson.isBlank()) return;
+    Session session = require(sessionId);
+    synchronized (session.monitor) {
+      ensureCurrent(sessionId, session);
+      String previous = session.summaryJson;
+      session.summaryJson = summaryJson;
+      try {
+        persist(sessionId, session);
+      } catch (RuntimeException ex) {
+        session.summaryJson = previous;
+        throw ex;
+      }
+    }
+  }
+
+  void saveDeliveredPlan(String sessionId, String planJson) {    Session session = require(sessionId);
     synchronized (session.monitor) {
       ensureCurrent(sessionId, session);
       String previous = session.lastPlanJson;
@@ -403,6 +431,7 @@ public class AiConversationMemoryService {
     }
     Session session = new Session(record.getProjectId(), record.getTargetId(), maxMessages);
     session.lastPlanJson = record.getLastPlanJson();
+    session.summaryJson = record.getSummaryJson();
     session.usage = parseUsage(record.getUsageJson());
     try {
       List<PersistedTurn> persistedTurns =
@@ -438,6 +467,7 @@ public class AiConversationMemoryService {
       record.setTargetId(session.targetId);
       record.setLastAccess(session.lastAccess);
       record.setLastPlanJson(session.lastPlanJson);
+      record.setSummaryJson(session.summaryJson);
       record.setUsageJson(session.usage == null ? null : objectMapper.writeValueAsString(session.usage));
       record.setTurnsJson(
           objectMapper.writeValueAsString(
@@ -693,6 +723,7 @@ public class AiConversationMemoryService {
     private final ChatMemory memory;
     private final Deque<Turn> turns = new ArrayDeque<>();
     private String lastPlanJson;
+    private String summaryJson;
     private Map<String, Object> usage = new LinkedHashMap<>();
     private volatile Instant lastAccess = Instant.now();
 

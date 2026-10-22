@@ -109,6 +109,11 @@ public class AiPlanContinuityService {
   }
 
   public Map<String, Object> conversationState(Baseline baseline, List<Map<String, String>> turns) {
+    return conversationState(baseline, turns, null);
+  }
+
+  public Map<String, Object> conversationState(
+      Baseline baseline, List<Map<String, String>> turns, String summaryJson) {
     boolean matching = baseline.previous() == null || baseline.current().equals(baseline.previous().scope());
     Map<String, Object> state = new LinkedHashMap<>();
     state.put("version", 1);
@@ -118,6 +123,9 @@ public class AiPlanContinuityService {
     state.put("deliveryPending", baseline.deliveryPending());
     state.put("approvalRequired", true);
     state.put("executionStatus", "CHECK_TASK_RECORDS");
+    // Carried verbatim so the runtime reuses its earlier digest instead of recomputing it.
+    Map<String, Object> parsedSummary = parseSummary(summaryJson);
+    if (!parsedSummary.isEmpty()) state.put("summary", parsedSummary);
     state.put("recentTurns", turns.subList(Math.max(0, turns.size() - 8), turns.size()).stream()
         .map(turn -> Map.of("role", turn.get("role"), "content",
             turn.get("content").substring(0, Math.min(1000, turn.get("content").length())))).toList());
@@ -128,6 +136,16 @@ public class AiPlanContinuityService {
       state.put("latestPlan", semantics(baseline.previous().plan()));
     }
     return java.util.Collections.unmodifiableMap(state);
+  }
+
+  /** Best-effort parse of a stored digest; a corrupt value is treated as "no digest". */
+  private Map<String, Object> parseSummary(String summaryJson) {
+    if (summaryJson == null || summaryJson.isBlank()) return Map.of();
+    try {
+      return mapper.readValue(summaryJson, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+    } catch (Exception ex) {
+      return Map.of();
+    }
   }
 
   /** Called after guard normalization and before any approval side effect. */

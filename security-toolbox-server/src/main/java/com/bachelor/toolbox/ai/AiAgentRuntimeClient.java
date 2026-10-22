@@ -826,7 +826,8 @@ public class AiAgentRuntimeClient {
         runId,
         POLICY_REVISION,
         holder.stateVersion,
-        holder.provenance(), holder.executionDecision, holder.modelUsage, holder.planRelation);
+        holder.provenance(), holder.executionDecision, holder.modelUsage, holder.planRelation,
+        holder.conversationSummary);
   }
 
   /** Persist a bounded continuation tombstone in the local runtime after Java creates tasks. */
@@ -1944,7 +1945,18 @@ public class AiAgentRuntimeClient {
       RuntimeProvenance provenance,
       String executionDecision,
       Map<String, Object> modelUsage,
-      String planRelation) {
+      String planRelation,
+      // Digest of the turns this run had to compact; null when nothing was compacted. The
+      // orchestrator persists it so the next turn reuses it rather than recomputing.
+      Map<String, Object> conversationSummary) {
+    public RuntimePlanResult(
+        AiPlanResponse plan, String answer, String status, String runId, String policyRevision,
+        int stateVersion, RuntimeProvenance provenance, String executionDecision,
+        Map<String, Object> modelUsage, String planRelation) {
+      this(plan, answer, status, runId, policyRevision, stateVersion, provenance, executionDecision,
+          modelUsage, planRelation, null);
+    }
+
     public RuntimePlanResult(AiPlanResponse plan, String answer, String status, String runId,
         String policyRevision, int stateVersion, RuntimeProvenance provenance, String executionDecision,
         Map<String, Object> modelUsage) {
@@ -2011,6 +2023,7 @@ public class AiAgentRuntimeClient {
     private String plannerSource = "";
     private String terminationReason = "";
     private String indexRevision = "";
+    private Map<String, Object> conversationSummary;
     private List<String> finishEvidenceIds = List.of();
     private Set<String> activeEvidenceIds = Set.of();
     private String routeQuery = "";
@@ -2873,7 +2886,7 @@ public class AiAgentRuntimeClient {
               "plannerSource",
               "terminationReason",
               "llmCallCount",
-               "modelUsage", "planRelation"),
+               "modelUsage", "planRelation", "conversationSummary"),
           Set.of(
               "status",
               "answer",
@@ -2896,6 +2909,11 @@ public class AiAgentRuntimeClient {
       }
       if (data.has("modelUsage")) {
         modelUsage = validateModelUsage(data.get("modelUsage"));
+      }
+      if (data.has("conversationSummary") && data.get("conversationSummary").isObject()) {
+        // Opaque digest produced by the runtime; persisted verbatim and echoed back next turn.
+        conversationSummary =
+            objectMapper.convertValue(data.get("conversationSummary"), Map.class);
       }
       finishStatus = strictText(data, "status", 32);
       if (!Set.of("COMPLETED", "DENIED", "APPROVAL_REQUIRED", "FAILED")
