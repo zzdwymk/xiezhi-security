@@ -269,6 +269,14 @@ export interface TaskControlStatus {
   pendingTasks: number;
   runningTasks: number;
 }
+/** What a conversation is waiting on after a turn ends (scan tasks / scheduled resume). */
+export interface AiSessionStatus {
+  sessionId?: string;
+  phase: "idle" | "waiting_tasks";
+  nextAttemptAt?: string | null;
+  attempt?: number;
+  tasks?: Array<{ id: number; toolCode: string | null; status: string }>;
+}
 export interface TaskExecutionLimitView {
   maxConcurrentTasks: number;
 }
@@ -1080,6 +1088,13 @@ export const endpoints = {
       { timeout: 20_000 },
     ),
   listConversations: () => api.get<any[]>("/ai/conversations", { timeout: 15_000 }),
+  // 只读：本会话当前在等待什么（等待扫描任务 / 等待自动续接）。用于在回合结束后
+  // 向用户明确展示“在等什么”，而不是笼统的“等待处理反馈”。
+  getAgentSessionStatus: (sessionId: string) =>
+    api.get<AiSessionStatus>(
+      `/ai/agent/sessions/${encodeURIComponent(sessionId)}/status`,
+      { timeout: 8_000, silent: true } as any,
+    ),
   saveConversation: (sessionId: string, payload: any) =>
     api.put(`/ai/conversations/${encodeURIComponent(sessionId)}`, payload, { timeout: 20_000 }),
   deleteConversation: (sessionId: string) =>

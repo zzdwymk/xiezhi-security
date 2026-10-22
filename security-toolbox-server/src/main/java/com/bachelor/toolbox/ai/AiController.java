@@ -305,6 +305,28 @@ public class AiController {
   }
 
   /**
+   * Read-only status of what a session is waiting on right now.
+   *
+   * <p>Between a finished turn and its automatic continuation the chat has neither a live model
+   * stream nor a dispatched task to render, so the UI could only show a vague "waiting for
+   * feedback". This exposes the pending scan tasks and the scheduled resume time so the interface
+   * can say exactly what it is waiting for.
+   */
+  @GetMapping("/agent/sessions/{sessionId}/status")
+  public Map<String, Object> sessionStatus(@PathVariable String sessionId) {
+    AiConversationMemoryService.SessionScope scope =
+        memoryService == null ? null : memoryService.scope(sessionId);
+    if (scope != null) authorization.requireAccess(scope.projectId());
+    Map<String, Object> status =
+        recoveryService == null
+            ? Map.of("phase", "idle")
+            : recoveryService.statusForSession(sessionId);
+    Map<String, Object> out = new LinkedHashMap<>(status);
+    out.put("sessionId", sessionId);
+    return out;
+  }
+
+  /**
    * Stop the automatic continuation loop for one session.
    *
    * <p>Repeated continuation is convenient until it is not: each round proposes new work, and a

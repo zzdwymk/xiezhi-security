@@ -227,6 +227,82 @@ class CrossTurnRecoveryServiceTests {
     return value;
   }
 
+  @Test
+  void statusReportsPendingScanTasksSoTheUiCanNameWhatItWaitsFor() {
+    ConversationTombstone pending = tombstone();
+    pending.setPendingTaskIdsJson("[31,32]");
+    pending.setAttempt(0);
+    when(tombstones.findTop5BySessionIdAndStatusInOrderByUpdatedAtDesc(
+            "conversation-1", List.of("WAITING_TASKS", "PROCESSING", "FAILED")))
+        .thenReturn(List.of(pending));
+    SecurityTask running = task(31L, "RUNNING");
+    running.setToolCode("tcp_ports");
+    SecurityTask queued = task(32L, "PENDING");
+    queued.setToolCode("nmap_service_scan");
+    when(tasks.findAllById(List.of(31L, 32L))).thenReturn(List.of(running, queued));
+
+    Map<String, Object> status = service.statusForSession("conversation-1");
+
+    assertThat(status).containsEntry("phase", "waiting_tasks");
+    assertThat(status).containsEntry("attempt", 0);
+    assertThat(status.get("nextAttemptAt")).isNotNull();
+    @SuppressWarnings("unchecked")
+    List<Map<String, Object>> taskViews = (List<Map<String, Object>>) status.get("tasks");
+    assertThat(taskViews).hasSize(2);
+    assertThat(taskViews.get(0)).containsEntry("id", 31L).containsEntry("toolCode", "tcp_ports")
+        .containsEntry("status", "RUNNING");
+    assertThat(taskViews.get(1)).containsEntry("id", 32L)
+        .containsEntry("toolCode", "nmap_service_scan").containsEntry("status", "PENDING");
+  }
+
+  @Test
+  void statusIsIdleWithoutPendingContinuation() {
+    when(tombstones.findTop5BySessionIdAndStatusInOrderByUpdatedAtDesc(
+            "conversation-1", List.of("WAITING_TASKS", "PROCESSING", "FAILED")))
+        .thenReturn(List.of());
+
+    assertThat(service.statusForSession("conversation-1")).containsEntry("phase", "idle");
+    assertThat(service.statusForSession("")).containsEntry("phase", "idle");
+    assertThat(service.statusForSession(null)).containsEntry("phase", "idle");
+    verify(tasks, never()).findAllById(any());
+  }
+
+  @Test
+  void statusKeepsScheduledResumeWithoutTaskRows() {
+    ConversationTombstone pending = tombstone();
+    pending.setPendingTaskIdsJson("[]");
+    pending.setAttempt(1);
+    pending.setNextAttemptAt(Instant.now().plusSeconds(20));
+    when(tombstones.findTop5BySessionIdAndStatusInOrderByUpdatedAtDesc(
+            "conversation-1", List.of("WAITING_TASKS", "PROCESSING", "FAILED")))
+        .thenReturn(List.of(pending));
+
+    Map<String, Object> status = service.statusForSession("conversation-1");
+
+    assertThat(status).containsEntry("phase", "waiting_tasks").containsEntry("attempt", 1);
+    assertThat(status.get("tasks")).isEqualTo(List.of());
+    assertThat(status.get("nextAttemptAt")).isNotNull();
+    verify(tasks, never()).findAllById(any());
+  }
+
+  @Test
+  void statusNeverLeaksPromptsOrEvidenceBodies() {
+    ConversationTombstone pending = tombstone();
+    pending.setPendingTaskIdsJson("[31]");
+    when(tombstones.findTop5BySessionIdAndStatusInOrderByUpdatedAtDesc(
+            "conversation-1", List.of("WAITING_TASKS", "PROCESSING", "FAILED")))
+        .thenReturn(List.of(pending));
+    SecurityTask running = task(31L, "RUNNING");
+    running.setToolCode("tcp_ports");
+    running.setRequestJson("{\"prompt\":\"SECRET_PROMPT\"}");
+    when(tasks.findAllById(List.of(31L))).thenReturn(List.of(running));
+
+    String serialized = String.valueOf(service.statusForSession("conversation-1"));
+
+    assertThat(serialized).doesNotContain("SECRET_PROMPT").doesNotContain("requestJson");
+    assertThat(serialized).doesNotContain("pendingTaskIdsJson");
+  }
+
   private AgentLedgerService.StateSnapshot ledgerState() {
     return new AgentLedgerService.StateSnapshot(
         true,

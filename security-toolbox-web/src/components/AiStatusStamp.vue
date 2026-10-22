@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import type { ConversationMessage } from "../stores/conversations";
-import type { AiProgressTask } from "../utils/aiProgress";
+import type { AiAwaitingStatus, AiProgressTask } from "../utils/aiProgress";
 import { AI_STATUS_LABELS, aiStatusIcon, buildAiStatusSummary } from "../utils/aiStatus";
 import { aiElapsedLabel } from "../utils/aiPresentation";
 import FluentIcon from "./FluentIcon.vue";
@@ -9,9 +9,9 @@ import FluentIcon from "./FluentIcon.vue";
 // The finished-answer status stamp. It carries the same reading and the same
 // typography as the in-card progress header, but lives with the message chrome
 // so the answer surface holds only the answer.
-const props = defineProps<{ message: ConversationMessage; tasks: AiProgressTask[] }>();
+const props = defineProps<{ message: ConversationMessage; tasks: AiProgressTask[]; awaiting?: AiAwaitingStatus }>();
 const now = ref(Date.now());
-const summary = computed(() => buildAiStatusSummary(props.message, props.tasks, now.value));
+const summary = computed(() => buildAiStatusSummary(props.message, props.tasks, now.value, props.awaiting));
 let timer: ReturnType<typeof setInterval> | undefined;
 watch(() => summary.value.spinning, spinning => {
   if (timer) clearInterval(timer);

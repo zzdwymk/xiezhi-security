@@ -276,9 +276,63 @@ public class CrossTurnRecoveryService {
     return ids.size();
   }
 
+  /**
+   * Read-only, user-facing description of what a session is waiting on right now.
+   *
+   * <p>Answers the question the chat UI cannot otherwise infer: after a turn ends
+   * without a live model stream, is the session waiting for scan tasks, or waiting
+   * for the scheduled continuation worker to resume it? Returns names and status of
+   * the pending tasks only (no prompts, evidence, or reasoning).
+   */
+  @Transactional(readOnly = true)
+  public Map<String, Object> statusForSession(String sessionId) {
+    Map<String, Object> out = new java.util.LinkedHashMap<>();
+    if (sessionId == null || sessionId.isBlank()) {
+      out.put("phase", "idle");
+      return out;
+    }
+    // The most recently updated pending continuation drives the UI message.
+    List<ConversationTombstone> pending =
+        tombstones.findTop5BySessionIdAndStatusInOrderByUpdatedAtDesc(
+            sessionId,
+            List.of(
+                ConversationTombstone.WAITING_TASKS,
+                ConversationTombstone.PROCESSING,
+                ConversationTombstone.FAILED));
+    if (pending.isEmpty()) {
+      out.put("phase", "idle");
+      return out;
+    }
+    ConversationTombstone active = pending.get(0);
+    // A presentation-only read must never fail because a stored list is empty or
+    // unreadable: report "no concrete task rows" and fall back to the resume ETA.
+    List<Long> taskIds = parseTaskIdsQuietly(active.getPendingTaskIdsJson());
+    out.put("phase", "waiting_tasks");
+    out.put("nextAttemptAt", active.getNextAttemptAt() == null ? null : active.getNextAttemptAt().toString());
+    out.put("attempt", active.getAttempt());
+    if (!taskIds.isEmpty()) {
+      Map<Long, SecurityTask> byId = new java.util.HashMap<>();
+      for (SecurityTask task : tasks.findAllById(taskIds)) byId.put(task.getId(), task);
+      List<Map<String, Object>> taskViews = new java.util.ArrayList<>();
+      for (Long taskId : taskIds) {
+        SecurityTask task = byId.get(taskId);
+        Map<String, Object> view = new java.util.LinkedHashMap<>();
+        view.put("id", taskId);
+        view.put("toolCode", task == null ? null : task.getToolCode());
+        view.put("status", task == null ? "UNKNOWN" : task.getStatus());
+        taskViews.add(view);
+      }
+      out.put("tasks", taskViews);
+    } else {
+      out.put("tasks", List.of());
+    }
+    return out;
+  }
+
   /** Close an in-doubt execution without retrying a model call whose outcome is unknown. */
   @Transactional
-  public void markSkipped(Long id, String reason) {    tombstones.findLockedById(id).ifPresent(tombstone -> {
+  public void markSkipped(Long id, String reason) {
+    tombstones.findLockedById(id).ifPresent(tombstone -> {
       if (ConversationTombstone.CONTINUED.equals(tombstone.getStatus())
           || ConversationTombstone.SKIPPED.equals(tombstone.getStatus())) return;
       tombstone.setStatus(ConversationTombstone.SKIPPED);
@@ -450,6 +504,15 @@ public class CrossTurnRecoveryService {
       return normalizeTaskIds(objectMapper.readValue(value, new TypeReference<List<Long>>() {}));
     } catch (Exception ex) {
       throw new ApiException("Agent 续接任务清单损坏");
+    }
+  }
+
+  /** Presentation-only variant: an empty or unreadable list means "no task rows yet". */
+  private List<Long> parseTaskIdsQuietly(String value) {
+    try {
+      return normalizeTaskIds(objectMapper.readValue(value, new TypeReference<List<Long>>() {}));
+    } catch (Exception ex) {
+      return List.of();
     }
   }
 

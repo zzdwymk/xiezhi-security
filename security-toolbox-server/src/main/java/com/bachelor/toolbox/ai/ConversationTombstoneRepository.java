@@ -28,4 +28,8 @@ public interface ConversationTombstoneRepository extends JpaRepository<Conversat
       + " and t.status in :statuses order by t.id")
   List<Long> findIdsBySessionIdAndStatusIn(
       @Param("sessionId") String sessionId, @Param("statuses") Collection<String> statuses);
+
+  /** Latest active continuation for one session, used to tell the UI what is pending. */
+  List<ConversationTombstone> findTop5BySessionIdAndStatusInOrderByUpdatedAtDesc(
+      String sessionId, Collection<String> statuses);
 }

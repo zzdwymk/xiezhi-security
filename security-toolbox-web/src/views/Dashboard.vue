@@ -85,6 +85,7 @@ import { aiEventStepStatus, findMatchingAiStep, mergeAiStep } from "../utils/aiS
 import { mergeTaskDetailSnapshot } from "../utils/taskDetail";
 import { aiExecutionRequest } from "../utils/aiIntent";
 import { isAiStatusOutsideCard, conversationStatusBadge } from "../utils/aiStatus";
+import type { AiAwaitingStatus } from "../utils/aiProgress";
 import { aiAnswerSource, isLocalAiAnswer, requireAiAnswer } from "../utils/aiAnswer";
 import { resolveAuditConversationScope } from "../utils/auditConversationScope";
 import { aiProgressFailureText, isPublicAiProgressEvent, publicAiProgressText } from "../utils/aiPresentation";
@@ -223,7 +224,7 @@ const currentThreadStatus = computed(() => {
   if (!t || !t.messages?.length) return null;
   const lastAssistant = [...t.messages].reverse().find((m) => m.role === "assistant");
   if (!lastAssistant) return null;
-  const badge = conversationStatusBadge(lastAssistant, relatedTasks(lastAssistant), Date.now());
+  const badge = conversationStatusBadge(lastAssistant, relatedTasks(lastAssistant), Date.now(), awaitingStatusForThread(t.id));
   // A live send in this window is authoritative even before its row is persisted.
   if (activeSendingThreadIds.value.has(t.id) && badge?.type !== "failed") {
     return { label: "回答中", type: "running" as const };
@@ -238,6 +239,43 @@ const activeDraft = ref<CopilotDraft>();
 const composerReferences = computed(() => (editingMessage.value?.references || activeDraft.value?.refs || []) as CopilotReference[]);
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let stopTaskFeed: (() => void) | undefined;
+// What the current thread's last turn is waiting on (scan tasks / scheduled
+// resume), so the progress card can name it instead of a vague placeholder.
+const awaitingByThreadId = ref<Record<string, AiAwaitingStatus>>({});
+let awaitingPollTimer: ReturnType<typeof setInterval> | undefined;
+
+/**
+ * Poll the backend for what the selected thread is waiting on.
+ *
+ * Only the visible thread is polled, at a low rate, and only while the thread is
+ * still in a non-terminal state. This closes the gap after a turn ends: without a
+ * live model stream and before task rows exist locally, the UI had nothing to say
+ * and showed "等待处理反馈".
+ */
+async function refreshAwaitingStatus() {
+  const thread = selectedThread.value;
+  if (!thread) {
+    awaitingByThreadId.value = {};
+    return;
+  }
+  try {
+    const { data } = await endpoints.getAgentSessionStatus(thread.id);
+    const next: AiAwaitingStatus = {
+      phase: data?.phase === "waiting_tasks" ? "waiting_tasks" : "idle",
+      nextAttemptAt: data?.nextAttemptAt ?? null,
+      attempt: typeof data?.attempt === "number" ? data.attempt : 0,
+      tasks: Array.isArray(data?.tasks) ? data.tasks : [],
+    };
+    awaitingByThreadId.value = { ...awaitingByThreadId.value, [thread.id]: next };
+  } catch {
+    // A failed status probe must never disturb the conversation view; the next
+    // poll (or a task event) will refresh it.
+  }
+}
+
+function awaitingStatusForThread(threadId: string): AiAwaitingStatus | undefined {
+  return awaitingByThreadId.value[threadId];
+}
 
 const enabledTargets = computed(() =>
   targets.value.filter((item) => item.enabled),
@@ -316,7 +354,7 @@ function taskLogs(message: ConversationMessage) {
 // A finished answer shows its status stamp with the message chrome, below the
 // answer card, instead of inside the answer surface.
 function isStatusOutsideAnswerCard(message: ConversationMessage) {
-  return !hasDispatchNotice(message) && isAiStatusOutsideCard(message, relatedTasks(message), Date.now());
+  return !hasDispatchNotice(message) && isAiStatusOutsideCard(message, relatedTasks(message), Date.now(), awaitingStatusForThread(selectedThread.value?.id || ""));
 }
 
 function hasDispatchNotice(message: ConversationMessage) {
@@ -1618,7 +1656,12 @@ function applyAgentEvent(
   // 终态事件到达后立即尝试收尾：无关联任务的一轮不会再有任务事件来触发
   // reconcileTaskMessages，必须在这里主动调用，否则界面停留在「尚未收到阶段反馈」。
   if (terminalDone || (event.type === "error" && !recordedEvent))
-    void nextTick(() => reconcileTaskMessages());
+    void nextTick(() => {
+      reconcileTaskMessages();
+      // The turn just ended. Ask immediately what it is now waiting on (scan
+      // tasks / scheduled continuation) instead of waiting for the next poll tick.
+      void refreshAwaitingStatus();
+    });
   void scrollToBottom();
 }
 
@@ -2545,6 +2588,10 @@ async function loadDashboardStats() {
     critical: number;
   };
 }
+// Switching conversations must re-read that thread's pending state, otherwise the
+// card would show the previous thread's waiting tasks until the next poll tick.
+watch(() => selectedThread.value?.id, () => { void refreshAwaitingStatus(); });
+
 onMounted(() => {
   for (const thread of conversations.items) {
     for (const msg of thread.messages) {
@@ -2553,6 +2600,10 @@ onMounted(() => {
   }
   stopTaskFeed = connectTaskEventFeed(applyTaskEvent);
   pollTimer = setInterval(() => void loadTasks(), 10_000);
+  // Keep the "what are we waiting for" description fresh. Runs at the same low
+  // rate as the task poll; the thread query above limits it to the visible thread.
+  awaitingPollTimer = setInterval(() => void refreshAwaitingStatus(), 10_000);
+  void refreshAwaitingStatus();
   focusComposer();
   void load();
   void loadDashboardStats();
@@ -2561,6 +2612,7 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   if (pollTimer) clearInterval(pollTimer);
+  if (awaitingPollTimer) clearInterval(awaitingPollTimer);
   if (typewriterInterval) clearInterval(typewriterInterval);
   if (turnHighlightTimer) clearTimeout(turnHighlightTimer);
   stopTaskFeed?.();
@@ -2834,6 +2886,7 @@ onBeforeUnmount(() => {
                     :tasks="relatedTasks(message)"
                     :hide-attention="true"
                     :status-outside="isStatusOutsideAnswerCard(message)"
+                    :awaiting="awaitingStatusForThread(selectedThread.id)"
                     @open-tasks="router.push('/tasks')"
                   >
                     <AiFailureNotice :message="message" />
@@ -2845,6 +2898,7 @@ onBeforeUnmount(() => {
                   :tasks="relatedTasks(message)"
                   :status-outside="isStatusOutsideAnswerCard(message)"
                   :status-in-plan="hasDispatchNotice(message)"
+                  :awaiting="awaitingStatusForThread(selectedThread.id)"
                   @open-tasks="router.push('/tasks')"
                 >
                   <div
@@ -3099,6 +3153,7 @@ onBeforeUnmount(() => {
                 class="message-status"
                 :message="message"
                 :tasks="relatedTasks(message)"
+                :awaiting="awaitingStatusForThread(selectedThread.id)"
               />
               <div class="message-actions" role="toolbar" aria-label="消息操作">
                 <el-tooltip content="引用消息" placement="top" :show-after="350">

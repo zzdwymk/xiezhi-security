@@ -1,5 +1,5 @@
 import type { ConversationMessage } from "../stores/conversations";
-import { buildAiProgress, type AiProgressTask, type ProgressTone } from "./aiProgress";
+import { buildAiProgress, type AiAwaitingStatus, type AiProgressTask, type ProgressTone } from "./aiProgress";
 
 type AiProgress = ReturnType<typeof buildAiProgress>;
 
@@ -27,8 +27,8 @@ export function hasAiDispatchConcern(message: ConversationMessage, tone: Progres
 
 // One shared reading of a turn's state feeds both the in-card progress header
 // and the finished-answer status stamp, so the two can never disagree.
-export function buildAiStatusSummary(message: ConversationMessage, tasks: AiProgressTask[], now: number): AiStatusSummary {
-  const progress = buildAiProgress(message, tasks, now);
+export function buildAiStatusSummary(message: ConversationMessage, tasks: AiProgressTask[], now: number, awaiting?: AiAwaitingStatus): AiStatusSummary {
+  const progress = buildAiProgress(message, tasks, now, awaiting);
   const progressTone = progress.tone as ProgressTone;
   const dispatchConcern = hasAiDispatchConcern(message, progressTone);
   const needsClarification = message.executionDecision === "CLARIFY"
@@ -54,8 +54,8 @@ export function aiStatusIcon(tone: ProgressTone | string): string {
  * in-card header, because a raw `modelStreamStatus === "running"` check cannot tell a live
  * stream from one whose connection already ended without a page reload.
  */
-export function conversationStatusBadge(message: ConversationMessage, tasks: AiProgressTask[], now: number): { label: string; type: "running" | "completed" | "failed" } | null {
-  const progress = buildAiProgress(message, tasks, now);
+export function conversationStatusBadge(message: ConversationMessage, tasks: AiProgressTask[], now: number, awaiting?: AiAwaitingStatus): { label: string; type: "running" | "completed" | "failed" } | null {
+  const progress = buildAiProgress(message, tasks, now, awaiting);
   const tone = progress.tone;
   if (progress.active) return { label: "回答中", type: "running" };
   if (progress.interrupted) return { label: "连接已结束", type: "failed" };
@@ -70,7 +70,7 @@ export function conversationStatusBadge(message: ConversationMessage, tasks: AiP
 // inside the response surface. A turn that can expand a model decision summary
 // keeps the header in the card, so its toggle stays next to the summary it
 // controls; that choice never depends on the clock.
-export function isAiStatusOutsideCard(message: ConversationMessage, tasks: AiProgressTask[], now: number): boolean {
+export function isAiStatusOutsideCard(message: ConversationMessage, tasks: AiProgressTask[], now: number, awaiting?: AiAwaitingStatus): boolean {
   if (message.role !== "assistant" || !["completed", "failed"].includes(message.status)) return false;
-  return buildAiStatusSummary(message, tasks, now).progress.modelEntries.length === 0;
+  return buildAiStatusSummary(message, tasks, now, awaiting).progress.modelEntries.length === 0;
 }
