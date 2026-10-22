@@ -841,25 +841,30 @@ public class AgentWorkflowSpecService {
         List.of(
             // ---- group 0: context (read-only, produces no action)
             defaultStep("context", "retrieve_project_context", 0, "SAFE", false),
-            // ---- group 1: mapping
-            defaultStep("service-scan", "nmap_service_scan", 1, "SAFE", false),
+            // ---- group 1: fast TCP port probe first. It is cheap and tells us which ports are
+            // actually open, so the heavier service-identification scan need not sweep 65535 ports.
             defaultStep("port-probe", "tcp_ports", 1, "SAFE", false),
-            defaultStep("headers", "http_headers", 1, "SAFE", false),
-            defaultStep("tls", "tls_config", 1, "SAFE", false),
-            // ---- group 2: discovery (自动侦察先做站点爬取提取页面链接；dir_scan 是需要管理员确认的可选字典枚举)
-            defaultStep("site-crawl", "site_crawl", 2, "SAFE", false),
-            defaultStep("dir-scan", "dir_scan", 2, "CAUTION", true),
-            defaultStep("http-security", "http_security_check", 2, "SAFE", false),
-            // ---- group 3: scanning (all intrusive, all administrator-confirmed)
-            defaultStep("nuclei", "nuclei_scan", 3, "CAUTION", true),
-            defaultStep("afrog", "afrog_scan", 3, "CAUTION", true),
-            defaultStep("xray", "xray_scan", 3, "CAUTION", true),
-            defaultStep("zap-scan", "zap_scan", 3, "CAUTION", true),
-            defaultStep("fscan", "fscan_scan", 3, "CAUTION", true),
-            // ---- group 4: validation
-            defaultStep("msf", "msf_scan", 4, "CAUTION", true),
-            defaultStep("sqlmap", "sqlmap_scan", 4, "CAUTION", true),
-            defaultStep("zap-fuzz", "zap_fuzz", 4, "CAUTION", true)));
+            // ---- group 2: service identification reuses the open ports found above; the rest of
+            // the light read-only probes batch in the same group.
+            defaultStepWithParameters(
+                "service-scan", "nmap_service_scan", 2, "SAFE", false,
+                Map.of("consumeOpenPorts", true)),
+            defaultStep("headers", "http_headers", 2, "SAFE", false),
+            defaultStep("tls", "tls_config", 2, "SAFE", false),
+            // ---- group 3: discovery (自动侦察先做站点爬取提取页面链接；dir_scan 是需要管理员确认的可选字典枚举)
+            defaultStep("site-crawl", "site_crawl", 3, "SAFE", false),
+            defaultStep("dir-scan", "dir_scan", 3, "CAUTION", true),
+            defaultStep("http-security", "http_security_check", 3, "SAFE", false),
+            // ---- group 4: scanning (all intrusive, all administrator-confirmed)
+            defaultStep("nuclei", "nuclei_scan", 4, "CAUTION", true),
+            defaultStep("afrog", "afrog_scan", 4, "CAUTION", true),
+            defaultStep("xray", "xray_scan", 4, "CAUTION", true),
+            defaultStep("zap-scan", "zap_scan", 4, "CAUTION", true),
+            defaultStep("fscan", "fscan_scan", 4, "CAUTION", true),
+            // ---- group 5: validation
+            defaultStep("msf", "msf_scan", 5, "CAUTION", true),
+            defaultStep("sqlmap", "sqlmap_scan", 5, "CAUTION", true),
+            defaultStep("zap-fuzz", "zap_fuzz", 5, "CAUTION", true)));
     return value;
   }
 
@@ -876,6 +881,23 @@ public class AgentWorkflowSpecService {
     step.put("risk", risk);
     step.put("requiresApproval", requiresApproval);
     step.put("group", group);
+    return step;
+  }
+
+  /** Same as {@link #defaultStep} but with extra parameters merged into the step's config. */
+  private Map<String, Object> defaultStepWithParameters(
+      String nodeId, String tool, int group, String risk, boolean requiresApproval,
+      Map<String, Object> extra) {
+    Map<String, Object> step = defaultStep(nodeId, tool, group, risk, requiresApproval);
+    Map<String, Object> parameters = new LinkedHashMap<>();
+    Object existing = step.get("parameters");
+    if (existing instanceof Map<?, ?> map) {
+      for (Map.Entry<?, ?> entry : map.entrySet()) {
+        parameters.put(String.valueOf(entry.getKey()), entry.getValue());
+      }
+    }
+    parameters.putAll(extra);
+    step.put("parameters", parameters);
     return step;
   }
 
