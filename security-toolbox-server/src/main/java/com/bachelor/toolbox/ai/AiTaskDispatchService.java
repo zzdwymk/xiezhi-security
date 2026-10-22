@@ -238,7 +238,7 @@ public class AiTaskDispatchService {
     Set<String> allowedKeys =
         switch (toolCode) {
           case "tcp_ports" -> Set.of("ports");
-          case "nmap_service_scan" -> Set.of("ports", "mode");
+          case "nmap_service_scan" -> Set.of("ports", "mode", "consumeOpenPorts");
           case "fscan_scan" -> Set.of("ports", "vulnMode");
           case "afrog_scan", "xray_scan" -> Set.of("pocCodes", "allPocs");
           case "zap_scan" -> Set.of("spider", "strength");

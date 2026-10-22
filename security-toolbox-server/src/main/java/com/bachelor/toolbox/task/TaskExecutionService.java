@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -326,6 +327,11 @@ public class TaskExecutionService {
 
     Map<String, Object> parameters =
         objectMapper.readValue(task.getRequestJson(), new TypeReference<Map<String, Object>>() {});
+    // Narrow this task's ports to what the preceding probe actually found open. Without this a
+    // full-range Nmap -sV re-sweeps all 65535 ports even though the TCP probe already returned the
+    // few that answer, which is both slow and redundant. Only applied when the task opted in and a
+    // dependency really produced a port list; otherwise the request stands as authored.
+    parameters = narrowPortsToDependencyResults(task, parameters);
     appendLog(task, "工具：" + tool.code() + "；目标：" + target.getTargetValue());
     appendLog(task, "参数已校验，准备执行工具…");
     updateProgress(task, PREPARED_PROGRESS, false, null, null, "参数已校验，准备执行工具");
@@ -385,6 +391,106 @@ public class TaskExecutionService {
         "SUCCESS",
         taskId,
         task.getAuthorizationSnapshotHash());
+  }
+
+  /**
+   * Replace a full-range port sweep with the ports a dependency probe actually found open.
+   *
+   * <p>Only applies when the task declared {@code consumeOpenPorts} and asked to sweep everything
+   * (the default {@code 1-65535} or the target's whole allowed range). An explicit narrow port list
+   * authored by the planner or the user is left untouched — they asked for those ports for a reason.
+   * If no dependency produced a usable list, the request stands as-is so a failed probe does not
+   * silently turn the sweep into a no-op.
+   */
+  private Map<String, Object> narrowPortsToDependencyResults(
+      SecurityTask task, Map<String, Object> parameters) {
+    Object consume = parameters.get("consumeOpenPorts");
+    if (!Boolean.TRUE.equals(consume) && !"true".equalsIgnoreCase(String.valueOf(consume))) {
+      return parameters;
+    }
+    if (!isFullRangeRequest(parameters)) {
+      // The planner or user chose specific ports for a reason; never override that.
+      return parameters;
+    }
+    List<Integer> openPorts = openPortsFromDependencies(task);
+    if (openPorts.isEmpty()) {
+      appendLog(task, "前序端口探测没有给出可用开放端口，按原参数扫描");
+      return parameters;
+    }
+    Map<String, Object> narrowed = new java.util.LinkedHashMap<>(parameters);
+    narrowed.put("ports", openPorts.stream().map(String::valueOf)
+        .collect(java.util.stream.Collectors.joining(",")));
+    narrowed.remove("consumeOpenPorts");
+    appendLog(task, "按前序探测结果将扫描范围收敛为 " + openPorts.size() + " 个开放端口："
+        + narrowed.get("ports"));
+    return narrowed;
+  }
+
+  /**
+   * True when the request asks for a whole-range sweep ({@code 1-65535} or the target's full allowed
+   * range), which is exactly the case where reusing probe results pays off. A narrow request like
+   * {@code 443} is left untouched.
+   *
+   * <p>Deliberately a count of the requested ports, not a parse into ranges: only the rough size of
+   * the sweep matters here, and a malformed request simply stays as it is.
+   */
+  private boolean isFullRangeRequest(Map<String, Object> parameters) {
+    Object requested = parameters.getOrDefault("ports", null);
+    if (requested == null || String.valueOf(requested).isBlank()) return true;
+    java.util.Set<Integer> requestedPorts = new java.util.LinkedHashSet<>();
+    for (String part : String.valueOf(requested).split("[,，]")) {
+      String token = part.trim();
+      if (token.isEmpty()) continue;
+      int dash = token.indexOf('-');
+      try {
+        if (dash < 0) {
+          requestedPorts.add(Integer.parseInt(token));
+        } else {
+          int from = Integer.parseInt(token.substring(0, dash).trim());
+          int to = Integer.parseInt(token.substring(dash + 1).trim());
+          if (to < from) return false;
+          // Expand lazily: a range can name 65535 ports and we only need the count.
+          for (int port = from; port <= to; port++) {
+            requestedPorts.add(port);
+            if (requestedPorts.size() > 60_000) return true;
+          }
+        }
+      } catch (NumberFormatException ex) {
+        return false;
+      }
+    }
+    return requestedPorts.size() > 60_000;
+  }
+
+  /** Open ports reported by any successful dependency task, deduplicated and ordered. */
+  private List<Integer> openPortsFromDependencies(SecurityTask task) {
+    String raw = task.getDependencyTaskIds();
+    if (raw == null || raw.isBlank()) return List.of();
+    List<Long> ids;
+    try {
+      ids = objectMapper.readValue(raw, new TypeReference<List<Long>>() {});
+    } catch (Exception ex) {
+      return List.of();
+    }
+    if (ids.isEmpty()) return List.of();
+    java.util.TreeSet<Integer> ports = new java.util.TreeSet<>();
+    for (SecurityTask dependency : taskRepository.findAllById(ids)) {
+      if (!"SUCCESS".equals(dependency.getStatus())) continue;
+      String resultJson = dependency.getResultJson();
+      if (resultJson == null || resultJson.isBlank()) continue;
+      try {
+        com.fasterxml.jackson.databind.JsonNode root = objectMapper.readTree(resultJson);
+        com.fasterxml.jackson.databind.JsonNode open = root.path("openPorts");
+        if (open.isArray()) {
+          for (com.fasterxml.jackson.databind.JsonNode port : open) {
+            if (port.canConvertToInt()) ports.add(port.asInt());
+          }
+        }
+      } catch (Exception ignored) {
+        // A dependency whose result cannot be parsed simply contributes nothing.
+      }
+    }
+    return List.copyOf(ports);
   }
 
   private AuthorizedTarget validateCurrentAuthorization(SecurityTask task) {
