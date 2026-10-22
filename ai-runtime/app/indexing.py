@@ -28,6 +28,79 @@ from .security import safe_project_file
 logger = logging.getLogger(__name__)
 
 
+class _ProjectReadWriteLock:
+    """Fair, writer-preferring reader/writer lock for one project's index.
+
+    Retrieval (readers) for different targets in the same project must run
+    concurrently — previously a single exclusive project lock serialized them,
+    so an embedding round-trip on target A blocked a retrieval on target B.
+    Only document mutations (writers) need exclusive access; a pending writer
+    blocks new readers so a slow write cannot be starved by a stream of reads.
+    """
+
+    __slots__ = ("_cond", "_readers", "_writer", "_waiting_writers")
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition(threading.Lock())
+        self._readers = 0
+        self._writer = False
+        self._waiting_writers = 0
+
+    def acquire_read(self) -> None:
+        with self._cond:
+            while self._writer or self._waiting_writers > 0:
+                self._cond.wait()
+            self._readers += 1
+
+    def release_read(self) -> None:
+        with self._cond:
+            self._readers -= 1
+            if self._readers == 0:
+                self._cond.notify_all()
+
+    def acquire_write(self) -> None:
+        with self._cond:
+            self._waiting_writers += 1
+            try:
+                while self._writer or self._readers > 0:
+                    self._cond.wait()
+                self._writer = True
+            finally:
+                self._waiting_writers -= 1
+
+    def release_write(self) -> None:
+        with self._cond:
+            self._writer = False
+            self._cond.notify_all()
+
+    def read_locked(self) -> "_RWGuard":
+        return _RWGuard(self, write=False)
+
+    def write_locked(self) -> "_RWGuard":
+        return _RWGuard(self, write=True)
+
+
+class _RWGuard:
+    __slots__ = ("_lock", "_write")
+
+    def __init__(self, lock: _ProjectReadWriteLock, *, write: bool) -> None:
+        self._lock = lock
+        self._write = write
+
+    def __enter__(self) -> None:
+        if self._write:
+            self._lock.acquire_write()
+        else:
+            self._lock.acquire_read()
+
+    def __exit__(self, *exc: object) -> bool:
+        if self._write:
+            self._lock.release_write()
+        else:
+            self._lock.release_read()
+        return False
+
+
 class IndexValidationError(ValueError):
     """可安全返回给调用方的项目索引参数错误。"""
 
@@ -173,7 +246,13 @@ class ProjectIndexStore:
             else int(index_cache_projects),
         )
         self._cache_lock = threading.RLock()
-        self._project_locks = tuple(threading.RLock() for _ in range(64))
+        # Per-project reader/writer locks. Sharded by project id; more shards
+        # reduce unrelated projects hashing to the same stripe. Readers (any
+        # target's retrieval) share a stripe concurrently; only mutations take it
+        # exclusively, so different targets in one project no longer serialize.
+        self._project_locks = tuple(
+            _ProjectReadWriteLock() for _ in range(256)
+        )
         self._stats_lock = threading.RLock()
         self._project_stats: dict[int, dict[str, Any]] = {}
         self._stats_loaded = False
@@ -202,7 +281,7 @@ class ProjectIndexStore:
             except EmbeddingProviderError as exc:
                 self._embedding_provider_error = str(exc)
 
-    def _project_lock(self, project_id: int) -> threading.RLock:
+    def _project_lock(self, project_id: int) -> _ProjectReadWriteLock:
         return self._project_locks[project_id % len(self._project_locks)]
 
     def _document_path(self, project_id: int) -> Path:
@@ -575,7 +654,7 @@ class ProjectIndexStore:
     def index_project(
         self, project_id: int, incoming: list[ProjectDocument], replace: bool = True
     ) -> dict[str, Any]:
-        with self._project_lock(project_id):
+        with self._project_lock(project_id).write_locked():
             return self._index_project_locked(project_id, incoming, replace)
 
     def _index_project_locked(
@@ -652,9 +731,26 @@ class ProjectIndexStore:
         conversation_id: str | None = None,
         target_id: int | None = None,
     ) -> list[dict[str, Any]]:
-        with self._project_lock(project_id):
-            return self._query_locked(
-                project_id, query, top_k, conversation_id, target_id
+        query = query.strip()
+        if not settings.rag_enabled or not query:
+            return []
+        top_k = min(max(top_k, 1), 10)
+        deadline = time.monotonic() + settings.retrieval_timeout_seconds
+        if self._retrieval_backend == "real_embedding":
+            # Snapshot the documents and the (cached) embedding corpus under a
+            # shared read lock, then release it before the query-embedding
+            # network call. Readers never block one another, and a slow
+            # embedding round-trip cannot hold the project lock against other
+            # targets' retrievals or against an index rebuild.
+            with self._project_lock(project_id).read_locked():
+                documents = self._read_documents(project_id)
+                corpus = self._get_embedding_corpus(project_id, documents, deadline)
+            return self._score_embedding(
+                project_id, query, top_k, conversation_id, target_id, deadline, corpus
+            )
+        with self._project_lock(project_id).read_locked():
+            return self._bm25_query(
+                project_id, query, top_k, conversation_id, target_id, deadline
             )
 
     def _query_locked(
@@ -671,13 +767,16 @@ class ProjectIndexStore:
         top_k = min(max(top_k, 1), 10)
         deadline = time.monotonic() + settings.retrieval_timeout_seconds
         if self._retrieval_backend == "real_embedding":
-            return self._embedding_query(
+            documents = self._read_documents(project_id)
+            corpus = self._get_embedding_corpus(project_id, documents, deadline)
+            return self._score_embedding(
                 project_id,
                 query,
                 top_k,
                 conversation_id,
                 target_id,
                 deadline,
+                corpus,
             )
         return self._bm25_query(
             project_id, query, top_k, conversation_id, target_id, deadline
@@ -756,7 +855,7 @@ class ProjectIndexStore:
         scored.sort(key=lambda match: (-match[0], match[1]))
         return [result for _, _, result in scored[:top_k]]
 
-    def _embedding_query(
+    def _score_embedding(
         self,
         project_id: int,
         query: str,
@@ -764,9 +863,11 @@ class ProjectIndexStore:
         conversation_id: str | None,
         target_id: int | None,
         deadline: float,
+        corpus: Any,
     ) -> list[dict[str, Any]]:
-        documents = self._read_documents(project_id)
-        corpus = self._get_embedding_corpus(project_id, documents, deadline)
+        # Runs OUTSIDE the project lock: ``corpus`` is an immutable snapshot the
+        # caller built under a shared read lock. The query-embedding network
+        # call therefore never serializes different targets in the same project.
         visible = [
             (item, vector)
             for item, vector in corpus.entries
@@ -875,7 +976,7 @@ class ProjectIndexStore:
         top_k: int | None = None,
         max_chars: int | None = None,
     ) -> dict[str, Any]:
-        with self._project_lock(project_id):
+        with self._project_lock(project_id).read_locked():
             if round < 0 or round >= settings.max_retrieval_rounds:
                 raise IndexValidationError("检索轮次超过运行时限制")
             item_limit = min(
@@ -1035,7 +1136,7 @@ class ProjectIndexStore:
     def list_documents(
         self, project_id: int, source: str | None = None
     ) -> list[dict[str, Any]]:
-        with self._project_lock(project_id):
+        with self._project_lock(project_id).read_locked():
             return [
                 {
                     "id": item.get("id"),
@@ -1054,7 +1155,7 @@ class ProjectIndexStore:
     def delete_document(
         self, project_id: int, doc_id: str, expected_source: str
     ) -> dict[str, Any]:
-        with self._project_lock(project_id):
+        with self._project_lock(project_id).write_locked():
             return self._delete_document_locked(project_id, doc_id, expected_source)
 
     def _delete_document_locked(
@@ -1088,7 +1189,7 @@ class ProjectIndexStore:
         self, project_id: int, source: str, conversation_id: str | None = None
     ) -> dict[str, Any]:
         """Remove every document whose source matches, then rebuild the index."""
-        with self._project_lock(project_id):
+        with self._project_lock(project_id).write_locked():
             return self._clear_documents_by_source_locked(
                 project_id, source, conversation_id
             )
@@ -1175,7 +1276,7 @@ class ProjectIndexStore:
             }
 
     def project_stats(self, project_id: int) -> dict[str, Any] | None:
-        with self._project_lock(project_id):
+        with self._project_lock(project_id).read_locked():
             with self._stats_lock:
                 value = self._project_stats.get(project_id)
                 if value is not None:
