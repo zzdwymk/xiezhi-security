@@ -25,7 +25,7 @@ class AiPlanningModelNormalizationTests {
 
   @Test
   @SuppressWarnings("unchecked")
-  void normalizesChatStepsAndRemovesTcpProbeWhenNmapIsPresent() throws Exception {
+  void normalizesChatStepsWithoutDroppingThePortProbeThatFeedsNmap() throws Exception {
     TargetService targets = targetsWith(target(21L, "127.0.0.1", "IP", "80,443"));
     AiModelClient client = chatClient();
     JsonNode modelResponse =
@@ -60,15 +60,19 @@ class AiPlanningModelNormalizationTests {
 
     assertThat(response.provider()).isEqualTo("openai-compatible");
     assertThat(response.requiresConfirmation()).isTrue();
+    // 授权端口 ≠ 端口开放：tcp_ports 负责找出真正开放的端口，Nmap 再对它们做深入识别。
+    // 两者扫描面不同，因此不再互相剔除——这正是"先粗扫、后精扫"的标准串联。
     assertThat(response.steps())
+        .extracting(AiPlanResponse.PlanStep::toolCode)
+        .containsExactly("tcp_ports", "nmap_service_scan");
+    assertThat(response.steps())
+        .filteredOn(step -> "nmap_service_scan".equals(step.toolCode()))
         .singleElement()
         .satisfies(
-            step -> {
-              assertThat(step.toolCode()).isEqualTo("nmap_service_scan");
-              assertThat(step.parameters())
-                  .containsEntry("ports", "80,443")
-                  .containsEntry("mode", "service");
-            });
+            step ->
+                assertThat(step.parameters())
+                    .containsEntry("ports", "80,443")
+                    .containsEntry("mode", "service"));
 
     ArgumentCaptor<Map<String, Object>> request = ArgumentCaptor.forClass(Map.class);
     verify(client).chat(request.capture());
@@ -190,14 +194,15 @@ class AiPlanningModelNormalizationTests {
         .extracting(AiPlanResponse.PlanStep::toolCode)
         .containsExactly(
             "http_headers",
+            "tcp_ports",
             "nmap_service_scan",
             "http_security_check",
             "http_security_check",
             "nuclei_scan");
-    assertThat(response.steps().get(1).parameters())
+    assertThat(response.steps().get(2).parameters())
         .containsEntry("ports", "80,443")
         .containsEntry("mode", "service");
-    assertThat(response.steps().subList(2, 4))
+    assertThat(response.steps().subList(3, 5))
         .extracting(step -> step.parameters().get("check"))
         .containsExactly("cookies", "cors");
   }

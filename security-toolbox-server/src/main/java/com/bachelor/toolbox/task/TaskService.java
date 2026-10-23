@@ -124,6 +124,65 @@ public class TaskService {
     return create(request, null, null);
   }
 
+  /**
+   * AI 计划内带依赖的任务创建入口。
+   *
+   * <p>AI 直接规划的方案不存在 {@code workflowDigest}/{@code workflowNodeId}，因此用不了
+   * {@link #createWorkflowTask}。但"先探测端口、再按探测结果做深入识别"这类步骤必须能建立任务级
+   * 依赖：{@code TaskExecutionService#narrowPortsToDependencyResults} 正是靠
+   * {@code dependencyTaskIds} 找到前序任务的 {@code openPorts}，把后续工具的扫描范围收敛过去。
+   *
+   * <p>与 {@link #create(CreateTaskRequest)} 的区别只有一处：<strong>存在依赖时不立即入队</strong>。
+   * 依赖任务尚未完成时入队，后续工具只会拿到空结果，等于白跑一次全量扫描。
+   *
+   * @param dependencyTaskIds 前序任务 ID（同一目标与项目内）；为空时行为等同 {@code create}
+   */
+  @Transactional(rollbackFor = Exception.class)
+  public SecurityTask createDependent(
+      CreateTaskRequest request, List<Long> dependencyTaskIds, int workflowGroup)
+      throws JsonProcessingException {
+    List<Long> dependencies =
+        dependencyTaskIds == null
+            ? List.of()
+            : dependencyTaskIds.stream().distinct().filter(id -> id != null && id > 0).toList();
+    if (dependencies.isEmpty()) {
+      return create(request);
+    }
+    projectService.validateProjectTarget(request.projectId(), request.targetId());
+    var target = targetService.getCurrentlyAuthorized(request.targetId(), request.projectId());
+    var tool = registry.require(request.toolCode());
+    List<SecurityTask> dependencyTasks = repository.findAllById(dependencies);
+    if (dependencyTasks.size() != dependencies.size()) {
+      throw new ApiException("任务依赖不存在");
+    }
+    for (SecurityTask dependency : dependencyTasks) {
+      if (!request.projectId().equals(dependency.getProjectId())
+          || !request.targetId().equals(dependency.getTargetId())) {
+        throw new ApiException("任务依赖越过项目或目标边界");
+      }
+    }
+    SecurityTask task = new SecurityTask();
+    task.setTargetId(request.targetId());
+    task.setProjectId(request.projectId());
+    task.setToolCode(request.toolCode());
+    // BLOCKED 而非 PENDING：PENDING 会被执行器直接取走，在依赖尚未完成时拿到空的 openPorts，
+    // 等于白跑一次全量扫描。BLOCKED 由 WorkflowTaskDependencyScheduler 在依赖终态后放行。
+    task.setStatus("BLOCKED");
+    task.setProgress(0);
+    task.setProgressDeterminate(false);
+    task.setProgressMessage("等待前置端口探测完成");
+    task.setProgressUpdatedAt(java.time.Instant.now());
+    task.setQueueEnteredAt(java.time.Instant.now());
+    task.setRequestJson(objectMapper.writeValueAsString(
+        request.parameters() == null ? Map.of() : request.parameters()));
+    task.setWorkflowGroup(Math.max(0, workflowGroup));
+    task.setDependencyTaskIds(objectMapper.writeValueAsString(dependencies));
+    task.setEffectiveRisk("SAFE");
+    snapshotService.capture(task, target, tool);
+    // execute=false：等依赖完成后再入队。
+    return saveTask(task, "CREATE_DEPENDENT_TASK", null, false);
+  }
+
   public SecurityTask create(CreateTaskRequest request, String ruleCode, String vulnerabilityCode)
       throws JsonProcessingException {
     return create(request, ruleCode, vulnerabilityCode, null, null, "CREATE_TASK");

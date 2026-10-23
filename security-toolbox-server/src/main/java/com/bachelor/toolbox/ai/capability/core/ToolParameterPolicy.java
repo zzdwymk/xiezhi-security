@@ -54,7 +54,8 @@ public final class ToolParameterPolicy {
   /** 各工具允许的参数键（对齐 {@code AiTaskDispatchService:238-252}）。 */
   private static final Map<String, Set<String>> ALLOWED_KEYS =
       Map.ofEntries(
-          Map.entry("tcp_ports", Set.of("ports")),
+          // tcp_ports 的扫描面只由 ports 决定（缺省 = 授权全段），故不接受 mode；udp 追加 UDP 探测。
+          Map.entry("tcp_ports", Set.of("ports", "udp")),
           Map.entry("nmap_service_scan", Set.of("ports", "mode")),
           Map.entry("fscan_scan", Set.of("ports", "vulnMode")),
           Map.entry("afrog_scan", Set.of("pocCodes", "allPocs")),

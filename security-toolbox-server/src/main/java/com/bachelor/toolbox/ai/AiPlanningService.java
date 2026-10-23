@@ -321,8 +321,10 @@ public class AiPlanningService {
             + "{\"summary\":\"简短说明\",\"steps\":[{\"toolCode\":\"工具名\",\"title\":\"标题\",\"reason\":\"原因\",\"parameters\":{}}]}。nmap_service_scan"
             + " parameters 必须包含 ports 和 mode(q" + "uick/regular/intense/intense_udp/intense_all_tcp/intense_no_ping/ping/quick_plus/quick_trace/slow_comprehensive 之一)；tcp_ports 必须包含"
             + " ports；http_security_check parameters 必须只包含 check，值为 cookies、cors、methods、disclosure"
-            + " 之一；nuclei_scan parameters 必须为空对象；http_headers 与 tls_config parameters 必须为空对象。不要同时选择"
-            + " nmap_service_scan 和 tcp_ports。";
+            + " 之一；nuclei_scan parameters 必须为空对象；http_headers 与 tls_config parameters 必须为空对象。"
+            + "端口与服务识别推荐串联：先用 tcp_ports 在授权范围内快速判定哪些端口真的开放"
+            + "（授权端口不等于已开放端口），再用 nmap_service_scan 且 parameters 带 consumeOpenPorts=true，"
+            + "让它只对已开放端口做服务/版本/系统识别。两者端口范围相同也不重复，因为 Nmap 会收敛到探测结果。";
     return ToolboxProgramGuide.context() + "\n" + instructions + "\n" + AiUserFacingLanguage.PROMPT;
   }
 
@@ -356,14 +358,10 @@ public class AiPlanningService {
   }
 
   private List<AiPlanResponse.PlanStep> deduplicateSteps(List<AiPlanResponse.PlanStep> steps) {
-    boolean hasNmap =
-        steps.stream()
-            .filter(Objects::nonNull)
-            .anyMatch(step -> "nmap_service_scan".equals(step.toolCode()));
     Set<String> seen = new LinkedHashSet<>();
     List<AiPlanResponse.PlanStep> result = new ArrayList<>();
     for (AiPlanResponse.PlanStep step : steps) {
-      if (step == null || (hasNmap && "tcp_ports".equals(step.toolCode()))) {
+      if (step == null) {
         continue;
       }
       if (seen.add(stepKey(step))) {
@@ -540,6 +538,15 @@ public class AiPlanningService {
   private void addPortStep(
       List<AiPlanResponse.PlanStep> steps, AuthorizedTarget target, LocalPlanIntent intent) {
     if (intent.wantsNmap()) {
+      // 先粗扫再精扫：授权端口 ≠ 这些端口是开放的。tcp_ports 用最高并发只判"是否开启"，
+      // 找出真正开放的少数端口；Nmap 再只对它们做服务/版本/系统识别。
+      // consumeOpenPorts 让 Nmap 的扫描面收敛到前序探测结果——两者扫描面不同，不构成重复扫描。
+      steps.add(
+          new AiPlanResponse.PlanStep(
+              "tcp_ports",
+              "端口开放状态探测",
+              "在授权范围内快速判定哪些端口实际开放，为后续服务识别收敛扫描面",
+              Map.of("ports", target.getAllowedPorts())));
       steps.add(
           new AiPlanResponse.PlanStep(
               "nmap_service_scan",
@@ -547,19 +554,22 @@ public class AiPlanningService {
                   ? "Nmap 授权全端口扫描"
                   : "Nmap 服务识别",
               intent.wantsServiceIdentification() && !intent.fullAuthorization()
-                  ? "识别授权端口状态和轻量服务版本"
-                  : "快速扫描全部授权端口",
+                  ? "识别已开放端口的服务和版本"
+                  : "对已开放的端口做深入识别",
               Map.of(
                   "ports",
                   target.getAllowedPorts(),
                   "mode",
                   intent.wantsServiceIdentification() && !intent.fullAuthorization()
                       ? "intense"
-                      : "quick")));
+                      : "intense_all_tcp",
+                  "consumeOpenPorts",
+                  true)));
     } else if (intent.wantsPortAssessment()) {
       steps.add(
           new AiPlanResponse.PlanStep(
-              "tcp_ports", "授权端口探测", "识别授权范围内可访问的网络服务", Map.of("ports", target.getAllowedPorts())));
+              "tcp_ports", "授权端口探测", "识别授权范围内可访问的网络服务",
+              Map.of("ports", target.getAllowedPorts())));
     }
   }
 

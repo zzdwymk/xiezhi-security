@@ -18,6 +18,7 @@ import {
   Refresh,
   CircleCheck,
   FolderOpened,
+  InfoCircle,
   Warning,
   VideoPlay,
   VideoPause,
@@ -4701,21 +4702,34 @@ onBeforeUnmount(() => {
   <section class="panel workflow-page">
     <div class="workflow-toolbar">
       <div class="workflow-head-copy">
-        <h3>红队评估工作流</h3>
-        <p>
-          从任务启动到报告交付的完整闭环。拖动节点调整布局，从右侧连接点手动连线；分叉表示并行，汇合表示等待上游全部完成。
-        </p>
-        <div class="workflow-context-summary" aria-label="当前工作流配置">
-          <span><b>项目</b>{{ selectedProject?.name || "未选择" }}</span>
-          <span
-            ><b>授权目标</b
-            >{{
-              selectedTarget
-                ? `${selectedTarget.name} · ${selectedTarget.targetValue}`
-                : "未选择"
-            }}</span
-          >
-          <span><b>模板</b>{{ selectedPresetLabel }}</span>
+        <div class="workflow-title-row">
+          <h3>红队评估工作流</h3>
+          <p class="workflow-desc">
+            拖动节点调整布局，从右侧连接点手动连线；分叉表示并行，汇合表示等待上游全部完成。
+          </p>
+        </div>
+        <div class="workflow-sub-row">
+          <div class="workflow-context-summary" aria-label="当前工作流配置">
+            <span><b>项目</b>{{ selectedProject?.name || "未选择" }}</span>
+            <span
+              ><b>授权目标</b
+              >{{
+                selectedTarget
+                  ? `${selectedTarget.name} · ${selectedTarget.targetValue}`
+                  : "未选择"
+              }}</span
+            >
+            <span><b>模板</b>{{ selectedPresetLabel }}</span>
+            <span class="workflow-status-row">
+              <span>{{ phaseNodes.length }} 个阶段 · {{ toolNodes.length }} 个能力 · {{ connectedEdgeCount }} 条连线</span>
+              <span v-if="graphReady" class="status-chip status-chip--ok"
+                ><el-icon><CircleCheck /></el-icon>拓扑可保存</span
+              >
+              <span v-else class="status-chip status-chip--warn"
+                ><el-icon><Warning /></el-icon>请修正拓扑后保存</span
+              >
+            </span>
+          </div>
         </div>
       </div>
       <div class="workflow-actions">
@@ -4732,9 +4746,14 @@ onBeforeUnmount(() => {
             aria-label="工作流步骤上限"
           />
           <span class="workflow-step-limit-value">{{ maxSteps }}</span>
-          <span class="workflow-step-limit-hint">
-            同一工具可多次出现（如 Nmap 先探端口再识别服务），故按步骤数计
-          </span>
+          <el-tooltip
+            content="同一工具可多次出现（如 Nmap 先探端口再识别服务），故按步骤数计"
+            placement="bottom"
+          >
+            <el-icon class="workflow-step-limit-info" tabindex="0" aria-label="步骤上限说明">
+              <InfoCircle />
+            </el-icon>
+          </el-tooltip>
         </div>
         <div class="workflow-actions-buttons">
           <el-button
@@ -4801,19 +4820,6 @@ onBeforeUnmount(() => {
       </el-alert>
     </Transition>
 
-    <div class="workflow-status-row">
-      <span class="status-chip"
-        ><el-icon><CircleCheck /></el-icon>{{ phaseNodes.length }} 个阶段 ·
-        {{ toolNodes.length }} 个能力 · {{ connectedEdgeCount }} 条连线</span
-      >
-      <span v-if="graphReady" class="status-chip status-chip--ok"
-        ><el-icon><CircleCheck /></el-icon>拓扑可保存</span
-      >
-      <span v-else class="status-chip status-chip--warn"
-        ><el-icon><Warning /></el-icon>请修正拓扑后保存</span
-      >
-    </div>
-
     <el-alert
       v-if="graphNotice"
       class="graph-notice"
@@ -4829,12 +4835,9 @@ onBeforeUnmount(() => {
       :closable="false"
       show-icon
     >
-      <template #title>当前拓扑需要调整</template>
-      <ul>
-        <li v-for="problem in graphValidation.slice(0, 5)" :key="problem">
-          {{ problem }}
-        </li>
-      </ul>
+      <template #title>
+        当前拓扑需要调整：{{ graphValidation.slice(0, 3).join("；") }}
+      </template>
     </el-alert>
 
     <div
@@ -4851,14 +4854,6 @@ onBeforeUnmount(() => {
             </p>
           </div>
           <div class="editor-head-actions">
-            <span
-              v-if="graphReady"
-              class="editor-status is-ok"
-              ><el-icon><CircleCheck /></el-icon>拓扑可保存</span
-            >
-            <span v-else class="editor-status is-warn"
-              ><el-icon><Warning /></el-icon>请修正拓扑后保存</span
-            >
             <el-button
               size="small"
               :class="{ 'is-active': workflowConfigVisible }"
@@ -6769,52 +6764,78 @@ onBeforeUnmount(() => {
   flex: none;
 }
 
-/* ── Fluent page header: title block left, config + primary actions right ── */
+/* ── Fluent page header: two compact rows, actions pinned right ── */
 .workflow-toolbar {
   display: flex;
   flex: none;
   flex-wrap: wrap;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 12px 32px;
-  margin: 0 0 12px;
-  padding: 0 2px 12px;
+  gap: 10px 28px;
+  margin: 0 0 10px;
+  padding: 0 2px 10px;
   border-bottom: 1px solid var(--app-border);
 }
 .workflow-head-copy {
+  display: flex;
   min-width: 0;
-  flex: 1 1 360px;
+  flex: 1 1 420px;
+  flex-direction: column;
+  gap: 3px;
+}
+.workflow-title-row {
+  display: flex;
+  min-width: 0;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  gap: 14px;
 }
 .workflow-toolbar h3 {
+  flex: none;
   margin: 0;
-  font-size: 18px;
+  font-size: 17px;
   font-weight: 600;
   line-height: 1.3;
   color: var(--app-text);
+  white-space: nowrap;
 }
-.workflow-toolbar p {
-  display: block;
-  margin: 4px 0 0;
-  max-width: 68ch;
-  color: var(--app-muted);
-  font-size: 12.5px;
-  line-height: 1.5;
-}
-.workflow-context-summary {
+.workflow-sub-row {
   display: flex;
   min-width: 0;
   flex-wrap: wrap;
-  gap: 4px 18px;
-  margin-top: 8px;
+  align-items: center;
+  gap: 4px 0;
+}
+.workflow-toolbar p,
+.workflow-toolbar .workflow-desc {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  max-width: none;
+  color: var(--app-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.workflow-context-summary {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 18px;
   color: var(--app-muted);
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.6;
   white-space: normal;
 }
 .workflow-context-summary span {
   display: inline-flex;
   align-items: baseline;
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
   max-width: 100%;
   overflow-wrap: anywhere;
@@ -6826,10 +6847,7 @@ onBeforeUnmount(() => {
   font-size: 11px;
   letter-spacing: 0.02em;
   text-transform: none;
-  opacity: 0.85;
-}
-.workflow-context-summary span::after {
-  content: "";
+  opacity: 0.8;
 }
 .workflow-actions {
   display: flex;
@@ -6851,14 +6869,15 @@ onBeforeUnmount(() => {
 .workflow-actions :deep(.el-select__wrapper) {
   min-height: 32px;
 }
-/* Step limit becomes a quiet Fluent "field" group instead of a bordered box */
+/* Step limit becomes a quiet Fluent "field" group instead of a bordered box.
+   Fluent 2 滑块组：标签 / 轨道 / 数值三段，轨道两端各留出袖口，数值占固定槽位。 */
 .workflow-step-limit {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   min-height: 32px;
-  padding: 0 12px 0 14px;
-  border-radius: 6px;
+  padding: 0 10px 0 12px;
+  border-radius: var(--fluent-radius-control, 4px);
   background: var(--app-surface-soft, color-mix(in srgb, var(--app-border) 35%, transparent));
   font-size: 12px;
   color: var(--app-muted);
@@ -6870,15 +6889,24 @@ onBeforeUnmount(() => {
 .workflow-step-limit-label {
   white-space: nowrap;
   font-weight: 500;
+  /* el-slider 手柄在元素框内还有约 8px 内缩，靠这份留白保证标签不被圆点压到 */
+  padding-right: 6px;
 }
+/* 112px 落在 Fluent 2 滑块常规区间内，避免在页头横出一条过长的轨道 */
 .workflow-step-limit-slider {
-  width: 132px;
+  width: 112px;
   flex: none;
+  margin: 0;
 }
-/* Reserve fixed room for the number so the slider handle never overlaps it */
+/* 手柄在最小值时会贴到轨道 LEFT 边缘，两侧补内边距把它挡在元素框内 */
+.workflow-step-limit-slider :deep(.el-slider__runway) {
+  margin: 0 6px;
+}
+/* 固定 3ch 槽位：一位到三位数都不会推动相邻元素，也不会贴住轨道末端 */
 .workflow-step-limit-value {
   flex: none;
-  min-width: 2.2ch;
+  min-width: 3ch;
+  margin-left: 8px;
   text-align: right;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
@@ -6887,12 +6915,18 @@ onBeforeUnmount(() => {
 .workflow-step-limit.over .workflow-step-limit-value {
   color: var(--el-color-danger);
 }
-.workflow-step-limit-hint {
-  max-width: 210px;
-  padding-left: 6px;
-  border-left: 1px solid var(--app-border);
-  line-height: 1.4;
+/* Long explanation collapses into a hover/focus tooltip to keep the header one line */
+.workflow-step-limit-info {
+  flex: none;
+  margin-left: 4px;
   color: var(--app-muted);
+  font-size: 14px;
+  cursor: help;
+  outline: none;
+}
+.workflow-step-limit-info:hover,
+.workflow-step-limit-info:focus-visible {
+  color: var(--app-accent, var(--el-color-primary));
 }
 .preset-select {
   width: 170px;
@@ -6938,20 +6972,30 @@ onBeforeUnmount(() => {
   color: var(--app-text);
 }
 .workflow-status-row {
-  display: flex;
+  display: inline-flex;
+  min-width: 0;
   flex-wrap: wrap;
-  gap: 6px 14px;
+  gap: 2px 12px;
   align-items: center;
-  margin: 0 0 8px;
   color: var(--app-muted);
   font-size: 12px;
+  line-height: 1.6;
 }
-.status-chip {
+.workflow-status-row > span:first-child {
+  color: var(--app-muted);
+}
+.workflow-context-summary .status-chip,
+.workflow-status-row .status-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.6;
   color: var(--app-muted);
 }
 .status-chip :deep(.el-icon) {
@@ -6963,27 +7007,17 @@ onBeforeUnmount(() => {
 .status-chip--warn {
   color: #8a5a08;
 }
-/* Inline status inside the editor header, next to its actions */
-.editor-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  margin-right: 2px;
-  font-size: 12px;
-  white-space: nowrap;
-}
-.editor-status :deep(.el-icon) {
-  font-size: 14px;
-}
-.editor-status.is-ok {
-  color: #18794e;
-}
-.editor-status.is-warn {
-  color: #8a5a08;
-}
 .graph-notice,
 .graph-validation {
-  margin-bottom: 4px;
+  margin: 0 0 8px;
+}
+/* Single-line validation summary instead of a tall bulleted alert */
+.graph-validation :deep(.el-alert) {
+  padding: 6px 12px;
+}
+.graph-validation :deep(.el-alert__title) {
+  line-height: 1.5;
+  font-size: 12.5px;
 }
 .graph-notice :deep(.el-alert),
 .graph-validation :deep(.el-alert),
@@ -7019,11 +7053,6 @@ onBeforeUnmount(() => {
   line-height: 1;
 }
 
-.graph-validation ul {
-  margin: 4px 0 0;
-  padding-left: 17px;
-  line-height: 1.6;
-}
 .workflow-editor-layout {
   display: grid;
   flex: 1 1 auto;
@@ -9283,9 +9312,6 @@ onBeforeUnmount(() => {
 }
 
 /* workflow extra tall */
-.workflow-page > .workflow-status-row {
-  margin-bottom: 8px !important;
-}
 .workflow-page > .graph-notice,
 .workflow-page > .graph-validation {
   margin-bottom: 6px !important;
@@ -9363,9 +9389,6 @@ onBeforeUnmount(() => {
   }
   .workflow-page .preset-select {
     width: clamp(145px, 10vw, 170px);
-  }
-  .workflow-page > .workflow-status-row {
-    margin-bottom: 8px;
   }
 }
 /* Very wide screens: keep the description from stretching into a ribbon */
