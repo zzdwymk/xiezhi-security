@@ -421,8 +421,14 @@ public class TaskExecutionService {
     narrowed.put("ports", openPorts.stream().map(String::valueOf)
         .collect(java.util.stream.Collectors.joining(",")));
     narrowed.remove("consumeOpenPorts");
-    appendLog(task, "按前序探测结果将扫描范围收敛为 " + openPorts.size() + " 个开放端口："
-        + narrowed.get("ports"));
+    // The narrowed list itself can name tens of thousands of ports, which would blow past the
+    // rolling execution-log cap and bury the very line that explains the narrowing. Log a
+    // bounded summary instead: the count plus the first few ports.
+    String sample = openPorts.stream().limit(20).map(String::valueOf)
+        .collect(java.util.stream.Collectors.joining(","));
+    appendLog(task, "按前序探测结果将扫描范围收敛为 " + openPorts.size() + " 个开放端口"
+        + (openPorts.size() > 20 ? "（示例 " + sample + " …，完整范围已传入工具）"
+            : "：" + sample));
     return narrowed;
   }
 
@@ -464,13 +470,19 @@ public class TaskExecutionService {
 
   /** Open ports reported by any successful dependency task, deduplicated and ordered. */
   private List<Integer> openPortsFromDependencies(SecurityTask task) {
-    String raw = task.getDependencyTaskIds();
-    if (raw == null || raw.isBlank()) return List.of();
-    List<Long> ids;
-    try {
-      ids = objectMapper.readValue(raw, new TypeReference<List<Long>>() {});
-    } catch (Exception ex) {
-      return List.of();
+    // Workflow-dispatched tasks carry their dependencies in successDependencyTaskIds, while
+    // directly created tasks use dependencyTaskIds. Read both so either origin can feed the
+    // narrowing; a missing or unreadable list simply contributes nothing.
+    List<Long> ids = new java.util.ArrayList<>();
+    for (String raw : new String[] {task.getDependencyTaskIds(), task.getSuccessDependencyTaskIds()}) {
+      if (raw == null || raw.isBlank()) continue;
+      try {
+        for (Long id : objectMapper.readValue(raw, new TypeReference<List<Long>>() {})) {
+          if (id != null && !ids.contains(id)) ids.add(id);
+        }
+      } catch (Exception ex) {
+        // A malformed list must not abort execution; the other field may still be usable.
+      }
     }
     if (ids.isEmpty()) return List.of();
     java.util.TreeSet<Integer> ports = new java.util.TreeSet<>();
@@ -480,7 +492,9 @@ public class TaskExecutionService {
       if (resultJson == null || resultJson.isBlank()) continue;
       try {
         com.fasterxml.jackson.databind.JsonNode root = objectMapper.readTree(resultJson);
-        com.fasterxml.jackson.databind.JsonNode open = root.path("openPorts");
+        // resultJson is a serialized ToolExecutionResult, so the payload lives under "data".
+        com.fasterxml.jackson.databind.JsonNode open = root.path("data").path("openPorts");
+        if (!open.isArray()) open = root.path("openPorts");
         if (open.isArray()) {
           for (com.fasterxml.jackson.databind.JsonNode port : open) {
             // tcp_ports reports plain integers; Nmap reports observation objects that carry the

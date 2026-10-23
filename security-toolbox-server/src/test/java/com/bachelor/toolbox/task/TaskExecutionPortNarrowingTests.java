@@ -86,7 +86,8 @@ class TaskExecutionPortNarrowingTests {
     probe.setTargetId(7L);
     probe.setToolCode("tcp_ports");
     probe.setStatus("SUCCESS");
-    probe.setResultJson("{\"openPorts\":" + openPortsJson + "}");
+    // 真实落库结构：序列化后的 ToolExecutionResult，端口清单在 data.openPorts 下
+    probe.setResultJson("{\"summary\":\"探测完成\",\"data\":{\"openPorts\":" + openPortsJson + "},\"findings\":[]}");
     return probe;
   }
 
@@ -127,6 +128,54 @@ class TaskExecutionPortNarrowingTests {
     org.mockito.Mockito.verify(tool)
         .execute(any(AuthorizedTarget.class), captor.capture(), any(ToolExecutionObserver.class));
     assertThat(captor.getValue()).containsEntry("ports", "443");
+  }
+
+  @Test
+  void workflowDispatchUsesSuccessDependencyIdsToNarrow() throws Exception {
+    // Workflow-dispatched tasks record dependencies in successDependencyTaskIds, not
+    // dependencyTaskIds. The narrowing must read that field too, otherwise the probe's
+    // open ports never reach the service-identification scan.
+    SecurityTask task = scanTask("{\"ports\":\"1-65535\",\"consumeOpenPorts\":true}");
+    task.setDependencyTaskIds(null);
+    task.setSuccessDependencyTaskIds("[11]");
+    SecurityTool tool = mock(SecurityTool.class);
+    arrange(task, tool);
+    when(taskRepository.findAllById(List.of(11L)))
+        .thenReturn(List.of(probe(11L, "[80,443,8080]")));
+
+    service.executeAsync(500L);
+
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<Map<String, Object>> captor = ArgumentCaptor.forClass(Map.class);
+    org.mockito.Mockito.verify(tool)
+        .execute(any(AuthorizedTarget.class), captor.capture(), any(ToolExecutionObserver.class));
+    assertThat(captor.getValue()).containsEntry("ports", "80,443,8080");
+    assertThat(captor.getValue()).doesNotContainKey("consumeOpenPorts");
+  }
+
+  @Test
+  void convergenceLogStaysBoundedWhenTheProbeReportsEveryPort() throws Exception {
+    // A target that answers on all 65535 ports must not produce a megabyte-long log line:
+    // the execution log is capped and would otherwise bury the explanation itself.
+    SecurityTask task = scanTask("{\"ports\":\"1-65535\",\"consumeOpenPorts\":true}");
+    task.setDependencyTaskIds("[11]");
+    SecurityTool tool = mock(SecurityTool.class);
+    arrange(task, tool);
+    StringBuilder all = new StringBuilder("[");
+    for (int port = 1; port <= 65535; port++) all.append(port).append(port < 65535 ? "," : "");
+    all.append("]");
+    when(taskRepository.findAllById(List.of(11L))).thenReturn(List.of(probe(11L, all.toString())));
+
+    service.executeAsync(500L);
+
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<Map<String, Object>> captor = ArgumentCaptor.forClass(Map.class);
+    org.mockito.Mockito.verify(tool)
+        .execute(any(AuthorizedTarget.class), captor.capture(), any(ToolExecutionObserver.class));
+    // 端口集合必须完整传入工具（由工具的 canonicalizeCompact 再压缩为区间）
+    String ports = String.valueOf(captor.getValue().get("ports"));
+    assertThat(ports.startsWith("1,2,3,")).isTrue();
+    assertThat(ports.endsWith("65535")).isTrue();
   }
 
   @Test
