@@ -167,6 +167,19 @@ public class AssessmentProjectService {
     requireProjectTarget(projectId, targetId, "目标不属于该评估项目");
   }
 
+  /**
+   * 项目级执行前置校验：一次确认项目可访问、处于进行中且授权时间窗有效。
+   *
+   * <p>供“按授权项目批量对项目内目标执行”的入口使用，使项目级不满足条件时直接给出整体错误，
+   * 而不是为每个目标重复产生失败记录。目标级绑定与目标授权状态仍由逐目标校验负责。
+   */
+  public AssessmentProject validateProjectExecution(Long projectId) {
+    AssessmentProject project = get(projectId);
+    validateActiveProject(project);
+    validateAuthorizationWindow(project, Instant.now());
+    return project;
+  }
+
   /** Serialize quota reservation and task creation for one project inside a transaction. */
   public AssessmentProject lockForAgentExecution(Long projectId) {
     authorization.requireAccess(projectId);
