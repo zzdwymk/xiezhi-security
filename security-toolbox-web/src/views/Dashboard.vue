@@ -974,6 +974,10 @@ let turnHighlightTimer: ReturnType<typeof setTimeout> | undefined;
    划过，前一个实例还在渐隐、后一个实例已经弹出，于是两张卡片并存叠在一起。
    改成单例后「哪一轮被悬停」是唯一状态，卡片只会在两处内容之间切换。 */
 const hoveredTurn = ref<UserTurnItem | null>(null);
+// 卡片内容与显隐分开维护：收起时 hoveredTurn 先清空、弹层壳还在最后一帧过渡，
+// 若内容也一起清空就会短暂只显示一个空框。这里留住"最后一次悬停的轮次"，
+// 弹层壳消失时内容始终是完整的，不会出现空壳。
+const lastTurnForTooltip = ref<UserTurnItem | null>(null);
 const turnTooltipAnchor = ref<HTMLElement | null>(null);
 const turnTooltipVisible = computed(
   () => hoveredTurn.value !== null && turnTooltipAnchor.value !== null,
@@ -983,6 +987,7 @@ function showTurnTooltip(event: Event, turn: UserTurnItem) {
   const mark = event.currentTarget as HTMLElement | null;
   if (mark) turnTooltipAnchor.value = mark;
   hoveredTurn.value = turn;
+  lastTurnForTooltip.value = turn;
 }
 
 function clearTurnTooltip() {
@@ -3229,7 +3234,11 @@ onBeforeUnmount(() => {
           </button>
         </div>
         <!-- virtual-triggering 模式下默认插槽不会渲染，锚点由 turnTooltipAnchor
-             直接指向被悬停的横条按钮，卡片就贴在真实触发元素上。 -->
+             直接指向被悬停的横条按钮，卡片就贴在真实触发元素上。
+             过渡用 stats-card-instant（无时长）：默认 fade 会在离开时保留约
+             180ms 的空壳，内容已随 hoveredTurn 清空，只剩一个深色圆角空框
+             停在横条旁边（用户反馈的"移走后还有一个黑框"）。瞬时过渡下卡片
+             同一帧就移出布局，不会留下空壳。 -->
         <el-tooltip
           :visible="turnTooltipVisible"
           placement="left"
@@ -3237,17 +3246,18 @@ onBeforeUnmount(() => {
           :hide-after="0"
           :enterable="false"
           :offset="10"
+          transition="stats-card-instant"
           popper-class="turn-rail-tooltip"
           virtual-triggering
           :virtual-ref="turnTooltipAnchor ?? undefined"
         >
           <template #content>
-            <div v-if="hoveredTurn" class="turn-tooltip-content">
+            <div v-if="lastTurnForTooltip" class="turn-tooltip-content">
               <div class="turn-tooltip-header">
-                <strong>第 {{ hoveredTurn.turn }} 轮提问</strong>
-                <span v-if="hoveredTurn.timeText">{{ hoveredTurn.timeText }}</span>
+                <strong>第 {{ lastTurnForTooltip.turn }} 轮提问</strong>
+                <span v-if="lastTurnForTooltip.timeText">{{ lastTurnForTooltip.timeText }}</span>
               </div>
-              <div class="turn-tooltip-body">{{ hoveredTurn.preview }}</div>
+              <div class="turn-tooltip-body">{{ lastTurnForTooltip.preview }}</div>
               <div class="turn-tooltip-tip">点击快速跳转</div>
             </div>
           </template>
@@ -5891,6 +5901,8 @@ a.agent-citation-bubble {
   opacity: 0.85;
 }
 
+/* 轮次预览卡片沿用主题的 hover 弹层配色；收起时的空框残留由上面的瞬时过渡
+   解决，这里不要再改底色，否则会覆盖掉有意的深色气泡设计。 */
 :global(.turn-rail-tooltip) {
   padding: 8px 12px !important;
   border-radius: 8px !important;
