@@ -9,6 +9,7 @@ import com.bachelor.toolbox.target.TargetService;
 import com.bachelor.toolbox.task.SecurityTaskRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -66,7 +67,13 @@ class AiToolCatalogContractCoverageTest {
     // The catalog advertises a set of parameter keys; strictParameters has its own allow-list.
     // When the two drift, the runtime produces a schema-valid tool call that Java then rejects as
     // "parameters 包含未知字段" — the failure only shows up end-to-end. This pins them together.
+    //
+    // 新增/改名一个参数时，请同步三处，缺一处就会在真实调用时被拒：
+    //   1. AiToolCatalog.parameterSchema —— 模型看到的 schema
+    //   2. AiAgentRuntimeClient.strictParameters 的允许键集合 —— 运行时白名单
+    //   3. 工具自身的参数校验（ToolParameterPolicy / 工具实现）
     ObjectMapper mapper = new ObjectMapper();
+    List<String> drifted = new ArrayList<>();
     for (String code : catalogCodes()) {
       Map<String, Object> schema = AiToolCatalog.parameterSchema(code);
       Object properties = schema.get("properties");
@@ -78,13 +85,16 @@ class AiToolCatalogContractCoverageTest {
           invokeStrictParameters(code, raw);
         } catch (java.lang.reflect.InvocationTargetException wrapped) {
           Throwable cause = wrapped.getCause() == null ? wrapped : wrapped.getCause();
-          assertThat(cause)
-              .as("catalog key '%s' of tool '%s' must be accepted by strictParameters",
-                  key, code)
-              .hasMessageNotContaining("包含未知字段");
+          if (String.valueOf(cause.getMessage()).contains("包含未知字段")) {
+            drifted.add(code + "." + key);
+          }
         }
       }
     }
+    assertThat(drifted)
+        .as("这些参数在 AiToolCatalog 里已声明，但 AiAgentRuntimeClient.strictParameters 未放行；"
+            + "请把对应键加入白名单（否则模型按 schema 生成调用后会被后端拒绝）")
+        .isEmpty();
   }
 
   @Test

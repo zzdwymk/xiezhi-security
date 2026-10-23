@@ -218,8 +218,12 @@ class AiWorkflowClosureTests {
   @Test
   void freePlanCannotBypassDeduplicationByAddingUntrustedNodeIds() {
     scanNode("nmap-01", "nmap_service_scan"); scanNode("tcp-01", "tcp_ports");
+    // 端口范围完全相同且 Nmap 未开启 consumeOpenPorts 时才判定为重复扫描；
+    // 提示要求调用方二选一（开启复用或去掉一个步骤），因此断言校验这个可操作建议。
     assertThatThrownBy(() -> dispatcher.prepare(new AiPlanRequest(2L, "scan"), scanPlan("tcp_ports", "tcp-01", "80")))
-        .isInstanceOf(ApiException.class).hasMessageContaining("重复扫描");
+        .isInstanceOf(ApiException.class)
+        .hasMessageContaining("consumeOpenPorts")
+        .hasMessageContaining("端口范围完全相同");
     assertThatThrownBy(() -> dispatcher.prepare(new AiPlanRequest(2L, "scan"), scanPlan("nmap_service_scan", "nmap-02", "80")))
         .isInstanceOf(ApiException.class).hasMessageContaining("重复派发");
   }
