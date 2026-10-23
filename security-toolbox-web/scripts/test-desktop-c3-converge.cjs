@@ -15,7 +15,7 @@ const root = path.resolve(__dirname, "..");
 const exePath = path.join(root, "desktop-release", "win-unpacked", "獬豸安全测试平台.exe");
 // C3 收敛只在“全端口授权目标”上触发：主动检测默认取目标 allowedPorts，
 // 80,8080 这类窄端口目标不会走到收敛分支，因此这里优先选用全端口授权的目标。
-const PREFERRED_IPS = ["192.168.222.143", "192.168.222.137"];
+const PREFERRED_IPS = ["192.168.222.147", "192.168.222.137"];
 const out = path.resolve(root, "..", ".run", "desktop-c3-converge", new Date().toISOString().replace(/[:.]/g, "-"));
 fs.mkdirSync(out, { recursive: true });
 
