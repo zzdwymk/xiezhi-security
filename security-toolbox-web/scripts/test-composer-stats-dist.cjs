@@ -134,11 +134,39 @@ function check(name, ok, detail) {
     }
     await page.screenshot({ path: path.join(outDir, `dist-${tag}.png`) });
 
-    // Rapid succession: click all three as fast as possible, then settle.
-    for (let i = 0; i < count; i += 1) { await pills.nth(i).click(); }
-    await page.waitForTimeout(600);
-    const afterRapid = await page.evaluate(visibleCards);
-    check(`${tag} 连点三个胶囊后仍只有一张卡片`, afterRapid.length <= 1, `展开 ${JSON.stringify(afterRapid)}`);
+    // Rapid succession, sampled DURING the show/hide transitions: Playwright's
+    // click() awaits actionability, which hides the bug, so raw mouse down/up is
+    // driven back-to-back and the visible-card count is sampled every ~40ms.
+    // Before the instant transition this peaked at three cards at once.
+    const boxes = [];
+    for (let i = 0; i < count; i += 1) boxes.push(await pills.nth(i).boundingBox());
+    for (const box of boxes) {
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      await page.mouse.up();
+    }
+    let worst = [];
+    for (let sample = 0; sample < 12; sample += 1) {
+      const open = await page.evaluate(visibleCards);
+      if (open.length > worst.length) worst = open;
+      await page.waitForTimeout(40);
+    }
+    check(`${tag} 快速连点三个胶囊过程中最多只有一张卡片`, worst.length <= 1, `峰值 ${JSON.stringify(worst)}`);
+
+    // Same, with a human-fast 30ms gap between clicks.
+    await page.mouse.click(10, 10);
+    await page.waitForTimeout(300);
+    worst = [];
+    for (const box of boxes) {
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      await page.mouse.up();
+      const open = await page.evaluate(visibleCards);
+      if (open.length > worst.length) worst = open;
+      await page.waitForTimeout(30);
+    }
+    await page.waitForTimeout(500);
+    check(`${tag} 30ms 间隔连点三个胶囊过程中最多只有一张卡片`, worst.length <= 1, `峰值 ${JSON.stringify(worst)}`);
 
     // Simulate the stats recompute the real app triggers (polling/events) and
     // ensure a re-render does not resurrect a second card.

@@ -3333,6 +3333,7 @@ onBeforeUnmount(() => {
             placement="top"
             :width="260"
             trigger="manual"
+            transition="stats-card-instant"
             popper-class="stats-pill-popover"
           >
             <template #reference>
@@ -3381,6 +3382,7 @@ onBeforeUnmount(() => {
             placement="top"
             :width="260"
             trigger="manual"
+            transition="stats-card-instant"
             popper-class="stats-pill-popover"
           >
             <template #reference>
@@ -3432,6 +3434,7 @@ onBeforeUnmount(() => {
             placement="top"
             :width="260"
             trigger="manual"
+            transition="stats-card-instant"
             popper-class="stats-pill-popover"
           >
             <template #reference>
@@ -5987,6 +5990,23 @@ a.agent-citation-bubble {
   background: var(--app-surface, #ffffff) !important;
   border: 1px solid var(--app-border, #e5e7eb) !important;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12) !important;
+}
+
+/* 三张统计卡片互斥展开，切换时必须"瞬时"完成。
+   默认的 el-fade-in-linear 会在离开时保留约 180ms 的过渡：快速连点三个胶囊时，
+   前两张仍处于 leave-active（display 仍为 block）而第三张已经进入，画面上就会
+   同时出现 2~3 张卡片（用户反馈的"快速点击还是三卡片"）。这里的过渡类不带任何
+   动画时长，并让进入/离开的起始帧直接 display:none，卡片在状态切换的同一帧
+   就被移出布局，杜绝叠加。 */
+:global(.stats-card-instant-enter-active),
+:global(.stats-card-instant-leave-active) {
+  transition: none !important;
+  animation: none !important;
+}
+
+:global(.stats-card-instant-enter-from),
+:global(.stats-card-instant-leave-to) {
+  display: none !important;
 }
 
 .stats-popover-content {
