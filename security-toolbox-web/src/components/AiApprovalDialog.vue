@@ -43,10 +43,10 @@ const judgeTitle = computed(() => {
     const cleanHeadline = rawHeadline.startsWith("判官熔断")
       ? rawHeadline.replace(/^判官熔断[（(]?/, "").replace(/[)）]?$/, "")
       : rawHeadline;
-    return `安全审查预警（判官熔断）· ${cleanHeadline || "未能自动识别行为模式"}`;
+    return `安全审查预警 · 自动初审未能给出可信结论（${cleanHeadline || "行为模式无法识别"}）`;
   }
-  if (doc.requiresHumanReview) return `行为透视识别 · 疑似 ${doc.headline || "需人工审核的动作"}`;
-  return "安全审查通过 · 判官未发现需要拦截的行为";
+  if (doc.requiresHumanReview) return `行为分析 · 疑似 ${doc.headline || "需人工审核的动作"}`;
+  return "安全审查通过 · 未发现需要拦截的行为";
 });
 
 const judgeSeverityIcon = computed(() => {
@@ -208,6 +208,20 @@ const PARAM_LABELS: Record<string, string> = {
   vulnMode: "扫描模式",
   mode: "识别模式",
   check: "检查项目",
+  consumeOpenPorts: "复用已探测端口",
+  allPocs: "使用全部 PoC",
+  pocCodes: "PoC 编号",
+  modules: "模块列表",
+  module: "模块",
+  options: "模块参数",
+  msfOptions: "模块参数",
+  requestUrl: "请求地址",
+  requestMethod: "请求方法",
+  fuzzRequestUrl: "变异请求地址",
+  fuzzParameter: "变异参数",
+  fuzzValue: "测试值",
+  wordlist: "字典文件",
+  userAgent: "User-Agent",
 };
 
 function onApprove() {
@@ -301,13 +315,13 @@ function onApprove() {
             最高风险 {{ judge.worstRisk }}
           </el-tag>
           <el-tag v-if="judge.degraded" size="small" type="danger" effect="dark">
-            熔断拦截
+            需人工确认
           </el-tag>
         </header>
 
         <p v-if="judge.degraded" class="approval-judge-note">
-          语义判官未能给出可信判定（{{ judge.degradedReason || "原因未知" }}）。
-          按 Fail-Closed 原则，系统已按最坏情况标记为高风险，请人工逐项核对下方具体参数后再决定。
+          自动初审未能给出可信判定（{{ judge.degradedReason || "原因未知" }}）。
+          为安全起见，系统已按最坏情况标记为高风险，请人工逐项核对下方具体参数后再决定。
         </p>
 
         <!-- 纯净通透的行为解读，彻底移除内嵌杂乱嵌套灰框 -->
@@ -403,7 +417,7 @@ function onApprove() {
 
                     <!-- 1. 字典选择型参数 -->
                     <el-select
-                      v-if="key === 'dictionary'"
+                      v-else-if="key === 'dictionary'"
                       v-model="editableParameters[index][key]"
                       size="small"
                       class="param-interactive-control"
@@ -991,16 +1005,17 @@ function onApprove() {
 
 .approval-parameters {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   margin: 0;
   padding: 0;
 }
 
 .approval-param-row {
   display: grid;
-  grid-template-columns: 105px 1fr;
+  grid-template-columns: 132px minmax(0, 1fr);
   align-items: center;
-  gap: 12px;
+  gap: 14px;
+  min-height: 32px;
   font-size: 13px;
 }
 
@@ -1008,10 +1023,24 @@ function onApprove() {
   color: var(--app-muted);
   font-weight: 500;
   font-size: 13px;
+  line-height: 1.4;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .approval-param-control-cell {
   margin: 0;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 32px;
+}
+
+/* Keep every interactive control on one height so the column never looks ragged */
+.approval-param-control-cell :deep(.el-select),
+.approval-param-control-cell :deep(.el-input),
+.approval-param-control-cell :deep(.el-input-number) {
+  min-height: 32px;
 }
 
 .param-interactive-control {
