@@ -334,6 +334,25 @@ def _workflow_node_id(text: str) -> str:
     return "service-scan-01"
 
 
+def _workflow_node_parameters(text: str, node_id: str) -> dict[str, Any]:
+    """The configured parameters of one manifest node, so a proposal matches the snapshot."""
+    match = _WORKFLOW_BLOCK.search(text)
+    if not match:
+        return {}
+    try:
+        manifest = json.loads(match.group("payload"))
+    except json.JSONDecodeError:
+        return {}
+    nodes = manifest.get("nodes") if isinstance(manifest, dict) else None
+    if not isinstance(nodes, list):
+        return {}
+    for node in nodes:
+        if isinstance(node, dict) and node.get("nodeId") == node_id:
+            params = node.get("parameters")
+            return dict(params) if isinstance(params, dict) else {}
+    return {}
+
+
 def _find_workflow_node(text: str, tool_name: str) -> str | None:
     match = _WORKFLOW_BLOCK.search(text)
     if match:
@@ -419,6 +438,7 @@ def _grounded_response(text: str, bundle: dict[str, Any]) -> dict[str, Any]:
                 }
             ],
         }
+    node_id = _workflow_node_id(text)
     return {
         "summary": "已根据项目证据生成授权服务扫描计划",
         "answer": "授权端口和服务扫描计划已准备。",
@@ -427,8 +447,11 @@ def _grounded_response(text: str, bundle: dict[str, Any]) -> dict[str, Any]:
         "evidenceRefs": refs,
         "actions": [
             {
-                "workflowNodeId": _workflow_node_id(text),
-                "parameters": {"ports": "80,443", "mode": "service"},
+                "workflowNodeId": node_id,
+                # Echo the node's own configured parameters. Java closes a proposal against the
+                # workflow snapshot, so inventing parameters the node never declared gets the whole
+                # plan rejected — and an old project's snapshot may declare none at all.
+                "parameters": _workflow_node_parameters(text, node_id),
                 "evidenceRefs": refs,
             }
         ],
