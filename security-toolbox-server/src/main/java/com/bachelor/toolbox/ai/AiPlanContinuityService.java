@@ -257,10 +257,31 @@ public class AiPlanContinuityService {
         changes.addAll(diff(old.get(index), current.get(index), path + "[" + (index + 1) + "]"));
       }
     } else {
-      changes.add(new Change(path, old == null ? "（不存在）" : old.toString(),
+      changes.add(new Change(humanPath(path), old == null ? "（不存在）" : old.toString(),
           current == null ? "（不存在）" : current.toString()));
     }
     return List.copyOf(changes);
+  }
+
+  /**
+   * Turn an internal diff path such as {@code 方案.steps[5].parameters.mode} into something a
+   * reviewer can act on. Unknown keys are kept as-is so a new field is never silently hidden.
+   */
+  private static String humanPath(String path) {
+    if (path == null || path.isBlank()) return "方案";
+    String human = path
+        .replace("方案.steps[", "方案 · 第 ")
+        .replace("].parameters.", " 步 · 参数「")
+        .replace("].toolCode", " 步 · 工具")
+        .replace("].risk", " 步 · 风险等级")
+        .replace("].requiresApproval", " 步 · 是否需要确认")
+        .replace("].group", " 步 · 并行分组")
+        .replace("].dependsOnNodeIds", " 步 · 依赖")
+        .replace(".workflowNodeId", ".工作流节点")
+        .replace("授权或工作流.", "授权范围或工作流 · ")
+        .replace("方案.", "方案 · ");
+    if (human.contains("参数「") && !human.endsWith("」")) human = human + "」";
+    return human;
   }
 
   private String write(Object value) {
@@ -287,10 +308,17 @@ public class AiPlanContinuityService {
   public static class PlanChangedException extends ApiException {
     private final List<Change> changes;
     PlanChangedException(List<Change> changes) {
-      super("本轮方案与上次已交付方案不同，未提交审批，未创建任务。请在当前会话明确说明修改要求；授权范围或工作流已变化时，请新建会话重新规划，再申请执行。变化：\n"
-          + changes.stream().map(change -> change.field() + "：原值 " + change.oldValue()
-              + " → 新值 " + change.newValue()).collect(java.util.stream.Collectors.joining("\n")));
-      this.changes = List.copyOf(changes);
+      super("本轮生成的方案和上次已批准的方案不一致，所以没有提交审批，也没有创建任务。\n"
+          + "这通常是因为你这句要求里没写清楚要改什么，模型就自行调整了方案。\n"
+          + ((changes == null || changes.isEmpty()) ? "" : "具体差异：\n"
+              + changes.stream().map(change -> "· " + change.field() + "：" + change.oldValue()
+                  + " 改为 " + change.newValue()).collect(java.util.stream.Collectors.joining("\n"))
+              + "\n")
+          + "你可以这样处理：\n"
+          + "1) 要改方案：直接说清改哪一项，例如“把识别模式改成慢速全面扫描”“去掉目录扫描这一步”；\n"
+          + "2) 就用原方案：回复“按上次方案执行”；\n"
+          + "3) 目标授权范围或工作流配置变了：请新建会话重新规划，再申请执行。");
+      this.changes = List.copyOf(changes == null ? List.of() : changes);
     }
     public List<Change> changes() { return changes; }
   }

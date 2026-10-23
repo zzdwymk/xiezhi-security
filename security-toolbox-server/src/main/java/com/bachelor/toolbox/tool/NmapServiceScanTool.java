@@ -111,8 +111,7 @@ public class NmapServiceScanTool implements SecurityTool {
     List<String> command = buildCommand(executable, host, canonicalPorts, mode);
     observer.command(command);
     observer.heartbeat("Nmap 已启动，等待原生扫描进度");
-    long effectiveTimeoutSeconds =
-        "1-65535".equals(canonicalPorts) ? fullTimeoutSeconds : timeoutSeconds;
+    long effectiveTimeoutSeconds = timeoutFor(mode, canonicalPorts);
     ProcessBuilder builder = ProcessEnvironmentSanitizer.sanitize(new ProcessBuilder(command));
     Process process = builder.start();
     ExecutorService readers = Executors.newFixedThreadPool(2);
@@ -233,6 +232,21 @@ public class NmapServiceScanTool implements SecurityTool {
     command.addAll(List.of("--stats-every", "1s"));
     command.addAll(List.of("-oX", "-", host));
     return List.copyOf(command);
+  }
+
+  /**
+   * Time budget for one run.
+   *
+   * <p>A full-range sweep needs the long budget, but port count is not the only cost driver:
+   * UDP probes wait for a timeout before concluding "closed|filtered", and NSE scripts add
+   * several more probes per open port. Giving those modes the short default made them fail on
+   * a healthy target with "任务执行超时", which looks like a product defect to the operator.
+   * Slow modes therefore get the long budget regardless of how few ports were requested.
+   */
+  long timeoutFor(String mode, String canonicalPorts) {
+    boolean fullRange = "1-65535".equals(canonicalPorts);
+    boolean slowMode = "slow_comprehensive".equals(mode) || "intense_udp".equals(mode);
+    return fullRange || slowMode ? fullTimeoutSeconds : timeoutSeconds;
   }
 
   private Path requireExecutable() {

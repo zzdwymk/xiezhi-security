@@ -41,8 +41,11 @@ class AiPlanContinuityServiceTests {
     assertThat(f.service.plannerContext(baseline)).contains("service", "80,443", "不是执行授权");
     assertThatThrownBy(() -> f.service.prepare(request(true), "session", plan("quick"), baseline))
         .isInstanceOf(AiPlanContinuityService.PlanChangedException.class)
-        .hasMessageContaining("parameters.mode：原值 \"service\" → 新值 \"quick\"")
-        .hasMessageContaining("未提交审批，未创建任务").hasMessageContaining("重新规划");
+        // 差异描述改为评审人可读的说法：参数「mode」：原值 service 改为 quick
+        .hasMessageContaining("参数「mode」")
+        .hasMessageContaining("service").hasMessageContaining("quick")
+        .hasMessageContaining("没有提交审批").hasMessageContaining("没有创建任务")
+        .hasMessageContaining("要改方案").hasMessageContaining("新建会话重新规划");
     assertThat(f.service.plannerContext(f.open())).contains("service").doesNotContain("quick");
   }
 
@@ -112,7 +115,7 @@ class AiPlanContinuityServiceTests {
     var current = f.service.open(request, "session");
     f.target.setAllowedPorts("80");
     assertThatThrownBy(() -> f.service.prepare(request, "session", withDirectoryScan(), current))
-        .isInstanceOf(AiPlanContinuityService.PlanChangedException.class).hasMessageContaining("授权或工作流");
+        .isInstanceOf(AiPlanContinuityService.PlanChangedException.class).hasMessageContaining("授权范围或工作流");
     f.target.setAllowedPorts("80,443");
     var pending = f.service.prepare(request, "session", withDirectoryScan(), f.service.open(request, "session"));
     f.service.stage(pending);
@@ -188,7 +191,9 @@ class AiPlanContinuityServiceTests {
     var baseline = f.open();
     assertThat(f.service.plannerContext(baseline)).contains("已变化").doesNotContain("service");
     assertThatThrownBy(() -> f.service.prepare(request(true), "session", plan("service"), baseline))
-        .isInstanceOf(AiPlanContinuityService.PlanChangedException.class).hasMessageContaining("授权或工作流");
+        .isInstanceOf(AiPlanContinuityService.PlanChangedException.class)
+        .hasMessageContaining("授权范围或工作流");
+
     assertThatThrownBy(() -> f.service.prepare(request(false), "session", plan("service"), baseline))
         .isInstanceOf(AiPlanContinuityService.PlanChangedException.class).hasMessageContaining("新建会话重新规划");
   }

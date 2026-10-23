@@ -113,6 +113,19 @@ class NmapServiceScanToolTests {
   }
 
   @Test
+  void slowModesGetTheLongTimeoutEvenForFewPorts() throws Exception {
+    // UDP 探测要等超时才判 closed|filtered，NSE 脚本每个开放端口还要多轮请求：
+    // 这些模式用短超时会在健康目标上误报“任务执行超时”。
+    NmapServiceScanTool tool = toolWithExecutable(createExecutable("nmap.exe"));
+
+    assertThat(tool.timeoutFor("intense_udp", "80")).as("UDP 模式用长超时").isEqualTo(600L);
+    assertThat(tool.timeoutFor("slow_comprehensive", "80")).as("全面扫描用长超时").isEqualTo(600L);
+    assertThat(tool.timeoutFor("intense", "80")).as("普通窄端口用短超时").isEqualTo(60L);
+    assertThat(tool.timeoutFor("intense", "1-65535")).as("全端口用长超时").isEqualTo(600L);
+    assertThat(tool.timeoutFor("quick", "1-65535")).as("全端口快速扫描也用长超时").isEqualTo(600L);
+  }
+
+  @Test
   void resolvesConfiguredCommandNameBeforeCheckingExecutableFile() throws Exception {
     Path resolvedExecutable = createExecutable("nmap-from-path.exe");
     AtomicReference<List<String>> receivedCandidates = new AtomicReference<>();
