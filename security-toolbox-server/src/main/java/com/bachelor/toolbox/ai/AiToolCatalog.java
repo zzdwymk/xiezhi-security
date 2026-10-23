@@ -148,10 +148,12 @@ final class AiToolCatalog {
                           com.bachelor.toolbox.ai.ToolParameterSpec.NMAP_MODES.stream()
                               .sorted()
                               .toList())));
-      case "tcp_ports" -> object(
-          Map.of(
-              "ports", string(1, 200, "授权端口，如 80,443 或 1-1024"),
-              "mode", enumeration("探测方式", List.of("quick"))));
+      // 只暴露 ports 与 udp：扫描面由授权范围与 ports 的交集决定，不存在会改变扫描面的 mode。
+      case "tcp_ports" ->
+          object(
+              Map.of(
+                  "ports", string(1, 200, "授权端口，如 80,443 或 1-1024"),
+                  "udp", bool("是否追加 UDP 快速探测；UDP 只能判定「开放或过滤」，不能确证开放")));
       case "fscan_scan" ->
           object(
               Map.of(
@@ -257,6 +259,13 @@ final class AiToolCatalog {
     Map<String, Object> value = new LinkedHashMap<>();
     value.put("enum", values);
     value.put("description", description);
+    return value;
+  }
+
+  private static Map<String, Object> bool(String description) {
+    Map<String, Object> value = new LinkedHashMap<>();
+    value.put("type", "boolean");
+    if (!description.isBlank()) value.put("description", description);
     return value;
   }
 }
