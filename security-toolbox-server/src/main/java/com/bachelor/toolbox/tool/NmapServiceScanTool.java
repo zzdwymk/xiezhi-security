@@ -197,8 +197,13 @@ public class NmapServiceScanTool implements SecurityTool {
       Path executable, String host, String canonicalPorts, String mode) {
     List<String> command = new ArrayList<>();
     command.add(executable.toString());
-    // 非端口相关参数，按 Zenmap 官方配置文件对齐（连接扫描 -sT、禁用名字解析 -n）。
-    command.addAll(List.of("-sT", "-n"));
+    // -sT 是本平台唯一的 TCP 扫描类型来源，任何模式下都只出现一次：Nmap
+    // 明确拒绝同时指定多种 TCP 扫描类型（"more than one type of TCP scan"）。
+    // UDP 必须与 TCP 合并为 -sSU 一个参数，分开写成 -sU -sT 同样会被拒绝。
+    boolean hostDiscovery = "ping".equals(mode) || "quick_trace".equals(mode);
+    boolean udp = "intense_udp".equals(mode) || "slow_comprehensive".equals(mode);
+    command.add(udp ? "-sSU" : "-sT");
+    command.add("-n");
     switch (mode) {
       case "quick" -> {
         // 纯 TCP 连接扫描：Nmap 内部按批并行，全段 65535 约 15-30 秒，
@@ -208,28 +213,24 @@ public class NmapServiceScanTool implements SecurityTool {
       }
       case "regular" -> command.add("-v");
       case "intense" -> command.addAll(List.of("-T4", "-A", "-v"));
-      case "intense_udp" -> command.addAll(List.of("-sU", "-T4", "-A", "-v"));
+      case "intense_udp" -> command.addAll(List.of("-T4", "-A", "-v"));
       case "intense_all_tcp" -> command.addAll(List.of("-T4", "-A", "-v"));
       case "intense_no_ping" -> command.addAll(List.of("-T4", "-A", "-v", "-Pn"));
       case "ping" -> command.addAll(List.of("-sn", "-PE", "-PS443", "-PA80"));
-      case "quick_plus" -> command.addAll(List.of("-sV", "-T4", "-O", "--version-light"));
+      case "quick_plus", "service" -> command.addAll(List.of("-sV", "-T4", "-O", "--version-light"));
       case "quick_trace" -> command.addAll(List.of("-sn", "--traceroute"));
-      case "service" -> command.addAll(List.of("-sV", "-T4", "-O", "--version-light"));
       case "slow_comprehensive" -> command.addAll(
-          List.of(
-              "-sS", "-sU", "-T4", "-A", "-v", "-PE", "-PS80", "-PA443",
-              "-PP", "-script", "default"));
+          List.of("-T4", "-A", "-v", "-PE", "-PS80", "-PA443", "-PP", "--script", "default"));
       default -> throw new ApiException("Nmap 扫描模式无效：" + mode);
     }
-    // 端口选择：全端口统一用 -p-；本平台强制的连接扫描参数放在端口参数之后。
+    // 端口选择：全端口统一用 -p-；主机发现类模式不扫描端口。
     if ("intense_all_tcp".equals(mode) || "slow_comprehensive".equals(mode)) {
       command.add("-p-");
-    } else if (!"ping".equals(mode) && !"quick_trace".equals(mode)) {
+    } else if (!hostDiscovery) {
       if ("1-65535".equals(canonicalPorts)) command.add("-p-");
       else command.addAll(List.of("-p", canonicalPorts));
     }
-    // 本平台安全基线：始终 TCP 连接扫描，避免 raw socket 权限问题；授权端口范围由系统约束。
-    command.addAll(List.of("-sT", "--stats-every", "1s"));
+    command.addAll(List.of("--stats-every", "1s"));
     command.addAll(List.of("-oX", "-", host));
     return List.copyOf(command);
   }

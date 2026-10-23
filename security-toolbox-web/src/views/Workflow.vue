@@ -1118,13 +1118,13 @@ const NMAP_MODE_DEFS = [
   { value: "quick", label: "快速扫描（仅端口存活）", flags: "" },
   { value: "regular", label: "常规扫描（详细输出）", flags: "-v" },
   { value: "intense", label: "深入扫描（服务/系统/脚本）", flags: "-T4 -A -v" },
-  { value: "intense_udp", label: "深入扫描 + UDP", flags: "-sU -T4 -A -v" },
+  { value: "intense_udp", label: "深入扫描 + UDP", flags: "-sSU -T4 -A -v" },
   { value: "intense_all_tcp", label: "深入扫描 + 全 TCP 端口", flags: "-T4 -A -v -p-" },
   { value: "intense_no_ping", label: "深入扫描 + 不检测存活", flags: "-T4 -A -v -Pn" },
   { value: "ping", label: "Ping 主机发现（不扫端口）", flags: "-sn -PE -PS443 -PA80" },
   { value: "quick_plus", label: "快速扫描+（版本/系统识别）", flags: "-sV -T4 -O --version-light" },
   { value: "quick_trace", label: "快速路由追踪（不扫端口）", flags: "-sn --traceroute" },
-  { value: "slow_comprehensive", label: "慢速全面扫描（含默认脚本）", flags: "-sU -T4 -A -v -p- --script default" },
+  { value: "slow_comprehensive", label: "慢速全面扫描（含默认脚本）", flags: "-sSU -T4 -A -v -p- --script default" },
   { value: "service", label: "服务识别（兼容旧值）", flags: "-sV -T4 -O --version-light" },
 ];
 const NMAP_MODE_VALUES = NMAP_MODE_DEFS.map((m) => m.value);

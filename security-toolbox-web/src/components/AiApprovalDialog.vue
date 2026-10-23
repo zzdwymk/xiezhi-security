@@ -120,13 +120,13 @@ const NMAP_MODE_OPTIONS = [
   { value: "quick", label: "快速扫描（仅端口存活，-sT）" },
   { value: "regular", label: "常规扫描（-sT -v 详细输出）" },
   { value: "intense", label: "深入扫描（-sT -T4 -A -v 服务/系统/脚本）" },
-  { value: "intense_udp", label: "深入扫描 + UDP（-sU -T4 -A -v）" },
+  { value: "intense_udp", label: "深入扫描 + UDP（-sSU -T4 -A -v）" },
   { value: "intense_all_tcp", label: "深入扫描 + 全 TCP 端口（-p- -T4 -A -v）" },
   { value: "intense_no_ping", label: "深入扫描 + 不检测存活（-T4 -A -v -Pn）" },
   { value: "ping", label: "Ping 主机发现（-sn -PE -PS443 -PA80）" },
   { value: "quick_plus", label: "快速扫描+（-sV -T4 -O --version-light 版本/系统）" },
   { value: "quick_trace", label: "快速路由追踪（-sn --traceroute）" },
-  { value: "slow_comprehensive", label: "慢速全面扫描（-sU -T4 -A -v -p- 默认脚本）" },
+  { value: "slow_comprehensive", label: "慢速全面扫描（-sSU -T4 -A -v -p- 默认脚本）" },
   { value: "service", label: "服务识别（-sV -O --version-light 兼容旧值）" },
 ];
 
@@ -165,13 +165,13 @@ const NMAP_MODE_FLAGS: Record<string, string> = {
   quick: "",
   regular: "-v",
   intense: "-T4 -A -v",
-  intense_udp: "-sU -T4 -A -v",
+  intense_udp: "-sSU -T4 -A -v",
   intense_all_tcp: "-T4 -A -v -p-",
   intense_no_ping: "-T4 -A -v -Pn",
   ping: "-sn -PE -PS443 -PA80",
   quick_plus: "-sV -T4 -O --version-light",
   quick_trace: "-sn --traceroute",
-  slow_comprehensive: "-sU -T4 -A -v -p- --script default",
+  slow_comprehensive: "-sSU -T4 -A -v -p- --script default",
   service: "-sV -T4 -O --version-light",
 };
 const NMAP_NO_PORT_MODES = new Set(["ping", "quick_trace"]);
