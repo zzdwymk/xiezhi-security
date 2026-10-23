@@ -1025,7 +1025,6 @@ class AgentRecoveryIdentity(BaseModel):
 
 class AgentCheckpointRequest(AgentRecoveryIdentity):
     """Finite callback checkpoint; task IDs are references, never result bodies."""
-
     pendingTaskIds: list[StrictInt] = Field(min_length=1, max_length=64)
 
     @field_validator("pendingTaskIds")
@@ -1106,3 +1105,14 @@ class ConversationSummary(BaseModel):
     @classmethod
     def _drop_blank_entries(cls, value: list[str]) -> list[str]:
         return [item.strip() for item in value if item and item.strip()]
+
+
+class SummarizeRequest(BaseModel):
+    """An explicit compaction request over an already-rendered conversation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    projectId: StrictInt = Field(gt=0)
+    targetId: StrictInt | None = Field(default=None, ge=1)
+    # The same rendering the planner would have received; bounded like a real turn.
+    conversation: StrictStr = Field(min_length=1, max_length=40_000)

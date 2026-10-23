@@ -378,6 +378,48 @@ public class AiController {
     return Map.of("sessionId", sessionId, "cancelled", cancelled);
   }
 
+  /**
+   * Compact this session's conversation on demand.
+   *
+   * <p>Long sessions eventually outgrow the context the runtime can carry verbatim, and until now
+   * that compaction only happened automatically once a size threshold was crossed. This exposes it
+   * explicitly so a user can reclaim context when they want to, and so the behaviour is observable
+   * without first talking past the threshold. The result is a descriptive digest kept for recall;
+   * it carries no authority and never approves or dispatches anything.
+   */
+  @PostMapping("/agent/sessions/{sessionId}/compact")
+  public Map<String, Object> compactSession(@PathVariable String sessionId) {
+    if (memoryService == null || runtimeClient == null) {
+      throw new org.springframework.web.server.ResponseStatusException(
+          org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, "智能服务不可用");
+    }
+    AiConversationMemoryService.SessionScope scope = memoryService.scope(sessionId);
+    if (scope == null) {
+      throw new org.springframework.web.server.ResponseStatusException(
+          org.springframework.http.HttpStatus.NOT_FOUND, "AI 会话不存在");
+    }
+    authorization.requireAccess(scope.projectId());
+    // Compact exactly what the planner would have seen: the same transcript rendering, so the
+    // digest describes the conversation as the model experiences it, not a differently trimmed one.
+    String transcript = memoryService.transcript(sessionId);
+    if (transcript == null || transcript.isBlank()) {
+      return Map.of("sessionId", sessionId, "compacted", false, "reason", "EMPTY_CONVERSATION");
+    }
+    Map<String, Object> summary = runtimeClient.summarizeConversation(
+        scope.projectId(), scope.targetId(), transcript);
+    if (summary.isEmpty()) {
+      return Map.of("sessionId", sessionId, "compacted", false, "reason", "NO_SUMMARY");
+    }
+    try {
+      memoryService.saveConversationSummary(
+          sessionId, objectMapper.writeValueAsString(summary));
+    } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
+      throw new org.springframework.web.server.ResponseStatusException(
+          org.springframework.http.HttpStatus.INTERNAL_SERVER_ERROR, "会话摘要保存失败");
+    }
+    return Map.of("sessionId", sessionId, "compacted", true, "summary", summary);
+  }
+
   @GetMapping("/sessions/{sessionId}/usage")
   public Map<String, Object> sessionUsage(@PathVariable String sessionId) {
     if (memoryService == null) return Map.of("sessionId", sessionId, "usage", Map.of());

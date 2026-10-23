@@ -200,6 +200,7 @@ const editingMessage = ref<MessageEditState>();
 const copiedMessageId = ref<string>();
 let copiedMessageTimer: ReturnType<typeof setTimeout> | undefined;
 const loading = ref(false);
+const compacting = ref(false);
 const activeSendingThreadIds = ref<Set<string>>(new Set());
 const isSendingAny = ref(false);
 const sending = computed({
@@ -1996,9 +1997,54 @@ async function saveConversationMemory(
   }
 }
 
+// 手动压缩命令。会话很长时，早期内容会被自动压缩；这里给用户一个主动入口，
+// 不必先把对话说到阈值才有反馈。只在纯命令输入时触发，避免误伤正常提问。
+const COMPACT_COMMANDS = new Set(["/compact", "/压缩", "压缩会话", "压缩上下文"]);
+
+function isCompactCommand(text: string) {
+  return COMPACT_COMMANDS.has(text.trim().toLowerCase());
+}
+
+async function runCompactCommand(sessionId: string) {
+  compacting.value = true;
+  try {
+    const result = await endpoints.compactAgentSession(sessionId);
+    const data = result?.data;
+    if (data?.compacted) {
+      const summary = data.summary || {};
+      const count = Object.values(summary).reduce<number>(
+        (acc, value) => acc + (Array.isArray(value) ? value.length : 0),
+        0,
+      );
+      ElMessage.success(`会话已压缩：整理出 ${count} 条要点，后续回答会带上这些记忆`);
+    } else {
+      ElMessage.info(
+        data?.reason === "EMPTY_CONVERSATION"
+          ? "当前会话还没有可压缩的内容"
+          : "本次没有生成摘要，请稍后重试",
+      );
+    }
+  } catch (error) {
+    ElMessage.error(readableAiConversationError(error, "压缩会话失败，请稍后重试"));
+  } finally {
+    compacting.value = false;
+  }
+}
+
 async function sendPrompt() {
   const text = prompt.value.trim();
   if (!text || sending.value) return;
+  // A bare compaction command acts on the session instead of becoming a chat turn.
+  if (isCompactCommand(text)) {
+    const thread = selectedThread.value;
+    if (!thread) {
+      ElMessage.warning("请先进入一个对话再压缩会话");
+      return;
+    }
+    prompt.value = "";
+    await runCompactCommand(thread.id);
+    return;
+  }
   if (text.length > 4000) {
     ElMessage.warning("本轮请求请控制在 4000 字以内");
     return;
@@ -2816,17 +2862,20 @@ onBeforeUnmount(() => {
               <el-icon><Plus /></el-icon>新增授权目标
             </button>
           </div>
-          <span class="composer-shortcut">Enter 发送，Shift + Enter 换行</span>
-          <el-tooltip content="发送" placement="top" :show-after="350"
+          <span class="composer-shortcut">{{
+            compacting ? "正在压缩会话，请稍候…" : "Enter 发送，Shift + Enter 换行"
+          }}</span>
+          <el-tooltip :content="compacting ? '正在压缩会话' : '发送'" placement="top" :show-after="350"
             ><button
               type="button"
               class="send-button"
-              aria-label="发送"
-              :disabled="sending || !prompt.trim() || !selectedTargetId"
+              :aria-label="compacting ? '正在压缩会话' : '发送'"
+              :aria-busy="compacting"
+              :disabled="sending || compacting || !prompt.trim() || !selectedTargetId"
               @click="sendPrompt"
             >
-              <el-icon :class="{ rotating: sending }"
-                ><Refresh v-if="sending" /><Promotion v-else
+              <el-icon :class="{ rotating: sending || compacting }"
+                ><Refresh v-if="sending || compacting" /><Promotion v-else
               /></el-icon></button
           ></el-tooltip>
         </div>

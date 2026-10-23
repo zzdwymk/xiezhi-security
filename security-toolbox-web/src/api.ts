@@ -1102,6 +1102,17 @@ export const endpoints = {
       undefined,
       { timeout: 20_000 },
     ),
+  // 手动压缩当前会话：把较早的对话压成结构化要点，释放上下文。
+  // 摘要只影响回忆，不承载任何授权。
+  compactAgentSession: (sessionId: string) =>
+    api.post<{
+      sessionId: string;
+      compacted: boolean;
+      reason?: string;
+      summary?: Record<string, unknown>;
+    }>(`/ai/agent/sessions/${encodeURIComponent(sessionId)}/compact`, undefined, {
+      timeout: 90_000,
+    }),
   listConversations: () => api.get<any[]>("/ai/conversations", { timeout: 15_000 }),
   // 只读：本会话当前在等待什么（等待扫描任务 / 等待自动续接）。用于在回合结束后
   // 向用户明确展示“在等什么”，而不是笼统的“等待处理反馈”。
