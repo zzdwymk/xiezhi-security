@@ -186,6 +186,14 @@ const targets = ref<Target[]>([]);
 const projectByTarget = ref<Record<number, number>>({});
 const selectedTargetId = ref<number>();
 const prompt = ref("");
+/**
+ * 与后端 AiAgentRequest.userPrompt 的 @Size(max = 4000) 保持一致。
+ *
+ * 超过这个长度的输入会被服务端拒绝，但界面上原来没有任何长度约束：几千字符会把
+ * 输入区撑到溢出、发送按钮被挤到视口外，用户只看到“卡住”，拿不到“内容过长”的
+ * 明确反馈。前端先拦住，让限制与提示都发生在输入阶段。
+ */
+const PROMPT_MAX_LENGTH = 4000;
 const composerInputRef = ref<HTMLTextAreaElement | null>(null);
 type QuotedMessage = Pick<ConversationMessage, "id" | "role" | "content" | "createdAt">;
 const quotedMessage = ref<QuotedMessage>();
@@ -2838,6 +2846,7 @@ onBeforeUnmount(() => {
           ref="composerInputRef"
           v-model="prompt"
           rows="4"
+          :maxlength="PROMPT_MAX_LENGTH"
           :disabled="sending"
           placeholder="例如：检查目标的开放端口；如需先看方案，可以说“先给方案，不执行”"
           @keydown="handlePromptKeydown"
@@ -3374,13 +3383,22 @@ onBeforeUnmount(() => {
             ref="composerInputRef"
             v-model="prompt"
             rows="2"
+            :maxlength="PROMPT_MAX_LENGTH"
             :disabled="sending"
             placeholder="继续提问或说明下一步；只需方案时，请说“先给方案，不执行”"
             @keydown="handlePromptKeydown"
           />
           <MarkdownComposerPreview :content="prompt" />
           <div class="thread-composer-footer">
-            <span class="composer-shortcut">Enter 发送，Shift + Enter 换行</span>
+            <span class="composer-shortcut">
+              Enter 发送，Shift + Enter 换行
+              <span
+                v-if="prompt.length > PROMPT_MAX_LENGTH * 0.8"
+                class="composer-length-hint"
+                :class="{ 'is-limit': prompt.length >= PROMPT_MAX_LENGTH }"
+                >· {{ prompt.length }}/{{ PROMPT_MAX_LENGTH }}</span
+              >
+            </span>
             <el-tooltip :content="editingMessage ? '发送编辑并新建分支' : '发送'" placement="top" :show-after="350"
               ><button
                 type="button"
@@ -3783,7 +3801,12 @@ onBeforeUnmount(() => {
 }
 .welcome-composer textarea {
   min-height: 110px;
+  max-height: 40vh;
   padding: 18px 19px 8px;
+  /* 与 .thread-composer 同理：超长连续串必须能断行，否则撑破欢迎区布局 */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  overflow-y: auto;
 }
 .welcome-composer textarea::placeholder,
 .thread-composer textarea::placeholder {
@@ -3822,6 +3845,15 @@ onBeforeUnmount(() => {
   justify-self: end;
   white-space: nowrap;
   text-align: right;
+}
+/* 接近输入上限时才显示计数，平时不占视线 */
+.composer-length-hint {
+  margin-left: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.composer-length-hint.is-limit {
+  color: var(--el-color-warning);
+  font-weight: 600;
 }
 .send-button,
 .thread-composer > button {
@@ -4089,6 +4121,10 @@ onBeforeUnmount(() => {
   max-height: 130px;
   min-height: 48px;
   padding: 4px 0;
+  /* 上千字符的连续串（没有空格可断行）会把输入区横向撑爆，把发送按钮挤到视口外 */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  overflow-y: auto;
 }
 .composer-hint {
   display: block;
