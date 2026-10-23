@@ -31,7 +31,14 @@ public class AiController {
   private final ProjectAuthorizationService authorization;
   private final AssessmentProjectService projects;
   private final AiConversationMemoryService memoryService;
+  private com.bachelor.toolbox.task.TaskService taskService;
   private com.bachelor.toolbox.ai.CrossTurnRecoveryService recoveryService;
+
+  /** 项目级批量执行能力；独立 setter 注入，保持既有构造器契约不变。 */
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  public void setTaskService(com.bachelor.toolbox.task.TaskService value) {
+    this.taskService = value;
+  }
 
   /** Optional: lets a user stop the automatic continuation loop for one session. */
   @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -227,6 +234,32 @@ public class AiController {
   @PostMapping("/answers")
   public AiAnswerResponse answer(@Valid @RequestBody AiAnswerRequest request) {
     return answerService.answer(request);
+  }
+
+  /**
+   * 按授权项目（而非单个授权目标）对整个项目内的目标批量执行同一工具。
+   *
+   * <p>这是 AI 对话中“对整个项目/所有目标做某项检测”这类项目级意图的确定性执行落地：不经过不确定的
+   * 语言模型规划器，而是由服务端解析项目范围后逐目标经授权与配额校验创建任务，返回逐目标结果。
+   */
+  @PostMapping("/projects/{projectId}/batch-execute")
+  public com.bachelor.toolbox.task.ProjectBatchTaskResult batchExecuteForProject(
+      @PathVariable Long projectId,
+      @RequestBody com.bachelor.toolbox.task.ProjectBatchTaskRequest request) {
+    authorization.requireAccess(projectId);
+    if (taskService == null) {
+      throw new com.bachelor.toolbox.common.ApiException("批量执行能力未配置");
+    }
+    if (request == null) {
+      throw new com.bachelor.toolbox.common.ApiException("批量执行请求不能为空");
+    }
+    if (request.projectId() != null && !projectId.equals(request.projectId())) {
+      throw new com.bachelor.toolbox.common.ApiException("路径项目 ID 与请求体项目 ID 不一致");
+    }
+    var normalized =
+        new com.bachelor.toolbox.task.ProjectBatchTaskRequest(
+            projectId, request.toolCode(), request.parameters(), request.targetIds());
+    return taskService.createBatchForProject(normalized);
   }
 
   @PostMapping("/agent")
