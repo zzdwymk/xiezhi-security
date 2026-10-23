@@ -940,7 +940,9 @@ function workflowToolParameters(
   )
     return { allPocs: true };
   if (tool === "http_security_check") return { check: "cookies" };
-  if (tool === "nmap_service_scan") return { mode: "quick" };
+  // 端口探测先发现开放端口，Nmap 服务识别再按结果收敛范围；该提示由后端
+  // TaskExecutionService#narrowPortsToDependencyResults 消费（仅在全端口请求时生效）。
+  if (tool === "nmap_service_scan") return { mode: "quick", consumeOpenPorts: true };
   if (tool === "fscan_scan") return { vulnMode: "SAFE" };
   return {};
 }
