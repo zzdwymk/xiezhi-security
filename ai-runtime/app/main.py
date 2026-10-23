@@ -35,6 +35,7 @@ from .schemas import (
     EvidenceBundle,
     IndexProjectRequest,
     QueryProjectEvidenceRequest,
+    SummarizeRequest,
 )
 from .security import require_project_authorization, require_runtime_token
 from .semantic_judge import BEHAVIOUR_LABELS, RISK_LEVELS, evaluate_action
@@ -187,6 +188,22 @@ async def agent_graph_debug() -> dict:
     if not settings.internal_graph_debug:
         raise HTTPException(status_code=404, detail="内部图调试接口未启用")
     return agent_runtime.internal_graph_structure()
+
+
+@app.post("/agent/summarize", dependencies=[Depends(require_runtime_token)])
+async def agent_summarize(payload: SummarizeRequest, raw_request: Request) -> dict:
+    """Compact a conversation on demand.
+
+    Compaction normally fires by itself once a conversation outgrows its budget. This endpoint
+    exposes the same work explicitly, so a user can reclaim context in a long session — and so the
+    behaviour is observable without having to talk past a size threshold first. The digest is
+    descriptive only: it never authorizes anything.
+    """
+    require_project_authorization(raw_request, payload.projectId, "agent")
+    summary = await agent_runtime.planner.summarize_conversation(
+        payload.conversation, payload.targetId
+    )
+    return {"summary": summary or {}}
 
 
 @app.post("/agent/checkpoint", dependencies=[Depends(require_runtime_token)])

@@ -347,6 +347,46 @@ public class AiAgentRuntimeClient {
 
   /** Retrieves project evidence without entering an agent turn or reading conversation memory. */
   @SuppressWarnings("unchecked")
+  /**
+   * Ask the runtime to compact a conversation on demand.
+   *
+   * <p>Compaction normally happens by itself once a conversation outgrows its budget; this is the
+   * explicit path, used when a user wants to reclaim context in a long session. The digest is
+   * descriptive only — it is stored for recall and never authorizes anything.
+   */
+  public Map<String, Object> summarizeConversation(
+      Long projectId, Long targetId, String conversation) {
+    if (projectId == null || projectId <= 0) {
+      throw new IllegalArgumentException("项目编号必须是正整数");
+    }
+    if (conversation == null || conversation.isBlank()) {
+      throw new IllegalArgumentException("没有可压缩的对话内容");
+    }
+    if (!enabled) throw new RuntimeUnavailableException("智能服务未启用，无法压缩会话");
+    try {
+      RestClient.RequestBodySpec spec = restClient.post()
+          .uri("/agent/summarize")
+          .contentType(MediaType.APPLICATION_JSON)
+          .accept(MediaType.APPLICATION_JSON);
+      authorizeProject(spec, projectId, "agent");
+      Map<String, Object> body = new java.util.LinkedHashMap<>();
+      body.put("projectId", projectId);
+      if (targetId != null && targetId > 0) body.put("targetId", targetId);
+      body.put("conversation", conversation);
+      JsonNode response = spec.body(body).retrieve().body(JsonNode.class);
+      if (response == null || !response.isObject()) {
+        throw new RuntimeProtocolException("会话压缩返回格式无效");
+      }
+      JsonNode summary = response.path("summary");
+      if (!summary.isObject()) return Map.of();
+      return objectMapper.convertValue(summary, Map.class);
+    } catch (RuntimeProtocolException ex) {
+      throw ex;
+    } catch (Exception ex) {
+      throw new RuntimeUnavailableException("会话压缩请求失败", ex);
+    }
+  }
+
   public Map<String, Object> retrieveProjectEvidence(Long projectId, Long targetId, String query) {
     if (projectId == null || projectId <= 0 || targetId == null || targetId <= 0) {
       throw new IllegalArgumentException("项目和目标编号必须是正整数");
@@ -1432,7 +1472,7 @@ public class AiAgentRuntimeClient {
     Set<String> allowed =
         switch (toolCode) {
           case "retrieve_project_context" -> Set.of("query");
-          case "tcp_ports" -> Set.of("ports", "mode");
+          case "tcp_ports" -> Set.of("ports", "udp");
           case "nmap_service_scan" -> Set.of("ports", "mode", "consumeOpenPorts");
           case "http_security_check" -> Set.of("check");
           case "afrog_scan", "xray_scan", "nuclei_scan" -> Set.of("pocCodes", "allPocs");
@@ -1452,9 +1492,11 @@ public class AiAgentRuntimeClient {
       case "retrieve_project_context" ->
           result.put("query", strictText(raw, "query", 2000));
       case "tcp_ports" -> {
+        // 扫描面只由 ports 决定；不接收 mode，避免出现"参数可见但不生效"的审批不一致。
         copyStrictText(raw, result, "ports", 200);
-        // quick = probe only common ports for liveness/discovery; absent = sweep as requested.
-        copyStrictText(raw, result, "mode", 20);
+        if (raw.has("udp")) {
+          result.put("udp", raw.path("udp").asBoolean(false));
+        }
       }
       case "nmap_service_scan" -> {
         copyStrictText(raw, result, "ports", 200);

@@ -100,13 +100,29 @@ def _prompt_kind(messages: list[dict[str, Any]]) -> str:
     # Identify the declared role, not downstream stages mentioned in its policy.
     # The evidence assessor also discusses the grounded planner in its prompt.
     role = system_text.strip().splitlines()[0] if system_text.strip() else ""
+    if role.startswith("你是授权安全测试平台的会话摘要器。"):
+        return "summary"
     if role.startswith("你是授权安全测试平台的 grounded planner。"):
         return "grounded"
     if role.startswith("你是证据充分性检查器。"):
         return "evidence"
     if role.startswith("你是授权安全测试平台的意图路由器。"):
-        return "intent"
+        # An AUTO turn extends the same router prompt with executionDecision / planRelation.
+        # The two contracts differ, so they must not share one canned answer.
+        return "auto_intent" if "executionDecision" in system_text else "intent"
     return "legacy"
+
+
+def _summary_response(text: str) -> dict[str, Any]:
+    """Recognisable, deterministic digest so a UI test can assert compaction actually happened."""
+    return {
+        "userIntents": ["早前轮次要求对授权目标做端口与服务发现"],
+        "completedChecks": ["TCP 端口探测：已发现开放端口"],
+        "openFindings": ["待确认开放端口对应的服务指纹"],
+        "pendingApprovals": [],
+        "userConstraints": ["只测试当前授权目标"],
+        "targetScope": "已授权目标的允许端口范围",
+    }
 
 
 def _extract_evidence_bundle(text: str) -> dict[str, Any]:
@@ -203,6 +219,23 @@ def _intent_response(text: str) -> dict[str, Any]:
         "retrievalQuery": request,
         "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
     }
+
+
+def _auto_intent_response(text: str) -> dict[str, Any]:
+    """AUTO turns extend the router contract with executionDecision and planRelation.
+
+    The desktop app always runs AUTO, so a mock that only answers the legacy router shape makes
+    every desktop turn fail at the route stage — which looks exactly like "the model is down".
+    """
+    decision = dict(_intent_response(text))
+    intent = decision.get("intent")
+    if intent == "ACTION_PLAN":
+        decision["executionDecision"] = "EXECUTE"
+        decision["planRelation"] = "NEW"
+    else:
+        decision["executionDecision"] = "CLARIFY" if intent == "CLARIFY" else "PLAN_ONLY"
+        decision["planRelation"] = "NONE"
+    return decision
 
 
 def _retrieval_round(text: str, bundle: dict[str, Any]) -> int:
@@ -410,6 +443,10 @@ def _select_response(messages: list[dict[str, Any]]) -> dict[str, Any]:
         for message in messages
         if message.get("role") != "system"
     )
+    if kind == "summary":
+        return _summary_response(text)
+    if kind == "auto_intent":
+        return _auto_intent_response(_trusted_prompt_text(user_text))
     if kind == "intent":
         return _intent_response(_trusted_prompt_text(user_text))
     bundle = _extract_evidence_bundle(text)
