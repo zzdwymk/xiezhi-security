@@ -47,6 +47,9 @@ public class TaskService {
   @Autowired private com.bachelor.toolbox.project.ProjectAuthorizationService authorization;
   @Autowired private org.springframework.transaction.PlatformTransactionManager transactionManager;
   @jakarta.persistence.PersistenceContext private jakarta.persistence.EntityManager entityManager;
+  /** 与 AiAuthorizationGuard 共用同一组配额配置，保证批量执行与 AI 派发口径一致。 */
+  @org.springframework.beans.factory.annotation.Value("${toolbox.ai.agent.max-active-tasks-per-target:4}")
+  private int maxActiveTasksPerTarget = 4;
 
   @Autowired
   public TaskService(
@@ -174,6 +177,107 @@ public class TaskService {
     task.setRequestJson(objectMapper.writeValueAsString(parameters));
     snapshotService.capture(task, target, tool);
     return saveAndExecute(task, auditAction, sourceTaskId);
+  }
+
+  /**
+   * 直接按授权项目对项目内目标批量下发同一工具。
+   *
+   * <p>与单目标入口相比，这里先按项目解析一次目标清单（全部目标或指定子集），再逐目标复用单目标创建流程：
+   * 每个目标独立执行项目活跃状态、授权时间窗、目标授权状态和单目标任务配额校验。任一目标失败不会中断其余目标，
+   * 最终以逐目标结果的形式返回，从而支持部分成功。单目标入口 {@link #create(CreateTaskRequest)} 保持不变。
+   */
+  public ProjectBatchTaskResult createBatchForProject(ProjectBatchTaskRequest request) {
+    if (request == null || request.projectId() == null) {
+      throw new ApiException("项目 ID 不能为空");
+    }
+    if (request.toolCode() == null || request.toolCode().isBlank()) {
+      throw new ApiException("工具代码不能为空");
+    }
+    // 项目级入口先要求对项目有访问权与可执行授权，避免越权枚举他人项目的目标清单。
+    var project = projectService.validateProjectExecution(request.projectId());
+
+    List<com.bachelor.toolbox.project.ProjectTarget> projectLinks =
+        projectService.targets(request.projectId());
+    List<Long> requestedIds =
+        request.allTargets()
+            ? projectLinks.stream().map(com.bachelor.toolbox.project.ProjectTarget::getTargetId).toList()
+            : request.targetIds().stream().filter(java.util.Objects::nonNull).distinct().toList();
+    if (requestedIds.isEmpty()) {
+      throw new ApiException("项目内没有可执行的授权目标");
+    }
+    if (!request.allTargets()) {
+      var memberIds =
+          projectLinks.stream()
+              .map(com.bachelor.toolbox.project.ProjectTarget::getTargetId)
+              .collect(java.util.stream.Collectors.toSet());
+      for (Long targetId : requestedIds) {
+        if (!memberIds.contains(targetId)) {
+          throw new ApiException("目标 #" + targetId + " 不属于该评估项目");
+        }
+      }
+    }
+
+    Map<String, Object> parameters =
+        request.parameters() == null ? Map.of() : request.parameters();
+    List<ProjectBatchTaskResult.Item> items = new java.util.ArrayList<>();
+    int succeeded = 0;
+    for (Long targetId : requestedIds) {
+      String targetName = resolveTargetName(targetId);
+      // 单目标配额：与 AI 派发口径一致，未结束任务已达上限的目标跳过，其余目标继续。
+      long active =
+          repository.countByTargetIdAndStatusIn(
+              targetId, List.of("BLOCKED", "PENDING", "RUNNING"));
+      if (active + 1 > Math.max(1, maxActiveTasksPerTarget)) {
+        items.add(
+            ProjectBatchTaskResult.Item.failure(
+                targetId,
+                targetName,
+                "目标任务配额不足（未结束 " + active + " 项，上限 " + Math.max(1, maxActiveTasksPerTarget) + " 项）"));
+        continue;
+      }
+      try {
+        SecurityTask created =
+            create(
+                new CreateTaskRequest(
+                    request.projectId(), targetId, request.toolCode(), parameters),
+                null,
+                null,
+                null,
+                null,
+                "BATCH_CREATE_TASK");
+        items.add(ProjectBatchTaskResult.Item.success(targetId, targetName, created.getId()));
+        succeeded++;
+      } catch (ApiException ex) {
+        items.add(ProjectBatchTaskResult.Item.failure(targetId, targetName, ex.getMessage()));
+      } catch (Exception ex) {
+        items.add(
+            ProjectBatchTaskResult.Item.failure(
+                targetId, targetName, "任务创建失败：" + ex.getMessage()));
+      }
+    }
+    auditService.record(
+        "BATCH_CREATE_TASK",
+        "PROJECT",
+        project.getId(),
+        "tool=" + request.toolCode() + "; targets=" + requestedIds.size(),
+        "SUCCESS");
+    return new ProjectBatchTaskResult(
+        project.getId(),
+        request.toolCode(),
+        requestedIds.size(),
+        succeeded,
+        requestedIds.size() - succeeded,
+        List.copyOf(items));
+  }
+
+  private String resolveTargetName(Long targetId) {
+    try {
+      var target = targetService.get(targetId);
+      String name = target == null ? null : target.getName();
+      return name == null || name.isBlank() ? ("目标 #" + targetId) : name;
+    } catch (RuntimeException ex) {
+      return "目标 #" + targetId;
+    }
   }
 
   /**
