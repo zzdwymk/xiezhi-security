@@ -30,6 +30,7 @@
     "test:offline": "node scripts/verify-offline-tools.cjs",
     "test:visual": "node scripts/visual-smoke.cjs",
     "test:composer-stats": "node scripts/test-composer-stats-popovers.cjs",
+    "test:turn-rail-leftover": "node scripts/test-turn-rail-tooltip-leftover.cjs",
     "test:e2e": "node tests/e2e/run-all.cjs",
     "test:e2e:report": "node tests/e2e/gen-report.cjs",
     "preview": "vite preview",
