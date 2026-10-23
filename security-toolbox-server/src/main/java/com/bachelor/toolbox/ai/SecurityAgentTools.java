@@ -208,6 +208,11 @@ public class SecurityAgentTools {
             .toList();
     if (!workflowBound) rejectUnsafeParallelGroups(orderedSteps);
     WorkflowTaskSchedule schedule = new WorkflowTaskSchedule();
+    // AI 直接规划的方案没有 workflowNodeId，无法走 dependsOnNodeIds，因此这里按工具语义补依赖：
+    // 声明 consumeOpenPorts 的 Nmap 步骤必须排在同一方案内的 tcp_ports 之后，并且等它成功。
+    // 少了这层依赖，TaskExecutionService#narrowPortsToDependencyResults 拿不到前序 openPorts，
+    // 扫描范围不会收敛，等于把授权全段又扫一遍——这正是当初把两者改成二选一的原因。
+    Long portProbeTaskId = null;
     for (AiPlanResponse.PlanStep step : orderedSteps) {
       List<Long> graphDependencyTaskIds =
           step.dependsOnNodeIds().stream()
@@ -224,8 +229,16 @@ public class SecurityAgentTools {
       if (graphDependencyTaskIds.size() != requiredSelectedDependencies) {
         throw new ApiException("工作流任务依赖顺序无效");
       }
+      List<Long> planDependencies = new java.util.ArrayList<>(graphDependencyTaskIds);
+      if (!workflowBound
+          && "nmap_service_scan".equals(step.toolCode())
+          && consumesOpenPorts(step)
+          && portProbeTaskId != null
+          && !planDependencies.contains(portProbeTaskId)) {
+        planDependencies.add(portProbeTaskId);
+      }
       WorkflowTaskSchedule.Scheduled scheduled = schedule.schedule(
-          step.group(), step.risk(), step.requiresApproval(), graphDependencyTaskIds,
+          step.group(), step.risk(), step.requiresApproval(), planDependencies,
           step.toolCode());
       CreateTaskRequest createRequest =
           new CreateTaskRequest(
@@ -241,13 +254,20 @@ public class SecurityAgentTools {
                   step.risk(),
                   step.requiresApproval(),
                   scheduled.dependencyTaskIds())
-              : taskService.create(createRequest);
+              : taskService.createDependent(createRequest, planDependencies, scheduled.group());
       // Scheduling barriers wait for completion, while only graph prerequisites
       // require success. The task is managed by this transaction and flushed
       // before TaskService's after-commit enqueue callback can observe it.
-      if (workflowBound) task.setSuccessDependencyTaskIds(objectMapper.writeValueAsString(graphDependencyTaskIds));
+      if (workflowBound) {
+        task.setSuccessDependencyTaskIds(objectMapper.writeValueAsString(graphDependencyTaskIds));
+      } else if (!planDependencies.isEmpty()) {
+        // 非工作流依赖同样要求"成功"而不只是"完成"：前序端口探测失败时，
+        // Nmap 应当跳过而不是退化回全量扫描。
+        task.setSuccessDependencyTaskIds(objectMapper.writeValueAsString(planDependencies));
+      }
       taskIds.add(task.getId());
       schedule.taskCreated(scheduled, task.getId());
+      if ("tcp_ports".equals(step.toolCode())) portProbeTaskId = task.getId();
       if (step.workflowNodeId() != null) taskByNode.put(step.workflowNodeId(), task.getId());
     }
     auditService.record(
@@ -287,8 +307,13 @@ public class SecurityAgentTools {
     recoveryService.checkpoint(recoveryAnchor.bind(request, taskIds));
   }
 
-  private void rejectUnsafeParallelGroups(List<AiPlanResponse.PlanStep> steps) {
-    java.util.Map<Integer, List<AiPlanResponse.PlanStep>> byGroup =
+  /** 该步骤是否声明了"复用前序端口探测结果"。 */
+  private static boolean consumesOpenPorts(AiPlanResponse.PlanStep step) {
+    Object raw = step.parameters() == null ? null : step.parameters().get("consumeOpenPorts");
+    return Boolean.TRUE.equals(raw) || "true".equalsIgnoreCase(String.valueOf(raw));
+  }
+
+  private void rejectUnsafeParallelGroups(List<AiPlanResponse.PlanStep> steps) {    java.util.Map<Integer, List<AiPlanResponse.PlanStep>> byGroup =
         steps.stream().collect(java.util.stream.Collectors.groupingBy(AiPlanResponse.PlanStep::group));
     for (List<AiPlanResponse.PlanStep> group : byGroup.values()) {
       if (group.size() <= 1) continue;

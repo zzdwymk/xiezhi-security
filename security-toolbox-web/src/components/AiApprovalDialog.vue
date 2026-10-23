@@ -35,18 +35,37 @@ const judgeSeverity = computed<"critical" | "warning" | "clear">(() => {
   return "clear";
 });
 
+/** 后端仍可能返回含内部术语的文案，展示前统一替换为用户可读的说法。 */
+function userFacingJudgeText(value?: string): string {
+  return String(value || "")
+    .replace(/语义判官/g, "自动初审")
+    .replace(/判官熔断/g, "初审未能判定")
+    .replace(/判官/g, "自动初审");
+}
+
 const judgeTitle = computed(() => {
   const doc = judge.value;
   if (!doc) return "";
-  if (doc.degraded) {
-    const rawHeadline = doc.headline || "无法判定";
-    const cleanHeadline = rawHeadline.startsWith("判官熔断")
-      ? rawHeadline.replace(/^判官熔断[（(]?/, "").replace(/[)）]?$/, "")
-      : rawHeadline;
-    return `安全审查预警 · 自动初审未能给出可信结论（${cleanHeadline || "行为模式无法识别"}）`;
-  }
+  // 标题保持单行：括号里的具体原因交给正文说明，避免把标题挤成两行。
+  if (doc.degraded) return "安全审查预警 · 自动初审未能给出结论";
   if (doc.requiresHumanReview) return `行为分析 · 疑似 ${doc.headline || "需人工审核的动作"}`;
   return "安全审查通过 · 未发现需要拦截的行为";
+});
+
+/** 初审失败的具体原因，单独作为正文说明（含后端返回的原始原因）。 */
+const judgeDegradedDetail = computed(() => {
+  const doc = judge.value;
+  if (!doc?.degraded) return "";
+  const headline = userFacingJudgeText(
+    String(doc.headline || "").replace(/^初审未能判定[（(]?/, "").replace(/[)）]?$/, ""),
+  ).trim();
+  const reason = userFacingJudgeText(doc.degradedReason).trim();
+  // 后端的 reason 常与 headline 语义重复（都是"无法判定"），去重后只报一次
+  const distinct = [headline, reason].filter(
+    (part, i, all) => part && all.indexOf(part) === i && part !== "无法判定" && part !== "原因未知",
+  );
+  if (!distinct.length) return "";
+  return `原因：${distinct.join("；")}`;
 });
 
 const judgeSeverityIcon = computed(() => {
@@ -66,6 +85,24 @@ function judgeRiskTagType(risk: string): "success" | "warning" | "danger" | "inf
   if (risk === "CAUTION") return "warning";
   if (risk === "HIGH" || risk === "CRITICAL") return "danger";
   return "info";
+}
+
+const RISK_LEVEL_LABELS: Record<string, string> = {
+  SAFE: "安全",
+  CAUTION: "需谨慎",
+  HIGH: "高风险",
+  CRITICAL: "严重",
+};
+
+/**
+ * "最高风险 SAFE" 自相矛盾：SAFE 表示没有发现风险，不能称为"最高风险"。
+ * 这里按等级给出符合语义的短语，并统一显示中文。
+ */
+function judgeRiskPhrase(risk?: string): string {
+  const key = String(risk || "").toUpperCase();
+  if (key === "SAFE") return "未发现风险";
+  const label = RISK_LEVEL_LABELS[key] || "待评估";
+  return `最高风险：${label}`;
 }
 
 function judgeBehaviourLabel(behaviour?: string): string {
@@ -151,6 +188,7 @@ const CHECK_OPTIONS = [
 // 工具码 -> 下拉型参数枚举，避免把半截枚举映射到错误工具上
 const ENUM_OPTIONS_BY_TOOL: Record<string, Record<string, { value: any; label: string }[]>> = {
   nmap_service_scan: { mode: NMAP_MODE_OPTIONS },
+  // tcp_ports 的扫描面只由 ports 决定，不提供 mode 下拉，避免出现"可选但不生效"的参数。
   zap_fuzz: { mode: MODE_OPTIONS },
   fscan_scan: { vulnMode: VULN_MODE_OPTIONS },
   http_security_check: { check: CHECK_OPTIONS },
@@ -158,6 +196,39 @@ const ENUM_OPTIONS_BY_TOOL: Record<string, Record<string, { value: any; label: s
 
 function enumOptions(toolCode: string | undefined, key: string) {
   return ENUM_OPTIONS_BY_TOOL[String(toolCode || "")]?.[key];
+}
+
+/**
+ * 某些历史参数已不生效（例如 tcp_ports 的 mode：端口集合只由 ports 决定）。
+ * 模型仍可能把它带出来，这里显式标注，避免管理员以为调它会有作用。
+ */
+function isInactiveParameter(toolCode: string | undefined, key: string) {
+  return String(toolCode || "") === "tcp_ports" && key === "mode";
+}
+
+/** 参数值的中文说明；未收录的枚举值退回中文标签而不是裸露英文。 */
+function parameterValueLabel(key: string, value: unknown): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "未设置";
+  const opts =
+    key === "mode" ? NMAP_MODE_OPTIONS
+      : key === "vulnMode" ? VULN_MODE_OPTIONS
+        : key === "check" ? CHECK_OPTIONS
+          : undefined;
+  const hit = opts?.find((o) => String(o.value) === raw);
+  if (hit) return hit.label;
+  const generic: Record<string, string> = {
+    quick: "快速扫描",
+    regular: "常规扫描",
+    intense: "深入扫描",
+    service: "服务识别",
+    passive: "被动扫描",
+    active: "主动扫描",
+    SAFE: "安全",
+    FINGERPRINT: "指纹识别",
+    FULL: "完整",
+  };
+  return generic[raw] || raw;
 }
 
 // 与后端 NmapServiceScanTool.buildCommand 对齐的“实际执行命令”预览（仅展示，非真正下发）。
@@ -312,7 +383,7 @@ function onApprove() {
           </div>
           <strong class="approval-judge-title">{{ judgeTitle }}</strong>
           <el-tag size="small" :type="judgeRiskTagType(judge.worstRisk)">
-            最高风险 {{ judge.worstRisk }}
+            {{ judgeRiskPhrase(judge.worstRisk) }}
           </el-tag>
           <el-tag v-if="judge.degraded" size="small" type="danger" effect="dark">
             需人工确认
@@ -320,14 +391,14 @@ function onApprove() {
         </header>
 
         <p v-if="judge.degraded" class="approval-judge-note">
-          自动初审未能给出可信判定（{{ judge.degradedReason || "原因未知" }}）。
+          <template v-if="judgeDegradedDetail">{{ judgeDegradedDetail }}。</template>
           为安全起见，系统已按最坏情况标记为高风险，请人工逐项核对下方具体参数后再决定。
         </p>
 
         <!-- 纯净通透的行为解读，彻底移除内嵌杂乱嵌套灰框 -->
         <div v-if="judgePrimaryStep" class="approval-judge-narrative">
           <p class="approval-judge-summary-lead">
-            {{ judgePrimaryStep.summary }}
+            {{ userFacingJudgeText(judgePrimaryStep.summary) }}
           </p>
           <div class="approval-judge-meta-row">
             <el-tag size="small" :type="judgeRiskTagType(judgePrimaryStep.risk)" effect="plain">
@@ -399,9 +470,13 @@ function onApprove() {
                 >
                   <dt class="approval-param-label">{{ PARAM_LABELS[key] || key }}</dt>
                   <dd class="approval-param-control-cell">
+                    <!-- 无效/已废弃参数：只做中文说明，不提供可编辑控件误导管理员 -->
+                    <span v-if="isInactiveParameter(step.toolCode, key)" class="param-inactive-note">
+                      {{ parameterValueLabel(key, val) }}（该参数已不生效，端口范围由“扫描端口”决定）
+                    </span>
                     <!-- 0. 工具原生枚举下拉：Nmap 识别模式 / 扫描模式 / HTTP 检查项等 -->
                     <el-select
-                      v-if="enumOptions(step.toolCode, key)"
+                      v-else-if="enumOptions(step.toolCode, key)"
                       v-model="editableParameters[index][key]"
                       size="small"
                       class="param-interactive-control"
@@ -844,12 +919,19 @@ function onApprove() {
 }
 
 .approval-judge-title {
-  flex: 1;
-  min-width: 140px;
+  flex: 1 1 auto;
+  min-width: 0;
   color: var(--app-text);
   font-size: 14px;
   font-weight: 600;
-  overflow-wrap: anywhere;
+  /* 标题固定单行：放不下时省略，原因另起一行说明，避免标题折成两行 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 右侧两个状态标签保持完整，不被标题挤压 */
+.approval-judge-head > .el-tag {
+  flex: none;
 }
 
 .approval-judge-note {
@@ -1036,10 +1118,28 @@ function onApprove() {
   min-height: 32px;
 }
 
-/* Keep every interactive control on one height so the column never looks ragged */
+/* 不生效的历史参数：纯文字说明，保留原值可读但不暗示可调整 */
+.param-inactive-note {
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* 所有交互控件的“可视外壳”统一 32px：下拉框与输入框内部结构不同，
+   只给外层容器设 min-height 管不到 __wrapper，必须直接命中它。 */
+.approval-param-control-cell :deep(.el-select__wrapper),
+.approval-param-control-cell :deep(.el-input__wrapper) {
+  min-height: 32px;
+  box-sizing: border-box;
+}
 .approval-param-control-cell :deep(.el-select),
 .approval-param-control-cell :deep(.el-input),
 .approval-param-control-cell :deep(.el-input-number) {
+  min-height: 32px;
+}
+/* 数字步进器的可见高度来自内部 input，单独对齐 */
+.approval-param-control-cell :deep(.el-input-number .el-input__wrapper) {
   min-height: 32px;
 }
 

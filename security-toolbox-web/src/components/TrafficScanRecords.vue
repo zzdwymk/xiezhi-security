@@ -29,7 +29,18 @@ interface ScanDetail {
   } | null;
 }
 
-const props = withDefaults(defineProps<{ mode?: "tasks" | "findings" }>(), { mode: "tasks" });
+const props = withDefaults(
+  defineProps<{
+    mode?: "tasks" | "findings";
+    /**
+     * 嵌入到已自带来源页签与动作按钮的页面时使用：
+     * 隐藏内部工具条（说明 + 引擎筛选 + 刷新），由宿主统一提供，
+     * 避免同一屏出现两行几乎相同的筛选条。
+     */
+    bare?: boolean;
+  }>(),
+  { mode: "tasks", bare: false },
+);
 const isFindings = computed(() => props.mode === "findings");
 const engines = computed(() => isFindings.value ? ['ZAP', 'XRAY', 'SQLMAP'] : ['ZAP', 'XRAY', 'SQLMAP', 'FUZZ']);
 const auth = useAuthStore();
@@ -40,7 +51,8 @@ const rows = ref<ScanRecord[]>([]);
 const page = ref(1);
 const pageSize = ref(10);
 const total = ref(0);
-const engine = ref("");
+/** 由宿主 v-model 传入的引擎筛选；嵌入模式下工具条由宿主渲染。 */
+const engine = defineModel<string>("engine", { default: "" });
 const loading = ref(false);
 const error = ref("");
 const detail = ref<ScanDetail>();
@@ -121,6 +133,7 @@ async function refresh() {
   await load();
   if (detailVisible.value && detail.value) await loadDetail(detail.value.entry.id, true);
 }
+defineExpose({ refresh, loading });
 function scheduleRefresh() {
   if (refreshTimer) clearTimeout(refreshTimer);
   if (!alive || !canRead.value || !busy.value) return;
@@ -154,8 +167,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="canRead" class="traffic-scan-records">
-    <div class="traffic-record-toolbar">
+  <div v-if="canRead" class="traffic-scan-records" :class="{ 'is-bare': bare }">
+    <div v-if="!bare" class="traffic-record-toolbar">
       <div class="traffic-record-toolbar-desc">
         <el-icon class="traffic-desc-icon"><InfoCircle /></el-icon>
         <p>{{ isFindings ? '按来源检测查看已保存的告警、风险证据和修复建议。模糊测试响应异常不作为漏洞发现。' : '跟踪流量定向检测与模糊测试的执行状态，查看探针和请求执行证据。' }}</p>

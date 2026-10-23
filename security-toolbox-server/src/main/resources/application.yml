@@ -140,6 +140,10 @@ toolbox:
     http-connect-timeout-seconds: ${HTTP_CONNECT_TIMEOUT_SECONDS:10}
     http-request-timeout-seconds: ${HTTP_REQUEST_TIMEOUT_SECONDS:20}
     max-ports-per-task: 65535
+    # TCP 端口探测的并行连接数。该工具是 Nmap 缺席时唯一的端口发现手段（纯 JDK，无外部二进制
+    # 依赖），串行探测全端口在不可行的时间量级上，因此必须并发。200 与 nmap -sT 的默认批处理
+    # 量级相当，同时避免把目标压垮；如需更低干扰可调到 50，如需更快可调到 500。
+    port-probe-concurrency: ${PORT_PROBE_CONCURRENCY:200}
     max-nmap-ports-per-task: 65535
     max-authorized-ports: 65535
     allow-public-targets: ${ALLOW_PUBLIC_TARGETS:true}

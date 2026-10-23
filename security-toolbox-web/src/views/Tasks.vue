@@ -194,7 +194,31 @@ function clearAllFilters() {
   idKeyword.value = "";
 }
 const controlStatus = ref<TaskControlStatus>();
+/** 流量检测来源的动作放在页面级工具条里，状态由本页持有并透传给记录组件。 */
+const trafficEngine = ref("");
+const trafficEngines = [
+  { value: "ZAP", label: "ZAP" },
+  { value: "XRAY", label: "XRAY" },
+  { value: "SQLMAP", label: "SQLMAP" },
+  { value: "FUZZ", label: "模糊测试" },
+];
+const trafficRecords = ref<{ refresh: () => Promise<void>; loading: boolean }>();
+const trafficRefreshing = computed(() => Boolean(trafficRecords.value?.loading));
+function refreshTrafficRecords() {
+  void trafficRecords.value?.refresh();
+}
 const offline = ref(false);
+const viewportWidth = ref(window.innerWidth);
+function onViewportResize() {
+  viewportWidth.value = window.innerWidth;
+}
+onMounted(() => window.addEventListener("resize", onViewportResize));
+onUnmounted(() => window.removeEventListener("resize", onViewportResize));
+/**
+ * 行内操作列宽：按全局 .row-actions 的 84px 最小按钮宽度，一行排得下全部
+ * 动作按钮才给固定宽度；窄窗口退回弹性列，避免整张表横向溢出。
+ */
+const taskActionsWidth = computed(() => (viewportWidth.value >= 1360 ? 490 : undefined));
 const detail = ref<TaskRow>();
 const detailVisible = ref(false);
 const detailLoading = ref(false);
@@ -1216,11 +1240,39 @@ onUnmounted(() => {
         >
       </div>
     </div>
-    <el-tabs v-if="canReadTraffic" v-model="recordSource" aria-label="任务来源">
-      <el-tab-pane label="项目任务" name="project" />
-      <el-tab-pane label="流量检测" name="traffic" />
-    </el-tabs>
-    <TrafficScanRecords v-if="recordSource === 'traffic'" mode="tasks" />
+    <!-- 两个来源共用的工具条：页签只切换数据来源，动作按钮始终在同一行，
+         不再为每个来源各画一套框架，也不再让页签与内容之间空出一行。 -->
+    <div class="task-source-bar">
+      <el-tabs v-if="canReadTraffic" v-model="recordSource" class="task-source-tabs" aria-label="任务来源">
+        <el-tab-pane label="项目任务" name="project" />
+        <el-tab-pane label="流量检测" name="traffic" />
+      </el-tabs>
+      <span v-else class="task-source-title">项目任务</span>
+      <div v-if="recordSource === 'traffic'" class="task-source-actions">
+        <el-select
+          v-model="trafficEngine"
+          class="task-source-engine"
+          clearable
+          placeholder="全部引擎"
+          aria-label="流量检测引擎"
+        >
+          <el-option
+            v-for="option in trafficEngines"
+            :key="option.value"
+            :label="option.label"
+            :value="option.value"
+          />
+        </el-select>
+        <el-button :loading="trafficRefreshing" @click="refreshTrafficRecords">刷新记录</el-button>
+      </div>
+    </div>
+    <TrafficScanRecords
+      v-if="recordSource === 'traffic'"
+      ref="trafficRecords"
+      v-model:engine="trafficEngine"
+      mode="tasks"
+      bare
+    />
     <template v-else>
     <div class="task-filter-bar" aria-label="任务筛选">
       <el-select
@@ -1298,15 +1350,15 @@ onUnmounted(() => {
           clearable
           aria-label="按任务ID或工具搜索"
         />
-        <el-button
-          v-if="hasActiveFilter"
-          class="task-filter-clear"
-          link
-          type="primary"
-          @click="clearAllFilters"
-          >清除筛选</el-button
-        >
       </div>
+      <el-button
+        v-if="hasActiveFilter"
+        class="task-filter-clear"
+        link
+        type="primary"
+        @click="clearAllFilters"
+        >清除筛选</el-button
+      >
     </div>
     <div
       v-if="controlStatus"
@@ -1340,25 +1392,26 @@ onUnmounted(() => {
     </div>
     <OfflineState
       v-if="offline || !rows.length"
+      class="task-list-empty"
       title="暂无任务"
       :description="
         offline ? '无法连接后端服务。' : '在检测计划中提交步骤后会创建任务。'
       "
     />
-    <el-table v-else :data="pagedRows">
+    <el-table v-else :data="pagedRows" class="task-list-table">
       <el-table-column prop="id" label="ID" width="55" />
-      <el-table-column prop="toolCode" label="工具" min-width="170" show-overflow-tooltip>
+      <el-table-column prop="toolCode" label="工具" min-width="150" show-overflow-tooltip>
         <template #default="scope">{{ aiToolLabel(scope.row.toolCode) }}</template>
       </el-table-column>
       <el-table-column prop="targetId" label="目标" width="65" />
-      <el-table-column label="状态" width="85"
+      <el-table-column label="状态" width="80"
         ><template #default="scope"
           ><el-tag size="small" :type="statusType(scope.row.status)">{{
             statusLabel(scope.row.status)
           }}</el-tag></template
         ></el-table-column
       >
-      <el-table-column label="进度" min-width="200"
+      <el-table-column label="进度" min-width="160"
         ><template #default="scope"
           ><div class="live-task-progress">
             <el-progress
@@ -1376,14 +1429,14 @@ onUnmounted(() => {
           </div></template
         ></el-table-column
       >
-      <el-table-column label="创建时间" min-width="140"
+      <el-table-column label="创建时间" min-width="128"
         ><template #default="scope">{{
           formatDateTime(scope.row.createdAt)
         }}</template></el-table-column
       >
-      <el-table-column label="操作" min-width="288"
+      <el-table-column label="操作" :width="taskActionsWidth"
         ><template #default="scope"
-          ><div class="task-row-actions">
+          ><div class="row-actions task-row-actions">
             <el-button
               class="row-action"
               size="small"
@@ -1395,13 +1448,13 @@ onUnmounted(() => {
               size="small"
               :icon="Search"
               @click="viewFindings(scope.row.id)"
-              >查看发现</el-button
+              >发现</el-button
             ><el-button
               class="row-action row-action--ai"
               size="small"
               :icon="MagicStick"
               @click="askCopilot(scope.row)"
-              >执行诊断</el-button
+              >诊断</el-button
             ><el-button
               v-if="['PENDING', 'RUNNING'].includes(scope.row.status)"
               class="row-action row-action--danger"
@@ -2169,9 +2222,10 @@ onUnmounted(() => {
 }
 .task-control-summary {
   display: flex;
+  flex: none;
   align-items: stretch;
   flex-wrap: wrap;
-  margin: 0 0 14px;
+  margin: 0;
   border-top: 1px solid var(--app-border);
   border-bottom: 1px solid var(--app-border);
   background: var(--app-surface-soft);
@@ -2199,10 +2253,13 @@ onUnmounted(() => {
 }
 .task-filter-bar {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns:
+    minmax(112px, 1fr) minmax(112px, 1fr) minmax(120px, 1.15fr) minmax(120px, 1.15fr)
+    minmax(0, 1.85fr);
+  align-items: center;
   gap: 10px;
-  margin: 14px 0 16px;
-  padding: 12px 14px;
+  margin: 0;
+  padding: 10px 12px;
   border: 1px solid var(--app-border);
   border-radius: var(--fluent-radius-card, 8px);
   background: var(--app-surface-soft);
@@ -2213,18 +2270,84 @@ onUnmounted(() => {
 }
 .task-filter-row {
   display: flex;
-  grid-column: 1 / -1;
+  grid-column: 5 / 6;
+  min-width: 0;
   align-items: center;
   gap: 10px;
 }
 .task-filter-row .task-filter-cell--date {
-  flex: 0 0 300px;
+  flex: 0 0 clamp(196px, 26%, 240px);
+  min-width: 0;
 }
 .task-filter-row .task-filter-cell--search {
-  flex: 1 1 220px;
+  flex: 1 1 150px;
+  min-width: 0;
 }
 .task-filter-clear {
   flex: none;
+  justify-self: end;
+  white-space: nowrap;
+}
+/* 来源工具条：页签与动作按钮同处一行，页签内容区不留高度 */
+.task-source-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  border-bottom: 1px solid var(--app-border);
+}
+.task-source-tabs {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.task-source-tabs :deep(.el-tabs__header) {
+  margin: 0;
+  border-bottom: 0;
+}
+.task-source-tabs :deep(.el-tabs__nav-wrap)::after {
+  display: none;
+}
+.task-source-tabs :deep(.el-tabs__content) {
+  display: none;
+}
+.task-source-title {
+  padding-bottom: 9px;
+  color: var(--app-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+.task-source-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 6px;
+}
+.task-source-engine {
+  width: 140px;
+}
+.task-list-table {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--app-border) !important;
+  border-radius: 10px !important;
+  background: var(--app-surface) !important;
+}
+.task-list-empty {
+  flex: 1 1 auto;
+  align-content: center;
+}
+@media (max-width: 1200px) {
+  .task-filter-bar {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .task-filter-row {
+    grid-column: 1 / -1;
+  }
 }
 @media (max-width: 900px) {
   .task-filter-bar {
@@ -2236,6 +2359,9 @@ onUnmounted(() => {
   .task-filter-row .task-filter-cell--date,
   .task-filter-row .task-filter-cell--search {
     flex: 1 1 100%;
+  }
+  .task-source-bar {
+    flex-wrap: wrap;
   }
 }
 .schedule-trigger {
@@ -2700,66 +2826,6 @@ onUnmounted(() => {
   float: right;
   color: var(--el-text-color-secondary);
   font-size: 12px;
-}
-.task-row-actions {
-  display: grid;
-  width: 100%;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  align-items: center;
-  gap: 6px;
-  box-sizing: border-box;
-}
-.task-row-actions > .el-button,
-.task-row-actions > .row-action {
-  width: 100% !important;
-  padding: 0 4px !important;
-}
-.task-row-actions .row-action.el-button {
-  margin: 0 !important;
-  box-sizing: border-box;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  border: var(--fluent-stroke-thin) solid var(--app-border-strong);
-  background: var(--app-surface-strong);
-  color: var(--app-text);
-  font-size: 12px;
-  font-weight: 600;
-}
-.task-row-actions .row-action.el-button > span {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  white-space: nowrap;
-}
-.task-row-actions .row-action.el-button:hover,
-.task-row-actions .row-action.el-button:focus-visible {
-  border-color: var(--app-accent);
-  background: var(--app-accent-soft);
-  color: var(--app-text);
-}
-.task-row-actions .row-action--ai.el-button {
-  border-color: var(--app-accent);
-  background: var(--app-surface-strong);
-  color: var(--fluent-link-fg);
-}
-.task-row-actions .row-action--ai.el-button:hover,
-.task-row-actions .row-action--ai.el-button:focus-visible {
-  border-color: var(--app-accent-dark);
-  background: var(--app-accent-soft);
-  color: var(--fluent-link-fg);
-}
-.task-row-actions .row-action.row-action--danger.el-button:not(.is-disabled):not(:disabled) {
-  border-color: var(--app-border-strong);
-  color: light-dark(var(--fluent-danger-bg), #ffb4ab);
-}
-.task-row-actions .row-action.row-action--danger.el-button:not(.is-disabled):not(:disabled):hover,
-.task-row-actions .row-action.row-action--danger.el-button:not(.is-disabled):not(:disabled):focus-visible {
-  border-color: var(--fluent-danger-bg);
-  background: color-mix(in srgb, var(--fluent-danger-bg) 10%, var(--app-surface-strong));
-  color: light-dark(var(--fluent-danger-hover-bg), #ffd2cc);
 }
 @media (max-width: 640px) {
   .schedule-rule-row {

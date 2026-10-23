@@ -209,8 +209,61 @@ class AiTaskDispatchServiceTests {
   }
 
   @Test
-  void dispatchesAnAlreadyGeneratedStreamingPlanWithoutCallingPlannerAgain() throws Exception {
-    AiPlanRequest request = new AiPlanRequest(7L, "检查响应头");
+  void allowsPortProbeAndNmapWhenNmapConsumesProbeResults() throws Exception {
+    target.setAllowedPorts("80,443");
+    when(toolRegistry.require("tcp_ports")).thenReturn(mock(SecurityTool.class));
+    when(toolRegistry.require("nmap_service_scan")).thenReturn(mock(SecurityTool.class));
+    AiPlanResponse generated =
+        new AiPlanResponse(
+            "test",
+            "test-model",
+            "probe then identify",
+            true,
+            List.of(
+                new AiPlanResponse.PlanStep(
+                    "tcp_ports", "probe", "find open ports", Map.of("ports", "80,443")),
+                new AiPlanResponse.PlanStep(
+                    "nmap_service_scan",
+                    "identify",
+                    "identify the open ones",
+                    Map.of("ports", "80,443", "mode", "intense", "consumeOpenPorts", true))));
+
+    AiPlanResponse response = service.prepare(new AiPlanRequest(7L, "先探端口再识别服务"), generated);
+
+    // 先粗扫、后精扫：Nmap 收敛到探测结果，扫描面不重叠，因此允许并存。
+    assertEquals(2, response.steps().size());
+    assertEquals("tcp_ports", response.steps().get(0).toolCode());
+    assertEquals("nmap_service_scan", response.steps().get(1).toolCode());
+    assertEquals(true, response.steps().get(1).parameters().get("consumeOpenPorts"));
+  }
+
+  @Test
+  void rejectsPortProbeAndNmapWhenRangesFullyOverlapWithoutConsumption() throws Exception {
+    target.setAllowedPorts("80,443");
+    when(toolRegistry.require("tcp_ports")).thenReturn(mock(SecurityTool.class));
+    when(toolRegistry.require("nmap_service_scan")).thenReturn(mock(SecurityTool.class));
+    AiPlanResponse generated =
+        new AiPlanResponse(
+            "test",
+            "test-model",
+            "redundant scan",
+            true,
+            List.of(
+                new AiPlanResponse.PlanStep(
+                    "tcp_ports", "probe", "find open ports", Map.of("ports", "80,443")),
+                new AiPlanResponse.PlanStep(
+                    "nmap_service_scan",
+                    "identify",
+                    "same range again",
+                    Map.of("ports", "80,443", "mode", "intense"))));
+
+    // 端口范围完全相同且 Nmap 不吃探测结果 => 同一段端口会被全连接扫两遍，这才是真浪费。
+    assertThrows(
+        ApiException.class, () -> service.prepare(new AiPlanRequest(7L, "扫两遍"), generated));
+  }
+
+  @Test
+  void dispatchesAnAlreadyGeneratedStreamingPlanWithoutCallingPlannerAgain() throws Exception {    AiPlanRequest request = new AiPlanRequest(7L, "检查响应头");
     AiPlanResponse generated =
         new AiPlanResponse(
             "ccs",
