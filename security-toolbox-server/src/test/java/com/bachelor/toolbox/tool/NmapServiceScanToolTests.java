@@ -10,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -64,6 +65,51 @@ class NmapServiceScanToolTests {
     List<String> command = tool.buildCommand("127.0.0.1", "80,443", "ping");
 
     assertThat(command).contains("-sn").doesNotContain("-p", "80,443");
+  }
+
+  @Test
+  void everyModeSpecifiesExactlyOneTcpScanType() throws Exception {
+    // Nmap 拒绝同时指定多种 TCP 扫描类型：
+    // "You specified more than one type of TCP scan. Please choose only one of ..."
+    // 这条断言覆盖全部模式，防止再次出现 -sS/-sU 与固定的 -sT 冲突。
+    NmapServiceScanTool tool = toolWithExecutable(createExecutable("nmap.exe"));
+    Set<String> tcpScanFlags = Set.of("-sA", "-b", "-sT", "-sF", "-sI", "-sM", "-sN", "-sS", "-sW", "-sX");
+    for (String mode : List.of(
+        "quick", "regular", "intense", "intense_udp", "intense_all_tcp",
+        "intense_no_ping", "ping", "quick_plus", "quick_trace", "slow_comprehensive", "service")) {
+      List<String> command = tool.buildCommand("127.0.0.1", "1-65535", mode);
+      // 合并写法 -sSU = 一种 TCP 类型(-sS) + UDP，同样只算一种 TCP 扫描类型。
+      long tcpTypes = command.stream()
+          .filter(arg -> tcpScanFlags.contains(arg) || arg.equals("-sSU"))
+          .count();
+      assertThat(tcpTypes)
+          .as("模式 %s 指定了 %d 种 TCP 扫描类型，Nmap 只允许 1 种：%s", mode, tcpTypes, command)
+          .isEqualTo(1);
+      if (mode.equals("intense_udp") || mode.equals("slow_comprehensive")) {
+        assertThat(command).as("模式 %s 应使用合并的 -sSU", mode).contains("-sSU");
+        assertThat(command).as("模式 %s 不应出现裸 -sU", mode).doesNotContain("-sU");
+      }
+    }
+  }
+
+  @Test
+  void tcpScanFlagNeverRepeatsWithinOneCommand() throws Exception {
+    NmapServiceScanTool tool = toolWithExecutable(createExecutable("nmap.exe"));
+    for (String mode : List.of(
+        "quick", "regular", "intense", "intense_udp", "intense_all_tcp",
+        "intense_no_ping", "ping", "quick_plus", "quick_trace", "slow_comprehensive", "service")) {
+      List<String> command = tool.buildCommand("127.0.0.1", "80,443", mode);
+      long sT = command.stream().filter("-sT"::equals).count();
+      assertThat(sT).as("模式 %s 中 -sT 出现了 %d 次：%s", mode, sT, command).isLessThanOrEqualTo(1);
+    }
+  }
+
+  @Test
+  void slowComprehensiveUsesDoubleDashScriptOption() throws Exception {
+    NmapServiceScanTool tool = toolWithExecutable(createExecutable("nmap.exe"));
+    List<String> command = tool.buildCommand("127.0.0.1", "80,443", "slow_comprehensive");
+
+    assertThat(command).contains("--script").doesNotContain("-script");
   }
 
   @Test
