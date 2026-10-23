@@ -379,22 +379,22 @@ const PRESETS = [
   {
     value: "standard",
     label: "标准红队评估",
-    desc: "从侦察、资产发现到复测报告的完整闭环。",
+    desc: "从资产发现、线索发现到安全验证的完整闭环。",
   },
   {
     value: "quick-web",
     label: "快速 Web 评估",
-    desc: "适合单个网站的低影响快速检查。",
+    desc: "适合单个网站的低影响快速检查，仅做 Web 基础信息与轻量线索。",
   },
   {
     value: "asset-inventory",
     label: "资产盘点",
-    desc: "优先梳理授权资产、端口和服务版本。",
+    desc: "只梳理授权资产、端口和服务版本，不进入漏洞发现。",
   },
   {
     value: "retest",
     label: "漏洞复测",
-    desc: "针对已有发现验证修复效果并交付结果差异。",
+    desc: "针对已有发现重新扫描并做最小影响验证。",
   },
 ] as const;
 type PresetCode = (typeof PRESETS)[number]["value"];
@@ -816,12 +816,32 @@ function goToSetupDependencies() {
   router.push({ path: "/setup", query: { redirect: router.currentRoute.value.fullPath } });
 }
 
-const sortedPhases = computed(() => PHASES);
 function toolPhase(tool?: string): PhaseCode | undefined {
   const phase = SUBAGENTS.find((agent) => agent.tool === tool)?.phase;
   if (tool === "dir_scan") return "discovery";
   return phase ? (phase as PhaseCode) : undefined;
 }
+/** 阶段是否至少拥有一个可添加的受控能力。 */
+function phaseHasCapabilities(code: PhaseCode): boolean {
+  return SUBAGENTS.some((agent) => toolPhase(agent.tool) === code);
+}
+/**
+ * 受控能力区的阶段下拉只列出真正有能力的阶段，避免用户选中空阶段后
+ * 只看到「暂无可添加的受控能力」。若当前选中的阶段恰好没有能力（例如点了
+ * 画布上的空阶段节点），仍保留在选项里以便正确回显标签。
+ */
+const sortedPhases = computed(() => {
+  const withCaps = PHASES.filter((phase) => phaseHasCapabilities(phase.code));
+  if (
+    !withCaps.some((phase) => phase.code === selectedPhase.value) &&
+    PHASES.some((phase) => phase.code === selectedPhase.value)
+  ) {
+    return PHASES.filter(
+      (phase) => phaseHasCapabilities(phase.code) || phase.code === selectedPhase.value,
+    );
+  }
+  return withCaps;
+});
 const filteredAgents = computed(() => {
   let list = SUBAGENTS.filter(
     (agent) => toolPhase(agent.tool) === selectedPhase.value,
@@ -1648,16 +1668,49 @@ function makeEdge(
   };
 }
 
+/**
+ * 各工作流模板的阶段能力组合。
+ *
+ * 约定：每个工具只能落在它的“规范阶段”(agent.phase)，与
+ * `addToolNode` 强制 `phase = agent.phase` 的行为保持一致，这样模板载入后
+ * 用户仍可通过受控能力面板复现同样的组合，保存/重新载入也不会漂移。
+ * 在此基础上按模板定位裁剪能力，避免“快速/盘点”类模板混入高强度扫描。
+ */
 function phaseToolMap(code: PresetCode): Record<PhaseCode, string[]> {
+  // 快速 Web 评估：面向单个网站的低影响检查，只做 Web 基础信息与轻量线索，
+  // 不启用提权/主动扫描与 SQL 注入。
   if (code === "quick-web")
     return {
       engagement: [],
       recon: ["retrieve_project_context"],
-      mapping: ["http_headers", "tls_config", "dir_scan"],
+      mapping: ["http_headers", "tls_config"],
+      discovery: ["http_security_check", "dir_scan"],
+      validation: [],
+      impact: [],
+      retest: [],
+      report: [],
+    };
+  // 资产盘点：只梳理授权资产、端口与服务版本，不进入漏洞发现与验证阶段。
+  if (code === "asset-inventory")
+    return {
+      engagement: [],
+      recon: ["retrieve_project_context"],
+      mapping: ["tcp_ports", "nmap_service_scan", "http_headers", "tls_config"],
+      discovery: [],
+      validation: [],
+      impact: [],
+      retest: [],
+      report: [],
+    };
+  // 漏洞复测：针对已有发现，重新执行发现类扫描并做最小影响验证，
+  // 不再重复资产梳理，也不启用爆破/主机扫描。
+  if (code === "retest")
+    return {
+      engagement: [],
+      recon: ["retrieve_project_context"],
+      mapping: [],
       discovery: [
         "http_security_check",
-        "fscan_scan",
-        "msf_scan",
         "nuclei_scan",
         "afrog_scan",
         "xray_scan",
@@ -1668,34 +1721,14 @@ function phaseToolMap(code: PresetCode): Record<PhaseCode, string[]> {
       retest: [],
       report: [],
     };
-  if (code === "asset-inventory")
-    return {
-      engagement: [],
-      recon: ["retrieve_project_context"],
-      mapping: ["nmap_service_scan", "fscan_scan", "http_headers", "tls_config"],
-      discovery: [],
-      validation: [],
-      impact: [],
-      retest: [],
-      report: [],
-    };
-  if (code === "retest")
-    return {
-      engagement: [],
-      recon: ["retrieve_project_context"],
-      mapping: [],
-      discovery: [],
-      validation: ["http_security_check"],
-      impact: [],
-      retest: ["http_security_check", "nuclei_scan", "afrog_scan", "xray_scan", "zap_scan"],
-      report: [],
-    };
+  // 标准红队评估：从侦察、资产发现到线索发现、安全验证的完整闭环。
   return {
     engagement: [],
     recon: ["retrieve_project_context"],
-    mapping: ["nmap_service_scan", "http_headers", "tls_config"],
+    mapping: ["tcp_ports", "nmap_service_scan", "http_headers", "tls_config"],
     discovery: [
       "http_security_check",
+      "dir_scan",
       "fscan_scan",
       "msf_scan",
       "nuclei_scan",
@@ -1703,7 +1736,7 @@ function phaseToolMap(code: PresetCode): Record<PhaseCode, string[]> {
       "xray_scan",
       "zap_scan",
     ],
-    validation: [],
+    validation: ["sqlmap_scan", "zap_fuzz"],
     impact: [],
     retest: [],
     report: [],
@@ -6181,7 +6214,12 @@ onBeforeUnmount(() => {
                       phaseOf(selectedPhase).shortLabel
                     }}暂无可添加的受控能力</strong
                   >
-                  <small>该阶段用于组织流程、确认结论或交付结果。</small>
+                  <small v-if="phaseHasCapabilities(selectedPhase)"
+                    >当前筛选下没有本机可用的能力，请取消「仅显示本机可用能力」或检查环境依赖。</small
+                  >
+                  <small v-else
+                    >该阶段用于组织流程、确认结论或交付结果，本身不绑定受控能力；请在右侧下拉切换到有能力的阶段。</small
+                  >
                 </div>
               </div>
             </div>
@@ -6731,21 +6769,21 @@ onBeforeUnmount(() => {
   flex: none;
 }
 
-/* ── Fluent page header: title block above, config + primary actions below ── */
+/* ── Fluent page header: title block left, config + primary actions right ── */
 .workflow-toolbar {
   display: flex;
   flex: none;
   flex-wrap: wrap;
-  align-items: flex-end;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 12px 20px;
+  gap: 12px 32px;
   margin: 0 0 12px;
   padding: 0 2px 12px;
   border-bottom: 1px solid var(--app-border);
 }
 .workflow-head-copy {
   min-width: 0;
-  flex: 1 1 420px;
+  flex: 1 1 360px;
 }
 .workflow-toolbar h3 {
   margin: 0;
@@ -6817,9 +6855,9 @@ onBeforeUnmount(() => {
 .workflow-step-limit {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   min-height: 32px;
-  padding: 0 12px;
+  padding: 0 12px 0 14px;
   border-radius: 6px;
   background: var(--app-surface-soft, color-mix(in srgb, var(--app-border) 35%, transparent));
   font-size: 12px;
@@ -6834,10 +6872,14 @@ onBeforeUnmount(() => {
   font-weight: 500;
 }
 .workflow-step-limit-slider {
-  width: 112px;
+  width: 132px;
+  flex: none;
 }
+/* Reserve fixed room for the number so the slider handle never overlaps it */
 .workflow-step-limit-value {
-  min-width: 2ch;
+  flex: none;
+  min-width: 2.2ch;
+  text-align: right;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   color: var(--app-text);
@@ -6846,7 +6888,9 @@ onBeforeUnmount(() => {
   color: var(--el-color-danger);
 }
 .workflow-step-limit-hint {
-  max-width: 240px;
+  max-width: 210px;
+  padding-left: 6px;
+  border-left: 1px solid var(--app-border);
   line-height: 1.4;
   color: var(--app-muted);
 }
@@ -9305,7 +9349,7 @@ onBeforeUnmount(() => {
 
 @media (min-width: 1201px) {
   .workflow-toolbar {
-    align-items: flex-end;
+    align-items: flex-start;
     margin-bottom: 10px;
   }
   .workflow-actions {
