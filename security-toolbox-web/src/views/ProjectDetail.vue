@@ -14,6 +14,7 @@ import {
   type IcpBatchResult,
   type MemoryDoc,
   type ProjectApproval,
+  type ProjectBatchTaskResult,
   type AiApprovalPlanDetail,
   type JudgeStepVerdict,
   type JudgeVerdictDocument,
@@ -524,12 +525,13 @@ const planReviewJudgeTitle = computed(() => {
   const judge = planReviewJudge.value;
   if (!judge) return "";
   if (judge.degraded) {
-    return `判官熔断 · ${judge.headline || "无法判定"}`;
+    const raw = String(judge.headline || "").replace(/^判官熔断[（(]?/, "").replace(/[)）]?$/, "");
+    return `安全审查预警 · 自动初审未能给出可信结论${raw ? `（${raw}）` : ""}`;
   }
   if (judge.requiresHumanReview) {
     return `疑似 ${judge.headline || "需人工确认的行为"}`;
   }
-  return "判官未发现需要拦截的行为";
+  return "未发现需要拦截的行为";
 });
 
 function judgeRiskTagType(risk: string): "success" | "warning" | "danger" | "info" {
@@ -1238,6 +1240,79 @@ async function loadProjectReportSummary(showError = false) {
     if (showError) ElMessage.error(errorMessage(error, "项目报告摘要加载失败"));
   } finally {
     reportSummaryLoading.value = false;
+  }
+}
+
+const BATCH_TOOL_OPTIONS = [
+  { value: "tcp_ports", label: "端口探测（tcp_ports）" },
+  { value: "nmap_service_scan", label: "服务识别（nmap_service_scan）" },
+  { value: "dir_scan", label: "目录扫描（dir_scan）" },
+  { value: "http_headers", label: "响应头检查（http_headers）" },
+  { value: "nuclei_scan", label: "漏洞扫描（nuclei_scan）" },
+  { value: "fscan_scan", label: "综合扫描（fscan_scan）" },
+];
+const batchTaskVisible = ref(false);
+const batchTaskSubmitting = ref(false);
+const batchTaskResult = ref<ProjectBatchTaskResult>();
+const batchTaskForm = reactive({
+  toolCode: "",
+  parametersText: "",
+  scope: "all" as "all" | "selected",
+  targetIds: [] as number[],
+});
+
+function openBatchTaskDialog() {
+  if (!linkedTargets.value.length) {
+    ElMessage.warning("项目尚未添加授权目标");
+    return;
+  }
+  batchTaskVisible.value = true;
+}
+
+function resetBatchTaskResult() {
+  batchTaskResult.value = undefined;
+}
+
+async function submitBatchTask() {
+  if (batchTaskSubmitting.value) return;
+  if (!batchTaskForm.toolCode) return ElMessage.warning("请选择要执行的工具");
+  if (batchTaskForm.scope === "selected" && !batchTaskForm.targetIds.length)
+    return ElMessage.warning("请至少选择一个目标");
+
+  let parameters: Record<string, unknown> | undefined;
+  const rawParameters = batchTaskForm.parametersText.trim();
+  if (rawParameters) {
+    try {
+      const parsed = JSON.parse(rawParameters);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        return ElMessage.warning("参数必须是 JSON 对象，例如 {\"ports\":\"80,443\"}");
+      parameters = parsed as Record<string, unknown>;
+    } catch {
+      return ElMessage.warning("参数不是合法的 JSON，请检查后重试");
+    }
+  }
+
+  batchTaskSubmitting.value = true;
+  try {
+    const { data } = await endpoints.createProjectBatchTask(id, {
+      toolCode: batchTaskForm.toolCode,
+      parameters,
+      targetIds:
+        batchTaskForm.scope === "selected"
+          ? [...batchTaskForm.targetIds]
+          : undefined,
+    });
+    batchTaskResult.value = data;
+    if (data.failed)
+      ElMessage.warning(
+        `批量执行完成：成功 ${data.succeeded} 个、失败 ${data.failed} 个`,
+      );
+    else ElMessage.success(`批量执行完成：成功 ${data.succeeded} 个、失败 ${data.failed} 个`);
+    if (data.succeeded > 0) await loadProjectTasks();
+  } catch (error: any) {
+    ElMessage.error(errorMessage(error, "批量执行失败"));
+  } finally {
+    batchTaskSubmitting.value = false;
   }
 }
 
@@ -5995,13 +6070,132 @@ onUnmounted(() => {
             }}
             个仍在排队或执行。</span
           >
-          <el-button
-            size="small"
-            :loading="projectDataLoading"
-            @click="loadProjectTasks"
-            >刷新任务</el-button
-          >
+          <div class="toolbar-inline">
+            <el-button
+              size="small"
+              type="primary"
+              :icon="MagicStick"
+              @click="openBatchTaskDialog"
+              >批量执行</el-button
+            >
+            <el-button
+              size="small"
+              :loading="projectDataLoading"
+              @click="loadProjectTasks"
+              >刷新任务</el-button
+            >
+          </div>
         </div>
+        <el-dialog
+          v-model="batchTaskVisible"
+          title="批量执行"
+          class="app-dialog"
+          align-center
+          :close-on-click-modal="false"
+          destroy-on-close
+          @closed="resetBatchTaskResult"
+        >
+          <el-form label-width="88px" label-position="left">
+            <el-form-item label="工具">
+              <el-select
+                v-model="batchTaskForm.toolCode"
+                placeholder="请选择要批量执行的工具"
+                style="width: 100%"
+              >
+                <el-option
+                  v-for="opt in BATCH_TOOL_OPTIONS"
+                  :key="opt.value"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="参数">
+              <el-input
+                v-model="batchTaskForm.parametersText"
+                type="textarea"
+                :rows="3"
+                placeholder="可选，填写 JSON 参数，例如 {&quot;ports&quot;:&quot;80,443&quot;}；留空表示使用默认参数"
+              />
+            </el-form-item>
+            <el-form-item label="目标范围">
+              <el-radio-group v-model="batchTaskForm.scope">
+                <el-radio value="all">全部目标</el-radio>
+                <el-radio value="selected">选择目标</el-radio>
+              </el-radio-group>
+            </el-form-item>
+            <el-form-item
+              v-if="batchTaskForm.scope === 'selected'"
+              label="选择目标"
+            >
+              <el-select
+                v-model="batchTaskForm.targetIds"
+                multiple
+                collapse-tags
+                collapse-tags-tooltip
+                placeholder="请选择要执行的目标"
+                style="width: 100%"
+              >
+                <el-option
+                  v-for="t in linkedTargets"
+                  :key="t.id"
+                  :label="t.name"
+                  :value="t.id"
+                />
+              </el-select>
+            </el-form-item>
+          </el-form>
+          <el-alert
+            v-if="batchTaskResult"
+            :title="`批量执行完成：成功 ${batchTaskResult.succeeded} 个、失败 ${batchTaskResult.failed} 个（共 ${batchTaskResult.total} 个目标）`"
+            :type="batchTaskResult.failed ? 'warning' : 'success'"
+            :closable="false"
+            show-icon
+          />
+          <el-table
+            v-if="batchTaskResult && batchTaskResult.items.length"
+            :data="batchTaskResult.items"
+            size="small"
+            stripe
+            style="margin-top: 12px"
+          >
+            <el-table-column
+              prop="targetName"
+              label="目标"
+              min-width="140"
+              show-overflow-tooltip
+            />
+            <el-table-column label="状态" width="100">
+              <template #default="scope">
+                <el-tag
+                  size="small"
+                  :type="scope.row.status === 'CREATED' ? 'success' : 'danger'"
+                  >{{ scope.row.status === "CREATED" ? "已创建" : "失败" }}</el-tag
+                >
+              </template>
+            </el-table-column>
+            <el-table-column
+              prop="message"
+              label="消息"
+              min-width="180"
+              show-overflow-tooltip
+            />
+            <el-table-column label="任务ID" width="90">
+              <template #default="scope">{{
+                scope.row.taskId ?? "—"
+              }}</template>
+            </el-table-column>
+          </el-table>
+          <template #footer>
+            <el-button @click="batchTaskVisible = false">关闭</el-button>
+            <el-button
+              type="primary"
+              :loading="batchTaskSubmitting"
+              @click="submitBatchTask"
+              >提交</el-button
+            >
+          </template>
+        </el-dialog>
         <div class="project-tab-filters">
           <el-input
             v-model="taskSearchQuery"
@@ -7546,7 +7740,7 @@ onUnmounted(() => {
           v-if="planReviewJudgeSeverity !== 'unknown'"
           class="plan-review-judge"
           :class="`plan-review-judge--${planReviewJudgeSeverity}`"
-          aria-label="语义判官审查结论"
+          aria-label="系统安全风险初审结论"
         >
           <header class="plan-review-judge-heading">
             <span class="plan-review-judge-icon" :class="`is-${planReviewJudgeSeverity}`" aria-hidden="true">
@@ -7561,12 +7755,12 @@ onUnmounted(() => {
               最高风险 {{ planReviewJudge.worstRisk }}
             </el-tag>
             <el-tag v-if="planReviewJudge?.degraded" size="small" type="danger" effect="dark">
-              熔断拦截
+              需人工确认
             </el-tag>
           </header>
           <p v-if="planReviewJudge?.degraded" class="plan-review-judge-note">
-            语义判官未能给出可信判定（{{ planReviewJudge.degradedReason || '原因未知' }}）。
-            按 Fail-Closed 原则，系统已按最坏情况标记为高风险，请人工逐项核对下方原始参数后再决定。
+            自动初审未能给出可信判定（{{ planReviewJudge.degradedReason || '原因未知' }}）。
+            为安全起见，系统已按最坏情况标记为高风险，请人工逐项核对下方原始参数后再决定。
           </p>
           <ul v-if="planReviewJudge?.steps.length" class="plan-review-judge-steps">
             <li v-for="item in planReviewJudge.steps" :key="item.workflowNodeId || item.toolCode">

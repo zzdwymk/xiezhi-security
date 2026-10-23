@@ -297,6 +297,21 @@ export interface ProjectTarget {
   projectId: number;
   targetId: number;
 }
+export interface ProjectBatchTaskItem {
+  targetId: number;
+  targetName: string;
+  taskId: number | null;
+  status: "CREATED" | "FAILED";
+  message: string;
+}
+export interface ProjectBatchTaskResult {
+  projectId: number;
+  toolCode: string;
+  total: number;
+  succeeded: number;
+  failed: number;
+  items: ProjectBatchTaskItem[];
+}
 export interface ProjectSummary {
   project: AssessmentProject;
   targetCount: number;
@@ -1346,6 +1361,18 @@ export const endpoints = {
     api.get<ProjectTarget[]>(`/projects/${id}/targets`),
   addProjectTarget: (id: number, targetId: number) =>
     api.post<ProjectTarget>(`/projects/${id}/targets/${targetId}`),
+  createProjectBatchTask: (
+    projectId: number,
+    payload: {
+      toolCode: string;
+      parameters?: Record<string, unknown>;
+      targetIds?: number[];
+    },
+  ) =>
+    api.post<ProjectBatchTaskResult>(`/projects/${projectId}/tasks/batch`, {
+      projectId,
+      ...payload,
+    }),
   removeProjectTarget: (id: number, targetId: number) =>
     api.delete(`/projects/${id}/targets/${targetId}`),
   projectApprovals: (id: number) =>
