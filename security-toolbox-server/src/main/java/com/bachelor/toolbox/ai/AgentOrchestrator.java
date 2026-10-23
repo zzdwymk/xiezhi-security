@@ -446,6 +446,12 @@ public class AgentOrchestrator {
                 failure.stage(),
                 failure.code(),
                 RuntimeProtocolDiagnostics.fingerprint(ex));
+            // The fingerprint alone cannot say which field tripped validation. Diagnostics mode
+            // adds the exception message, which is a developer-authored constant naming the field
+            // — still no request text, tool parameters or model output.
+            if (Boolean.getBoolean("toolbox.diagnostics.protocolDetail")) {
+              log.warn("AI_RUNTIME_PROTOCOL_DETAIL {}", ex.getMessage());
+            }
             throw new ApiException(RuntimeProtocolDiagnostics.userMessage(failure));
           } catch (AiAgentRuntimeClient.RuntimeUnavailableException ex) {
             provenance.markFallback("RUNTIME_UNAVAILABLE");

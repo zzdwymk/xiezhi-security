@@ -73,6 +73,35 @@ class AiPythonAgentRouteEndToEndTests {
         () -> System.getenv("AI_RUNTIME_PROJECT_SIGNING_SECRET"));
   }
 
+  /**
+   * The desktop client always runs an AUTO turn. No other end-to-end case exercises that shape, so
+   * a regression here reaches users while every legacy-mode test stays green — which is exactly
+   * how the desktop app ended up failing every turn.
+   */
+  @Test
+  void autoTurnCompletesThroughTheRealRuntime() throws Exception {
+    String jwt = login();
+    long[] scope = createActiveTarget(jwt, "Runtime AUTO E2E");
+    long projectId = scope[0];
+    long targetId = scope[1];
+
+    mockMvc
+        .perform(
+            post("/api/ai/agent")
+                .header("Authorization", "Bearer " + jwt)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(
+                    """
+                    {"projectId":%d,"targetId":%d,"sessionId":"ci-auto-turn","turnId":"ci-auto-turn-1","prompt":"请扫描本机授权目标的端口","execute":false,"mode":"standard","executionIntent":"AUTO","userPrompt":"请扫描本机授权目标的端口"}
+                    """
+                        .formatted(projectId, targetId)))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.plan").exists())
+        .andExpect(jsonPath("$.executed").value(false));
+
+    assertThat(tasks.count()).isZero();
+  }
+
   @Test
   void springAgentRouteUsesPythonPlannerAndJavaHarness() throws Exception {
     String jwt = login();

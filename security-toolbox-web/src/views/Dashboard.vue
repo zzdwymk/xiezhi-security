@@ -213,12 +213,29 @@ const sending = computed({
     if (val) {
       if (currentId) activeSendingThreadIds.value.add(currentId);
       isSendingAny.value = true;
-    } else {
-      if (currentId) activeSendingThreadIds.value.delete(currentId);
-      isSendingAny.value = false;
+      return;
     }
+    // Clearing must never depend on which thread happens to be selected right now. A turn's
+    // finally block can run after navigation or a fork swapped the selection; deleting by current
+    // selection then left a stale id behind and locked the composer for the rest of the session.
+    isSendingAny.value = false;
+    if (currentId) activeSendingThreadIds.value.delete(currentId);
   },
 });
+
+/** Release one specific thread's send lock, regardless of what is selected now. */
+function releaseThreadSendLock(threadId: string | undefined) {
+  if (!threadId) {
+    sending.value = false;
+    return;
+  }
+  const next = new Set(activeSendingThreadIds.value);
+  next.delete(threadId);
+  activeSendingThreadIds.value = next;
+  // The blanket flag only described "some thread is sending"; with this one released and no
+  // other thread mid-turn, it must drop too or every composer stays disabled.
+  if (next.size === 0) isSendingAny.value = false;
+}
 
 const currentThreadStatus = computed(() => {
   const t = selectedThread.value;
@@ -2146,8 +2163,8 @@ async function sendPrompt() {
       }
     } else ElMessage.error(message);
   } finally {
-    if (thread) activeSendingThreadIds.value.delete(thread.id);
-    sending.value = false;
+    if (thread) releaseThreadSendLock(thread.id);
+    else sending.value = false;
     void scrollToBottom();
   }
 }
@@ -2251,8 +2268,8 @@ async function retryConversationMessage(message: ConversationMessage) {
     const next = new Set(retryingMessageIds.value);
     next.delete(retryMessageId);
     retryingMessageIds.value = next;
-    if (thread) activeSendingThreadIds.value.delete(thread.id);
-    sending.value = false;
+    if (thread) releaseThreadSendLock(thread.id);
+    else sending.value = false;
     void scrollToBottom();
   }
 }
