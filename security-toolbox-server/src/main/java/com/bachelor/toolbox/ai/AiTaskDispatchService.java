@@ -225,10 +225,50 @@ public class AiTaskDispatchService {
               AiToolCatalog.requiresApproval(step.toolCode()) || step.requiresApproval(),
               step.evidenceRefs()));
     }
-    if (!workflowBound && toolCodes.contains("nmap_service_scan") && toolCodes.contains("tcp_ports")) {
-      throw new ApiException("Nmap 服务识别与 TCP 端口探测不能在同一计划中重复扫描");
+    if (!workflowBound) {
+      validatePortProbeIsNotRedundant(safeSteps, toolCodes);
     }
     return List.copyOf(safeSteps);
+  }
+
+  /**
+   * 兜底校验：端口探测与 Nmap 并存时，只有在<strong>真的会重复扫描</strong>时才拒绝。
+   *
+   * <p>两者功能不同而不重复——授权端口不等于这些端口开放。tcp_ports 用最高并发只判端口是否开启，
+   * Nmap 再对开放端口做服务/版本/系统识别，这是标准的"先粗扫、后精扫"串联，各自扫描面不同。
+   * 真正浪费的只有一种组合：Nmap 不消费前序结果（{@code consumeOpenPorts} 未开），并且两者端口范围
+   * 实质重叠——那才会把同一段端口全连接扫两遍。
+   */
+  private void validatePortProbeIsNotRedundant(
+      List<AiPlanResponse.PlanStep> steps, Set<String> toolCodes) {
+    if (!toolCodes.contains("nmap_service_scan") || !toolCodes.contains("tcp_ports")) {
+      return;
+    }
+    AiPlanResponse.PlanStep nmap =
+        steps.stream()
+            .filter(step -> "nmap_service_scan".equals(step.toolCode()))
+            .findFirst()
+            .orElse(null);
+    AiPlanResponse.PlanStep probe =
+        steps.stream()
+            .filter(step -> "tcp_ports".equals(step.toolCode()))
+            .findFirst()
+            .orElse(null);
+    if (nmap == null || probe == null) {
+      return;
+    }
+    Object consume = nmap.parameters() == null ? null : nmap.parameters().get("consumeOpenPorts");
+    if (Boolean.TRUE.equals(consume) || "true".equalsIgnoreCase(String.valueOf(consume))) {
+      // Nmap 会收敛到前序探测结果，扫描面不重叠，放行。
+      return;
+    }
+    String probePorts = Objects.toString(probe.parameters().get("ports"), "");
+    String nmapPorts = Objects.toString(nmap.parameters().get("ports"), "");
+    if (probePorts.equals(nmapPorts)) {
+      throw new ApiException(
+          "TCP 端口探测与 Nmap 扫描的端口范围完全相同，且 Nmap 未复用探测结果："
+              + "请为 Nmap 开启 consumeOpenPorts（只扫已开放端口），或去掉其中一个步骤");
+    }
   }
 
   private Map<String, Object> normalizeParameters(
@@ -237,7 +277,10 @@ public class AiTaskDispatchService {
         rawParameters == null ? new LinkedHashMap<>() : new LinkedHashMap<>(rawParameters);
     Set<String> allowedKeys =
         switch (toolCode) {
-          case "tcp_ports" -> Set.of("ports", "mode");
+          // tcp_ports 的扫描面只由 ports 决定（缺省 = 授权全段）。历史上的 mode=quick 会静默
+          // 忽略 ports 只扫 17 个常用端口，与审批弹窗展示的参数不一致，已移除。
+          // udp=true 追加 UDP 快速探测，结果单独标注（UDP 只能判"开放或过滤"，不能确证开放）。
+          case "tcp_ports" -> Set.of("ports", "udp");
           case "nmap_service_scan" -> Set.of("ports", "mode", "consumeOpenPorts");
           case "fscan_scan" -> Set.of("ports", "vulnMode");
           case "afrog_scan", "xray_scan" -> Set.of("pocCodes", "allPocs");
