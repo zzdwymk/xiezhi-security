@@ -466,7 +466,7 @@ const showGuide = ref(false);
 const preset = ref<PresetCode>("standard");
 const nodes = shallowRef<EditorNode[]>([]);
 const suggestionNodeLabels = computed(() => Object.fromEntries(nodes.value.map(node => [
-  node.id, actionStepLabel(node.data.tool, node.data.label),
+  node.id, nodeDisplayName(node),
 ])));
 const edges = shallowRef<Edge[]>([]);
 const selectedNodeId = ref("");
@@ -831,6 +831,33 @@ const filteredAgents = computed(() => {
   }
   return list;
 });
+/**
+ * Display name for a node. Backends persist node ids/labels like "zap-fuzz" or
+ * "context"; they must never surface raw identifiers to the user.
+ */
+function nodeDisplayName(node?: EditorNode): string {
+  if (!node) return "节点";
+  const raw = String(node.data.label || "").trim();
+  if (node.data.nodeKind === "system") return raw || "节点";
+  if (node.data.tool) {
+    const agent = agentOf(node.data.tool);
+    if (
+      !raw ||
+      raw.toLowerCase() === node.data.tool.toLowerCase() ||
+      raw.toLowerCase() === node.id.toLowerCase() ||
+      /\b[a-z][a-z0-9]*(?:[-_][a-z0-9]+)+\b/i.test(raw)
+    ) {
+      return agent?.name || actionStepLabel(node.data.tool);
+    }
+    return raw;
+  }
+  if (/\b[a-z][a-z0-9]*(?:[-_][a-z0-9]+)+\b/i.test(raw)) {
+    const meta = phaseOf(node.data.phase);
+    if (meta && meta.code === node.data.phase) return meta.label;
+  }
+  return raw || "节点";
+}
+
 const selectedNode = computed(() =>
   nodes.value.find((node) => node.id === selectedNodeId.value),
 );
@@ -913,10 +940,22 @@ function nodeData(
   const agent = agentOf(tool);
   const effectivePhase = tool ? (toolPhase(tool) || phase) : phase;
   const meta = phaseOf(effectivePhase);
+  const rawLabel = String(label || "").trim();
+  // Persisted graphs may carry machine labels (node id / tool code such as
+  // "zap-fuzz"). Normalize them to the human name at construction time so raw
+  // identifiers never reach the canvas, validation messages, or the saved spec.
+  const looksLikeCode = /[a-z][a-z0-9]*(?:[-_][a-z0-9]+)+/i.test(rawLabel);
+  const normalizedLabel =
+    agent &&
+    (!rawLabel ||
+      rawLabel.toLowerCase() === (tool || "").toLowerCase() ||
+      looksLikeCode)
+      ? agent.name
+      : rawLabel;
   return {
     nodeKind: kind,
     phase: effectivePhase,
-    label: label || agent?.name || meta.label,
+    label: normalizedLabel || meta.label,
     desc: agent?.desc || meta.desc,
     icon: agent?.icon || meta.icon,
     tool,
@@ -1923,9 +1962,9 @@ function validateGraph() {
   });
   nodes.value.forEach((node) => {
     if (node.id !== "__start__" && (incoming.get(node.id) || 0) === 0)
-      problems.push(`节点“${node.data.label}”没有上游依赖`);
+      problems.push(`节点“${nodeDisplayName(node)}”没有上游依赖`);
     if (node.id !== "__end__" && (outgoing.get(node.id) || 0) === 0)
-      problems.push(`节点“${node.data.label}”没有下游依赖`);
+      problems.push(`节点“${nodeDisplayName(node)}”没有下游依赖`);
   });
   const topo = topologicalGroups();
   if (!topo.acyclic) problems.push("连线形成了环路，请调整依赖方向");
@@ -1943,7 +1982,7 @@ function validateGraph() {
   if (!reachable.has("__end__")) problems.push("开始节点无法到达结束节点");
   nodes.value.forEach((node) => {
     if (!reachable.has(node.id))
-      problems.push(`节点“${node.data.label}”不在开始到结束的路径上`);
+      problems.push(`节点“${nodeDisplayName(node)}”不在开始到结束的路径上`);
   });
   graphValidation.value = [...new Set(problems)];
   return graphValidation.value;
@@ -2375,7 +2414,7 @@ function copyAndPasteNode(
   snapshotToClipboard(source);
   const newNode = pasteNode(atFlowPosition, inPlace);
   if (newNode) {
-    ElMessage.success(`已复制并创建“${newNode.data.label}”`);
+    ElMessage.success(`已复制并创建“${nodeDisplayName(newNode)}”`);
   }
   return newNode;
 }
@@ -2501,7 +2540,7 @@ function pasteNode(atFlowPosition?: { x: number; y: number }, inPlace = false) {
   validateGraph();
   graphNotice.value =
     newNodes.length === 1
-      ? `已创建“${newNodes[0].data.label}”`
+      ? `已创建“${nodeDisplayName(newNodes[0])}”`
       : `已创建 ${newNodes.length} 个节点`;
   return newNodes[0];
 }
@@ -3009,7 +3048,7 @@ function copySelectedNodes(inPlace = false) {
     snapshotToClipboard(validNodes);
     ElMessage.success(
       validNodes.length === 1
-        ? `已复制“${validNodes[0].data.label}”，按 Ctrl+V 粘贴`
+        ? `已复制“${nodeDisplayName(validNodes[0])}”，按 Ctrl+V 粘贴`
         : `已复制 ${validNodes.length} 个节点，按 Ctrl+V 粘贴`,
     );
     return;
@@ -3441,7 +3480,7 @@ const nodeDetailRun = computed(() =>
 );
 const nodeDetailTitle = computed(() => {
   const node = nodes.value.find((item) => item.id === nodeDetailNodeId.value);
-  return node ? `节点详情：${actionStepLabel(node.data.tool, node.data.label)}` : "节点详情";
+  return node ? `节点详情：${nodeDisplayName(node)}` : "节点详情";
 });
 
 interface EndFinding {
@@ -4627,7 +4666,7 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="panel workflow-page">
-    <div class="section-head">
+    <div class="workflow-toolbar">
       <div class="workflow-head-copy">
         <h3>红队评估工作流</h3>
         <p>
@@ -4664,31 +4703,33 @@ onBeforeUnmount(() => {
             同一工具可多次出现（如 Nmap 先探端口再识别服务），故按步骤数计
           </span>
         </div>
-        <el-button
-          type="primary"
-          :loading="saving"
-          @click="save"
-          :disabled="executing || viewingRunSnapshot"
-          ><el-icon><Check /></el-icon>保存工作流</el-button
-        >
-        <el-button
-          type="success"
-          :loading="executing"
-          :disabled="
-            !selectedTargetId || saving || viewingRunSnapshot || executing
-          "
-          @click="executeWorkflow"
-        >
-          <el-icon><VideoPlay /></el-icon>执行工作流
-        </el-button>
-        <el-button
-          v-if="executing && activeRunId"
-          type="danger"
-          :loading="stoppingRun"
-          @click="stopExecution"
-        >
-          <el-icon><VideoPause /></el-icon>停止
-        </el-button>
+        <div class="workflow-actions-buttons">
+          <el-button
+            type="primary"
+            :loading="saving"
+            @click="save"
+            :disabled="executing || viewingRunSnapshot"
+            ><el-icon><Check /></el-icon>保存工作流</el-button
+          >
+          <el-button
+            type="success"
+            :loading="executing"
+            :disabled="
+              !selectedTargetId || saving || viewingRunSnapshot || executing
+            "
+            @click="executeWorkflow"
+          >
+            <el-icon><VideoPlay /></el-icon>执行工作流
+          </el-button>
+          <el-button
+            v-if="executing && activeRunId"
+            type="danger"
+            :loading="stoppingRun"
+            @click="stopExecution"
+          >
+            <el-icon><VideoPause /></el-icon>停止
+          </el-button>
+        </div>
       </div>
     </div>
 
@@ -4777,6 +4818,14 @@ onBeforeUnmount(() => {
             </p>
           </div>
           <div class="editor-head-actions">
+            <span
+              v-if="graphReady"
+              class="editor-status is-ok"
+              ><el-icon><CircleCheck /></el-icon>拓扑可保存</span
+            >
+            <span v-else class="editor-status is-warn"
+              ><el-icon><Warning /></el-icon>请修正拓扑后保存</span
+            >
             <el-button
               size="small"
               :class="{ 'is-active': workflowConfigVisible }"
@@ -4864,7 +4913,7 @@ onBeforeUnmount(() => {
                       type="button"
                       class="node-run-status"
                       :class="`is-${nodeRuns[id].status}`"
-                      :aria-label="`查看${actionStepLabel(data.tool, data.label)}任务详情`"
+                      :aria-label="`查看${nodeDisplayName(nodes.find(n => n.id === id))}任务详情`"
                       title="查看任务详情"
                       @click.stop="openNodeDetail(id)"
                     >
@@ -4881,7 +4930,7 @@ onBeforeUnmount(() => {
                       <el-icon><Delete /></el-icon>
                     </button>
                   </div>
-                  <strong>{{ actionStepLabel(data.tool, data.label) }}</strong>
+                  <strong>{{ nodeDisplayName(nodes.find(n => n.id === id)) }}</strong>
                   <small>{{ data.desc }}</small>
                   <div class="node-tags">
                     <el-tag
@@ -5256,7 +5305,7 @@ onBeforeUnmount(() => {
           ><span v-if="selectedNodeIds.length > 1"
             >已多选 {{ selectedNodeIds.length }} 个节点：Ctrl+C 批量复制 / Delete 批量删除</span
           ><span v-else-if="selectedNode"
-            >已选节点：{{ actionStepLabel(selectedNode.data.tool, selectedNode.data.label)
+            >已选节点：{{ nodeDisplayName(selectedNode)
             }}{{
               selectedNode.data.nodeKind === "system"
                 ? "（固定保留）"
@@ -5807,7 +5856,7 @@ onBeforeUnmount(() => {
               <template v-if="selectedNode.id === '__end__'">
                 <div class="node-editor-header">
                   <div class="node-editor-title-row">
-                    <h5 class="node-editor-title">结束节点 · {{ selectedNode.data.label }}</h5>
+                    <h5 class="node-editor-title">结束节点 · {{ nodeDisplayName(selectedNode) }}</h5>
                     <el-tag size="small" type="success" effect="plain" class="node-risk-tag">结果</el-tag>
                   </div>
                   <p class="node-editor-desc">
@@ -5883,7 +5932,7 @@ onBeforeUnmount(() => {
               <template v-else>
                 <div class="node-editor-header">
                   <div class="node-editor-title-row">
-                    <h5 class="node-editor-title">已选节点 · {{ selectedNode.data.label }}</h5>
+                    <h5 class="node-editor-title">已选节点 · {{ nodeDisplayName(selectedNode) }}</h5>
                     <el-tag size="small" type="info" effect="plain" class="node-risk-tag">
                       {{ selectedNode.data.nodeKind === "phase" ? "流程阶段" : "全局起点" }}
                     </el-tag>
@@ -6674,7 +6723,6 @@ onBeforeUnmount(() => {
   padding: 0;
   overflow: hidden;
 }
-.workflow-page > .section-head,
 .workflow-page > .workflow-guide,
 .workflow-page > .workflow-status-row,
 .workflow-page > .graph-notice,
@@ -6682,63 +6730,81 @@ onBeforeUnmount(() => {
 .workflow-page > .el-alert {
   flex: none;
 }
-.workflow-page > .section-head {
-  margin: 0 0 12px !important;
-  gap: 12px !important;
-  align-items: flex-start;
-}
-.workflow-page > .section-head h3 {
-  margin: 0 !important;
-  line-height: 1.3;
+
+/* ── Fluent page header: title block above, config + primary actions below ── */
+.workflow-toolbar {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px 20px;
+  margin: 0 0 12px;
+  padding: 0 2px 12px;
+  border-bottom: 1px solid var(--app-border);
 }
 .workflow-head-copy {
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 1 1 420px;
 }
-.workflow-page > .section-head p {
-  display: block !important;
-  margin: 4px 0 0 !important;
-  max-width: 62ch;
-  line-height: 1.45 !important;
-  white-space: normal !important;
-  overflow: visible !important;
-  -webkit-line-clamp: unset !important;
+.workflow-toolbar h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--app-text);
+}
+.workflow-toolbar p {
+  display: block;
+  margin: 4px 0 0;
+  max-width: 68ch;
+  color: var(--app-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
 }
 .workflow-context-summary {
   display: flex;
   min-width: 0;
   flex-wrap: wrap;
-  gap: 3px 14px;
-  margin-top: 7px;
+  gap: 4px 18px;
+  margin-top: 8px;
   color: var(--app-muted);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
   white-space: normal;
 }
 .workflow-context-summary span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
   min-width: 0;
   max-width: 100%;
   overflow-wrap: anywhere;
   text-overflow: clip;
 }
 .workflow-context-summary b {
-  margin-right: 5px;
-  color: var(--app-text);
+  color: var(--app-muted);
   font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  opacity: 0.85;
 }
-.workflow-actions {
-  flex: 0 0 auto;
-  gap: 8px !important;
+.workflow-context-summary span::after {
+  content: "";
 }
-.workflow-actions :deep(.el-button) {
-  min-height: 30px !important;
-}
-
 .workflow-actions {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex: 0 1 auto;
   flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+.workflow-actions-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 .workflow-actions :deep(.el-button) {
   min-height: 32px;
@@ -6747,38 +6813,42 @@ onBeforeUnmount(() => {
 .workflow-actions :deep(.el-select__wrapper) {
   min-height: 32px;
 }
+/* Step limit becomes a quiet Fluent "field" group instead of a bordered box */
 .workflow-step-limit {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 10px;
-  border: 1px solid var(--el-border-color);
+  min-height: 32px;
+  padding: 0 12px;
   border-radius: 6px;
+  background: var(--app-surface-soft, color-mix(in srgb, var(--app-border) 35%, transparent));
   font-size: 12px;
-  color: var(--el-text-color-secondary);
+  color: var(--app-muted);
 }
 .workflow-step-limit.over {
-  border-color: var(--el-color-danger);
+  background: color-mix(in srgb, var(--el-color-danger) 10%, transparent);
   color: var(--el-color-danger);
 }
 .workflow-step-limit-label {
   white-space: nowrap;
+  font-weight: 500;
 }
 .workflow-step-limit-slider {
-  width: 120px;
+  width: 112px;
 }
 .workflow-step-limit-value {
   min-width: 2ch;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
-  color: var(--el-text-color-primary);
+  color: var(--app-text);
 }
 .workflow-step-limit.over .workflow-step-limit-value {
   color: var(--el-color-danger);
 }
 .workflow-step-limit-hint {
-  max-width: 260px;
+  max-width: 240px;
   line-height: 1.4;
+  color: var(--app-muted);
 }
 .preset-select {
   width: 170px;
@@ -6826,33 +6896,45 @@ onBeforeUnmount(() => {
 .workflow-status-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 6px 14px;
   align-items: center;
-  margin: 0 0 4px;
-}
-.status-chip {
-  min-height: 28px !important;
-  padding: 0 9px !important;
-  font-size: 11px !important;
+  margin: 0 0 8px;
+  color: var(--app-muted);
+  font-size: 12px;
 }
 .status-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  padding: 0 11px;
-  border: 1px solid var(--app-border);
-  border-radius: 999px;
-  background: var(--app-surface-soft);
+  gap: 5px;
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--app-muted);
-  font-size: var(--type-caption);
+}
+.status-chip :deep(.el-icon) {
+  font-size: 14px;
 }
 .status-chip--ok {
-  border-color: color-mix(in srgb, #2e9d67 55%, var(--app-border));
   color: #18794e;
 }
 .status-chip--warn {
-  border-color: color-mix(in srgb, #c88719 55%, var(--app-border));
+  color: #8a5a08;
+}
+/* Inline status inside the editor header, next to its actions */
+.editor-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: 2px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.editor-status :deep(.el-icon) {
+  font-size: 14px;
+}
+.editor-status.is-ok {
+  color: #18794e;
+}
+.editor-status.is-warn {
   color: #8a5a08;
 }
 .graph-notice,
@@ -9157,15 +9239,12 @@ onBeforeUnmount(() => {
 }
 
 /* workflow extra tall */
-.workflow-page > .section-head {
-  margin-bottom: 8px !important;
-}
 .workflow-page > .workflow-status-row {
-  margin-bottom: 4px !important;
+  margin-bottom: 8px !important;
 }
 .workflow-page > .graph-notice,
 .workflow-page > .graph-validation {
-  margin-bottom: 4px !important;
+  margin-bottom: 6px !important;
 }
 .workflow-editor-layout {
   min-height: calc(100vh - 220px);
@@ -9225,12 +9304,12 @@ onBeforeUnmount(() => {
 }
 
 @media (min-width: 1201px) {
-  .workflow-page > .section-head {
-    align-items: center !important;
-    margin-bottom: 6px !important;
+  .workflow-toolbar {
+    align-items: flex-end;
+    margin-bottom: 10px;
   }
-  .workflow-page > .section-head > .workflow-actions {
-    flex-wrap: nowrap !important;
+  .workflow-actions {
+    flex-wrap: nowrap;
   }
   .workflow-page .project-select {
     width: clamp(170px, 12vw, 200px);
@@ -9242,8 +9321,13 @@ onBeforeUnmount(() => {
     width: clamp(145px, 10vw, 170px);
   }
   .workflow-page > .workflow-status-row {
-    min-height: 28px;
-    margin-bottom: 4px !important;
+    margin-bottom: 8px;
+  }
+}
+/* Very wide screens: keep the description from stretching into a ribbon */
+@media (min-width: 1600px) {
+  .workflow-head-copy {
+    max-width: 720px;
   }
 }
 </style>
