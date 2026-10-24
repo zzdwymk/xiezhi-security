@@ -309,6 +309,42 @@ class CoreCapabilityTargetBindingTest {
         "清单不一致时必须失败，否则漂移会被静默放过");
   }
 
+  /**
+   * AI 侧允许的参数键必须被检测规则侧接受。
+   *
+   * <p>两侧白名单刻意不同（规则需要 ZAP 认证、HTTP 路径等运维专属参数），所以断言的是子集关系
+   * 而不是相等。这里读取 {@code ActiveScanService} 的真实取值，避免在测试里再抄一份——
+   * 那只会制造第三个漂移源。
+   */
+  @Test
+  void everyAiAllowedParameterKeyIsAlsoAcceptedByDetectionRules() {
+    ToolParameterPolicy.assertAllowedKeysAreRuleSubset(
+        com.bachelor.toolbox.vulnerability.ActiveScanService::ruleParameterKeys);
+  }
+
+  @Test
+  void parameterKeyDriftAssertionFailsWhenAiAllowsSomethingRulesReject() {
+    // 断言本身要能工作：如果规则侧漏了某个 AI 允许的键，必须报错并指出是哪个工具哪个键。
+    assertThrows(
+        ApiException.class,
+        () ->
+            ToolParameterPolicy.assertAllowedKeysAreRuleSubset(
+                toolCode ->
+                    "tcp_ports".equals(toolCode)
+                        ? Set.of("ports")
+                        : new java.util.LinkedHashSet<>(
+                            Set.of(
+                                "ports", "mode", "vulnMode", "path", "level", "risk", "technique",
+                                "pocCodes", "allPocs", "spider", "strength", "scanPolicy",
+                                "ajaxSpider", "openApiUrl", "authLoginUrl", "authUsername",
+                                "authPassword", "authUsernameField", "authPasswordField",
+                                "authType", "fuzzRequestUrl", "method", "fuzzPostBody",
+                                "fuzzPayload", "fuzzTargetField", "module", "modules", "options",
+                                "check", "dictionary", "concurrency", "depth", "maxRequests",
+                                "extensions"))),
+        "规则侧漏掉 AI 允许键时必须失败，否则用户会遇到「规则能配、AI 却不能」的割裂");
+  }
+
   // ---------------------------------------------------------------- 桩
 
   /**
