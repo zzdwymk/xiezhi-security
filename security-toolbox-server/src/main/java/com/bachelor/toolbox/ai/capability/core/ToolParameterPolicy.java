@@ -242,4 +242,50 @@ public final class ToolParameterPolicy {
           "工具清单漂移：dispatch 层独有 " + onlyAuthoritative + "，能力层独有 " + onlyLocal);
     }
   }
+
+  /**
+   * 由服务端在派发时注入、因而不出现在"用户可配置键"白名单里的参数。
+   *
+   * <p>{@code ActiveScanService} 在规则参数校验<b>之后</b>才根据请求注入 PoC 选择
+   * （{@code parameters.put("allPocs"/"pocCodes", ...)}），所以规则侧白名单不含它们并不是漂移。
+   * 列在这里而不是放宽断言，是为了让"哪些键属于服务端注入"成为显式记录——将来新增注入键时，
+   * 这里漏写会让测试失败，而不是被静默放过。
+   */
+  private static final Set<String> SERVER_INJECTED_KEYS = Set.of("allPocs", "pocCodes");
+
+  /**
+   * 参数键漂移断言：AI 侧允许的参数键必须是检测规则侧允许键的<b>子集</b>。
+   *
+   * <p>两侧刻意不同：检测规则由运维配置并持久化，需要承载 ZAP 认证、HTTP 路径等运维专属参数；
+   * AI 方案只开放模型可提议的最小集合。所以不能要求相等，但必须保证
+   * <strong>AI 能提议的键规则侧一定接受</strong>——否则同一工具在同一目标上会出现"规则能配、
+   * AI 却不能"的割裂。这层关系在此之前只能靠人工比对，没有任何测试会发现。
+   *
+   * @param ruleKeysFor 给定工具码返回规则侧允许键（由 {@code ActiveScanService} 提供真实取值）
+   * @throws ApiException AI 侧存在规则侧不认识的参数键时
+   */
+  public static void assertAllowedKeysAreRuleSubset(
+      java.util.function.Function<String, Set<String>> ruleKeysFor) {
+    for (String toolCode : EXECUTABLE_TOOLS) {
+      Set<String> aiKeys = new LinkedHashSet<>(allowedKeys(toolCode));
+      aiKeys.removeAll(SERVER_INJECTED_KEYS);
+      Set<String> ruleKeys;
+      try {
+        ruleKeys = ruleKeysFor.apply(toolCode);
+      } catch (ApiException unsupportedRuleTool) {
+        // 该工具不是检测规则可用的工具（如 site_crawl），无从比较。
+        continue;
+      }
+      Set<String> aiOnly = new LinkedHashSet<>(aiKeys);
+      aiOnly.removeAll(ruleKeys);
+      if (!aiOnly.isEmpty()) {
+        throw new ApiException(
+            "参数键漂移：工具 "
+                + toolCode
+                + " 在 AI 侧允许但检测规则侧不接受 "
+                + aiOnly
+                + "（AI=" + aiKeys + "，规则=" + ruleKeys + "）");
+      }
+    }
+  }
 }
