@@ -44,6 +44,18 @@ public class TaskExecutionService {
   private static final String EXECUTION_TIMEOUT_MESSAGE = "任务执行超时，请稍后重试";
   private static final String AUTHORIZATION_CHANGED_MESSAGE = "任务授权状态已变更，请重新确认授权后再试";
   private static final String ZOMBIE_REAPED_MESSAGE = "任务进程已退出，检测到长时间无进度，已自动终止";
+  /** 长期排队却从未开始的任务被判为遗留，用这条说明为什么没有执行。 */
+  private static final String ABANDONED_PENDING_MESSAGE =
+      "任务长期处于排队状态且未开始执行，已自动取消；如仍需要请重新提交";
+  /**
+   * How long a PENDING row may sit untouched before it is treated as abandoned.
+   *
+   * <p>正常排队任务会在入队时写入 {@code queueStartedAt}，并在秒级被调度；给足 30 分钟是为了
+   * 容纳并发槽位被长任务占满的真实等待，避免误杀仍在合理排队中的任务。
+   */
+  @org.springframework.beans.factory.annotation.Value(
+      "${toolbox.task.abandoned-pending-ms:1800000}")
+  private long abandonedPendingMs = 1_800_000L;
 
   /** How often the zombie-reaper sweep runs. */
   private final long zombieReapIntervalMs;
@@ -208,6 +220,48 @@ public class TaskExecutionService {
     }
     if (reaped > 0) {
       log.warn("已回收 {} 个僵尸运行任务（进程退出但未写终态）", reaped);
+    }
+    reapAbandonedPendingTasks(now);
+  }
+
+  /**
+   * Reaps PENDING rows that were queued so long ago that nothing is going to pick them up.
+   *
+   * <p>上面只扫 RUNNING：进程在任务排队期间退出、或任务创建后从未被调度时，行会永远停在
+   * PENDING（{@code startedAt} 与 {@code queueStartedAt} 都为 null，日志为空）。这类僵尸不
+   * 会自行消失，只会持续占用并发槽位并让 {@code pendingTasks} 计数永不归零——实测中就有三个
+   * 任务这样挂了三天。判据是「从未开始 + 排队时间已远超合理等待」，正在正常排队的任务
+   * （有 queueStartedAt 且时间很近）不会被误伤。
+   */
+  void reapAbandonedPendingTasks(Instant now) {
+    List<SecurityTask> pending = taskRepository.findAllByStatusOrderByCreatedAtAsc("PENDING");
+    int reaped = 0;
+    for (SecurityTask task : pending) {
+      if (executionControl.hasActiveWorker(task.getId())) {
+        continue;
+      }
+      // 真正在排队中的任务会写入 queueStartedAt；从未写入说明它根本没进过调度。
+      Instant queuedAt = task.getQueueStartedAt() == null ? task.getCreatedAt() : task.getQueueStartedAt();
+      if (queuedAt == null || now.isBefore(queuedAt.plusMillis(abandonedPendingMs))) {
+        continue;
+      }
+      try {
+        task.setStatus("CANCELLED");
+        task.setTerminationReason("ABANDONED_PENDING");
+        task.setErrorMessage(ABANDONED_PENDING_MESSAGE);
+        task.setProgressMessage(ABANDONED_PENDING_MESSAGE);
+        task.setProgressUpdatedAt(now);
+        task.setFinishedAt(now);
+        appendLog(task, ABANDONED_PENDING_MESSAGE);
+        taskRepository.save(task);
+        progressEvents.publish(task, ABANDONED_PENDING_MESSAGE);
+        reaped++;
+      } catch (Exception exception) {
+        log.warn("回收遗留排队任务失败，taskId={}，toolCode={}", task.getId(), task.getToolCode(), exception);
+      }
+    }
+    if (reaped > 0) {
+      log.warn("已回收 {} 个长期未开始的排队任务（占用并发槽位且无人调度）", reaped);
     }
   }
 
