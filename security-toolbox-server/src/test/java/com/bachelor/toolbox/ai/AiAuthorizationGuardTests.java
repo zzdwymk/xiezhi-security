@@ -224,8 +224,59 @@ class AiAuthorizationGuardTests {
     assertThat(decision.normalizedPlan().steps()).hasSize(1);
   }
 
-  private void verifyCountQueriesOnly(SecurityTaskRepository tasks) {
-    verify(tasks).countByProjectIdAndStatusIn(7L, List.of("BLOCKED", "PENDING", "RUNNING"));
+  /**
+   * 审批弹窗允许管理员直接微调参数（{@code stepOverrides}），这些改动在
+   * {@code ProjectApprovalService.decide} 里被<b>原样合并</b>进已保存方案，那一刻不做校验。
+   * 因此"改参之后是否还会被重新校验"就是审批完整性的关键：确认执行时必须重新规范化，
+   * 且归一化结果与已批准方案不一致时要拒绝。这里用真实的 dispatcher 固定这一行为。
+   */
+  @Test
+  void adminParameterOverrideBeyondAuthorizationIsRejectedOnResume() {
+    com.bachelor.toolbox.target.PortRangeParser parser =
+        new com.bachelor.toolbox.target.PortRangeParser();
+    var targetService = mock(TargetService.class);
+    var registry = mock(com.bachelor.toolbox.tool.SecurityToolRegistry.class);
+    when(registry.require("tcp_ports")).thenReturn(mock(com.bachelor.toolbox.tool.SecurityTool.class));
+    com.bachelor.toolbox.target.AuthorizedTarget target =
+        new com.bachelor.toolbox.target.AuthorizedTarget();
+    target.setEnabled(true);
+    target.setTargetValue("127.0.0.1");
+    target.setAllowedPorts("80");
+    when(targetService.get(9L)).thenReturn(target);
+    var dispatch =
+        new AiTaskDispatchService(
+            targetService,
+            new com.bachelor.toolbox.target.TargetPolicyService(false, parser),
+            registry,
+            parser,
+            20,
+            65535);
+    var guard =
+        new AiAuthorizationGuard(
+            mock(AssessmentProjectService.class),
+            targetService,
+            dispatch,
+            mock(SecurityTaskRepository.class),
+            20,
+            4);
+
+    // 管理员在弹窗里把端口从授权的 80 改成 8000（越出授权范围）。
+    AiPlanResponse tampered =
+        new AiPlanResponse(
+            "test",
+            "test-model",
+            "管理员改参后的方案",
+            true,
+            List.of(
+                new AiPlanResponse.PlanStep(
+                    "tcp_ports", "授权端口探测", "验证授权端口", Map.of("ports", "8000"))));
+
+    assertThatThrownBy(() -> guard.evaluateApproved(request(true), tampered))
+        .isInstanceOf(ApiException.class)
+        .hasMessageContaining("授权");
+  }
+
+  private void verifyCountQueriesOnly(SecurityTaskRepository tasks) {    verify(tasks).countByProjectIdAndStatusIn(7L, List.of("BLOCKED", "PENDING", "RUNNING"));
     verify(tasks).countByTargetIdAndStatusIn(9L, List.of("BLOCKED", "PENDING", "RUNNING"));
     verifyNoMoreInteractions(tasks);
   }
