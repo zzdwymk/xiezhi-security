@@ -536,6 +536,19 @@ try {
     $portableArchiveName = "xiezhi-$packageVersion-portable.zip"
     $portableArchive = Join-Path $staging $portableArchiveName
 
+    # Ship the multi-size .ico next to the executable as a real file. The
+    # shell cannot read icons from inside app.asar, so both the window icon
+    # path and any AppUserModelId IconUri need this unpacked copy. Nothing is
+    # written to the registry here: the build machine's HKCU has no bearing on
+    # the machine where the archive is finally extracted.
+    $stageWatch = Start-Stage
+    $iconSource = Join-Path $frontend 'build\icon.ico'
+    if (-not (Test-Path -LiteralPath $iconSource -PathType Leaf)) { throw 'build/icon.ico is missing.' }
+    $taskbarIcon = Join-Path $unpackedStaging 'xiezhi-icon.ico'
+    Copy-Item -LiteralPath $iconSource -Destination $taskbarIcon -Force
+    Write-Host "Bundled taskbar icon: $taskbarIcon" -ForegroundColor DarkGray
+    Stop-Stage 'Bundle taskbar icon' $stageWatch
+
     # Write an auditable build date/time record into the packaged app and beside it.
     $buildInfoFile = Join-Path $unpackedStaging 'BUILD_INFO.txt'
     $buildInfoContent = @(
