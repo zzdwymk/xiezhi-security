@@ -208,17 +208,12 @@ function refreshTrafficRecords() {
   void trafficRecords.value?.refresh();
 }
 const offline = ref(false);
-const viewportWidth = ref(window.innerWidth);
-function onViewportResize() {
-  viewportWidth.value = window.innerWidth;
-}
-onMounted(() => window.addEventListener("resize", onViewportResize));
-onUnmounted(() => window.removeEventListener("resize", onViewportResize));
 /**
- * 行内操作列宽：按全局 .row-actions 的 84px 最小按钮宽度，一行排得下全部
- * 动作按钮才给固定宽度；窄窗口退回弹性列，避免整张表横向溢出。
+ * 行内操作列。不写死 width：那需要精确预估 5 个按钮 + 间距 + 单元格内边距，
+ * 估小了会把"报告"裁掉，估大了又会撑出表格横向滚动条。
+ * 改用 min-width 交给表格自行分配，空间不足时 .row-actions 自动换行。
  */
-const taskActionsWidth = computed(() => (viewportWidth.value >= 1360 ? 490 : undefined));
+const TASK_ACTIONS_MIN_WIDTH = 524;
 const detail = ref<TaskRow>();
 const detailVisible = ref(false);
 const detailLoading = ref(false);
@@ -1434,7 +1429,7 @@ onUnmounted(() => {
           formatDateTime(scope.row.createdAt)
         }}</template></el-table-column
       >
-      <el-table-column label="操作" :width="taskActionsWidth"
+      <el-table-column label="操作" :min-width="TASK_ACTIONS_MIN_WIDTH"
         ><template #default="scope"
           ><div class="row-actions task-row-actions">
             <el-button

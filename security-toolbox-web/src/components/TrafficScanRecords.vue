@@ -459,6 +459,14 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: center;
 }
+/* 空态说明按单行展示：flex 子项默认收缩到内容宽度，窄容器里会把一句话折成两行。
+   给足宽度让说明一行放下，过长时才自然换行。 */
+.traffic-empty-container :deep(.empty-state) {
+  max-width: min(100%, 620px);
+}
+.traffic-empty-container :deep(.empty-state p) {
+  max-width: none;
+}
 .traffic-record-dialog :deep(.el-table) {
   font-size: 13px;
   border-radius: var(--fluent-radius-card, 6px);
