@@ -97,6 +97,8 @@ interface PhaseMeta {
   label: string;
   shortLabel: string;
   desc: string;
+  /** 侧栏卡片的一行摘要，刻意比 desc 更短，避免在窄侧栏里被截断。 */
+  summary: string;
   icon: string;
 }
 
@@ -130,6 +132,7 @@ const PHASES: PhaseMeta[] = [
     label: "项目启动与范围",
     shortLabel: "启动与范围",
     desc: "选择项目、目标、测试目标和停止条件。",
+    summary: "定义范围与停止条件",
     icon: "rocket",
   },
   {
@@ -137,6 +140,7 @@ const PHASES: PhaseMeta[] = [
     label: "被动侦察",
     shortLabel: "被动侦察",
     desc: "先整理公开情报、项目资料和历史证据。",
+    summary: "整理公开情报与历史证据",
     icon: "globe-search",
   },
   {
@@ -144,6 +148,7 @@ const PHASES: PhaseMeta[] = [
     label: "资产与服务发现",
     shortLabel: "资产发现",
     desc: "识别授权资产、端口、服务、版本和 Web 信息。",
+    summary: "识别资产、端口与服务",
     icon: "map",
   },
   {
@@ -151,6 +156,7 @@ const PHASES: PhaseMeta[] = [
     label: "风险线索发现",
     shortLabel: "线索发现",
     desc: "结合指纹与规则发现潜在风险线索；结果需验证后再定性为漏洞。",
+    summary: "指纹与规则发现线索",
     icon: "beaker",
   },
   {
@@ -158,6 +164,7 @@ const PHASES: PhaseMeta[] = [
     label: "安全验证",
     shortLabel: "安全验证",
     desc: "以最小影响方式补充证据，不执行未授权利用。",
+    summary: "最小影响补充证据",
     icon: "shield-checkmark",
   },
   {
@@ -165,6 +172,7 @@ const PHASES: PhaseMeta[] = [
     label: "影响评估",
     shortLabel: "影响评估",
     desc: "说明业务影响、暴露面、可信度与优先级。",
+    summary: "评估影响与优先级",
     icon: "chart",
   },
   {
@@ -172,6 +180,7 @@ const PHASES: PhaseMeta[] = [
     label: "复测与修复确认",
     shortLabel: "复测修复",
     desc: "验证修复结果并记录扫描结果差异。",
+    summary: "确认修复与结果差异",
     icon: "sync",
   },
   {
@@ -179,6 +188,7 @@ const PHASES: PhaseMeta[] = [
     label: "报告交付",
     shortLabel: "报告交付",
     desc: "生成证据链、风险结论、整改建议并归档。",
+    summary: "生成证据链与整改建议",
     icon: "report",
   },
 ];
@@ -6048,6 +6058,7 @@ onBeforeUnmount(() => {
                       'is-selected': selectedPhase === phase.code,
                     }"
                     :data-phase-code="phase.code"
+                    :title="`${phase.label} · ${phase.desc}`"
                     :draggable="!hasCanonicalPhaseNode(phase.code)"
                     @click="selectedPhase = phase.code"
                     @dragstart="onPhaseDragStart($event, phase.code)"
@@ -6057,7 +6068,7 @@ onBeforeUnmount(() => {
                     /></span>
                     <span class="phase-library-copy">
                       <strong>{{ phase.shortLabel }}</strong>
-                      <small>流程阶段 · 用于组织能力和依赖</small>
+                      <small>{{ phase.summary }}</small>
                     </span>
                     <el-tooltip
                       :content="
@@ -6068,25 +6079,34 @@ onBeforeUnmount(() => {
                       placement="left"
                       :show-after="350"
                     >
-                      <button
-                        type="button"
-                        class="phase-library-action"
-                        :class="{
-                          'is-present': hasCanonicalPhaseNode(phase.code),
-                        }"
-                        :disabled="hasCanonicalPhaseNode(phase.code)"
-                        :aria-label="
+                      <span
+                        class="phase-library-action-shell"
+                        :data-tooltip="
                           hasCanonicalPhaseNode(phase.code)
-                            ? `${phase.shortLabel}阶段已添加`
+                            ? '该阶段已在画布中'
                             : `加回${phase.shortLabel}阶段`
                         "
-                        @click.stop="addPhaseNode(phase.code)"
                       >
-                        <el-icon v-if="hasCanonicalPhaseNode(phase.code)"
-                          ><Check
-                        /></el-icon>
-                        <el-icon v-else><Plus /></el-icon>
-                      </button>
+                        <button
+                          type="button"
+                          class="phase-library-action"
+                          :class="{
+                            'is-present': hasCanonicalPhaseNode(phase.code),
+                          }"
+                          :disabled="hasCanonicalPhaseNode(phase.code)"
+                          :aria-label="
+                            hasCanonicalPhaseNode(phase.code)
+                              ? `${phase.shortLabel}阶段已添加`
+                              : `加回${phase.shortLabel}阶段`
+                          "
+                          @click.stop="addPhaseNode(phase.code)"
+                        >
+                          <el-icon v-if="hasCanonicalPhaseNode(phase.code)"
+                            ><Check
+                          /></el-icon>
+                          <el-icon v-else><Plus /></el-icon>
+                        </button>
+                      </span>
                     </el-tooltip>
                   </div>
                 </div>
@@ -6786,9 +6806,9 @@ onBeforeUnmount(() => {
 .workflow-title-row {
   display: flex;
   min-width: 0;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 14px;
+  gap: 2px 14px;
 }
 .workflow-toolbar h3 {
   flex: none;
@@ -6816,9 +6836,9 @@ onBeforeUnmount(() => {
   color: var(--app-muted);
   font-size: 12.5px;
   line-height: 1.5;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
 }
 .workflow-context-summary {
   display: flex;
@@ -8979,11 +8999,11 @@ onBeforeUnmount(() => {
 .phase-library-item {
   display: grid;
   min-width: 0;
-  min-height: 54px;
-  grid-template-columns: 24px minmax(0, 1fr) 28px;
+  min-height: 56px;
+  grid-template-columns: 24px minmax(0, 1fr) 34px;
   align-items: center;
-  gap: 7px;
-  padding: 7px;
+  gap: 9px;
+  padding: 7px 9px 7px 8px;
   border: 1px solid var(--app-border);
   border-radius: var(--fluent-radius-control);
   background: var(--app-surface-strong);
@@ -8998,6 +9018,8 @@ onBeforeUnmount(() => {
 }
 .phase-library-icon {
   display: grid;
+  width: 24px;
+  height: 24px;
   place-items: center;
   color: var(--app-accent);
   font-size: 16px;
@@ -9006,26 +9028,55 @@ onBeforeUnmount(() => {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 .phase-library-copy strong {
   overflow: hidden;
-  font-size: var(--type-micro);
+  font-size: var(--type-caption);
+  line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .phase-library-copy small {
   overflow: hidden;
   color: var(--app-muted);
-  font-size: 10px;
-  line-height: 1.3;
+  font-size: var(--type-micro);
+  line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.phase-library-action-shell {
+  position: relative;
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  justify-self: end;
+}
+.phase-library-action-shell[data-tooltip]:hover::after {
+  position: absolute;
+  z-index: 6;
+  top: 50%;
+  right: calc(100% + 10px);
+  transform: translateY(-50%);
+  max-width: 220px;
+  padding: 6px 10px;
+  border-radius: var(--fluent-radius-control);
+  background: #1b1b1f;
+  box-shadow: 0 6px 16px rgb(0 0 0 / 22%);
+  color: #fff;
+  content: attr(data-tooltip);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+}
 .phase-library-action {
   display: grid;
-  width: 28px;
-  height: 28px;
+  width: 34px;
+  height: 34px;
+  margin: 0;
+  padding: 0;
   place-items: center;
   border: 0;
   border-radius: var(--fluent-radius-control);
@@ -9033,8 +9084,22 @@ onBeforeUnmount(() => {
   color: var(--app-accent);
   cursor: pointer;
 }
+.phase-library-action .el-icon,
+.phase-library-action :deep(.el-icon) {
+  font-size: 16px;
+  line-height: 1;
+}
 .phase-library-action:not(:disabled):hover {
   background: var(--app-accent-soft);
+}
+.phase-library-action:not(:disabled):active {
+  background: var(--app-accent-soft);
+  transform: scale(0.94);
+}
+.phase-library-action:focus-visible,
+.phase-library-action-shell:has(.phase-library-action:focus-visible) {
+  outline: 2px solid var(--app-accent);
+  outline-offset: 1px;
 }
 .phase-library-action.is-present {
   color: var(--app-success);
