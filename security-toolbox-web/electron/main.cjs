@@ -3,6 +3,7 @@ const {
   BrowserWindow,
   dialog,
   ipcMain,
+  nativeImage,
   nativeTheme,
   net: electronNet,
   Notification,
@@ -34,6 +35,55 @@ const {
   diagnosticError,
   publicErrorMessage,
 } = require("./public-error.cjs");
+
+/**
+ * 窗口图标统一入口。
+ *
+ * Windows 任务栏按钮的图标解析顺序是：
+ *   1. 窗口自己上报的图标（WM_GETICON / 窗口类 HICON，即 BrowserWindow 的 icon）；
+ *   2. AppUserModelId 在注册表里的 IconUri；
+ *   3. 快捷方式自己的 IconLocation；
+ *   4. 进程 exe 的内嵌图标。
+ *
+ * 两个必须遵守的约束：
+ *
+ * a) 交给 BrowserWindow 的必须是 nativeImage，不能是路径字符串。打包后
+ *    __dirname 落在 app.asar 内部，Chromium 解析窗口图标时会走 shell 的
+ *    IExtractIcon（不认 asar 内路径），解析失败就回退到 exe 内嵌图标。
+ *
+ * b) 多尺寸 .ico 优先于单尺寸 .png：任务栏需要 16/24/32/48 各个尺度，
+ *    只给一张 512px PNG 时小图标会被缩糊。
+ *
+ * 注意：这里只负责「窗口图标」。任务栏按钮的最终图标由 shell 决定，还受
+ * AppUserModelId 登记、快捷方式 IconLocation 和任务栏自身缓存影响；不要
+ * 在启动时去写注册表或拉起 powershell —— 那会拖慢每次启动，而且写进去的
+ * 路径若指向 app.asar 内部，shell 根本读不到。
+ */
+const WINDOW_ICON = (() => {
+  const candidates = ["icon.ico", "icon.png"];
+  for (const name of candidates) {
+    const candidate = path.join(__dirname, name);
+    try {
+      if (!fs.existsSync(candidate)) continue;
+      // Multi-size .ico keeps a crisp frame for every taskbar scale.
+      const image = nativeImage.createFromPath(candidate);
+      if (!image.isEmpty()) return image;
+    } catch {
+      // 单个候选图标不可用就尝试下一个；图标缺失不应阻塞启动。
+    }
+  }
+  return undefined;
+})();
+
+/** 给窗口补一次图标，覆盖任务栏对「未安装应用」的默认回退。 */
+function applyWindowIcon(win) {
+  if (!win || win.isDestroyed() || !WINDOW_ICON) return;
+  try {
+    win.setIcon(WINDOW_ICON);
+  } catch {
+    // 图标缺失不应阻塞启动；此时任务栏会回退到 exe 内嵌图标。
+  }
+}
 
 let backendProcess;
 let aiRuntimeProcess;
@@ -8090,7 +8140,7 @@ function createStartupWindow() {
   startupWindow = new BrowserWindow({
     width: 900,
     height: 620,
-    icon: path.join(__dirname, "icon.png"),
+    icon: WINDOW_ICON,
       resizable: false,
       maximizable: false,
       show: false,
@@ -8112,6 +8162,7 @@ function createStartupWindow() {
     },
   });
   const startupEntry = path.join(__dirname, "startup.html");
+  applyWindowIcon(startupWindow);
   const guardStartupNavigation = (event, url) => {
     if (!isTrustedLocalFileUrl(url, startupEntry)) event.preventDefault();
   };
@@ -8156,7 +8207,7 @@ function createMainWindow(port) {
   );
   mainWindow = new BrowserWindow({
     title: "獬豸授权安全测试平台",
-    icon: path.join(__dirname, "icon.png"),
+    icon: WINDOW_ICON,
     width: 1380,
     height: 860,
     minWidth: 1000,
@@ -8182,6 +8233,7 @@ function createMainWindow(port) {
   });
   const publishMaximizedState = () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
+      applyWindowIcon(mainWindow);
       mainWindow.webContents.send(
         "toolbox:window-maximized-changed",
         mainWindow.isMaximized(),
@@ -8190,6 +8242,7 @@ function createMainWindow(port) {
   };
   mainWindow.on("maximize", publishMaximizedState);
   mainWindow.on("unmaximize", publishMaximizedState);
+  applyWindowIcon(mainWindow);
   const guardMainNavigation = (event, url) => {
     if (isTrustedMainRendererUrl(url)) return;
     event.preventDefault();
@@ -8346,8 +8399,17 @@ async function boot() {
   }
 }
 
+/**
+ * 不要调用 app.setAppUserModelId()。
+ *
+ * 免安装运行的 win-unpacked 没有安装器、没有登记 AppUserModelId、也没有携带
+ * 该 AUMID 的快捷方式。一旦设置了 AUMID，Windows 就会按这个身份去解析任务栏
+ * 图标；解析不到任何图标来源时，任务栏会回退到 Electron 默认的原子图标。
+ * 不设置 AUMID 时，shell 按 exe 路径归组并直接使用 exe 内嵌图标（即獬豸 logo）。
+ * 如果将来加了 NSIS 安装器，再在安装阶段登记 AUMID 与图标。
+ */
+
 if (hasSingleInstanceLock) {
-  app.setAppUserModelId("com.bachelor.securitytoolbox");
   app.whenReady().then(() => {
     systemPreferences.on("accent-color-changed", handleSystemThemeChanged);
     systemPreferences.on("color-changed", handleSystemThemeChanged);
