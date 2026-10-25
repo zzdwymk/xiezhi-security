@@ -6886,6 +6886,19 @@ onBeforeUnmount(() => {
   min-height: 32px;
   margin: 0;
 }
+/* Element Plus 把图标和文字一起包进按钮里唯一的 <span>，其内置的
+   `.el-button [class*=el-icon]+span{margin-left:6px}` 因为文本不是独立
+   span 而匹配不到，图标就紧贴文字。这里让该 span 成为 flex 容器，
+   再用 gap 撑开图标与文字。 */
+.workflow-actions :deep(.el-button) > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.workflow-actions :deep(.el-button) > span > .el-icon {
+  margin-right: 0;
+  margin-left: 0;
+}
 .workflow-actions :deep(.el-select__wrapper) {
   min-height: 32px;
 }
