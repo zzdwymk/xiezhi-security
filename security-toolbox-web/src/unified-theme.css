@@ -728,22 +728,25 @@ body,
   color: #e2e8f0 !important;
 }
 
-/* Buttons in dark mode */
-:root[data-system-theme="dark"] .el-button:not(.el-button--primary):not(.is-link):not(.is-text):where(:not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled)) {
+/* Buttons in dark mode. `.row-action` is excluded for the same reason as the
+   light-mode rule further down: row actions carry their own accent-tinted
+   hover, and the neutral white-alpha fill below would override it (these
+   declarations use !important, so the exclusion has to happen here). */
+:root[data-system-theme="dark"] .el-button:not(.el-button--primary):not(.is-link):not(.is-text):where(:not(.row-action):not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled)) {
   background: rgba(255, 255, 255, 0.06);
   border-color: rgba(255, 255, 255, 0.18);
   color: #f8fafc !important;
   box-shadow: none;
 }
 
-:root[data-system-theme="dark"] .el-button:not(.el-button--primary):not(.is-link):not(.is-text):where(:not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled)):hover {
+:root[data-system-theme="dark"] .el-button:not(.el-button--primary):not(.is-link):not(.is-text):where(:not(.row-action):not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled)):hover {
   background: rgba(255, 255, 255, 0.12) !important;
   border-color: rgba(255, 255, 255, 0.32) !important;
   color: #ffffff !important;
   box-shadow: none !important;
 }
 
-:root[data-system-theme="dark"] .el-button:not(.el-button--primary):not(.is-link):not(.is-text):where(:not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled)):active {
+:root[data-system-theme="dark"] .el-button:not(.el-button--primary):not(.is-link):not(.is-text):where(:not(.row-action):not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled)):active {
   background: rgba(255, 255, 255, 0.16) !important;
   box-shadow: none !important;
 }
@@ -1598,14 +1601,19 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
   transform: scale(0.985);
 }
 
-.el-button:not(.el-button--primary):not(.is-link):not(.is-text):where(:not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled)) {
+.el-button:not(.el-button--primary):not(.is-link):not(.is-text):where(:not(.row-action):not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled)) {
   border-color: var(--app-border-strong);
   background: var(--app-surface-strong);
   color: var(--app-text);
   box-shadow: 0 1px 1px color-mix(in srgb, CanvasText 5%, transparent);
 }
 
-.el-button:not(.el-button--primary):not(.is-link):not(.is-text):where(:not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled)):hover {
+/* Neutral 5% CanvasText is the right hover for a lone outlined button, but it
+   is wrong for row actions: those sit inside a table row that is itself being
+   tinted with the system accent, so a desaturated grey reads as a grey box
+   floating in a blue row, and it silently discards the theme colour. Row
+   actions keep their own accent-tinted hover (see `.row-action` below). */
+.el-button:not(.el-button--primary):not(.is-link):not(.is-text):where(:not(.row-action):not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled)):hover {
   background: color-mix(in srgb, CanvasText 5%, var(--app-surface-strong));
 }
 
@@ -2180,10 +2188,33 @@ html
   gap: 3px;
   white-space: nowrap;
 }
-.row-actions .row-action.el-button:hover,
-.row-actions .row-action.el-button:focus-visible {
+/* Row actions must read as hovered *inside* a hovered table row. The row
+   itself is painted `--app-accent-soft` (see the Fluent 2 table hover rule),
+   so reusing that token here leaves the button visually identical to the row.
+   Step up to `--app-accent-soft-strong` and darken the border so the control
+   separates from both the row and its own resting surface. The repeated class
+   keeps this above Element Plus' own `.el-button:hover` fill. */
+.row-actions .row-action.el-button.el-button:hover,
+.row-actions .row-action.el-button.el-button:focus-visible,
+.row-action.el-button.el-button:hover,
+.row-action.el-button.el-button:focus-visible {
+  border-color: var(--app-accent-dark);
+  background: var(--app-accent-soft-strong);
+  color: var(--app-text);
+}
+/* On the dark theme `--app-accent-soft-strong` mixes against a near-black
+   Canvas, so it lands *darker* than the button's resting surface and the
+   hover would read as a press. Lift the accent ratio instead. */
+:root[data-system-theme="dark"]
+  .row-actions
+  .row-action.el-button.el-button:hover,
+:root[data-system-theme="dark"]
+  .row-actions
+  .row-action.el-button.el-button:focus-visible,
+:root[data-system-theme="dark"] .row-action.el-button.el-button:hover,
+:root[data-system-theme="dark"] .row-action.el-button.el-button:focus-visible {
   border-color: var(--app-accent);
-  background: var(--app-accent-soft);
+  background: color-mix(in srgb, var(--system-theme-accent) 34%, var(--app-surface-strong));
   color: var(--app-text);
 }
 .row-action--ai.el-button {
@@ -2194,7 +2225,7 @@ html
 .row-action--ai.el-button:hover,
 .row-action--ai.el-button:focus-visible {
   border-color: var(--app-accent-dark);
-  background: var(--app-accent-soft);
+  background: var(--app-accent-soft-strong);
   color: var(--fluent-link-fg);
 }
 /* Keep destructive actions red above the shared row hover and adjacent-button

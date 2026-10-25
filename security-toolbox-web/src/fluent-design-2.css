@@ -1297,12 +1297,16 @@ html
   border-color: var(--app-border-strong) !important;
 }
 
+/* Selected-row row actions must stay visibly hovered. `--app-accent-soft` is
+   also the table row hover fill, so pairing it here made a hovered action
+   indistinguishable from the hovered row it sits in. Match the shared
+   `.row-action` hover step in unified-theme.css. */
 :where(
   .el-table tr.current-row .el-button:not(.el-button--primary):not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled):hover,
   .el-table tr.is-selected .el-button:not(.el-button--primary):not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled):hover,
   .el-table .el-table__row.current-row .el-button:not(.el-button--primary):not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled):hover
 ) {
-  background: var(--app-accent-soft) !important;
+  background: var(--app-accent-soft-strong) !important;
   border-color: var(--app-accent-dark) !important;
   color: var(--fluent-link-fg) !important;
 }
