@@ -751,8 +751,12 @@ onBeforeUnmount(() => {
         <TrafficScanRecords mode="findings" />
       </div>
       <div v-else key="project" class="findings-source-pane">
-    <!-- 多维组合检索与过滤栏 -->
-    <div class="findings-filter-toolbar">
+    <!-- 多维组合检索与过滤栏：版式与「检测任务」页 .task-filter-bar 一致——
+         五列网格（四个下拉 + 右侧“排序 / 搜索”组），10px 列间距、
+         10px 12px 内边距、同样的描边/圆角/底色。两页筛选栏等高、控件同宽同高。 -->
+    <div class="findings-filter-toolbar" aria-label="安全发现筛选">
+      <!-- 来源任务筛选：仅由任务行「来源任务」跳转进来时出现，
+           在网格里独占一行，不挤占下面五个筛选槽位。 -->
       <el-tag
         v-if="taskFilter !== undefined"
         closable
@@ -761,18 +765,12 @@ onBeforeUnmount(() => {
       >
         来源任务 #{{ taskFilter }}
       </el-tag>
-      <el-input
-        v-model="searchQuery"
-        :prefix-icon="Search"
-        clearable
-        placeholder="搜索名称、等级、工具、规则..."
-        class="finding-filter-search"
-      />
       <el-select
         v-model="categoryFilter"
-        placeholder="全部类型"
+        class="finding-filter-cell"
         clearable
-        class="finding-filter-category"
+        placeholder="全部类型"
+        aria-label="按发现类型筛选"
       >
         <el-option label="全部类型" value="" />
         <el-option label="漏洞发现" value="vulnerability" />
@@ -780,10 +778,11 @@ onBeforeUnmount(() => {
       </el-select>
       <el-select
         v-model="targetFilter"
-        placeholder="全部目标"
-        filterable
+        class="finding-filter-cell"
         clearable
-        class="finding-filter-target"
+        filterable
+        placeholder="全部目标"
+        aria-label="按目标筛选"
       >
         <el-option
           v-for="t in targets"
@@ -794,9 +793,10 @@ onBeforeUnmount(() => {
       </el-select>
       <el-select
         v-model="severityFilter"
-        placeholder="全部等级"
+        class="finding-filter-cell"
         clearable
-        class="finding-filter-severity"
+        placeholder="全部等级"
+        aria-label="按风险等级筛选"
       >
         <el-option label="严重" value="CRITICAL" />
         <el-option label="高危" value="HIGH" />
@@ -806,38 +806,47 @@ onBeforeUnmount(() => {
       </el-select>
       <el-select
         v-model="statusFilter"
-        placeholder="全部状态"
+        class="finding-filter-cell"
         clearable
-        class="finding-filter-status"
+        placeholder="全部状态"
+        aria-label="按处置状态筛选"
       >
         <el-option label="待确认" value="OPEN" />
         <el-option label="已确认" value="CONFIRMED" />
         <el-option label="误报" value="FALSE_POSITIVE" />
         <el-option label="已修复" value="FIXED" />
       </el-select>
-      <el-select
-        v-model="findingSort"
-        placeholder="排序"
-        class="finding-filter-sort"
-      >
-        <el-option
-          v-for="opt in FINDING_SORT_OPTIONS"
-          :key="opt.value"
-          :label="opt.label"
-          :value="opt.value"
+      <!-- 第五列：与「检测任务」一致，日期区间 + 关键词搜索同处一格的右侧列 -->
+      <div class="finding-filter-row">
+        <el-select
+          v-model="findingSort"
+          class="finding-filter-cell finding-filter-cell--sort"
+          aria-label="排序方式"
+        >
+          <el-option
+            v-for="opt in FINDING_SORT_OPTIONS"
+            :key="opt.value"
+            :label="opt.label"
+            :value="opt.value"
+          />
+        </el-select>
+        <el-input
+          v-model="searchQuery"
+          :prefix-icon="Search"
+          class="finding-filter-cell finding-filter-cell--search"
+          placeholder="搜索名称 / 等级 / 工具 / 规则"
+          clearable
+          aria-label="按名称、等级、工具或规则搜索"
         />
-      </el-select>
+      </div>
       <el-button
         v-if="hasActiveFilters"
+        class="finding-filter-reset-btn"
         link
         type="primary"
-        size="small"
-        class="finding-filter-reset-btn"
         @click="resetFilters"
+        >重置筛选</el-button
       >
-        重置筛选
-      </el-button>
-      <span class="finding-filter-count-badge">共 {{ total }} 条</span>
     </div>
     <OfflineState
       v-if="offline || !rows.length"
@@ -1335,28 +1344,53 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
     transform: none;
   }
 }
-/* 页签下方的空白只由内容区自己的上外边距提供，不再叠加多段间距。 */
+/* 筛选栏：与「检测任务」页 .task-filter-bar 同一套版式——
+   五列网格（四个下拉 + 右侧“排序 / 搜索”组）、10px 列间距、10px 12px 内边距、
+   1px 描边 + 8px 圆角 + surface-soft 底色。
+   两页筛选栏因此等高、控件同宽同高，来回切换不会出现“跳一下”的观感。 */
 .findings-filter-toolbar {
-  display: flex;
+  display: grid;
+  grid-template-columns:
+    minmax(112px, 1fr) minmax(112px, 1fr) minmax(120px, 1.15fr) minmax(120px, 1.15fr)
+    minmax(0, 1.85fr);
   align-items: center;
-  flex-wrap: wrap;
-  gap: 8px 10px;
-  margin: 16px 0;
-  padding: 10px 14px;
+  gap: 10px;
+  margin: 0;
+  padding: 10px 12px;
   background: var(--app-surface-soft, rgba(0, 0, 0, 0.02));
   border: 1px solid var(--app-border, #e2e8f0);
   border-radius: var(--fluent-radius-card, 8px);
 }
-/* 来源任务筛选：与同排输入框统一 32px 高度，主色描边让它一眼可辨，
-   圆角与筛选控件保持一致（不再使用胶囊形）。 */
+.findings-filter-toolbar .finding-filter-cell {
+  width: 100%;
+  min-width: 0;
+}
+.finding-filter-row {
+  display: flex;
+  grid-column: 5 / 6;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+.finding-filter-row .finding-filter-cell--sort {
+  flex: 0 0 clamp(196px, 26%, 240px);
+  min-width: 0;
+}
+.finding-filter-row .finding-filter-cell--search {
+  flex: 1 1 150px;
+  min-width: 0;
+}
+/* 来源任务筛选：从任务行「来源任务」跳转进来时才出现；在网格里独占一行，
+   左对齐、32px 高度与筛选控件一致，主色描边让它一眼可辨。 */
 .finding-task-filter-tag.el-tag {
   --el-tag-bg-color: var(--app-accent-soft);
   --el-tag-border-color: color-mix(in srgb, var(--app-accent) 32%, transparent);
   --el-tag-text-color: var(--app-accent);
   display: inline-flex;
+  grid-column: 1 / -1;
   align-items: center;
   justify-content: center;
-  flex: 0 0 auto;
+  justify-self: start;
   height: 32px;
   margin: 0;
   padding: 0 6px 0 11px;
@@ -1380,67 +1414,33 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
   background-color: var(--app-accent);
   color: var(--app-surface);
 }
-.finding-filter-search {
-  flex: 1 1 260px;
-  min-width: 170px;
-  max-width: 340px;
-}
-.finding-filter-category {
-  flex: 0 0 auto;
-  width: 112px;
-}
-.finding-filter-target {
-  flex: 0 1 150px;
-  width: 150px;
-  min-width: 112px;
-}
-.finding-filter-severity {
-  flex: 0 0 auto;
-  width: 100px;
-}
-.finding-filter-status {
-  flex: 0 0 auto;
-  width: 100px;
-}
-.finding-filter-sort {
-  flex: 0 0 auto;
-  width: 136px;
-}
+/* 仅在存在筛选条件时出现的「重置筛选」：与任务的「清除筛选」同位——
+   列表末尾、右对齐、不占固定槽位。 */
 .finding-filter-reset-btn {
+  flex: none;
+  justify-self: end;
+  white-space: nowrap;
   font-size: 12px;
   padding: 0 4px;
-  flex-shrink: 0;
-  white-space: nowrap;
 }
-.finding-filter-count-badge {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  font-size: 12px;
-  color: var(--app-muted, #64748b);
-  font-weight: 500;
-  padding: 3px 10px;
-  background: var(--app-surface-strong, rgba(0, 0, 0, 0.03));
-  border: 1px solid var(--app-border);
-  border-radius: 999px;
-  white-space: nowrap;
-  flex: 0 0 auto;
-}
-@media (max-width: 1180px) {
-  .finding-filter-search {
-    flex: 1 1 220px;
-    max-width: none;
+@media (max-width: 1200px) {
+  .findings-filter-toolbar {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
-  .finding-filter-target {
-    flex: 1 1 130px;
+  .finding-filter-row {
+    grid-column: 1 / -1;
   }
 }
-@media (max-width: 860px) {
-  .finding-filter-search {
+@media (max-width: 900px) {
+  .findings-filter-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .finding-filter-row {
+    flex-wrap: wrap;
+  }
+  .finding-filter-row .finding-filter-cell--sort,
+  .finding-filter-row .finding-filter-cell--search {
     flex: 1 1 100%;
-  }
-  .finding-filter-count-badge {
-    margin-left: 0;
   }
 }
 .diff-form {
