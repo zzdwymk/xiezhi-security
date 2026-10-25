@@ -209,11 +209,22 @@ function refreshTrafficRecords() {
 }
 const offline = ref(false);
 /**
- * 行内操作列。不写死 width：那需要精确预估 5 个按钮 + 间距 + 单元格内边距，
- * 估小了会把"报告"裁掉，估大了又会撑出表格横向滚动条。
- * 改用 min-width 交给表格自行分配，空间不足时 .row-actions 自动换行。
+ * 行内操作列宽：五个按钮（详情 / 发现 / 诊断 / 取消|重试 / 报告）折成两行
+ * 3 + 2，与 Targets 页四个按钮折成 2×2 是同一套 `.row-actions` 自适应网格。
+ *
+ * 折行结果完全由列宽决定，`.row-actions` 是 `repeat(auto-fill, minmax(84px, 1fr))`
+ * 加 6px gap，所以：
+ *   列宽 ≥ 468px → 5 条轨道，挤成一行（每个按钮被拉得很宽）
+ *   列宽 288–467px → 3 条轨道，3 + 2 两行  ← 目标
+ *   列宽 198–287px → 2 条轨道，2 + 2 + 1 三行
+ * 取 340px 稳稳落在 3 轨道区间中段，两侧各留 50px 余量。
+ *
+ * 用固定 width 而非 min-width：min-width 会让该列参与 Element Plus 的
+ * 比例分配，窗口一变列宽就在 200→489px 之间浮动，正好横跨 5 轨道与 3 轨道
+ * 两个区间，折行结果会跟着窗口宽度跳（一行/三行交替）。固定宽度把列宽锁死，
+ * 折行才稳定为 3 + 2。
  */
-const TASK_ACTIONS_MIN_WIDTH = 524;
+const TASK_ACTIONS_WIDTH = 340;
 const detail = ref<TaskRow>();
 const detailVisible = ref(false);
 const detailLoading = ref(false);
@@ -1429,7 +1440,7 @@ onUnmounted(() => {
           formatDateTime(scope.row.createdAt)
         }}</template></el-table-column
       >
-      <el-table-column label="操作" :min-width="TASK_ACTIONS_MIN_WIDTH"
+      <el-table-column label="操作" :width="TASK_ACTIONS_WIDTH"
         ><template #default="scope"
           ><div class="row-actions task-row-actions">
             <el-button
