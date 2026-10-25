@@ -22,7 +22,7 @@ const { _electron: electron } = require("playwright-core");
 
 const root = path.resolve(__dirname, "..");
 const exePath = path.join(root, "desktop-release", "win-unpacked", "獬豸安全测试平台.exe");
-const TARGET_IP = "192.168.222.147";
+const TARGET_IP = "192.168.222.150";
 const out = path.resolve(root, "..", ".run", "desktop-multiturn", new Date().toISOString().replace(/[:.]/g, "-"));
 fs.mkdirSync(out, { recursive: true });
 

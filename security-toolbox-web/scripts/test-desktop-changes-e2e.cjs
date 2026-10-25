@@ -1,6 +1,6 @@
 /*
  * 桌面程序「獬豸安全测试平台」四项改动全量真实实测
- * （真实打包 Electron 生产构建 + 真实目标 192.168.222.147）
+ * （真实打包 Electron 生产构建 + 真实目标 192.168.222.150）
  *
  * 覆盖改动：
  *   C1 Nmap 扫描模式对齐 Zenmap 官方配置（10 种中文下拉 + 每条命令可见）
@@ -19,7 +19,7 @@ const { _electron: electron } = require("playwright-core");
 
 const root = path.resolve(__dirname, "..");
 const exePath = path.join(root, "desktop-release", "win-unpacked", "獬豸安全测试平台.exe");
-const TARGET_IP = "192.168.222.147";
+const TARGET_IP = "192.168.222.150";
 const out = path.resolve(root, "..", ".run", "desktop-changes-e2e", new Date().toISOString().replace(/[:.]/g, "-"));
 fs.mkdirSync(out, { recursive: true });
 
@@ -234,7 +234,7 @@ const FUZZ_PAYLOADS = [
 
     await shot(page, "01-workspace-ready");
 
-    // ---------------------------------------------------------------- 项目与目标 192.168.222.147
+    // ---------------------------------------------------------------- 项目与目标 192.168.222.150
     await check(page, `A4 确保 ${TARGET_IP} 评估项目与目标存在且 ACTIVE`, async () => {
       targetInfo = await page.evaluate(async (ip) => {
         const query = new URLSearchParams(window.location.search);
