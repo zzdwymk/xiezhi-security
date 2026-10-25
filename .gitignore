@@ -245,6 +245,11 @@ preview-orig/
 preview-*/
 软著*
 
+# 本机实测启动脚本：写死了本机的 CLI 代理端口、模型名与某个时间点的构建路径，
+# 换一台机器即失效，属于个人环境配置而非仓库资源。
+/start-desktop-ai-live.cmd
+/security-toolbox-web/.preview/
+
 # 公开仓库必需的说明和协作文件，覆盖前面的 Markdown 忽略规则。
 !/LICENSE
 !/LICENSE.*
