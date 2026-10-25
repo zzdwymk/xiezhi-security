@@ -1591,6 +1591,9 @@ html
   > .workspace-list-page
   > .section-head
   > div:first-child {
+  /* 标题与描述独占剩余空间：按钮组按内容宽度靠右，描述不参与收缩，
+     否则一句短描述会被挤到两行。 */
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -1632,7 +1635,8 @@ html
   > .workspace-list-page
   > .section-head
   > .section-head-actions {
-  flex: 0 1 auto;
+  /* 操作按钮组保持内容宽度，不参与挤压标题区 */
+  flex: 0 0 auto;
   align-self: flex-start;
   min-width: 0;
 }
@@ -2705,7 +2709,10 @@ html
     .workbench-head p
   ) {
   display: -webkit-box;
-  max-width: 68ch;
+  /* ch 以数字 0 的宽度为基准，中文全角字约为其两倍，68ch 只够放 34 个汉字，
+     一句 36 字的说明就会被硬折成两行。改用 em（随字号缩放）给出中文可读的
+     单行宽度，同时仍限制过长说明最多两行。 */
+  max-width: 46em;
   margin: 4px 0 0 !important;
   overflow: hidden;
   color: color-mix(in srgb, var(--app-text) 68%, transparent);
