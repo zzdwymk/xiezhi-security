@@ -9002,8 +9002,8 @@ onBeforeUnmount(() => {
   min-height: 56px;
   grid-template-columns: 24px minmax(0, 1fr) 34px;
   align-items: center;
-  gap: 9px;
-  padding: 7px 9px 7px 8px;
+  gap: 12px;
+  padding: 7px 10px 7px 8px;
   border: 1px solid var(--app-border);
   border-radius: var(--fluent-radius-control);
   background: var(--app-surface-strong);
