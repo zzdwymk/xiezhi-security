@@ -111,6 +111,13 @@ security-toolbox-web/scripts/ui-full-flow-test.cjs
 security-toolbox-web/scripts/ui-scanner-test.cjs
 security-toolbox-web/scripts/ui-target-verify.cjs
 
+# 一次性的临时排查脚本（文件名以 tmp- 开头）。这类脚本只为定位某个具体问题
+# 而写，用完即弃，不做回归用途，也不应进入公开仓库。约定以此前缀命名即自动
+# 屏蔽，避免每次都要手动确认是否误提交。
+security-toolbox-web/scripts/tmp-*.cjs
+security-toolbox-web/scripts/tmp-*.mjs
+security-toolbox-web/scripts/tmp-*.js
+
 # End-to-end test evidence, artifacts and runtime credentials.
 # Already covered by .run/, listed explicitly so they stay ignored
 # even when a run writes outside that directory.
