@@ -645,18 +645,6 @@ onBeforeUnmount(() => {
          10px 列间距、10px 12px 内边距、同样的描边/圆角/底色、同样 32px 高的控件。
          两页筛选栏因此等高、控件同宽同高、聚焦下划线同为 2px 主色。 -->
     <div class="findings-filter-toolbar" aria-label="安全发现筛选">
-      <!-- 来源任务筛选：仅由任务行「来源任务」跳转进来时出现。
-           它和「清除筛选」同处网格末尾的收尾槽位（与筛选行同一行），
-           不再独占一整行——否则它自己的格线会把下面的清除筛选挤到新的一行，
-           筛选栏凭空长高一截。窄屏下这一列并入筛选行，自动换行。 -->
-      <el-tag
-        v-if="taskFilter !== undefined"
-        closable
-        class="finding-task-filter-tag"
-        @close="clearTaskFilter"
-      >
-        来源任务 #{{ taskFilter }}
-      </el-tag>
       <el-select
         v-model="categoryFilter"
         class="finding-filter-cell"
@@ -733,6 +721,8 @@ onBeforeUnmount(() => {
           clearable
           aria-label="按名称、等级、工具或规则搜索"
         />
+        <!-- 「清除筛选」只在有条件时出现，但槽位常驻（与检测任务页
+             .task-filter-clear 同款处理）：收起时留白，展开时搜索框让出宽度。 -->
         <span class="finding-filter-clear-slot">
           <el-button
             v-if="hasActiveFilters"
@@ -744,6 +734,17 @@ onBeforeUnmount(() => {
           >
         </span>
       </div>
+      <!-- 来源任务筛选：仅由任务行「来源任务」跳转进来时出现。它是工具栏的
+            最后一个网格项（第 6 列），与筛选行（第 5 列）各自占一格，
+            两者永远不会叠在一起；窄屏时整行铺满。 -->
+      <el-tag
+        v-if="taskFilter !== undefined"
+        closable
+        class="finding-task-filter-tag"
+        @close="clearTaskFilter"
+      >
+        来源任务 #{{ taskFilter }}
+      </el-tag>
     </div>
     <!-- 空态放在表格内部（#empty）而不是顶替整张表格：表格骨架（表头列宽、
          边框、行分隔线）始终在位，空态只是表格的空行，页签切换不再整体跳动。 -->
@@ -1226,12 +1227,11 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
    两页筛选栏因此等高、控件同宽同高，来回切换不会出现“跳一下”的观感。 */
 .findings-filter-toolbar {
   display: grid;
-  /* 第五列（排序 + 搜索 + 清除槽位）留出 260px 下限：它内部有三个控件和两个
-     gap，低于这个宽度排序下拉会被压成一条、搜索框直接消失。窄屏（<=1200px）
-     整行铺满，见下方 media query。 */
+  /* 六列网格：前四列筛选下拉，第五列是「排序 + 搜索 + 清除槽位」行，
+     第六列放「来源任务」标签。两个收尾项各自占一格，互不重叠。 */
   grid-template-columns:
     minmax(112px, 1fr) minmax(112px, 1fr) minmax(120px, 1.15fr) minmax(120px, 1.15fr)
-    minmax(260px, 1.85fr) auto;
+    minmax(300px, 1.85fr) auto;
   align-items: center;
   gap: 10px;
   margin: 0;
@@ -1256,11 +1256,17 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
   grid-column: 5 / 6;
   min-width: 0;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
 }
+/* 排序下拉：固定按内容宽，绝不增长、绝不压缩到 150px 以下。
+   flex-basis 必须写 auto 而不是百分比——写成 44% 时它会按容器宽度增长，
+   把同行的搜索框和清除按钮挤到下一行。 */
 .finding-filter-row .finding-filter-cell--sort {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
+  width: auto;
   min-width: 150px;
+  max-width: 220px;
 }
 .finding-filter-row .finding-filter-cell--search {
   flex: 1 1 96px;
@@ -1281,19 +1287,17 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
   font-size: 12px;
   padding: 0 4px;
 }
-/* 来源任务筛选：从任务行「来源任务」跳转进来时才出现；落在第 6 列收尾槽位，
-   32px 高度与筛选控件一致，右对齐于筛选栏末尾。 */
+/* 来源任务筛选：从任务行「来源任务」跳转进来时才出现。它是工具栏的最后一个
+   网格项（第 6 列），与筛选行（第 5 列）各自占一格——早先它和第 5 列末端的
+   「清除筛选」挤在同一条水平带上，窗口不够宽时直接叠在一起。 */
 .finding-task-filter-tag.el-tag {
   --el-tag-bg-color: var(--app-accent-soft);
   --el-tag-border-color: color-mix(in srgb, var(--app-accent) 32%, transparent);
   --el-tag-text-color: var(--app-accent);
   display: inline-flex;
-  grid-row: 1;
-  grid-column: 6 / 7;
-  align-self: center;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  justify-self: end;
   height: 32px;
   margin: 0;
   padding: 0 6px 0 11px;
@@ -1318,18 +1322,38 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
   color: var(--app-surface);
 }
 /* 仅在存在筛选条件时出现的「清除筛选」：固定在筛选行末尾槽位，字号 12px。 */
+
+/* 中等宽度（<=1600px）：六列挤不下时，筛选行单独占满一行，
+   排序下拉与搜索框在行内平分，来源任务标签跟在末尾——不会出现
+   “第五列内部 wrap 成两行、和标签错位”的半吊子状态。 */
+@media (max-width: 1600px) {
+  .findings-filter-toolbar {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .finding-filter-row {
+    grid-column: 1 / -1;
+    flex-wrap: nowrap;
+  }
+  .finding-filter-row .finding-filter-cell--sort {
+    flex: 0 0 auto;
+    max-width: 200px;
+  }
+  .finding-task-filter-tag.el-tag {
+    grid-column: auto;
+  }
+}
 @media (max-width: 1200px) {
-  /* 收尾槽位并入筛选行：不再单独占一列，标签随筛选行换行。 */
   .findings-filter-toolbar {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
   .finding-filter-row {
     grid-column: 1 / -1;
+    flex-wrap: wrap;
   }
-  .finding-task-filter-tag.el-tag {
-    grid-row: auto;
-    grid-column: auto;
-    justify-self: start;
+  .finding-filter-row .finding-filter-cell--sort,
+  .finding-filter-row .finding-filter-cell--search {
+    flex: 1 1 100%;
+    max-width: none;
   }
 }
 @media (max-width: 900px) {
