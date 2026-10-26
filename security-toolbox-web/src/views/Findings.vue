@@ -646,17 +646,9 @@ onBeforeUnmount(() => {
          两页筛选栏因此等高、控件同宽同高、聚焦下划线同为 2px 主色。 -->
     <div class="findings-filter-toolbar" aria-label="安全发现筛选">
       <!-- 来源任务筛选：仅由任务行「来源任务」跳转进来时出现。
-           它和「清除筛选」同处网格末尾的收尾槽位（第 6 列、与筛选行同一行），
+           它和「清除筛选」同处网格末尾的收尾槽位（与筛选行同一行），
            不再独占一整行——否则它自己的格线会把下面的清除筛选挤到新的一行，
            筛选栏凭空长高一截。窄屏下这一列并入筛选行，自动换行。 -->
-      <el-button
-        v-if="hasActiveFilters"
-        class="finding-filter-clear"
-        link
-        type="primary"
-        @click="resetFilters"
-        >清除筛选</el-button
-      >
       <el-tag
         v-if="taskFilter !== undefined"
         closable
@@ -717,8 +709,9 @@ onBeforeUnmount(() => {
         <el-option label="已修复" value="FIXED" />
       </el-select>
       <!-- 第五列：与「检测任务」的「开始日期 至 结束日期 + 搜任务」同构——
-           发现没有独立的日期区间字段，这里把时间区间换成「排序方式」，
-           宽度/高度/图标位与日期区间控件一致，右侧是等宽的关键词搜索框。 -->
+           发现没有独立的日期区间字段，这里把时间区间换成「排序方式」。
+           「清除筛选」只在有条件时出现，与检测任务页一样挂在筛选行末尾的
+           固定槽位里，收起时留出 62px，展开时筛选框自动让位，不会与控件重叠。 -->
       <div class="finding-filter-row">
         <el-select
           v-model="findingSort"
@@ -740,6 +733,16 @@ onBeforeUnmount(() => {
           clearable
           aria-label="按名称、等级、工具或规则搜索"
         />
+        <span class="finding-filter-clear-slot">
+          <el-button
+            v-if="hasActiveFilters"
+            class="finding-filter-clear"
+            link
+            type="primary"
+            @click="resetFilters"
+            >清除筛选</el-button
+          >
+        </span>
       </div>
     </div>
     <!-- 空态放在表格内部（#empty）而不是顶替整张表格：表格骨架（表头列宽、
@@ -1205,8 +1208,8 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
 /* 筛选栏：与「检测任务」页 .task-filter-bar 逐项对齐——
    同一套五列网格与各列比例、10px 列间距、10px 12px 内边距、
    1px 描边 + 8px 圆角 + surface-soft 底色、32px 高的控件。
-   末尾额外留一列「收尾槽位」（第 6 列，按内容宽度）：来源任务标签与
-   「清除筛选」都放在这里、与筛选行同一行，不会把筛选栏撑高。
+   末尾额外留一列收尾槽位（第 6 列，按内容宽度）放「来源任务」标签，
+   与筛选行同一行，不会把筛选栏撑高；「清除筛选」在筛选行内固定槽位。
    两页筛选栏因此等高、控件同宽同高，来回切换不会出现“跳一下”的观感。 */
 .findings-filter-toolbar {
   display: grid;
@@ -1227,22 +1230,38 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
 }
 .finding-filter-row {
   display: flex;
+  flex: 1 1 auto;
   grid-column: 5 / 6;
   min-width: 0;
   align-items: center;
   gap: 10px;
 }
 .finding-filter-row .finding-filter-cell--sort {
-  flex: 0 0 clamp(196px, 26%, 240px);
+  flex: 0 0 clamp(170px, 24%, 200px);
   min-width: 0;
 }
 .finding-filter-row .finding-filter-cell--search {
-  flex: 1 1 150px;
+  flex: 1 1 90px;
   min-width: 0;
 }
+/* 「清除筛选」挂在筛选行末尾的固定槽位（与检测任务页 .task-filter-clear 同款
+   "只在有条件时出现，但槽位常驻"）：收起时 62px 空白，展开时搜索框按
+   flex-shrink 让出这 62px，控件永远不会被文字压住。 */
+.finding-filter-clear-slot {
+  display: inline-flex;
+  flex: 0 0 62px;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+}
+.finding-filter-clear {
+  flex: none;
+  white-space: nowrap;
+  font-size: 12px;
+  padding: 0 4px;
+}
 /* 来源任务筛选：从任务行「来源任务」跳转进来时才出现；落在第 6 列收尾槽位，
-   32px 高度与筛选控件一致，让「清除筛选」也从槽位内左移一位、两个收尾项
-   各占一格而非互相遮挡。 */
+   32px 高度与筛选控件一致，右对齐于筛选栏末尾。 */
 .finding-task-filter-tag.el-tag {
   --el-tag-bg-color: var(--app-accent-soft);
   --el-tag-border-color: color-mix(in srgb, var(--app-accent) 32%, transparent);
@@ -1253,7 +1272,7 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
   align-self: center;
   align-items: center;
   justify-content: center;
-  justify-self: start;
+  justify-self: end;
   height: 32px;
   margin: 0;
   padding: 0 6px 0 11px;
@@ -1277,40 +1296,19 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
   background-color: var(--app-accent);
   color: var(--app-surface);
 }
-/* 仅在存在筛选条件时出现的「清除筛选」：与检测任务页的 .task-filter-clear
-   同一收尾槽位——筛选栏末尾、不占固定槽位、字号 12px。 */
-/* 仅在存在筛选条件时出现的「清除筛选」：默认落在第 6 列收尾槽位；
-   有「来源任务」标签时让位到第 7 列（标签存在与否由数据属性反映）。 */
-.finding-filter-clear {
-  grid-row: 1;
-  grid-column: 6 / 7;
-  align-self: center;
-  flex: none;
-  justify-self: end;
-  white-space: nowrap;
-  font-size: 12px;
-  padding: 0 4px;
-}
-.findings-filter-toolbar:has(.finding-task-filter-tag) .finding-filter-clear {
-  grid-column: 7 / 8;
-}
-.findings-filter-toolbar:has(.finding-task-filter-tag) {
-  grid-template-columns:
-    minmax(112px, 1fr) minmax(112px, 1fr) minmax(120px, 1.15fr) minmax(120px, 1.15fr)
-    minmax(0, 1.85fr) auto auto;
-}
+/* 仅在存在筛选条件时出现的「清除筛选」：固定在筛选行末尾槽位，字号 12px。 */
 @media (max-width: 1200px) {
-  /* 收尾槽位并入筛选行：不再单独占一列，标签与按钮随筛选行换行。 */
+  /* 收尾槽位并入筛选行：不再单独占一列，标签随筛选行换行。 */
   .findings-filter-toolbar {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
   .finding-filter-row {
     grid-column: 1 / -1;
   }
-  .finding-task-filter-tag.el-tag,
-  .finding-filter-clear {
+  .finding-task-filter-tag.el-tag {
     grid-row: auto;
     grid-column: auto;
+    justify-self: start;
   }
 }
 @media (max-width: 900px) {
