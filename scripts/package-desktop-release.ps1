@@ -458,6 +458,22 @@ try {
             $needFrontendBuild = $true
         }
     }
+    # The manifest records the sources of the last build; it cannot prove that the
+    # dist on disk came from that build. A manual 'vite build' (web base), an
+    # interrupted build or another process rewriting dist/ leaves them out of sync
+    # while the gate above still reports "up to date". Require dist/index.html to
+    # be newer than both the manifest and every renderer source.
+    if (-not $needFrontendBuild) {
+        $distWriteTime = (Get-Item -LiteralPath $frontendDistIndex).LastWriteTimeUtc
+        if ((Test-Path -LiteralPath $frontendManifest -PathType Leaf) -and
+            (Get-Item -LiteralPath $frontendManifest).LastWriteTimeUtc -gt $distWriteTime) {
+            Write-Host 'Existing dist predates the build manifest, forcing desktop rebuild...' -ForegroundColor Yellow
+            $needFrontendBuild = $true
+        } elseif ((Get-NewestFileTimeUtc @($frontend) $frontendExcludes) -gt $distWriteTime) {
+            Write-Host 'Existing dist is older than the newest renderer source, forcing desktop rebuild...' -ForegroundColor Yellow
+            $needFrontendBuild = $true
+        }
+    }
 
     $stageWatch = Start-Stage
     if ($needFrontendBuild) {
@@ -503,6 +519,37 @@ try {
         throw 'AI Runtime is missing from the unpacked application.'
     }
     Stop-Stage 'Electron packaging' $stageWatch
+
+    # The packaged renderer must be the dist validated above. A stale or foreign
+    # app.asar ships a UI that was never built from the current sources. The entry
+    # bundle name is only recorded in dist/index.html inside the archive, so read
+    # the header to find that file and then compare the two names.
+    $stageWatch = Start-Stage
+    $asarPath = Join-Path $source 'resources\app.asar'
+    if (-not (Test-Path -LiteralPath $asarPath -PathType Leaf)) { throw 'app.asar was not produced.' }
+    $distEntryMatch = [regex]::Match(
+        [IO.File]::ReadAllText($frontendDistIndex, [Text.Encoding]::UTF8),
+        'src="([^"]*assets/index-[^"]+\.js)"'
+    )
+    if (-not $distEntryMatch.Success) { throw 'Unable to read the entry bundle from dist/index.html.' }
+    $distEntry = $distEntryMatch.Groups[1].Value
+    $asarBytes = [IO.File]::ReadAllBytes($asarPath)
+    $asarHeaderLength = [BitConverter]::ToUInt32($asarBytes, 12)
+    $asarHeaderJson = [Text.Encoding]::UTF8.GetString($asarBytes, 16, $asarHeaderLength)
+    $asarHeader = $asarHeaderJson | ConvertFrom-Json
+    $packagedIndex = $asarHeader.files.'dist'.files.'index.html'
+    if ($null -eq $packagedIndex) { throw 'Packaged app.asar has no dist/index.html.' }
+    $packagedIndexText = [Text.Encoding]::UTF8.GetString(
+        $asarBytes,
+        16 + $asarHeaderLength + [int]$packagedIndex.offset,
+        [int]$packagedIndex.size
+    )
+    $asarEntryMatch = [regex]::Match($packagedIndexText, 'src="([^"]*assets/index-[^"]+\.js)"')
+    if (-not $asarEntryMatch.Success) { throw 'Packaged index.html has no entry bundle; app.asar looks broken.' }
+    if ($asarEntryMatch.Groups[1].Value -ne $distEntry) {
+        throw ('Packaged renderer does not match dist. dist={0} asar={1}' -f $distEntry, $asarEntryMatch.Groups[1].Value)
+    }
+    Stop-Stage 'Verify packaged renderer matches dist' $stageWatch
 
     # Stop any process still running from the previous release directory so its
     # files can be replaced before the swap. (Helper functions are defined at module
