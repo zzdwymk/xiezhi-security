@@ -517,31 +517,54 @@ pre {
   margin-top: 16px;
 }
 
-/* 空态作为表格的空行填充：不再缩在表格左上角的一小块里，
-   而是在整张表格宽度的空行中居中显示。 */
+/* 空态作为表格的空行填充：与同页「项目发现」表格一致——空块给足高度
+   （min-height 覆盖 Element Plus 默认的 60px），内容在整行宽度里居中，
+   不再出现「表头下面只吊着一条扁空行」的观感。 */
+.traffic-scan-records.is-embedded .traffic-records-table :deep(.el-table__empty-block) {
+  min-height: 260px;
+}
+.traffic-scan-records.is-embedded .traffic-records-table :deep(.el-table__empty-text) {
+  width: 100%;
+  line-height: 1;
+}
 .traffic-scan-records.is-embedded .traffic-empty-container {
   display: flex;
   width: 100%;
+  /* 与「项目发现」的空态同高：那边 empty-state 实测 220px。 */
+  min-height: 220px;
+  align-items: center;
   justify-content: center;
-  padding: 24px 12px;
+  padding: 0;
 }
 .traffic-scan-records.is-embedded .traffic-empty-container :deep(.empty-state) {
+  width: 100%;
   max-width: min(100%, 620px);
+  /* 与项目发现的空态同一套尺寸：空块已经在 .el-table__empty-block 里给了
+     260px，这里不再叠加紧凑态的 120px 下限，让内容自然居中原有的高度。 */
   min-height: 0;
+  padding: 0;
 }
 
-/* 嵌入列表页页签时：与同页主表格（.workspace-list-page > .el-table）同一套
-   Fluent 平面样式——无外框/圆角、表头 48px、行单元格 12px 上下内边距、
-   悬停底色用主题的表格悬停令牌，表格紧接页签栏不再留 20px 上边距。 */
+/* 嵌入列表页页签时：与同页主表格（.workspace-list-page > .el-table）逐项对齐。
+   项目发现表在 workspace-list-page 规则下是：表头 44px、单元格 0 8px、
+   `.cell` 12px 横向留白、无外框无圆角。这里原先写的是表头 48px，
+   两页页签来回切时表头高度会跳一下，现统一到 44px。 */
 .traffic-scan-records.is-embedded {
   display: flex;
   min-width: 0;
   flex: 1 1 auto;
   flex-direction: column;
+  /* 与「项目发现」的表格顶边对齐：那边表格上方是筛选栏，页签栏到表格隔着
+     筛选栏 + gap；流量发现没有筛选栏，这里补同样的上沿留白，
+     两个页签来回切换时表格不会上下跳。 */
+  padding-top: 14px;
 }
 .traffic-scan-records.is-embedded .traffic-records-table {
   flex: 0 0 auto;
   width: 100%;
+  /* 与「项目发现」表格同一下限：空态时也保持一整块，不被 flex 压成一条表头。
+     有数据时由行内容自然撑开；只有 1-2 行时仍保留 220px，两页页签切换不跳。 */
+  min-height: 220px;
   overflow: hidden;
   border: 0;
   border-radius: 0;
@@ -560,7 +583,7 @@ pre {
   padding: 0;
 }
 .traffic-scan-records.is-embedded .traffic-records-table :deep(th.el-table__cell) {
-  height: 48px;
+  height: 44px;
   background: var(--app-surface-soft) !important;
   color: color-mix(in srgb, var(--app-text) 86%, transparent);
   font-size: 13px !important;
@@ -568,6 +591,9 @@ pre {
   border-bottom-color: var(--app-border) !important;
 }
 .traffic-scan-records.is-embedded .traffic-records-table :deep(td.el-table__cell) {
+  /* 与「项目发现」同一套行高：那边 td 是 padding:12px 0（行高约 87px）。
+     早先这里把 td padding 归零，行塌到 25px，两页表格密度明显不一致。 */
+  padding: 12px 0;
   border-bottom-color: var(--app-border);
   font-size: 13px;
 }
