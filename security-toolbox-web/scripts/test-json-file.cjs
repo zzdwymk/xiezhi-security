@@ -239,7 +239,11 @@ try {
   assert.match(workflowSource, /<h5[^>]*>已选节点/);
   assert.match(workflowSource, /<h4>能力库<\/h4>/);
   assert.match(workflowSource, /<h5>流程阶段<\/h5>/);
-  assert.match(workflowSource, /流程阶段 · 用于组织能力和依赖/);
+  // 阶段说明文案在 46ffb86 中从统一的一句改为逐阶段的 phase.summary：
+  // 每个阶段都写「用于组织能力和依赖」等于没说，用户看不出该阶段干什么。
+  // 因此这里断言的是「阶段库有说明文案且逐阶段渲染」，而不是某一句固定措辞。
+  assert.match(workflowSource, /用于组织能力和依赖/);
+  assert.match(workflowSource, /<small>\{\{ phase\.summary \}\}<\/small>/);
   assert.match(workflowSource, /v-for="phase in PHASES"/);
   assert.match(
     workflowSource,
