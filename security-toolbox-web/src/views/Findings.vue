@@ -1171,11 +1171,24 @@ onBeforeUnmount(() => {
 /* 内容切换：与检测任务页一致保留淡入淡出过渡，但时长统一到 Fluent 标准档
    （150ms / --fluent-curve-standard），不再用 180ms+120ms 这种和别的页面
    对不上的组合；设置里关闭"界面动画"或系统开启"减少动态效果"时直接跳过。 */
+/* 内容区（页签下方）：筛选栏、表格、分页三者的唯一间距来源。
+   早先筛选栏自己 margin:0、表格也 margin:0，页面根的 --page-gap 又只作用于
+   section 的直接子元素，于是筛选栏与表格贴成一片、表格被压得只剩表头。
+   这里显式给出列向间距，并让表格/分页按内容占位，不再互相挤压。 */
 .findings-source-pane {
   display: flex;
   min-width: 0;
   flex: 1 1 auto;
   flex-direction: column;
+  gap: 14px;
+}
+/* 表格按内容高度撑开（空态也是完整的一行），不被 flex 压缩成一条表头。 */
+.findings-source-pane > .el-table {
+  flex: 0 0 auto;
+  min-height: 220px;
+}
+.findings-source-pane > .findings-pagination {
+  flex: 0 0 auto;
 }
 .findings-pane-enter-active,
 .findings-pane-leave-active {
@@ -1495,6 +1508,16 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
   display: flex;
   justify-content: flex-end;
   padding: 15px 16px 17px;
+}
+/* 空态行：给足高度，让「暂无风险记录」的空块在表格里占满一整块而不是
+   被 flex 压成一条 40px 的窄行。 */
+.findings-source-pane :deep(.el-table__empty-block) {
+  min-height: 260px;
+  padding: 24px 12px;
+}
+.findings-source-pane :deep(.el-table__empty-block .empty-state) {
+  width: 100%;
+  min-height: 0;
 }
 .findings-pagination :deep(.el-pagination) {
   justify-content: flex-end;
