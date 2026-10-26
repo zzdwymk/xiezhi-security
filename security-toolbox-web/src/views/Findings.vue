@@ -740,14 +740,20 @@ onBeforeUnmount(() => {
         >清除筛选</el-button
       >
     </div>
-    <OfflineState
-      v-if="offline || !rows.length"
-      title="暂无风险记录"
-      :description="
-        offline ? '无法连接后端服务。' : '任务产生的检查结果会显示在这里。'
-      "
-    />
-    <el-table v-else :data="rows">
+    <!-- 空态放在表格内部（#empty）而不是顶替整张表格：表格骨架（表头列宽、
+         边框、行分隔线）始终在位，空态只是表格的空行，页签切换不再整体跳动。 -->
+    <el-table
+      :data="rows"
+      :empty-text="offline ? '无法连接后端服务。' : '任务产生的检查结果会显示在这里。'"
+    >
+      <template #empty>
+        <OfflineState
+          title="暂无风险记录"
+          :description="
+            offline ? '无法连接后端服务。' : '任务产生的检查结果会显示在这里。'
+          "
+        />
+      </template>
       <el-table-column
         prop="title"
         label="名称"

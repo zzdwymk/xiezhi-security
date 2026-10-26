@@ -198,7 +198,9 @@ const PROBE = `(() => {
     const url = new URL(route.request().url());
     const api = url.pathname.replace(/^\/api/, '');
     if (api === '/findings') {
-      const data = Array.from({ length: 6 }, (_, i) => finding(1000 + i));
+      const data = process.env.PARITY_EMPTY === '1'
+        ? []
+        : Array.from({ length: 6 }, (_, i) => finding(1000 + i));
       return route.fulfill({ json: { content: data, totalElements: data.length } });
     }
     if (api === '/tasks') {
@@ -214,15 +216,17 @@ const PROBE = `(() => {
       return route.fulfill({ json: { token: 'parity-token', tokenType: 'Bearer', expiresIn: 3600, user: { id: 1, username: 'admin', role: 'ADMIN' } } });
     }
     if (api.startsWith('/traffic/scans')) {
-      const records = Array.from({ length: 4 }, (_, i) => ({
-        id: 900 + i,
-        engine: i % 2 ? 'XRAY' : 'ZAP',
-        status: 'SUCCESS',
-        url: `http://127.0.0.1:8080/authorized/target/${900 + i}`,
-        host: '127.0.0.1',
-        hitCount: i % 2 ? 3 : 0,
-        createdAt: '2026-10-25T07:15:28Z',
-      }));
+      const records = process.env.PARITY_EMPTY === '1'
+        ? []
+        : Array.from({ length: 4 }, (_, i) => ({
+            id: 900 + i,
+            engine: i % 2 ? 'XRAY' : 'ZAP',
+            status: 'SUCCESS',
+            url: `http://127.0.0.1:8080/authorized/target/${900 + i}`,
+            host: '127.0.0.1',
+            hitCount: i % 2 ? 3 : 0,
+            createdAt: '2026-10-25T07:15:28Z',
+          }));
       return route.fulfill({ json: { content: records, totalElements: records.length, totalPages: 1, number: 0, size: 10 } });
     }
     return route.fulfill({ json: [] });

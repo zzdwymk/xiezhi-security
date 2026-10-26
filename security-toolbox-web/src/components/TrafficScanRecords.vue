@@ -517,6 +517,19 @@ pre {
   margin-top: 16px;
 }
 
+/* 空态作为表格的空行填充：不再缩在表格左上角的一小块里，
+   而是在整张表格宽度的空行中居中显示。 */
+.traffic-scan-records.is-embedded .traffic-empty-container {
+  display: flex;
+  width: 100%;
+  justify-content: center;
+  padding: 24px 12px;
+}
+.traffic-scan-records.is-embedded .traffic-empty-container :deep(.empty-state) {
+  max-width: min(100%, 620px);
+  min-height: 0;
+}
+
 /* 嵌入列表页页签时：与同页主表格（.workspace-list-page > .el-table）同一套
    Fluent 平面样式——无外框/圆角、表头 48px、行单元格 12px 上下内边距、
    悬停底色用主题的表格悬停令牌，表格紧接页签栏不再留 20px 上边距。 */
