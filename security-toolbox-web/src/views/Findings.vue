@@ -1213,9 +1213,12 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
    两页筛选栏因此等高、控件同宽同高，来回切换不会出现“跳一下”的观感。 */
 .findings-filter-toolbar {
   display: grid;
+  /* 第五列（排序 + 搜索 + 清除槽位）留出 260px 下限：它内部有三个控件和两个
+     gap，低于这个宽度排序下拉会被压成一条、搜索框直接消失。窄屏（<=1200px）
+     整行铺满，见下方 media query。 */
   grid-template-columns:
     minmax(112px, 1fr) minmax(112px, 1fr) minmax(120px, 1.15fr) minmax(120px, 1.15fr)
-    minmax(0, 1.85fr) auto;
+    minmax(260px, 1.85fr) auto;
   align-items: center;
   gap: 10px;
   margin: 0;
@@ -1228,6 +1231,12 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
   width: 100%;
   min-width: 0;
 }
+/* 第五列 = 排序下拉 + 搜索框 + 清除筛选槽位，三者共享可用宽度。
+   宽度按 flex 分配而不是写死 basis：早期版本给排序下拉和清除槽位都写了不可压缩
+   的固定宽度，搜索框成了唯一可收缩项，在 1280 下被压到 18px（placeholder 完全
+   看不见）。现在排序下拉按内容宽（下限 150px，容纳“时间从新到旧”），搜索框拿
+   剩余（下限 96px，保证 placeholder 可读），清除槽位固定 56px；
+   空间不足时优先压缩排序下拉，输入框始终可用。 */
 .finding-filter-row {
   display: flex;
   flex: 1 1 auto;
@@ -1237,19 +1246,18 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
   gap: 10px;
 }
 .finding-filter-row .finding-filter-cell--sort {
-  flex: 0 0 clamp(170px, 24%, 200px);
-  min-width: 0;
+  flex: 0 1 auto;
+  min-width: 150px;
 }
 .finding-filter-row .finding-filter-cell--search {
-  flex: 1 1 90px;
-  min-width: 0;
+  flex: 1 1 96px;
+  min-width: 96px;
 }
-/* 「清除筛选」挂在筛选行末尾的固定槽位（与检测任务页 .task-filter-clear 同款
-   "只在有条件时出现，但槽位常驻"）：收起时 62px 空白，展开时搜索框按
-   flex-shrink 让出这 62px，控件永远不会被文字压住。 */
+/* 「清除筛选」只在有条件时出现，但槽位常驻（与检测任务页 .task-filter-clear 同款
+   处理）：收起时留白，展开时搜索框让出宽度，控件不会被文字压住。 */
 .finding-filter-clear-slot {
   display: inline-flex;
-  flex: 0 0 62px;
+  flex: 0 0 56px;
   align-items: center;
   justify-content: flex-end;
   min-width: 0;
@@ -1393,9 +1401,17 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
   gap: 6px;
   box-sizing: border-box;
 }
-.finding-row-actions :deep(.el-button),
-.finding-row-actions :deep(.el-button + .el-button),
-.finding-row-actions :deep(.finding-action) {
+/* AI actions opt out of the neutral row-button base: their accent text/border
+   comes from `.finding-action--ai` in unified-theme.css. Without this the
+   scoped `[data-v-…]` attribute pushes this rule to (0,4,0) and it silently
+   repaints the AI buttons black — the same failure the shared `.row-actions`
+   base had on the Tasks page. */
+.finding-row-actions
+  :deep(
+    .el-button:not(.finding-action--ai),
+    .el-button + .el-button:not(.finding-action--ai),
+    .finding-action:not(.finding-action--ai)
+  ) {
   width: 100% !important;
   height: 28px;
   margin: 0 !important;
