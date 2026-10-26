@@ -542,9 +542,12 @@ pre {
 .traffic-scan-records.is-embedded .traffic-records-table :deep(.el-table__inner-wrapper) {
   border-radius: 0;
 }
+.traffic-scan-records.is-embedded .traffic-records-table :deep(th.el-table__cell),
+.traffic-scan-records.is-embedded .traffic-records-table :deep(td.el-table__cell) {
+  padding: 0;
+}
 .traffic-scan-records.is-embedded .traffic-records-table :deep(th.el-table__cell) {
   height: 48px;
-  padding: 0;
   background: var(--app-surface-soft) !important;
   color: color-mix(in srgb, var(--app-text) 86%, transparent);
   font-size: 13px !important;
@@ -552,11 +555,13 @@ pre {
   border-bottom-color: var(--app-border) !important;
 }
 .traffic-scan-records.is-embedded .traffic-records-table :deep(td.el-table__cell) {
-  padding: 12px 0;
   border-bottom-color: var(--app-border);
   font-size: 13px;
 }
-.traffic-scan-records.is-embedded .traffic-records-table :deep(td.el-table__cell .cell) {
+/* 单元格横向留白与同页主表格一致（Element Plus 默认 12px）：组件自身的
+   14px 只保留在独立使用的场景，嵌入态不再让两页表格文字左起点错位。 */
+.traffic-scan-records.is-embedded .traffic-records-table :deep(.cell) {
+  padding: 0 12px;
   line-height: 1.45;
 }
 .traffic-scan-records.is-embedded .traffic-records-table :deep(.el-table__row:hover > td.el-table__cell) {

@@ -117,6 +117,26 @@ const PROBE = `(() => {
         tdFont: tdS ? tdS.fontSize : null,
         tableTop: table.getBoundingClientRect().top,
         paneTop: (document.querySelector('.findings-source-pane, .task-filter-bar') || document.body).getBoundingClientRect().top,
+        cellPads: [...table.querySelectorAll('th.el-table__cell .cell, td.el-table__cell .cell')]
+          .slice(0, 4)
+          .map(el => getComputedStyle(el).padding),
+        firstThTextX: (() => {
+          const th = table.querySelector('th.el-table__cell .cell');
+          if (!th) return null;
+          const tableLeft = table.getBoundingClientRect().left;
+          // 数字列/操作列居中，文字偏移不等于留白；因此同时给出列盒偏移与对齐方式，
+          // 判断留白是否一致要看 cellPads。
+          const thBox = th.parentElement;
+          const textRect = document.createRange();
+          textRect.selectNodeContents(th);
+          return {
+            thBoxX: Math.round(thBox.getBoundingClientRect().left - tableLeft),
+            align: getComputedStyle(thBox).textAlign,
+            textX: textRect.getBoundingClientRect().width
+              ? Math.round(textRect.getBoundingClientRect().left - tableLeft)
+              : null,
+          };
+        })(),
       };
     })(),
   };
