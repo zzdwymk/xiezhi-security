@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useSelectionIndicator } from "../composables/useSelectionIndicator";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   Delete as DeleteIcon,
   MagicStick,
-  Search,
+  Sort,
   VideoPlay,
   View,
 } from "../components/fluentIcons";
@@ -123,128 +123,25 @@ const recordSource = computed({
   } }); },
 });
 
-/* 页签切换动效
-   - 选中条：复用 `useSelectionIndicator` 计算位置（与左侧导航同一套定位规则），
-     但滑动由本文件的 glideIndicator() 推算：切换时把指示条从旧页签一路插值
-     到新页签（220ms Fluent decelerate 缓动），页面重渲染时指示条不会被重建，
-     所以看到的是"滑过去"而不是"跳过去"。
-   - 内容切换：<Transition> 旧内容淡出、新内容淡入并轻微上移（只动
-     opacity/transform，不触发重排）。
-   - 两者都属于「装饰性动画」：设置 → 界面动画关闭，或系统开启"减少动态效果"
-     时直接跳到终点。 */
+/* 来源页签的选中条（项目发现 / 流量发现）
+   版式与「检测任务」页的来源页签完全一致：同一个 Element Plus 页签组件、
+   同一套字号/字重/内边距/行高、同一条 1px 底部分割线，选中条也采用组件
+   自带的 3px 主色下划线（.el-tabs__active-bar，宽度与位移由 Element Plus
+   自己的 Fluent 过渡完成）。
+   之前这里自绘了一条 2px 下划线并额外套了一层 44px 页签 + 16px 上边距 +
+   内容区淡入淡出，视觉与动画节奏都与检测任务页对不上，现统一回组件默认。 */
 const tabsWrap = ref<HTMLElement | null>(null);
-const { positionSelectionIndicator } = useSelectionIndicator({
+useSelectionIndicator({
   container: tabsWrap,
   activeSelector: ".findings-source-tab.is-active",
   indicatorSelector: ".findings-source-indicator",
   dependencies: [recordSource, canReadTraffic],
   orientation: "horizontal",
-  // 下划线铺满页签宽度（与评估项目详情页的下划线等宽等位）。
   sizeRatio: 1,
   minSize: 0,
   thickness: 2,
   edgeInset: 1,
 });
-
-const TAB_GLIDE_MS = 220;
-const tabGlideQuery =
-  typeof window === "undefined" || typeof window.matchMedia !== "function"
-    ? null
-    : window.matchMedia("(prefers-reduced-motion: reduce)");
-
-function animationsEnabled() {
-  return (
-    !tabGlideQuery?.matches &&
-    document.documentElement.getAttribute("data-anim-decorative") !== "off"
-  );
-}
-
-let tabGlideFrame = 0;
-
-function cancelTabGlide() {
-  if (tabGlideFrame) window.cancelAnimationFrame(tabGlideFrame);
-  tabGlideFrame = 0;
-}
-
-/** 把选中条从 fromX 滑到当前激活页签的 x（Fluent decelerate 曲线）。 */
-function glideIndicator(fromX?: number, fromWidth?: number) {
-  const root = tabsWrap.value;
-  const indicatorEl =
-    root?.querySelector<HTMLElement>(".findings-source-indicator");
-  const activeEl = root?.querySelector<HTMLElement>(
-    ".findings-source-tab.is-active",
-  );
-  if (!root || !indicatorEl || !activeEl) return;
-  const rootLeft = root.getBoundingClientRect().left;
-  const activeRect = activeEl.getBoundingClientRect();
-  const toX = activeRect.left - rootLeft;
-  const toWidth = activeRect.width;
-  const currentX = parseFloat(
-    indicatorEl.style.getPropertyValue("--selection-indicator-x") || "0",
-  );
-  const startX = fromX ?? currentX;
-  const startWidth =
-    fromWidth ??
-    parseFloat(
-      getComputedStyle(indicatorEl).getPropertyValue(
-        "--selection-indicator-width",
-      ) || String(toWidth),
-    );
-
-  cancelTabGlide();
-  if (!animationsEnabled()) {
-    positionSelectionIndicator();
-    return;
-  }
-  const startedAt = performance.now();
-  const ease = (t: number) => (t >= 1 ? 1 : 1 - (1 - t) ** 3);
-  const step = (now: number) => {
-    const t = Math.min(1, (now - startedAt) / TAB_GLIDE_MS);
-    const k = ease(t);
-    indicatorEl.style.setProperty(
-      "--selection-indicator-x",
-      `${(startX + (toX - startX) * k).toFixed(2)}px`,
-    );
-    indicatorEl.style.setProperty(
-      "--selection-indicator-width",
-      `${(startWidth + (toWidth - startWidth) * k).toFixed(2)}px`,
-    );
-    if (t < 1) {
-      tabGlideFrame = window.requestAnimationFrame(step);
-      return;
-    }
-    tabGlideFrame = 0;
-    positionSelectionIndicator();
-  };
-  tabGlideFrame = window.requestAnimationFrame(step);
-}
-
-watch(
-  recordSource,
-  (next, previous) => {
-    const root = tabsWrap.value;
-    const indicatorEl =
-      root?.querySelector<HTMLElement>(".findings-source-indicator") ?? null;
-    // 旧页签在本次渲染后仍留在 DOM 里（新页签只是多了 is-active），
-    // 切换前它的位置就是选中条的起点。
-    const previousEl =
-      previous && previous !== next
-        ? root?.querySelector<HTMLElement>(
-            `.findings-source-tab[data-source="${previous}"]`,
-          )
-        : null;
-    if (!root || !indicatorEl) return;
-    const startX = previousEl
-      ? previousEl.getBoundingClientRect().left - root.getBoundingClientRect().left
-      : undefined;
-    const startWidth = previousEl?.getBoundingClientRect().width;
-    void nextTick(() => glideIndicator(startX, startWidth));
-  },
-  { flush: "post" },
-);
-
-const tabGlideCleanup = () => cancelTabGlide();
-onBeforeUnmount(tabGlideCleanup);
 
 
 interface FindingRow {
@@ -717,43 +614,36 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div
+    <!-- 来源页签：与「检测任务」页同构——同一个 el-tabs、同样的页签样式、
+         同样的 1px 底部分割线；指示条也交给组件自带的 3px 下划线。
+         页签栏与内容之间不再留额外间距（组件 header 默认 margin-bottom 已清零）。 -->
+    <el-tabs
       v-if="canReadTraffic"
       ref="tabsWrap"
+      v-model="recordSource"
       class="findings-source-tabs"
-      role="tablist"
       aria-label="发现来源"
     >
-      <button
+      <el-tab-pane
         v-for="item in FINDING_SOURCES"
         :key="item.name"
-        type="button"
-        role="tab"
-        class="findings-source-tab"
-        :class="{ 'is-active': recordSource === item.name }"
-        :aria-selected="recordSource === item.name"
-        :data-source="item.name"
-        @click="recordSource = item.name"
-      >
-        {{ item.label }}
-      </button>
-      <!-- 页签选中条：与左侧导航共用 .fluent-selection-indicator，
-           位置由 useSelectionIndicator 写入 CSS 变量，切换时平滑滑动。 -->
-      <span
-        class="fluent-selection-indicator findings-source-indicator"
-        aria-hidden="true"
+        :label="item.label"
+        :name="item.name"
       />
-    </div>
+    </el-tabs>
     <Transition name="findings-pane" mode="out-in">
       <div v-if="recordSource === 'traffic'" key="traffic" class="findings-source-pane">
         <!-- 流量发现与项目发现各自占满页签下方空间：两者共用一条页签栏，
              内容区贴近页签栏，不再让固定的筛选工具栏把“流量发现”的表格往下压。 -->
-        <TrafficScanRecords mode="findings" />
+        <!-- 嵌入态：隐藏组件自带工具条、表格改用列表页的平面样式，
+             让切页签前后表格顶边与列样式不跳动。 -->
+        <TrafficScanRecords mode="findings" bare embedded />
       </div>
       <div v-else key="project" class="findings-source-pane">
     <!-- 多维组合检索与过滤栏：版式与「检测任务」页 .task-filter-bar 一致——
-         五列网格（四个下拉 + 右侧“排序 / 搜索”组），10px 列间距、
-         10px 12px 内边距、同样的描边/圆角/底色。两页筛选栏等高、控件同宽同高。 -->
+         五列网格，前四列是筛选下拉，第五列是「时间区间 / 排序 + 搜索」组合；
+         10px 列间距、10px 12px 内边距、同样的描边/圆角/底色、同样 32px 高的控件。
+         两页筛选栏因此等高、控件同宽同高、聚焦下划线同为 2px 主色。 -->
     <div class="findings-filter-toolbar" aria-label="安全发现筛选">
       <!-- 来源任务筛选：仅由任务行「来源任务」跳转进来时出现，
            在网格里独占一行，不挤占下面五个筛选槽位。 -->
@@ -816,11 +706,14 @@ onBeforeUnmount(() => {
         <el-option label="误报" value="FALSE_POSITIVE" />
         <el-option label="已修复" value="FIXED" />
       </el-select>
-      <!-- 第五列：与「检测任务」一致，日期区间 + 关键词搜索同处一格的右侧列 -->
+      <!-- 第五列：与「检测任务」的「开始日期 至 结束日期 + 搜任务」同构——
+           发现没有独立的日期区间字段，这里把时间区间换成「排序方式」，
+           宽度/高度/图标位与日期区间控件一致，右侧是等宽的关键词搜索框。 -->
       <div class="finding-filter-row">
         <el-select
           v-model="findingSort"
           class="finding-filter-cell finding-filter-cell--sort"
+          :prefix-icon="Sort"
           aria-label="排序方式"
         >
           <el-option
@@ -832,20 +725,19 @@ onBeforeUnmount(() => {
         </el-select>
         <el-input
           v-model="searchQuery"
-          :prefix-icon="Search"
           class="finding-filter-cell finding-filter-cell--search"
-          placeholder="搜索名称 / 等级 / 工具 / 规则"
+          placeholder="搜名称 / 等级 / 工具"
           clearable
           aria-label="按名称、等级、工具或规则搜索"
         />
       </div>
       <el-button
         v-if="hasActiveFilters"
-        class="finding-filter-reset-btn"
+        class="finding-filter-clear"
         link
         type="primary"
         @click="resetFilters"
-        >重置筛选</el-button
+        >清除筛选</el-button
       >
     </div>
     <OfflineState
@@ -1237,88 +1129,48 @@ onBeforeUnmount(() => {
 .findings-page .section-head h3 {
   font-size: var(--type-section-title);
 }
-/* 来源页签（项目发现 / 流量发现）
-   原先是两个空内容的 <el-tab-pane>：Element Plus 仍会生成一条铺满整行、
-   带底部分割线的内容区，再叠上页签栏自身 15px 底边距和筛选栏 12px 上边距，
-   页签与内容之间就空出一大截。这里改成一条自绘的页签栏——结构可控、间距
-   全部显式给出，内容区紧随其下。
-   间距/字重/下划线刻意与「评估项目」详情页的 .project-tabs 对齐：
-   页签高 44px、左右内边距 6px、相邻页签间隔 22px、激活项加粗，
-   这样两个页面切换时页签的观感一致。 */
+/* 来源页签（项目发现 / 流量发现）：与「检测任务」页 .task-source-tabs 同一套结构。
+   Element Plus 页签组件的 header / nav-wrap / item / active-bar 尺寸规则全部来自
+   全局样式（fluent-design-2.css 的 .el-tabs__item：32px 高、8px 左右内边距、
+   14px 字号、500 字重、激活态只改颜色不加粗、选中条 3px 主色下划线），
+   这里只做两件事：
+   1）去掉页签内容区——两个 pane 都是空的，只作为页签数据源；
+   2）压掉 header 的默认下边距，让筛选栏紧贴页签栏下方，与检测任务页一致。 */
 .findings-source-tabs {
-  position: relative;
-  display: flex;
-  align-items: stretch;
   flex: 0 0 auto;
-  margin: 16px 0 0;
-  border-bottom: 1px solid var(--fluent-border, #e5e7eb);
+  min-width: 0;
 }
-.findings-source-tab {
-  position: relative;
-  box-sizing: border-box;
-  appearance: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  height: 44px;
-  min-height: 44px;
+.findings-source-tabs :deep(.el-tabs__header) {
   margin: 0;
-  padding: 0 6px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: color-mix(in srgb, var(--app-text) 78%, transparent);
-  font-family: inherit;
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 44px;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: color var(--fluent-fast, 100ms);
+  border-bottom: 0;
 }
-/* 间隔 22px 与 .project-tabs 的 margin-right: 22px 等价，只是不依赖相邻兄弟
-   选择器，省得末项还要单独清零。 */
-.findings-source-tab + .findings-source-tab {
-  margin-left: 22px;
+.findings-source-tabs :deep(.el-tabs__nav-wrap)::after {
+  display: none;
 }
-.findings-source-tab:hover,
-.findings-source-tab.is-active {
-  color: var(--app-accent, #0078d4);
+.findings-source-tabs :deep(.el-tabs__content) {
+  display: none;
 }
-.findings-source-tab.is-active {
-  font-weight: 600;
+/* 页签栏自身的 1px 分隔线：与检测任务页使用同一个 --app-border 令牌。 */
+.findings-source-tabs::after {
+  content: "";
+  display: block;
+  height: 1px;
+  background: var(--app-border);
 }
-/* 页签选中条：2px 主色下划线，宽度与位置由 useSelectionIndicator 写入内联样式，
-   切换时由脚本平滑推算（坐标变化 + 对应时长/缓动），与评估项目详情页的下划线
-   同宽同高。背景色取自 --fluent3-slider-accent，和左侧导航的选中条同色。 */
-.findings-source-indicator.findings-source-indicator {
-  width: var(--selection-indicator-width, 68px);
-  height: 2px;
-  border-radius: 3px;
-  background: var(--fluent3-slider-accent, var(--app-accent, #0078d4));
-}
-.findings-source-tab:focus-visible {
-  outline: 2px solid var(--app-text);
-  outline-offset: -2px;
-  border-radius: var(--fluent-radius-control, 4px);
-}
-/* 内容切换：旧内容先淡出（120ms），新内容再淡入并轻微上移（180ms）；
-   只动 opacity/transform，不触发重排，表格较多的"项目发现"也不掉帧。 */
+/* 内容切换：与检测任务页一致保留淡入淡出过渡，但时长统一到 Fluent 标准档
+   （150ms / --fluent-curve-standard），不再用 180ms+120ms 这种和别的页面
+   对不上的组合；设置里关闭"界面动画"或系统开启"减少动态效果"时直接跳过。 */
 .findings-source-pane {
   display: flex;
   min-width: 0;
   flex: 1 1 auto;
   flex-direction: column;
 }
-.findings-pane-enter-active {
-  transition:
-    opacity 180ms var(--fluent-curve-decelerate, cubic-bezier(0.1, 0.9, 0.2, 1)),
-    transform 180ms var(--fluent-curve-decelerate, cubic-bezier(0.1, 0.9, 0.2, 1));
-}
+.findings-pane-enter-active,
 .findings-pane-leave-active {
   transition:
-    opacity 120ms var(--fluent-curve-standard, cubic-bezier(0.33, 0, 0.67, 1)),
-    transform 120ms var(--fluent-curve-standard, cubic-bezier(0.33, 0, 0.67, 1));
+    opacity var(--fluent-duration-fast, 150ms) var(--fluent-curve-standard, ease),
+    transform var(--fluent-duration-fast, 150ms) var(--fluent-curve-standard, ease);
 }
 .findings-pane-enter-from {
   opacity: 0;
@@ -1328,8 +1180,6 @@ onBeforeUnmount(() => {
   opacity: 0;
   transform: translateY(-4px);
 }
-/* 设置里关闭"界面动画"后（motion.css 使用同一属性），内容切换即时完成；
-   选中条的滑动由脚本读取该属性跳过。 */
 html[data-anim-decorative="off"] .findings-pane-enter-active,
 html[data-anim-decorative="off"] .findings-pane-leave-active {
   transition: none !important;
@@ -1344,9 +1194,9 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
     transform: none;
   }
 }
-/* 筛选栏：与「检测任务」页 .task-filter-bar 同一套版式——
-   五列网格（四个下拉 + 右侧“排序 / 搜索”组）、10px 列间距、10px 12px 内边距、
-   1px 描边 + 8px 圆角 + surface-soft 底色。
+/* 筛选栏：与「检测任务」页 .task-filter-bar 逐项对齐——
+   同一套五列网格与各列比例、10px 列间距、10px 12px 内边距、
+   1px 描边 + 8px 圆角 + surface-soft 底色、32px 高的控件。
    两页筛选栏因此等高、控件同宽同高，来回切换不会出现“跳一下”的观感。 */
 .findings-filter-toolbar {
   display: grid;
@@ -1357,9 +1207,9 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
   gap: 10px;
   margin: 0;
   padding: 10px 12px;
-  background: var(--app-surface-soft, rgba(0, 0, 0, 0.02));
-  border: 1px solid var(--app-border, #e2e8f0);
+  border: 1px solid var(--app-border);
   border-radius: var(--fluent-radius-card, 8px);
+  background: var(--app-surface-soft);
 }
 .findings-filter-toolbar .finding-filter-cell {
   width: 100%;
@@ -1414,9 +1264,9 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
   background-color: var(--app-accent);
   color: var(--app-surface);
 }
-/* 仅在存在筛选条件时出现的「重置筛选」：与任务的「清除筛选」同位——
-   列表末尾、右对齐、不占固定槽位。 */
-.finding-filter-reset-btn {
+/* 仅在存在筛选条件时出现的「清除筛选」：与检测任务页的 .task-filter-clear
+   同名同位——列表末尾、右对齐、不占固定槽位、字号 12px。 */
+.finding-filter-clear {
   flex: none;
   justify-self: end;
   white-space: nowrap;

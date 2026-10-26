@@ -56,6 +56,7 @@ export const Setting = fluentIcon("settings");
 export const Share = fluentIcon("branch-fork");
 export const Star = fluentIcon("star");
 export const StarFilled = fluentIcon("star-filled");
+export const Sort = fluentIcon("arrow-swap");
 export const Switch = fluentIcon("arrow-swap");
 export const SwitchButton = fluentIcon("sign-out");
 export const Tickets = fluentIcon("clipboard-text");

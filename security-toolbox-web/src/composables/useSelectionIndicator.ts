@@ -47,8 +47,26 @@ export function useSelectionIndicator({
   let observedActiveItem: HTMLElement | null = null;
   let layoutTrackingIndicator: HTMLElement | null = null;
 
+  /**
+   * 页签一类的组件会把模板 ref 暴露成组件实例（`<el-tabs ref="...">`），
+   * 因此容器不一定是原生元素。统一取出真正的 DOM 根节点，避免对组件实例
+   * 调用 querySelector 抛错。
+   */
+  function resolveContainer(): HTMLElement | null {
+    const value = container.value as unknown;
+    if (!value) return null;
+    if (
+      value instanceof HTMLElement ||
+      (typeof value === "object" && typeof (value as Element).querySelector === "function")
+    ) {
+      return value as HTMLElement;
+    }
+    const root = (value as { $el?: unknown }).$el;
+    return root instanceof HTMLElement ? root : null;
+  }
+
   function updatePosition() {
-    const root = container.value;
+    const root = resolveContainer();
     const indicator = root?.querySelector<HTMLElement>(indicatorSelector);
     const activeItem = root?.querySelector<HTMLElement>(activeSelector);
     if (
@@ -111,7 +129,7 @@ export function useSelectionIndicator({
   function trackLayout(duration = 260) {
     window.cancelAnimationFrame(layoutTrackingFrame);
     layoutTrackingIndicator?.classList.remove("is-layout-tracking");
-    const root = container.value;
+    const root = resolveContainer();
     const indicator = root?.querySelector<HTMLElement>(indicatorSelector);
     const deadline = performance.now() + duration;
     layoutTrackingIndicator = indicator ?? null;
@@ -133,7 +151,7 @@ export function useSelectionIndicator({
     if (!mounted) return;
     resizeObserver?.disconnect();
     resizeObserver = new ResizeObserver(position);
-    const root = container.value;
+    const root = resolveContainer();
     observedActiveItem =
       root?.querySelector<HTMLElement>(activeSelector) ?? null;
     if (root) resizeObserver.observe(root);

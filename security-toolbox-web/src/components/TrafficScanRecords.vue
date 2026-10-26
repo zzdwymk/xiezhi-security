@@ -38,8 +38,15 @@ const props = withDefaults(
      * 避免同一屏出现两行几乎相同的筛选条。
      */
     bare?: boolean;
+    /**
+     * 作为「安全发现 / 检测任务」这类列表页页签内容时使用：
+     * 表格改成与同页主表格同一套 Fluent 平面样式（无外框、表头 48px、
+     * 行高与单元格内边距一致），并且顶部不再留额外间距，
+     * 让页签切换前后表格位置与观感保持一致。
+     */
+    embedded?: boolean;
   }>(),
-  { mode: "tasks", bare: false },
+  { mode: "tasks", bare: false, embedded: false },
 );
 const isFindings = computed(() => props.mode === "findings");
 const engines = computed(() => isFindings.value ? ['ZAP', 'XRAY', 'SQLMAP'] : ['ZAP', 'XRAY', 'SQLMAP', 'FUZZ']);
@@ -167,7 +174,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="canRead" class="traffic-scan-records" :class="{ 'is-bare': bare }">
+  <div
+    v-if="canRead"
+    class="traffic-scan-records"
+    :class="{ 'is-bare': bare, 'is-embedded': embedded }"
+  >
     <div v-if="!bare" class="traffic-record-toolbar">
       <div class="traffic-record-toolbar-desc">
         <el-icon class="traffic-desc-icon"><InfoCircle /></el-icon>
@@ -504,5 +515,60 @@ pre {
 }
 .traffic-scan-records > :last-child {
   margin-top: 16px;
+}
+
+/* 嵌入列表页页签时：与同页主表格（.workspace-list-page > .el-table）同一套
+   Fluent 平面样式——无外框/圆角、表头 48px、行单元格 12px 上下内边距、
+   悬停底色用主题的表格悬停令牌，表格紧接页签栏不再留 20px 上边距。 */
+.traffic-scan-records.is-embedded {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+.traffic-scan-records.is-embedded .traffic-records-table {
+  flex: 0 0 auto;
+  width: 100%;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  --el-table-bg-color: var(--app-surface);
+  --el-table-tr-bg-color: var(--app-surface);
+  --el-table-header-bg-color: var(--app-surface-soft);
+  --el-table-border-color: var(--app-border);
+  --el-table-row-hover-bg-color: var(--fluent3-table-hover-bg);
+}
+.traffic-scan-records.is-embedded .traffic-records-table :deep(.el-table__inner-wrapper) {
+  border-radius: 0;
+}
+.traffic-scan-records.is-embedded .traffic-records-table :deep(th.el-table__cell) {
+  height: 48px;
+  padding: 0;
+  background: var(--app-surface-soft) !important;
+  color: color-mix(in srgb, var(--app-text) 86%, transparent);
+  font-size: 13px !important;
+  font-weight: 600;
+  border-bottom-color: var(--app-border) !important;
+}
+.traffic-scan-records.is-embedded .traffic-records-table :deep(td.el-table__cell) {
+  padding: 12px 0;
+  border-bottom-color: var(--app-border);
+  font-size: 13px;
+}
+.traffic-scan-records.is-embedded .traffic-records-table :deep(td.el-table__cell .cell) {
+  line-height: 1.45;
+}
+.traffic-scan-records.is-embedded .traffic-records-table :deep(.el-table__row:hover > td.el-table__cell) {
+  background: var(--app-accent-soft) !important;
+}
+/* 分页在嵌入态与同页其他列表共用同一条右对齐页脚。 */
+.traffic-scan-records.is-embedded > :last-child {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  margin-top: 12px;
+  padding: 16px 0 0;
+  border-top: var(--fluent-stroke-thin) solid var(--app-border);
 }
 </style>
