@@ -645,8 +645,18 @@ onBeforeUnmount(() => {
          10px 列间距、10px 12px 内边距、同样的描边/圆角/底色、同样 32px 高的控件。
          两页筛选栏因此等高、控件同宽同高、聚焦下划线同为 2px 主色。 -->
     <div class="findings-filter-toolbar" aria-label="安全发现筛选">
-      <!-- 来源任务筛选：仅由任务行「来源任务」跳转进来时出现，
-           在网格里独占一行，不挤占下面五个筛选槽位。 -->
+      <!-- 来源任务筛选：仅由任务行「来源任务」跳转进来时出现。
+           它和「清除筛选」同处网格末尾的收尾槽位（第 6 列、与筛选行同一行），
+           不再独占一整行——否则它自己的格线会把下面的清除筛选挤到新的一行，
+           筛选栏凭空长高一截。窄屏下这一列并入筛选行，自动换行。 -->
+      <el-button
+        v-if="hasActiveFilters"
+        class="finding-filter-clear"
+        link
+        type="primary"
+        @click="resetFilters"
+        >清除筛选</el-button
+      >
       <el-tag
         v-if="taskFilter !== undefined"
         closable
@@ -731,14 +741,6 @@ onBeforeUnmount(() => {
           aria-label="按名称、等级、工具或规则搜索"
         />
       </div>
-      <el-button
-        v-if="hasActiveFilters"
-        class="finding-filter-clear"
-        link
-        type="primary"
-        @click="resetFilters"
-        >清除筛选</el-button
-      >
     </div>
     <!-- 空态放在表格内部（#empty）而不是顶替整张表格：表格骨架（表头列宽、
          边框、行分隔线）始终在位，空态只是表格的空行，页签切换不再整体跳动。 -->
@@ -820,7 +822,7 @@ onBeforeUnmount(() => {
               >来源任务</el-button
             >
             <el-button
-              class="finding-action"
+              class="finding-action finding-action--ai"
               size="small"
               :icon="MagicStick"
               @click="generatePostScanPath(scope.row)"
@@ -1203,12 +1205,14 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
 /* 筛选栏：与「检测任务」页 .task-filter-bar 逐项对齐——
    同一套五列网格与各列比例、10px 列间距、10px 12px 内边距、
    1px 描边 + 8px 圆角 + surface-soft 底色、32px 高的控件。
+   末尾额外留一列「收尾槽位」（第 6 列，按内容宽度）：来源任务标签与
+   「清除筛选」都放在这里、与筛选行同一行，不会把筛选栏撑高。
    两页筛选栏因此等高、控件同宽同高，来回切换不会出现“跳一下”的观感。 */
 .findings-filter-toolbar {
   display: grid;
   grid-template-columns:
     minmax(112px, 1fr) minmax(112px, 1fr) minmax(120px, 1.15fr) minmax(120px, 1.15fr)
-    minmax(0, 1.85fr);
+    minmax(0, 1.85fr) auto;
   align-items: center;
   gap: 10px;
   margin: 0;
@@ -1236,14 +1240,17 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
   flex: 1 1 150px;
   min-width: 0;
 }
-/* 来源任务筛选：从任务行「来源任务」跳转进来时才出现；在网格里独占一行，
-   左对齐、32px 高度与筛选控件一致，主色描边让它一眼可辨。 */
+/* 来源任务筛选：从任务行「来源任务」跳转进来时才出现；落在第 6 列收尾槽位，
+   32px 高度与筛选控件一致，让「清除筛选」也从槽位内左移一位、两个收尾项
+   各占一格而非互相遮挡。 */
 .finding-task-filter-tag.el-tag {
   --el-tag-bg-color: var(--app-accent-soft);
   --el-tag-border-color: color-mix(in srgb, var(--app-accent) 32%, transparent);
   --el-tag-text-color: var(--app-accent);
   display: inline-flex;
-  grid-column: 1 / -1;
+  grid-row: 1;
+  grid-column: 6 / 7;
+  align-self: center;
   align-items: center;
   justify-content: center;
   justify-self: start;
@@ -1271,20 +1278,39 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
   color: var(--app-surface);
 }
 /* 仅在存在筛选条件时出现的「清除筛选」：与检测任务页的 .task-filter-clear
-   同名同位——列表末尾、右对齐、不占固定槽位、字号 12px。 */
+   同一收尾槽位——筛选栏末尾、不占固定槽位、字号 12px。 */
+/* 仅在存在筛选条件时出现的「清除筛选」：默认落在第 6 列收尾槽位；
+   有「来源任务」标签时让位到第 7 列（标签存在与否由数据属性反映）。 */
 .finding-filter-clear {
+  grid-row: 1;
+  grid-column: 6 / 7;
+  align-self: center;
   flex: none;
   justify-self: end;
   white-space: nowrap;
   font-size: 12px;
   padding: 0 4px;
 }
+.findings-filter-toolbar:has(.finding-task-filter-tag) .finding-filter-clear {
+  grid-column: 7 / 8;
+}
+.findings-filter-toolbar:has(.finding-task-filter-tag) {
+  grid-template-columns:
+    minmax(112px, 1fr) minmax(112px, 1fr) minmax(120px, 1.15fr) minmax(120px, 1.15fr)
+    minmax(0, 1.85fr) auto auto;
+}
 @media (max-width: 1200px) {
+  /* 收尾槽位并入筛选行：不再单独占一列，标签与按钮随筛选行换行。 */
   .findings-filter-toolbar {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
   .finding-filter-row {
     grid-column: 1 / -1;
+  }
+  .finding-task-filter-tag.el-tag,
+  .finding-filter-clear {
+    grid-row: auto;
+    grid-column: auto;
   }
 }
 @media (max-width: 900px) {
@@ -1401,11 +1427,10 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
   background: var(--app-accent-soft);
   color: var(--app-text);
 }
-.finding-row-actions :deep(.finding-action--ai) {
-  border-color: var(--app-accent);
-  background: var(--app-surface-strong);
-  color: var(--fluent-link-fg);
-}
+/* The AI state itself lives in unified-theme.css next to `.row-action--ai`, so
+   the Findings, audit-log and task AI buttons cannot drift apart. Only the
+   per-page hover surface stays here: Findings uses `--app-accent-soft` so the
+   hover matches the row-action palette of the surrounding table. */
 .finding-row-actions :deep(.finding-action--ai:hover),
 .finding-row-actions :deep(.finding-action--ai:focus-visible) {
   border-color: var(--app-accent-dark);

@@ -95,7 +95,7 @@ const PROBE = `(() => {
     table: (() => {
       const pane = document.querySelector('.findings-source-pane');
       const table = pane
-        ? pane.querySelector('.traffic-records-table, .findings-filter-toolbar + .el-table')
+        ? pane.querySelector('.traffic-records-table, .findings-filter-toolbar + .el-table, .el-table')
         : document.querySelector('.tasks-page .el-table');
       if (!table) return null;
       const s = getComputedStyle(table);
@@ -117,6 +117,40 @@ const PROBE = `(() => {
         tdFont: tdS ? tdS.fontSize : null,
         tableTop: table.getBoundingClientRect().top,
         paneTop: (document.querySelector('.findings-source-pane, .task-filter-bar') || document.body).getBoundingClientRect().top,
+        /* 空态 / 状态区：表格是否还在、空态占多宽多高、是否有自带外框 */
+        emptyWrap: (() => {
+          const el = document.querySelector('.findings-source-pane .el-table__empty-block, .task-filter-bar + .empty-state, .task-list-empty, .tasks-page > .empty-state');
+          if (!el) return null;
+          const es = getComputedStyle(el);
+          return {
+            cls: String(el.className).slice(0, 60),
+            ...rect(el),
+            tableBorder: 'n/a',
+          };
+        })(),
+        emptyState: (() => {
+          const el = document.querySelector('.findings-source-pane .empty-state, .tasks-page > .empty-state');
+          if (!el) return null;
+          return { ...rect(el), cls: String(el.className) };
+        })(),
+        toolbar: (() => {
+          const el = document.querySelector('.findings-filter-toolbar, .task-filter-bar');
+          if (!el) return null;
+          const kids = [...el.children].map(k => ({ cls: String(k.className).split(' ')[0], ...rect(k) }));
+          const clr = el.querySelector('.finding-filter-clear, .task-filter-clear');
+          return {
+            ...rect(el),
+            cols: getComputedStyle(el).gridTemplateColumns,
+            rowGap: getComputedStyle(el).rowGap,
+            rows: new Set(kids.map(k => k.y)).size,
+            kids,
+            clear: clr ? { text: clr.textContent.trim(), alignSelf: getComputedStyle(clr).alignSelf, justifySelf: getComputedStyle(clr).justifySelf, ...rect(clr) } : null,
+            tag: (() => {
+              const t = el.querySelector('.finding-task-filter-tag');
+              return t ? { ...rect(t), span: getComputedStyle(t).gridColumn } : null;
+            })(),
+          };
+        })(),
         cellPads: [...table.querySelectorAll('th.el-table__cell .cell, td.el-table__cell .cell')]
           .slice(0, 4)
           .map(el => getComputedStyle(el).padding),
@@ -245,6 +279,10 @@ const PROBE = `(() => {
     await page.addInitScript(() => { localStorage.setItem('security_toolbox_theme', 'light'); });
     await page.addInitScript(r => { window.__parityRoute = r; }, route);
     await page.goto(`http://127.0.0.1:${port}/${route === 'findings-traffic' ? 'findings?source=traffic' : route}`, { waitUntil: 'networkidle' });
+    // 与桌面端一致：3 分钟后先以“带来源任务筛选”进入项目发现（任务行「发现」跳转的形态）。
+    if (process.env.PARITY_TASK_FILTER === '1' && route === 'findings') {
+      await page.goto(`http://127.0.0.1:${port}/findings?taskId=1228`, { waitUntil: 'networkidle' });
+    }
     await page.waitForTimeout(1200);
     await page.evaluate(() => {
       document.documentElement.setAttribute('data-system-theme', 'light');
@@ -293,6 +331,7 @@ const PROBE = `(() => {
       console.log(`  rowKids        ${m.rowKids.map(k => `${String(k.cls).split(' ').pop()}:${k.w}x${k.h}@${k.x}`).join(' ')}`);
       console.log(`  nextAfter      ${JSON.stringify(m.firstAfter)}`);
       console.log(`  table          ${JSON.stringify(m.table)}`);
+      console.log(`  toolbar        ${JSON.stringify(m.toolbar)}`);
     }
   }
   if (errors.length) {
