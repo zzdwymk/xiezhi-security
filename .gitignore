@@ -118,6 +118,44 @@ security-toolbox-web/scripts/tmp-*.cjs
 security-toolbox-web/scripts/tmp-*.mjs
 security-toolbox-web/scripts/tmp-*.js
 
+# security-toolbox-web/scripts/ 采用白名单：只有被 package.json 的 npm scripts
+# 直接调用、或作为正式测试依赖被 require 的脚本属于公开仓库范围。其余为现场
+# 实测、一次性布局测量/验证、现场演示与诊断脚本，写死了本机靶机地址或只服务
+# 于已修复的具体问题，仅供本地运行，不计入发布仓库。
+security-toolbox-web/scripts/*
+!security-toolbox-web/scripts/ai-relay-runtime-probe.py
+!security-toolbox-web/scripts/generate-icon.cjs
+!security-toolbox-web/scripts/test-ai-intent-request.cjs
+!security-toolbox-web/scripts/test-ai-progress-browser.cjs
+!security-toolbox-web/scripts/test-ai-progress-view.cjs
+!security-toolbox-web/scripts/test-ai-progress.cjs
+!security-toolbox-web/scripts/test-ai-relay-models.cjs
+!security-toolbox-web/scripts/test-ai-relay-runtime.cjs
+!security-toolbox-web/scripts/test-ai-relay-settings.cjs
+!security-toolbox-web/scripts/test-ai-relay.cjs
+!security-toolbox-web/scripts/test-ai-settings.cjs
+!security-toolbox-web/scripts/test-build-paths.cjs
+!security-toolbox-web/scripts/test-composer-stats-popovers.cjs
+!security-toolbox-web/scripts/test-desktop-ai-live-rounds.cjs
+!security-toolbox-web/scripts/test-desktop-dev-runner.cjs
+!security-toolbox-web/scripts/test-desktop-packaged-e2e.cjs
+!security-toolbox-web/scripts/test-global-notifications-browser.cjs
+!security-toolbox-web/scripts/test-json-file.cjs
+!security-toolbox-web/scripts/test-notification-center.cjs
+!security-toolbox-web/scripts/test-notification-pages-browser.cjs
+!security-toolbox-web/scripts/test-notification-settings-browser.cjs
+!security-toolbox-web/scripts/test-notifications.cjs
+!security-toolbox-web/scripts/test-postgres-startup.cjs
+!security-toolbox-web/scripts/test-setup-auto-continue-browser.cjs
+!security-toolbox-web/scripts/test-startup-navigation-browser.cjs
+!security-toolbox-web/scripts/test-stream-auth.cjs
+!security-toolbox-web/scripts/test-task-detail.cjs
+!security-toolbox-web/scripts/test-traffic-scan-status-browser.cjs
+!security-toolbox-web/scripts/test-turn-rail-tooltip-browser.cjs
+!security-toolbox-web/scripts/test-turn-rail-tooltip-leftover.cjs
+!security-toolbox-web/scripts/verify-offline-tools.cjs
+!security-toolbox-web/scripts/visual-smoke.cjs
+
 # End-to-end test evidence, artifacts and runtime credentials.
 # Already covered by .run/, listed explicitly so they stay ignored
 # even when a run writes outside that directory.
