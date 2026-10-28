@@ -592,7 +592,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="panel findings-page workspace-list-page" v-loading="loading && recordSource === 'project'">
+  <section class="panel findings-page workspace-list-page findings-tabbed-page" v-loading="loading && recordSource === 'project'">
     <div class="section-head">
       <div>
         <h3>安全发现</h3>
@@ -632,14 +632,17 @@ onBeforeUnmount(() => {
       />
     </el-tabs>
     <Transition name="findings-pane" mode="out-in">
-      <div v-if="recordSource === 'traffic'" key="traffic" class="findings-source-pane">
-        <!-- 流量发现与项目发现各自占满页签下方空间：两者共用一条页签栏，
-             内容区贴近页签栏，不再让固定的筛选工具栏把“流量发现”的表格往下压。 -->
+      <!-- 流量发现没有筛选栏：页签内容区在纵向占满，表格直接成为页签下方的
+           唯一主体（与项目发现的表格同一条顶边、同一块底部）。外层
+           `.findings-list-plane` 只提供块级定位与 `flex: 1 1 auto`，列向布局交给
+           组件根节点：从列表容器到表格之间是三层 flex 链，缺了中间这一层，
+           `flex: 1` 的表格就撑不满、在下方留出一截空白。 -->
+      <div v-if="recordSource === 'traffic'" key="traffic" class="findings-source-pane findings-list-plane">
         <!-- 嵌入态：隐藏组件自带工具条、表格改用列表页的平面样式，
              让切页签前后表格顶边与列样式不跳动。 -->
         <TrafficScanRecords mode="findings" bare embedded />
       </div>
-      <div v-else key="project" class="findings-source-pane">
+      <div v-else key="project" class="findings-source-pane findings-list-plane">
     <!-- 多维组合检索与过滤栏：版式与「检测任务」页 .task-filter-bar 一致——
          五列网格，前四列是筛选下拉，第五列是「时间区间 / 排序 + 搜索」组合；
          10px 列间距、10px 12px 内边距、同样的描边/圆角/底色、同样 32px 高的控件。
@@ -698,8 +701,8 @@ onBeforeUnmount(() => {
       </el-select>
       <!-- 第五列：与「检测任务」的「开始日期 至 结束日期 + 搜任务」同构——
            发现没有独立的日期区间字段，这里把时间区间换成「排序方式」。
-           「清除筛选」只在有条件时出现，与检测任务页一样挂在筛选行末尾的
-           固定槽位里，收起时留出 62px，展开时筛选框自动让位，不会与控件重叠。 -->
+           第五格 = 排序下拉 + 搜索框，两个控件在这一格里双列网格等宽铺满，
+           右边缘与上面四列的下拉框对齐。 -->
       <div class="finding-filter-row">
         <el-select
           v-model="findingSort"
@@ -721,30 +724,28 @@ onBeforeUnmount(() => {
           clearable
           aria-label="按名称、等级、工具或规则搜索"
         />
-        <!-- 「清除筛选」只在有条件时出现，但槽位常驻（与检测任务页
-             .task-filter-clear 同款处理）：收起时留白，展开时搜索框让出宽度。 -->
-        <span class="finding-filter-clear-slot">
-          <el-button
-            v-if="hasActiveFilters"
-            class="finding-filter-clear"
-            link
-            type="primary"
-            @click="resetFilters"
-            >清除筛选</el-button
-          >
-        </span>
       </div>
-      <!-- 来源任务筛选：仅由任务行「来源任务」跳转进来时出现。它是工具栏的
-            最后一个网格项（第 6 列），与筛选行（第 5 列）各自占一格，
-            两者永远不会叠在一起；窄屏时整行铺满。 -->
-      <el-tag
-        v-if="taskFilter !== undefined"
-        closable
-        class="finding-task-filter-tag"
-        @close="clearTaskFilter"
-      >
-        来源任务 #{{ taskFilter }}
-      </el-tag>
+      <!-- 「清除筛选」只在有条件时出现，与「来源任务」标签同处第 6 列的
+           收尾槽位：两者并排一行、互不换行，任一不在时另一项右对齐收尾。 -->
+      <div class="finding-filter-trailing">
+        <el-button
+          v-if="hasActiveFilters"
+          class="finding-filter-clear"
+          link
+          type="primary"
+          @click="resetFilters"
+          >清除筛选</el-button
+        >
+        <!-- 来源任务筛选：仅由任务行「来源任务」跳转进来时出现，跟「清除筛选」同行。 -->
+        <el-tag
+          v-if="taskFilter !== undefined"
+          closable
+          class="finding-task-filter-tag"
+          @close="clearTaskFilter"
+        >
+          来源任务 #{{ taskFilter }}
+        </el-tag>
+      </div>
     </div>
     <!-- 空态放在表格内部（#empty）而不是顶替整张表格：表格骨架（表头列宽、
          边框、行分隔线）始终在位，空态只是表格的空行，页签切换不再整体跳动。 -->
@@ -1183,11 +1184,10 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 14px;
 }
-/* 表格按内容高度撑开（空态也是完整的一行），不被 flex 压缩成一条表头。 */
-.findings-source-pane > .el-table {
-  flex: 0 0 auto;
-  min-height: 220px;
-}
+/* 表格撑满列表容器剩余高度（空态也要铺满整块，不能只占一条 314px 的矮表）。
+   flex/min-height 与空态填充规则统一由 fluent-design-2.css 的
+   `.findings-tabbed-page > .findings-list-plane > .el-table` 提供——项目发现与
+   流量发现两个页签共用同一套：1px 描边 + 10px 圆角 + 撑满剩余高度。 */
 .findings-source-pane > .findings-pagination {
   flex: 0 0 auto;
 }
@@ -1244,41 +1244,37 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
   width: 100%;
   min-width: 0;
 }
-/* 第五列 = 排序下拉 + 搜索框 + 清除筛选槽位，三者共享可用宽度。
-   宽度按 flex 分配而不是写死 basis：早期版本给排序下拉和清除槽位都写了不可压缩
-   的固定宽度，搜索框成了唯一可收缩项，在 1280 下被压到 18px（placeholder 完全
-   看不见）。现在排序下拉按内容宽（下限 150px，容纳“时间从新到旧”），搜索框拿
-   剩余（下限 96px，保证 placeholder 可读），清除槽位固定 56px；
-   空间不足时优先压缩排序下拉，输入框始终可用。 */
+/* 第五列 = 排序下拉 + 搜索框，两者在这一格里等宽分列、共同铺满整格。
+   早先是行内 flex：排序下拉按内容宽（150px）、搜索框吃掉剩余、清空槽位再过 56px，
+   结果搜索框右边缘比上面四个下拉框往左缩进了一截，整条筛选栏看着“没撑满”。
+   现在改成双列等宽网格，两个控件各自 100% 宽，最后一项的右边缘与上方
+   第 4 个下拉框严格对齐；「清除筛选」单独占工具栏第 6 列（auto 宽），
+   不再占用这一格的空间。 */
 .finding-filter-row {
-  display: flex;
-  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-column: 5 / 6;
   min-width: 0;
   align-items: center;
-  flex-wrap: wrap;
   gap: 10px;
 }
-/* 排序下拉：固定按内容宽，绝不增长、绝不压缩到 150px 以下。
-   flex-basis 必须写 auto 而不是百分比——写成 44% 时它会按容器宽度增长，
-   把同行的搜索框和清除按钮挤到下一行。 */
-.finding-filter-row .finding-filter-cell--sort {
-  flex: 0 0 auto;
-  width: auto;
-  min-width: 150px;
-  max-width: 220px;
-}
-.finding-filter-row .finding-filter-cell--search {
-  flex: 1 1 96px;
-  min-width: 96px;
+.finding-filter-row .finding-filter-cell {
+  width: 100%;
+  min-width: 0;
 }
 /* 「清除筛选」只在有条件时出现，但槽位常驻（与检测任务页 .task-filter-clear 同款
-   处理）：收起时留白，展开时搜索框让出宽度，控件不会被文字压住。 */
-.finding-filter-clear-slot {
+   处理）：收起时留白，展开时由 `grid-column: 5 / 6` 让搜索框让出宽度。
+   显式落在第 6 列：来源任务标签 `v-if` 不在时，槽位仍然与它共用同一格，
+   不会往前挪去占据第 5 列、把搜索框挤窄。 */
+/* 收尾槽位（第 6 列）：把「清除筛选」与「来源任务」标签并排放在同一行。
+   flex + nowrap 保证两者永远同行不换行；任一不在时另一项自动右对齐收尾。 */
+.finding-filter-trailing {
   display: inline-flex;
-  flex: 0 0 56px;
+  flex-wrap: nowrap;
+  grid-column: 6 / 7;
   align-items: center;
   justify-content: flex-end;
+  gap: 8px;
   min-width: 0;
 }
 .finding-filter-clear {
@@ -1323,23 +1319,24 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
 }
 /* 仅在存在筛选条件时出现的「清除筛选」：固定在筛选行末尾槽位，字号 12px。 */
 
-/* 中等宽度（<=1600px）：六列挤不下时，筛选行单独占满一行，
-   排序下拉与搜索框在行内平分，来源任务标签跟在末尾——不会出现
-   “第五列内部 wrap 成两行、和标签错位”的半吊子状态。 */
+/* 中等宽度（<=1600px）：六列挤不下时，筛选行单独占满一整行，
+   排序下拉与搜索框在行内等宽平分，来源任务标签跟在末尾——不会出现
+   “第五列内部 wrap 成两行、和标签错位”的半吊子状态。此时整行都已铺满，
+   「清除筛选」让位到筛选行的下一行（仍占满一行、右对齐）。 */
 @media (max-width: 1600px) {
   .findings-filter-toolbar {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
   .finding-filter-row {
     grid-column: 1 / -1;
-    flex-wrap: nowrap;
   }
-  .finding-filter-row .finding-filter-cell--sort {
-    flex: 0 0 auto;
-    max-width: 200px;
+  .finding-filter-trailing {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
   }
-  .finding-task-filter-tag.el-tag {
-    grid-column: auto;
+  .finding-filter-trailing {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
   }
 }
 @media (max-width: 1200px) {
@@ -1348,12 +1345,10 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
   }
   .finding-filter-row {
     grid-column: 1 / -1;
-    flex-wrap: wrap;
   }
-  .finding-filter-row .finding-filter-cell--sort,
-  .finding-filter-row .finding-filter-cell--search {
-    flex: 1 1 100%;
-    max-width: none;
+  /* 窄屏一列一行：排序下拉与搜索框各占一整行，placeholder 不被压缩。 */
+  .finding-filter-row {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 @media (max-width: 900px) {
@@ -1361,11 +1356,11 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .finding-filter-row {
-    flex-wrap: wrap;
+    grid-column: 1 / -1;
+    grid-template-columns: minmax(0, 1fr);
   }
-  .finding-filter-row .finding-filter-cell--sort,
-  .finding-filter-row .finding-filter-cell--search {
-    flex: 1 1 100%;
+  .finding-task-filter-tag.el-tag {
+    flex: 0 0 auto;
   }
 }
 .diff-form {

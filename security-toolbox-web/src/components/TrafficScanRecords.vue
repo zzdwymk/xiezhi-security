@@ -522,6 +522,12 @@ pre {
    不再出现「表头下面只吊着一条扁空行」的观感。 */
 .traffic-scan-records.is-embedded .traffic-records-table :deep(.el-table__empty-block) {
   min-height: 260px;
+  /* 空块由宿主（fluent-design-2.css）撑满表格剩余高度；内容块再叠加自己的
+     min-height 会把空块顶高，而 Element Plus 的 empty-block 是
+     align-items: center —— 内容块一旦比空块高，就会从顶部溢出，
+     看着就像「空态贴着表头」。这里让空块既是 flex 容器也吃满高度，
+     内容块不再自己定高，交给 align-items 真正垂直居中。 */
+  align-items: center;
 }
 .traffic-scan-records.is-embedded .traffic-records-table :deep(.el-table__empty-text) {
   width: 100%;
@@ -530,8 +536,9 @@ pre {
 .traffic-scan-records.is-embedded .traffic-empty-container {
   display: flex;
   width: 100%;
-  /* 与「项目发现」的空态同高：那边 empty-state 实测 220px。 */
-  min-height: 220px;
+  /* 只给下限、不抢高度：空块有富余高度时由它居中，
+     空块塌到 260px 以下时这里再兜一个 220px 的下限。 */
+  min-height: 0;
   align-items: center;
   justify-content: center;
   padding: 0;
@@ -550,8 +557,13 @@ pre {
    `.cell` 12px 横向留白、无外框无圆角。这里原先写的是表头 48px，
    两页页签来回切时表头高度会跳一下，现统一到 44px。 */
 .traffic-scan-records.is-embedded {
+  /* 列向 flex 链的关键中间层：页面根（flex 列）→ 页签内容区 → 组件根 → 表格。
+     组件根必须自身是「列向 flex + flex: 1 1 auto」，表格的 flex: 1 才能拿到
+     扣除表头、分页之后的剩余高度并铺满到底部；否则表格只按内容高度排布，
+     下方会留出一截空白（空态尤其明显）。 */
   display: flex;
   min-width: 0;
+  min-height: 0;
   flex: 1 1 auto;
   flex-direction: column;
   /* 与「项目发现」的表格顶边对齐：那边表格上方是筛选栏，页签栏到表格隔着
@@ -560,23 +572,111 @@ pre {
   padding-top: 14px;
 }
 .traffic-scan-records.is-embedded .traffic-records-table {
-  flex: 0 0 auto;
+  /* 与「项目发现」表格同一套高度策略：吃掉列表容器剩余高度（空态铺满整块），
+     下限 220px，内容超出时由 Element Plus 内部滚动。
+     `max-height` 保证内容再多也不会把容器撑破、在页面外层冒出一条滚动条。 */
+  flex: 1 1 auto;
   width: 100%;
-  /* 与「项目发现」表格同一下限：空态时也保持一整块，不被 flex 压成一条表头。
-     有数据时由行内容自然撑开；只有 1-2 行时仍保留 220px，两页页签切换不跳。 */
+  max-height: 100%;
   min-height: 220px;
-  overflow: hidden;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
+  /* 滚动容器会沿 90° 直角把表头的浅色底裁成方角，盖住外框的 10px 圆角，
+     所以 overflow 规则只留在 fluent-design-2.css 的宿主外框上，
+     这里不再自带 overflow: hidden。 */
+  /* 外框：嵌入态用真 border 画在表格根节点上（圆角由 border-radius 完整裁出，
+     四边+四角同为一条实线）。border 带来的 offsetWidth +2px 由宿主
+     .findings-list-plane 与表格自身 overflow:hidden 收口，不出现假横向滚动条。 */
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  background: var(--app-surface);
   --el-table-bg-color: var(--app-surface);
   --el-table-tr-bg-color: var(--app-surface);
   --el-table-header-bg-color: var(--app-surface-soft);
   --el-table-border-color: var(--app-border);
   --el-table-row-hover-bg-color: var(--fluent3-table-hover-bg);
 }
+/* 空态撑满整张表并垂直居中：从表格根往下每一层做列向 flex + flex:1，
+   逐层吃掉剩余高度（Element Plus 默认的 height:100% 在 flex 撑高的容器里
+   解析不到，内层只按内容撑到 ~300px，空态看着「靠上」）。链路同宿主
+   fluent-design-2.css。 */
+.traffic-scan-records.is-embedded .traffic-records-table {
+  display: flex;
+  flex-direction: column;
+}
+.traffic-scan-records.is-embedded .traffic-records-table :deep(.el-table__body-wrapper) {
+  display: flex;
+  flex: 1 1 0%;
+  flex-direction: column;
+  min-height: 0;
+}
+.traffic-scan-records.is-embedded .traffic-records-table :deep(.el-scrollbar) {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.traffic-scan-records.is-embedded .traffic-records-table :deep(.el-scrollbar__wrap) {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+/* 隐藏假横向滚动条的视觉 chrome（border 外框导致 offsetWidth +2px，
+   EP 判成可横向滚动）。保留 overflow-x:auto，真实列溢出仍可横向滚。 */
+.traffic-scan-records.is-embedded
+  .traffic-records-table
+  :deep(.el-scrollbar__bar.is-horizontal) {
+  display: none !important;
+}
+/* 空表时 Element Plus 会给 `.el-scrollbar__view` 打上内联
+   `display: inline-block; vertical-align: middle;`，内联优先级高于这里的
+   `display:flex`，导致下面的空态块 flex:1 失去容器、只按内容高度（约 220px）
+   停在表格顶部——「暂无包含告警的流量检测」于是"贴着表头靠上"。
+   用 !important 覆盖内联 display，空态块再 flex:1 撑满整张表并垂直居中。 */
+.traffic-scan-records.is-embedded
+  .traffic-records-table
+  :deep(.el-scrollbar__view:has(.el-table__empty-block)) {
+  display: flex !important;
+  flex-direction: column;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
+  vertical-align: initial;
+}
+.traffic-scan-records.is-embedded
+  .traffic-records-table
+  :deep(.el-scrollbar__view) {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.traffic-scan-records.is-embedded .traffic-records-table :deep(.el-table__empty-block) {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 220px;
+  align-items: center;
+}
 .traffic-scan-records.is-embedded .traffic-records-table :deep(.el-table__inner-wrapper) {
-  border-radius: 0;
+  border-radius: 10px;
+  /* 表头是浅色底，若不裁到圆角，四个直角会把外框 10px 圆角“切掉”，
+     看起来像表格缺了边框。 */
+  overflow: hidden;
+  /* 吃掉整张表的高度：`.el-table` 高是 flex 撑出来的，inner-wrapper 若不
+     flex:1 只按内容撑到 ~264px，下面的空态块就在这 264px 里居中，
+     相对整张表看着偏上。设为列向 flex 并 flex:1，才能把剩余高度传给
+     body-wrapper → scrollbar → view → empty-block，空态真正垂直居中。 */
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+/* 底部收边：嵌入态没有数据行时，最后一行到底是空块，Element Plus 不画
+   “最后一行”下边框，表格下沿的 1px 就整条消失，只剩左右和上边三条线。
+   这里补一条与行分隔线同色的下边框（有分页时紧贴分页上方的分隔线，
+   视觉上连成一整张闭合的表格）。 */
+.traffic-scan-records.is-embedded .traffic-records-table
+  :deep(.el-table__body-wrapper .el-table__body tr:last-child > td.el-table__cell) {
+  border-bottom: 1px solid var(--app-border) !important;
 }
 .traffic-scan-records.is-embedded .traffic-records-table :deep(th.el-table__cell),
 .traffic-scan-records.is-embedded .traffic-records-table :deep(td.el-table__cell) {
@@ -614,5 +714,15 @@ pre {
   margin-top: 12px;
   padding: 16px 0 0;
   border-top: var(--fluent-stroke-thin) solid var(--app-border);
+}
+
+/* 内层 wrapper 只负责把内容裁进 10px 圆角（表头浅色底不裁的话会把圆角切成直角）。
+   外框由上方 `.traffic-scan-records.is-embedded .traffic-records-table` 的 border
+   提供；这里不要再写同名选择器设 border，否则会覆盖掉外框。 */
+.traffic-scan-records.is-embedded
+  .traffic-records-table
+  :deep(.el-table__inner-wrapper) {
+  border-radius: 10px;
+  overflow: hidden;
 }
 </style>

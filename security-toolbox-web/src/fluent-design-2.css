@@ -1562,6 +1562,242 @@ html
  * on the direct route root and its direct table only; detail workbenches,
  * dialogs and project-scoped tables intentionally keep their own surfaces.
  * ------------------------------------------------------------------------- */
+/* -------------------------------------------------------------------------
+ * Tabbed list pages (tabs + one list plane)
+ *
+ * The list surface rule right below is intentionally scoped to
+ * `.workspace-list-page > .el-table` — the direct child.  Pages that put their
+ * table behind tabs (安全发现「项目发现 / 流量发现」) keep the table one level
+ * deeper inside the tab pane, so they never received the 1px outer edge: the
+ * filter toolbar above was framed but the table below floated borderless on
+ * the page, which read as "part of the table border is missing".
+ *
+ * The tab pane is marked `.findings-list-plane` (the visual equivalent of the
+ * route root for these pages).  It stretches to the bottom of the page card,
+ * so the table gets one closed frame instead of relying on the page
+ * (min-height: 100%) to be exactly as tall as its content.  Both tabs therefore
+ * share one frame: 1px `--page-border`, 10px radius, page surface colour — the
+ * same edge (and colour) as the filter toolbar above it.
+ * ------------------------------------------------------------------------- */
+.desktop-v2-app-frame .desktop-v2-content > .findings-tabbed-page {
+  /* 表格外框统一由列表面板提供，页签内容区不再额外留纵向间距。 */
+  gap: 0;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .findings-tabbed-page
+  > .findings-list-plane {
+  box-sizing: border-box;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 14px;
+  /* 表格自带 1px 外框，而 Element Plus 的列宽是按内容盒计算的：内容 1691px +
+     左右边框 2px，`.el-scrollbar__wrap` 的 scrollWidth 就比 clientWidth 多出
+     2px，组件据此判成"可横向滚动"，在表格中部挂出一条整宽的横向滚动条——
+     内容其实一点没溢出。竖向滚动条已被全局隐藏，这条横向的就格外刺眼。
+     列表面板这一层直接裁掉横向溢出：被裁掉的只有边框那 1~2px，内容不受影响，
+     统计口径与实际内容也重新对齐。 */
+  overflow-x: hidden;
+}
+
+/* 列表面板自身即"表格外框"：1px 描边 + 10px 圆角 + 页面表面底色，
+   与筛选栏/页脚用同一套边框令牌，表格内部只保留横向行分隔线。
+   空态要"撑满"：早先表格是 flex: 0 0 auto + min-height 220px，空态只有约
+   314px 高、页面下方空出一大块。现在表格吃掉列表容器剩余高度（下限 220px），
+   `.el-table__empty-block` 用 height:100% 顶满整张表，空态文案垂直居中；
+   有数据时超出一屏由 Element Plus 内部滚动，表格外框始终是一整张闭合的框。
+   流量发现（TrafficScanRecords 的 .traffic-records-table）走同一套。
+
+   外框必须用 outline 而不是 border。Element Plus 的列宽按内容盒分配到
+   colgroup，而 `.el-scrollbar__wrap` 的 scrollWidth 会把这 1px 边框也算进去：
+   border 版实测 offsetWidth 1808 / clientWidth 1806（左右边框共 2px），
+   scrollWidth 因此恒比 clientWidth 多 2px。Element Plus 只看
+   scrollWidth - clientWidth 判断是否可横向滚动（见 element-plus 的
+   scrollbar bar.vue update()），于是给表格挂出一条几乎满宽的横向滚动条——
+   内容其实一点没溢出，拖它也几乎没有位移，纯属假控件。overflow-x: clip
+   压不住它，因为 Element Plus 压根不读 overflow。
+   outline 不参与盒模型计算，不进 scrollWidth，等于从源头取消了这 2px 差值；
+   outline-offset: -1px 把描边收到框内，视觉上与原来的 border 一致。
+   列总宽真的超过表宽时，差值来自 colgroup，横向滚动条照常出现并可用。 */
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .findings-tabbed-page
+  > .findings-list-plane
+  > .el-table {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 220px;
+  overflow: hidden;
+  /* 外框用真 border 画在表格根节点上：圆角由 border-radius 完整裁出，
+     四条直边 + 四个圆角都是同一条实线（outline 会在半透明表头处发虚、
+     单元格 border 画不出圆角、伪元素被 Element Plus 的 --border 模式占用）。
+     border 会让 offsetWidth 多 2px，可能触发 EP 的假横向滚动条——下方
+     `.findings-list-plane` 的 overflow-x:hidden + 表格自身的 overflow:hidden
+     让这条满宽的假条不可见；真实列溢出照常滚动。 */
+  border: 1px solid var(--app-border) !important;
+  border-radius: 10px !important;
+  background: var(--page-surface) !important;
+  box-shadow: none !important;
+  --el-table-bg-color: var(--page-surface);
+  --el-table-tr-bg-color: var(--page-surface);
+  --el-table-header-bg-color: color-mix(
+    in srgb,
+    var(--page-soft) 92%,
+    transparent
+  );
+  --el-table-border-color: var(--page-border);
+  --el-table-row-hover-bg-color: var(--fluent3-table-hover-bg);
+}
+
+/* 内层 wrapper 只负责把内容裁进 10px 圆角（表头浅色底不裁的话会把圆角切成直角）。
+   外框由上方 `.el-table` 的 border 提供，这里不再画描边。 */
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .findings-tabbed-page
+  > .findings-list-plane
+  > .el-table
+  > .el-table__inner-wrapper {
+  /* 吃掉整张表的高度：.el-table 自身高度是 flex 撑出来的，inner-wrapper 用
+     height:100% 解析不到这个高度（只会按内容撑到 ~312px），空态块就在这
+     312px 里居中、相对整张表看着偏上。改成把 .el-table 设为 flex 列容器
+     （见下方规则）+ inner-wrapper flex:1 1 auto 才能真正撑满。 */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 10px !important;
+}
+
+/* 空态撑满整张表并从表格顶部垂直到表格底部居中的完整 flex 链。
+   Element Plus 默认靠 height:100% 逐层传递高度，但 `.el-table` 的自身高度是
+   flex 撑出来的（不是显式 height），height:100% 在 block 容器里解析不到，
+   内层只按内容撑到 ~312px → 空态块停在上半部、看着「靠上」。
+   改成从 .el-table 往下每一层都做列向 flex、子项 flex:1，逐层吃掉剩余高度：
+     .el-table            (flex column)   ← 见上方根规则
+     > .el-table__inner-wrapper  flex:1
+     > .el-table__body-wrapper   flex column
+     > .el-scrollbar             flex column
+     > .el-scrollbar__wrap       flex:1 (flex column)
+     > .el-scrollbar__view       flex:1 (flex column)
+     > .el-table__empty-block    flex:1，自身 align-items:center 居中内容 */
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .findings-tabbed-page
+  > .findings-list-plane
+  > .el-table
+  .el-table__body-wrapper {
+  display: flex;
+  flex-direction: column;
+}
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .findings-tabbed-page
+  > .findings-list-plane
+  > .el-table
+  .el-scrollbar {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .findings-tabbed-page
+  > .findings-list-plane
+  > .el-table
+  .el-scrollbar__wrap {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+/* 关键修复：空表时 Element Plus 会给 `.el-scrollbar__view` 打上内联
+   `display: inline-block; vertical-align: middle;`（为了让 body 表格纵向居中），
+   内联样式优先级高于任何类选择器，导致上面那套 `display:flex` 链在这里断掉——
+   `.el-table__empty-block` 的 `flex: 1` 失去容器而只按内容高度（约 268px）停在
+   表格顶部，于是「暂无风险记录 / 暂无包含告警的流量检测」看起来"贴着表头靠上"。
+   这里用 `!important` 覆盖内联 display，只对「无数据（含 empty-block）」的表格
+   生效，有数据时保持原样不动。空态块再 flex:1 撑满整张表格并垂直居中。 */
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .findings-tabbed-page
+  > .findings-list-plane
+  > .el-table
+  .el-scrollbar__view:has(.el-table__empty-block) {
+  display: flex !important;
+  flex-direction: column;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
+  vertical-align: initial;
+}
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .findings-tabbed-page
+  > .findings-list-plane
+  > .el-table
+  .el-scrollbar__view {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .findings-tabbed-page
+  > .findings-list-plane
+  > .el-table
+  .el-table__empty-block {
+  flex: 1 1 auto;
+  height: auto;
+}
+
+/* 横向滚动条收口（「项目发现 / 流量发现」两个页签共用）。
+
+   历史坑：早先表格外框用的是 border（1px × 左右），Element Plus 会把边框算进
+   `.el-scrollbar__wrap` 的 scrollWidth：内容 1691px + 左右边框 2px = 1693px，
+   比 clientWidth 多 2px，于是判定为「可横向滚动」，在表格底部挂出一条整宽滚动条，
+   而内容其实没有溢出。竖向滚动条已被全局隐藏，这条横向的就格外刺眼。
+
+/* 横向滚动容器：content 放得下时不要横向滚动，列总宽真的超出时仍可横向滚。
+   外框用 border 画（圆角完美），border 会让 `.el-table` 的 offsetWidth 比
+   clientWidth 多 2px，Element Plus 据此把 wrap 判成「可横向滚动」并挂出
+   一条满宽的横向滚动条（thumb 尺寸恒非空，鼠标移入就冒出来）。
+   这里把这条「横向滚动条」的视觉 chrome 隐藏掉，但保留 overflow-x: auto，
+   所以真实列溢出时仍能靠触控板/Shift+滚轮横向滚动，只是不显示那条假条。 */
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .findings-tabbed-page
+  > .findings-list-plane
+  > .el-table
+  :is(.el-table__body-wrapper, .el-scrollbar, .el-scrollbar__wrap) {
+  overflow-x: auto;
+}
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .findings-tabbed-page
+  > .findings-list-plane
+  > .el-table
+  .el-scrollbar__bar.is-horizontal {
+  display: none !important;
+}
+
+.desktop-v2-app-frame
+  .desktop-v2-content
+  > .findings-tabbed-page
+  > .findings-list-plane
+  > .el-table
+  .el-table__empty-block {
+  height: 100%;
+  min-height: 260px;
+}
+
 .desktop-v2-app-frame .desktop-v2-content > .workspace-list-page {
   box-sizing: border-box;
   display: flex;
@@ -3451,25 +3687,52 @@ body,
 }
 
 /* ----- Buttons ----- */
+/* AI actions stay excluded here (same reason as `.row-action--danger` above):
+   they carry their own accent text/border from `.row-action--ai` in
+   unified-theme.css. This `:where()` rule targets the whole app frame, so any
+   page whose AI button has no page-scoped `:deep()` override of its own — the
+   task row "诊断" button, for instance — would otherwise be repainted neutral
+   and lose the AI affordance entirely. */
 .desktop-v2-app-frame
-  :where(.el-button:not(.is-link):not(.is-text):not(.el-button--primary)),
+  :where(
+    .el-button:not(.is-link):not(.is-text):not(.el-button--primary):not(
+        .row-action--ai
+      ):not(.finding-action--ai)
+  ),
 .login-page
-  :where(.el-button:not(.is-link):not(.is-text):not(.el-button--primary)),
+  :where(
+    .el-button:not(.is-link):not(.is-text):not(.el-button--primary):not(
+        .row-action--ai
+      ):not(.finding-action--ai)
+  ),
 .setup-page
-  :where(.el-button:not(.is-link):not(.is-text):not(.el-button--primary)) {
+  :where(
+    .el-button:not(.is-link):not(.is-text):not(.el-button--primary):not(
+        .row-action--ai
+      ):not(.finding-action--ai)
+  ) {
   border: var(--fluent-stroke-thin) solid var(--app-border-strong);
   background: var(--app-surface-strong);
   color: var(--app-text);
   box-shadow: none;
 }
-
 .desktop-v2-app-frame
-  :where(.el-button:not(.is-link):not(.is-text):not(.el-button--primary):hover),
+  :where(
+    .el-button:not(.is-link):not(.is-text):not(.el-button--primary):not(
+        .row-action--ai
+      ):not(.finding-action--ai):hover
+  ),
 .login-page
-  :where(.el-button:not(.is-link):not(.is-text):not(.el-button--primary):hover),
+  :where(
+    .el-button:not(.is-link):not(.is-text):not(.el-button--primary):not(
+        .row-action--ai
+      ):not(.finding-action--ai):hover
+  ),
 .setup-page
   :where(
-    .el-button:not(.is-link):not(.is-text):not(.el-button--primary):hover
+    .el-button:not(.is-link):not(.is-text):not(.el-button--primary):not(
+        .row-action--ai
+      ):not(.finding-action--ai):hover
   ) {
   border-color: color-mix(in srgb, var(--app-accent) 40%, var(--app-border));
   background: var(--app-surface-soft);
