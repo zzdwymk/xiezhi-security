@@ -894,7 +894,7 @@ onMounted(load);
         ><template #default="scope"
           ><div class="row-actions row-actions--pair"
             ><el-button
-              class="row-action target-action-ai"
+              class="row-action row-action--ai target-action-ai"
               size="small"
               :icon="MagicStick"
               @click="askCopilot(scope.row)"

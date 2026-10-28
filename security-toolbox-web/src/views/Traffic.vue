@@ -3201,7 +3201,7 @@ onUnmounted(() => {
                 ><el-button
                   size="small"
                   type="primary"
-                  class="packet-copilot-button"
+                  class="packet-copilot-button row-action--ai"
                   @click="openTrafficCopilot"
                   ><el-icon><MagicStick /></el-icon>AI 分析</el-button
                 ></el-tooltip
@@ -6427,6 +6427,10 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--app-accent) 74%, #000);
   color: #fff;
 }
+/* The AI action in the page header keeps its filled-primary treatment: it is
+   the only entry point in this view, so it carries more weight than the
+   bordered row-level AI buttons. `row-action--ai` is still on the element so
+   the semantic role is declared in markup; this !important block wins. */
 .codex-traffic-page :deep(.packet-copilot-button) {
   border-color: var(--fluent-action-bg) !important;
   background: var(--fluent-action-bg) !important;

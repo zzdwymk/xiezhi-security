@@ -2144,7 +2144,7 @@ watch(
         <div class="ai-diagnostics-assistant">
           <h3>AI 配置诊断</h3>
           <p>将已读取的服务商、模型与连接配置状态带入 AI 安全助手，由你发送诊断请求。不会附带 API 密钥、密钥提示或 API 地址。</p>
-          <el-button :icon="MagicStick" :disabled="aiSettingsBusy || aiLoading" @click="troubleshootWithCopilot">在 AI 助手中诊断</el-button>
+          <el-button class="row-action row-action--ai" :icon="MagicStick" :disabled="aiSettingsBusy || aiLoading" @click="troubleshootWithCopilot">在 AI 助手中诊断</el-button>
         </div>
       </section>
       <template #footer>

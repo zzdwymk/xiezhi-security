@@ -1709,7 +1709,7 @@ onUnmounted(() => {
             }}</span>
             <h2>{{ selected.name }}</h2>
             <el-button
-              class="detail-ai-action"
+              class="detail-ai-action row-action row-action--ai"
               type="primary"
               :icon="MagicStick"
               @click="askCopilot(selected)"

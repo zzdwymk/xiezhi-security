@@ -4259,7 +4259,7 @@ onUnmounted(() => {
             :disabled="s.value === 'ACTIVE' && !windowActive"
           />
         </el-select>
-        <el-button type="primary" plain @click="openProjectCopilot()"
+        <el-button type="primary" plain class="row-action--ai" @click="openProjectCopilot()"
           ><el-icon><MagicStick /></el-icon>AI 项目分析</el-button
         >
         <el-button
@@ -5475,7 +5475,7 @@ onUnmounted(() => {
               @click="stopProjectWorkflow"
               >停止工作流</el-button
             >
-            <el-button type="primary" plain @click="openProjectCopilot('recon')"
+            <el-button type="primary" plain class="row-action--ai" @click="openProjectCopilot('recon')"
               ><el-icon><MagicStick /></el-icon>AI 解读结果</el-button
             >
           </div>
@@ -6396,6 +6396,7 @@ onUnmounted(() => {
               size="small"
               type="primary"
               plain
+              class="row-action--ai"
               @click="openProjectCopilot('findings')"
               ><el-icon><MagicStick /></el-icon>AI 汇总</el-button
             >

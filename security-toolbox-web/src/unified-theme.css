@@ -146,9 +146,15 @@
   --app-hover-popup-text: light-dark(#ffffff, #111827);
   --app-hover-popup-border: light-dark(#374151, #cbd5e1);
   --app-accent: var(--system-theme-accent);
+  /* "Dark" accent step, used for accent-coloured text/icons (`--fluent-link-fg`)
+     as well as accent hover borders. 74% CanvasText made the accent read
+     heavier than the fixed, deliberately-dark `--fluent-danger-bg`, so the AI
+     and link-blue controls looked deeper than the destructive red beside them.
+     85% keeps AA contrast (≈5.9:1 on Canvas) while restoring the Fluent
+     hierarchy where danger out-weighs accent. */
   --app-accent-dark: color-mix(
     in srgb,
-    var(--system-theme-accent) 74%,
+    var(--system-theme-accent) 85%,
     CanvasText
   );
   /* Compatibility aliases used by a few legacy page styles.  Keeping these
@@ -1601,7 +1607,12 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
   transform: scale(0.985);
 }
 
-.el-button:not(.el-button--primary):not(.is-link):not(.is-text):where(:not(.row-action):not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled)) {
+/* The `:where()` exclusions keep semantic variants out of this neutral base.
+   Both AI class names must be listed: Findings uses `.finding-action--ai`,
+   which does not carry a `row-action` prefix, so excluding `.row-action`
+   alone left its AI buttons repainted black at (0,3,0) — higher than the
+   shared AI rule. */
+.el-button:not(.el-button--primary):not(.is-link):not(.is-text):where(:not(.row-action):not(.row-action--danger):not(.row-action--ai):not(.finding-action--ai):not(.el-button--danger):not(.is-disabled):not(:disabled)) {
   border-color: var(--app-border-strong);
   background: var(--app-surface-strong);
   color: var(--app-text);
@@ -1613,7 +1624,7 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
    tinted with the system accent, so a desaturated grey reads as a grey box
    floating in a blue row, and it silently discards the theme colour. Row
    actions keep their own accent-tinted hover (see `.row-action` below). */
-.el-button:not(.el-button--primary):not(.is-link):not(.is-text):where(:not(.row-action):not(.row-action--danger):not(.el-button--danger):not(.is-disabled):not(:disabled)):hover {
+.el-button:not(.el-button--primary):not(.is-link):not(.is-text):where(:not(.row-action):not(.row-action--danger):not(.row-action--ai):not(.finding-action--ai):not(.el-button--danger):not(.is-disabled):not(:disabled)):hover {
   background: color-mix(in srgb, CanvasText 5%, var(--app-surface-strong));
 }
 
@@ -2217,13 +2228,29 @@ html
   background: color-mix(in srgb, var(--system-theme-accent) 34%, var(--app-surface-strong));
   color: var(--app-text);
 }
-.row-action--ai.el-button {
+/* "This action calls the AI copilot" is one semantic state, so it gets one
+   selector list. `.row-action--ai` covers the shared row buttons (audit log,
+   tasks, finding rows); `.finding-action--ai` is the Findings table's older
+   copy of the same look.
+
+   The double class (`.row-action--ai.row-action--ai`) is load-bearing, not
+   noise: the base rule above is declared as `.row-actions .row-action`, i.e.
+   (0,2,0). A bare `.row-action--ai.el-button` is also (0,2,0) and only wins by
+   source order, which is fragile — on pages that wrap the buttons in
+   `<div class="row-actions">` (Tasks) the base rule gets the container match
+   and repaints the AI button neutral black while the audit-log button, which
+   has no wrapper, stays accent-coloured. Repeating the class lifts this rule
+   to (0,3,0) so the AI state wins regardless of wrapper markup. */
+.row-action--ai.row-action--ai.el-button,
+.finding-action--ai.finding-action--ai.el-button {
   border-color: var(--app-accent);
   background: var(--app-surface-strong);
   color: var(--fluent-link-fg);
 }
-.row-action--ai.el-button:hover,
-.row-action--ai.el-button:focus-visible {
+.row-action--ai.row-action--ai.el-button:hover,
+.row-action--ai.row-action--ai.el-button:focus-visible,
+.finding-action--ai.finding-action--ai.el-button:hover,
+.finding-action--ai.finding-action--ai.el-button:focus-visible {
   border-color: var(--app-accent-dark);
   background: var(--app-accent-soft-strong);
   color: var(--fluent-link-fg);
