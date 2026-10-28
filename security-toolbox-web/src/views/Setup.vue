@@ -1071,9 +1071,9 @@ onUnmounted(() => {
               确认安全检测引擎与本地工具均可用，缺失项目可在此安装或查看官方来源。
             </p>
           </div>
-          <el-button class="dep-rescan-button" :loading="loading" @click="check(true)"
-            ><el-icon><Refresh /></el-icon><span>重新检测</span></el-button
-          >
+          <el-button class="dep-rescan-button" :loading="loading" @click="check(true)">
+            <el-icon v-if="!loading"><Refresh /></el-icon><span>重新检测</span>
+          </el-button>
         </header>
 
         <el-alert

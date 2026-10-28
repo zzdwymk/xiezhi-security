@@ -415,6 +415,15 @@ body:has(.setup-page) {
     transform: rotate(360deg);
   }
 }
+/* 按钮内加载图标的旋转（替代 Element Plus 的 rotating，避免其放大图标盒）。 */
+@keyframes dep-icon-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
 .dep-main {
   display: flex;
   min-width: 0;
@@ -774,6 +783,44 @@ body:has(.setup-page) {
 .dep-ready-controls .el-button .el-icon {
   flex: none;
   font-size: 14px;
+}
+/* loading 态的 el-icon 由 Element Plus 插到按钮首位并吃掉行内空白，
+   外层按钮的 gap 管不到它；同时它是 1em 尺寸，不锁定尺寸会随继承字号变成 ~19.7px，
+   于是加载时图标突然变大、离文字更远。这里锁定尺寸并显式给出与 gap 一致的间距，
+   并停掉 EP 自带的 rotating 动画（实测会让盒子从 14px 变成 19.7px）——
+   旋转改由内部 svg 承担，视觉不变。 */
+.setup-header .el-button.el-button > .el-icon.is-loading,
+.dep-actions .el-button.el-button > .el-icon.is-loading,
+.dep-ready-controls .el-button.el-button > .el-icon.is-loading,
+.setup-storage-actions .el-button.el-button > .el-icon.is-loading,
+.setup-toolbox-card .el-button.el-button > .el-icon.is-loading {
+  flex: 0 0 14px;
+  width: 14px !important;
+  height: 14px !important;
+  font-size: 14px;
+  animation: none !important;
+}
+/* loading 图标由 EP 作为按钮<span>外层的第一个子节点插入，正好落在 15px 内边距处；
+   它的右侧那 ~18px 是模板源码里换行留下的空白文本节点（按钮已改为 inline-flex，
+   空白会被渲染成一个文本节点）。这里用负右外边距吃掉这段空白，只保留与 gap 一致的 6px。 */
+.setup-header .el-button.el-button > .el-icon.is-loading {
+  margin-left: 0;
+  margin-right: -6px;
+}
+.setup-header .el-button.el-button > .el-icon.is-loading > svg,
+.dep-actions .el-button.el-button > .el-icon.is-loading > svg,
+.dep-ready-controls .el-button.el-button > .el-icon.is-loading > svg,
+.setup-storage-actions .el-button.el-button > .el-icon.is-loading > svg,
+.setup-toolbox-card .el-button.el-button > .el-icon.is-loading > svg {
+  width: 14px;
+  height: 14px;
+  animation: dep-icon-spin 1s linear infinite;
+}
+/* 检测中只保留一个转圈图标（模板里加载时不再渲染刷新图标），
+   按钮宽度与静止态保持一致，避免右上角按钮在检测期间左右跳动。
+   宽度按「图标 14 + 间距 6 + 文字 56 + 左右内边距 15×2」对齐。 */
+.setup-header .dep-rescan-button {
+  min-width: 106px;
 }
 /* 兼容 Element Plus 对旧版按钮文本未包裹 span 的情况，移除原有 margin 叠加 */
 .dep-ready-controls .el-button span {
