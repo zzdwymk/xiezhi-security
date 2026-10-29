@@ -18,6 +18,9 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -40,6 +43,8 @@ public class SecurityAgentTools {
   private final TaskService taskService;
   private final AuditService auditService;
   private final CrossTurnRecoveryService recoveryService;
+  @Autowired(required = false)
+  private com.bachelor.toolbox.target.PortRangeParser portRangeParser;
 
   public SecurityAgentTools(
       AssessmentProjectService projects,
@@ -174,20 +179,50 @@ public class SecurityAgentTools {
       CrossTurnRecoveryService.RecoveryAnchor recoveryAnchor, boolean approvedPlan)
       throws Exception {
     projects.lockForAgentExecution(request.projectId());
-    targets.lockForAgentExecution(request.targetId());
+
+    List<Long> targetIdsToExecute;
+    if (request.isProjectScoped()) {
+      if (request.scopeMode() == AiAgentRequest.ScopeMode.PROJECT_SUBSET) {
+        targetIdsToExecute = request.targetIds() == null ? List.of() : request.targetIds().stream().distinct().toList();
+        var links = projects.targets(request.projectId()).stream()
+            .map(com.bachelor.toolbox.project.ProjectTarget::getTargetId).collect(java.util.stream.Collectors.toSet());
+        for (Long tid : targetIdsToExecute) {
+          if (!links.contains(tid)) {
+            throw new ApiException("目标 #" + tid + " 不属于该评估项目");
+          }
+        }
+      } else { // PROJECT_ALL
+        targetIdsToExecute = projects.targets(request.projectId()).stream()
+            .map(com.bachelor.toolbox.project.ProjectTarget::getTargetId).distinct().toList();
+      }
+      if (targetIdsToExecute.isEmpty()) {
+        throw new ApiException("项目内没有可执行的授权目标");
+      }
+    } else {
+      targetIdsToExecute = List.of(request.targetId());
+    }
+
+    // 避免死锁：按目标 ID 升序加锁
+    for (Long tid : targetIdsToExecute.stream().sorted().toList()) {
+      targets.lockForAgentExecution(tid);
+    }
+
     String idempotencyKey = idempotencyKey(request);
     String requestDigest = requestDigest(request, proposedPlan);
     AiAgentDispatchRecord existing = dispatches.findById(idempotencyKey).orElse(null);
+    Long primaryTargetId = request.targetId() != null ? request.targetId() : targetIdsToExecute.get(0);
     if (existing != null) {
       if (!requestDigest.equals(existing.getRequestDigest())) {
         throw new ApiException("相同 Turn ID 不能用于不同的 AI 执行请求");
       }
-      projects.validateProjectTarget(request.projectId(), request.targetId());
-      targets.getCurrentlyAuthorized(request.targetId());
+      for (Long tid : targetIdsToExecute) {
+        projects.validateProjectTarget(request.projectId(), tid);
+        targets.getCurrentlyAuthorized(tid);
+      }
       AiPlanResponse normalized = prepareForHarness(request, proposedPlan);
       List<Long> taskIds = parseTaskIds(existing.getTaskIds());
       checkpoint(request, recoveryAnchor, taskIds);
-      return new AiDispatchResponse(request.targetId(), inExecutionOrder(normalized), taskIds.size(), taskIds);
+      return new AiDispatchResponse(primaryTargetId, inExecutionOrder(normalized), taskIds.size(), taskIds);
     }
     AiAuthorizationGuard.GuardDecision decision = approvedPlan ? guard.evaluateApproved(request, proposedPlan) : guard.evaluate(request, proposedPlan);
     if (!decision.mayExecute()) {
@@ -200,89 +235,119 @@ public class SecurityAgentTools {
     }
     boolean workflowBound = request.workflowDigest() != null && !request.workflowDigest().isBlank();
     List<Long> taskIds = new java.util.ArrayList<>();
-    java.util.Map<String, Long> taskByNode = new java.util.LinkedHashMap<>();
     List<AiPlanResponse.PlanStep> orderedSteps =
         executablePlan.steps().stream()
             .sorted(java.util.Comparator.comparingInt(AiPlanResponse.PlanStep::group)
                 .thenComparing(SecurityAgentTools::requiresSerialExecution))
             .toList();
     if (!workflowBound) rejectUnsafeParallelGroups(orderedSteps);
-    WorkflowTaskSchedule schedule = new WorkflowTaskSchedule();
-    // AI 直接规划的方案没有 workflowNodeId，无法走 dependsOnNodeIds，因此这里按工具语义补依赖：
-    // 声明 consumeOpenPorts 的 Nmap 步骤必须排在同一方案内的 tcp_ports 之后，并且等它成功。
-    // 少了这层依赖，TaskExecutionService#narrowPortsToDependencyResults 拿不到前序 openPorts，
-    // 扫描范围不会收敛，等于把授权全段又扫一遍——这正是当初把两者改成二选一的原因。
-    Long portProbeTaskId = null;
-    for (AiPlanResponse.PlanStep step : orderedSteps) {
-      List<Long> graphDependencyTaskIds =
-          step.dependsOnNodeIds().stream()
-              .filter(taskByNode::containsKey)
-              .map(taskByNode::get)
-              .toList();
-      long requiredSelectedDependencies =
-          step.dependsOnNodeIds().stream()
-              .filter(
-                  nodeId ->
-                      orderedSteps.stream()
-                          .anyMatch(candidate -> nodeId.equals(candidate.workflowNodeId())))
-              .count();
-      if (graphDependencyTaskIds.size() != requiredSelectedDependencies) {
-        throw new ApiException("工作流任务依赖顺序无效");
+
+    for (Long currentTargetId : targetIdsToExecute) {
+      try {
+        projects.validateProjectTarget(request.projectId(), currentTargetId);
+        targets.getCurrentlyAuthorized(currentTargetId);
+      } catch (ApiException e) {
+        if (!request.isProjectScoped()) throw e;
+        continue;
       }
-      List<Long> planDependencies = new java.util.ArrayList<>(graphDependencyTaskIds);
-      if (!workflowBound
-          && "nmap_service_scan".equals(step.toolCode())
-          && consumesOpenPorts(step)
-          && portProbeTaskId != null
-          && !planDependencies.contains(portProbeTaskId)) {
-        planDependencies.add(portProbeTaskId);
+      java.util.Map<String, Long> taskByNode = new java.util.LinkedHashMap<>();
+      WorkflowTaskSchedule schedule = new WorkflowTaskSchedule();
+      Long portProbeTaskId = null;
+      for (AiPlanResponse.PlanStep step : orderedSteps) {
+        List<Long> graphDependencyTaskIds =
+            step.dependsOnNodeIds().stream()
+                .filter(taskByNode::containsKey)
+                .map(taskByNode::get)
+                .toList();
+        long requiredSelectedDependencies =
+            step.dependsOnNodeIds().stream()
+                .filter(
+                    nodeId ->
+                        orderedSteps.stream()
+                            .anyMatch(candidate -> nodeId.equals(candidate.workflowNodeId())))
+                .count();
+        if (graphDependencyTaskIds.size() != requiredSelectedDependencies) {
+          throw new ApiException("工作流任务依赖顺序无效");
+        }
+        List<Long> planDependencies = new java.util.ArrayList<>(graphDependencyTaskIds);
+        if (!workflowBound
+            && "nmap_service_scan".equals(step.toolCode())
+            && consumesOpenPorts(step)
+            && portProbeTaskId != null
+            && !planDependencies.contains(portProbeTaskId)) {
+          planDependencies.add(portProbeTaskId);
+        }
+        Map<String, Object> stepParameters = step.parameters();
+        if (request.isProjectScoped() && portRangeParser != null && Set.of("tcp_ports", "nmap_service_scan", "fscan_scan").contains(step.toolCode())) {
+          String reqPorts = java.util.Objects.toString(step.parameters() != null ? step.parameters().get("ports") : null, "").trim();
+          if (!reqPorts.isBlank()) {
+            try {
+              var tgt = targets.get(currentTargetId);
+              var allowed = portRangeParser.parse(tgt.getAllowedPorts());
+              var requested = portRangeParser.parse(reqPorts);
+              var intersection = new java.util.LinkedHashSet<>(requested);
+              intersection.retainAll(allowed);
+              if (intersection.isEmpty()) {
+                continue;
+              }
+              stepParameters = new java.util.LinkedHashMap<>(step.parameters());
+              stepParameters.put("ports", intersection.stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(",")));
+            } catch (Exception ignored) {
+            }
+          }
+        }
+        WorkflowTaskSchedule.Scheduled scheduled = schedule.schedule(
+            step.group(), step.risk(), step.requiresApproval(), planDependencies,
+            step.toolCode());
+        CreateTaskRequest createRequest =
+            new CreateTaskRequest(
+                request.projectId(), currentTargetId, step.toolCode(), stepParameters);
+        String nodeRunId = workflowBound
+            ? (request.isProjectScoped()
+                ? (request.nodeRunId() + "." + currentTargetId + "." + step.workflowNodeId())
+                : (request.nodeRunId() + "." + step.workflowNodeId()))
+            : null;
+        SecurityTask task =
+            workflowBound
+                ? taskService.createWorkflowTask(
+                    createRequest,
+                    request.workflowDigest(),
+                    step.workflowNodeId(),
+                    nodeRunId,
+                    scheduled.group(),
+                    step.risk(),
+                    step.requiresApproval(),
+                    scheduled.dependencyTaskIds())
+                : taskService.createDependent(createRequest, planDependencies, scheduled.group());
+        if (workflowBound) {
+          task.setSuccessDependencyTaskIds(objectMapper.writeValueAsString(graphDependencyTaskIds));
+        } else if (!planDependencies.isEmpty()) {
+          task.setSuccessDependencyTaskIds(objectMapper.writeValueAsString(planDependencies));
+        }
+        taskIds.add(task.getId());
+        schedule.taskCreated(scheduled, task.getId());
+        if ("tcp_ports".equals(step.toolCode())) portProbeTaskId = task.getId();
+        if (step.workflowNodeId() != null) taskByNode.put(step.workflowNodeId(), task.getId());
       }
-      WorkflowTaskSchedule.Scheduled scheduled = schedule.schedule(
-          step.group(), step.risk(), step.requiresApproval(), planDependencies,
-          step.toolCode());
-      CreateTaskRequest createRequest =
-          new CreateTaskRequest(
-              request.projectId(), request.targetId(), step.toolCode(), step.parameters());
-      SecurityTask task =
-          workflowBound
-              ? taskService.createWorkflowTask(
-                  createRequest,
-                  request.workflowDigest(),
-                  step.workflowNodeId(),
-                  request.nodeRunId() + "." + step.workflowNodeId(),
-                  scheduled.group(),
-                  step.risk(),
-                  step.requiresApproval(),
-                  scheduled.dependencyTaskIds())
-              : taskService.createDependent(createRequest, planDependencies, scheduled.group());
-      // Scheduling barriers wait for completion, while only graph prerequisites
-      // require success. The task is managed by this transaction and flushed
-      // before TaskService's after-commit enqueue callback can observe it.
-      if (workflowBound) {
-        task.setSuccessDependencyTaskIds(objectMapper.writeValueAsString(graphDependencyTaskIds));
-      } else if (!planDependencies.isEmpty()) {
-        // 非工作流依赖同样要求"成功"而不只是"完成"：前序端口探测失败时，
-        // Nmap 应当跳过而不是退化回全量扫描。
-        task.setSuccessDependencyTaskIds(objectMapper.writeValueAsString(planDependencies));
-      }
-      taskIds.add(task.getId());
-      schedule.taskCreated(scheduled, task.getId());
-      if ("tcp_ports".equals(step.toolCode())) portProbeTaskId = task.getId();
-      if (step.workflowNodeId() != null) taskByNode.put(step.workflowNodeId(), task.getId());
+    }
+    if (taskIds.isEmpty() && !orderedSteps.isEmpty()) {
+      throw new ApiException("项目范围内所有授权目标均无法通过执行校验或已失效");
     }
     auditService.record(
         "AI_DISPATCH_TASKS",
         "PROJECT",
         request.projectId(),
-        "targetId=" + request.targetId() + "; turnId=" + request.turnId() + "; taskIds=" + taskIds,
+        "scope=" + (request.isProjectScoped() ? request.scopeMode() : "SINGLE")
+            + "; targetIds=" + targetIdsToExecute
+            + "; turnId=" + request.turnId() + "; taskIds=" + taskIds,
         "ACCEPTED");
     AiDispatchResponse response =
         new AiDispatchResponse(
-            request.targetId(), inExecutionOrder(executablePlan), taskIds.size(), List.copyOf(taskIds));
+            primaryTargetId, inExecutionOrder(executablePlan), taskIds.size(), List.copyOf(taskIds));
     AiAgentDispatchRecord record = new AiAgentDispatchRecord();
     record.setIdempotencyKey(idempotencyKey);
     record.setProjectId(request.projectId());
-    record.setTargetId(request.targetId());
+    record.setTargetId(primaryTargetId);
     record.setRequestDigest(requestDigest);
     record.setTaskIds(
         response.taskIds().stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(",")));
@@ -368,6 +433,8 @@ public class SecurityAgentTools {
     java.util.Map<String, Object> digestInput = new java.util.LinkedHashMap<>();
     digestInput.put("projectId", request.projectId());
     digestInput.put("targetId", request.targetId());
+    digestInput.put("scopeMode", request.scopeMode() == null ? "SINGLE" : request.scopeMode().name());
+    digestInput.put("targetIds", request.targetIds());
     digestInput.put("execute", request.executionRequested());
     digestInput.put("workflowId", request.workflowId());
     digestInput.put("workflowRevision", request.workflowRevision());

@@ -67,6 +67,8 @@ public class AgentOrchestrator {
   private final com.bachelor.toolbox.project.ProjectApprovalService approvalService;
   private AiPlanContinuityService planContinuity;
   private com.bachelor.toolbox.notification.NotificationService notifications;
+  @Autowired(required = false)
+  private com.bachelor.toolbox.project.AssessmentProjectService projectService;
 
   @Autowired
   public void setPlanContinuity(AiPlanContinuityService value) {
@@ -188,15 +190,35 @@ public class AgentOrchestrator {
     return operationGate.withMutation(() -> runUnderGate(request, eventSink));
   }
 
+  private Long resolveAnchorTargetId(AiAgentRequest request) {
+    if (request.targetId() != null) return request.targetId();
+    if (request.targetIds() != null && !request.targetIds().isEmpty()) {
+      return request.targetIds().get(0);
+    }
+    if (projectService != null) {
+      var links = projectService.targets(request.projectId());
+      if (!links.isEmpty()) {
+        return links.get(0).getTargetId();
+      }
+    }
+    return null;
+  }
+
   private AiAgentResponse runUnderGate(
-      AiAgentRequest request, Consumer<AiAgentEvent> eventSink) {
+      AiAgentRequest rawRequest, Consumer<AiAgentEvent> eventSink) {
+    Long anchorTargetId = resolveAnchorTargetId(rawRequest);
+    if (anchorTargetId == null && rawRequest.isProjectScoped()) {
+      throw new ApiException("项目内未绑定任何授权目标，无法发起批量评估");
+    }
+    AiAgentRequest request = anchorTargetId != null && !Objects.equals(anchorTargetId, rawRequest.targetId())
+        ? rawRequest.withResolvedAnchorTarget(anchorTargetId) : rawRequest;
     Consumer<AiAgentEvent> sink = eventSink == null ? ignored -> {} : eventSink;
     EventSequence sequence = new EventSequence(request);
     TurnProvenance provenance = new TurnProvenance();
     if (request.automaticExecutionIntent()) provenance.executionDecision = "PLAN_ONLY";
     TurnExecutionState executionState = new TurnExecutionState();
     AiConversationMemoryService.SessionHandle session =
-        memory.open(request.sessionId(), request.projectId(), request.targetId());
+        memory.open(rawRequest.sessionId(), rawRequest.projectId(), rawRequest.targetId());
 
     synchronized (session.monitor()) {
       try {
@@ -654,8 +676,9 @@ public class AgentOrchestrator {
         if (!taskIds.isEmpty()) {
           emit(sink, sequence, "state", AgentPhase.REPORTING, "RUNNING", "正在核对任务归属和当前执行状态", Map.of());
         }
-        AiAgentResponse.AgentReview review =
-            reviewer.review(request.projectId(), request.targetId(), taskIds);
+        AiAgentResponse.AgentReview review = request.isProjectScoped()
+            ? reviewer.review(request.projectId(), request.targetId(), request.targetIds(), taskIds)
+            : reviewer.review(request.projectId(), request.targetId(), taskIds);
         emit(
             sink,
             sequence,

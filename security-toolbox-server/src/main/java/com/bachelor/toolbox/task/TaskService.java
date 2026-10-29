@@ -47,6 +47,7 @@ public class TaskService {
   @Autowired private com.bachelor.toolbox.project.ProjectAuthorizationService authorization;
   @Autowired private org.springframework.transaction.PlatformTransactionManager transactionManager;
   @jakarta.persistence.PersistenceContext private jakarta.persistence.EntityManager entityManager;
+  @Autowired(required = false) private com.bachelor.toolbox.target.PortRangeParser portRangeParser;
   /** 与 AiAuthorizationGuard 共用同一组配额配置，保证批量执行与 AI 派发口径一致。 */
   @org.springframework.beans.factory.annotation.Value("${toolbox.ai.agent.max-active-tasks-per-target:4}")
   private int maxActiveTasksPerTarget = 4;
@@ -294,11 +295,34 @@ public class TaskService {
                 "目标任务配额不足（未结束 " + active + " 项，上限 " + Math.max(1, maxActiveTasksPerTarget) + " 项）"));
         continue;
       }
+      Map<String, Object> targetParameters = parameters;
+      if (portRangeParser != null && Set.of("tcp_ports", "nmap_service_scan", "fscan_scan").contains(request.toolCode())) {
+        String reqPorts = java.util.Objects.toString(parameters.get("ports"), "").trim();
+        if (!reqPorts.isBlank()) {
+          try {
+            var tgt = targetService.getCurrentlyAuthorized(targetId, request.projectId());
+            var allowed = portRangeParser.parse(tgt.getAllowedPorts());
+            var requested = portRangeParser.parse(reqPorts);
+            var intersection = new java.util.LinkedHashSet<>(requested);
+            intersection.retainAll(allowed);
+            if (intersection.isEmpty()) {
+              items.add(ProjectBatchTaskResult.Item.failure(targetId, targetName, "目标未授权请求的扫描端口（请求: " + reqPorts + "，授权: " + tgt.getAllowedPorts() + "）"));
+              continue;
+            }
+            targetParameters = new java.util.LinkedHashMap<>(parameters);
+            targetParameters.put("ports", intersection.stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(",")));
+          } catch (ApiException ex) {
+            items.add(ProjectBatchTaskResult.Item.failure(targetId, targetName, ex.getMessage()));
+            continue;
+          } catch (Exception ignored) {
+          }
+        }
+      }
       try {
         SecurityTask created =
             create(
                 new CreateTaskRequest(
-                    request.projectId(), targetId, request.toolCode(), parameters),
+                    request.projectId(), targetId, request.toolCode(), targetParameters),
                 null,
                 null,
                 null,

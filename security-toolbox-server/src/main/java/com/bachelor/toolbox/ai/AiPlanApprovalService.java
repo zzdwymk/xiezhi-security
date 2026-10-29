@@ -5,6 +5,7 @@ import com.bachelor.toolbox.project.ProjectApproval;
 import com.bachelor.toolbox.project.ProjectApprovalRepository;
 import com.bachelor.toolbox.project.ProjectAuthorizationService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.List;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -68,20 +69,35 @@ public class AiPlanApprovalService {
     AiPlanResponse plan = mapper.readValue(approval.getAiPlanJson(), AiPlanResponse.class);
     if (!projectId.equals(stored.projectId())) throw new ApiException("审批单与原计划项目不一致");
     var project = projects.lockForAgentExecution(projectId);
-    var target = targets.lockForAgentExecution(stored.targetId());
     // requireAccess may already have loaded the project before the locks were acquired.
     // Refresh managed state under those locks so a concurrent authorization edit is visible.
     entityManager.refresh(project);
-    entityManager.refresh(target);
-    // Approval does not extend an authorization window or authorize a changed engagement.
-    // Check live authorization first so expiry remains a precise, actionable API error.
-    projects.validateProjectTarget(projectId, stored.targetId());
-    targets.getCurrentlyAuthorized(stored.targetId());
+    if (!stored.isProjectScoped()) {
+      var target = targets.lockForAgentExecution(stored.targetId());
+      entityManager.refresh(target);
+      // Approval does not extend an authorization window or authorize a changed engagement.
+      // Check live authorization first so expiry remains a precise, actionable API error.
+      projects.validateProjectTarget(projectId, stored.targetId());
+      targets.getCurrentlyAuthorized(stored.targetId());
+      if (approval.getAiTargetBinding() == null || !approval.getAiTargetBinding().equals(targetBinding(target))) {
+        throw new ApiException("目标地址或授权范围已变化，原审批不能继续执行，请重新申请");
+      }
+    } else {
+      List<Long> targetIdsToLock;
+      if (stored.scopeMode() == AiAgentRequest.ScopeMode.PROJECT_SUBSET) {
+        targetIdsToLock = stored.targetIds() == null ? List.of() : stored.targetIds().stream().distinct().toList();
+      } else {
+        targetIdsToLock = projects.targets(projectId).stream().map(com.bachelor.toolbox.project.ProjectTarget::getTargetId).distinct().toList();
+      }
+      for (Long tid : targetIdsToLock.stream().sorted().toList()) {
+        var target = targets.lockForAgentExecution(tid);
+        entityManager.refresh(target);
+        projects.validateProjectTarget(projectId, tid);
+        targets.getCurrentlyAuthorized(tid);
+      }
+    }
     if (approval.getAiProjectBinding() == null || !approval.getAiProjectBinding().equals(projectBinding(project))) {
       throw new ApiException("项目授权范围已变化或原审批未保存授权快照，请重新申请");
-    }
-    if (approval.getAiTargetBinding() == null || !approval.getAiTargetBinding().equals(targetBinding(target))) {
-      throw new ApiException("目标地址或授权范围已变化，原审批不能继续执行，请重新申请");
     }
     // Reuse the original turn identity: even independently duplicated approval tickets
     // cannot create the original turn's task batch twice.

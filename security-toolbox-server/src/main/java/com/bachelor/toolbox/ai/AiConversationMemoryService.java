@@ -17,6 +17,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -64,8 +65,8 @@ public class AiConversationMemoryService {
   }
 
   public SessionHandle open(String requestedId, Long projectId, Long targetId) {
-    if (projectId == null || targetId == null) {
-      throw new ApiException("AI 会话必须绑定评估项目和授权目标");
+    if (projectId == null) {
+      throw new ApiException("AI 会话必须绑定评估项目");
     }
     String id =
         requestedId == null || requestedId.isBlank() ? UUID.randomUUID().toString() : requestedId;
@@ -106,7 +107,7 @@ public class AiConversationMemoryService {
         session = created;
       }
       synchronized (session.monitor) {
-        if (!projectId.equals(session.projectId) || !targetId.equals(session.targetId)) {
+        if (!Objects.equals(projectId, session.projectId) || !Objects.equals(targetId, session.targetId)) {
           throw new ApiException("AI 会话已绑定其他项目或目标，请新建会话");
         }
         session.lastAccess = Instant.now();

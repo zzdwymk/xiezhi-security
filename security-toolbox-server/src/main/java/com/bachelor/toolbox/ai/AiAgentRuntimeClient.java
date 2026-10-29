@@ -914,12 +914,17 @@ public class AiAgentRuntimeClient {
   Map<String, Integer> planningQuota(AiAgentRequest request) {
     long projectUsed = Math.max(0,
         tasks.countByProjectIdAndStatusIn(request.projectId(), ACTIVE_TASK_STATUSES));
-    long targetUsed = Math.max(0,
+    long targetUsed = request.targetId() == null ? 0 : Math.max(0,
         tasks.countByTargetIdAndStatusIn(request.targetId(), ACTIVE_TASK_STATUSES));
     int capacity = Math.min(AiTaskDispatchService.MAX_TASKS_PER_DISPATCH,
         Math.min(maxActions, maxTargetActions));
-    long remaining = Math.max(0,
-        Math.min(capacity, Math.min(maxActions - projectUsed, maxTargetActions - targetUsed)));
+    long remaining;
+    if (request.isProjectScoped()) {
+      remaining = Math.max(0, Math.min(capacity, maxActions - projectUsed));
+    } else {
+      remaining = Math.max(0,
+          Math.min(capacity, Math.min(maxActions - projectUsed, maxTargetActions - targetUsed)));
+    }
     // Keep the existing runtime contract, but encode the tightest shared budget.
     // This is only a planning snapshot; the locked execution guard rechecks it.
     return Map.of("maxActions", capacity, "usedActions", capacity - (int) remaining);

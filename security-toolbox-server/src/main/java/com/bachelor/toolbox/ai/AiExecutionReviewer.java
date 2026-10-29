@@ -19,9 +19,17 @@ public class AiExecutionReviewer {
   }
 
   public AiAgentResponse.AgentReview review(Long projectId, Long targetId, List<Long> taskIds) {
+    return review(projectId, targetId, null, taskIds);
+  }
+
+  public AiAgentResponse.AgentReview review(Long projectId, Long targetId, List<Long> targetIds, List<Long> taskIds) {
     if (taskIds == null || taskIds.isEmpty()) {
       return new AiAgentResponse.AgentReview("NO_ACTION", "本轮没有创建任务，没有可核对的任务状态", false, List.of());
     }
+    Set<Long> allowedTargets = new java.util.HashSet<>();
+    if (targetId != null) allowedTargets.add(targetId);
+    if (targetIds != null) allowedTargets.addAll(targetIds);
+
     List<Long> verified = new ArrayList<>();
     boolean retryAllowed = false;
     boolean pending = false;
@@ -29,7 +37,7 @@ public class AiExecutionReviewer {
       SecurityTask task = taskId == null ? null : tasks.findById(taskId).orElse(null);
       if (task == null
           || !Objects.equals(projectId, task.getProjectId())
-          || !Objects.equals(targetId, task.getTargetId())) {
+          || (!allowedTargets.isEmpty() && !allowedTargets.contains(task.getTargetId()))) {
         return new AiAgentResponse.AgentReview(
             "REJECTED", "任务无法通过项目与目标归属核对，未核验检测结果", false, List.copyOf(verified));
       }

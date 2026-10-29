@@ -51,7 +51,10 @@ public class AiAuthorizationGuard {
   }
 
   private GuardDecision evaluate(AiAgentRequest request, AiPlanResponse proposedPlan, boolean approvedPlan) {
-    if (request.projectId() == null || request.targetId() == null) {
+    if (request.projectId() == null) {
+      throw new ApiException("AI 工具调用必须绑定评估项目");
+    }
+    if (!request.isProjectScoped() && request.targetId() == null) {
       throw new ApiException("AI 工具调用必须绑定评估项目和授权目标");
     }
 
@@ -59,12 +62,27 @@ public class AiAuthorizationGuard {
     // project/target pair, but an expired or paused engagement may be discussed and its
     // historical plan may be reviewed.  The strict status/time-window checks below are
     // intentionally deferred until the caller explicitly requests execution.
-    projects.validateProjectTargetMembership(request.projectId(), request.targetId());
+    if (request.isProjectScoped()) {
+      if (request.scopeMode() == AiAgentRequest.ScopeMode.PROJECT_SUBSET && request.targetIds() != null) {
+        for (Long tid : request.targetIds()) {
+          projects.validateProjectTargetMembership(request.projectId(), tid);
+        }
+      }
+      if (request.targetId() != null) {
+        projects.validateProjectTargetMembership(request.projectId(), request.targetId());
+      }
+    } else {
+      projects.validateProjectTargetMembership(request.projectId(), request.targetId());
+    }
 
+    Long validationAnchorTarget = request.targetId();
+    if (validationAnchorTarget == null && request.targetIds() != null && !request.targetIds().isEmpty()) {
+      validationAnchorTarget = request.targetIds().get(0);
+    }
     AiPlanRequest scoped =
         new AiPlanRequest(
             request.projectId(),
-            request.targetId(),
+            validationAnchorTarget,
             request.prompt(),
             request.contextRefs(),
             request.refs(),
@@ -75,7 +93,8 @@ public class AiAuthorizationGuard {
 
     long activeProjectTasks =
         tasks.countByProjectIdAndStatusIn(request.projectId(), ACTIVE_STATUSES);
-    long activeTargetTasks = tasks.countByTargetIdAndStatusIn(request.targetId(), ACTIVE_STATUSES);
+    long activeTargetTasks = validationAnchorTarget == null ? 0
+        : tasks.countByTargetIdAndStatusIn(validationAnchorTarget, ACTIVE_STATUSES);
     int requestedTasks = normalized.steps() == null ? 0 : normalized.steps().size();
 
     if (requestedTasks == 0) {
@@ -99,24 +118,34 @@ public class AiAuthorizationGuard {
     }
 
     // Actual tool execution/task creation is the strict authorization boundary.
-    projects.validateProjectTarget(request.projectId(), request.targetId());
-    targets.getCurrentlyAuthorized(request.targetId());
-    // Waiting cannot free enough slots for a plan larger than either full quota.
-    if (requestedTasks > maxProjectTasks) {
-      throw new ApiException("项目 AI 计划超出任务配额（本次 " + requestedTasks + " 项，上限 "
-          + maxProjectTasks + " 项），请拆分方案后重新确认");
-    }
-    if (requestedTasks > maxTargetTasks) {
-      throw new ApiException("目标 AI 计划超出任务配额（本次 " + requestedTasks + " 项，上限 "
-          + maxTargetTasks + " 项），请拆分方案后重新确认");
-    }
-    if (activeProjectTasks + requestedTasks > maxProjectTasks) {
-      throw new ApiException("项目 AI 任务配额不足（本次 " + requestedTasks + " 项，未结束 "
-          + activeProjectTasks + " 项，上限 " + maxProjectTasks + " 项），请等待现有任务完成后重试");
-    }
-    if (activeTargetTasks + requestedTasks > maxTargetTasks) {
-      throw new ApiException("目标 AI 任务配额不足（本次 " + requestedTasks + " 项，未结束 "
-          + activeTargetTasks + " 项，上限 " + maxTargetTasks + " 项），请等待现有任务完成后重试");
+    if (!request.isProjectScoped()) {
+      projects.validateProjectTarget(request.projectId(), request.targetId());
+      targets.getCurrentlyAuthorized(request.targetId());
+      // Waiting cannot free enough slots for a plan larger than either full quota.
+      if (requestedTasks > maxProjectTasks) {
+        throw new ApiException("项目 AI 计划超出任务配额（本次 " + requestedTasks + " 项，上限 "
+            + maxProjectTasks + " 项），请拆分方案后重新确认");
+      }
+      if (requestedTasks > maxTargetTasks) {
+        throw new ApiException("目标 AI 计划超出任务配额（本次 " + requestedTasks + " 项，上限 "
+            + maxTargetTasks + " 项），请拆分方案后重新确认");
+      }
+      if (activeProjectTasks + requestedTasks > maxProjectTasks) {
+        throw new ApiException("项目 AI 任务配额不足（本次 " + requestedTasks + " 项，未结束 "
+            + activeProjectTasks + " 项，上限 " + maxProjectTasks + " 项），请等待现有任务完成后重试");
+      }
+      if (activeTargetTasks + requestedTasks > maxTargetTasks) {
+        throw new ApiException("目标 AI 任务配额不足（本次 " + requestedTasks + " 项，未结束 "
+            + activeTargetTasks + " 项，上限 " + maxTargetTasks + " 项），请等待现有任务完成后重试");
+      }
+    } else {
+      // 项目级批量模式：先校验项目整体处于活跃状态
+      projects.validateProjectExecution(request.projectId());
+      int totalTasks = requestedTasks * (request.targetIds() != null && !request.targetIds().isEmpty() ? request.targetIds().size() : 1);
+      if (totalTasks > maxProjectTasks) {
+        throw new ApiException("项目 AI 计划超出整体任务配额（本次涉及约 " + totalTasks + " 项，上限 "
+            + maxProjectTasks + " 项），请拆分方案或缩减目标范围后重新确认");
+      }
     }
     return new GuardDecision(
         "ALLOWED",
