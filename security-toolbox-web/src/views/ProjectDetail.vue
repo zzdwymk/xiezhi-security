@@ -1103,8 +1103,10 @@ function taskTargetName(targetId?: number) {
 }
 
 function openProjectCopilot(
-  kind: "overview" | "recon" | "findings" = "overview",
+  kind: "overview" | "recon" | "findings" | "batch_all" | "batch_subset" = "overview",
+  selectedTargets?: number[],
 ) {
+  const isBatch = kind === "batch_all" || kind === "batch_subset";
   const target = linkedTargets.value.find((item) => item.enabled);
   if (!target) {
     ElMessage.warning(
@@ -1112,13 +1114,28 @@ function openProjectCopilot(
     );
     return;
   }
+  const scopeMode = isBatch ? (kind === "batch_all" ? "PROJECT_ALL" : "PROJECT_SUBSET") : "SINGLE";
+  const targetIds = isBatch
+    ? (kind === "batch_all" ? linkedTargets.value.map((t) => t.id) : (selectedTargets || [target.id]))
+    : undefined;
   const prompt =
-    kind === "recon"
-      ? `请结合安全评估项目 #${id} 当前已保存的信息收集、探测服务、网站指纹和 WAF 证据，整理资产清单、可信度、未知项和下一步低风险验证建议。不要把开放端口或公开资产直接判定为漏洞。`
-      : kind === "findings"
-        ? `请汇总安全评估项目 #${id} 当前漏洞与复测记录，按风险和证据完整性排序，指出需要人工复核的误报边界、扫描差异关注点和整改优先级；只分析已有结果，不要重复发起扫描。`
-        : `请介绍安全评估项目 #${id} 的授权范围、目标、检测任务、漏洞/复测、审批审计和项目报告状态，并给出当前最合适的下一步。只基于项目已有资料，不要创建检测任务。`;
-  copilot.open({ targetId: target.id, mode: "analyze", prompt });
+    kind === "batch_all"
+      ? `请对安全评估项目 #${id} 的全部授权目标进行批量安全分析，并给出端口、服务或漏洞排查的批量受控执行方案。`
+      : kind === "batch_subset"
+        ? `请对选定的项目授权目标进行批量安全分析，并给出受控执行方案。`
+        : kind === "recon"
+          ? `请结合安全评估项目 #${id} 当前已保存的信息收集、探测服务、网站指纹和 WAF 证据，整理资产清单、可信度、未知项和下一步低风险验证建议。不要把开放端口或公开资产直接判定为漏洞。`
+          : kind === "findings"
+            ? `请汇总安全评估项目 #${id} 当前漏洞与复测记录，按风险和证据完整性排序，指出需要人工复核的误报边界、扫描差异关注点和整改优先级；只分析已有结果，不要重复发起扫描。`
+            : `请介绍安全评估项目 #${id} 的授权范围、目标、检测任务、漏洞/复测、审批审计和项目报告状态，并给出当前最合适的下一步。只基于项目已有资料，不要创建检测任务。`;
+  copilot.open({
+    projectId: id,
+    targetId: target.id,
+    targetIds,
+    scopeMode,
+    mode: isBatch ? "plan" : "analyze",
+    prompt,
+  });
   void router.push("/");
 }
 
@@ -6077,6 +6094,12 @@ onUnmounted(() => {
               :icon="MagicStick"
               @click="openBatchTaskDialog"
               >批量执行</el-button
+            >
+            <el-button
+              size="small"
+              :icon="MagicStick"
+              @click="openProjectCopilot('batch_all')"
+              >AI 批量分析</el-button
             >
             <el-button
               size="small"

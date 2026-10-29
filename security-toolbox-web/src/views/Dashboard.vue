@@ -1733,6 +1733,8 @@ async function dispatchConversationMessage(
     {
       projectId,
       targetId: thread.targetId,
+      targetIds: thread.targetIds,
+      scopeMode: thread.scopeMode,
       sessionId: thread.id,
       turnId: userMessage.id,
       ...workflow,
@@ -2114,7 +2116,20 @@ async function sendPrompt() {
         return;
       }
     } else if (!thread) {
-      thread = conversations.createThread(target.id, target.name, text, projectIdForTarget(target.id));
+      const draftScope = activeDraft.value?.scopeMode;
+      const draftTargetIds = activeDraft.value?.targetIds;
+      const targetName = draftScope === "PROJECT_ALL" ? `【项目全部目标批量】` : (draftScope === "PROJECT_SUBSET" ? `【项目部分目标批量】` : target.name);
+      thread = conversations.createThread(
+        target.id,
+        targetName,
+        text,
+        activeDraft.value?.projectId || projectIdForTarget(target.id),
+        undefined,
+        {
+          targetIds: draftTargetIds,
+          scopeMode: draftScope || "SINGLE",
+        },
+      );
     }
     if (thread) activeSendingThreadIds.value.add(thread.id);
     const turn = conversations.appendTurn(thread.id, {

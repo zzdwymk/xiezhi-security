@@ -10,7 +10,9 @@ const desktopMode = Boolean(
   window.toolboxDesktop?.isDesktop || query.get("desktop") === "1",
 );
 export const apiBaseUrl =
-  query.get("backend") || window.toolboxDesktop?.backendBaseUrl || "/api";
+  import.meta.env.DEV
+    ? "/api"
+    : (query.get("backend") || window.toolboxDesktop?.backendBaseUrl || "/api");
 
 export function getApiUrl(path: string): string {
   const normalized = apiBaseUrl.replace(/\/+$/, "");

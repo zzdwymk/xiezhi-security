@@ -32,7 +32,10 @@ export const useCopilotStore = defineStore("copilot", () => {
   );
 
   function prepare(input: {
+    projectId?: number;
     targetId?: number;
+    targetIds?: number[];
+    scopeMode?: "SINGLE" | "PROJECT_ALL" | "PROJECT_SUBSET";
     prompt?: string;
     mode?: CopilotMode;
     refs?: CopilotReference[];
@@ -43,7 +46,10 @@ export const useCopilotStore = defineStore("copilot", () => {
       id:
         globalThis.crypto?.randomUUID?.() ||
         `${createdAt}-${Math.random().toString(16).slice(2)}`,
+      projectId: input.projectId,
       targetId: input.targetId,
+      targetIds: input.targetIds,
+      scopeMode: input.scopeMode,
       prompt: input.prompt?.trim() || "",
       mode: input.mode || "ask",
       refs: input.refs || [],
@@ -55,7 +61,10 @@ export const useCopilotStore = defineStore("copilot", () => {
   }
 
   function open(input: {
+    projectId?: number;
     targetId?: number;
+    targetIds?: number[];
+    scopeMode?: "SINGLE" | "PROJECT_ALL" | "PROJECT_SUBSET";
     prompt?: string;
     mode?: CopilotMode;
     entity?: CopilotReference;

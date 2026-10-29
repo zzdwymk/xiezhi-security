@@ -20,7 +20,10 @@ export interface CopilotReference {
 
 export interface CopilotDraft {
   id: string;
+  projectId?: number;
   targetId?: number;
+  targetIds?: number[];
+  scopeMode?: "SINGLE" | "PROJECT_ALL" | "PROJECT_SUBSET";
   prompt: string;
   mode: CopilotMode;
   refs: CopilotReference[];

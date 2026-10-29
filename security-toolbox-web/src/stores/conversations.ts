@@ -240,6 +240,8 @@ export interface ConversationThread {
   projectId?: number;
   targetId: number;
   targetName: string;
+  targetIds?: number[];
+  scopeMode?: "SINGLE" | "PROJECT_ALL" | "PROJECT_SUBSET";
   messages: ConversationMessage[];
   createdAt: string;
   updatedAt: string;
@@ -573,6 +575,10 @@ export const useConversationStore = defineStore("conversations", () => {
     firstPrompt: string,
     projectId?: number,
     branchSource?: ConversationThread["branchSource"],
+    scopeOptions?: {
+      targetIds?: number[];
+      scopeMode?: "SINGLE" | "PROJECT_ALL" | "PROJECT_SUBSET";
+    },
   ) {
     const now = new Date().toISOString();
     const thread: ConversationThread = {
@@ -582,6 +588,8 @@ export const useConversationStore = defineStore("conversations", () => {
       branchSource,
       targetId,
       targetName,
+      targetIds: scopeOptions?.targetIds,
+      scopeMode: scopeOptions?.scopeMode || "SINGLE",
       messages: [],
       createdAt: now,
       updatedAt: now,

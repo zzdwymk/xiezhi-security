@@ -72,7 +72,9 @@ export interface AiDispatch {
 
 export interface AiAgentRequestPayload {
   projectId?: number;
-  targetId: number;
+  targetId?: number;
+  targetIds?: number[];
+  scopeMode?: "SINGLE" | "PROJECT_ALL" | "PROJECT_SUBSET";
   sessionId?: string;
   turnId?: string;
   workflowId?: string;
@@ -94,7 +96,7 @@ interface AiAgentResponsePayload {
   approvalStatus?: string;
   sessionId?: string;
   projectId?: number;
-  targetId: number;
+  targetId?: number;
   message?: string;
   plan?: AiDispatch["plan"];
   taskIds?: number[];
@@ -2396,7 +2398,7 @@ export async function dispatchAiStreaming(
       return (
         await endpoints.dispatchAi({
           projectId: payload.projectId,
-          targetId: payload.targetId,
+          targetId: payload.targetId || (payload.targetIds && payload.targetIds.length ? payload.targetIds[0] : 0),
           sessionId: payload.sessionId,
           turnId: payload.turnId,
           workflowId: payload.workflowId,
