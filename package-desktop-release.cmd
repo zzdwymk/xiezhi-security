@@ -22,4 +22,10 @@ if not defined PS_BIN (
 
 echo Using PowerShell: %PS_BIN%
 "%PS_BIN%" -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\package-desktop-release.ps1" %*
-pause
+set "EXIT_CODE=%ERRORLEVEL%"
+
+echo.
+echo [DONE] Packaging finished. Exit code: %EXIT_CODE%
+rem ASCII-only on purpose: non-ASCII text here desyncs cmd.exe after the chcp switch.
+pause >nul
+exit /b %EXIT_CODE%
