@@ -9,10 +9,12 @@ const query = new URLSearchParams(window.location.search);
 const desktopMode = Boolean(
   window.toolboxDesktop?.isDesktop || query.get("desktop") === "1",
 );
+// 后端地址优先级：显式 ?backend= 参数（桌面端主进程注入）> 预加载注入 > 同源 /api。
+// 注意：这里不要用 import.meta.env —— 该文件会被 scripts/test-stream-auth.cjs
+// 以 ts.transpileModule(CommonJS) + vm 方式加载做 401/403 鉴权回归，
+// import.meta 在非模块上下文会直接抛 SyntaxError。
 export const apiBaseUrl =
-  import.meta.env.DEV
-    ? "/api"
-    : (query.get("backend") || window.toolboxDesktop?.backendBaseUrl || "/api");
+  query.get("backend") || window.toolboxDesktop?.backendBaseUrl || "/api";
 
 export function getApiUrl(path: string): string {
   const normalized = apiBaseUrl.replace(/\/+$/, "");
