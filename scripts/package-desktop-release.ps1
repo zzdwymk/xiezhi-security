@@ -1,4 +1,4 @@
-﻿param(
+param(
     [switch]$SkipComponentBuild,
     [switch]$Force,
     [string]$Python,
@@ -9,6 +9,10 @@
 )
 
 $ErrorActionPreference = 'Stop'
+# 关闭 PowerShell 进度条：Remove-Item 递归删除大目录时会绘制
+# "已删除 x/y 的文件 [a MB/b GB (c MB/秒)]" 的进度条，长行在窄终端里会折行，
+# 把结尾的 ] 挤到下一行，看起来像脚本多输出了一行。静默后日志只剩阶段行。
+$ProgressPreference = 'SilentlyContinue'
 
 # Keep Windows PowerShell 5.1 and native build tools on the same UTF-8 channel.
 $utf8 = [System.Text.UTF8Encoding]::new($false)
@@ -360,6 +364,32 @@ function Stop-Stage([string]$Name, [System.Diagnostics.Stopwatch]$Watch) {
     $Watch.Stop()
     $stageTimings.Add([pscustomobject]@{ Stage = $Name; Elapsed = $Watch.Elapsed })
     Write-Host ("{0} took {1}." -f $Name, (Format-StageDuration $Watch.Elapsed)) -ForegroundColor DarkGray
+}
+
+# 记录本次打包的开始/结束时间、总耗时与各阶段耗时，追加写入 JSONL 便于审计与对比。
+function Write-ReleaseTimingRecord([bool]$Succeeded) {
+    try {
+        $logDir = Join-Path $workspace '.run\logs'
+        New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+        $finishedAt = Get-Date
+        $stages = @()
+        if ($null -ne $stageTimings) {
+            $stages = @($stageTimings | ForEach-Object {
+                [ordered]@{ stage = [string]$_.Stage; seconds = [math]::Round($_.Elapsed.TotalSeconds, 1) }
+            })
+        }
+        $record = [ordered]@{
+            startedAt  = $releaseStartedAt.ToString('yyyy-MM-dd HH:mm:ss.fff zzz')
+            finishedAt = $finishedAt.ToString('yyyy-MM-dd HH:mm:ss.fff zzz')
+            elapsedSec = [math]::Round(($finishedAt - $releaseStartedAt).TotalSeconds, 1)
+            succeeded  = $Succeeded
+            stages     = $stages
+        }
+        $line = ($record | ConvertTo-Json -Depth 6 -Compress)
+        Add-Content -LiteralPath (Join-Path $logDir 'package-desktop-release-timing.jsonl') -Value $line -Encoding UTF8
+    } catch {
+        Write-Host ("[WARN] 写入打包时间记录失败: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+    }
 }
 
 if (-not $SkipComponentBuild) {
@@ -730,6 +760,7 @@ try {
     Stop-Stage 'Swap release with rollback' $stageWatch
 
     $totalStopwatch.Stop()
+    $releaseFinishedAt = Get-Date
     Write-Host ''
     Write-Host 'Release timing summary:' -ForegroundColor Cyan
     foreach ($timing in $stageTimings) {
@@ -737,11 +768,16 @@ try {
     }
     Write-Host ('  {0,-36} {1,10}' -f 'Total', (Format-StageDuration $totalStopwatch.Elapsed)) -ForegroundColor Cyan
     Write-Host ''
+    Write-Host ('  {0,-22} {1}' -f 'Started at', $releaseStartedAt.ToString('yyyy-MM-dd HH:mm:ss')) -ForegroundColor Cyan
+    Write-Host ('  {0,-22} {1}' -f 'Finished at', $releaseFinishedAt.ToString('yyyy-MM-dd HH:mm:ss')) -ForegroundColor Cyan
+    Write-Host ('  {0,-22} {1}' -f 'Elapsed', (Format-StageDuration ($releaseFinishedAt - $releaseStartedAt))) -ForegroundColor Cyan
+    Write-Host ''
 
     Write-Host "Desktop unpacked release ready: $(Join-Path $resolvedReleaseRoot ('win-unpacked\' + $packagedExe.Name))" -ForegroundColor Green
     Write-Host "Desktop portable archive ready: $(Join-Path $resolvedReleaseRoot $portableArchiveName)" -ForegroundColor Green
     Write-Host "Release checksums ready: $(Join-Path $resolvedReleaseRoot 'SHA256SUMS.txt')" -ForegroundColor Green
     $releaseSucceeded = $true
+    Write-ReleaseTimingRecord $true
 } finally {
     # A failed run leaves the staging tree behind; only ever remove the GUID
     # directory this run created inside the validated release root.
@@ -751,7 +787,9 @@ try {
         Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
     }
     if (-not $releaseSucceeded) {
-        Write-Host ("Release run aborted after {0}." -f (Format-StageDuration $totalStopwatch.Elapsed)) -ForegroundColor Yellow
+        $abortedAt = Get-Date
+        Write-Host ("Release run aborted at {0} after {1}." -f $abortedAt.ToString('yyyy-MM-dd HH:mm:ss'), (Format-StageDuration ($abortedAt - $releaseStartedAt))) -ForegroundColor Yellow
+        Write-ReleaseTimingRecord $false
     }
     Pop-Location
 }
