@@ -2892,19 +2892,18 @@ onBeforeUnmount(() => {
         />
         <MarkdownComposerPreview :content="prompt" />
         <div class="composer-footer">
-          <div class="target-picker">
+          <div class="target-scope">
             <el-radio-group
               v-model="askScopeType"
               size="small"
               class="ask-scope-toggle"
               :disabled="sending || loading"
-              style="margin-right: 8px"
             >
               <el-radio-button label="target">按目标提问</el-radio-button>
               <el-radio-button label="project">按项目提问</el-radio-button>
             </el-radio-group>
-
-            <template v-if="askScopeType === 'target'">
+            <div class="target-picker">
+              <template v-if="askScopeType === 'target'">
               <span>授权目标</span>
               <el-select
                 v-if="enabledTargets.length"
@@ -2972,6 +2971,7 @@ onBeforeUnmount(() => {
                 <el-icon><Plus /></el-icon>新增评估项目
               </button>
             </template>
+            </div>
           </div>
           <span class="composer-shortcut">{{
             compacting ? "正在压缩会话，请稍候…" : "Enter 发送，Shift + Enter 换行"
@@ -3904,6 +3904,17 @@ onBeforeUnmount(() => {
   gap: 12px;
   padding: 8px 18px 11px;
 }
+.composer-footer .target-scope {
+  width: 100%;
+  max-width: 290px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ask-scope-toggle {
+  align-self: flex-start;
+}
 .composer-footer .target-picker {
   width: 100%;
   max-width: 290px;
@@ -4243,6 +4254,9 @@ onBeforeUnmount(() => {
   }
   .composer-footer {
     grid-template-columns: 1fr 36px;
+  }
+  .composer-footer .target-scope {
+    grid-column: 1 / -1;
   }
   .composer-footer .target-picker {
     grid-column: 1 / -1;
@@ -5900,6 +5914,10 @@ a.agent-citation-bubble {
 @media (max-width: 760px) {
   .composer-footer {
     grid-template-columns: minmax(0, 1fr) 36px;
+  }
+
+  .composer-footer .target-scope {
+    grid-column: 1 / -1;
   }
 
   .composer-footer .target-picker {
