@@ -185,6 +185,10 @@ const tasks = ref<TaskRow[]>([]);
 const targets = ref<Target[]>([]);
 const projectByTarget = ref<Record<number, number>>({});
 const selectedTargetId = ref<number>();
+const availableProjects = ref<AssessmentProject[]>([]);
+const projectTargetsMap = ref<Record<number, number[]>>({});
+const askScopeType = ref<"target" | "project">("target");
+const selectedProjectId = ref<number>();
 const prompt = ref("");
 /**
  * 与后端 AiAgentRequest.userPrompt 的 @Size(max = 4000) 保持一致。
@@ -2116,18 +2120,23 @@ async function sendPrompt() {
         return;
       }
     } else if (!thread) {
-      const draftScope = activeDraft.value?.scopeMode;
-      const draftTargetIds = activeDraft.value?.targetIds;
-      const targetName = draftScope === "PROJECT_ALL" ? `【项目全部目标批量】` : (draftScope === "PROJECT_SUBSET" ? `【项目部分目标批量】` : target.name);
+      const isProjectMode = askScopeType.value === "project";
+      const proj = isProjectMode ? availableProjects.value.find((p) => p.id === selectedProjectId.value) : undefined;
+      const projTargetIds = isProjectMode && selectedProjectId.value ? (projectTargetsMap.value[selectedProjectId.value] || []) : [];
+      const draftScope = isProjectMode ? "PROJECT_ALL" : (activeDraft.value?.scopeMode || "SINGLE");
+      const draftTargetIds = isProjectMode ? projTargetIds : activeDraft.value?.targetIds;
+      const effectiveTargetId = isProjectMode ? (projTargetIds.length ? projTargetIds[0] : (target ? target.id : 0)) : target.id;
+      const effectiveTargetName = isProjectMode && proj ? `【项目: ${proj.name} (全部目标)】` : target.name;
+
       thread = conversations.createThread(
-        target.id,
-        targetName,
+        effectiveTargetId,
+        effectiveTargetName,
         text,
-        activeDraft.value?.projectId || projectIdForTarget(target.id),
+        isProjectMode ? selectedProjectId.value : (activeDraft.value?.projectId || projectIdForTarget(target.id)),
         undefined,
         {
           targetIds: draftTargetIds,
-          scopeMode: draftScope || "SINGLE",
+          scopeMode: draftScope,
         },
       );
     }
@@ -2465,6 +2474,10 @@ async function loadProjectScopes() {
   const activeProjects = (
     Array.isArray(projectResult.data) ? projectResult.data : []
   ).filter((project) => project.status === "ACTIVE");
+  availableProjects.value = activeProjects;
+  if (!selectedProjectId.value && activeProjects.length) {
+    selectedProjectId.value = activeProjects[0].id;
+  }
   const memberships = await Promise.all(
     activeProjects.map(async (project) => ({
       projectId: project.id,
@@ -2475,12 +2488,15 @@ async function loadProjectScopes() {
     })),
   );
   const mapping: Record<number, number> = {};
+  const targetsMap: Record<number, number[]> = {};
   for (const membership of memberships) {
+    targetsMap[membership.projectId] = (membership.result.data || []).map((item) => item.targetId);
     for (const item of membership.result.data || [])
       if (!mapping[item.targetId])
         mapping[item.targetId] = membership.projectId;
   }
   projectByTarget.value = mapping;
+  projectTargetsMap.value = targetsMap;
 }
 
 async function refreshStatus() {
@@ -2507,6 +2523,12 @@ async function load() {
   const copilotDraft = copilot.consume();
   if (copilotDraft) {
     activeDraft.value = copilotDraft;
+    if (copilotDraft.scopeMode === "PROJECT_ALL" || copilotDraft.scopeMode === "PROJECT_SUBSET") {
+      askScopeType.value = "project";
+      if (copilotDraft.projectId) {
+        selectedProjectId.value = copilotDraft.projectId;
+      }
+    }
     if (
       copilotDraft.targetId &&
       enabledTargets.value.some((item) => item.id === copilotDraft.targetId)
@@ -2863,45 +2885,93 @@ onBeforeUnmount(() => {
           rows="4"
           :maxlength="PROMPT_MAX_LENGTH"
           :disabled="sending"
-          placeholder="例如：检查目标的开放端口；如需先看方案，可以说“先给方案，不执行”"
+          :placeholder="askScopeType === 'project'
+            ? '例如：对所选项目内全部目标进行开放端口与漏洞排查规划；如需先看方案，可以说“先给方案，不执行”'
+            : '例如：检查目标的开放端口；如需先看方案，可以说“先给方案，不执行”'"
           @keydown="handlePromptKeydown"
         />
         <MarkdownComposerPreview :content="prompt" />
         <div class="composer-footer">
           <div class="target-picker">
-            <span>授权目标</span>
-            <el-select
-              v-if="enabledTargets.length"
-              v-model="selectedTargetId"
+            <el-radio-group
+              v-model="askScopeType"
               size="small"
+              class="ask-scope-toggle"
               :disabled="sending || loading"
-              placeholder="选择目标"
-              popper-class="target-picker-popper"
-              :title="targetHoverText(selectedTarget?.name, selectedTarget?.targetValue)"
+              style="margin-right: 8px"
             >
-              <el-option
-                v-for="target in enabledTargets"
-                :key="target.id"
-                :value="target.id"
-                :label="displayKnownTestName(target.name)"
+              <el-radio-button label="target">按目标提问</el-radio-button>
+              <el-radio-button label="project">按项目提问</el-radio-button>
+            </el-radio-group>
+
+            <template v-if="askScopeType === 'target'">
+              <span>授权目标</span>
+              <el-select
+                v-if="enabledTargets.length"
+                v-model="selectedTargetId"
+                size="small"
+                :disabled="sending || loading"
+                placeholder="选择目标"
+                popper-class="target-picker-popper"
+                :title="targetHoverText(selectedTarget?.name, selectedTarget?.targetValue)"
               >
-                <div
-                  class="target-option"
-                  :title="targetHoverText(target.name, target.targetValue)"
+                <el-option
+                  v-for="target in enabledTargets"
+                  :key="target.id"
+                  :value="target.id"
+                  :label="displayKnownTestName(target.name)"
                 >
-                  <span>{{ displayKnownTestName(target.name) }}</span
-                  ><small>{{ target.targetValue }}</small>
-                </div>
-              </el-option>
-            </el-select>
-            <button
-              v-else
-              type="button"
-              class="create-target"
-              @click="router.push('/targets')"
-            >
-              <el-icon><Plus /></el-icon>新增授权目标
-            </button>
+                  <div
+                    class="target-option"
+                    :title="targetHoverText(target.name, target.targetValue)"
+                  >
+                    <span>{{ displayKnownTestName(target.name) }}</span
+                    ><small>{{ target.targetValue }}</small>
+                  </div>
+                </el-option>
+              </el-select>
+              <button
+                v-else
+                type="button"
+                class="create-target"
+                @click="router.push('/targets')"
+              >
+                <el-icon><Plus /></el-icon>新增授权目标
+              </button>
+            </template>
+
+            <template v-else>
+              <span>评估项目</span>
+              <el-select
+                v-if="availableProjects.length"
+                v-model="selectedProjectId"
+                size="small"
+                :disabled="sending || loading"
+                placeholder="选择评估项目"
+                popper-class="target-picker-popper"
+                style="min-width: 220px"
+              >
+                <el-option
+                  v-for="proj in availableProjects"
+                  :key="proj.id"
+                  :value="proj.id"
+                  :label="proj.name"
+                >
+                  <div class="target-option">
+                    <span>{{ proj.name }}</span>
+                    <small>全部目标批量 ({{ projectTargetsMap[proj.id]?.length || 0 }}个)</small>
+                  </div>
+                </el-option>
+              </el-select>
+              <button
+                v-else
+                type="button"
+                class="create-target"
+                @click="router.push('/projects')"
+              >
+                <el-icon><Plus /></el-icon>新增评估项目
+              </button>
+            </template>
           </div>
           <span class="composer-shortcut">{{
             compacting ? "正在压缩会话，请稍候…" : "Enter 发送，Shift + Enter 换行"
@@ -2912,7 +2982,7 @@ onBeforeUnmount(() => {
               class="send-button"
               :aria-label="compacting ? '正在压缩会话' : '发送'"
               :aria-busy="compacting"
-              :disabled="sending || compacting || !prompt.trim() || !selectedTargetId"
+              :disabled="sending || compacting || !prompt.trim() || (askScopeType === 'target' ? !selectedTargetId : !selectedProjectId)"
               @click="sendPrompt"
             >
               <el-icon :class="{ rotating: sending || compacting }"
