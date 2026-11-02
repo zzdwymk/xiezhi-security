@@ -406,6 +406,18 @@ public class ReconService {
     // 复用共享客户端：目录枚举会发出上千次请求，逐次 new HttpClient 会累积线程与连接。
     HttpClient client = activeClient;
 
+    // ---- 融合流水线（爬虫 ↔ 目录枚举双向喂种子）----
+    // 仅当调用方显式请求「站点爬取 + 目录枚举 + 融合开关」时进入；否则走下方各自独立的旧路径。
+    if (request.fuseEnabled()) {
+      fusedDiscoverWebPaths(projectId, target, base, request, client, discovered, evidence);
+      // 参数探测仍复用已发现端点（融合后端点更全，注入候选自然更多）。
+      mineInjectableParameters(projectId, target, base, discovered, evidence);
+      if (Boolean.TRUE.equals(request.aggregateProxyPaths())) {
+        aggregateProxyPaths(projectId, target, host, discovered, evidence);
+      }
+      return mergeKnownPaths(projectId, target.getId(), discovered);
+    }
+
     // ---- 主动目录枚举（仅 ACTIVE 且勾选）----
     if (request.activeMode() && Boolean.TRUE.equals(request.enumeratePaths())) {
       enumerateWebPaths(projectId, target, base, request, client, discovered, evidence);
@@ -557,7 +569,391 @@ public class ReconService {
   }
 
   /**
-   * 递归站点爬虫（广度优先）。
+   * 融合流水线：把「站点爬虫」与「目录字典枚举」围绕同一个待处理队列迭代执行，互相喂种子。
+   *
+   * <p>解决的问题：旧实现中 {@link #crawlLinks} 与 {@link #enumerateWebPaths} 是两个互不通信的
+   * 独立循环——爬虫发现的 {@code /api/} 目录不会被字典扩展，字典命中的可达页面不会被爬虫继续
+   * 解析其链接。本方法把两者放进同一个 {@link DiscoveryContext}：
+   *
+   * <ol>
+   *   <li><b>爬虫轮</b>：从队列取出页面，真实访问判活、入库，解析 {@code href/src/action} 链接，
+   *       并把其中的<strong>目录前缀</strong>（如 {@code /api/}）登记到 {@code prefixSeeds}；</li>
+   *   <li><b>目录轮</b>：用字典词对「根 base + 每个爬虫发现的目录前缀」做候选扩展，并发探测命中后
+   *       入库，并把命中的<strong>可达页面 URL</strong>回灌爬虫队列；</li>
+   *   <li><b>迭代</b>：重复上述两轮，直到无新 URL 入队 / 达到页数上限 / 墙钟预算耗尽（所有上限与
+   *       旧路径一致，保证同步请求总能返回）；</li>
+   *   <li>全程同源约束，端口授权由 {@code discoveredPaths.record} 兜底。</li>
+   * </ol>
+   */
+  private void fusedDiscoverWebPaths(
+      Long projectId,
+      AuthorizedTarget target,
+      String base,
+      ReconRequest request,
+      HttpClient client,
+      java.util.LinkedHashSet<String> discovered,
+      List<Map<String, Object>> evidence) {
+    int maxDepth = Math.max(1, crawlMaxDepth);
+    int maxPages = Math.max(1, crawlMaxPages);
+    int concurrency = Math.max(1, Math.min(16, crawlConcurrency));
+    long deadline =
+        System.nanoTime()
+            + Duration.ofSeconds(
+                    Math.max(5, Math.max(crawlTimeBudgetSeconds, pathEnumTimeBudgetSeconds)))
+                .toNanos();
+
+    // 软-404 基线：爬虫判活与字典枚举共用同一条基线，避免"两套基线、两种判活"。
+    long[] baseline =
+        probePath(client, base + "/xzy404-" + Long.toHexString(System.nanoTime()) + "/");
+
+    // 字典词（目录轮使用）。若为空则退化为纯爬虫。
+    List<String> words = expandPathWords(request.pathWords(), request.pathDictionaryId());
+    int dirBudget = 5000;
+    if (words.size() > dirBudget) words = words.subList(0, dirBudget);
+
+    DiscoveryContext ctx = new DiscoveryContext(base, maxDepth, maxPages, deadline);
+    ctx.enqueued.add(stripTrailingSlash(base) + "/");
+    ctx.queue.add(new QueueItem(stripTrailingSlash(base) + "/", 1));
+
+    Pattern linkPattern =
+        Pattern.compile("(?i)(?:href|src|action)\\s*=\\s*[\"']([^\"'#>]+)[\"']");
+    java.util.concurrent.ExecutorService pool =
+        java.util.concurrent.Executors.newFixedThreadPool(
+            concurrency,
+            runnable -> {
+              Thread thread = new Thread(runnable);
+              thread.setName("recon-fused-" + thread.getId());
+              thread.setDaemon(true);
+              return thread;
+            });
+
+    int dirFoundTotal = 0;
+    int round = 0;
+    try {
+      // 迭代直到爬虫队列排空且没有新的目录前缀可扩展。
+      while ((!ctx.queue.isEmpty() || ctx.hasPendingPrefix()) && round < 12) {
+        if (System.nanoTime() > deadline) {
+          ctx.timedOut = true;
+          break;
+        }
+        round++;
+        // ---- 爬虫轮：处理当前队列（BFS 逐层），产出链接与目录前缀 ----
+        crawlRound(ctx, target, projectId, client, pool, linkPattern, baseline, concurrency, discovered);
+        // ---- 目录轮：用根 base + 爬虫新发现的目录前缀扩展字典，命中回灌爬虫队列 ----
+        if (!words.isEmpty()) {
+          dirFoundTotal +=
+              dirScanRound(ctx, target, projectId, client, pool, words, baseline, concurrency, discovered);
+        }
+      }
+    } finally {
+      pool.shutdownNow();
+    }
+
+    Map<String, Object> fusedEvidence = new LinkedHashMap<>();
+    fusedEvidence.put("source", "FUSED_DISCOVERY");
+    fusedEvidence.put("available", true);
+    fusedEvidence.put("rounds", round);
+    fusedEvidence.put("maxDepth", maxDepth);
+    fusedEvidence.put("pagesFetched", ctx.pagesFetched);
+    fusedEvidence.put("pagesAlive", ctx.pagesAlive);
+    fusedEvidence.put("linksFound", ctx.linksFound);
+    fusedEvidence.put("dirCandidates", words.size());
+    fusedEvidence.put("dirFound", dirFoundTotal);
+    fusedEvidence.put("prefixSeeds", ctx.prefixSeeds.size());
+    fusedEvidence.put("timedOut", ctx.timedOut);
+    evidence.add(fusedEvidence);
+  }
+
+  /**
+   * 融合流水线的一次「爬虫轮」：消费当前队列中尚未访问的页面，判活、入库、解析链接，
+   * 并把链接中的目录前缀登记为下一轮目录扩展的种子、把同源链接回灌队列（BFS）。
+   */
+  private void crawlRound(
+      DiscoveryContext ctx,
+      AuthorizedTarget target,
+      Long projectId,
+      HttpClient client,
+      java.util.concurrent.ExecutorService pool,
+      Pattern linkPattern,
+      long[] baseline,
+      int concurrency,
+      java.util.LinkedHashSet<String> discovered) {
+    // 取出一轮要处理的页面（上限 = 剩余页数预算）。
+    List<QueueItem> batch = new ArrayList<>();
+    while (!ctx.queue.isEmpty()
+        && batch.size() < concurrency * 2
+        && ctx.pagesFetched + batch.size() < ctx.maxPages) {
+      QueueItem item = ctx.queue.poll();
+      if (item == null) break;
+      synchronized (ctx.visited) {
+        if (ctx.visited.contains(item.url())) continue;
+        ctx.visited.add(item.url());
+      }
+      batch.add(item);
+    }
+    if (batch.isEmpty()) return;
+
+    List<java.util.concurrent.Future<CrawlPageResult>> futures = new ArrayList<>(batch.size());
+    for (QueueItem item : batch) {
+      if (System.nanoTime() > ctx.deadline) {
+        ctx.timedOut = true;
+        break;
+      }
+      futures.add(
+          pool.submit(
+              () -> {
+                long[] resp = probePath(client, item.url());
+                if (resp == null) return CrawlPageResult.dead(item);
+                int status = (int) resp[0];
+                long len = resp[1];
+                if (!isAlive(baseline, status, len) || status >= 400) return CrawlPageResult.dead(item);
+                if (discoveredPaths.record(
+                    target,
+                    projectId,
+                    item.url(),
+                    "CRAWL",
+                    status,
+                    len,
+                    "融合侦察·爬虫（第 " + item.depth() + " 层，已测活）")) {
+                  synchronized (discovered) {
+                    discovered.add(item.url());
+                  }
+                }
+                CrawlPageResult res = new CrawlPageResult(item, true);
+                // 深度允许时抓源码解析下一层链接，并抽取目录前缀作为字典扩展种子。
+                if (item.depth() < ctx.maxDepth) {
+                  String html = fetchBody(client, item.url());
+                  if (html != null) {
+                    Matcher matcher = linkPattern.matcher(html);
+                    int cap = 200;
+                    while (matcher.find() && cap-- > 0) {
+                      String link = matcher.group(1).trim();
+                      if (link.isBlank()
+                          || link.startsWith("javascript:")
+                          || link.startsWith("mailto:")
+                          || link.startsWith("data:")
+                          || link.startsWith("#")) {
+                        continue;
+                      }
+                      String url = resolveLink(item.url(), link);
+                      if (url == null) continue;
+                      res.linkCount++;
+                      // 目录前缀（如 /api/、/admin/）：作为目录轮扩展的种子。
+                      String dirPrefix = directoryPrefixOf(url);
+                      if (dirPrefix != null) {
+                        synchronized (ctx.prefixSeeds) {
+                          ctx.prefixSeeds.add(dirPrefix);
+                        }
+                      }
+                      res.next.add(url);
+                    }
+                  }
+                }
+                return res;
+              }));
+    }
+
+    for (java.util.concurrent.Future<CrawlPageResult> future : futures) {
+      try {
+        CrawlPageResult res = future.get();
+        ctx.pagesFetched++;
+        if (res.alive) {
+          ctx.pagesAlive++;
+          ctx.linksFound += res.linkCount;
+        }
+        // 回灌同源子链接（去掉 fragment，去重入队）。
+        for (String raw : res.next) {
+          String normalized = stripFragment(raw);
+          synchronized (ctx.enqueued) {
+            if (ctx.enqueued.add(normalized)) {
+              ctx.queue.add(new QueueItem(normalized, res.item.depth() + 1));
+            }
+          }
+        }
+      } catch (InterruptedException interrupted) {
+        Thread.currentThread().interrupt();
+        ctx.timedOut = true;
+        break;
+      } catch (java.util.concurrent.ExecutionException ignored) {
+        ctx.pagesFetched++;
+      }
+    }
+  }
+
+  /**
+   * 融合流水线的一次「目录轮」：对「根 base + 每个爬虫发现的目录前缀」按字典做候选扩展，
+   * 并发探测命中后入库，并把命中的可达页面回灌爬虫队列。返回本轮命中数。
+   */
+  private int dirScanRound(
+      DiscoveryContext ctx,
+      AuthorizedTarget target,
+      Long projectId,
+      HttpClient client,
+      java.util.concurrent.ExecutorService pool,
+      List<String> words,
+      long[] baseline,
+      int concurrency,
+      java.util.LinkedHashSet<String> discovered) {
+    // 收集本轮扩展基址：根 base + 爬虫本轮新发现的目录前缀（消费后清空，下一轮不再重复）。
+    java.util.LinkedHashSet<String> bases = new java.util.LinkedHashSet<>();
+    String rootBase = stripTrailingSlash(ctx.base) + "/";
+    synchronized (ctx.scannedBases) {
+      if (ctx.scannedBases.add(rootBase)) bases.add(rootBase);
+      synchronized (ctx.prefixSeeds) {
+        for (String prefix : ctx.prefixSeeds) {
+          String normalized = prefix.endsWith("/") ? prefix : prefix + "/";
+          if (normalized.startsWith(stripTrailingSlash(ctx.base)) && ctx.scannedBases.add(normalized)) {
+            bases.add(normalized);
+          }
+        }
+        ctx.prefixSeeds.clear();
+      }
+    }
+    if (bases.isEmpty()) return 0;
+    // 规划候选 URL（bases × words），去重且不超过剩余请求预算。
+    java.util.LinkedHashSet<String> candidates = new java.util.LinkedHashSet<>();
+    for (String b : bases) {
+      String root = b.endsWith("/") ? b : b + "/";
+      for (String word : words) {
+        if (System.nanoTime() > ctx.deadline) {
+          ctx.timedOut = true;
+          break;
+        }
+        String url = root + word.replaceFirst("^/+", "");
+        candidates.add(url);
+        if (candidates.size() >= 5000) break;
+      }
+      if (candidates.size() >= 5000) break;
+    }
+    if (candidates.isEmpty()) return 0;
+
+    java.util.concurrent.atomic.AtomicInteger found = new java.util.concurrent.atomic.AtomicInteger();
+    List<java.util.concurrent.Future<?>> futures = new ArrayList<>(candidates.size());
+    for (String url : candidates) {
+      if (System.nanoTime() > ctx.deadline) {
+        ctx.timedOut = true;
+        break;
+      }
+      futures.add(
+          pool.submit(
+              () -> {
+                long[] resp = probePath(client, url);
+                if (resp == null) return;
+                int status = (int) resp[0];
+                long len = resp[1];
+                if (isAlive(baseline, status, len) && status > 0 && status < 500 && status != 404) {
+                  if (discoveredPaths.record(
+                      target, projectId, url, "ACTIVE_ENUM", status, len, "融合侦察·目录字典枚举")) {
+                    synchronized (discovered) {
+                      discovered.add(url);
+                    }
+                    found.incrementAndGet();
+                    // 命中可达页面回灌爬虫队列（若未访问过），让爬虫继续解析其链接。
+                    // 回灌深度取 1：保证只要 maxDepth>=2 就会真正抓取该页源码解析下一层链接，
+                    // 否则若用 maxDepth 入队，深层解析条件 item.depth()<maxDepth 恒假，命中页永不展开。
+                    synchronized (ctx.enqueued) {
+                      if (!ctx.visited.contains(url) && ctx.enqueued.add(url)) {
+                        ctx.queue.add(new QueueItem(url, 1));
+                      }
+                    }
+                  }
+                }
+              }));
+    }
+    for (java.util.concurrent.Future<?> future : futures) {
+      try {
+        future.get();
+      } catch (InterruptedException interrupted) {
+        Thread.currentThread().interrupt();
+        ctx.timedOut = true;
+        break;
+      } catch (java.util.concurrent.ExecutionException ignored) {
+        // 单请求失败不影响整体流水线。
+      }
+    }
+    return found.get();
+  }
+
+  /**
+   * 共享判活：软-404 基线存在时，响应状态码与基线不同、或长度差超过容差，才视为"页面存在"；
+   * 无基线时退化为状态码 {@code 0 < status < 400}。爬虫轮与目录轮共用此判据，统一口径。
+   */
+  private boolean isAlive(long[] baseline, int status, long len) {
+    if (baseline == null) {
+      return status > 0 && status < 400;
+    }
+    return status != (int) baseline[0] || Math.abs(len - baseline[1]) > 24;
+  }
+
+  /**
+   * 从同一主机下的 URL 抽取"目录前缀"（以 / 结尾的路径部分），作为目录字典扩展的种子。
+   * 例：{@code http://h/api/users} → {@code http://h/api/}；根路径本身返回 null。
+   */
+  private String directoryPrefixOf(String url) {
+    try {
+      URI uri = URI.create(url);
+      String path = uri.getPath();
+      if (path == null || path.isEmpty() || path.equals("/")) return null;
+      int lastSlash = path.lastIndexOf('/');
+      if (lastSlash <= 0) return null;
+      String dir = path.substring(0, lastSlash + 1); // 含末尾斜杠
+      String scheme = uri.getScheme();
+      String authority = uri.getAuthority();
+      if (scheme == null || authority == null) return null;
+      return scheme + "://" + authority + dir;
+    } catch (Exception ex) {
+      return null;
+    }
+  }
+
+  /** 融合流水线的共享上下文：待处理队列 + 去重集合 + 目录前缀种子 + 统计计数。 */
+  private static final class DiscoveryContext {
+    final String base;
+    final int maxDepth;
+    final int maxPages;
+    final long deadline;
+    final java.util.Deque<QueueItem> queue = new java.util.ArrayDeque<>();
+    final Set<String> visited = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+    final Set<String> enqueued = new java.util.HashSet<>();
+    final Set<String> prefixSeeds = java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<>());
+    final Set<String> scannedBases = new java.util.HashSet<>();
+    int pagesFetched;
+    int pagesAlive;
+    int linksFound;
+    volatile boolean timedOut;
+
+    DiscoveryContext(String base, int maxDepth, int maxPages, long deadline) {
+      this.base = base;
+      this.maxDepth = maxDepth;
+      this.maxPages = maxPages;
+      this.deadline = deadline;
+    }
+
+    boolean hasPendingPrefix() {
+      synchronized (prefixSeeds) {
+        return !prefixSeeds.isEmpty();
+      }
+    }
+  }
+
+  /** 一次爬虫轮中单页的处理结果：是否存活、解析出的子链接、链接计数。 */
+  private static final class CrawlPageResult {
+    final QueueItem item;
+    final boolean alive;
+    final List<String> next = new ArrayList<>();
+    int linkCount;
+
+    CrawlPageResult(QueueItem item, boolean alive) {
+      this.item = item;
+      this.alive = alive;
+    }
+
+    static CrawlPageResult dead(QueueItem item) {
+      return new CrawlPageResult(item, false);
+    }
+  }
+
+  /** 递归站点爬虫（广度优先）。
    *
    * <p>与旧实现的区别：旧版只请求根页一次，把页面源码里的链接<strong>直接登记</strong>——
    * 链接从未被真实访问过，状态码为空，也不存在任何递归。这里改为真正的爬取：

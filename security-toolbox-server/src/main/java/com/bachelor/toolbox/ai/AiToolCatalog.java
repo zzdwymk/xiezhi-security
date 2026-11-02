@@ -88,7 +88,7 @@ final class AiToolCatalog {
       case "http_headers" -> "采集 HTTP 响应头并检查常见浏览器安全头";
       case "http_security_check" -> "检查 cookies、CORS、HTTP 方法与信息泄露";
       case "tls_config" -> "检查 HTTPS 证书与 TLS 基础配置";
-      case "site_crawl" -> "抓取授权目标首页，提取同源链接与疑似可注入参数候选并登记资产（只读信息收集）";
+      case "site_crawl" -> "抓取授权目标并融合目录扫描：爬虫发现的目录前缀喂给字典扩展、字典命中的页面回灌爬虫，迭代发现页面/目录/参数候选并登记资产（只读信息收集）";
       case "retrieve_project_context" -> "检索已索引的项目资料、历史任务与证据（只读，不产生动作）";
       default -> "安全检测工具";
     };
@@ -224,7 +224,10 @@ final class AiToolCatalog {
                           "items", Map.of("type", "string"),
                           "maxItems", 10,
                           "description", "附加后缀探测，如 php、txt")));
-      case "site_crawl" -> object(Map.of());
+      case "site_crawl" ->
+          object(
+              Map.of(
+                  "fuse", Map.of("type", "boolean", "description", "是否融合爬虫与目录扫描迭代发现")));
       default -> object(Map.of());
     };
   }

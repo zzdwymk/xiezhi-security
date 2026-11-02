@@ -90,6 +90,25 @@ public final class ToolParameterSpec {
   /** {@code dir_scan} 的单轮请求总数上限（与 ai-runtime DirScanParameters.maxRequests 对齐）。 */
   public static final int DIR_SCAN_MAX_REQUESTS = 200_000;
 
+  // ------------------------------------------------------------------ 融合侦察取值规格
+
+  /**
+   * {@code dir_scan} / {@code site_crawl} 的 {@code fuse} 取值（方案 B：爬虫↔目录扫描深度融合）。
+   *
+   * <p>融合只改变两个只读信息收集动作的<strong>执行编排</strong>（爬虫发现的目录前缀喂给字典扫描、
+   * 目录命中的可达页面回灌爬虫队列），不改变授权边界、不发送攻击载荷、不提升风险等级。因此护栏侧与
+   * 执行侧采用同一校验即可。缺失视为 false（保持旧行为）。
+   */
+  public static boolean requireFuseFlag(Object rawFuse) {
+    if (rawFuse == null) {
+      return false;
+    }
+    if (!(rawFuse instanceof Boolean value)) {
+      throw new ApiException("fuse 参数必须为布尔值: " + rawFuse);
+    }
+    return value;
+  }
+
   // ------------------------------------------------------------------ 校验方法（两侧共用）
 
   /**

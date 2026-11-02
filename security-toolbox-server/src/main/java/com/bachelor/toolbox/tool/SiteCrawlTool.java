@@ -42,13 +42,15 @@ public class SiteCrawlTool implements SecurityTool {
 
   @Override
   public String displayName() {
-    return "站点链接爬取与信息收集";
+    return "站点链接爬取与信息收集（可融合目录扫描）";
   }
 
   @Override
   public String description() {
     return "抓取授权目标首页并提取同源链接（页面源码链接提取），对发现的动态端点做常见 GET 参数的"
-        + "疑似注入候选探测；全部结果登记进资产库。这是只读信息收集，不发送攻击载荷。";
+        + "疑似注入候选探测；全部结果登记进资产库。参数 fuse=true 时，爬虫与目录字典扫描融合迭代："
+        + "爬虫发现的目录前缀作为字典扩展的种子、字典命中的可达页面回灌爬虫队列继续解析，"
+        + "显著提升页面/目录/表单/参数的覆盖度。这是只读信息收集，不发送攻击载荷。";
   }
 
   @Override
@@ -65,7 +67,12 @@ public class SiteCrawlTool implements SecurityTool {
 
     long knownBefore = discoveredPaths.list(projectId, target.getId()).size();
 
-    observer.heartbeat("正在抓取目标首页并提取同源链接");
+    boolean fuse =
+        com.bachelor.toolbox.ai.ToolParameterSpec.requireFuseFlag(
+            parameters == null ? null : parameters.get("fuse"));
+
+    observer.heartbeat(
+        fuse ? "正在融合爬取与目录扫描（爬虫↔字典双向喂种子）" : "正在抓取目标首页并提取同源链接");
     if (observer.isCancellationRequested()) throw new ApiException("站点爬取已取消");
 
     ReconRequest request =
@@ -75,7 +82,7 @@ public class SiteCrawlTool implements SecurityTool {
             /* includeTls */ false,
             /* enumerateSubdomains */ false,
             /* subdomainWords */ null,
-            /* enumeratePaths */ false, // 不做字典爆破；端点完全来自页面源码链接提取
+            /* enumeratePaths */ fuse, // 融合模式开启目录枚举，与爬虫同一流水线迭代
             /* pathWords */ null,
             /* crawlSite */ true,
             /* aggregateProxyPaths */ false,
@@ -83,7 +90,8 @@ public class SiteCrawlTool implements SecurityTool {
             /* mode */ "ACTIVE",
             /* includeSameSubnet */ false,
             /* pathDictionaryId */ null,
-            /* pathConcurrency */ null);
+            /* pathConcurrency */ null,
+            /* fuseCrawlWithDirScan */ fuse);
     ReconResult result = reconService.collect(projectId, request);
 
     if (observer.isCancellationRequested()) throw new ApiException("站点爬取已取消");
@@ -118,7 +126,8 @@ public class SiteCrawlTool implements SecurityTool {
             .collect(java.util.stream.Collectors.joining("\n"));
 
     String summary =
-        "站点爬取完成：本次新增 "
+        (fuse ? "融合侦察完成（爬虫 + 目录扫描迭代）" : "站点爬取完成")
+            + "：本次新增 "
             + Math.max(0, allPaths.size() - knownBefore)
             + " 条端点，资产库共 "
             + allPaths.size()

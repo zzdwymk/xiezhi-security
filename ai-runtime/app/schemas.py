@@ -88,6 +88,13 @@ class EmptyToolParameters(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class SiteCrawlParameters(BaseModel):
+    """Crawl a site's links; ``fuse`` fuses crawl and directory discovery (Plan B)."""
+
+    model_config = ConfigDict(extra="forbid")
+    fuse: StrictBool = False
+
+
 class PocSelectionParameters(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     pocCodes: list[
@@ -349,6 +356,7 @@ class WorkflowHttpSecurityParameters(BaseModel):
 
 WorkflowToolParameters = Union[
     EmptyToolParameters,
+    SiteCrawlParameters,
     NucleiParameters,
     WorkflowRetrievalParameters,
     PortScanParameters,
@@ -365,6 +373,7 @@ WorkflowToolParameters = Union[
 
 GroundedParameterPatch = Union[
     EmptyToolParameters,
+    SiteCrawlParameters,
     PortScanParameters,
     NmapParameters,
     WorkflowHttpSecurityParameters,
@@ -417,7 +426,7 @@ class TlsConfigAction(_PlanAction):
 
 class SiteCrawlAction(_PlanAction):
     tool: Literal["site_crawl"]
-    parameters: EmptyToolParameters
+    parameters: SiteCrawlParameters
 
 
 class DirScanAction(_PlanAction):
@@ -835,7 +844,7 @@ class WorkflowStep(BaseModel):
         "http_headers": EmptyToolParameters,
         "http_security_check": WorkflowHttpSecurityParameters,
         "tls_config": EmptyToolParameters,
-        "site_crawl": EmptyToolParameters,
+        "site_crawl": SiteCrawlParameters,
         "dir_scan": DirScanParameters,
         "nuclei_scan": NucleiParameters,
         "afrog_scan": PocSelectionParameters,

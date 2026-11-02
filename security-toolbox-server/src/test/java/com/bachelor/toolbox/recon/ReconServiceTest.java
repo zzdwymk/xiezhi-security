@@ -7,6 +7,7 @@ import com.bachelor.toolbox.traffic.TrafficPacketRepository;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -468,6 +469,156 @@ class ReconServiceTest {
             any(),
             any(),
             argThat(note -> note != null && note.contains("疑似可注入")));
+  }
+
+  /**
+   * 方案 B 融合测试之一：爬虫发现的目录前缀应作为目录字典扫描的种子。
+   *
+   * <p>站点根页只链接到 {@code /api/users}（爬虫发现目录前缀 /api/），字典含 "admin"。
+   * 旧实现里目录扫描只对根 base 爆破，永远不会请求 /api/admin；融合后应把 /api/ 作为扩展基址，
+   * 从而命中 /api/admin。断言 record 收到 /api/admin。
+   */
+  @Test
+  void fusedDiscoveryUsesCrawledDirectoryPrefixAsDirScanSeed() throws Exception {
+    HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    // 软-404 基线：不存在的路径返回 404（否则全站判活）。
+    server.createContext(
+        "/xzy404-",
+        exchange -> {
+          exchange.sendResponseHeaders(404, -1);
+          exchange.close();
+        });
+    // 根页仅链接 /api/users（用于让爬虫发现 /api/ 前缀）。
+    server.createContext(
+        "/",
+        exchange -> {
+          byte[] body = "<a href=\"/api/users\">u</a>".getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(200, body.length);
+          exchange.getResponseBody().write(body);
+          exchange.close();
+        });
+    // /api/users 可达（爬虫判活成功，登记 /api/ 前缀）。
+    server.createContext(
+        "/api/users",
+        exchange -> {
+          byte[] body = "<div>users</div>".getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(200, body.length);
+          exchange.getResponseBody().write(body);
+          exchange.close();
+        });
+    // 融合后目录扫描 /api/ + "admin" → /api/admin，应当可达。
+    server.createContext(
+        "/api/admin",
+        exchange -> {
+          byte[] body = "<div>admin panel</div>".getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(200, body.length);
+          exchange.getResponseBody().write(body);
+          exchange.close();
+        });
+    server.start();
+    int port = server.getAddress().getPort();
+
+    DiscoveredPathService discoveredPaths = mock(DiscoveredPathService.class);
+    when(discoveredPaths.record(any(), any(), any(), any(), any(), any(), any())).thenReturn(true);
+    AuthorizedTarget target = authorizedTarget("http://127.0.0.1:" + port, String.valueOf(port));
+    stubSavedTarget(target);
+    ReconService service = serviceWith(discoveredPaths);
+
+    // enumeratePaths=true, crawlSite=true, fuseCrawlWithDirScan=true；字典词显式给 ["admin"]。
+    ReconRequest request =
+        new ReconRequest(
+            target.getId(), false, false, false, List.of(),
+            /* enumeratePaths */ true, List.of("admin"), /* crawlSite */ true,
+            false, false, "ACTIVE", false, null, null, /* fuse */ true);
+
+    try {
+      service.collect(1L, request);
+    } finally {
+      server.stop(0);
+    }
+
+    // 融合的核心断言：/api/admin 只在「爬虫发现 /api/ + 字典 admin」同时发生时才会被请求。
+    // 允许被记录多次：目录轮命中后回灌爬虫队列，爬虫会再次测活登记（带真实状态码），合理。
+    verify(discoveredPaths, atLeastOnce())
+        .record(
+            eq(target),
+            eq(1L),
+            argThat(url -> url != null && url.endsWith("/api/admin")),
+            any(), any(), any(), any());
+  }
+
+  /**
+   * 方案 B 融合测试之二：目录扫描命中的可达页面应回灌爬虫队列，被继续解析其链接。
+   *
+   * <p>字典词只有 "admin"（根 base 扫描命中 /admin）。/admin 页面源码里又链接了 /admin/panel。
+   * 旧实现里 /admin/panel 只能靠字典恰好猜中；融合后 /admin 命中即回灌爬虫队列，爬虫会抓其源码
+   * 并发现 /admin/panel。断言 record 收到 /admin/panel，且来源为 CRAWL（爬虫解析而来）。
+   */
+  @Test
+  void fusedDiscoveryFeedsDirScanHitsBackIntoTheCrawler() throws Exception {
+    HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext(
+        "/xzy404-",
+        exchange -> {
+          exchange.sendResponseHeaders(404, -1);
+          exchange.close();
+        });
+    // 根页不含任何链接（避免根页爬取直接带出 /admin）；字典仍会爆破出 /admin。
+    server.createContext(
+        "/",
+        exchange -> {
+          byte[] body = "<div>home</div>".getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(200, body.length);
+          exchange.getResponseBody().write(body);
+          exchange.close();
+        });
+    // 目录扫描命中 /admin，其源码链接 /admin/panel。
+    server.createContext(
+        "/admin",
+        exchange -> {
+          byte[] body = "<a href=\"/admin/panel\">p</a>".getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(200, body.length);
+          exchange.getResponseBody().write(body);
+          exchange.close();
+        });
+    // 只可能通过「/admin 回灌爬虫再解析链接」才发现的深层页面。
+    server.createContext(
+        "/admin/panel",
+        exchange -> {
+          byte[] body = "<div>panel</div>".getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(200, body.length);
+          exchange.getResponseBody().write(body);
+          exchange.close();
+        });
+    server.start();
+    int port = server.getAddress().getPort();
+
+    DiscoveredPathService discoveredPaths = mock(DiscoveredPathService.class);
+    when(discoveredPaths.record(any(), any(), any(), any(), any(), any(), any())).thenReturn(true);
+    AuthorizedTarget target = authorizedTarget("http://127.0.0.1:" + port, String.valueOf(port));
+    stubSavedTarget(target);
+    ReconService service = serviceWith(discoveredPaths);
+
+    ReconRequest request =
+        new ReconRequest(
+            target.getId(), false, false, false, List.of(),
+            /* enumeratePaths */ true, List.of("admin"), /* crawlSite */ true,
+            false, false, "ACTIVE", false, null, null, /* fuse */ true);
+
+    try {
+      service.collect(1L, request);
+    } finally {
+      server.stop(0);
+    }
+
+    // 深层页面 /admin/panel 只能由「目录命中 /admin → 回灌爬虫 → 解析链接」发现，且来源为 CRAWL。
+    verify(discoveredPaths)
+        .record(
+            eq(target),
+            eq(1L),
+            argThat(url -> url != null && url.endsWith("/admin/panel")),
+            eq("CRAWL"),
+            any(), any(), any());
   }
 
   private ReconService serviceWith(DiscoveredPathService discoveredPaths) {

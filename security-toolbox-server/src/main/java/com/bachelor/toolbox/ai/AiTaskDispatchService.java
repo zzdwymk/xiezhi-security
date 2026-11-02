@@ -292,7 +292,7 @@ public class AiTaskDispatchService {
           case "http_security_check" -> Set.of("check");
           case "dir_scan" ->
               Set.of("dictionary", "concurrency", "depth", "maxRequests", "extensions");
-          case "site_crawl" -> Set.of();
+          case "site_crawl" -> Set.of("fuse");
           case "http_headers", "tls_config" -> Set.of();
           default -> throw new ApiException("AI 工具不在安全白名单内");
         };
@@ -400,6 +400,11 @@ public class AiTaskDispatchService {
       case "site_crawl" -> {
         // 站点爬取只发只读 GET，校验存在可达 Web 基址即可（授权校验在 ReconService 内部再做一次）。
         targetPolicyService.validatedHttpUri(target);
+        // 融合开关：爬虫 + 目录扫描同一流水线迭代（只读信息收集，不提升风险）。
+        if (parameters.containsKey("fuse")) {
+          boolean fuse = ToolParameterSpec.requireFuseFlag(parameters.get("fuse"));
+          parameters.put("fuse", fuse);
+        }
       }
       case "msf_scan" -> {
         targetPolicyService.validatedHost(target);

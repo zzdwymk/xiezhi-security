@@ -1491,7 +1491,7 @@ public class AiAgentRuntimeClient {
           case "sqlmap_scan" -> Set.of("path", "level", "risk", "technique");
           case "zap_fuzz" -> ZapFuzzAiParameters.KEYS;
           case "dir_scan" -> Set.of("dictionary", "concurrency", "depth", "maxRequests", "extensions");
-          case "site_crawl" -> Set.of();
+          case "site_crawl" -> Set.of("fuse");
           case "http_headers", "tls_config" -> Set.of();
           default -> throw new RuntimeProtocolException("AI Runtime 计划包含未知工具 " + toolCode);
         };
@@ -1604,7 +1604,16 @@ public class AiAgentRuntimeClient {
           result.put("extensions", ToolParameterSpec.requireDirScanExtensions(values));
         }
       }
-      case "site_crawl", "http_headers", "tls_config" -> {}
+      case "site_crawl" -> {
+        if (raw.has("fuse")) {
+          JsonNode fuse = raw.get("fuse");
+          if (!fuse.isBoolean()) {
+            throw new RuntimeProtocolException("AI Runtime site_crawl fuse 参数必须是布尔值");
+          }
+          result.put("fuse", ToolParameterSpec.requireFuseFlag(fuse.booleanValue()));
+        }
+      }
+      case "http_headers", "tls_config" -> {}
       default -> throw new RuntimeProtocolException("AI Runtime 计划包含未知工具 " + toolCode);
     }
     return Map.copyOf(result);

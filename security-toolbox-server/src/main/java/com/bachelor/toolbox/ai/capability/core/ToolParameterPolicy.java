@@ -67,7 +67,7 @@ public final class ToolParameterPolicy {
           Map.entry("http_security_check", Set.of("check")),
           Map.entry("http_headers", Set.of()),
           Map.entry("tls_config", Set.of()),
-          Map.entry("site_crawl", Set.of()),
+          Map.entry("site_crawl", Set.of("fuse")),
           Map.entry("retrieve_project_context", Set.of("query")));
 
   /** 取值枚举（对齐 dispatch 层的逐个 case 校验）。 */

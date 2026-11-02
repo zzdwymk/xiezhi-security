@@ -1527,6 +1527,7 @@ export const endpoints = {
       pathDictionaryId?: string;
       pathConcurrency?: number;
       crawlSite?: boolean;
+      fuseCrawlWithDirScan?: boolean;
       aggregateProxyPaths?: boolean;
       activeNetworkProbe?: boolean;
     },

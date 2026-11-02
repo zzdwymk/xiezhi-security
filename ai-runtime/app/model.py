@@ -46,6 +46,7 @@ from .schemas import (
     PocSelectionParameters,
     NucleiParameters,
     PortScanParameters,
+    SiteCrawlParameters,
     WorkflowStep,
     ZapParameters,
     SqlmapParameters,
@@ -263,7 +264,7 @@ _ACTION_PARAMETER_MODELS: dict[str, type[BaseModel]] = {
     "msf_scan": MsfParameters,
     "sqlmap_scan": SqlmapParameters,
     "zap_fuzz": ZapFuzzParameters,
-    "site_crawl": EmptyToolParameters,
+    "site_crawl": SiteCrawlParameters,
 }
 
 _PARAMETER_SCHEMAS: dict[str, dict[str, Any]] = {
@@ -322,7 +323,9 @@ _PARAMETER_SCHEMAS: dict[str, dict[str, Any]] = {
     },
     "site_crawl": {
         "type": "object",
-        "properties": {},
+        "properties": {
+            "fuse": {"type": "boolean"},
+        },
         "additionalProperties": False,
     },
     "dir_scan": {

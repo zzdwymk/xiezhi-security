@@ -241,6 +241,30 @@ public class AgentWorkflowSpecService {
             defaultStep("zap-fuzz", "zap_fuzz", 4, "CAUTION", true),
             defaultStep("site-crawl", "site_crawl", 2, "SAFE", false)));
 
+    // Generation 5 (pre-fusion): site_crawl + a separate dir_scan node (CAUTION). Kept so projects
+    // created on it migrate to the current fused single-node discovery default.
+    retired.add(
+        presetOne(
+            defaultStep("context", "retrieve_project_context", 0, "SAFE", false),
+            defaultStepWithParameters(
+                "port-probe", "tcp_ports", 1, "SAFE", false, Map.of("mode", "quick")),
+            defaultStepWithParameters(
+                "service-scan", "nmap_service_scan", 2, "SAFE", false,
+                Map.of("consumeOpenPorts", true)),
+            defaultStep("headers", "http_headers", 2, "SAFE", false),
+            defaultStep("tls", "tls_config", 2, "SAFE", false),
+            defaultStep("site-crawl", "site_crawl", 3, "SAFE", false),
+            defaultStep("dir-scan", "dir_scan", 3, "CAUTION", true),
+            defaultStep("http-security", "http_security_check", 3, "SAFE", false),
+            defaultStep("nuclei", "nuclei_scan", 4, "CAUTION", true),
+            defaultStep("afrog", "afrog_scan", 4, "CAUTION", true),
+            defaultStep("xray", "xray_scan", 4, "CAUTION", true),
+            defaultStep("zap-scan", "zap_scan", 4, "CAUTION", true),
+            defaultStep("fscan", "fscan_scan", 4, "CAUTION", true),
+            defaultStep("msf", "msf_scan", 5, "CAUTION", true),
+            defaultStep("sqlmap", "sqlmap_scan", 5, "CAUTION", true),
+            defaultStep("zap-fuzz", "zap_fuzz", 5, "CAUTION", true)));
+
     return retired;
   }
 
@@ -861,9 +885,12 @@ public class AgentWorkflowSpecService {
                 Map.of("consumeOpenPorts", true)),
             defaultStep("headers", "http_headers", 2, "SAFE", false),
             defaultStep("tls", "tls_config", 2, "SAFE", false),
-            // ---- group 3: discovery (自动侦察先做站点爬取提取页面链接；dir_scan 是需要管理员确认的可选字典枚举)
-            defaultStep("site-crawl", "site_crawl", 3, "SAFE", false),
-            defaultStep("dir-scan", "dir_scan", 3, "CAUTION", true),
+            // ---- group 3: discovery. 融合侦察：爬虫与目录扫描同一条流水线迭代（爬虫发现的目录前缀
+            // 喂给字典扫描、目录命中的可达页面回灌爬虫队列），一次节点即覆盖"页面/目录/表单/参数"。
+            // 只读信息收集（SAFE），取代原先 site_crawl + 独立 dir_scan 两节点"二选一/割裂"的模型。
+            defaultStepWithParameters(
+                "site-crawl", "site_crawl", 3, "SAFE", false,
+                Map.of("fuse", true)),
             defaultStep("http-security", "http_security_check", 3, "SAFE", false),
             // ---- group 4: scanning (all intrusive, all administrator-confirmed)
             defaultStep("nuclei", "nuclei_scan", 4, "CAUTION", true),

@@ -131,6 +131,8 @@ const loading = ref(false);
 const selected = ref<number>();
 const discoveryTarget = ref<number>();
 const discoveryRows = ref<DiscoveryResult[]>([]);
+// 方案 C：保留原始 DiscoveredPath 列表，用于按来源归类展示「页面/目录/表单/参数/API」五类资产。
+const discoveredPathRows = ref<DiscoveredPath[]>([]);
 const showDiscoveryTopology = ref(false);
 const discoveryLoading = ref(false);
 const {
@@ -187,6 +189,10 @@ const pathDictLibrary = ref<
   Array<{ id: string; displayName: string; entryCount: number; description?: string }>
 >([]);
 const crawlSite = ref(true);
+// 方案 C：把「目录/路径枚举」与「站点爬取」合并为单一「资产发现（深度融合）」开关。
+// 勾选时同时打开 enumeratePaths + crawlSite 并发送 fuseCrawlWithDirScan=true，
+// 由后端融合流水线迭代执行（爬虫发现的目录前缀喂给字典、字典命中回灌爬虫）。
+const fusedDiscovery = ref(true);
 const aggregateProxyPaths = ref(true);
 const reconRows = ref<ReconResult[]>([]);
 const collectingRecon = ref(false);
@@ -2494,6 +2500,7 @@ async function loadDiscovery() {
       endpoints.projectDiscoveredPaths(id, discoveryTarget.value),
     ]);
     const pathAssets = asWebPathAssets(webPaths.data || []);
+    discoveredPathRows.value = webPaths.data || [];
     discoveryRows.value = [...(probeResults.data || []), ...pathAssets];
   } catch (error: any) {
     ElMessage.error(errorMessage(error, "探测结果加载失败"));
@@ -2518,6 +2525,61 @@ function asWebPathAssets(paths: DiscoveredPath[]): DiscoveryResult[] {
       _webPathId: rawId,
     }));
 }
+
+// 方案 C：把融合发现的路径资产归为「页面 / 目录 / 表单 / 参数 / API」五类，用于资产分类概览。
+// 归类依据：URL 形态（是否以 / 结尾为目录、是否带查询串/疑似注入备注为参数、/api 前缀为 API、
+// 是否含表单/登录类动态脚本为表单）+ 来源（CRAWL/ACTIVE_ENUM 等）。
+type AssetCategory = "页面" | "目录" | "表单" | "参数" | "API";
+const ASSET_CATEGORY_ORDER: AssetCategory[] = [
+  "页面",
+  "目录",
+  "表单",
+  "参数",
+  "API",
+];
+
+function classifyAssetCategory(p: DiscoveredPath): AssetCategory {
+  const url = String(p.url || p.path || "");
+  const lower = url.toLowerCase();
+  const note = String(p.note || "");
+  const pathPart = lower.split("?")[0];
+  if (
+    lower.includes("?") ||
+    note.includes("可注入") ||
+    note.includes("参数")
+  ) {
+    return "参数";
+  }
+  if (/\/api(\/|$)/.test(pathPart) || /\/v\d+(\/|$)/.test(pathPart)) {
+    return "API";
+  }
+  if (
+    /(login|signin|register|form|submit|admin|user|auth|account|search)(\/|\.|$)/.test(
+      pathPart,
+    )
+  ) {
+    return "表单";
+  }
+  if (pathPart.endsWith("/")) {
+    return "目录";
+  }
+  return "页面";
+}
+
+const assetCategorySummary = computed(() => {
+  const buckets = new Map<AssetCategory, DiscoveredPath[]>();
+  for (const cat of ASSET_CATEGORY_ORDER) buckets.set(cat, []);
+  for (const p of discoveredPathRows.value) {
+    buckets.get(classifyAssetCategory(p))!.push(p);
+  }
+  return ASSET_CATEGORY_ORDER.map((cat) => ({
+    category: cat,
+    count: buckets.get(cat)!.length,
+    items: buckets.get(cat)!,
+  }));
+});
+
+const assetTotalCount = computed(() => discoveredPathRows.value.length);
 
 /**
  * Probe results keep the matcher output in an evidence JSON blob.  Keep the
@@ -3240,16 +3302,21 @@ async function collectRecon(options: LinkedStepOptions = {}): Promise<boolean> {
       includeTls: includeTls.value,
       enumerateSubdomains: enumerateSubdomains.value,
       subdomainWords: [],
-      enumeratePaths: reconMode.value === "ACTIVE" && enumeratePaths.value,
+      enumeratePaths:
+        reconMode.value === "ACTIVE" &&
+        (fusedDiscovery.value || enumeratePaths.value),
       pathDictionaryId:
-        reconMode.value === "ACTIVE" && enumeratePaths.value
+        reconMode.value === "ACTIVE" && (fusedDiscovery.value || enumeratePaths.value)
           ? reconPathDictionary.value
           : undefined,
       pathConcurrency:
-        reconMode.value === "ACTIVE" && enumeratePaths.value
+        reconMode.value === "ACTIVE" && (fusedDiscovery.value || enumeratePaths.value)
           ? reconPathConcurrency.value
           : undefined,
-      crawlSite: reconMode.value === "ACTIVE" && crawlSite.value,
+      crawlSite:
+        reconMode.value === "ACTIVE" &&
+        (fusedDiscovery.value || crawlSite.value),
+      fuseCrawlWithDirScan: reconMode.value === "ACTIVE" && fusedDiscovery.value,
       aggregateProxyPaths: aggregateProxyPaths.value,
       pathWords: [],
     });
@@ -5074,6 +5141,49 @@ onUnmounted(() => {
             <el-radio-button :value="true">拓扑</el-radio-button>
           </el-radio-group>
         </div>
+        <div v-if="assetTotalCount" class="asset-category-panel">
+          <div class="asset-category-heading">
+            <strong>资产发现分类</strong>
+            <span class="asset-category-total">共 {{ assetTotalCount }} 条</span>
+          </div>
+          <div class="asset-category-grid">
+            <div
+              v-for="group in assetCategorySummary"
+              :key="group.category"
+              class="asset-category-card"
+              :class="{ 'is-empty': group.count === 0 }"
+            >
+              <div class="asset-category-card__count">{{ group.count }}</div>
+              <div class="asset-category-card__label">{{ group.category }}</div>
+              <el-popover
+                v-if="group.count"
+                placement="bottom"
+                :width="360"
+                trigger="click"
+              >
+                <template #reference>
+                  <el-button link size="small" class="asset-category-card__more"
+                    >查看</el-button
+                  >
+                </template>
+                <div class="asset-category-list">
+                  <div
+                    v-for="item in group.items"
+                    :key="item.id"
+                    class="asset-category-list__row"
+                  >
+                    <code class="asset-category-list__url">{{
+                      item.url || item.path
+                    }}</code>
+                    <span v-if="item.statusCode" class="asset-category-list__meta"
+                      >{{ item.statusCode }} · {{ item.source }}</span
+                    >
+                  </div>
+                </div>
+              </el-popover>
+            </div>
+          </div>
+        </div>
         <AssetTopology
           v-if="showDiscoveryTopology"
           :project-id="id"
@@ -5394,12 +5504,9 @@ onUnmounted(() => {
                   >受限同网段发现</el-checkbox
                 >
                 <el-checkbox
-                  v-model="enumeratePaths"
+                  v-model="fusedDiscovery"
                   :disabled="reconMode !== 'ACTIVE'"
-                  >目录/路径枚举</el-checkbox
-                >
-                <el-checkbox v-model="crawlSite" :disabled="reconMode !== 'ACTIVE'"
-                  >站点爬取</el-checkbox
+                  >资产发现（爬虫 + 目录扫描深度融合）</el-checkbox
                 >
                 <el-checkbox v-model="aggregateProxyPaths"
                   >代理会话路径聚合</el-checkbox
@@ -5408,11 +5515,13 @@ onUnmounted(() => {
             </div>
             <div
               class="recon-option-group recon-option-group--params"
-              :class="{ 'is-inactive': reconMode !== 'ACTIVE' || !enumeratePaths }"
+              :class="{
+                'is-inactive': reconMode !== 'ACTIVE' || !fusedDiscovery,
+              }"
             >
-              <span class="recon-option-group__label">路径枚举参数</span>
+              <span class="recon-option-group__label">资产发现参数</span>
               <div class="recon-option-group__items">
-                <template v-if="reconMode === 'ACTIVE' && enumeratePaths">
+                <template v-if="reconMode === 'ACTIVE' && fusedDiscovery">
                   <label class="recon-param-field">
                     <span class="recon-param-field__label">枚举字典</span>
                     <el-select
@@ -9604,6 +9713,77 @@ onUnmounted(() => {
   display: flex;
   justify-content: flex-end;
   margin-bottom: 12px;
+}
+.asset-category-panel {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  background: var(--el-fill-color-blank);
+}
+.asset-category-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.asset-category-total {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.asset-category-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+.asset-category-card {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  padding: 10px 12px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.asset-category-card.is-empty {
+  opacity: 0.55;
+}
+.asset-category-card__count {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--el-color-primary);
+}
+.asset-category-card__label {
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+}
+.asset-category-card__more {
+  font-size: 12px;
+}
+.asset-category-list {
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.asset-category-list__row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: var(--el-fill-color-light);
+}
+.asset-category-list__url {
+  font-size: 12px;
+  word-break: break-all;
+}
+.asset-category-list__meta {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
 }
 .project-tabs .project-subtitle {
   margin: 24px 0 12px;

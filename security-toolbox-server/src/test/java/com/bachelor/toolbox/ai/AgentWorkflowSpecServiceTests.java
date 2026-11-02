@@ -301,12 +301,22 @@ class AgentWorkflowSpecServiceTests {
     assertEquals("runtime-default", snapshot.spec().get("preset"));
     // The shipped default must expose every executable tool, otherwise the model cannot discover
     // what the platform supports. Safety comes from requiresApproval, not from omission.
+    // 融合默认：dir_scan 不再是独立节点——它已被 site_crawl 的融合流水线（fuse=true）吸收，
+    // 因此默认里 site_crawl 一个节点即覆盖爬虫+目录扫描。dir_scan 仍作为独立工具存在于白名单，
+    // 只是不再出现在默认工作流中。故此处期望集合为 RUNTIME_CODES 去掉 dir_scan。
     List<String> toolSequence =
         snapshot.executableSteps().stream().map(step -> String.valueOf(step.get("tool"))).toList();
-    assertEquals(AiToolCatalog.RUNTIME_CODES, toolSequence);
+    List<String> expectedCodes =
+        AiToolCatalog.RUNTIME_CODES.stream()
+            .filter(code -> !"dir_scan".equals(code))
+            .toList();
+    assertEquals(expectedCodes, toolSequence);
     assertTrue(
-        toolSequence.containsAll(AiToolCatalog.EXECUTABLE_CODES),
-        "shipped default must list every executable tool");
+        toolSequence.containsAll(
+            AiToolCatalog.EXECUTABLE_CODES.stream()
+                .filter(code -> !"dir_scan".equals(code))
+                .toList()),
+        "shipped default must list every executable tool (except the fused dir_scan)");
 
     Map<String, Map<String, Object>> byTool = new LinkedHashMap<>();
     for (Map<String, Object> step : snapshot.executableSteps()) {
@@ -316,9 +326,13 @@ class AgentWorkflowSpecServiceTests {
     assertEquals("SAFE", byTool.get("nmap_service_scan").get("risk"));
     assertEquals(false, byTool.get("nmap_service_scan").get("requiresApproval"));
     assertEquals(1, byTool.get("nmap_service_scan").get("group"));
+    // 融合侦察节点为只读信息收集：SAFE 且无需审批，并通过 fuse=true 打开目录枚举。
+    assertEquals("SAFE", byTool.get("site_crawl").get("risk"));
+    assertEquals(false, byTool.get("site_crawl").get("requiresApproval"));
+    assertEquals(Map.of("fuse", true), byTool.get("site_crawl").get("parameters"));
     // Intrusive tools are visible but require the administrator to confirm before any task.
     for (String intrusive :
-        List.of("dir_scan", "nuclei_scan", "afrog_scan", "xray_scan", "zap_scan",
+        List.of("nuclei_scan", "afrog_scan", "xray_scan", "zap_scan",
             "fscan_scan", "msf_scan", "sqlmap_scan", "zap_fuzz")) {
       Map<String, Object> step = byTool.get(intrusive);
       assertNotNull(step, "default workflow missing " + intrusive);
@@ -354,7 +368,9 @@ class AgentWorkflowSpecServiceTests {
     for (Map<String, Object> step : upgraded.executableSteps()) {
       byTool.put(String.valueOf(step.get("tool")), step);
     }
-    assertEquals(List.of("context"), byTool.get("dir_scan").get("dependsOnNodeIds"));
+    // 升级后的默认是融合版：site_crawl 携带 fuse=true，且不再有独立 dir_scan 节点。
+    assertEquals(Map.of("fuse", true), byTool.get("site_crawl").get("parameters"));
+    assertEquals(null, byTool.get("dir_scan"));
     assertEquals(List.of("context"), byTool.get("http_security_check").get("dependsOnNodeIds"));
     assertEquals(2L, service.freezeSnapshot(303L).revision());
     assertEquals(frozen.specDigest(), service.freezeSnapshot(

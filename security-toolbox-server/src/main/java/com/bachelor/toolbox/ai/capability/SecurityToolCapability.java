@@ -146,7 +146,7 @@ public final class SecurityToolCapability implements AgentCapability {
               property("check", "string", "检查类型：cookies、cors、methods 或 disclosure")),
           Map.entry("http_headers", Map.of()),
           Map.entry("tls_config", Map.of()),
-          Map.entry("site_crawl", Map.of()));
+          Map.entry("site_crawl", property("fuse", "boolean", "是否融合爬虫与目录扫描（迭代喂种子）")));
 
   // ---------------------------------------------------------------- 策略推导
 
