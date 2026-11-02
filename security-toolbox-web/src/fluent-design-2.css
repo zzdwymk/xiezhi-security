@@ -3720,8 +3720,13 @@ body,
   transition: box-shadow var(--fluent-fast-duration, 150ms) ease;
 }
 
+/* Fluent UI 2 NumberBox：数值统一左对齐（覆盖 Element 默认的 is-center/is-right 居中/右对齐）。 */
 .desktop-v2-app-frame .el-input-number .el-input__inner,
+.desktop-v2-app-frame .el-input-number.is-center .el-input__inner,
+.desktop-v2-app-frame .el-input-number.is-right .el-input__inner,
+.desktop-v2-app-frame .el-input-number.is-left .el-input__inner,
 .el-overlay-dialog .el-input-number .el-input__inner,
+.el-overlay-dialog .el-input-number.is-center .el-input__inner,
 .el-drawer .el-input-number .el-input__inner {
   font-variant-numeric: tabular-nums;
   color: var(--app-text) !important;
@@ -3837,6 +3842,13 @@ body,
 }
 
 /* Default bilateral controls (- on left, + on right) */
+/* 双侧步进器：左右各 30px 按钮，输入区两侧须让出内边距，否则文字会贴边/与按钮重叠。 */
+.desktop-v2-app-frame .el-input-number:not(.is-controls-right) .el-input__wrapper,
+.el-overlay-dialog .el-input-number:not(.is-controls-right) .el-input__wrapper,
+.el-drawer .el-input-number:not(.is-controls-right) .el-input__wrapper {
+  padding-left: 34px !important;
+  padding-right: 34px !important;
+}
 .desktop-v2-app-frame .el-input-number:not(.is-controls-right) .el-input-number__decrease,
 .el-overlay-dialog .el-input-number:not(.is-controls-right) .el-input-number__decrease {
   left: 1px !important;

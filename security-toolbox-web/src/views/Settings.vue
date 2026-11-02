@@ -1439,6 +1439,7 @@ watch(
               :min="1"
               :max="32"
               :disabled="concurrencySaving"
+              controls-position="right"
               @change="saveConcurrencyLimit"
               style="width: 120px"
             />
