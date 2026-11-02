@@ -5418,7 +5418,6 @@ onUnmounted(() => {
                     <el-select
                       v-model="reconPathDictionary"
                       placeholder="选择字典"
-                      size="small"
                       class="recon-dict-select"
                     >
                       <el-option
@@ -8376,14 +8375,14 @@ onUnmounted(() => {
 .recon-option-group {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  align-items: start;
+  align-items: center;
   gap: 4px 12px;
 }
 .recon-option-group__label {
-  padding-top: 1px;
+  padding-top: 0;
   font-size: 12px;
   font-weight: 600;
-  line-height: 24px;
+  line-height: 32px;
   color: var(--el-text-color-secondary);
   white-space: nowrap;
 }
@@ -8409,6 +8408,7 @@ onUnmounted(() => {
 .recon-param-field__label {
   color: var(--el-text-color-secondary);
   font-size: 13px;
+  line-height: 32px;
   white-space: nowrap;
 }
 .recon-option-group--params .recon-option-group__items {
