@@ -6373,7 +6373,7 @@ onUnmounted(() => {
                       scope.row.status,
                     )
                   "
-                  class="row-action"
+                  class="row-action row-action--danger"
                   size="small"
                   :icon="Refresh"
                   :loading="taskRetrying === scope.row.id"
