@@ -659,7 +659,8 @@ public class ReconService {
     fusedEvidence.put("linksFound", ctx.linksFound);
     fusedEvidence.put("dirCandidates", words.size());
     fusedEvidence.put("dirFound", dirFoundTotal);
-    fusedEvidence.put("prefixSeeds", ctx.prefixSeeds.size());
+    // prefixSeeds 每轮会被目录轮消费后 clear，因此用累计消费量作为「目录种子是否生效」的指标。
+    fusedEvidence.put("prefixSeeds", ctx.prefixSeedsConsumed);
     fusedEvidence.put("timedOut", ctx.timedOut);
     evidence.add(fusedEvidence);
   }
@@ -742,7 +743,9 @@ public class ReconService {
                       String dirPrefix = directoryPrefixOf(url);
                       if (dirPrefix != null) {
                         synchronized (ctx.prefixSeeds) {
-                          ctx.prefixSeeds.add(dirPrefix);
+                          if (ctx.prefixSeeds.size() < MAX_PREFIX_SEEDS) {
+                            ctx.prefixSeeds.add(dirPrefix);
+                          }
                         }
                       }
                       res.next.add(url);
@@ -804,6 +807,7 @@ public class ReconService {
           String normalized = prefix.endsWith("/") ? prefix : prefix + "/";
           if (normalized.startsWith(stripTrailingSlash(ctx.base)) && ctx.scannedBases.add(normalized)) {
             bases.add(normalized);
+            ctx.prefixSeedsConsumed++;
           }
         }
         ctx.prefixSeeds.clear();
@@ -885,21 +889,61 @@ public class ReconService {
     return status != (int) baseline[0] || Math.abs(len - baseline[1]) > 24;
   }
 
+  /** 目录前缀种子的最大路径层级，避免对极深路径做过宽的字典扩展。 */
+  private static final int MAX_PREFIX_DEPTH = 3;
+
+  /** 单次运行累计收录的目录种子数量上限，防止站点目录过多时候选爆炸。 */
+  private static final int MAX_PREFIX_SEEDS = 200;
+
   /**
    * 从同一主机下的 URL 抽取"目录前缀"（以 / 结尾的路径部分），作为目录字典扩展的种子。
-   * 例：{@code http://h/api/users} → {@code http://h/api/}；根路径本身返回 null。
+   *
+   * <p>除了「取父目录」这一常规语义，还覆盖两类此前会被漏掉的情况，让爬虫发现的子目录也能被
+   * 目录字典继续深挖：
+   * <ul>
+   *   <li>链接本身即目录（以 / 结尾）：{@code http://h/less-1/} → {@code http://h/less-1/}；</li>
+   *   <li>链接是根下一层的「叶子」（无扩展名的目录式入口，如 SQLi-Labs 的 {@code /Less-1}）：
+   *       视作目录 {@code http://h/Less-1/}，从而枚举 {@code /Less-1/<word>} 更深层文件。</li>
+   * </ul>
+   * 深层路径仍取父目录。路径层级超过 {@link #MAX_PREFIX_DEPTH} 不再扩展；根路径返回 null。
    */
   private String directoryPrefixOf(String url) {
     try {
       URI uri = URI.create(url);
       String path = uri.getPath();
-      if (path == null || path.isEmpty() || path.equals("/")) return null;
-      int lastSlash = path.lastIndexOf('/');
-      if (lastSlash <= 0) return null;
-      String dir = path.substring(0, lastSlash + 1); // 含末尾斜杠
       String scheme = uri.getScheme();
       String authority = uri.getAuthority();
       if (scheme == null || authority == null) return null;
+      if (path == null || path.isEmpty() || path.equals("/")) return null;
+      String cleaned = path;
+      while (cleaned.length() > 1 && cleaned.endsWith("/")) {
+        cleaned = cleaned.substring(0, cleaned.length() - 1);
+      }
+      if (cleaned.isEmpty() || cleaned.equals("/")) return null;
+      // 计算"目录部分"：以 / 结尾的路径取其自身；否则取到最后一个 / 为止（父目录）。
+      int lastSlash = cleaned.lastIndexOf('/');
+      String dir;
+      if (path.endsWith("/")) {
+        dir = cleaned + "/"; // 链接本身就是目录
+      } else if (lastSlash <= 0) {
+        // 根下一层的一级叶子（如 /Less-1）：当作目录，向下扩展一层。
+        dir = cleaned + "/";
+      } else {
+        dir = cleaned.substring(0, lastSlash + 1); // 深层路径：取父目录
+      }
+      // 层级上限：路径里 '/' 的数量（去掉首尾）不超过 MAX_PREFIX_DEPTH。
+      int depth = 0;
+      String inner = dir.substring(1);
+      String innerTrim = inner.endsWith("/") ? inner.substring(0, inner.length() - 1) : inner;
+      if (!innerTrim.isEmpty()) {
+        depth = innerTrim.split("/", -1).length;
+      }
+      if (depth > MAX_PREFIX_DEPTH) return null;
+      // 末段含点号（如 /index-1.html）大概率是文件而非目录，跳过多余的目录扫描。
+      String dirSeg = dir.substring(0, dir.length() - 1);
+      int segSlash = dirSeg.lastIndexOf('/');
+      String leaf = segSlash >= 0 ? dirSeg.substring(segSlash + 1) : dirSeg;
+      if (leaf.contains(".")) return null;
       return scheme + "://" + authority + dir;
     } catch (Exception ex) {
       return null;
@@ -920,6 +964,8 @@ public class ReconService {
     int pagesFetched;
     int pagesAlive;
     int linksFound;
+    /** 累计被目录轮消费的目录前缀种子数（prefixSeeds 会每轮 clear，需单独累计用于统计）。 */
+    int prefixSeedsConsumed;
     volatile boolean timedOut;
 
     DiscoveryContext(String base, int maxDepth, int maxPages, long deadline) {

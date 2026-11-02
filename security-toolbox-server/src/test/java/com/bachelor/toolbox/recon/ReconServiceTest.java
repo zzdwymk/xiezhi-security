@@ -621,10 +621,81 @@ class ReconServiceTest {
             any(), any(), any());
   }
 
+  /**
+   * 方案 B 融合测试之三（目录叶子优化）：爬虫在根页发现一个「目录式叶子」链接 {@code /less-1}
+   * （无扩展名、无末尾斜杠，SQLi-Labs 常见形态），应把它当作目录 {@code /less-1/} 作为字典扩展
+   * 种子；字典词 {@code info} 命中后应请求 {@code /less-1/info}。旧实现里 {@code directoryPrefixOf}
+   * 对 {@code /less-1} 返回 null，该目录永远不会被深挖，只能靠爬虫解析其页面源码碰运气。
+   */
+  @Test
+  void fusedDiscoveryTreatsLeafLinkAsDirScanSeed() throws Exception {
+    HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext(
+        "/xzy404-",
+        exchange -> {
+          exchange.sendResponseHeaders(404, -1);
+          exchange.close();
+        });
+    // 根页仅链接 /less-1（无末尾斜杠、无扩展名）。
+    server.createContext(
+        "/",
+        exchange -> {
+          byte[] body = "<a href=\"/less-1\">L1</a>".getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(200, body.length);
+          exchange.getResponseBody().write(body);
+          exchange.close();
+        });
+    // /less-1 可达（爬虫测活成功，登记 /less-1/ 为目录种子）。
+    server.createContext(
+        "/less-1",
+        exchange -> {
+          byte[] body = "<div>lesson 1</div>".getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(200, body.length);
+          exchange.getResponseBody().write(body);
+          exchange.close();
+        });
+    // 融合后目录扫描 /less-1/ + "info" → /less-1/info，应可达。
+    server.createContext(
+        "/less-1/info",
+        exchange -> {
+          byte[] body = "<div>info</div>".getBytes(StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(200, body.length);
+          exchange.getResponseBody().write(body);
+          exchange.close();
+        });
+    server.start();
+    int port = server.getAddress().getPort();
+
+    DiscoveredPathService discoveredPaths = mock(DiscoveredPathService.class);
+    when(discoveredPaths.record(any(), any(), any(), any(), any(), any(), any())).thenReturn(true);
+    AuthorizedTarget target = authorizedTarget("http://127.0.0.1:" + port, String.valueOf(port));
+    stubSavedTarget(target);
+    ReconService service = serviceWith(discoveredPaths);
+
+    ReconRequest request =
+        new ReconRequest(
+            target.getId(), false, false, false, List.of(),
+            /* enumeratePaths */ true, List.of("info"), /* crawlSite */ true,
+            false, false, "ACTIVE", false, null, null, /* fuse */ true);
+
+    try {
+      service.collect(1L, request);
+    } finally {
+      server.stop(0);
+    }
+
+    // /less-1/info 只有在「爬虫把 /less-1 识别为目录种子 + 字典 info」同时发生时才被请求。
+    verify(discoveredPaths, atLeastOnce())
+        .record(
+            eq(target),
+            eq(1L),
+            argThat(url -> url != null && url.endsWith("/less-1/info")),
+            any(), any(), any(), any());
+  }
+
   private ReconService serviceWith(DiscoveredPathService discoveredPaths) {
     return serviceWith(discoveredPaths, 16);
   }
-
   private ReconService serviceWith(DiscoveredPathService discoveredPaths, int maxEndpoints) {
     ReconService service =
         new ReconService(
