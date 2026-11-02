@@ -6347,7 +6347,7 @@ onUnmounted(() => {
               formatDateTime(scope.row.createdAt)
             }}</template></el-table-column
           >
-          <el-table-column label="操作" min-width="220">
+          <el-table-column label="操作" width="300">
             <template #default="scope">
               <div class="row-actions">
                 <el-button
