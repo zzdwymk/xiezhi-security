@@ -64,6 +64,8 @@ public class AgentOrchestrator {
   private final AiContextService contextService;
   private final AuditService audit;
   private final BusinessDataOperationGate operationGate;
+  /** 在途（正在处理）的会话键集合，用于同会话并发轮的快速失败（SESSION_BUSY）。 */
+  private final Set<String> inFlightSessions = java.util.concurrent.ConcurrentHashMap.newKeySet();
   private final com.bachelor.toolbox.project.ProjectApprovalService approvalService;
   private AiPlanContinuityService planContinuity;
   private com.bachelor.toolbox.notification.NotificationService notifications;
@@ -187,7 +189,28 @@ public class AgentOrchestrator {
   }
 
   public AiAgentResponse run(AiAgentRequest request, Consumer<AiAgentEvent> eventSink) {
-    return operationGate.withMutation(() -> runUnderGate(request, eventSink));
+    // 同一会话同一时刻只允许一个在途轮次（会话级串行）。
+    // runUnderGate 内部的 synchronized(session.monitor()) 虽能保证互斥，但并发抵达的同会话请求
+    // 会在那里阻塞 Tomcat 工作线程直到前一轮结束（长扫描下可能占满线程池）。这里在入口处用
+    // 非阻塞的 in-flight 标记快速失败，向前端返回明确的 SESSION_BUSY，而不是无反馈地挂起线程。
+    // 前端已按会话排队，正常交互不会触发此分支；它是防御多窗口/多客户端并发的情况。
+    String sessionKey = sessionKeyOf(request);
+    if (sessionKey != null && !inFlightSessions.add(sessionKey)) {
+      throw new ApiException("该对话正在处理上一条消息，请等待当前回答结束后再发送");
+    }
+    try {
+      return operationGate.withMutation(() -> runUnderGate(request, eventSink));
+    } finally {
+      if (sessionKey != null) inFlightSessions.remove(sessionKey);
+    }
+  }
+
+  private static String sessionKeyOf(AiAgentRequest request) {
+    if (request == null) return null;
+    String sessionId = request.sessionId();
+    if (sessionId != null && !sessionId.isBlank()) return sessionId;
+    // 无显式会话 id 时用项目+目标兜底，避免不同会话共享空键而互相串扰。
+    return "p" + request.projectId() + ":t" + request.targetId();
   }
 
   private Long resolveAnchorTargetId(AiAgentRequest request) {

@@ -214,39 +214,49 @@ let copiedMessageTimer: ReturnType<typeof setTimeout> | undefined;
 const loading = ref(false);
 const compacting = ref(false);
 const activeSendingThreadIds = ref<Set<string>>(new Set());
-const isSendingAny = ref(false);
+/** 仅用于侧边栏/全局“某对话正在生成”指示，不参与输入框禁用判定。 */
+const isSendingAny = computed(() => activeSendingThreadIds.value.size > 0);
+// “当前这个对话是否正在生成”。刻意不再把 isSendingAny 并进来：此前只要任意对话在跑，
+// 当前本应空闲的对话也会被锁死（切到别的空白对话也发不出去）。不同对话应各自独立发送，
+// 后端 synchronized(session.monitor()) 只保证“同一会话串行”，不同会话本就允许并行。
 const sending = computed({
   get: () => {
     const currentId = selectedThread.value?.id;
-    return Boolean(isSendingAny.value || (currentId && activeSendingThreadIds.value.has(currentId)));
+    return Boolean(currentId && activeSendingThreadIds.value.has(currentId));
   },
   set: (val: boolean) => {
     const currentId = selectedThread.value?.id;
     if (val) {
-      if (currentId) activeSendingThreadIds.value.add(currentId);
-      isSendingAny.value = true;
+      if (currentId) markThreadSending(currentId);
       return;
     }
     // Clearing must never depend on which thread happens to be selected right now. A turn's
     // finally block can run after navigation or a fork swapped the selection; deleting by current
     // selection then left a stale id behind and locked the composer for the rest of the session.
-    isSendingAny.value = false;
-    if (currentId) activeSendingThreadIds.value.delete(currentId);
+    if (currentId) releaseThreadSendLock(currentId);
   },
 });
+
+function markThreadSending(threadId: string) {
+  if (activeSendingThreadIds.value.has(threadId)) return;
+  activeSendingThreadIds.value = new Set(activeSendingThreadIds.value).add(threadId);
+}
+
+/** 当前对话是否“忙”（正在处理一轮）。供入队判断使用，与全局无关。 */
+function isThreadBusy(threadId: string | undefined): boolean {
+  return Boolean(threadId && activeSendingThreadIds.value.has(threadId));
+}
 
 /** Release one specific thread's send lock, regardless of what is selected now. */
 function releaseThreadSendLock(threadId: string | undefined) {
   if (!threadId) {
-    sending.value = false;
+    // 没有归属对话（理论上不应出现）：清空所有在途标记，避免永久锁死。
+    activeSendingThreadIds.value = new Set();
     return;
   }
   const next = new Set(activeSendingThreadIds.value);
   next.delete(threadId);
   activeSendingThreadIds.value = next;
-  // The blanket flag only described "some thread is sending"; with this one released and no
-  // other thread mid-turn, it must drop too or every composer stays disabled.
-  if (next.size === 0) isSendingAny.value = false;
 }
 
 const currentThreadStatus = computed(() => {
@@ -267,6 +277,60 @@ const answeringMessages = new Set<string>();
 const retryingMessageIds = ref(new Set<string>());
 const activeDraft = ref<CopilotDraft>();
 const composerReferences = computed(() => (editingMessage.value?.references || activeDraft.value?.refs || []) as CopilotReference[]);
+
+/**
+ * 输入区的行内校验提示（替代打断式 ElMessage 弹窗）。
+ * 例如“请先选择授权目标”“已 4123/4000 字”。
+ */
+const composerError = ref("");
+
+/**
+ * 待发队列：threadId → 这条对话排队等待发送的消息快照。
+ *
+ * 为什么要快照而不是排队后实时读响应式状态？当一条消息排在图里、用户随后切换授权目标或
+ * 改问另一个对象时，如果沿用实时读取，排队的这条就会“变成”针对新目标的消息——语义错位。
+ * 因此在回车瞬间固化目标、范围、引用、引用消息、模式。
+ *
+ * 新对话（selectedThread 为空）先用一个临时键 `__pending_new__` 挂队，创建真实 thread 后迁移。
+ */
+const PENDING_NEW_THREAD_KEY = "__pending_new__";
+interface PendingPrompt {
+  id: string;
+  text: string;
+  target: Target;
+  references: NonNullable<ConversationMessage["references"]>;
+  mode?: ConversationMessage["copilotMode"];
+  quote?: QuotedMessage;
+  /** 新对话的范围快照（按项目/按目标提问、项目 id、目标集合）。 */
+  draftScope: {
+    askScopeType: "target" | "project";
+    selectedProjectId?: number;
+    projectTargetIds?: number[];
+    activeDraftScopeMode?: CopilotDraft["scopeMode"];
+    activeDraftTargetIds?: number[];
+    activeDraftProjectId?: number;
+  };
+  /** 是否来自“编辑上一条消息”的发送（决定走 fork 分支）。 */
+  editing?: { threadId: string; messageId: string };
+  enqueuedAt: number;
+}
+const pendingPrompts = ref<Map<string, PendingPrompt[]>>(new Map());
+/** 防重入：正在为某对话出队发送。 */
+const drainingThreads = new Set<string>();
+/** 当前对话的队列键（新对话用临时键）。供模板与脚本共用，避免模板内复杂类型推断。 */
+const currentQueueKey = computed<string>(() => selectedThread.value?.id ?? PENDING_NEW_THREAD_KEY);
+
+/** 供 UI 显示的队列计数（当前对话）。 */
+const pendingForCurrentThread = computed<PendingPrompt[]>(() => {
+  return pendingPrompts.value.get(currentQueueKey.value) ?? [];
+});
+
+/** 生成一个本地唯一 id，用于排队项（不依赖 crypto，避免旧运行时缺失）。 */
+let pendingIdSeq = 0;
+function createPendingId(): string {
+  pendingIdSeq += 1;
+  return `pq-${Date.now().toString(36)}-${pendingIdSeq}`;
+}
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let stopTaskFeed: (() => void) | undefined;
 // What the current thread's last turn is waiting on (scan tasks / scheduled
@@ -2068,7 +2132,10 @@ async function saveConversationMemory(
 
 // 手动压缩命令。会话很长时，早期内容会被自动压缩；这里给用户一个主动入口，
 // 不必先把对话说到阈值才有反馈。只在纯命令输入时触发，避免误伤正常提问。
-const COMPACT_COMMANDS = new Set(["/compact", "/压缩", "压缩会话", "压缩上下文"]);
+// 仅接受显式命令（斜杠前缀）触发会话压缩。历史上曾把“压缩会话/压缩上下文”这类自然语言短语
+// 也当命令，容易误伤“帮我压缩这段文字”之类的正常提问，违反“回车内容原样直发”的引导语义，
+// 因此收敛为显式命令。仍保留独立的中文斜杠命令 /压缩。
+const COMPACT_COMMANDS = new Set(["/compact", "/压缩"]);
 
 function isCompactCommand(text: string) {
   return COMPACT_COMMANDS.has(text.trim().toLowerCase());
@@ -2102,7 +2169,8 @@ async function runCompactCommand(sessionId: string) {
 
 async function sendPrompt() {
   const text = prompt.value.trim();
-  if (!text || sending.value) return;
+  if (!text) return;
+
   // A bare compaction command acts on the session instead of becoming a chat turn.
   if (isCompactCommand(text)) {
     const thread = selectedThread.value;
@@ -2114,17 +2182,17 @@ async function sendPrompt() {
     await runCompactCommand(thread.id);
     return;
   }
-  if (text.length > 4000) {
-    ElMessage.warning("本轮请求请控制在 4000 字以内");
+
+  // 行内校验（替代打断式弹窗）：超长拦截。
+  if (text.length > PROMPT_MAX_LENGTH) {
+    composerError.value = `已 ${text.length}/${PROMPT_MAX_LENGTH} 字，请精简后再发送`;
     return;
   }
-  let target = selectedTarget.value;
+  const target = selectedTarget.value;
   if (!target) {
-    ElMessage.warning(
-      enabledTargets.value.length
-        ? "请先选择授权目标"
-        : "请先登记并启用一个授权目标",
-    );
+    composerError.value = enabledTargets.value.length
+      ? "请先选择授权目标"
+      : "请先登记并启用一个授权目标";
     return;
   }
 
@@ -2133,19 +2201,138 @@ async function sendPrompt() {
     ElMessage.warning("请回到原对话继续编辑，或取消本次编辑");
     return;
   }
-  const references = cloneMessageDraft(editing?.references || activeDraft.value?.refs);
-  const mode = editing?.mode || activeDraft.value?.mode;
-  const quote = cloneMessageDraft(quotedMessage.value);
-  let thread = selectedThread.value;
+  composerError.value = "";
+
+  // 回车瞬间固化上下文快照，避免排队期间用户切换目标/范围污染这条消息。
+  const draft: PendingPrompt = {
+    id: createPendingId(),
+    text,
+    target: cloneMessageDraft(target),
+    references: cloneMessageDraft(editing?.references || activeDraft.value?.refs) || [],
+    mode: editing?.mode || activeDraft.value?.mode,
+    quote: cloneMessageDraft(quotedMessage.value),
+    draftScope: {
+      askScopeType: askScopeType.value,
+      selectedProjectId: selectedProjectId.value,
+      projectTargetIds: selectedProjectId.value
+        ? cloneMessageDraft(projectTargetsMap.value[selectedProjectId.value] || [])
+        : undefined,
+      activeDraftScopeMode: activeDraft.value?.scopeMode,
+      activeDraftTargetIds: cloneMessageDraft(activeDraft.value?.targetIds),
+      activeDraftProjectId: activeDraft.value?.projectId,
+    },
+    editing: editing ? { threadId: editing.threadId, messageId: editing.messageId } : undefined,
+    enqueuedAt: Date.now(),
+  };
+
+  const queueKey = selectedThread.value?.id ?? PENDING_NEW_THREAD_KEY;
+  // 只在“当前这个对话”忙时入队；别的对话在跑不影响本对话直发（见 sending 定义）。
+  if (isThreadBusy(selectedThread.value?.id)) {
+    enqueuePrompt(queueKey, draft);
+    prompt.value = "";
+    composerError.value = "";
+    ElMessage.info("当前对话正在处理上一条，已加入队列，完成后自动发送");
+    return;
+  }
+  await launchPrompt(draft);
+}
+
+/** 将一条消息快照加入指定对话的待发队列。 */
+function enqueuePrompt(queueKey: string, draft: PendingPrompt) {
+  const list = pendingPrompts.value.get(queueKey) ?? [];
+  list.push(draft);
+  pendingPrompts.value = new Map(pendingPrompts.value).set(queueKey, list);
+}
+
+/** 取消某一对话中的一条排队消息。 */
+function cancelPendingPrompt(queueKey: string, id: string) {
+  const list = pendingPrompts.value.get(queueKey);
+  if (!list?.length) return;
+  const next = list.filter((item) => item.id !== id);
+  const map = new Map(pendingPrompts.value);
+  if (next.length) map.set(queueKey, next);
+  else map.delete(queueKey);
+  pendingPrompts.value = map;
+}
+
+/** 清空某一对话（默认当前对话）的所有排队消息，并保留输入框内容。 */
+function clearPendingQueue(queueKey?: string) {
+  const key = queueKey ?? selectedThread.value?.id ?? PENDING_NEW_THREAD_KEY;
+  if (!pendingPrompts.value.has(key)) return;
+  const map = new Map(pendingPrompts.value);
+  map.delete(key);
+  pendingPrompts.value = map;
+}
+
+/**
+ * 一轮结束后尝试为某对话出队发送下一条。
+ *
+ * 唯一出队入口，挂在 dispatchConversationMessage / retry 的 finally 里，保证“同一对话
+ * 同一时刻只有一条在途”，天然满足后端 synchronized(session.monitor()) 的同会话串行假设。
+ * 幂等：drainingThreads 防重入；isThreadBusy 二次确认。
+ */
+function maybeDrainThread(queueKey: string) {
+  // 同步重入保护：只防止“同一 finally 内被并发触发两次”。必须在真正发起请求前立刻释放，
+  // 否则链式出队会被自己挡住：launchPrompt 的 finally 再调用本函数时若键仍在集合里就会
+  // 直接 return，导致第 3 条及以后永远发不出去。
+  if (drainingThreads.has(queueKey)) return;
+  const list = pendingPrompts.value.get(queueKey);
+  if (!list?.length) return;
+  if (isThreadBusy(queueKey)) return;
+  drainingThreads.add(queueKey);
+  const next = list[0];
+  const rest = list.slice(1);
+  const map = new Map(pendingPrompts.value);
+  if (rest.length) map.set(queueKey, rest);
+  else map.delete(queueKey);
+  pendingPrompts.value = map;
+  try {
+    // 注意：这里不等待 launchPrompt 完成。launchPrompt 自己的 finally 会在这一轮结束后再次
+    // 调用 maybeDrainThread，形成自然链式出队；两轮之间 isThreadBusy 为 false 且 draining
+    // 已在发起后释放，不会互相阻塞。
+    void launchPrompt(next, queueKey === PENDING_NEW_THREAD_KEY ? undefined : queueKey).then(() => {
+      // launchPrompt 未真正占住锁就返回（例如归属对话已被删除、提前 return）时，继续排空剩余
+      // 队列，避免后续消息永久卡住。
+      if (!isThreadBusy(queueKey) && (pendingPrompts.value.get(queueKey)?.length ?? 0) > 0) {
+        maybeDrainThread(queueKey);
+      }
+    });
+  } finally {
+    // 释放同步重入闸；真正的“忙”状态由 isThreadBusy（activeSendingThreadIds）表达。
+    drainingThreads.delete(queueKey);
+  }
+}
+
+/**
+ * 真正的发送主体。接受上下文快照；直接回车与出队复用它，行为与原 sendPrompt 一致。
+ *
+ * @param forcedThreadId 出队发送时传入的“归属对话 id”。排队期间用户可能已切换到别的对话，
+ *   此时必须把消息发回它原本所属的对话，而不是当前界面上选中的那个。直接回车时不传。
+ */
+async function launchPrompt(draft: PendingPrompt, forcedThreadId?: string) {
+  const text = draft.text;
+  const references = draft.references;
+  const mode = draft.mode;
+  const quote = draft.quote;
+  const editing = draft.editing;
+  let target = draft.target;
+  // 归属对话优先用强制 id（出队场景）；否则用当前选中对话（直接回车场景）。
+  let thread = forcedThreadId
+    ? conversations.items.find((item) => item.id === forcedThreadId)
+    : selectedThread.value;
+  // 出队时若归属对话已被删除，则丢弃这条排队消息，避免错误地新建对话。
+  if (forcedThreadId && !thread) return;
   let assistantMessage: ConversationMessage | undefined;
   // Lock before creating a branch or awaiting navigation so double submits cannot fork twice.
-  sending.value = true;
+  if (thread) markThreadSending(thread.id);
+  else sending.value = true;
   try {
     const auditScope = await auditScopeForMessage(references, target.id,
       projectIdForTarget(target.id, thread));
     if (auditScope) {
       target = auditScope.target;
-      selectedTargetId.value = target.id;
+      // 仅当用户正在当前对话主动发送时才同步界面目标选择；后台出队不应改动用户的当前选择。
+      if (!forcedThreadId) selectedTargetId.value = target.id;
       // Server sessions bind their target permanently. Repair old failed audit chats in a new session.
       if (!thread || thread.targetId !== target.id || thread.projectId !== auditScope.projectId)
         thread = conversations.createThread(target.id, target.name, text, auditScope.projectId,
@@ -2158,27 +2345,40 @@ async function sendPrompt() {
         return;
       }
     } else if (!thread) {
-      const isProjectMode = askScopeType.value === "project";
-      const proj = isProjectMode ? availableProjects.value.find((p) => p.id === selectedProjectId.value) : undefined;
-      const projTargetIds = isProjectMode && selectedProjectId.value ? (projectTargetsMap.value[selectedProjectId.value] || []) : [];
-      const draftScope = isProjectMode ? "PROJECT_ALL" : (activeDraft.value?.scopeMode || "SINGLE");
-      const draftTargetIds = isProjectMode ? projTargetIds : activeDraft.value?.targetIds;
-      const effectiveTargetId = isProjectMode ? (projTargetIds.length ? projTargetIds[0] : (target ? target.id : 0)) : target.id;
+      const scope = draft.draftScope;
+      const isProjectMode = scope.askScopeType === "project";
+      const proj = isProjectMode && scope.selectedProjectId
+        ? availableProjects.value.find((p) => p.id === scope.selectedProjectId)
+        : undefined;
+      const projTargetIds = isProjectMode ? (scope.projectTargetIds || []) : [];
+      const draftScope = isProjectMode ? "PROJECT_ALL" : (scope.activeDraftScopeMode || "SINGLE");
+      const draftTargetIds = isProjectMode ? projTargetIds : scope.activeDraftTargetIds;
+      const effectiveTargetId = isProjectMode
+        ? (projTargetIds.length ? projTargetIds[0] : target.id)
+        : target.id;
       const effectiveTargetName = isProjectMode && proj ? `【项目: ${proj.name} (全部目标)】` : target.name;
 
       thread = conversations.createThread(
         effectiveTargetId,
         effectiveTargetName,
         text,
-        isProjectMode ? selectedProjectId.value : (activeDraft.value?.projectId || projectIdForTarget(target.id)),
+        isProjectMode ? scope.selectedProjectId : (scope.activeDraftProjectId || projectIdForTarget(target.id)),
         undefined,
         {
           targetIds: draftTargetIds,
           scopeMode: draftScope,
         },
       );
+      // 新对话：把挂在临时键下的后续排队项迁移到真实 threadId。
+      if (thread && pendingPrompts.value.has(PENDING_NEW_THREAD_KEY)) {
+        const pendingNew = pendingPrompts.value.get(PENDING_NEW_THREAD_KEY) ?? [];
+        const map = new Map(pendingPrompts.value);
+        map.delete(PENDING_NEW_THREAD_KEY);
+        if (pendingNew.length) map.set(thread.id, [...(map.get(thread.id) || []), ...pendingNew]);
+        pendingPrompts.value = map;
+      }
     }
-    if (thread) activeSendingThreadIds.value.add(thread.id);
+    if (thread) markThreadSending(thread.id);
     const turn = conversations.appendTurn(thread.id, {
       role: "user", content: text, status: "completed", taskIds: [], steps: [],
       references, copilotMode: mode, executionIntent: "AUTO",
@@ -2236,6 +2436,8 @@ async function sendPrompt() {
     if (thread) releaseThreadSendLock(thread.id);
     else sending.value = false;
     void scrollToBottom();
+    // 一轮结束（成功/失败/派发后）→ 尝试发送该对话排队中的下一条。
+    if (thread) maybeDrainThread(thread.id);
   }
 }
 
@@ -2341,6 +2543,8 @@ async function retryConversationMessage(message: ConversationMessage) {
     if (thread) releaseThreadSendLock(thread.id);
     else sending.value = false;
     void scrollToBottom();
+    // 重试也属于“一轮结束”，同样尝试出队，避免队列在重试期间被卡住。
+    if (thread) maybeDrainThread(thread.id);
   }
 }
 
@@ -2917,12 +3121,32 @@ onBeforeUnmount(() => {
             >{{ displayKnownTestName(reference.title || reference.label) || copilotReferenceTypeLabel(reference.type) }}</span
           >
         </div>
+        <div v-if="composerError" class="composer-inline-error">{{ composerError }}</div>
+        <div
+          v-if="pendingForCurrentThread.length"
+          class="composer-queue-bar"
+          role="status"
+          aria-label="待发送队列"
+        >
+          <span class="composer-queue-title">排队中 {{ pendingForCurrentThread.length }} 条</span>
+          <ul class="composer-queue-list">
+            <li v-for="item in pendingForCurrentThread" :key="item.id">
+              <span class="composer-queue-text">{{ quotePreview(item.text) }}</span>
+              <button
+                type="button"
+                class="composer-queue-cancel"
+                :aria-label="`取消排队：${quotePreview(item.text)}`"
+                @click="cancelPendingPrompt(currentQueueKey, item.id)"
+              >×</button>
+            </li>
+          </ul>
+          <button type="button" class="composer-queue-clear" @click="clearPendingQueue()">清空</button>
+        </div>
         <textarea
           ref="composerInputRef"
           v-model="prompt"
           rows="4"
           :maxlength="PROMPT_MAX_LENGTH"
-          :disabled="sending"
           :placeholder="askScopeType === 'project'
             ? '例如：对所选项目内全部目标进行开放端口与漏洞排查规划；如需先看方案，可以说“先给方案，不执行”'
             : '例如：检查目标的开放端口；如需先看方案，可以说“先给方案，不执行”'"
@@ -3014,18 +3238,26 @@ onBeforeUnmount(() => {
           <span class="composer-shortcut">{{
             compacting ? "正在压缩会话，请稍候…" : "Enter 发送，Shift + Enter 换行"
           }}</span>
-          <el-tooltip :content="compacting ? '正在压缩会话' : '发送'" placement="top" :show-after="350"
+          <el-tooltip
+            :content="compacting
+              ? '正在压缩会话'
+              : sending
+                ? '发送（当前对话处理中，将加入队列）'
+                : '发送'"
+            placement="top"
+            :show-after="350"
             ><button
               type="button"
               class="send-button"
-              :aria-label="compacting ? '正在压缩会话' : '发送'"
-              :aria-busy="compacting"
-              :disabled="sending || compacting || !prompt.trim() || (askScopeType === 'target' ? !selectedTargetId : !selectedProjectId)"
+              :class="{ 'is-queued': sending }"
+              :aria-label="compacting ? '正在压缩会话' : sending ? '加入队列' : '发送'"
+              :aria-busy="compacting || sending"
+              :disabled="compacting || !prompt.trim() || (askScopeType === 'target' ? !selectedTargetId : !selectedProjectId)"
               @click="sendPrompt"
             >
-              <el-icon :class="{ rotating: sending || compacting }"
-                ><Refresh v-if="sending || compacting" /><Promotion v-else
-              /></el-icon></button
+              <el-icon :class="{ rotating: compacting }"
+                ><Refresh v-if="compacting" /><Promotion v-else
+              /></el-icon><span v-if="sending" class="send-queue-badge">{{ pendingForCurrentThread.length + 1 }}</span></button
           ></el-tooltip>
         </div>
       </div>
@@ -3502,19 +3734,39 @@ onBeforeUnmount(() => {
               >{{ displayKnownTestName(reference.title || reference.label) || copilotReferenceTypeLabel(reference.type) }}</span
             >
           </div>
+          <div v-if="composerError" class="composer-inline-error">{{ composerError }}</div>
+          <div
+            v-if="pendingForCurrentThread.length"
+            class="composer-queue-bar"
+            role="status"
+            aria-label="待发送队列"
+          >
+            <span class="composer-queue-title">排队中 {{ pendingForCurrentThread.length }} 条</span>
+            <ul class="composer-queue-list">
+              <li v-for="item in pendingForCurrentThread" :key="item.id">
+                <span class="composer-queue-text">{{ quotePreview(item.text) }}</span>
+                <button
+                  type="button"
+                  class="composer-queue-cancel"
+                  :aria-label="`取消排队：${quotePreview(item.text)}`"
+                  @click="cancelPendingPrompt(currentQueueKey, item.id)"
+                >×</button>
+              </li>
+            </ul>
+            <button type="button" class="composer-queue-clear" @click="clearPendingQueue()">清空</button>
+          </div>
           <textarea
             ref="composerInputRef"
             v-model="prompt"
             rows="2"
             :maxlength="PROMPT_MAX_LENGTH"
-            :disabled="sending"
             placeholder="继续提问或说明下一步；只需方案时，请说“先给方案，不执行”"
             @keydown="handlePromptKeydown"
           />
           <MarkdownComposerPreview :content="prompt" />
           <div class="thread-composer-footer">
             <span class="composer-shortcut">
-              Enter 发送，Shift + Enter 换行
+              Enter 发送，Shift + Enter 换行<span v-if="sending"> · 当前对话处理中，回车将加入队列</span>
               <span
                 v-if="prompt.length > PROMPT_MAX_LENGTH * 0.8"
                 class="composer-length-hint"
@@ -3522,17 +3774,25 @@ onBeforeUnmount(() => {
                 >· {{ prompt.length }}/{{ PROMPT_MAX_LENGTH }}</span
               >
             </span>
-            <el-tooltip :content="editingMessage ? '发送编辑并新建分支' : '发送'" placement="top" :show-after="350"
+            <el-tooltip
+              :content="editingMessage
+                ? '发送编辑并新建分支'
+                : sending
+                  ? '加入队列（当前对话处理中）'
+                  : '发送'"
+              placement="top"
+              :show-after="350"
               ><button
                 type="button"
                 class="send-button"
-                :aria-label="editingMessage ? '发送编辑并新建分支' : '发送'"
-                :disabled="sending || !prompt.trim()"
+                :class="{ 'is-queued': sending }"
+                :aria-label="editingMessage ? '发送编辑并新建分支' : sending ? '加入队列' : '发送'"
+                :disabled="!prompt.trim()"
                 @click="sendPrompt"
               >
-                <el-icon :class="{ rotating: sending }"
-                  ><Refresh v-if="sending" /><Promotion v-else
-                /></el-icon></button
+                <el-icon :class="{ rotating: compacting }"
+                  ><Refresh v-if="compacting" /><Promotion v-else
+                /></el-icon><span v-if="sending" class="send-queue-badge">{{ pendingForCurrentThread.length + 1 }}</span></button
             ></el-tooltip>
           </div>
         </div>
@@ -3935,6 +4195,112 @@ onBeforeUnmount(() => {
 .thread-composer textarea::placeholder {
   color: var(--app-muted);
 }
+/* 行内校验提示（替代打断式弹窗） */
+.composer-inline-error {
+  margin: 8px 18px 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--el-color-danger-dark-2, #b42318);
+  background: color-mix(in srgb, var(--el-color-danger, #f56c6c) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--el-color-danger, #f56c6c) 30%, transparent);
+}
+/* 待发送队列条 */
+.composer-queue-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 18px 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  background: var(--app-surface-soft, rgba(0, 0, 0, 0.04));
+  border: 1px dashed color-mix(in srgb, var(--app-accent, #409eff) 40%, transparent);
+}
+.composer-queue-title {
+  font-weight: 600;
+  color: var(--app-accent, #409eff);
+  white-space: nowrap;
+}
+.composer-queue-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+.composer-queue-list li {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 260px;
+  padding: 2px 4px 2px 8px;
+  border-radius: 999px;
+  background: var(--app-surface, #fff);
+  border: 1px solid var(--app-border, rgba(0, 0, 0, 0.12));
+}
+.composer-queue-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-queue-cancel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--app-muted, #909399);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.composer-queue-cancel:hover {
+  background: color-mix(in srgb, var(--el-color-danger, #f56c6c) 15%, transparent);
+  color: var(--el-color-danger-dark-2, #b42318);
+}
+.composer-queue-clear {
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--app-muted, #909399);
+  cursor: pointer;
+  font-size: 12px;
+  text-decoration: underline;
+}
+.composer-queue-clear:hover {
+  color: var(--app-accent, #409eff);
+}
+/* 发送按钮上叠加的排队角标 */
+.send-button {
+  position: relative;
+}
+.send-button .send-queue-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  color: #fff;
+  background: var(--el-color-warning, #e6a23c);
+  box-shadow: 0 0 0 2px var(--app-surface, #fff);
+}
+
 .composer-footer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) max-content 36px;

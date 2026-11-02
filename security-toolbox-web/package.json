@@ -17,6 +17,7 @@
     "test:turn-rail-tooltip": "node scripts/test-turn-rail-tooltip-browser.cjs",
     "test:ai-progress-browser": "node scripts/test-ai-progress-browser.cjs",
     "test:ai-intent-request": "node scripts/test-ai-intent-request.cjs",
+    "test:prompt-queue-logic": "node scripts/test-prompt-queue-logic.cjs",
     "test:stream-auth": "node scripts/test-stream-auth.cjs",
     "test:traffic-scan-status": "node scripts/test-traffic-scan-status-browser.cjs",
     "test:task-detail": "node scripts/test-task-detail.cjs",
