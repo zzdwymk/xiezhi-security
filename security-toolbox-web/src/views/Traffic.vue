@@ -4198,15 +4198,15 @@ onUnmounted(() => {
       class="app-dialog"
       align-center
     >
-      <el-form label-position="left" label-width="70px" size="small" style="margin-top: 10px">
+      <el-form label-position="left" label-width="70px" style="margin-top: 10px">
         <el-form-item label="起始值">
-          <el-input-number v-model="numbersGenForm.from" :min="0" :max="100000" style="width: 100%" />
+          <el-input-number v-model="numbersGenForm.from" :min="0" :max="100000" controls-position="right" style="width: 100%" />
         </el-form-item>
         <el-form-item label="结束值">
-          <el-input-number v-model="numbersGenForm.to" :min="0" :max="100000" style="width: 100%" />
+          <el-input-number v-model="numbersGenForm.to" :min="0" :max="100000" controls-position="right" style="width: 100%" />
         </el-form-item>
         <el-form-item label="步长">
-          <el-input-number v-model="numbersGenForm.step" :min="1" :max="1000" style="width: 100%" />
+          <el-input-number v-model="numbersGenForm.step" :min="1" :max="1000" controls-position="right" style="width: 100%" />
         </el-form-item>
         <div style="font-size: 11px; color: var(--app-muted); margin-bottom: 6px">
           预计生成 {{ Math.max(0, Math.floor((Number(numbersGenForm.to) - Number(numbersGenForm.from)) / (Number(numbersGenForm.step) || 1)) + 1) }} 个数字（系统单次上限 200 项）

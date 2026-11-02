@@ -5577,7 +5577,7 @@ onBeforeUnmount(() => {
                   <small class="input-hint">URL 必须包含待测查询参数，且属于当前授权主机与端口。</small>
                 </el-form-item>
                 <el-form-item label="检测级别">
-                  <el-input-number v-model="selectedSqlmapLevel" :min="1" :max="5" :step="1" step-strictly />
+                  <el-input-number v-model="selectedSqlmapLevel" :min="1" :max="5" :step="1" step-strictly controls-position="right" />
                 </el-form-item>
                 <el-form-item label="检测技术">
                   <el-input v-model="selectedSqlmapTechnique" maxlength="4" placeholder="BEUT" />

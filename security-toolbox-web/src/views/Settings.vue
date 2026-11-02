@@ -2234,7 +2234,7 @@ watch(
 
 .simple-page-heading p {
   margin: 0;
-  max-width: 52ch;
+  max-width: none;
   color: var(--app-muted);
   font-size: 13px;
   line-height: 1.55;

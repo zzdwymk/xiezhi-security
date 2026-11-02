@@ -1129,7 +1129,7 @@ function runText() {
                   value="atbash" /></el-select
             ></label>
             <label v-if="classicType === 'caesar'"
-              >位移<el-input-number v-model="classicShift" :min="0" :max="25"
+              >位移<el-input-number v-model="classicShift" :min="0" :max="25" controls-position="right"
             /></label>
           </div>
           <div class="offline-editor-grid">
@@ -1524,6 +1524,7 @@ function runText() {
                 v-model="generatorLength"
                 :min="4"
                 :max="256"
+                controls-position="right"
             /></label>
             <el-checkbox v-model="includeUppercase">大写字母</el-checkbox
             ><el-checkbox v-model="includeLowercase">小写字母</el-checkbox

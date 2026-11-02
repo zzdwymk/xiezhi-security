@@ -2648,6 +2648,11 @@ onUnmounted(() => {
   grid-template-columns: minmax(120px, 160px) minmax(130px, 180px);
   justify-content: start;
 }
+/* 频率/间隔的步进器是纯数字，占满整格会被拉得过宽，收窄到与时间单位对齐的紧凑宽度 */
+.interval-rule-row :deep(.el-input-number) {
+  width: 100%;
+  max-width: 150px;
+}
 .schedule-rule-preview {
   margin: 4px 0 18px;
   padding-top: 2px;

@@ -44,6 +44,10 @@ import { aiToolLabel, displayKnownTestName, displayConversationTitle } from "./u
 import { toErrorMessage } from "./utils/errorMessage";
 import { useSelectionIndicator } from "./composables/useSelectionIndicator";
 import { taskbarProgress } from "./utils/taskbarProgress";
+import {
+  hideOpenElementPlusTooltips,
+  startElementPlusTooltipMutex,
+} from "./utils/tooltipMutex";
 
 const route = useRoute();
 const router = useRouter();
@@ -624,6 +628,12 @@ function ensureTooltipElement(): HTMLDivElement {
 
 function placeTooltip(target: HTMLElement) {
   if (!tooltipEl) return;
+  if (!target.isConnected) {
+    // 触发元素在气泡亮着时被卸载（例如对话重试会整排换掉操作按钮），
+    // 直接收起气泡，避免 fixed 定位的框停在失效坐标上。
+    hideFluentTooltip();
+    return;
+  }
   const rect = target.getBoundingClientRect();
   const el = tooltipEl;
   const vw = window.visualViewport?.width ?? window.innerWidth;
@@ -654,6 +664,8 @@ function placeTooltip(target: HTMLElement) {
 function showFluentTooltip(target: HTMLElement) {
   const text = target.getAttribute("data-fluent-tooltip")?.trim();
   if (!text) return;
+  // 与 Element Plus 深色 tooltip 互斥：本气泡出现时，已经亮着的黑框立即消失。
+  hideOpenElementPlusTooltips();
   const el = ensureTooltipElement();
   // Move to the end of <body> so the bubble paints above recently-opened
   // dialogs / dropdowns / popovers (which are also appended to <body>).
@@ -678,6 +690,7 @@ function handleTooltipReposition() {
 }
 
 function onTooltipEnter(e: Event) {
+  if (tooltipTarget && !tooltipTarget.isConnected) hideFluentTooltip();
   const target = (e.target as HTMLElement | null)?.closest<HTMLElement>(
     TOOLTIP_SELECTOR,
   );
@@ -696,6 +709,25 @@ function onTooltipLeave(e: Event) {
   }
   hideFluentTooltip();
 }
+
+/* 黑框互斥：Element Plus 深色 tooltip 与上面的 Fluent 气泡不得同屏，机制、
+   选择器与排除清单见 utils/tooltipMutex.ts。这里只保留气泡自身的行为：
+   - 显示前按灭已亮着的 EP tooltip（showFluentTooltip 内）；
+   - 任一 EP tooltip 亮起时收起本气泡（onMounted 里装的监听）；
+   - 点击气泡触发元素之外的任何地方立即收起；
+   - 触发元素被卸载时收起（对话重试会整排换掉操作按钮）。 */
+function onTooltipPointerDown(e: PointerEvent) {
+  if (
+    tooltipTarget &&
+    e.target instanceof Node &&
+    tooltipTarget.contains(e.target)
+  ) {
+    return;
+  }
+  hideFluentTooltip();
+}
+
+let stopElementPlusTooltipMutex: (() => void) | undefined;
 
 let stopNotifications: (() => void) | undefined;
 let stopNotificationClick: (() => void) | undefined;
@@ -829,9 +861,13 @@ onMounted(() => {
     document.addEventListener("pointerout", onTooltipLeave, true);
     document.addEventListener("focusin", onTooltipEnter, true);
     document.addEventListener("focusout", onTooltipLeave, true);
+    document.addEventListener("pointerdown", onTooltipPointerDown, true);
     window.addEventListener("scroll", handleTooltipReposition, true);
     window.addEventListener("resize", handleTooltipReposition);
     window.addEventListener("blur", hideFluentTooltip);
+    stopElementPlusTooltipMutex = startElementPlusTooltipMutex(
+      hideFluentTooltip,
+    );
     tooltipListenersAttached = true;
   }
 
@@ -858,6 +894,8 @@ onBeforeUnmount(() => {
   taskbarProgress.clearAll();
   nativeTooltipObserver?.disconnect();
   nativeTooltipObserver = undefined;
+  stopElementPlusTooltipMutex?.();
+  stopElementPlusTooltipMutex = undefined;
   tooltipTarget = null;
   tooltipEl?.remove();
   tooltipEl = null;

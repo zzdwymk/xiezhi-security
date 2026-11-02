@@ -458,7 +458,7 @@ class AiAgentRuntimeClientTests {
 
   @org.junit.jupiter.params.ParameterizedTest
   @org.junit.jupiter.params.provider.ValueSource(strings = {
-      "MODEL_ACCESS_DENIED", "MODEL_RATE_LIMITED", "MODEL_SERVICE_UNAVAILABLE",
+      "MODEL_NOT_CONFIGURED", "MODEL_ACCESS_DENIED", "MODEL_RATE_LIMITED", "MODEL_SERVICE_UNAVAILABLE",
       "MODEL_TIMEOUT", "MODEL_REQUEST_FAILED", "MODEL_RESPONSE_INVALID"
   })
   void failedRoutePreservesValidatedModelFailureReason(String code) {

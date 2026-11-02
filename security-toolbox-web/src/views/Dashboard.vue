@@ -1909,6 +1909,44 @@ const approvalDialogMessageId = ref<string | null>(null);
 const shouldPromptApproval = createAiApprovalPromptGate();
 const approvalDialogMessage = computed(() => selectedThread.value?.messages.find(message => message.id === approvalDialogMessageId.value && isAwaitingAiApproval(message)));
 const approvalTarget = computed(() => targets.value.find(target => target.id === selectedThread.value?.targetId));
+
+// 审批时“申请执行目标”可能命中多主机：单目标 / 项目全部 / 项目子集。
+// 返回本轮实际会执行到的目标列表（含名称与地址），用于摘要展示与命令预览。
+const approvalTargets = computed<Array<{ id: number; name: string; value: string }>>(() => {
+  const thread = selectedThread.value;
+  if (!thread) {
+    const t = approvalTarget.value;
+    return t ? [{ id: t.id, name: displayKnownTestName(t.name), value: t.targetValue }] : [];
+  }
+  const byId = (id: number) => targets.value.find((t) => t.id === id);
+  let ids: number[] = [];
+  if (thread.scopeMode === "PROJECT_ALL") {
+    const pid = projectIdForTarget(thread.targetId, thread);
+    ids = targets.value
+      .filter((t) => projectByTarget.value[t.id] === pid)
+      .map((t) => t.id);
+  } else if (thread.scopeMode === "PROJECT_SUBSET" && thread.targetIds?.length) {
+    ids = thread.targetIds.slice();
+  } else {
+    ids = [thread.targetId];
+  }
+  // 去重、过滤无效目标；保底至少包含锚点目标
+  const seen = new Set<number>();
+  const list: Array<{ id: number; name: string; value: string }> = [];
+  for (const id of ids) {
+    if (!id || seen.has(id)) continue;
+    const t = byId(id);
+    if (!t) continue;
+    seen.add(id);
+    list.push({ id: t.id, name: displayKnownTestName(t.name), value: t.targetValue });
+  }
+  if (!list.length) {
+    const t = approvalTarget.value;
+    if (t) list.push({ id: t.id, name: displayKnownTestName(t.name), value: t.targetValue });
+  }
+  return list;
+});
+const approvalTargetValues = computed(() => approvalTargets.value.map((t) => t.value));
 const approvalDialogVisible = computed({ get: () => Boolean(approvalDialogMessage.value), set: value => { if (!value) approvalDialogMessageId.value = null; } });
 watch(() => selectedThread.value?.id, () => { approvalDialogMessageId.value = null; });
 function reopenApproval(message: ConversationMessage) {
@@ -3688,7 +3726,7 @@ onBeforeUnmount(() => {
         </div>
       </footer>
     </template>
-    <AiApprovalDialog v-model:visible="approvalDialogVisible" :message="approvalDialogMessage" :target-name="displayKnownTestName(approvalTarget?.name || selectedThread?.targetName)" :target-value="approvalTarget?.targetValue || `目标 #${selectedThread?.targetId || ''}`" :allowed-ports="approvalTarget?.allowedPorts || ''" :busy="approvingMessageId !== null" @decide="decideDialogApproval" />
+    <AiApprovalDialog v-model:visible="approvalDialogVisible" :message="approvalDialogMessage" :target-name="displayKnownTestName(approvalTarget?.name || selectedThread?.targetName)" :target-value="approvalTarget?.targetValue || `目标 #${selectedThread?.targetId || ''}`" :target-values="approvalTargets.map(t => t.value)" :target-labels="approvalTargets.map(t => t.name)" :allowed-ports="approvalTarget?.allowedPorts || ''" :busy="approvingMessageId !== null" @decide="decideDialogApproval" />
   </div>
 </template>
 
@@ -3906,19 +3944,24 @@ onBeforeUnmount(() => {
 }
 .composer-footer .target-scope {
   width: 100%;
-  max-width: 290px;
+  max-width: none;
   min-width: 0;
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  /* 改为左右布局：左边「按目标/按项目提问」切换，右边授权目标/评估项目选择 */
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 .ask-scope-toggle {
-  align-self: flex-start;
+  align-self: center;
+  flex: 0 0 auto;
 }
 .composer-footer .target-picker {
-  width: 100%;
-  max-width: 290px;
+  width: auto;
+  max-width: none;
   min-width: 0;
+  flex: 1 1 220px;
 }
 .target-picker {
   display: grid;

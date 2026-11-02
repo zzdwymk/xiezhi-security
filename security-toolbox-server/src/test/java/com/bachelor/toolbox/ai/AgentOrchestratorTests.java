@@ -89,6 +89,29 @@ class AgentOrchestratorTests {
   }
 
   @Test
+  void modelNotConfiguredReportsActionableUserMessage() {
+    var memory = new AiConversationMemoryService(20, 20, 120);
+    var tools = mock(SecurityAgentTools.class);
+    var runtime = mock(AiAgentRuntimeClient.class);
+    var index = mock(AiProjectIndexService.class);
+    var planner = mock(AiPlanningService.class);
+    var guard = mock(AiAuthorizationGuard.class);
+    var reviewer = mock(AiExecutionReviewer.class);
+    var context = mock(AiContextService.class);
+    var audit = mock(AuditService.class);
+    when(tools.inspectProjectContext(5L, 8L)).thenReturn("project scope");
+    when(runtime.enabled()).thenReturn(true);
+    when(runtime.plan(any(), anyString(), any()))
+        .thenThrow(new AiAgentRuntimeClient.RuntimeProtocolException("AI Runtime 本轮未完成：MODEL_NOT_CONFIGURED"));
+    var orchestrator = new AgentOrchestrator(memory, tools, runtime, index, planner, guard, reviewer, context, audit);
+    var request = new AiAgentRequest(5L, 8L, "unconfigured-test", "这个怎么打", false, null,
+        List.of(), "standard", "turn-cfg", "workflow-cfg", 1L, "sha256:" + "a".repeat(64), "ledger-agent", "node-cfg");
+    assertThatThrownBy(() -> orchestrator.run(request))
+        .isInstanceOf(ApiException.class)
+        .hasMessage("AI 模型未配置或未启用，本轮已安全停止，尚未提交审批申请，未创建检测任务，未执行任何检测。请在系统设置中配置并启用模型后重试");
+  }
+
+  @Test
   void auditTemplateAndEditedPromptReachModelWithoutUnrelatedProjectRetrieval() {
     AiConversationMemoryService memory = new AiConversationMemoryService(20, 20, 120);
     SecurityAgentTools tools = mock(SecurityAgentTools.class);

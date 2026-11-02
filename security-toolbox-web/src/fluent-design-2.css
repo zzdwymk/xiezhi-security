@@ -2903,7 +2903,7 @@ html
 .desktop-v2-app-frame .desktop-v2-content .simple-page-heading > p,
 .desktop-v2-app-frame .desktop-v2-content .settings-page > header > p {
   margin: 0 !important;
-  max-width: 56ch;
+  max-width: none !important;
   color: color-mix(in srgb, var(--app-text) 72%, transparent);
   font-size: var(--type-section-desc, 13px);
   line-height: 1.5;
@@ -3684,6 +3684,209 @@ body,
 .login-page :where(.el-input__inner):focus-visible {
   outline: none !important;
   box-shadow: none !important;
+}
+
+/* ----- Fluent UI 2: NumberBox / SpinButton (.el-input-number) ----- */
+.desktop-v2-app-frame .el-input-number,
+.el-overlay-dialog .el-input-number,
+.el-drawer .el-input-number {
+  position: relative;
+  display: inline-flex;
+  vertical-align: middle;
+  min-height: var(--fluent-control-height, 32px);
+  height: var(--fluent-control-height, 32px);
+  line-height: calc(var(--fluent-control-height, 32px) - 2px);
+  box-sizing: border-box;
+}
+
+.desktop-v2-app-frame .el-input-number .el-input,
+.el-overlay-dialog .el-input-number .el-input,
+.el-drawer .el-input-number .el-input {
+  width: 100%;
+  height: 100%;
+}
+
+.desktop-v2-app-frame .el-input-number .el-input__wrapper,
+.el-overlay-dialog .el-input-number .el-input__wrapper,
+.el-drawer .el-input-number .el-input__wrapper {
+  min-height: var(--fluent-control-height, 32px) !important;
+  height: var(--fluent-control-height, 32px) !important;
+  border-radius: var(--fluent-radius-control, 4px) !important;
+  background: var(--app-surface-strong) !important;
+  border: 0 !important;
+  box-shadow: 0 0 0 var(--fluent-stroke-thin, 1px) var(--app-border) inset !important;
+  padding-left: 10px !important;
+  box-sizing: border-box;
+  transition: box-shadow var(--fluent-fast-duration, 150ms) ease;
+}
+
+.desktop-v2-app-frame .el-input-number .el-input__inner,
+.el-overlay-dialog .el-input-number .el-input__inner,
+.el-drawer .el-input-number .el-input__inner {
+  font-variant-numeric: tabular-nums;
+  color: var(--app-text) !important;
+  text-align: left !important;
+  height: 100% !important;
+  line-height: calc(var(--fluent-control-height, 32px) - 2px) !important;
+}
+
+/* Hover state */
+.desktop-v2-app-frame .el-input-number:hover .el-input__wrapper,
+.el-overlay-dialog .el-input-number:hover .el-input__wrapper,
+.el-drawer .el-input-number:hover .el-input__wrapper {
+  box-shadow: 0 0 0 var(--fluent-stroke-thin, 1px) color-mix(in srgb, var(--app-border) 80%, var(--app-text)) inset !important;
+}
+
+/* Focus state: Fluent bottom accent line */
+.desktop-v2-app-frame .el-input-number.is-focused .el-input__wrapper,
+.desktop-v2-app-frame .el-input-number .el-input__wrapper.is-focus,
+.el-overlay-dialog .el-input-number.is-focused .el-input__wrapper,
+.el-overlay-dialog .el-input-number .el-input__wrapper.is-focus,
+.el-drawer .el-input-number.is-focused .el-input__wrapper,
+.el-drawer .el-input-number .el-input__wrapper.is-focus {
+  box-shadow:
+    inset 0 0 0 1px var(--app-border),
+    inset 0 -2px 0 0 var(--app-accent) !important;
+}
+
+/* --- Controls on the right (controls-position="right") --- */
+.desktop-v2-app-frame .el-input-number.is-controls-right .el-input__wrapper,
+.el-overlay-dialog .el-input-number.is-controls-right .el-input__wrapper,
+.el-drawer .el-input-number.is-controls-right .el-input__wrapper {
+  padding-right: 30px !important;
+}
+
+.desktop-v2-app-frame .el-input-number.is-controls-right .el-input-number__increase,
+.desktop-v2-app-frame .el-input-number.is-controls-right .el-input-number__decrease,
+.el-overlay-dialog .el-input-number.is-controls-right .el-input-number__increase,
+.el-overlay-dialog .el-input-number.is-controls-right .el-input-number__decrease,
+.el-drawer .el-input-number.is-controls-right .el-input-number__increase,
+.el-drawer .el-input-number.is-controls-right .el-input-number__decrease {
+  position: absolute !important;
+  right: 1px !important;
+  width: 26px !important;
+  height: calc(50% - 1px) !important;
+  line-height: 1 !important;
+  background: transparent !important;
+  border-left: 1px solid color-mix(in srgb, var(--app-border) 60%, transparent) !important;
+  color: var(--app-muted) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  box-sizing: border-box !important;
+  z-index: 2 !important;
+  cursor: pointer;
+  transition: background-color var(--fluent-fast-duration, 150ms) ease, color var(--fluent-fast-duration, 150ms) ease;
+}
+
+.desktop-v2-app-frame .el-input-number.is-controls-right .el-input-number__increase,
+.el-overlay-dialog .el-input-number.is-controls-right .el-input-number__increase,
+.el-drawer .el-input-number.is-controls-right .el-input-number__increase {
+  top: 1px !important;
+  bottom: auto !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--app-border) 60%, transparent) !important;
+  border-top-right-radius: calc(var(--fluent-radius-control, 4px) - 1px) !important;
+}
+
+.desktop-v2-app-frame .el-input-number.is-controls-right .el-input-number__decrease,
+.el-overlay-dialog .el-input-number.is-controls-right .el-input-number__decrease,
+.el-drawer .el-input-number.is-controls-right .el-input-number__decrease {
+  bottom: 1px !important;
+  top: auto !important;
+  border-bottom: 0 !important;
+  border-radius: 0 0 calc(var(--fluent-radius-control, 4px) - 1px) 0 !important;
+}
+
+/* Stepper Hover & Active (Fluent subtle hover) */
+.desktop-v2-app-frame .el-input-number.is-controls-right .el-input-number__increase:hover:not(.is-disabled),
+.desktop-v2-app-frame .el-input-number.is-controls-right .el-input-number__decrease:hover:not(.is-disabled),
+.el-overlay-dialog .el-input-number.is-controls-right .el-input-number__increase:hover:not(.is-disabled),
+.el-overlay-dialog .el-input-number.is-controls-right .el-input-number__decrease:hover:not(.is-disabled),
+.el-drawer .el-input-number.is-controls-right .el-input-number__increase:hover:not(.is-disabled),
+.el-drawer .el-input-number.is-controls-right .el-input-number__decrease:hover:not(.is-disabled) {
+  background: color-mix(in srgb, var(--app-text) 8%, transparent) !important;
+  color: var(--app-text) !important;
+}
+
+.desktop-v2-app-frame .el-input-number.is-controls-right .el-input-number__increase:active:not(.is-disabled),
+.desktop-v2-app-frame .el-input-number.is-controls-right .el-input-number__decrease:active:not(.is-disabled),
+.el-overlay-dialog .el-input-number.is-controls-right .el-input-number__increase:active:not(.is-disabled),
+.el-overlay-dialog .el-input-number.is-controls-right .el-input-number__decrease:active:not(.is-disabled),
+.el-drawer .el-input-number.is-controls-right .el-input-number__increase:active:not(.is-disabled),
+.el-drawer .el-input-number.is-controls-right .el-input-number__decrease:active:not(.is-disabled) {
+  background: color-mix(in srgb, var(--app-text) 14%, transparent) !important;
+  color: var(--app-text) !important;
+}
+
+.desktop-v2-app-frame .el-input-number.is-controls-right .el-input-number__increase.is-disabled,
+.desktop-v2-app-frame .el-input-number.is-controls-right .el-input-number__decrease.is-disabled,
+.el-overlay-dialog .el-input-number.is-controls-right .el-input-number__increase.is-disabled,
+.el-overlay-dialog .el-input-number.is-controls-right .el-input-number__decrease.is-disabled,
+.el-drawer .el-input-number.is-controls-right .el-input-number__increase.is-disabled,
+.el-drawer .el-input-number.is-controls-right .el-input-number__decrease.is-disabled {
+  color: color-mix(in srgb, var(--app-text) 24%, transparent) !important;
+  cursor: not-allowed;
+  background: transparent !important;
+}
+
+.desktop-v2-app-frame .el-input-number.is-controls-right [class*="el-icon"],
+.el-overlay-dialog .el-input-number.is-controls-right [class*="el-icon"],
+.el-drawer .el-input-number.is-controls-right [class*="el-icon"] {
+  font-size: 11px !important;
+  transform: scale(0.9) !important;
+}
+
+/* Default bilateral controls (- on left, + on right) */
+.desktop-v2-app-frame .el-input-number:not(.is-controls-right) .el-input-number__decrease,
+.el-overlay-dialog .el-input-number:not(.is-controls-right) .el-input-number__decrease {
+  left: 1px !important;
+  top: 1px !important;
+  bottom: 1px !important;
+  width: 30px !important;
+  height: auto !important;
+  background: transparent !important;
+  border-right: 1px solid color-mix(in srgb, var(--app-border) 60%, transparent) !important;
+  border-top-left-radius: calc(var(--fluent-radius-control, 4px) - 1px) !important;
+  border-bottom-left-radius: calc(var(--fluent-radius-control, 4px) - 1px) !important;
+  color: var(--app-muted) !important;
+}
+.desktop-v2-app-frame .el-input-number:not(.is-controls-right) .el-input-number__increase,
+.el-overlay-dialog .el-input-number:not(.is-controls-right) .el-input-number__increase {
+  right: 1px !important;
+  top: 1px !important;
+  bottom: 1px !important;
+  width: 30px !important;
+  height: auto !important;
+  background: transparent !important;
+  border-left: 1px solid color-mix(in srgb, var(--app-border) 60%, transparent) !important;
+  border-top-right-radius: calc(var(--fluent-radius-control, 4px) - 1px) !important;
+  border-bottom-right-radius: calc(var(--fluent-radius-control, 4px) - 1px) !important;
+  color: var(--app-muted) !important;
+}
+.desktop-v2-app-frame .el-input-number:not(.is-controls-right) .el-input-number__decrease:hover:not(.is-disabled),
+.desktop-v2-app-frame .el-input-number:not(.is-controls-right) .el-input-number__increase:hover:not(.is-disabled),
+.el-overlay-dialog .el-input-number:not(.is-controls-right) .el-input-number__decrease:hover:not(.is-disabled),
+.el-overlay-dialog .el-input-number:not(.is-controls-right) .el-input-number__increase:hover:not(.is-disabled) {
+  background: color-mix(in srgb, var(--app-text) 8%, transparent) !important;
+  color: var(--app-text) !important;
+}
+
+/* 兜底：任何容器/尺寸下的步进按钮默认都必须透明（Fluent NumberBox Rest 态）。
+   Element Plus 在 size="small"/default 下会给按钮加不透明 --el-fill-color-light 灰底，
+   且小尺寸按钮高度仅 11px 会悬空于 32px 框体内。这里统一强制透明背景 + 图标居中，
+   具体几何位置由上面 is-controls-right / 双侧两条规则负责。 */
+.desktop-v2-app-frame .el-input-number .el-input-number__increase,
+.desktop-v2-app-frame .el-input-number .el-input-number__decrease,
+.el-overlay-dialog .el-input-number .el-input-number__increase,
+.el-overlay-dialog .el-input-number .el-input-number__decrease,
+.el-drawer .el-input-number .el-input-number__increase,
+.el-drawer .el-input-number .el-input-number__decrease {
+  background: transparent !important;
+  color: var(--app-muted) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  box-sizing: border-box !important;
 }
 
 /* ----- Buttons ----- */

@@ -88,7 +88,7 @@ public class AiAgentRuntimeClient {
       List.of("project", "target", "task", "finding", "recon", "probe", "reference", "conversation");
   static final String POLICY_REVISION = "java-authoritative-v1";
   private static final Set<String> MODEL_PROVIDER_FAILURE_CODES =
-      Set.of("MODEL_ACCESS_DENIED", "MODEL_RATE_LIMITED", "MODEL_SERVICE_UNAVAILABLE",
+      Set.of("MODEL_NOT_CONFIGURED", "MODEL_ACCESS_DENIED", "MODEL_RATE_LIMITED", "MODEL_SERVICE_UNAVAILABLE",
           "MODEL_TIMEOUT", "MODEL_REQUEST_FAILED");
   private static final Set<String> RUNTIME_EVENT_TYPES =
       Set.of(
@@ -797,7 +797,9 @@ public class AiAgentRuntimeClient {
       String reason = holder.terminationReason;
       throw new RuntimeProtocolException(
           reason == null || reason.isBlank()
-              ? "AI Runtime Harness 拒绝了本轮计划"
+              ? ("DENIED".equals(holder.finishStatus)
+                  ? "AI Runtime 本轮未完成：AUTHORIZATION_GUARD_DENIED"
+                  : "AI Runtime Harness 拒绝了本轮计划")
               : "AI Runtime 本轮未完成：" + reason);
     }
     if ("APPROVAL_REQUIRED".equals(holder.finishStatus)
@@ -850,7 +852,9 @@ public class AiAgentRuntimeClient {
       String reason = holder.terminationReason;
       throw new RuntimeProtocolException(
           reason == null || reason.isBlank()
-              ? "AI Runtime Harness 拒绝了本轮计划"
+              ? ("DENIED".equals(holder.finishStatus)
+                  ? "AI Runtime 本轮未完成：AUTHORIZATION_GUARD_DENIED"
+                  : "AI Runtime Harness 拒绝了本轮计划")
               : "AI Runtime 本轮未完成：" + reason);
     }
     if ("APPROVAL_REQUIRED".equals(holder.finishStatus)

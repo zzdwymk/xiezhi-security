@@ -43,6 +43,7 @@ class RuntimeProtocolDiagnosticsTests {
         Arguments.of("AI Runtime 本轮未完成：MODEL_SERVICE_UNAVAILABLE", "RUNTIME_TERMINAL", "MODEL_SERVICE_UNAVAILABLE"),
         Arguments.of("AI Runtime 返回失败终态：MODEL_REQUEST_FAILED", "RUNTIME_TERMINAL", "MODEL_REQUEST_FAILED"),
         Arguments.of("AI Runtime 本轮未完成：MODEL_TIMEOUT", "RUNTIME_TERMINAL", "MODEL_TIMEOUT"),
+        Arguments.of("AI Runtime 本轮未完成：AUTHORIZATION_GUARD_DENIED", "RUNTIME_TERMINAL", "AUTHORIZATION_GUARD_DENIED"),
         Arguments.of("AI Runtime 本轮未完成：UNKNOWN", "RUNTIME_TERMINAL", "UNKNOWN_RUNTIME_TERMINAL"),
         Arguments.of("AI Runtime 本轮未完成：MODEL_NOT_CONFIGURED extra", "RUNTIME_TERMINAL", "UNKNOWN_RUNTIME_TERMINAL"),
         Arguments.of("AI Runtime 返回失败终态：MODEL_NOT_CONFIGURED\\nEXFILTRATE", "RUNTIME_TERMINAL", "UNKNOWN_RUNTIME_TERMINAL"),
@@ -166,6 +167,37 @@ class RuntimeProtocolDiagnosticsTests {
         new AiAgentRuntimeClient.RuntimeProtocolException(message));
     assertThat(failure.stage()).isEqualTo(RuntimeProtocolDiagnostics.Stage.JAVA_SEMANTIC);
     assertThat(failure.code()).isEqualTo(RuntimeProtocolDiagnostics.Code.RETRIEVAL_FAILED);
+    assertThat(RuntimeProtocolDiagnostics.userMessage(failure))
+        .contains("项目证据检索失败", "项目索引和检索服务", "本轮已安全停止")
+        .doesNotContain("完整性校验");
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "AI Runtime 未授权执行本轮计划",
+      "AI Runtime SQLMap 计划必须要求审批",
+      "AI Runtime 本轮未完成：AUTHORIZATION_GUARD_DENIED"
+  })
+  void authorizationFailuresReportAuthorizationCause(String message) {
+    var failure = RuntimeProtocolDiagnostics.classify(
+        new AiAgentRuntimeClient.RuntimeProtocolException(message));
+    assertThat(RuntimeProtocolDiagnostics.userMessage(failure))
+        .contains("未通过安全授权校验", "目标授权状态与操作权限", "本轮已安全停止")
+        .doesNotContain("完整性校验", "检查服务状态");
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "AI Runtime 计划引用了当前 EvidenceBundle 之外的证据",
+      "AI Runtime action 引用了未声明证据",
+      "AI Runtime Evidence 超出当前项目或目标 scope"
+  })
+  void evidenceScopeFailuresReportEvidenceScopeCause(String message) {
+    var failure = RuntimeProtocolDiagnostics.classify(
+        new AiAgentRuntimeClient.RuntimeProtocolException(message));
+    assertThat(RuntimeProtocolDiagnostics.userMessage(failure))
+        .contains("超出授权范围或缺少必要依据", "项目和目标授权范围", "本轮已安全停止")
+        .doesNotContain("完整性校验");
   }
 
   @Test

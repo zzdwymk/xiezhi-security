@@ -615,15 +615,26 @@ class LedgerAgentRuntime:
                     state, self.planner.plan, state["request"]
                 )
                 if plan.get("source") == "langchain-rejected":
+                    raw_failure = plan.get("failureCode", "MODEL_RESPONSE_INVALID")
+                    failure_code = (
+                        raw_failure
+                        if raw_failure in MODEL_PROVIDER_FAILURE_CODES
+                        else "MODEL_RESPONSE_INVALID"
+                    )
+                    termination_reason = (
+                        raw_failure
+                        if raw_failure in MODEL_PROVIDER_FAILURE_CODES
+                        else "ROUTE_FAILED"
+                    )
                     return {
                         "intentDecision": {"intent": "CLARIFY", "needsRetrieval": False,
                                            "publicReasonCode": "AMBIGUOUS_REQUEST"},
                         "plan": plan,
                         "llmCallCount": call_count,
-                        "terminationReason": plan.get("failureCode", "MODEL_RESPONSE_INVALID"),
+                        "terminationReason": termination_reason,
                         "terminalStatus": "FAILED",
                         "event": _event("route", "engage", "模型回复不可用，已停止本轮处理",
-                                        {"status": "FAILED", "failureCode": plan.get("failureCode", "MODEL_RESPONSE_INVALID")}),
+                                        {"status": "FAILED", "failureCode": failure_code}),
                     }
                 routed = {
                     "intent": "ACTION_PLAN"
@@ -1323,7 +1334,7 @@ class LedgerAgentRuntime:
             else ("APPROVAL_REQUIRED" if approvals else "AUTHORIZED")
         )
         decision = self._create_decision(request, guarded)
-        return {
+        guard_result = {
             "guardedActions": guarded,
             "guardViolations": violations,
             "approvalActions": approvals,
@@ -1341,6 +1352,10 @@ class LedgerAgentRuntime:
                 },
             ),
         }
+        if violations:
+            guard_result["terminationReason"] = "AUTHORIZATION_GUARD_DENIED"
+            guard_result["terminalStatus"] = "DENIED"
+        return guard_result
 
     def _create_decision(
         self, request: dict[str, Any], actions: list[dict[str, Any]]

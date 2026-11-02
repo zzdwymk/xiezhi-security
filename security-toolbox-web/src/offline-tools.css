@@ -284,6 +284,11 @@
   font-size: 12px;
   font-weight: 600;
 }
+/* 步进器（位移/长度）用适合数字的紧凑宽度，别跟着 label 撑满整行 */
+.offline-control-row .el-input-number,
+.generator-settings .el-input-number {
+  width: 132px;
+}
 .offline-editor-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

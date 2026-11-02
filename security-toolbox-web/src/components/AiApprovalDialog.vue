@@ -10,6 +10,10 @@ const props = defineProps<{
   message?: ConversationMessage;
   targetName: string;
   targetValue: string;
+  /** 本轮实际执行涉及的全部目标地址（多主机时为多项）。 */
+  targetValues?: string[];
+  /** 与 targetValues 对应的目标名称（用于摘要展示）。 */
+  targetLabels?: string[];
   allowedPorts: string;
   busy: boolean;
 }>();
@@ -247,14 +251,48 @@ const NMAP_MODE_FLAGS: Record<string, string> = {
 };
 const NMAP_NO_PORT_MODES = new Set(["ping", "quick_trace"]);
 
-function nmapCommandPreview(parameters: Record<string, any>): string {
+// 从授权目标地址里取出纯主机名（去掉 http(s):// 协议、路径、端口以外的查询等），
+// 用于命令预览展示真实目标，而不是占位符「<目标>」。
+function resolveTargetHost(value?: string): string {
+  let v = String(value || "").trim();
+  if (!v) return "";
+  // 去掉协议
+  v = v.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+  // 去掉路径 / 查询 / 片段
+  v = v.split(/[/?#]/)[0];
+  // 去掉可能存在的 用户信息@
+  v = v.replace(/^[^@]*@/, "");
+  return v;
+}
+
+// 本轮执行涉及的全部主机：优先用 targetValues（多主机），否则退回单个 targetValue。
+const executionHosts = computed<string[]>(() => {
+  const raw = (props.targetValues && props.targetValues.length
+    ? props.targetValues
+    : [props.targetValue]) || [];
+  const seen = new Set<string>();
+  const hosts: string[] = [];
+  for (const item of raw) {
+    const h = resolveTargetHost(item);
+    if (h && !seen.has(h)) {
+      seen.add(h);
+      hosts.push(h);
+    }
+  }
+  return hosts;
+});
+
+function nmapCommandPreview(parameters: Record<string, any>, hosts: string[]): string {
   const mode = String(parameters?.mode || "quick");
   const ports = String(parameters?.ports || "1-65535").trim();
   const parts = ["nmap", "-sT", "-n"];
   const flags = NMAP_MODE_FLAGS[mode] ?? "";
   if (flags) parts.push(flags);
   if (!NMAP_NO_PORT_MODES.has(mode)) parts.push(ports === "1-65535" ? "-p-" : `-p ${ports}`);
-  parts.push("--stats-every 1s", "-oX -", "<目标>");
+  parts.push("--stats-every 1s", "-oX -");
+  // 多主机时以空格分隔列出全部真实目标（与后端逐目标下发一致）；无目标时回退占位符。
+  if (hosts.length) parts.push(...hosts);
+  else parts.push("<目标>");
   return parts.join(" ");
 }
 
@@ -353,10 +391,29 @@ function onApprove() {
 
         <dl class="approval-meta-grid">
           <div class="approval-meta-item is-target">
-            <dt>申请执行目标</dt>
-            <dd>
+            <dt>
+              申请执行目标
+              <span v-if="executionHosts.length > 1" class="approval-target-count"
+                >共 {{ executionHosts.length }} 个主机</span
+              >
+            </dt>
+            <!-- 单主机：沿用原有名称 + 地址展示 -->
+            <dd v-if="executionHosts.length <= 1">
               <strong class="approval-target-name">{{ targetName }}</strong>
               <code class="approval-target-addr">{{ targetValue }}</code>
+            </dd>
+            <!-- 多主机：逐项列出名称 + 地址，避免只显示锚点目标而造成误解 -->
+            <dd v-else class="approval-target-list">
+              <span
+                v-for="(host, i) in executionHosts"
+                :key="host"
+                class="approval-target-list-item"
+              >
+                <strong class="approval-target-name">{{
+                  (targetLabels && targetLabels[i]) || host
+                }}</strong>
+                <code class="approval-target-addr">{{ host }}</code>
+              </span>
             </dd>
           </div>
           <div class="approval-meta-item">
@@ -478,7 +535,6 @@ function onApprove() {
                     <el-select
                       v-else-if="enumOptions(step.toolCode, key)"
                       v-model="editableParameters[index][key]"
-                      size="small"
                       class="param-interactive-control"
                       :disabled="busy"
                     >
@@ -494,7 +550,6 @@ function onApprove() {
                     <el-select
                       v-else-if="key === 'dictionary'"
                       v-model="editableParameters[index][key]"
-                      size="small"
                       class="param-interactive-control"
                       :disabled="busy"
                     >
@@ -512,7 +567,6 @@ function onApprove() {
                       v-model="editableParameters[index][key]"
                       :min="1"
                       :max="3"
-                      size="small"
                       controls-position="right"
                       class="param-interactive-number"
                       :disabled="busy"
@@ -525,7 +579,6 @@ function onApprove() {
                       :min="1"
                       :max="50"
                       :step="5"
-                      size="small"
                       controls-position="right"
                       class="param-interactive-number"
                       :disabled="busy"
@@ -535,7 +588,6 @@ function onApprove() {
                     <el-select
                       v-else-if="key === 'technique'"
                       v-model="editableParameters[index][key]"
-                      size="small"
                       class="param-interactive-control"
                       :disabled="busy"
                     >
@@ -551,7 +603,6 @@ function onApprove() {
                     <el-select
                       v-else-if="key === 'level'"
                       v-model="editableParameters[index][key]"
-                      size="small"
                       class="param-interactive-control"
                       :disabled="busy"
                     >
@@ -567,7 +618,6 @@ function onApprove() {
                     <el-select
                       v-else-if="key === 'risk'"
                       v-model="editableParameters[index][key]"
-                      size="small"
                       class="param-interactive-control"
                       :disabled="busy"
                     >
@@ -591,7 +641,6 @@ function onApprove() {
                     <el-input-number
                       v-else-if="typeof val === 'number'"
                       v-model="editableParameters[index][key]"
-                      size="small"
                       controls-position="right"
                       class="param-interactive-number"
                       :disabled="busy"
@@ -601,7 +650,6 @@ function onApprove() {
                     <el-input
                       v-else
                       v-model="editableParameters[index][key]"
-                      size="small"
                       class="param-interactive-input"
                       :disabled="busy"
                     />
@@ -619,7 +667,7 @@ function onApprove() {
               >
                 <span class="approval-command-preview-label">本轮将执行命令</span>
                 <code class="approval-command-preview-code">{{
-                  nmapCommandPreview(editableParameters[index])
+                  nmapCommandPreview(editableParameters[index], executionHosts)
                 }}</code>
               </div>
 
@@ -844,6 +892,30 @@ function onApprove() {
   color: var(--app-text);
   font-family: var(--font-mono, monospace);
   font-size: 12px;
+}
+
+/* 多主机：目标地址列表 */
+.approval-target-count {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--app-accent) 12%, transparent);
+  color: var(--app-accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+.approval-target-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 2px 0 0;
+  padding: 0;
+}
+.approval-target-list-item {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
 .approval-port-badge {
@@ -1143,6 +1215,9 @@ function onApprove() {
   min-height: 32px;
 }
 
+/* 同一参数列内的控件统一左右边界：下拉、文本输入、数字步进器都对齐到同一宽度，
+   避免「识别模式」下拉与「扫描端口」输入左右长短不一。数字步进器也保持一致宽度，
+   由内部 step 按钮占据右侧固定区域，数值仍左对齐。 */
 .param-interactive-control {
   width: 100%;
   max-width: 320px;
@@ -1155,7 +1230,7 @@ function onApprove() {
 
 .param-interactive-input {
   width: 100%;
-  max-width: 340px;
+  max-width: 320px;
 }
 
 .approval-command-preview {

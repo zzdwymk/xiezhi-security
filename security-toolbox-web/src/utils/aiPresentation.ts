@@ -42,6 +42,18 @@ const RUNTIME_TIMEOUT_MESSAGE =
 
 const MODEL_PROVIDER_FAILURES: ReadonlyArray<readonly [RegExp, string]> = [
   [
+    /MODEL_NOT_CONFIGURED|AI\s*模型未配置/i,
+    "AI 模型未配置或未启用，本轮已安全停止，尚未提交审批申请，未创建检测任务，未执行任何检测。请在系统设置中配置并启用模型后重试。",
+  ],
+  [
+    /AUTHORIZATION_GUARD_DENIED|方案未通过(?:安全)?授权(?:边界)?校验/i,
+    "AI 生成的检测方案未通过安全授权校验，本轮已安全停止，尚未提交审批申请，未创建检测任务，未执行任何检测。请检查目标授权状态与操作权限后重试。",
+  ],
+  [
+    /RETRIEVAL_FAILED|项目证据检索失败/i,
+    "项目证据检索失败，本轮已安全停止，尚未提交审批申请，未创建检测任务，未执行任何检测。请检查项目索引和检索服务后重试。",
+  ],
+  [
     /MODEL_ACCESS_DENIED|模型服务拒绝了这次请求|HTTP\s*(?:401|403)/i,
     "模型服务拒绝了这次请求，本轮没有执行检测。请检查代理地址、模型权限，或更换兼容的 API 服务后重试。",
   ],

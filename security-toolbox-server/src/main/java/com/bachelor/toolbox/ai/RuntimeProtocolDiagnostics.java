@@ -6,7 +6,7 @@ final class RuntimeProtocolDiagnostics {
 
   enum Code {
     ROUTE_FAILED, GROUNDED_GENERATION_FAILED, GROUNDED_REFERENCE_INVALID, EVIDENCE_ASSESSMENT_FAILED, RETRIEVAL_FAILED,
-    RETRIEVAL_GUARD_DENIED, TURN_TIMEOUT, MODEL_NOT_CONFIGURED, MODEL_ACCESS_DENIED, MODEL_RATE_LIMITED,
+    RETRIEVAL_GUARD_DENIED, AUTHORIZATION_GUARD_DENIED, TURN_TIMEOUT, MODEL_NOT_CONFIGURED, MODEL_ACCESS_DENIED, MODEL_RATE_LIMITED,
     MODEL_TIMEOUT, MODEL_SERVICE_UNAVAILABLE, MODEL_REQUEST_FAILED, UNKNOWN_RUNTIME_TERMINAL,
     LEDGER_DIGEST_INVALID, LEDGER_PERSISTENCE_INVALID, EVENT_IDENTITY_INVALID,
     ROUTE_PLAN_MISMATCH, AUTO_DECISION_INVALID, PLAN_EVENT_MISMATCH,
@@ -60,8 +60,23 @@ final class RuntimeProtocolDiagnostics {
   static String userMessage(Failure failure) {
     String stopped = "本轮已安全停止，尚未提交审批申请，未创建检测任务，未执行任何检测。";
     if (failure.stage() != Stage.RUNTIME_TERMINAL) {
+      if (failure.code() == Code.MODEL_NOT_CONFIGURED) {
+        return "AI 模型未配置或未启用，" + stopped + "请在系统设置中配置并启用模型后重试";
+      }
       if (failure.code() == Code.MODEL_REQUEST_FAILED) {
         return "模型服务拒绝了本次请求，" + stopped + "请查看 AI 诊断记录后重试";
+      }
+      if (failure.code() == Code.RETRIEVAL_FAILED) {
+        return "项目证据检索失败，" + stopped + "请检查项目索引和检索服务后重试";
+      }
+      if (failure.code() == Code.RETRIEVAL_GUARD_DENIED) {
+        return "项目证据检索未通过授权检查，" + stopped + "请检查项目和目标授权范围";
+      }
+      if (failure.code() == Code.AUTHORIZATION_MISMATCH || failure.code() == Code.AUTHORIZATION_GUARD_DENIED) {
+        return "AI 生成的检测方案未通过安全授权校验，" + stopped + "请检查目标授权状态与操作权限后重试";
+      }
+      if (failure.code() == Code.EVIDENCE_SCOPE_INVALID) {
+        return "AI 生成的方案引用的证据超出授权范围或缺少必要依据，" + stopped + "请检查项目和目标授权范围后重试";
       }
       return "智能服务返回内容未通过完整性校验，"
           + stopped + "请查看 AI 诊断记录后重试";
@@ -79,6 +94,10 @@ final class RuntimeProtocolDiagnostics {
           "项目证据检索失败，" + stopped + "请检查项目索引和检索服务后重试";
       case RETRIEVAL_GUARD_DENIED ->
           "项目证据检索未通过授权检查，" + stopped + "请检查项目和目标授权范围";
+      case AUTHORIZATION_GUARD_DENIED, AUTHORIZATION_MISMATCH ->
+          "AI 生成的检测方案未通过安全授权校验，" + stopped + "请检查目标授权状态与操作权限后重试";
+      case EVIDENCE_SCOPE_INVALID ->
+          "AI 生成的方案引用的证据超出授权范围或缺少必要依据，" + stopped + "请检查项目和目标授权范围后重试";
       case TURN_TIMEOUT ->
           "模型在规定时间内没有完成回答，" + stopped + "请检查模型连接后重试";
       case MODEL_NOT_CONFIGURED ->

@@ -150,6 +150,7 @@ security-toolbox-web/scripts/*
 !security-toolbox-web/scripts/test-startup-navigation-browser.cjs
 !security-toolbox-web/scripts/test-stream-auth.cjs
 !security-toolbox-web/scripts/test-task-detail.cjs
+!security-toolbox-web/scripts/test-tooltip-mutex-browser.cjs
 !security-toolbox-web/scripts/test-traffic-scan-status-browser.cjs
 !security-toolbox-web/scripts/test-turn-rail-tooltip-browser.cjs
 !security-toolbox-web/scripts/test-turn-rail-tooltip-leftover.cjs

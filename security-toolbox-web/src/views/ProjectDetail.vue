@@ -5435,7 +5435,6 @@ onUnmounted(() => {
                       v-model="reconPathConcurrency"
                       :min="1"
                       :max="50"
-                      size="small"
                       class="recon-concurrency-input"
                       controls-position="right"
                       title="并发请求数 (1-50)"
@@ -8433,7 +8432,7 @@ onUnmounted(() => {
   width: 200px;
 }
 .recon-concurrency-input {
-  width: 110px;
+  width: 130px;
 }
 .recon-controls-row--actions {
   padding-top: 2px;
