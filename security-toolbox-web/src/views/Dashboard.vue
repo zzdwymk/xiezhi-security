@@ -4,6 +4,7 @@ import {
   nextTick,
   onBeforeUnmount,
   onMounted,
+  reactive,
   ref,
   watch,
 } from "vue";
@@ -2253,6 +2254,49 @@ function cancelPendingPrompt(queueKey: string, id: string) {
   if (next.length) map.set(queueKey, next);
   else map.delete(queueKey);
   pendingPrompts.value = map;
+  expandedPendingIds.delete(id);
+}
+
+/** 展开/收起某条排队消息的完整预览。 */
+const expandedPendingIds = reactive(new Set<string>());
+function togglePendingPreview(id: string) {
+  if (expandedPendingIds.has(id)) expandedPendingIds.delete(id);
+  else expandedPendingIds.add(id);
+}
+
+/**
+ * 把排队中的某条消息取回输入框编辑：从队列移除并载入其原始文本，
+ * 用户修改后按普通发送流程重新提交（同一对话、同一目标快照）。
+ */
+function editPendingPrompt(queueKey: string, id: string) {
+  const list = pendingPrompts.value.get(queueKey);
+  const item = list?.find((entry) => entry.id === id);
+  if (!item) return;
+  cancelPendingPrompt(queueKey, id);
+  prompt.value = item.text;
+  composerError.value = "";
+  nextTick(() => {
+    const el = composerInputRef.value;
+    el?.focus?.();
+    if (el && typeof el.setSelectionRange === "function") {
+      const len = prompt.value.length;
+      el.setSelectionRange(len, len);
+    }
+  });
+}
+
+/** 调整排队消息顺序：direction = -1 上移一位，+1 下移一位。 */
+function movePendingPrompt(queueKey: string, id: string, direction: -1 | 1) {
+  const list = pendingPrompts.value.get(queueKey);
+  if (!list?.length) return;
+  const idx = list.findIndex((item) => item.id === id);
+  if (idx < 0) return;
+  const target = idx + direction;
+  if (target < 0 || target >= list.length) return;
+  const next = list.slice();
+  const [moved] = next.splice(idx, 1);
+  next.splice(target, 0, moved);
+  pendingPrompts.value = new Map(pendingPrompts.value).set(queueKey, next);
 }
 
 /** 清空某一对话（默认当前对话）的所有排队消息，并保留输入框内容。 */
@@ -3130,12 +3174,44 @@ onBeforeUnmount(() => {
         >
           <span class="composer-queue-title">排队中 {{ pendingForCurrentThread.length }} 条</span>
           <ul class="composer-queue-list">
-            <li v-for="item in pendingForCurrentThread" :key="item.id">
-              <span class="composer-queue-text">{{ quotePreview(item.text) }}</span>
+            <li v-for="(item, qIndex) in pendingForCurrentThread" :key="item.id" :class="{ 'is-expanded': expandedPendingIds.has(item.id) }">
+              <span class="composer-queue-order">
+                <button
+                  type="button"
+                  class="composer-queue-move"
+                  :disabled="qIndex === 0"
+                  :aria-label="`上移排队消息：${quotePreview(item.text)}`"
+                  title="上移"
+                  @click="movePendingPrompt(currentQueueKey, item.id, -1)"
+                >↑</button>
+                <button
+                  type="button"
+                  class="composer-queue-move"
+                  :disabled="qIndex === pendingForCurrentThread.length - 1"
+                  :aria-label="`下移排队消息：${quotePreview(item.text)}`"
+                  title="下移"
+                  @click="movePendingPrompt(currentQueueKey, item.id, 1)"
+                >↓</button>
+              </span>
+              <button
+                type="button"
+                class="composer-queue-text"
+                :title="item.text"
+                :aria-label="`预览排队消息：${quotePreview(item.text)}`"
+                @click="togglePendingPreview(item.id)"
+              >{{ expandedPendingIds.has(item.id) ? item.text : quotePreview(item.text) }}</button>
+              <button
+                type="button"
+                class="composer-queue-edit"
+                :aria-label="`编辑排队消息：${quotePreview(item.text)}`"
+                title="编辑"
+                @click="editPendingPrompt(currentQueueKey, item.id)"
+              >编辑</button>
               <button
                 type="button"
                 class="composer-queue-cancel"
                 :aria-label="`取消排队：${quotePreview(item.text)}`"
+                title="取消"
                 @click="cancelPendingPrompt(currentQueueKey, item.id)"
               >×</button>
             </li>
@@ -3257,7 +3333,7 @@ onBeforeUnmount(() => {
             >
               <el-icon :class="{ rotating: compacting }"
                 ><Refresh v-if="compacting" /><Promotion v-else
-              /></el-icon><span v-if="sending" class="send-queue-badge">{{ pendingForCurrentThread.length + 1 }}</span></button
+              /></el-icon></button>
           ></el-tooltip>
         </div>
       </div>
@@ -3743,12 +3819,44 @@ onBeforeUnmount(() => {
           >
             <span class="composer-queue-title">排队中 {{ pendingForCurrentThread.length }} 条</span>
             <ul class="composer-queue-list">
-              <li v-for="item in pendingForCurrentThread" :key="item.id">
-                <span class="composer-queue-text">{{ quotePreview(item.text) }}</span>
+              <li v-for="(item, qIndex) in pendingForCurrentThread" :key="item.id" :class="{ 'is-expanded': expandedPendingIds.has(item.id) }">
+                <span class="composer-queue-order">
+                  <button
+                    type="button"
+                    class="composer-queue-move"
+                    :disabled="qIndex === 0"
+                    :aria-label="`上移排队消息：${quotePreview(item.text)}`"
+                    title="上移"
+                    @click="movePendingPrompt(currentQueueKey, item.id, -1)"
+                  >↑</button>
+                  <button
+                    type="button"
+                    class="composer-queue-move"
+                    :disabled="qIndex === pendingForCurrentThread.length - 1"
+                    :aria-label="`下移排队消息：${quotePreview(item.text)}`"
+                    title="下移"
+                    @click="movePendingPrompt(currentQueueKey, item.id, 1)"
+                  >↓</button>
+                </span>
+                <button
+                  type="button"
+                  class="composer-queue-text"
+                  :title="item.text"
+                  :aria-label="`预览排队消息：${quotePreview(item.text)}`"
+                  @click="togglePendingPreview(item.id)"
+                >{{ expandedPendingIds.has(item.id) ? item.text : quotePreview(item.text) }}</button>
+                <button
+                  type="button"
+                  class="composer-queue-edit"
+                  :aria-label="`编辑排队消息：${quotePreview(item.text)}`"
+                  title="编辑"
+                  @click="editPendingPrompt(currentQueueKey, item.id)"
+                >编辑</button>
                 <button
                   type="button"
                   class="composer-queue-cancel"
                   :aria-label="`取消排队：${quotePreview(item.text)}`"
+                  title="取消"
                   @click="cancelPendingPrompt(currentQueueKey, item.id)"
                 >×</button>
               </li>
@@ -3792,7 +3900,7 @@ onBeforeUnmount(() => {
               >
                 <el-icon :class="{ rotating: compacting }"
                   ><Refresh v-if="compacting" /><Promotion v-else
-                /></el-icon><span v-if="sending" class="send-queue-badge">{{ pendingForCurrentThread.length + 1 }}</span></button
+                /></el-icon></button>
             ></el-tooltip>
           </div>
         </div>
@@ -4239,20 +4347,88 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 4px;
   max-width: 260px;
-  padding: 2px 4px 2px 8px;
+  padding: 2px 4px 2px 6px;
   border-radius: 999px;
   background: var(--app-surface, #fff);
   border: 1px solid var(--app-border, rgba(0, 0, 0, 0.12));
+}
+/* 展开预览时：由药丸改为可换行的块，完整显示消息全文 */
+.composer-queue-list li.is-expanded {
+  max-width: 100%;
+  border-radius: 8px;
+  align-items: flex-start;
+}
+.composer-queue-order {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 0;
+  flex: 0 0 auto;
+}
+.composer-queue-move {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 12px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--app-muted, #909399);
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+}
+.composer-queue-move:hover:not(:disabled) {
+  color: var(--app-accent, #409eff);
+}
+.composer-queue-move:disabled {
+  opacity: 0.3;
+  cursor: default;
 }
 .composer-queue-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* 点击可展开预览：按按钮外观呈现，但保持纯文本观感 */
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.composer-queue-text:hover {
+  color: var(--app-accent, #409eff);
+}
+.composer-queue-list li.is-expanded .composer-queue-text {
+  white-space: pre-wrap;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.composer-queue-edit {
+  flex: 0 0 auto;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  color: var(--app-accent, #409eff);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.composer-queue-edit:hover {
+  text-decoration: underline;
 }
 .composer-queue-cancel {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex: 0 0 auto;
   width: 16px;
   height: 16px;
   padding: 0;
@@ -4281,24 +4457,8 @@ onBeforeUnmount(() => {
 .composer-queue-clear:hover {
   color: var(--app-accent, #409eff);
 }
-/* 发送按钮上叠加的排队角标 */
 .send-button {
   position: relative;
-}
-.send-button .send-queue-badge {
-  position: absolute;
-  top: -5px;
-  right: -5px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: 999px;
-  font-size: 10px;
-  line-height: 16px;
-  text-align: center;
-  color: #fff;
-  background: var(--el-color-warning, #e6a23c);
-  box-shadow: 0 0 0 2px var(--app-surface, #fff);
 }
 
 .composer-footer {
