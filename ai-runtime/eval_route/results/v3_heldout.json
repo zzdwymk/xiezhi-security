@@ -1,0 +1,117 @@
+{
+  "variant": "v3",
+  "summary": {
+    "correct": 18,
+    "total": 18
+  },
+  "rows": [
+    {
+      "text": "这玩意儿稳不稳",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true
+    },
+    {
+      "text": "给我盘它",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true
+    },
+    {
+      "text": "先来一轮再说，别真扫",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true
+    },
+    {
+      "text": "你这能帮我把关口把一下吗",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true
+    },
+    {
+      "text": "看看还有啥没发现的",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true
+    },
+    {
+      "text": "帮我出个检查清单",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true
+    },
+    {
+      "text": "越权是啥意思",
+      "expect": "GENERAL_QA",
+      "got": "GENERAL_QA",
+      "ok": true
+    },
+    {
+      "text": "为什么要把cookie设httponly",
+      "expect": "GENERAL_QA",
+      "got": "GENERAL_QA",
+      "ok": true
+    },
+    {
+      "text": "指纹识别靠什么原理",
+      "expect": "GENERAL_QA",
+      "got": "GENERAL_QA",
+      "ok": true
+    },
+    {
+      "text": "一个IP能有几个端口",
+      "expect": "GENERAL_QA",
+      "got": "GENERAL_QA",
+      "ok": true
+    },
+    {
+      "text": "弄一下",
+      "expect": "CLARIFY",
+      "got": "CLARIFY",
+      "ok": true
+    },
+    {
+      "text": "随便看看",
+      "expect": "CLARIFY",
+      "got": "CLARIFY",
+      "ok": true
+    },
+    {
+      "text": "你能扫描端口吗",
+      "expect": "GENERAL_QA",
+      "got": "GENERAL_QA",
+      "ok": true
+    },
+    {
+      "text": "你好",
+      "expect": "GENERAL_QA",
+      "got": "GENERAL_QA",
+      "ok": true
+    },
+    {
+      "text": "支不支持目录扫描",
+      "expect": "GENERAL_QA",
+      "got": "GENERAL_QA",
+      "ok": true
+    },
+    {
+      "text": "能不能做漏洞扫描",
+      "expect": "GENERAL_QA",
+      "got": "GENERAL_QA",
+      "ok": true
+    },
+    {
+      "text": "上次扫描结果怎么样",
+      "expect": "PROJECT_QA",
+      "got": "PROJECT_QA",
+      "ok": true
+    },
+    {
+      "text": "看看这轮发现了什么漏洞",
+      "expect": "PROJECT_QA",
+      "got": "PROJECT_QA",
+      "ok": true
+    }
+  ]
+}

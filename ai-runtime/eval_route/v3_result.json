@@ -1,0 +1,355 @@
+{
+  "model": "workbuddy/deepseek-v4.1-flash",
+  "prompt_version": "v3",
+  "prompt_variant": "v3",
+  "summary": {
+    "correct": 22,
+    "total": 22,
+    "accuracy": 1.0
+  },
+  "rows": [
+    {
+      "text": "这个项目怎么打",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true,
+      "parsed": {
+        "intent": "ACTION_PLAN",
+        "needsRetrieval": true,
+        "retrievalQuery": "当前授权目标基础资产与安全评估能力",
+        "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NEW"
+      },
+      "raw": "{\"intent\":\"ACTION_PLAN\",\"needsRetrieval\":true,\"retrievalQuery\":\"当前授权目标基础资产与安全评估能力\",\"publicReasonCode\":\"AUTHORIZED_ACTION_REQUEST\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NEW\"}",
+      "ms": 44963
+    },
+    {
+      "text": "从哪开始",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true,
+      "parsed": {
+        "intent": "ACTION_PLAN",
+        "needsRetrieval": true,
+        "retrievalQuery": "当前授权目标基础资产与安全评估能力",
+        "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NEW"
+      },
+      "raw": "{\"intent\":\"ACTION_PLAN\",\"needsRetrieval\":true,\"retrievalQuery\":\"当前授权目标基础资产与安全评估能力\",\"publicReasonCode\":\"AUTHORIZED_ACTION_REQUEST\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NEW\"}",
+      "ms": 30102
+    },
+    {
+      "text": "先怎么下手",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true,
+      "parsed": {
+        "intent": "ACTION_PLAN",
+        "needsRetrieval": true,
+        "retrievalQuery": "当前授权目标基础资产与安全评估能力",
+        "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NEW"
+      },
+      "raw": "{\"intent\":\"ACTION_PLAN\",\"needsRetrieval\":true,\"retrievalQuery\":\"当前授权目标基础资产与安全评估能力\",\"publicReasonCode\":\"AUTHORIZED_ACTION_REQUEST\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NEW\"}",
+      "ms": 45387
+    },
+    {
+      "text": "帮我看看它有什么问题",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true,
+      "parsed": {
+        "intent": "ACTION_PLAN",
+        "needsRetrieval": true,
+        "retrievalQuery": "当前授权目标基础资产与安全评估能力",
+        "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NEW"
+      },
+      "raw": "{\"intent\":\"ACTION_PLAN\",\"needsRetrieval\":true,\"retrievalQuery\":\"当前授权目标基础资产与安全评估能力\",\"publicReasonCode\":\"AUTHORIZED_ACTION_REQUEST\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NEW\"}",
+      "ms": 27318
+    },
+    {
+      "text": "这家伙底子怎么样",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true,
+      "parsed": {
+        "intent": "ACTION_PLAN",
+        "needsRetrieval": true,
+        "retrievalQuery": "当前授权目标基础资产与安全评估能力",
+        "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NEW"
+      },
+      "raw": "{\"intent\":\"ACTION_PLAN\",\"needsRetrieval\":true,\"retrievalQuery\":\"当前授权目标基础资产与安全评估能力\",\"publicReasonCode\":\"AUTHORIZED_ACTION_REQUEST\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NEW\"}",
+      "ms": 37767
+    },
+    {
+      "text": "能进来不",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true,
+      "parsed": {
+        "intent": "ACTION_PLAN",
+        "needsRetrieval": true,
+        "retrievalQuery": "当前授权目标基础资产与安全评估能力",
+        "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NEW"
+      },
+      "raw": "{\"intent\":\"ACTION_PLAN\",\"needsRetrieval\":true,\"retrievalQuery\":\"当前授权目标基础资产与安全评估能力\",\"publicReasonCode\":\"AUTHORIZED_ACTION_REQUEST\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NEW\"}",
+      "ms": 98521
+    },
+    {
+      "text": "摸摸底",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true,
+      "parsed": {
+        "intent": "ACTION_PLAN",
+        "needsRetrieval": true,
+        "retrievalQuery": "当前授权目标基础资产与安全评估能力",
+        "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NEW"
+      },
+      "raw": "{\"intent\":\"ACTION_PLAN\",\"needsRetrieval\":true,\"retrievalQuery\":\"当前授权目标基础资产与安全评估能力\",\"publicReasonCode\":\"AUTHORIZED_ACTION_REQUEST\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NEW\"}",
+      "ms": 958
+    },
+    {
+      "text": "先探探路",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true,
+      "parsed": {
+        "intent": "ACTION_PLAN",
+        "needsRetrieval": true,
+        "retrievalQuery": "当前授权目标基础资产与安全评估能力",
+        "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NEW"
+      },
+      "raw": "{\"intent\":\"ACTION_PLAN\",\"needsRetrieval\":true,\"retrievalQuery\":\"当前授权目标基础资产与安全评估能力\",\"publicReasonCode\":\"AUTHORIZED_ACTION_REQUEST\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NEW\"}",
+      "ms": 8151
+    },
+    {
+      "text": "这站靠谱吗",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true,
+      "parsed": {
+        "intent": "ACTION_PLAN",
+        "needsRetrieval": true,
+        "retrievalQuery": "当前授权目标基础资产与安全评估能力",
+        "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NEW"
+      },
+      "raw": "{\"intent\":\"ACTION_PLAN\",\"needsRetrieval\":true,\"retrievalQuery\":\"当前授权目标基础资产与安全评估能力\",\"publicReasonCode\":\"AUTHORIZED_ACTION_REQUEST\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NEW\"}",
+      "ms": 5452
+    },
+    {
+      "text": "给我出个方案先别动",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true,
+      "parsed": {
+        "intent": "ACTION_PLAN",
+        "needsRetrieval": true,
+        "retrievalQuery": "当前授权目标基础资产与安全评估能力",
+        "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NEW"
+      },
+      "raw": "{\"intent\":\"ACTION_PLAN\",\"needsRetrieval\":true,\"retrievalQuery\":\"当前授权目标基础资产与安全评估能力\",\"publicReasonCode\":\"AUTHORIZED_ACTION_REQUEST\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NEW\"}",
+      "ms": 4552
+    },
+    {
+      "text": "有啥安全隐患吗",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true,
+      "parsed": {
+        "intent": "ACTION_PLAN",
+        "needsRetrieval": true,
+        "retrievalQuery": "当前授权目标基础资产与安全评估能力",
+        "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NEW"
+      },
+      "raw": "{\"intent\":\"ACTION_PLAN\",\"needsRetrieval\":true,\"retrievalQuery\":\"当前授权目标基础资产与安全评估能力\",\"publicReasonCode\":\"AUTHORIZED_ACTION_REQUEST\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NEW\"}",
+      "ms": 7718
+    },
+    {
+      "text": "下一步呢",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true,
+      "parsed": {
+        "intent": "ACTION_PLAN",
+        "needsRetrieval": true,
+        "retrievalQuery": "当前授权目标基础资产与安全评估能力",
+        "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NEW"
+      },
+      "raw": "{\"intent\":\"ACTION_PLAN\",\"needsRetrieval\":true,\"retrievalQuery\":\"当前授权目标基础资产与安全评估能力\",\"publicReasonCode\":\"AUTHORIZED_ACTION_REQUEST\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NEW\"}",
+      "ms": 4087
+    },
+    {
+      "text": "整体评估一下",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true,
+      "parsed": {
+        "intent": "ACTION_PLAN",
+        "needsRetrieval": true,
+        "retrievalQuery": "当前授权目标基础资产与安全评估能力",
+        "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NEW"
+      },
+      "raw": "{\"intent\":\"ACTION_PLAN\",\"needsRetrieval\":true,\"retrievalQuery\":\"当前授权目标基础资产与安全评估能力\",\"publicReasonCode\":\"AUTHORIZED_ACTION_REQUEST\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NEW\"}",
+      "ms": 2697
+    },
+    {
+      "text": "什么是CORS",
+      "expect": "GENERAL_QA",
+      "got": "GENERAL_QA",
+      "ok": true,
+      "parsed": {
+        "intent": "GENERAL_QA",
+        "needsRetrieval": false,
+        "publicReasonCode": "GENERAL_KNOWLEDGE",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"GENERAL_QA\",\"needsRetrieval\":false,\"publicReasonCode\":\"GENERAL_KNOWLEDGE\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NONE\"}",
+      "ms": 2421
+    },
+    {
+      "text": "SQL注入原理是什么",
+      "expect": "GENERAL_QA",
+      "got": "GENERAL_QA",
+      "ok": true,
+      "parsed": {
+        "intent": "GENERAL_QA",
+        "needsRetrieval": false,
+        "publicReasonCode": "GENERAL_KNOWLEDGE",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"GENERAL_QA\",\"needsRetrieval\":false,\"publicReasonCode\":\"GENERAL_KNOWLEDGE\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NONE\"}",
+      "ms": 5887
+    },
+    {
+      "text": "TLS和SSL有什么区别",
+      "expect": "GENERAL_QA",
+      "got": "GENERAL_QA",
+      "ok": true,
+      "parsed": {
+        "intent": "GENERAL_QA",
+        "needsRetrieval": false,
+        "publicReasonCode": "GENERAL_KNOWLEDGE",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"GENERAL_QA\",\"needsRetrieval\":false,\"publicReasonCode\":\"GENERAL_KNOWLEDGE\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NONE\"}",
+      "ms": 1902
+    },
+    {
+      "text": "解释下HTTP响应头",
+      "expect": "GENERAL_QA",
+      "got": "GENERAL_QA",
+      "ok": true,
+      "parsed": {
+        "intent": "GENERAL_QA",
+        "needsRetrieval": false,
+        "publicReasonCode": "GENERAL_KNOWLEDGE",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"GENERAL_QA\",\"needsRetrieval\":false,\"publicReasonCode\":\"GENERAL_KNOWLEDGE\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NONE\"}",
+      "ms": 2375
+    },
+    {
+      "text": "端口扫描是怎么工作的",
+      "expect": "GENERAL_QA",
+      "got": "GENERAL_QA",
+      "ok": true,
+      "parsed": {
+        "intent": "GENERAL_QA",
+        "needsRetrieval": false,
+        "publicReasonCode": "GENERAL_KNOWLEDGE",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"GENERAL_QA\",\"needsRetrieval\":false,\"publicReasonCode\":\"GENERAL_KNOWLEDGE\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NONE\"}",
+      "ms": 2904
+    },
+    {
+      "text": "nmap是干嘛的",
+      "expect": "GENERAL_QA",
+      "got": "GENERAL_QA",
+      "ok": true,
+      "parsed": {
+        "intent": "GENERAL_QA",
+        "needsRetrieval": false,
+        "publicReasonCode": "GENERAL_KNOWLEDGE",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"GENERAL_QA\",\"needsRetrieval\":false,\"publicReasonCode\":\"GENERAL_KNOWLEDGE\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NONE\"}",
+      "ms": 3995
+    },
+    {
+      "text": "为什么会有越权漏洞",
+      "expect": "GENERAL_QA",
+      "got": "GENERAL_QA",
+      "ok": true,
+      "parsed": {
+        "intent": "GENERAL_QA",
+        "needsRetrieval": false,
+        "publicReasonCode": "GENERAL_KNOWLEDGE",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"GENERAL_QA\",\"needsRetrieval\":false,\"publicReasonCode\":\"GENERAL_KNOWLEDGE\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NONE\"}",
+      "ms": 1575
+    },
+    {
+      "text": "帮我搞一下",
+      "expect": "CLARIFY",
+      "got": "CLARIFY",
+      "ok": true,
+      "parsed": {
+        "intent": "CLARIFY",
+        "needsRetrieval": false,
+        "publicReasonCode": "AMBIGUOUS_REQUEST",
+        "executionDecision": "CLARIFY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"CLARIFY\",\"needsRetrieval\":false,\"publicReasonCode\":\"AMBIGUOUS_REQUEST\",\"executionDecision\":\"CLARIFY\",\"planRelation\":\"NONE\"}",
+      "ms": 1833
+    },
+    {
+      "text": "那个东西处理下",
+      "expect": "CLARIFY",
+      "got": "CLARIFY",
+      "ok": true,
+      "parsed": {
+        "intent": "CLARIFY",
+        "needsRetrieval": false,
+        "publicReasonCode": "AMBIGUOUS_REQUEST",
+        "executionDecision": "CLARIFY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"CLARIFY\",\"needsRetrieval\":false,\"publicReasonCode\":\"AMBIGUOUS_REQUEST\",\"executionDecision\":\"CLARIFY\",\"planRelation\":\"NONE\"}",
+      "ms": 1440
+    }
+  ]
+}

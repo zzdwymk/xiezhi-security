@@ -1,0 +1,347 @@
+{
+  "model": "workbuddy/deepseek-v4.1-flash",
+  "prompt_version": "current_v1",
+  "summary": {
+    "correct": 15,
+    "total": 22,
+    "accuracy": 0.6818181818181818
+  },
+  "rows": [
+    {
+      "text": "这个项目怎么打",
+      "expect": "ACTION_PLAN",
+      "got": "CLARIFY",
+      "ok": false,
+      "parsed": {
+        "intent": "CLARIFY",
+        "needsRetrieval": false,
+        "publicReasonCode": "AMBIGUOUS_REQUEST",
+        "executionDecision": "CLARIFY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"CLARIFY\",\"needsRetrieval\":false,\"publicReasonCode\":\"AMBIGUOUS_REQUEST\",\"executionDecision\":\"CLARIFY\",\"planRelation\":\"NONE\"}",
+      "ms": 4163
+    },
+    {
+      "text": "从哪开始",
+      "expect": "ACTION_PLAN",
+      "got": "GENERAL_QA",
+      "ok": false,
+      "parsed": {
+        "intent": "GENERAL_QA",
+        "needsRetrieval": false,
+        "publicReasonCode": "GENERAL_KNOWLEDGE",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"GENERAL_QA\",\"needsRetrieval\":false,\"publicReasonCode\":\"GENERAL_KNOWLEDGE\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NONE\"}",
+      "ms": 2720
+    },
+    {
+      "text": "先怎么下手",
+      "expect": "ACTION_PLAN",
+      "got": "CLARIFY",
+      "ok": false,
+      "parsed": {
+        "intent": "CLARIFY",
+        "needsRetrieval": false,
+        "publicReasonCode": "AMBIGUOUS_REQUEST",
+        "executionDecision": "CLARIFY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"CLARIFY\",\"needsRetrieval\":false,\"publicReasonCode\":\"AMBIGUOUS_REQUEST\",\"executionDecision\":\"CLARIFY\",\"planRelation\":\"NONE\"}",
+      "ms": 2317
+    },
+    {
+      "text": "帮我看看它有什么问题",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true,
+      "parsed": {
+        "intent": "ACTION_PLAN",
+        "needsRetrieval": true,
+        "retrievalQuery": "授权目标 1 的资产与安全风险排查",
+        "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
+        "executionDecision": "EXECUTE",
+        "planRelation": "NEW"
+      },
+      "raw": "{\"intent\":\"ACTION_PLAN\",\"needsRetrieval\":true,\"retrievalQuery\":\"授权目标 1 的资产与安全风险排查\",\"publicReasonCode\":\"AUTHORIZED_ACTION_REQUEST\",\"executionDecision\":\"EXECUTE\",\"planRelation\":\"NEW\"}",
+      "ms": 1747
+    },
+    {
+      "text": "这家伙底子怎么样",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true,
+      "parsed": {
+        "intent": "ACTION_PLAN",
+        "needsRetrieval": true,
+        "retrievalQuery": "授权目标 1 的基础信息与资产探测能力（端口、服务、指纹识别）",
+        "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
+        "executionDecision": "EXECUTE",
+        "planRelation": "NEW"
+      },
+      "raw": "{\"intent\":\"ACTION_PLAN\",\"needsRetrieval\":true,\"retrievalQuery\":\"授权目标 1 的基础信息与资产探测能力（端口、服务、指纹识别）\",\"publicReasonCode\":\"AUTHORIZED_ACTION_REQUEST\",\"executionDecision\":\"EXECUTE\",\"planRelation\":\"NEW\"}",
+      "ms": 2252
+    },
+    {
+      "text": "能进来不",
+      "expect": "ACTION_PLAN",
+      "got": "CLARIFY",
+      "ok": false,
+      "parsed": {
+        "intent": "CLARIFY",
+        "needsRetrieval": false,
+        "publicReasonCode": "AMBIGUOUS_REQUEST",
+        "executionDecision": "CLARIFY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"CLARIFY\",\"needsRetrieval\":false,\"publicReasonCode\":\"AMBIGUOUS_REQUEST\",\"executionDecision\":\"CLARIFY\",\"planRelation\":\"NONE\"}",
+      "ms": 1903
+    },
+    {
+      "text": "摸摸底",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true,
+      "parsed": {
+        "intent": "ACTION_PLAN",
+        "needsRetrieval": true,
+        "retrievalQuery": "当前授权目标 1 的基础信息摸底与端口服务识别",
+        "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
+        "executionDecision": "EXECUTE",
+        "planRelation": "NEW"
+      },
+      "raw": "{\"intent\":\"ACTION_PLAN\",\"needsRetrieval\":true,\"retrievalQuery\":\"当前授权目标 1 的基础信息摸底与端口服务识别\",\"publicReasonCode\":\"AUTHORIZED_ACTION_REQUEST\",\"executionDecision\":\"EXECUTE\",\"planRelation\":\"NEW\"}",
+      "ms": 1979
+    },
+    {
+      "text": "先探探路",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true,
+      "parsed": {
+        "intent": "ACTION_PLAN",
+        "needsRetrieval": true,
+        "retrievalQuery": "当前授权目标的基础信息采集与端口服务探测能力",
+        "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
+        "executionDecision": "EXECUTE",
+        "planRelation": "NEW"
+      },
+      "raw": "{\"intent\":\"ACTION_PLAN\",\"needsRetrieval\":true,\"retrievalQuery\":\"当前授权目标的基础信息采集与端口服务探测能力\",\"publicReasonCode\":\"AUTHORIZED_ACTION_REQUEST\",\"executionDecision\":\"EXECUTE\",\"planRelation\":\"NEW\"}",
+      "ms": 2106
+    },
+    {
+      "text": "这站靠谱吗",
+      "expect": "ACTION_PLAN",
+      "got": "CLARIFY",
+      "ok": false,
+      "parsed": {
+        "intent": "CLARIFY",
+        "needsRetrieval": false,
+        "publicReasonCode": "AMBIGUOUS_REQUEST",
+        "executionDecision": "CLARIFY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"CLARIFY\",\"needsRetrieval\":false,\"publicReasonCode\":\"AMBIGUOUS_REQUEST\",\"executionDecision\":\"CLARIFY\",\"planRelation\":\"NONE\"}",
+      "ms": 1694
+    },
+    {
+      "text": "给我出个方案先别动",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true,
+      "parsed": {
+        "intent": "ACTION_PLAN",
+        "needsRetrieval": true,
+        "retrievalQuery": "当前授权目标的安全检测方案与可用检测能力",
+        "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NEW"
+      },
+      "raw": "{\"intent\":\"ACTION_PLAN\",\"needsRetrieval\":true,\"retrievalQuery\":\"当前授权目标的安全检测方案与可用检测能力\",\"publicReasonCode\":\"AUTHORIZED_ACTION_REQUEST\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NEW\"}",
+      "ms": 1752
+    },
+    {
+      "text": "有啥安全隐患吗",
+      "expect": "ACTION_PLAN",
+      "got": "ACTION_PLAN",
+      "ok": true,
+      "parsed": {
+        "intent": "ACTION_PLAN",
+        "needsRetrieval": true,
+        "retrievalQuery": "授权目标 1 的安全隐患检查：端口与服务识别、常见漏洞检测",
+        "publicReasonCode": "AUTHORIZED_ACTION_REQUEST",
+        "executionDecision": "EXECUTE",
+        "planRelation": "NEW"
+      },
+      "raw": "{\"intent\":\"ACTION_PLAN\",\"needsRetrieval\":true,\"retrievalQuery\":\"授权目标 1 的安全隐患检查：端口与服务识别、常见漏洞检测\",\"publicReasonCode\":\"AUTHORIZED_ACTION_REQUEST\",\"executionDecision\":\"EXECUTE\",\"planRelation\":\"NEW\"}",
+      "ms": 2341
+    },
+    {
+      "text": "下一步呢",
+      "expect": "ACTION_PLAN",
+      "got": "GENERAL_QA",
+      "ok": false,
+      "parsed": {
+        "intent": "GENERAL_QA",
+        "needsRetrieval": false,
+        "publicReasonCode": "GENERAL_KNOWLEDGE",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"GENERAL_QA\",\"needsRetrieval\":false,\"publicReasonCode\":\"GENERAL_KNOWLEDGE\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NONE\"}",
+      "ms": 1796
+    },
+    {
+      "text": "整体评估一下",
+      "expect": "ACTION_PLAN",
+      "got": "CLARIFY",
+      "ok": false,
+      "parsed": {
+        "intent": "CLARIFY",
+        "needsRetrieval": false,
+        "publicReasonCode": "AMBIGUOUS_REQUEST",
+        "executionDecision": "CLARIFY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"CLARIFY\",\"needsRetrieval\":false,\"publicReasonCode\":\"AMBIGUOUS_REQUEST\",\"executionDecision\":\"CLARIFY\",\"planRelation\":\"NONE\"}",
+      "ms": 2247
+    },
+    {
+      "text": "什么是CORS",
+      "expect": "GENERAL_QA",
+      "got": "GENERAL_QA",
+      "ok": true,
+      "parsed": {
+        "intent": "GENERAL_QA",
+        "needsRetrieval": false,
+        "publicReasonCode": "GENERAL_KNOWLEDGE",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"GENERAL_QA\",\"needsRetrieval\":false,\"publicReasonCode\":\"GENERAL_KNOWLEDGE\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NONE\"}",
+      "ms": 2169
+    },
+    {
+      "text": "SQL注入原理是什么",
+      "expect": "GENERAL_QA",
+      "got": "GENERAL_QA",
+      "ok": true,
+      "parsed": {
+        "intent": "GENERAL_QA",
+        "needsRetrieval": false,
+        "publicReasonCode": "GENERAL_KNOWLEDGE",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"GENERAL_QA\",\"needsRetrieval\":false,\"publicReasonCode\":\"GENERAL_KNOWLEDGE\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NONE\"}",
+      "ms": 3075
+    },
+    {
+      "text": "TLS和SSL有什么区别",
+      "expect": "GENERAL_QA",
+      "got": "GENERAL_QA",
+      "ok": true,
+      "parsed": {
+        "intent": "GENERAL_QA",
+        "needsRetrieval": false,
+        "publicReasonCode": "GENERAL_KNOWLEDGE",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"GENERAL_QA\",\"needsRetrieval\":false,\"publicReasonCode\":\"GENERAL_KNOWLEDGE\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NONE\"}",
+      "ms": 2158
+    },
+    {
+      "text": "解释下HTTP响应头",
+      "expect": "GENERAL_QA",
+      "got": "GENERAL_QA",
+      "ok": true,
+      "parsed": {
+        "intent": "GENERAL_QA",
+        "needsRetrieval": false,
+        "publicReasonCode": "GENERAL_KNOWLEDGE",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"GENERAL_QA\",\"needsRetrieval\":false,\"publicReasonCode\":\"GENERAL_KNOWLEDGE\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NONE\"}",
+      "ms": 2000
+    },
+    {
+      "text": "端口扫描是怎么工作的",
+      "expect": "GENERAL_QA",
+      "got": "GENERAL_QA",
+      "ok": true,
+      "parsed": {
+        "intent": "GENERAL_QA",
+        "needsRetrieval": false,
+        "publicReasonCode": "GENERAL_KNOWLEDGE",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"GENERAL_QA\",\"needsRetrieval\":false,\"publicReasonCode\":\"GENERAL_KNOWLEDGE\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NONE\"}",
+      "ms": 1724
+    },
+    {
+      "text": "nmap是干嘛的",
+      "expect": "GENERAL_QA",
+      "got": "GENERAL_QA",
+      "ok": true,
+      "parsed": {
+        "intent": "GENERAL_QA",
+        "needsRetrieval": false,
+        "publicReasonCode": "GENERAL_KNOWLEDGE",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"GENERAL_QA\",\"needsRetrieval\":false,\"publicReasonCode\":\"GENERAL_KNOWLEDGE\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NONE\"}",
+      "ms": 1449
+    },
+    {
+      "text": "为什么会有越权漏洞",
+      "expect": "GENERAL_QA",
+      "got": "GENERAL_QA",
+      "ok": true,
+      "parsed": {
+        "intent": "GENERAL_QA",
+        "needsRetrieval": false,
+        "publicReasonCode": "GENERAL_KNOWLEDGE",
+        "executionDecision": "PLAN_ONLY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"GENERAL_QA\",\"needsRetrieval\":false,\"publicReasonCode\":\"GENERAL_KNOWLEDGE\",\"executionDecision\":\"PLAN_ONLY\",\"planRelation\":\"NONE\"}",
+      "ms": 2157
+    },
+    {
+      "text": "帮我搞一下",
+      "expect": "CLARIFY",
+      "got": "CLARIFY",
+      "ok": true,
+      "parsed": {
+        "intent": "CLARIFY",
+        "needsRetrieval": false,
+        "publicReasonCode": "AMBIGUOUS_REQUEST",
+        "executionDecision": "CLARIFY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"CLARIFY\",\"needsRetrieval\":false,\"publicReasonCode\":\"AMBIGUOUS_REQUEST\",\"executionDecision\":\"CLARIFY\",\"planRelation\":\"NONE\"}",
+      "ms": 2221
+    },
+    {
+      "text": "那个东西处理下",
+      "expect": "CLARIFY",
+      "got": "CLARIFY",
+      "ok": true,
+      "parsed": {
+        "intent": "CLARIFY",
+        "needsRetrieval": false,
+        "publicReasonCode": "AMBIGUOUS_REQUEST",
+        "executionDecision": "CLARIFY",
+        "planRelation": "NONE"
+      },
+      "raw": "{\"intent\":\"CLARIFY\",\"needsRetrieval\":false,\"publicReasonCode\":\"AMBIGUOUS_REQUEST\",\"executionDecision\":\"CLARIFY\",\"planRelation\":\"NONE\"}",
+      "ms": 2398
+    }
+  ]
+}
