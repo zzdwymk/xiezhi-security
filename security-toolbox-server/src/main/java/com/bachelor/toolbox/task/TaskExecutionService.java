@@ -42,6 +42,17 @@ public class TaskExecutionService {
   private static final int TOOL_PROGRESS_END = 85;
   private static final String EXECUTION_FAILED_MESSAGE = "任务执行失败，请稍后重试";
   private static final String EXECUTION_TIMEOUT_MESSAGE = "任务执行超时，请稍后重试";
+
+  /**
+   * 进度/错误文本的列宽上限（见 {@link SecurityTask#progressMessage} 的 {@code length = 500}
+   * 与 {@code errorMessage} 的 2000）。任何拼接进这两列的工具文本都必须过这里。
+   *
+   * <p>历史故障：{@code tcp_ports} 把 65,535 个端口号拼进进度文本（382KB），保存进度时
+   * H2 抛 {@code Value too long}，异常冒到 {@link #markFailed} 后整个任务被判失败，
+   * 用户看到的是「一开始就超时」而不是「字段超长」。
+   */
+  private static final int PROGRESS_MESSAGE_MAX_LENGTH = 500;
+  private static final int ERROR_MESSAGE_MAX_LENGTH = 2000;
   private static final String AUTHORIZATION_CHANGED_MESSAGE = "任务授权状态已变更，请重新确认授权后再试";
   private static final String ZOMBIE_REAPED_MESSAGE = "任务进程已退出，检测到长时间无进度，已自动终止";
   /** 长期排队却从未开始的任务被判为遗留，用这条说明为什么没有执行。 */
@@ -594,7 +605,7 @@ public class TaskExecutionService {
       @Override
       public void operation(String operation) {
         appendLog(task, "执行操作：" + operation);
-        task.setProgressMessage(operation);
+        task.setProgressMessage(fitProgressMessage(operation));
         task.setProgressUpdatedAt(Instant.now());
         taskRepository.save(task);
         progressEvents.publish(task, "执行操作：" + operation);
@@ -619,7 +630,7 @@ public class TaskExecutionService {
           task.setProgressDeterminate(true);
           task.setProgressCompleted(boundedCompleted);
           task.setProgressTotal(total);
-          task.setProgressMessage(nonBlank(operation, "工具正在执行"));
+          task.setProgressMessage(fitProgressMessage(nonBlank(operation, "工具正在执行")));
           task.setProgressUpdatedAt(Instant.now());
           if (percentageChanged || totalChanged || boundedCompleted == total) {
             taskRepository.save(task);
@@ -641,7 +652,7 @@ public class TaskExecutionService {
           if (task.getProgressTotal() == null || task.getProgressTotal() <= 0) {
             task.setProgressDeterminate(false);
           }
-          task.setProgressMessage(nonBlank(operation, "外部工具正在运行"));
+          task.setProgressMessage(fitProgressMessage(nonBlank(operation, "外部工具正在运行")));
           task.setProgressUpdatedAt(Instant.now());
           taskRepository.save(task);
           progressEvents.publish(task, null);
@@ -863,8 +874,8 @@ public class TaskExecutionService {
     if (timeout) {
       task.setTimeoutAt(Instant.now());
     }
-    task.setErrorMessage(userMessage);
-    task.setProgressMessage(progressMessage(timeout, authorizationChanged));
+    task.setErrorMessage(fitErrorMessage(userMessage));
+    task.setProgressMessage(fitProgressMessage(progressMessage(timeout, authorizationChanged)));
     task.setProgressUpdatedAt(Instant.now());
     appendLog(task, "执行失败：" + userMessage);
     auditService.record(
@@ -877,25 +888,34 @@ public class TaskExecutionService {
         task.getAuthorizationSnapshotHash());
   }
 
+  /**
+   * 判定异常是否代表「超时」。
+   *
+   * <p>只认异常类型与已知的网络静默特征，<strong>不再嗅探消息里的 "timeout"/"超时" 字样</strong>：
+   * 任何把工具参数写进消息的代码都会让这条规则误触发。历史故障即是如此——端口探测的进度文本包含
+   * {@code timeout=3000ms}，一次字段超长的数据库写入失败因此被标成超时，真实原因被彻底掩盖。
+   *
+   * <p>{@link ApiException} 只是工具给出的外层包装：它自己的消息不参与判断，但它包裹的原因链仍然
+   * 要检查——工具可以抛出「业务说明 + TimeoutException」来表达模块级超时。
+   */
   private boolean isTimeout(Exception exception) {
-    java.util.Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+    java.util.Set<Throwable> seen =
+        java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
     for (Throwable current = exception; current != null && seen.add(current); current = current.getCause()) {
+      // 业务异常自带面向用户的结论，不按超时归类；继续看它的原因链。
+      if (current instanceof ApiException) continue;
       if (current instanceof java.net.http.HttpTimeoutException
           || current instanceof java.net.SocketTimeoutException
-          || current instanceof java.util.concurrent.TimeoutException) return true;
+          || current instanceof java.util.concurrent.TimeoutException) {
+        return true;
+      }
+      // 连接已建立，但对端一个字节都不回。JDK HttpClient 在这种情况下抛的是普通
+      // IOException（"HTTP/1.1 header parser received no bytes"），而不是超时异常；
+      // 若不在这里识别，用户看到的会是更费解的「任务执行失败」，掩盖了「目标不响应」这一事实。
+      // 本质仍是目标在规定时间内没有任何响应，按超时归类比按失败归类更准确、更可操作。
       String message = current.getMessage();
       if (message != null) {
         String lower = message.toLowerCase();
-        if (message.contains("超时")
-            || message.contains("超过")
-            || lower.contains("timed out")
-            || lower.contains("timeout")) {
-          return true;
-        }
-        // 连接已建立，但对端一个字节都不回。JDK HttpClient 在这种情况下抛的是普通
-        // IOException（"HTTP/1.1 header parser received no bytes"），而不是超时异常；
-        // 若不在这里识别，用户看到的会是更费解的「任务执行失败」，掩盖了「目标不响应」这一事实。
-        // 本质仍是目标在规定时间内没有任何响应，按超时归类比按失败归类更准确、更可操作。
         if (lower.contains("header parser received no bytes")
             || lower.contains("received no bytes")
             || lower.contains("connection reset by peer")
@@ -986,7 +1006,7 @@ public class TaskExecutionService {
       task.setProgressDeterminate(determinate);
       task.setProgressCompleted(completed);
       task.setProgressTotal(total);
-      task.setProgressMessage(message);
+      task.setProgressMessage(fitProgressMessage(message));
       task.setProgressUpdatedAt(Instant.now());
       taskRepository.save(task);
       progressEvents.publish(task, null);
@@ -995,6 +1015,26 @@ public class TaskExecutionService {
 
   private static String nonBlank(String value, String fallback) {
     return value == null || value.isBlank() ? fallback : value;
+  }
+
+  /**
+   * 把任意文本收敛到目标列宽内。工具可以自由拼接进度文本，但落库的那一列不会因此扩容：
+   * 超长文本必须被截断，而不是让 {@code save} 抛异常把任务打成失败。
+   *
+   * <p>截断保留尾部——端口/进度类文本的结论通常在末尾。
+   */
+  static String fitToColumn(String value, int maxLength) {
+    if (value == null || value.length() <= maxLength) return value;
+    int keep = maxLength - 1;
+    return "…" + value.substring(value.length() - keep);
+  }
+
+  private static String fitProgressMessage(String value) {
+    return fitToColumn(value, PROGRESS_MESSAGE_MAX_LENGTH);
+  }
+
+  private static String fitErrorMessage(String value) {
+    return fitToColumn(value, ERROR_MESSAGE_MAX_LENGTH);
   }
 
   private void appendLog(SecurityTask task, String line) {
