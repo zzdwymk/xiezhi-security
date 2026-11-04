@@ -155,11 +155,14 @@ public class TcpPortTool implements SecurityTool {
     }
 
     List<Integer> ports = new ArrayList<>(requested);
+    // 进度文本只写可读的摘要，绝不展开端口列表：全段扫描展开后是 382KB 文本，
+    // 远超 progress_message 的 500 字符列宽，会让保存进度本身抛异常、进而把整个任务
+    // 判成失败（历史上表现为"一开始就超时"）。次数用 count 表达已足够。
     observer.operation(
         "TCP_CONNECT host="
             + host
             + " ports="
-            + requestedText
+            + describePortScope(requestedText)
             + " count="
             + ports.size()
             + " timeout="
@@ -228,6 +231,21 @@ public class TcpPortTool implements SecurityTool {
       "UDP 无连接握手，只能通过 ICMP port unreachable 判定端口关闭；未收到任何响应时无法区分"
           + "「端口开放但服务不回应探测载荷」与「被防火墙静默丢弃」，此类端口归类为「开放或过滤」，"
           + "不等于开放。确认开放请使用 nmap -sU 并配合服务特定的探测载荷。";
+
+  /**
+   * 把端口范围压成适合放进进度文本的短描述。
+   *
+   * <p>内部拿到的 {@code requestedText} 可能是用户写的范围（{@code 80,443,8000-8010}），也可能是
+   * 展开后的 65,535 个端口号。前者原样保留（审批弹窗里看到的参数可对照），后者只报一个范围摘要，
+   * 因为进度文本受列宽约束，而端口清单在数量上并无信息价值。
+   */
+  private static String describePortScope(String requestedText) {
+    return requestedText.length() <= MAX_PROGRESS_PORT_SCOPE_CHARS
+        ? requestedText.replaceAll("\\s+", "")
+        : "1-65535";
+  }
+
+  private static final int MAX_PROGRESS_PORT_SCOPE_CHARS = 120;
 
   private boolean truthy(Object value) {
     return Boolean.TRUE.equals(value) || "true".equalsIgnoreCase(String.valueOf(value));
