@@ -1034,10 +1034,64 @@ function buildContextPrompt(thread: ConversationThread, userMessageId: string) {
   return `${heading}${history.length ? history.join("\n") + "\n" : ""}${latest}`;
 }
 
-async function scrollToBottom() {
+/**
+ * The message list is a scroll container whose content grows on every streamed
+ * token. Automatically following the newest text is desirable — until the user
+ * scrolls up to read something. Forcing the view back to the bottom on every
+ * update made it impossible to scroll up while an answer was being written.
+ *
+ * So "stick to bottom" is a state, not an unconditional command: it turns on when
+ * the user is at (or near) the bottom, and off as soon as they scroll away from it.
+ *
+ * Distance is measured from the *container's own layout* (scrollHeight/clientHeight)
+ * rather than element rects: the composer below the list moves the whole list when
+ * the window or composer resizes, which would move rects without the user scrolling.
+ */
+const STICK_TO_BOTTOM_THRESHOLD_PX = 48;
+const stickToBottom = ref(true);
+/** True while we scroll programmatically, so our own scroll events cannot unlock following. */
+let applyingScroll = false;
+
+function distanceFromBottom(element: HTMLElement) {
+  return element.scrollHeight - element.scrollTop - element.clientHeight;
+}
+
+/** Track the user's scroll position: following resumes only when they return to the bottom. */
+function handleMessagesScroll() {
+  const container = messagesElement.value;
+  if (!container) return;
+  // A programmatic scroll fires a scroll event too; it must not be read as the user
+  // leaving the bottom (which would stop following after a single written frame).
+  if (!applyingScroll) {
+    stickToBottom.value = distanceFromBottom(container) <= STICK_TO_BOTTOM_THRESHOLD_PX;
+  }
+  updateActiveTurn();
+}
+
+/**
+ * Keep the newest content in view, but only while the user is following along.
+ *
+ * @param force re-pin unconditionally — for actions the user just took (sending a
+ *   message, opening a conversation), where jumping to the newest answer is expected
+ *   even if they had been reading further up.
+ */
+async function scrollToBottom(force = false) {
   await nextTick();
   const element = messagesElement.value;
-  if (element) element.scrollTop = element.scrollHeight;
+  if (!element) return;
+  if (force) stickToBottom.value = true;
+  if (!stickToBottom.value) return;
+  // The list animates scrolling (`scroll-behavior: smooth`). Assigning scrollTop
+  // during an in-flight animation makes the browser resolve the write against the
+  // current, still-animating position: each new chunk then restarts the animation
+  // from wherever it had reached, so the view visibly drifts upward instead of
+  // following. Pin instantly and resume the declared behaviour afterwards.
+  applyingScroll = true;
+  element.style.scrollBehavior = "auto";
+  element.scrollTop = element.scrollHeight;
+  element.style.scrollBehavior = "";
+  void element.offsetHeight;
+  applyingScroll = false;
 }
 
 interface UserTurnItem {
@@ -2450,7 +2504,8 @@ async function launchPrompt(draft: PendingPrompt, forcedThreadId?: string) {
     prompt.value = "";
     if (selectedThread.value?.id !== thread.id)
       await router.replace({ path: "/", query: { conversation: thread.id } });
-    void scrollToBottom();
+    // 用户主动发送：无论此前是否在回看历史，都应跳到最新一轮。
+    void scrollToBottom(true);
     await dispatchConversationMessage(thread, userMessage, assistantMessage, projectId);
   } catch (error: any) {
     const message = error instanceof ConversationStorageError ? error.message : readableConversationError(error);
@@ -2850,7 +2905,8 @@ async function load() {
     });
   }
   loading.value = false;
-  void scrollToBottom();
+  // 打开/切换对话：定位到最新一轮。
+  void scrollToBottom(true);
   focusComposer();
 }
 
@@ -2942,7 +2998,12 @@ async function clearConversations() {  if (!conversations.items.length) return;
   }
 }
 
+// 切换到另一段对话是用户主动操作，定位到其最新一轮；同一对话的原地更新
+// （流式回答、打字机）必须尊重用户当前的滚动位置，否则没法往上翻。
+let lastThreadId: string | undefined;
 watch(selectedThread, (thread) => {
+  const switched = thread?.id !== lastThreadId;
+  lastThreadId = thread?.id;
   if (thread) {
     acknowledgeThreadCompletion(thread);
     for (const msg of thread.messages) {
@@ -2958,7 +3019,7 @@ watch(selectedThread, (thread) => {
     enabledTargets.value.some((item) => item.id === thread.targetId)
   )
     selectedTargetId.value = thread.targetId;
-  void scrollToBottom();
+  void scrollToBottom(switched);
   focusComposer();
 });
 
@@ -3366,7 +3427,7 @@ onBeforeUnmount(() => {
 
     <template v-else>
       <div class="chat-conversation-body">
-        <section ref="messagesElement" class="chat-messages" @scroll.passive="updateActiveTurn">
+        <section ref="messagesElement" class="chat-messages" @scroll.passive="handleMessagesScroll">
           <div class="messages-inner">
             <article
               v-for="message in selectedThread.messages"
