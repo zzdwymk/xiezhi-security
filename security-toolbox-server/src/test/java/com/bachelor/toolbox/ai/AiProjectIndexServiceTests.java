@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 
 class AiProjectIndexServiceTests {
   private final AiAgentRuntimeClient runtime = mock(AiAgentRuntimeClient.class);
+  private final AgentWorkflowSpecService workflowSpecs = mock(AgentWorkflowSpecService.class);
   private final AssessmentProjectService projects = mock(AssessmentProjectService.class);
   private final ProjectTargetRepository projectTargets = mock(ProjectTargetRepository.class);
   private final AuthorizedTargetRepository targets = mock(AuthorizedTargetRepository.class);
@@ -43,8 +44,8 @@ class AiProjectIndexServiceTests {
   void setUp() {
     service =
         new AiProjectIndexService(
-            runtime, projects, projectTargets, targets, tasks, findings, recon, probes,
-            discoveredPaths);
+            runtime, workflowSpecs, projects, projectTargets, targets, tasks, findings, recon,
+            probes, discoveredPaths);
     AssessmentProject project = new AssessmentProject();
     project.setId(1L);
     project.setName("Example assessment");
@@ -84,8 +85,11 @@ class AiProjectIndexServiceTests {
             eq(1L),
             argThat(
                 documents ->
-                    documents.size() == 1
-                        && documents.get(0).text().contains("Authorized security assessment")));
+                    documents.stream()
+                        .anyMatch(
+                            d ->
+                                "authorization".equals(d.metadata().get("kind"))
+                                    && d.text().contains("Authorized security assessment"))));
   }
 
   @Test
@@ -101,7 +105,84 @@ class AiProjectIndexServiceTests {
     var reference = new AiAgentRuntimeClient.IndexDocument("本轮引用", "任务 #1 的已脱敏证据", "reference", java.util.Map.of("targetId", "9"));
     assertTrue(service.refreshBestEffort(1L, reference));
     verify(runtime).indexProject(eq(1L), argThat(documents ->
-        documents.size() == 2 && documents.get(0).equals(reference)));
+        documents.size() >= 2 && documents.get(0).equals(reference)));
+  }
+
+  /**
+   * 空项目（没有任何登记目标/任务/发现）也必须产出两类基线文档：
+   * 目标授权上下文 + 检测能力快照，且 documentId 在重复 refresh 时保持稳定
+   * （Python 侧按 documentId 合并，保证幂等、不产生重复基线）。
+   */
+  @Test
+  void emptyProjectAlwaysProducesStableBaselineDocuments() {
+    var documents = service.collect(1L);
+    var targetBaseline = documents.stream()
+        .filter(d -> "target-authorization-baseline".equals(d.metadata().get("kind")))
+        .findFirst().orElseThrow(() -> new AssertionError("空项目必须产出目标授权上下文基线文档"));
+    var capabilityBaseline = documents.stream()
+        .filter(d -> "capability-baseline".equals(d.metadata().get("kind")))
+        .findFirst().orElseThrow(() -> new AssertionError("空项目必须产出检测能力快照基线文档"));
+
+    assertThat(documents.size()).isGreaterThanOrEqualTo(2);
+    assertThat(targetBaseline.title()).isEqualTo("目标授权上下文（基线）");
+    assertThat(targetBaseline.source()).isEqualTo("project");
+    assertThat(targetBaseline.text())
+        .contains("尚未登记授权目标", "授权有效期", "不能对任何地址执行检测");
+    assertThat(capabilityBaseline.title()).isEqualTo("检测能力快照（基线）");
+    assertThat(capabilityBaseline.source()).isEqualTo("project");
+    assertThat(capabilityBaseline.text()).contains("检测能力", "工作流");
+
+    // 基线文档必须带确定性 documentId，重复 collect 完全一致（幂等）。
+    assertThat(targetBaseline.documentId()).isNotBlank().startsWith("baseline-");
+    assertThat(capabilityBaseline.documentId()).isNotBlank().startsWith("baseline-");
+    var secondPass = service.collect(1L);
+    assertThat(secondPass.stream()
+        .filter(d -> "target-authorization-baseline".equals(d.metadata().get("kind")))
+        .findFirst().orElseThrow().documentId())
+        .isEqualTo(targetBaseline.documentId());
+    assertThat(secondPass.stream()
+        .filter(d -> "capability-baseline".equals(d.metadata().get("kind")))
+        .findFirst().orElseThrow().documentId())
+        .isEqualTo(capabilityBaseline.documentId());
+  }
+
+  /** 已登记目标时，基线文档必须汇总目标 ID/地址/类型/允许端口与授权有效期。 */
+  @Test
+  void targetAuthorizationBaselineAggregatesRegisteredTargets() {
+    var target = new com.bachelor.toolbox.target.AuthorizedTarget();
+    target.setId(85L);
+    target.setName("靶机-192.168.222.129");
+    target.setTargetValue("192.168.222.129");
+    target.setTargetType("IP");
+    target.setAllowedPorts("22,80");
+    target.setEnabled(true);
+    var link = new com.bachelor.toolbox.project.ProjectTarget();
+    link.setProjectId(1L);
+    link.setTargetId(85L);
+    when(projectTargets.findByProjectId(1L)).thenReturn(List.of(link));
+    when(targets.findAllById(List.of(85L))).thenReturn(List.of(target));
+
+    var baseline = service.collect(1L).stream()
+        .filter(d -> "target-authorization-baseline".equals(d.metadata().get("kind")))
+        .findFirst().orElseThrow();
+    assertThat(baseline.text())
+        .contains("85", "192.168.222.129", "IP", "22,80")
+        .contains("2026-07-22 08:00:00", "2026-07-30 08:00:00");
+  }
+
+  /** 工作流能力快照必须序列化 executableSteps 的节点摘要，使“能做什么检测”永远可检索。 */
+  @Test
+  void capabilityBaselineSerializesWorkflowNodeSummaries() {
+    when(workflowSpecs.executableSteps()).thenReturn(List.of(
+        Map.of("nodeId", "recon-node", "tool", "site_crawl", "group", 0, "summary", "先爬站点"),
+        Map.of("nodeId", "check-node", "tool", "http_headers", "group", 1, "summary", "检查安全头")));
+
+    var baseline = service.collect(1L).stream()
+        .filter(d -> "capability-baseline".equals(d.metadata().get("kind")))
+        .findFirst().orElseThrow();
+    assertThat(baseline.text())
+        .contains("recon-node", "site_crawl", "先爬站点")
+        .contains("check-node", "http_headers", "检查安全头");
   }
 
   @Test

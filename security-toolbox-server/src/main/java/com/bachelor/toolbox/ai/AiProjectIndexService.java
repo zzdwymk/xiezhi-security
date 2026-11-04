@@ -15,6 +15,9 @@ import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.AuthorizedTargetRepository;
 import com.bachelor.toolbox.task.SecurityTask;
 import com.bachelor.toolbox.task.SecurityTaskRepository;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -43,6 +46,7 @@ public class AiProjectIndexService {
       DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.of("Asia/Shanghai"));
 
   private final AiAgentRuntimeClient runtime;
+  private final AgentWorkflowSpecService workflowSpecs;
   private final AssessmentProjectService projects;
   private final ProjectTargetRepository projectTargets;
   private final AuthorizedTargetRepository targets;
@@ -54,6 +58,7 @@ public class AiProjectIndexService {
 
   public AiProjectIndexService(
       AiAgentRuntimeClient runtime,
+      AgentWorkflowSpecService workflowSpecs,
       AssessmentProjectService projects,
       ProjectTargetRepository projectTargets,
       AuthorizedTargetRepository targets,
@@ -63,6 +68,7 @@ public class AiProjectIndexService {
       ProbeResultRepository probes,
       DiscoveredPathService discoveredPaths) {
     this.runtime = runtime;
+    this.workflowSpecs = workflowSpecs;
     this.projects = projects;
     this.projectTargets = projectTargets;
     this.targets = targets;
@@ -124,6 +130,49 @@ public class AiProjectIndexService {
             .map(link -> targetById.get(link.getTargetId()))
             .filter(Objects::nonNull)
             .toList();
+
+    // ── 基线文档（始终写入）────────────────────────────────────────────────────
+    // 为什么需要：新项目或资料很少的项目索引为空时，AI 的 ACTION_PLAN 因
+    // “动作必须引用真实 evidenceId”而无证据可引用，永远只能澄清，体验上表现为“笨”。
+    // 这里固定写入两类基线文档，保证“这个目标的授权范围是什么”“这个目标能做什么检测”
+    // 这类检索永远命中真实证据。基线放在收集流程最前，避免被 200 条文档上限截断。
+    // 幂等性：documentId 由 projectId+kind 决定性哈希生成，Python 侧按 documentId
+    // 合并文档，同一项目重复 refresh 只会覆盖同一条基线，不会产生重复文档。
+    output.add(
+        baselineDocumentId(projectId, "target-authorization-baseline"),
+        "目标授权上下文（基线）",
+        String.join(
+            "\n",
+            "授权有效期开始：" + time(project.getAuthorizationValidFrom()),
+            "授权有效期结束：" + time(project.getAuthorizationExpiresAt()),
+            "登记的授权目标（可执行范围以这些目标及其允许端口为准）：",
+            registeredTargets.isEmpty()
+                ? "尚未登记授权目标；在登记授权目标之前，不能对任何地址执行检测。"
+                : registeredTargets.stream()
+                    .map(
+                        target ->
+                            "- 目标编号：" + target.getId()
+                                + "；地址：" + safe(target.getTargetValue())
+                                + "；类型：" + safe(target.getTargetType())
+                                + "；允许端口：" + safe(target.getAllowedPorts()))
+                    .collect(Collectors.joining("\n")),
+            "以上为目标授权基线；回答授权范围、可执行目标或端口限制问题时以此为准。",
+            // 与既有授权文档同样的约束：检索来源不是会话，可执行范围仍以登记目标为权威。
+            "本基线只汇总登记信息，不授予任何额外目标或端口。"),
+        "project",
+        Map.of("projectId", projectId.toString(), "kind", "target-authorization-baseline"));
+    output.add(
+        baselineDocumentId(projectId, "capability-baseline"),
+        "检测能力快照（基线）",
+        String.join(
+            "\n",
+            "本项目可用的检测能力快照：",
+            workflowCapabilitiesText(),
+            "回答“这个目标能做什么检测/有哪些检测能力”时以此为准；"
+                + "具体执行仍需符合授权范围与审批要求。"),
+        "project",
+        Map.of("projectId", projectId.toString(), "kind", "capability-baseline"));
+
     // 声明与登记目标的一致性核查：声明是自由文本，可能残留历史地址（换靶机后忘记更新）。
     // 这里把冲突显式写进索引，让模型据实说明，而不是把过期地址当成权威授权范围。
     List<String> conflict = authorizationStatementConflicts(project, registeredTargets);
@@ -394,6 +443,50 @@ public class AiProjectIndexService {
     return List.copyOf(conflicts);
   }
 
+  /**
+   * 工作流能力快照文本：把当前项目工作流的可执行节点摘要（nodeId、tool、summary、group）
+   * 序列化成基线文档内容，使“检索这个目标能做什么检测”永远命中。
+   *
+   * <p>项目尚未配置工作流时也不能留空（空文本会被丢弃）：此时列出平台内置的基础检测能力，
+   * 并说明尚未配置工作流，避免能力检索落空。
+   */
+  private String workflowCapabilitiesText() {
+    List<Map<String, Object>> steps = workflowSpecs.executableSteps();
+    if (steps.isEmpty()) {
+      return "项目尚未配置红队工作流；平台仍内置以下基础检测能力，可按授权范围选用："
+          + "TCP 端口探测、Nmap 服务识别、HTTP 安全响应头检查、HTTP 常见安全检查、"
+          + "站点链接爬取、目录/路径探测、TLS 基础配置检查、Nuclei/PoC 漏洞检测等。";
+    }
+    return steps.stream()
+        .map(
+            step ->
+                "- 节点：" + Objects.toString(step.get("nodeId"), "（未命名）")
+                    + "；工具：" + Objects.toString(step.get("tool"), "")
+                    + "；分组：" + Objects.toString(step.get("group"), "0")
+                    + "；说明：" + Objects.toString(step.get("summary"), ""))
+        .collect(Collectors.joining("\n"));
+  }
+
+  /**
+   * 基线文档的确定性 documentId：只由项目编号与文档种类决定，与内容时间戳无关。
+   * Python 侧按 documentId 合并文档，重复 refresh 只覆盖同一条基线，不会产生重复文档。
+   */
+  private String baselineDocumentId(Long projectId, String kind) {
+    try {
+      MessageDigest digest = MessageDigest.getInstance("SHA-256");
+      byte[] hash =
+          digest.digest(("baseline|" + projectId + "|" + kind).getBytes(StandardCharsets.UTF_8));
+      StringBuilder hex = new StringBuilder("baseline-");
+      for (int i = 0; i < 8; i++) {
+        hex.append(String.format("%02x", hash[i]));
+      }
+      return hex.toString();
+    } catch (NoSuchAlgorithmException ex) {
+      // JDK 必须提供 SHA-256；到不了这里。
+      throw new IllegalStateException("SHA-256 不可用", ex);
+    }
+  }
+
   private String safe(String value) {
     return value == null ? "" : value;
   }
@@ -408,6 +501,12 @@ public class AiProjectIndexService {
     private int totalChars;
 
     private void add(String title, String text, String source, Map<String, String> metadata) {
+      add(null, title, text, source, metadata);
+    }
+
+    /** 带确定性 documentId 的重载：基线文档用，保证重复 refresh 幂等。 */
+    private void add(
+        String documentId, String title, String text, String source, Map<String, String> metadata) {
       if (documents.size() >= MAX_DOCUMENTS || totalChars >= MAX_TOTAL_CHARS) return;
       String safeTitle = title == null || title.isBlank() ? "项目资料" : title;
       String safeText = text == null ? "" : text.replaceAll("[\\p{Cc}&&[^\\r\\n\\t]]", "").strip();
@@ -419,7 +518,8 @@ public class AiProjectIndexService {
               safeTitle,
               safeText,
               source == null ? "project" : source,
-              metadata == null ? Map.of() : new LinkedHashMap<>(metadata)));
+              metadata == null ? Map.of() : new LinkedHashMap<>(metadata),
+              documentId));
       totalChars += safeText.length();
     }
 

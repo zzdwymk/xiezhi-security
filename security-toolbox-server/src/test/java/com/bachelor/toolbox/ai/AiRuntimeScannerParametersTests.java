@@ -39,6 +39,63 @@ class AiRuntimeScannerParametersTests {
         .containsEntry("parameters", Map.of("path", "/Less-1/?id=1"));
   }
 
+  /**
+   * 项目未配置工作流时必须注入默认基线步骤：否则 Python 能力清单 nodes=[]，
+   * 任何方案动作都被 "references an unknown node" 拒绝，AI 永远只能澄清。
+   */
+  @Test
+  void injectsDefaultBaselineStepsWhenProjectHasNoWorkflow() {
+    when(workflows.executableSteps()).thenReturn(List.of());
+    List<Map<String, Object>> forwarded = ReflectionTestUtils.invokeMethod(client, "loadWorkflowSteps");
+    assertThat(forwarded).isNotEmpty();
+    assertThat(forwarded).allSatisfy(step -> {
+      assertThat(AiToolCatalog.RUNTIME_TOOLS).contains((String) step.get("tool"));
+      assertThat(String.valueOf(step.get("nodeId"))).startsWith("baseline-");
+      assertThat(step.get("requiresApproval"))
+          .isEqualTo(AiToolCatalog.requiresApproval((String) step.get("tool")));
+      assertThat(step.get("parameters")).isEqualTo(Map.of());
+    });
+    // 默认（目标未知）按 Web 目标处理：四个 Web 基线节点，dir_scan 依赖 site_crawl。
+    assertThat(forwarded).extracting(step -> step.get("tool"))
+        .containsExactly("http_headers", "http_security_check", "site_crawl", "dir_scan");
+    assertThat(forwarded.get(3))
+        .containsEntry("group", 1)
+        .containsEntry("dependsOnNodeIds", List.of("baseline-site-crawl"));
+  }
+
+  /** 主机目标（IP、非 http(s) 前缀）的默认基线是 TCP 端口探测 + fscan 主机扫描。 */
+  @Test
+  void injectsHostBaselineStepsForHostTargets() {
+    when(workflows.executableSteps()).thenReturn(List.of());
+    var hostTarget = new com.bachelor.toolbox.target.AuthorizedTarget();
+    hostTarget.setId(9L);
+    hostTarget.setTargetValue("192.168.222.129");
+    hostTarget.setTargetType("IP");
+    hostTarget.setAllowedPorts("22,80");
+    List<Map<String, Object>> forwarded =
+        ReflectionTestUtils.invokeMethod(client, "loadWorkflowSteps", hostTarget);
+    assertThat(forwarded).extracting(step -> step.get("tool"))
+        .containsExactly("tcp_ports", "fscan_scan");
+    assertThat(forwarded.get(1))
+        .containsEntry("group", 1)
+        .containsEntry("dependsOnNodeIds", List.of("baseline-tcp-ports"));
+  }
+
+  /** URL 目标（http(s) 前缀或 targetType=URL）注入 Web 基线，且不会混入主机工具。 */
+  @Test
+  void injectsWebBaselineStepsForUrlTargets() {
+    when(workflows.executableSteps()).thenReturn(List.of());
+    var urlTarget = new com.bachelor.toolbox.target.AuthorizedTarget();
+    urlTarget.setId(9L);
+    urlTarget.setTargetValue("https://target.example.com");
+    urlTarget.setTargetType("IP");
+    urlTarget.setAllowedPorts("443");
+    List<Map<String, Object>> forwarded =
+        ReflectionTestUtils.invokeMethod(client, "loadWorkflowSteps", urlTarget);
+    assertThat(forwarded).extracting(step -> step.get("tool"))
+        .containsExactly("http_headers", "http_security_check", "site_crawl", "dir_scan");
+  }
+
   @ParameterizedTest
   @ValueSource(strings = {"zap_scan", "fscan_scan", "msf_scan", "sqlmap_scan"})
   void acceptsNewScannerActionsFromTheRuntimePlan(String tool) {

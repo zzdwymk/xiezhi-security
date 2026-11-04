@@ -20,6 +20,7 @@ import java.util.HexFormat;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -312,18 +313,25 @@ public class AiAgentRuntimeClient {
   public void indexProject(Long projectId, List<IndexDocument> documents) {
     if (!enabled) throw new RuntimeUnavailableException("AI Runtime 未启用");
     if (projectId == null || documents == null || documents.isEmpty()) return;
-    List<Map<String, Object>> safeDocuments =
-        documents.stream()
-            .filter(Objects::nonNull)
-            .limit(200)
-            .map(
-                document ->
-                    Map.<String, Object>of(
-                        "title", truncate(document.title(), 300),
-                        "text", truncate(document.text(), 20_000),
-                        "source", truncate(document.source(), 200),
-                        "metadata", document.metadata() == null ? Map.of() : document.metadata()))
-            .toList();
+    List<Map<String, Object>> safeDocuments = new ArrayList<>();
+    for (IndexDocument document : documents) {
+      if (document == null) continue;
+      // Python 端 ProjectDocument 是 extra=forbid：只有显式给了确定性 documentId
+      // 才发送 id 字段，其余文档仍由 Python 侧按内容哈希推导。
+      Map<String, Object> payload = new LinkedHashMap<>();
+      payload.put("title", truncate(document.title(), 300));
+      payload.put("text", truncate(document.text(), 20_000));
+      payload.put("source", truncate(document.source(), 200));
+      payload.put("metadata", document.metadata() == null ? Map.of() : document.metadata());
+      if (document.documentId() != null && !document.documentId().isBlank()) {
+        payload.put("id", truncate(document.documentId(), 128));
+      }
+      safeDocuments.add(payload);
+    }
+    // 与既有行为一致：单次索引请求最多 200 条（Python AppendDocumentsRequest 上限）。
+    if (safeDocuments.size() > 200) {
+      safeDocuments = new ArrayList<>(safeDocuments.subList(0, 200));
+    }
     if (safeDocuments.isEmpty()) return;
     try {
       RestClient.RequestBodySpec spec =
@@ -743,7 +751,7 @@ public class AiAgentRuntimeClient {
         "budget",
         plannerBudget());
 
-    List<Map<String, Object>> workflowSteps = loadWorkflowSteps();
+    List<Map<String, Object>> workflowSteps = loadWorkflowSteps(target);
     if (!workflowSteps.isEmpty()) body.put("workflow", workflowSteps);
 
     Holder holder = new Holder(runId, POLICY_REVISION, request);
@@ -986,6 +994,10 @@ public class AiAgentRuntimeClient {
   }
 
   private List<Map<String, Object>> loadWorkflowSteps() {
+    return loadWorkflowSteps(null);
+  }
+
+  private List<Map<String, Object>> loadWorkflowSteps(AuthorizedTarget target) {
     List<Map<String, Object>> result = new ArrayList<>();
     for (Map<String, Object> step : workflowSpecs.executableSteps()) {
       String tool = Objects.toString(step.get("tool"), "");
@@ -1009,7 +1021,80 @@ public class AiAgentRuntimeClient {
       if (step.get("summary") != null) item.put("summary", Objects.toString(step.get("summary")));
       result.add(item);
     }
+    // 项目未配置工作流时 executableSteps() 为空：不带 workflow 字段会让 Python 能力清单
+    // nodes=[]，任何方案动作都被 "references an unknown node" 拒绝，AI 永远只能澄清。
+    // 此时注入一次最小默认基线步骤（工具全部来自 ALLOWED_RUNTIME_TOOLS 白名单），
+    // 保证“无工作流也能规划”。只注入一次、nodeId 以 baseline- 前缀确定性命名，
+    // summary 标注“默认基线”，用户配置工作流后即被真实节点取代。
+    if (result.isEmpty()) {
+      result.addAll(defaultBaselineSteps(target));
+    }
     return result;
+  }
+
+  /**
+   * 目标未配置工作流时的最小默认基线步骤。
+   *
+   * <p>按目标类型分流：Web 目标（targetValue 以 http(s):// 开头，或 targetType 为 URL）
+   * 注入 HTTP 头检查、HTTP 常见安全检查、站点爬取与目录探测；主机目标注入 TCP 端口探测
+   * 与 fscan 主机扫描。目标未知时保守按 Web 目标处理（桌面端 AI 对话最常见的是 Web 靶标）。
+   *
+   * <p>硬性约束：工具必须 ∈ ALLOWED_RUNTIME_TOOLS，不在白名单内的工具直接跳过；
+   * requiresApproval 沿用 {@link AiToolCatalog#requiresApproval(String)} 判定；
+   * parameters 传空 Map，由 Python 端参数默认值兜底。
+   */
+  private List<Map<String, Object>> defaultBaselineSteps(AuthorizedTarget target) {
+    boolean webTarget;
+    if (target == null) {
+      webTarget = true;
+    } else {
+      String targetValue = Objects.toString(target.getTargetValue(), "").toLowerCase(Locale.ROOT);
+      webTarget =
+          targetValue.startsWith("http://")
+              || targetValue.startsWith("https://")
+              || "URL".equalsIgnoreCase(target.getTargetType());
+    }
+    List<Map<String, Object>> baseline = new ArrayList<>();
+    if (webTarget) {
+      baseline.add(
+          baselineStep("baseline-http-headers", "http_headers", 0,
+              List.of(), "默认基线：采集 HTTP 响应头并检查常见浏览器安全头"));
+      baseline.add(
+          baselineStep("baseline-http-security-check", "http_security_check", 0,
+              List.of(), "默认基线：检查 cookies、CORS、HTTP 方法与信息泄露"));
+      baseline.add(
+          baselineStep("baseline-site-crawl", "site_crawl", 0,
+              List.of(), "默认基线：抓取授权目标页面并登记端点资产（只读信息收集）"));
+      baseline.add(
+          baselineStep("baseline-dir-scan", "dir_scan", 1,
+              List.of("baseline-site-crawl"),
+              "默认基线：基于爬取结果用字典探测授权目录与路径，命中仅为待核实线索"));
+    } else {
+      baseline.add(
+          baselineStep("baseline-tcp-ports", "tcp_ports", 0,
+              List.of(), "默认基线：仅在授权端口范围内探测 TCP 连通性"));
+      baseline.add(
+          baselineStep("baseline-fscan-scan", "fscan_scan", 1,
+              List.of("baseline-tcp-ports"), "默认基线：对授权主机做服务指纹与安全漏洞指纹扫描"));
+    }
+    // 白名单兜底：任何不在 ALLOWED_RUNTIME_TOOLS 内的工具都不得进入基线。
+    return baseline.stream()
+        .filter(step -> ALLOWED_RUNTIME_TOOLS.contains(step.get("tool")))
+        .toList();
+  }
+
+  private Map<String, Object> baselineStep(
+      String nodeId, String tool, int group, List<String> dependsOnNodeIds, String summary) {
+    Map<String, Object> item = new LinkedHashMap<>();
+    item.put("nodeId", nodeId);
+    item.put("tool", tool);
+    item.put("parameters", Map.of());
+    item.put("risk", "SAFE");
+    item.put("requiresApproval", AiToolCatalog.requiresApproval(tool));
+    item.put("group", group);
+    item.put("dependsOnNodeIds", dependsOnNodeIds);
+    item.put("summary", summary);
+    return item;
   }
 
   void readSse(BufferedReader reader, Consumer<RuntimeEvent> sink) throws IOException {
@@ -1903,8 +1988,20 @@ public class AiAgentRuntimeClient {
     return clean.length() <= max ? clean : clean.substring(0, max);
   }
 
+  /**
+   * 一条写入 Python 项目索引的文档。
+   *
+   * <p>{@code documentId} 可为空：为空时 Python 侧按 source|title|text 内容哈希推导文档 ID；
+   * 基线类文档（目标授权上下文、检测能力快照）必须传确定性 ID，保证重复 refresh
+   * 按 ID 覆盖同一条文档，不会在索引里堆积重复基线。
+   */
   public record IndexDocument(
-      String title, String text, String source, Map<String, String> metadata) {}
+      String title, String text, String source, Map<String, String> metadata, String documentId) {
+    /** 兼容既有四参构造：未指定 documentId 时由 Python 端按内容推导。 */
+    public IndexDocument(String title, String text, String source, Map<String, String> metadata) {
+      this(title, text, source, metadata, null);
+    }
+  }
 
   public record RuntimeEvent(
       String eventId,
