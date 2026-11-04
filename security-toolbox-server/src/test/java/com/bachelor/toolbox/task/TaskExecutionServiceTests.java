@@ -34,7 +34,9 @@ class TaskExecutionServiceTests {
   @CsvSource(
       value = {
         "数据库连接失败：jdbc:secret|FAILED|FAILED|任务执行失败，请稍后重试|任务执行失败",
-        "外部工具执行超时：token=secret|TIMEOUT|TIMEOUT|任务执行超时，请稍后重试|任务执行超时",
+        // 只有消息里出现 "timeout" 字样、异常类型却不是超时的普通失败，不能再被当成超时。
+        // 历史故障就是这样把一次字段超长的写库失败显示成“一开始就超时”。
+        "外部工具执行超时：token=secret|FAILED|FAILED|任务执行失败，请稍后重试|任务执行失败",
         "HTTP connect timed out: token=secret|TIMEOUT|TIMEOUT|任务执行超时，请稍后重试|任务执行超时",
         "Wrapped MSF deadline: token=secret|TIMEOUT|TIMEOUT|任务执行超时，请稍后重试|任务执行超时",
         "java.io.IOException: HTTP/1.1 header parser received no bytes|TIMEOUT|TIMEOUT|任务执行超时，请稍后重试|任务执行超时",
@@ -134,6 +136,73 @@ class TaskExecutionServiceTests {
         .isEqualTo(expectedErrorMessage)
         .doesNotContain(internalMessage)
         .doesNotContain("secret");
+  }
+
+  /**
+   * 数据库写入失败必须如实报错，而不是被进度文本里的 "timeout=" 字样伪装成超时。
+   *
+   * <p>历史故障（task 1293）：{@code tcp_ports} 把 65,535 个端口拼进进度文本，写库时
+   * H2 抛 {@code Value too long}，异常消息里带着 {@code timeout=3000ms}，旧的
+   * 消息嗅探规则把它判成 TIMEOUT，用户看到「一开始就超时」。
+   */
+  @Test
+  void persistenceFailureIsReportedAsFailureNotTimeout() throws Exception {
+    SecurityTaskRepository taskRepository = mock(SecurityTaskRepository.class);
+    FindingRepository findingRepository = mock(FindingRepository.class);
+    TargetService targetService = mock(TargetService.class);
+    AssessmentProjectService projectService = mock(AssessmentProjectService.class);
+    SecurityToolRegistry registry = mock(SecurityToolRegistry.class);
+    AuditService auditService = mock(AuditService.class);
+    TaskSnapshotService snapshotService = mock(TaskSnapshotService.class);
+    TaskProgressEventService progressEvents = mock(TaskProgressEventService.class);
+    ProjectAuthorizationService authorization = mock(ProjectAuthorizationService.class);
+    TaskExecutionControlService executionControl = new TaskExecutionControlService(1, 1);
+    when(authorization.callWithSystemAccess(any(Callable.class)))
+        .thenAnswer(invocation -> ((Callable<?>) invocation.getArgument(0)).call());
+
+    SecurityTask task = task();
+    task.setToolCode("tcp_ports");
+    AuthorizedTarget target = new AuthorizedTarget();
+    target.setId(7L);
+    target.setTargetValue("192.168.222.149");
+    SecurityTool tool = mock(SecurityTool.class);
+    when(taskRepository.findById(42L)).thenReturn(Optional.of(task));
+    when(targetService.getCurrentlyAuthorized(7L)).thenReturn(target);
+    when(registry.require("tcp_ports")).thenReturn(tool);
+    when(tool.code()).thenReturn("tcp_ports");
+    when(tool.execute(any(AuthorizedTarget.class), anyMap(), any(ToolExecutionObserver.class)))
+        .thenThrow(new IllegalStateException(
+            "could not execute statement [Value too long for column \"PROGRESS_MESSAGE\"]; "
+                + "TCP_CONNECT host=192.168.222.149 ports=1,2,3 count=65535 timeout=3000ms concurrency=200"));
+
+    new TaskExecutionService(
+            taskRepository,
+            findingRepository,
+            targetService,
+            projectService,
+            registry,
+            auditService,
+            new ObjectMapper(),
+            snapshotService,
+            executionControl,
+            progressEvents,
+            authorization)
+        .executeAsync(42L);
+
+    assertThat(task.getStatus()).isEqualTo("FAILED");
+    assertThat(task.getTerminationReason()).isEqualTo("FAILED");
+    assertThat(task.getTimeoutAt()).isNull();
+    assertThat(task.getErrorMessage()).isEqualTo("任务执行失败，请稍后重试");
+    assertThat(task.getProgressMessage()).isEqualTo("任务执行失败");
+  }
+
+  @Test
+  void overlongProgressTextIsTruncatedInsteadOfFailingTheWrite() {
+    String huge = "TCP_CONNECT ports=" + "65535,".repeat(60_000);
+    String fitted = TaskExecutionService.fitToColumn(huge, 500);
+    assertThat(fitted).hasSize(500).startsWith("…").endsWith("65535,");
+    assertThat(TaskExecutionService.fitToColumn("短文本", 500)).isEqualTo("短文本");
+    assertThat(TaskExecutionService.fitToColumn(null, 500)).isNull();
   }
 
   @Test
