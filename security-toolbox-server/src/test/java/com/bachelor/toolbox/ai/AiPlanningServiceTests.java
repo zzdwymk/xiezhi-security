@@ -148,4 +148,29 @@ class AiPlanningServiceTests {
         .hasMessage("目标不属于该评估项目");
     verifyNoInteractions(client);
   }
+
+  /**
+   * 关键词短路收窄回归：纯名词“这个项目”不再触发项目介绍短路，
+   * “这个项目怎么打”这类行动咨询必须放行；精确短语仍按项目介绍处理。
+   */
+  @Test
+  void projectIntroductionShortCircuitDoesNotCaptureActionConsultation() {
+    AiPlanningService service = new AiPlanningService(
+        mock(TargetService.class), mock(AuditService.class), new ObjectMapper(), mock(AiModelClient.class));
+
+    assertThat((Boolean) org.springframework.test.util.ReflectionTestUtils.invokeMethod(
+        service, "isProjectIntroductionRequest", "这个项目怎么打")).isFalse();
+    assertThat((Boolean) org.springframework.test.util.ReflectionTestUtils.invokeMethod(
+        service, "isProjectIntroductionRequest", "这个项目怎么测")).isFalse();
+    assertThat((Boolean) org.springframework.test.util.ReflectionTestUtils.invokeMethod(
+        service, "isProjectIntroductionRequest", "介绍一下这个项目")).isTrue();
+    assertThat((Boolean) org.springframework.test.util.ReflectionTestUtils.invokeMethod(
+        service, "isProjectIntroductionRequest", "这个项目是什么")).isTrue();
+
+    // 原有行为保持不变。
+    assertThat((Boolean) org.springframework.test.util.ReflectionTestUtils.invokeMethod(
+        service, "isProjectIntroductionRequest", "介绍一下项目")).isTrue();
+    assertThat((Boolean) org.springframework.test.util.ReflectionTestUtils.invokeMethod(
+        service, "isProjectIntroductionRequest", "当前项目情况如何")).isTrue();
+  }
 }

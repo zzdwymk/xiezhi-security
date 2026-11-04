@@ -799,7 +799,22 @@ public class AiPlanningService {
   }
 
   private boolean isProjectIntroductionRequest(String prompt) {
-    return containsAny(prompt, "介绍一下项目", "介绍项目", "当前项目", "项目情况", "项目概况", "这个项目")
+    // 注意：不能把纯名词“这个项目”放进匹配列表——它太宽，会把
+    // “这个项目怎么打”“这个项目怎么测”这类行动咨询短路成项目介绍，
+    // 导致 AI 永远只会回答项目说明。只保留更精确的短语匹配；
+    // “介绍一下项目/项目情况/项目概况”等原有行为保持不变。
+    return containsAny(
+            prompt,
+            "介绍一下项目",
+            "介绍项目",
+            "当前项目",
+            "项目情况",
+            "项目概况",
+            "介绍一下这个项目",
+            "这个项目是什么",
+            "这个项目的情况",
+            "这个项目的概况",
+            "这个项目的介绍")
         && !explicitlyRequestsExecution(prompt);
   }
 
