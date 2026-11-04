@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from "vue";
 import { ElMessage } from "element-plus";
 import FluentIcon from "./FluentIcon.vue";
 
@@ -11,7 +11,10 @@ const props = withDefaults(
     icon?: string;
     monospace?: boolean;
     wrap?: boolean;
+    /** Height floor, in text lines. */
     minRows?: number;
+    /** Height ceiling in text lines. With `wrap`, a longer text scrolls inside
+     *  this budget instead of being clipped at the last row. */
     maxRows?: number;
     copyable?: boolean;
     live?: boolean;
@@ -39,9 +42,57 @@ function syncTextarea() {
   const inner = inputEl.value as
     | { textarea?: HTMLTextAreaElement }
     | undefined;
+  textareaEl.value = inner?.textarea ?? null;
   props.textareaRef?.(inner?.textarea ?? null);
 }
-onMounted(() => syncTextarea());
+onMounted(() => {
+  syncTextarea();
+  void measureRows();
+});
+
+// el-input's `autosize` sizes the textarea to its content and *clips* whatever
+// exceeds maxRows. A readonly textarea reports no layout overflow, so those rows
+// vanished silently: a log with one wrapped nmap command (17 rows) showed 8 and
+// lost the rest, which reads on screen as "cut off on the right".
+//
+// A wrapping block is therefore measured instead of capped: `measureRows()` asks
+// the browser for the real content height (CJK + monospace metrics cannot be
+// derived in CSS arithmetic) and `autosize` gets exactly the row count that keeps
+// the box at `max-rows`, so the box stops growing there and scrolls the remainder
+// (see the `.is-wrap` rules). Shorter content keeps its natural height. Unwrapped
+// blocks keep Element Plus' sizing: their lines scroll sideways, so capping can
+// never hide text.
+const textareaEl = ref<HTMLTextAreaElement | null>(null);
+const measuredRows = ref(0);
+
+function measureRows() {
+  const el = textareaEl.value;
+  if (!el) return;
+  const style = getComputedStyle(el);
+  const lineHeight = Number.parseFloat(style.lineHeight);
+  if (!lineHeight) return;
+  const verticalPadding =
+    Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
+  const rows = Math.ceil((el.scrollHeight - verticalPadding) / lineHeight);
+  if (Number.isFinite(rows) && rows > 0) measuredRows.value = rows;
+}
+
+const autosize = computed(() => {
+  if (!props.wrap) return { minRows: props.minRows, maxRows: props.maxRows };
+  const rows = measuredRows.value || props.maxRows;
+  if (rows <= props.maxRows) return { minRows: props.minRows, maxRows: rows };
+  // Past the ceiling: hold the reading height so the shared scroll rules apply.
+  return { minRows: props.maxRows, maxRows: props.maxRows };
+});
+
+watch(
+  () => [props.content, props.wrap, props.maxRows],
+  async () => {
+    await nextTick();
+    // Re-measure once the DOM has the new content, cheaply (readonly value).
+    measureRows();
+  },
+);
 
 const copied = ref(false);
 let copiedTimer: ReturnType<typeof setTimeout> | null = null;
@@ -99,7 +150,7 @@ async function copy() {
         :class="{ 'is-mono': monospace, 'is-wrap': wrap }"
         :model-value="content"
         type="textarea"
-        :autosize="{ minRows, maxRows }"
+        :autosize="autosize"
         readonly
         :placeholder="emptyText"
         :role="live ? 'log' : undefined"
@@ -174,12 +225,23 @@ html.dark .fluent-subtle-btn.is-copied,
   color: var(--app-text, #1e293b);
   transition: box-shadow 150ms ease;
 }
+/* Element Plus sizes the box from the measured rows; all that remains here is to
+   make the overflow reachable — a readonly textarea never reports it otherwise.
+   The scrollbar is reserved in the gutter so no text ever sits underneath it. */
+.fluent-code-block :deep(.fluent-code-textarea.is-wrap .el-textarea__inner) {
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
 .fluent-code-textarea.is-mono :deep(.el-textarea__inner) {
   font-family: var(--font-mono, "Cascadia Code", "Consolas", monospace);
   font-size: 11.5px;
   line-height: 1.55;
 }
-.fluent-code-textarea.is-wrap :deep(.el-textarea__inner) {
+/* Wrapped surfaces always lay lines out at the mono metrics the row budget above
+   is expressed in, so the budget cannot drift from the rendered line height. */
+.fluent-code-block :deep(.fluent-code-textarea.is-wrap .el-textarea__inner) {
+  font-size: 11.5px;
+  line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

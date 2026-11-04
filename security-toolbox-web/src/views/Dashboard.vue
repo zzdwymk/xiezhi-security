@@ -5299,6 +5299,9 @@ onBeforeUnmount(() => {
     grid-template-columns: 1fr;
   }
 }
+/* The log wraps (tool commands are a single line several hundred pixels wide), so
+   FluentCodeBlock holds it at the `max-rows` reading height and scrolls the rest
+   instead of cutting it off. */
 .runtime-output {
   margin-top: 10px;
 }
