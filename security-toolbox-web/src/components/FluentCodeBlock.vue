@@ -162,9 +162,17 @@ async function copy() {
 </template>
 
 <style scoped>
+/* The wrapper is the only width reference this block has. `100%` resolved against
+   the containing block's *content* box, but Dashboard pads that block on both sides
+   (`.plan-runtime-details > :not(summary) { margin: 0 14px }`), so the box came out
+   14px wider than the card's inner area and hung past its right edge — which reads
+   on screen as "cut off on the right". `border-box` keeps the width and the wrapper's
+   own padding on the same box model, and `auto` lets the block fill the padded box. */
 .fluent-code-block {
   display: flex;
-  width: 100%;
+  box-sizing: border-box;
+  width: auto;
+  max-width: 100%;
   min-width: 0;
   flex-direction: column;
   gap: 6px;
