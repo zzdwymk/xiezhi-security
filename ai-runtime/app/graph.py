@@ -6,6 +6,8 @@ import asyncio
 import hashlib
 import hmac
 import json
+import os
+import sys
 import re
 import secrets
 import unicodedata
@@ -317,6 +319,22 @@ def envelope_runtime_event(
 def _event(
     event_type: str, node: str, message: str, data: dict[str, Any] | None = None
 ) -> dict[str, Any]:
+    # 协议联调诊断开关：AI_RUNTIME_EVENT_TRACE=1 时把事件原文写到 stderr，
+    # 供桌面端 Java FIELD 校验失败时比对字段契约（只含协议字段，不含模型正文之外的用户数据）。
+    if os.getenv("AI_RUNTIME_EVENT_TRACE") == "1":
+        try:
+            sys.stderr.write(
+                "EVENT_TRACE "
+                + json.dumps(
+                    {"type": event_type, "node": node, "data": data},
+                    ensure_ascii=False,
+                    default=str,
+                )[:4000]
+                + "\n"
+            )
+            sys.stderr.flush()
+        except Exception:
+            pass
     return {
         "eventId": str(uuid.uuid4()),
         "type": event_type,

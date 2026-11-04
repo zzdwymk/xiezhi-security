@@ -1471,10 +1471,32 @@ def test_node_scope_does_not_retry_or_rewrite_unknown_nodes(node_id):
     assert invalid["actions"][0]["workflowNodeId"] == node_id
 
 
-def test_empty_node_scope_requires_no_actions():
+def test_empty_node_scope_returns_honest_clarify_without_model_call():
+    """空能力清单时 ACTION_PLAN 确定性短路为诚实澄清，不消耗模型调用。"""
     planner = _model_planner()
     chain = planner._grounded_chain = _ScriptedContractChain(_clarification_output())
-    asyncio.run(planner.grounded_plan({**_request(), "workflow": []}, _bundle(), _decision_for_route("ACTION_PLAN")))
+    result = asyncio.run(
+        planner.grounded_plan(
+            {**_request(), "workflow": []}, _bundle(), _decision_for_route("ACTION_PLAN")
+        )
+    )
+    assert result["intent"] == "clarify"
+    assert result["knowledgeMode"] == "INSUFFICIENT_EVIDENCE"
+    assert result["actions"] == [] and result["evidenceRefs"] == []
+    assert "工作流" in result["answer"] and "配置" in result["answer"]
+    assert chain.calls == []
+
+
+def test_empty_node_scope_still_constrains_model_contract_for_answer_routes():
+    """纵深防御：问答路由走到模型时，空节点场景的输出契约仍禁用 actions。"""
+    planner = _model_planner()
+    general_answer = {**_grounded_answer_output(), "knowledgeMode": "GENERAL", "evidenceRefs": []}
+    chain = planner._grounded_chain = _ScriptedContractChain(general_answer)
+    asyncio.run(
+        planner.grounded_plan(
+            {**_request(), "workflow": []}, _bundle(), _decision_for_route("GENERAL_QA")
+        )
+    )
     supplied = _supplied_output_contract(chain.calls[0])
     assert supplied["workflowNodeScope"]["allowedWorkflowNodeIds"] == []
     assert supplied["expectedSchema"]["properties"]["actions"]["maxItems"] == 0

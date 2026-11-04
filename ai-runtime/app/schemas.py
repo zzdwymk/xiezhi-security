@@ -135,7 +135,9 @@ class RetrievalParameters(BaseModel):
 class PortScanParameters(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ports: StrictStr | None = Field(default=None, min_length=1, max_length=200)
-    # "quick" probes only common ports for liveness and discovery; absent sweeps as requested.
+    # mode 仅为存量工作流模板兼容保留；模型补丁（GroundedParameterPatch 路径）
+    # 在 validate_workflow_action_closure 中禁止 tcp_ports 的 mode —— 执行器
+    # 不接收该字段（与 Java 端参数白名单一致），快速探测请使用 nmap_service_scan。
     mode: Literal["quick"] | None = None
 
 
