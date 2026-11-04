@@ -1094,6 +1094,24 @@ async function scrollToBottom(force = false) {
   applyingScroll = false;
 }
 
+/**
+ * "Jump to newest" availability. Once the user scrolls away from the bottom the
+ * view stops following, so the newest answer can be out of sight while it is still
+ * being written; this is the way back. Hidden near the bottom, where it would only
+ * cover content and offer nothing.
+ */
+const showJumpToBottom = computed(() => !stickToBottom.value);
+
+/** Explicit user request from that control: pin to the bottom and resume following. */
+function jumpToBottom() {
+  stickToBottom.value = true;
+  const element = messagesElement.value;
+  if (!element) return;
+  // User-initiated, so honour the list's declared smooth scrolling here.
+  element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
+  updateActiveTurn();
+}
+
 interface UserTurnItem {
   id: string;
   turn: number;
@@ -3839,6 +3857,21 @@ onBeforeUnmount(() => {
           </template>
         </el-tooltip>
       </nav>
+
+      <!-- 回到最新：用户往上翻看时，回答仍在继续生成，这里是一键回到底部的入口。
+           只在离开底部时出现；出现/消失用 opacity+位移过渡，不做布局跳动。 -->
+      <Transition name="jump-to-bottom">
+        <button
+          v-if="showJumpToBottom"
+          type="button"
+          class="jump-to-bottom"
+          aria-label="回到最新内容"
+          title="回到最新内容"
+          @click="jumpToBottom"
+        >
+          <FluentIcon name="chevron-down" aria-hidden="true" />
+        </button>
+      </Transition>
     </div>
 
     <footer class="chat-composer-wrap">
@@ -6746,6 +6779,65 @@ a.agent-citation-bubble {
   font-size: 10px;
   color: var(--app-accent, #3b82f6);
   opacity: 0.85;
+}
+
+/* 回到最新内容：悬浮在对话区右下角、输入框正上方。
+   靠右对齐并贴住容器右边缘（留 16px），避开正文列——正文是居中且最大 820px，
+   窗口够宽时按钮落在右侧留白里，不会压住文字。 */
+.jump-to-bottom {
+  position: absolute;
+  right: 16px;
+  bottom: 14px;
+  z-index: 16;
+  display: flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--app-border);
+  border-radius: 50%;
+  background: var(--app-surface-strong);
+  color: var(--app-text-muted);
+  box-shadow: 0 2px 8px color-mix(in srgb, CanvasText 12%, transparent);
+  cursor: pointer;
+  transition:
+    background-color var(--fluent-fast, 150ms),
+    color var(--fluent-fast, 150ms),
+    box-shadow var(--fluent-fast, 150ms);
+}
+.jump-to-bottom:hover {
+  background: var(--app-surface-soft);
+  color: var(--app-accent);
+  box-shadow: 0 3px 12px color-mix(in srgb, CanvasText 18%, transparent);
+}
+.jump-to-bottom:focus-visible {
+  outline: 2px solid var(--app-accent);
+  outline-offset: 2px;
+}
+.jump-to-bottom svg {
+  width: 16px;
+  height: 16px;
+}
+.jump-to-bottom-enter-active,
+.jump-to-bottom-leave-active {
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+}
+.jump-to-bottom-enter-from,
+.jump-to-bottom-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+/* On a narrow window there is no gutter beside the text column, so the button
+   floats over the lower-right corner of the content instead. */
+@media (max-width: 900px) {
+  .jump-to-bottom {
+    right: 12px;
+    bottom: 10px;
+  }
 }
 
 /* 轮次预览卡片沿用主题的 hover 弹层配色；收起时的空框残留由上面的瞬时过渡

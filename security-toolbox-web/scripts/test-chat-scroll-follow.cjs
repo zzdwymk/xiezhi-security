@@ -243,7 +243,54 @@ function check(name, ok, detail) {
     check('新内容确实被追加（列表变高）', afterStream.scrollHeight > beforeStream.scrollHeight, JSON.stringify({ before: beforeStream.scrollHeight, after: afterStream.scrollHeight }));
     await page.screenshot({ path: path.join(output, 'scrolled-up-while-streaming.png') });
 
-    // 2. Returning to the bottom resumes following.
+    // 3. The "jump to newest" button: only shown away from the bottom, and it
+    //    returns the list to the newest content.
+    const jumpButton = page.getByRole('button', { name: '回到最新内容' });
+    check('离开底部时出现「回到最新内容」按钮', await jumpButton.isVisible());
+
+    const buttonBox = await jumpButton.boundingBox();
+    const viewport = page.viewportSize();
+
+    check(
+      '按钮位于可视区域内（未被输入框或滚动容器裁掉）',
+      Boolean(buttonBox) && buttonBox.y > 0 && buttonBox.y + buttonBox.height < viewport.height,
+      JSON.stringify(buttonBox),
+    );
+    // It must not cover the text column: it should sit in the gutter beside it.
+    check(
+      '按钮没有压住正文内容',
+      await page.evaluate(() => {
+        const button = document.querySelector('.jump-to-bottom');
+        if (!button) return false;
+        const b = button.getBoundingClientRect();
+        const inner = document.querySelector('.messages-inner');
+        if (!inner) return false;
+        const t = inner.getBoundingClientRect();
+        return b.right <= t.left + 1 || b.left >= t.right - 1;
+      }),
+    );
+
+    await jumpButton.click();
+    await page.waitForTimeout(700);
+    const afterJump = await geometry();
+    check('点击后直达最新内容', afterJump.distanceFromBottom <= 2, JSON.stringify(afterJump));
+    check('回到最新后按钮自动隐藏', !(await jumpButton.isVisible()));
+    await page.screenshot({ path: path.join(output, 'after-jump-to-bottom.png') });
+
+    // 4. Following resumes after the jump.
+    await page.evaluate(() => window.__appendAnswer('\n\n点击回到最新之后的内容'));
+    await page.waitForTimeout(300);
+    const followingAfterJump = await geometry();
+    check('点击回到最新后恢复自动跟随', followingAfterJump.distanceFromBottom <= 2, JSON.stringify(followingAfterJump));
+
+    // 5. Returning to the bottom resumes following.
+    await page.evaluate(() => {
+      const box = document.querySelector('.chat-messages');
+      box.style.scrollBehavior = 'auto';
+      box.scrollTop = Math.round((box.scrollHeight - box.clientHeight) * 0.2);
+      box.style.scrollBehavior = '';
+    });
+    await page.waitForTimeout(400);
     await page.evaluate(() => {
       const box = document.querySelector('.chat-messages');
       box.style.scrollBehavior = 'auto';
