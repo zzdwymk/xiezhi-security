@@ -189,11 +189,20 @@ const CHECK_OPTIONS = [
   { value: "disclosure", label: "技术栈信息泄露（Server/X-Powered-By 等响应头）" },
 ];
 
+const STRENGTH_OPTIONS = [
+  { value: "LOW", label: "低强度（LOW）" },
+  { value: "MEDIUM", label: "中强度（MEDIUM，默认）" },
+  { value: "HIGH", label: "高强度（HIGH）" },
+  { value: "INSANE", label: "极高强度（INSANE，谨慎使用）" },
+];
+
 // 工具码 -> 下拉型参数枚举，避免把半截枚举映射到错误工具上
 const ENUM_OPTIONS_BY_TOOL: Record<string, Record<string, { value: any; label: string }[]>> = {
   nmap_service_scan: { mode: NMAP_MODE_OPTIONS },
   // tcp_ports 的扫描面只由 ports 决定，不提供 mode 下拉，避免出现"可选但不生效"的参数。
   zap_fuzz: { mode: MODE_OPTIONS },
+  // strength 是 ZAP 扫描强度枚举；缺了它就只能落进输入框里露出 LOW/MEDIUM/HIGH/INSANE。
+  zap_scan: { strength: STRENGTH_OPTIONS },
   fscan_scan: { vulnMode: VULN_MODE_OPTIONS },
   http_security_check: { check: CHECK_OPTIONS },
 };
@@ -211,16 +220,21 @@ function isInactiveParameter(toolCode: string | undefined, key: string) {
 }
 
 /** 参数值的中文说明；未收录的枚举值退回中文标签而不是裸露英文。 */
-function parameterValueLabel(key: string, value: unknown): string {
+function parameterValueLabel(key: string, value: unknown, toolCode?: string): string {
+  if (typeof value === "boolean") return value ? "开启" : "关闭";
   const raw = String(value ?? "").trim();
   if (!raw) return "未设置";
+  // 先查“工具 + 参数”的枚举表（与编辑器下拉同源），再查跨工具通用枚举（字典）。
   const opts =
-    key === "mode" ? NMAP_MODE_OPTIONS
-      : key === "vulnMode" ? VULN_MODE_OPTIONS
-        : key === "check" ? CHECK_OPTIONS
-          : undefined;
-  const hit = opts?.find((o) => String(o.value) === raw);
+    enumOptions(toolCode, key)
+    ?? (key === "dictionary" ? DICTIONARY_OPTIONS
+      : key === "mode" ? NMAP_MODE_OPTIONS
+        : key === "vulnMode" ? VULN_MODE_OPTIONS
+          : key === "check" ? CHECK_OPTIONS
+            : undefined);
+  const hit = opts?.find((o) => String(o.value).toLowerCase() === raw.toLowerCase());
   if (hit) return hit.label;
+  // 跨工具同名取值的兜底；键统一按小写匹配，避免大小写差异漏译。
   const generic: Record<string, string> = {
     quick: "快速扫描",
     regular: "常规扫描",
@@ -228,11 +242,19 @@ function parameterValueLabel(key: string, value: unknown): string {
     service: "服务识别",
     passive: "被动扫描",
     active: "主动扫描",
-    SAFE: "安全",
-    FINGERPRINT: "指纹识别",
-    FULL: "完整",
+    safe: "安全",
+    fingerprint: "指纹识别",
+    full: "完整",
+    // HTTP 方法名是协议字面量，保持大写原文。
+    get: "GET",
+    post: "POST",
+    low: "低",
+    medium: "中",
+    high: "高",
+    insane: "极高",
+    custom: "用户自定义字典",
   };
-  return generic[raw] || raw;
+  return generic[raw.toLowerCase()] || raw;
 }
 
 // 与后端 NmapServiceScanTool.buildCommand 对齐的“实际执行命令”预览（仅展示，非真正下发）。
@@ -306,6 +328,7 @@ const PARAM_LABELS: Record<string, string> = {
   concurrency: "并发请求数",
   workers: "并发工作线程",
   depth: "探测深度",
+  maxRequests: "请求预算上限",
   dictionary: "枚举字典",
   ports: "扫描端口",
   path: "请求路径",
@@ -316,6 +339,8 @@ const PARAM_LABELS: Record<string, string> = {
   extensions: "匹配扩展名",
   vulnMode: "扫描模式",
   mode: "识别模式",
+  strength: "扫描强度",
+  spider: "启用爬虫",
   check: "检查项目",
   consumeOpenPorts: "复用已探测端口",
   allPocs: "使用全部 PoC",
@@ -326,11 +351,18 @@ const PARAM_LABELS: Record<string, string> = {
   msfOptions: "模块参数",
   requestUrl: "请求地址",
   requestMethod: "请求方法",
+  method: "请求方法",
   fuzzRequestUrl: "变异请求地址",
   fuzzParameter: "变异参数",
   fuzzValue: "测试值",
+  // 编排协议里的真实键名（ai-runtime/app/schemas.py 的 WorkflowZapFuzzParameters）。
+  fuzzTargetField: "变异目标字段",
+  fuzzPayload: "变异测试值",
+  fuzzPostBody: "变异请求体",
   wordlist: "字典文件",
   userAgent: "User-Agent",
+  // 融合侦察开关：site_crawl 的 fuse 参数（爬虫 ↔ 目录扫描迭代喂种子）。
+  fuse: "融合目录扫描",
 };
 
 function onApprove() {
@@ -529,7 +561,7 @@ function onApprove() {
                   <dd class="approval-param-control-cell">
                     <!-- 无效/已废弃参数：只做中文说明，不提供可编辑控件误导管理员 -->
                     <span v-if="isInactiveParameter(step.toolCode, key)" class="param-inactive-note">
-                      {{ parameterValueLabel(key, val) }}（该参数已不生效，端口范围由“扫描端口”决定）
+                      {{ parameterValueLabel(key, val, step.toolCode) }}（该参数已不生效，端口范围由“扫描端口”决定）
                     </span>
                     <!-- 0. 工具原生枚举下拉：Nmap 识别模式 / 扫描模式 / HTTP 检查项等 -->
                     <el-select

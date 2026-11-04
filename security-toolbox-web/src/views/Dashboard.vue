@@ -56,6 +56,7 @@ import { useCopilotStore } from "../stores/copilot";
 import { formatDateTime, formatExecutionLog } from "../utils/dateTime";
 import {
   actionStepLabel,
+  actionRiskLabel,
   aiToolLabel,
   copilotReferenceTypeLabel,
   displayKnownTestName,
@@ -902,8 +903,16 @@ function targetHoverText(name?: string, value?: string): string {
   return n || v;
 }
 
+/** Older turns persisted the runtime's raw reason fallback ("风险 SAFE"); localize it on read. */
+function localizedStepFallbackReason(reason: string): string {
+  const match = /^风险\s+(SAFE|CAUTION|HIGH|CRITICAL)$/i.exec(reason.trim());
+  if (!match) return reason;
+  return `风险 ${actionRiskLabel(match[1])}`;
+}
+
 function displayedStepReason(step: ConversationStep) {
-  const reason = publicAiProgressText(step.reason);
+  const raw = publicAiProgressText(step.reason);
+  const reason = raw ? localizedStepFallbackReason(raw) : raw;
   return !reason || reason === displayedStepTitle(step) || reason === aiToolLabel(step.toolCode)
     || /^智能助手根据项目上下文提出[。.]?$/.test(reason) ? "" : reason;
 }

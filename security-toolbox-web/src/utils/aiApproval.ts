@@ -73,8 +73,11 @@ export function approvalParameterRows(parameters: Record<string, unknown> = {}) 
     authLoginUrl: "登录地址", authUsername: "认证用户名", authPassword: "认证密码",
     authUsernameField: "用户名字段", authPasswordField: "密码字段",
     concurrency: "并发请求数", depth: "探测深度", dictionary: "枚举字典",
+    maxRequests: "请求预算上限", consumeOpenPorts: "复用已探测端口",
     extensions: "匹配扩展名", workers: "工作线程数", timeout: "请求超时",
     customDictionary: "自定义字典",
+    // 融合侦察开关：site_crawl 的 fuse 参数（爬虫 ↔ 目录扫描迭代喂种子）。
+    fuse: "融合目录扫描",
   };
   // Translate enumerated settings only; literal paths, payloads and module options must stay exact.
   const values: Record<string, Record<string, string>> = {
@@ -111,14 +114,26 @@ export function approvalParameterRows(parameters: Record<string, unknown> = {}) 
       U: "联合查询注入 (Union query)",
       T: "时间盲注 (Time-based blind)",
       S: "堆叠注入 (Stacked queries)",
+      Q: "内联查询注入 (Inline query)",
     },
+    method: { GET: "GET", POST: "POST" },
     scanPolicy: {
       "Default Policy": "默认策略", Developer: "开发者策略", "Security Baseline": "安全基线",
       Manager: "管理者策略", "Testing - HIGH": "高强度测试", "Testing - MEDIUM": "中强度测试", "Testing - LOW": "低强度测试",
     },
   };
+  // Array/object values: only translate the enumerated strings inside, never free text.
+  const literal = (key: string, value: unknown): string => {
+    if (typeof value === "boolean") return value ? "是" : "否";
+    if (typeof value === "string") return values[key]?.[value] || value;
+    if (Array.isArray(value)) {
+      // Positional arguments must stay exact; only plain enum lists (e.g. technique letters) translate.
+      return key === "extensions" ? value.map(String).join("、") : JSON.stringify(value);
+    }
+    return JSON.stringify(value);
+  };
   return Object.entries(parameters).map(([key, value]) => ({
     label: labels[key] || key,
-    value: typeof value === "boolean" ? value ? "是" : "否" : typeof value === "string" ? values[key]?.[value] || value : JSON.stringify(value),
+    value: literal(key, value),
   }));
 }

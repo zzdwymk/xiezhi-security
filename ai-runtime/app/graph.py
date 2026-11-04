@@ -115,6 +115,16 @@ TOOL_STAGE = {
     "zap_fuzz": "validate",
 }
 
+# Plan-step fallback reason. The runtime is a Chinese-facing product surface, so the
+# risk level is spelled out in Chinese here instead of leaking the raw enum
+# ("风险 SAFE") into the approval checklist the administrator reads.
+_RISK_REASON_LABELS = {
+    "SAFE": "安全",
+    "CAUTION": "需谨慎",
+    "HIGH": "高风险",
+    "CRITICAL": "严重",
+}
+
 CONTRACT_VERSION = 3
 RUNTIME_LEDGER_GENESIS_DIGEST = "sha256:" + ("0" * 64)
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -1207,7 +1217,11 @@ class LedgerAgentRuntime:
                             "reason": str(
                                 action.get("reason")
                                 or (
-                                    f"风险 {action.get('risk', 'SAFE')}"
+                                    "风险 "
+                                    + _RISK_REASON_LABELS.get(
+                                        str(action.get("risk")).strip().upper(),
+                                        str(action.get("risk")),
+                                    )
                                     if action.get("risk")
                                     else ""
                                 )
