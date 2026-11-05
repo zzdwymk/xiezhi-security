@@ -256,18 +256,36 @@ function check(name, ok, detail) {
       Boolean(buttonBox) && buttonBox.y > 0 && buttonBox.y + buttonBox.height < viewport.height,
       JSON.stringify(buttonBox),
     );
-    // It must not cover the text column: it should sit in the gutter beside it.
+    // It must not cover the text itself. `.messages-inner` is the padded column
+    // (text + 22px of breathing room), so compare against the message cells inside
+    // it — that is what the user actually reads.
     check(
       '按钮没有压住正文内容',
       await page.evaluate(() => {
         const button = document.querySelector('.jump-to-bottom');
         if (!button) return false;
         const b = button.getBoundingClientRect();
-        const inner = document.querySelector('.messages-inner');
-        if (!inner) return false;
-        const t = inner.getBoundingClientRect();
-        return b.right <= t.left + 1 || b.left >= t.right - 1;
+        const cells = [...document.querySelectorAll('.messages-inner .message-column')];
+        if (!cells.length) return false;
+        return cells.every((cell) => {
+          const t = cell.getBoundingClientRect();
+          return b.right <= t.left + 1 || b.left >= t.right - 1;
+        });
       }),
+    );
+    // It should also stay close to that column instead of drifting to the window edge.
+    const gapFromText = await page.evaluate(() => {
+      const button = document.querySelector('.jump-to-bottom');
+      if (!button) return null;
+      const cells = [...document.querySelectorAll('.messages-inner .message-column')];
+      if (!cells.length) return null;
+      const rightMost = Math.max(...cells.map((cell) => cell.getBoundingClientRect().right));
+      return Math.round(button.getBoundingClientRect().left - rightMost);
+    });
+    check(
+      '按钮贴近正文列（不随窗口变宽而远离）',
+      gapFromText !== null && gapFromText >= 0 && gapFromText <= 24,
+      `距正文 ${gapFromText}px`,
     );
 
     await jumpButton.click();

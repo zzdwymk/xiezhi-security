@@ -6781,17 +6781,24 @@ a.agent-citation-bubble {
   opacity: 0.85;
 }
 
-/* 回到最新内容：悬浮在对话区右下角、输入框正上方。
-   靠右对齐并贴住容器右边缘（留 16px），避开正文列——正文是居中且最大 820px，
-   窗口够宽时按钮落在右侧留白里，不会压住文字。 */
+/* 回到最新内容：悬浮在对话区右下角。
+   定位跟随**正文列**而不是窗口右边缘——正文居中且最大 820px，窗口越宽，
+   贴窗口右边的浮层离用户正在读的文字就越远（1920px 下曾达 525px）。
+   解算：按钮左边缘 = 容器宽 - right - 按钮宽，正文列右边界
+   = 容器宽/2 + min(820px)/2 - 内边距，令两者相差 --jump-spacing 即得 right。 */
 .jump-to-bottom {
+  --jump-spacing: 8px;
+  --jump-size: 32px;
+  --inner-padding-x: 22px;
   position: absolute;
-  right: 16px;
+  right: calc(
+    (100% - min(820px, 100%)) / 2 + var(--inner-padding-x) - var(--jump-spacing) - var(--jump-size)
+  );
   bottom: 14px;
   z-index: 16;
   display: flex;
-  width: 32px;
-  height: 32px;
+  width: var(--jump-size);
+  height: var(--jump-size);
   align-items: center;
   justify-content: center;
   padding: 0;
@@ -6831,14 +6838,8 @@ a.agent-citation-bubble {
   transform: translateY(6px);
 }
 
-/* On a narrow window there is no gutter beside the text column, so the button
-   floats over the lower-right corner of the content instead. */
-@media (max-width: 900px) {
-  .jump-to-bottom {
-    right: 12px;
-    bottom: 10px;
-  }
-}
+/* 位置公式以正文列为基准，窗口宽度变化时按钮始终贴着文字右侧 10px，
+   不需要按断点特判（1920px 与 560px 实测一致）。 */
 
 /* 轮次预览卡片沿用主题的 hover 弹层配色；收起时的空框残留由上面的瞬时过渡
    解决，这里不要再改底色，否则会覆盖掉有意的深色气泡设计。 */
