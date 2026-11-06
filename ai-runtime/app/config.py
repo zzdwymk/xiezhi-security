@@ -61,7 +61,20 @@ class Settings:
         "AI_RUNTIME_EXPERIMENT_DATE", "2026-08-07"
     )[:32]
     llm_timeout_seconds: float = _bounded_float(
-        "AI_RUNTIME_LLM_TIMEOUT_SECONDS", 120.0, 0.1, 240.0
+        "AI_RUNTIME_LLM_TIMEOUT_SECONDS", 60.0, 0.1, 240.0
+    )
+    # Reasoning-tuned upstreams can spend 85-95% of their output tokens on hidden thinking:
+    # one planner contract then needs 15-40 s. Measured through the desktop relay, a turn that
+    # needs route + grounded (+ one contract repair each) lands at 90-140 s, so a 90 s turn
+    # budget cut healthy turns off. Kept below the Java client's 120 s read timeout so the
+    # runtime still gets to report TURN_TIMEOUT itself instead of the socket dying first.
+    agent_turn_timeout_seconds: float = _bounded_float(
+        "AI_RUNTIME_AGENT_TURN_TIMEOUT_SECONDS", 110.0, 5.0, 110.0
+    )
+    # Optional latency lever for reasoning-tuned models. Empty keeps the provider default;
+    # "none"/"minimal" trade answer quality for speed and are opt-in only.
+    reasoning_effort: str = _choice(
+        "AI_RUNTIME_REASONING_EFFORT", "", {"", "none", "minimal", "low", "medium", "high"}
     )
     max_retries: int = min(max(int(os.getenv("AI_RUNTIME_MAX_RETRIES", "2")), 0), 3)
     max_request_bytes: int = min(
@@ -135,7 +148,7 @@ class Settings:
         "AI_RUNTIME_MAX_RAG_LLM_CALLS", 5, 1, 8
     )
     agent_turn_timeout_seconds: float = _bounded_float(
-        "AI_RUNTIME_AGENT_TURN_TIMEOUT_SECONDS", 90.0, 5.0, 300.0
+        "AI_RUNTIME_AGENT_TURN_TIMEOUT_SECONDS", 110.0, 5.0, 110.0
     )
     graph_recursion_limit: int = _bounded_int(
         "AI_RUNTIME_GRAPH_RECURSION_LIMIT", 32, 8, 64

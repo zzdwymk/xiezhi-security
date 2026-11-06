@@ -1148,7 +1148,7 @@ class AgentPlanner:
                     raise RuntimeError("The configured model dependencies are unavailable")
                 ChatPromptTemplate, ChatOpenAI = langchain_api
                 responses = getattr(settings, "proxy_mode", False) or getattr(settings, "api_mode", "chat_completions") == "responses"
-                model_options = (
+                model_options: dict[str, Any] = (
                     {
                         "use_responses_api": True,
                         "streaming": True,
@@ -1162,6 +1162,16 @@ class AgentPlanner:
                     }
                     if responses else {"temperature": 0}
                 )
+                # Opt-in only: reasoning-tuned upstreams otherwise spend most of the output
+                # budget on hidden thinking, which is what made planner contracts slow.
+                reasoning_effort = getattr(settings, "reasoning_effort", "")
+                if reasoning_effort:
+                    if responses:
+                        model_options["reasoning_effort"] = reasoning_effort
+                    else:
+                        # Chat-completions mode exposes reasoning_effort as a first-class
+                        # ChatOpenAI field; LangChain emits it at the top level of the body.
+                        model_options["reasoning_effort"] = reasoning_effort
                 self._model = ChatOpenAI(
                     model=settings.model,
                     api_key=settings.api_key or "local-proxy",

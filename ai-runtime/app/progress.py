@@ -6,7 +6,8 @@ from contextlib import suppress
 from contextvars import ContextVar
 from typing import Any, AsyncIterator, Callable
 
-_STAGES = {"ROUTING", "RETRIEVING", "EVIDENCE_READY", "ASSESSING", "ASSESSED", "GENERATING", "CONTRACT_RETRY", "AUTHORIZING"}
+_STAGES = {"ROUTING", "RETRIEVING", "EVIDENCE_READY", "ASSESSING", "ASSESSED", "GENERATING", "CONTRACT_RETRY",
+           "AUTHORIZING", "MODEL_CALL"}
 _DECISIONS = {"FINALIZE", "REWRITE_QUERY", "CLARIFY"}
 _REASONS = {
     "FINALIZE": {"DIRECT_SUPPORT", "PARTIAL_SUPPORT"},
@@ -14,6 +15,14 @@ _REASONS = {
     "CLARIFY": {"NO_RELEVANT_EVIDENCE", "CONFLICTING_EVIDENCE", "SCOPE_MISMATCH"},
 }
 _GUARD_REASONS = {"REWRITE_LIMIT_REACHED", "REWRITE_REJECTED"}
+# Model-call observability: which planner stage the call belongs to, how it ended and how long
+# it took. Every value is a finite enumeration or a bounded integer, so this channel can say
+# "waiting on the model, 18 s of a 60 s limit" without ever carrying prompt or evidence text.
+_MODEL_STAGES = {"ROUTE", "EVIDENCE", "GROUNDED", "LEGACY", "SUMMARY", "CONTRACT"}
+_MODEL_OUTCOMES = {"STARTED", "SUCCEEDED", "TIMEOUT", "FAILED"}
+_MAX_ATTEMPT = 8
+_MAX_ELAPSED_MS = 600_000
+_MAX_TIMEOUT_MS = 240_000
 _listener: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar("public_progress", default=None)
 
 
@@ -51,6 +60,37 @@ def emit_progress(
             return
         payload.update(modelDecision=model_decision, reasonCodes=list(reason_codes),
                        assessmentSource=assessment_source)
+    listener(payload)
+
+
+def emit_model_call(stage: str, outcome: str, *, attempt: int = 0,
+                    elapsed_ms: int | None = None, timeout_ms: int | None = None) -> None:
+    """Publish one bounded model-call observation for the chat's connection indicator.
+
+    ``STARTED`` carries the per-call limit; the terminal outcomes carry the measured duration so
+    the UI can show "responded in 18 s" or "timed out after 60 s". Any value outside the finite
+    ranges drops the whole hint rather than leaking a free-form field.
+    """
+    listener = _listener.get()
+    if listener is None:
+        return
+    if stage not in _MODEL_STAGES or outcome not in _MODEL_OUTCOMES:
+        return
+    if type(attempt) is not int or not 0 <= attempt <= _MAX_ATTEMPT:
+        return
+    payload: dict[str, Any] = {"stage": "MODEL_CALL", "modelStage": stage, "outcome": outcome, "attempt": attempt}
+    if outcome == "STARTED":
+        if timeout_ms is None:
+            return
+        if type(timeout_ms) is not int or not 0 <= timeout_ms <= _MAX_TIMEOUT_MS:
+            return
+        payload["timeoutMs"] = timeout_ms
+    else:
+        if elapsed_ms is None:
+            return
+        if type(elapsed_ms) is not int or not 0 <= elapsed_ms <= _MAX_ELAPSED_MS:
+            return
+        payload["elapsedMs"] = elapsed_ms
     listener(payload)
 
 

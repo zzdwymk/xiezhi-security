@@ -96,7 +96,7 @@ def diagnostic_scope(run_id: Any):
 
 
 def record_diagnostic(stage: str, outcome: str, category: str, errors=(), attempt: int = 1) -> None:
-    if stage not in {"ROUTE", "EVIDENCE", "GROUNDED", "LEGACY", "UNKNOWN"}:
+    if stage not in {"ROUTE", "EVIDENCE", "GROUNDED", "LEGACY", "UNKNOWN", "TURN"}:
         return
     if outcome not in {"RETRY_REQUESTED", "RETRY_BUDGET_EXHAUSTED", "REPAIRED", "REJECTED"}:
         return
@@ -117,6 +117,53 @@ def record_diagnostic(stage: str, outcome: str, category: str, errors=(), attemp
     entry = {"timestamp": datetime.now(timezone.utc).isoformat(), "runId": _run_id.get(),
              "stage": stage, "outcome": outcome, "category": category,
              "attempt": min(max(attempt if type(attempt) is int else 1, 0), 8), "errors": safe_errors}
+    _append(entry)
+
+
+# Nodes the outer agent graph can have completed before a turn ends. A timeout is only
+# diagnosable if the log says how far the turn got, never what the model said.
+_COMPLETED_NODES = frozenset(
+    {"route", "retrieval_guard", "retrieve", "assess_evidence", "generate", "engage", "review"}
+)
+
+
+def record_vendor_diagnostic(event: dict[str, Any]) -> None:
+    """Record a vendor-side (ai-runtime) outcome as one bounded diagnostic line.
+
+    Only fixed enumerations, small integers and a whitelist of graph node names may cross this
+    boundary; prompts, evidence bodies and model output never reach the file.
+    """
+    if not isinstance(event, dict):
+        return
+    code = event.get("code")
+    if not isinstance(code, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,47}", code):
+        return
+    completed = event.get("completedNodes")
+    nodes = sorted(n for n in completed if isinstance(n, str) and n in _COMPLETED_NODES) if isinstance(completed, list) else []
+
+    def bounded_int(value: Any, maximum: int) -> int:
+        return min(max(value if type(value) is int else 0, 0), maximum)
+
+    _append({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "runId": _run_id.get(),
+        "stage": "TURN",
+        "outcome": "REJECTED",
+        "category": "TIMEOUT",
+        "attempt": 0,
+        "errors": [],
+        "vendor": {
+            "code": code,
+            "completedNodes": nodes[:8],
+            "elapsedSeconds": bounded_int(event.get("elapsedSeconds"), 3600),
+            "budgetSeconds": bounded_int(event.get("budgetSeconds"), 3600),
+            "llmCallCount": bounded_int(event.get("llmCallCount"), 16),
+            "modelCalls": bounded_int(event.get("modelCalls"), 16),
+        },
+    })
+
+
+def _append(entry: dict[str, Any]) -> None:
     encoded = json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n"
     # Windowed PyInstaller processes have no stderr. Keep at most two small local
     # files; diagnostic I/O must never change the turn's authorization/result.
