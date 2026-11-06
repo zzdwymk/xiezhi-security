@@ -13,8 +13,10 @@
     "test:json-file": "node scripts/test-json-file.cjs",
     "test:ai-settings": "node scripts/test-ai-settings.cjs",
     "test:ai-progress": "node scripts/test-ai-progress.cjs",
+    "test:ai-step-state": "node scripts/test-ai-step-state.cjs",
     "test:ai-progress-view": "node scripts/test-ai-progress-view.cjs",
     "test:turn-rail-tooltip": "node scripts/test-turn-rail-tooltip-browser.cjs",
+    "test:welcome-centering": "node scripts/test-welcome-centering.cjs",
     "test:ai-progress-browser": "node scripts/test-ai-progress-browser.cjs",
     "test:ai-intent-request": "node scripts/test-ai-intent-request.cjs",
     "test:prompt-queue-logic": "node scripts/test-prompt-queue-logic.cjs",
@@ -22,6 +24,7 @@
     "test:traffic-scan-status": "node scripts/test-traffic-scan-status-browser.cjs",
     "test:task-detail": "node scripts/test-task-detail.cjs",
     "test:postgres-startup": "node scripts/test-postgres-startup.cjs",
+    "test:startup-window": "node scripts/test-startup-window-dismissal.cjs",
     "test:setup-auto-continue": "node scripts/test-setup-auto-continue-browser.cjs",
     "test:startup-navigation": "node scripts/test-startup-navigation-browser.cjs",
     "test:desktop-dev-runner": "node scripts/test-desktop-dev-runner.cjs",
@@ -113,3 +116,4 @@
     }
   }
 }
+

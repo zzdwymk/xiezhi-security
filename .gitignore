@@ -149,6 +149,7 @@ security-toolbox-web/scripts/*
 !security-toolbox-web/scripts/test-postgres-startup.cjs
 !security-toolbox-web/scripts/test-setup-auto-continue-browser.cjs
 !security-toolbox-web/scripts/test-startup-navigation-browser.cjs
+!security-toolbox-web/scripts/test-startup-window-dismissal.cjs
 !security-toolbox-web/scripts/test-stream-auth.cjs
 !security-toolbox-web/scripts/test-task-detail.cjs
 !security-toolbox-web/scripts/test-tooltip-mutex-browser.cjs
