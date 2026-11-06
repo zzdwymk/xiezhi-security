@@ -9,6 +9,8 @@ import { normalizeAiExecutionDecision, type AiExecutionDecision, type AiExecutio
 
 export interface ConversationStep {
   id?: string;
+  /** Stable plan-step identity; the same step re-planned keeps the same actionId. */
+  actionId?: string;
   workflowNodeId?: string;
   nodeRunId?: string;
   group?: number;
@@ -111,6 +113,8 @@ export interface ConversationAgentEvent {
   summary?: string;
   message?: string;
   stepId?: string;
+  /** Stable plan-step identity, carried by plan/tool events. */
+  actionId?: string;
   stepIndex?: number;
   toolCode?: string;
   toolName?: string;
@@ -134,6 +138,13 @@ export interface ConversationAgentEvent {
   outerNodeId?: string;
   nodeRunId?: string;
   publicNodeStatus?: PublicAgentNodeStatus;
+  /** Chat connection indicator: which planner stage the model call serves. */
+  modelStage?: string;
+  /** STARTED / SUCCEEDED / TIMEOUT / FAILED — never model text. */
+  modelOutcome?: string;
+  modelAttempt?: number;
+  modelElapsedMs?: number;
+  modelTimeoutMs?: number;
   innerStep?: string;
   ledgerSequence?: number;
   ledgerEntryDigest?: string;
@@ -413,6 +424,7 @@ function sanitizeStoredAgentEvent(event: ConversationAgentEvent) {
     summary: isPublicAiProgressEvent(event) ? publicAiProgressText(event.summary || event.message) || undefined : undefined,
     status: event.status,
     stepId: event.stepId,
+    actionId: event.actionId,
     stepIndex: finiteNumber(event.stepIndex),
     toolCode: event.toolCode,
     toolName: event.toolName,
@@ -435,6 +447,11 @@ function sanitizeStoredAgentEvent(event: ConversationAgentEvent) {
     outerNodeId: event.outerNodeId,
     nodeRunId: event.nodeRunId,
     publicNodeStatus: event.publicNodeStatus,
+    modelStage: event.modelStage,
+    modelOutcome: event.modelOutcome,
+    modelAttempt: finiteNumber(event.modelAttempt),
+    modelElapsedMs: finiteNumber(event.modelElapsedMs),
+    modelTimeoutMs: finiteNumber(event.modelTimeoutMs),
     innerStep: event.innerStep,
     ledgerSequence: finiteNumber(event.ledgerSequence),
     ledgerEntryDigest: event.ledgerEntryDigest,

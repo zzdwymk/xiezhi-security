@@ -34,6 +34,10 @@ export interface PlanStep {
   nodeRunId?: string;
   group?: number;
   dependsOnNodeIds?: string[];
+  /** Stable identity of this step inside the plan; used to merge replans of the same step. */
+  actionId?: string;
+  /** Execution attempt ordinal, so a retry can supersede the previous attempt's status. */
+  attempt?: number;
   toolCode: string;
   title: string;
   reason: string;
@@ -1143,6 +1147,22 @@ export const endpoints = {
   }) => api.post("/tasks", payload),
   retryTask: (id: number, idempotencyKey?: string) => api.post(`/tasks/${id}/retry`, undefined,
     idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : undefined),
+  /**
+   * Re-run one failed workflow node without re-planning the whole plan.
+   * Requires Idempotency-Key: a double click must not queue two scans.
+   */
+  retryWorkflowNode: (runId: number, taskId: number, idempotencyKey: string) =>
+    api.post(`/workflow-runs/${runId}/nodes/${taskId}/retry`, undefined, {
+      headers: { "Idempotency-Key": idempotencyKey },
+    }),
+  /**
+   * Re-run one dependency step of an approved AI plan that has no visual workflow run.
+   * Same idempotency contract as retryWorkflowNode.
+   */
+  retryTaskStep: (taskId: number, idempotencyKey: string) =>
+    api.post(`/tasks/${taskId}/retry-step`, undefined, {
+      headers: { "Idempotency-Key": idempotencyKey },
+    }),
   cancelTask: (id: number) => api.post(`/tasks/${id}/cancel`),
   workflowRuns: (projectId: number) =>
     api.get<WorkflowRunSummary[]>("/workflow-runs", { params: { projectId } }),
@@ -2062,6 +2082,8 @@ export function normalizeAgentEvent(
         workflowNodeId:
           step.workflowNodeId || step.workflow_node_id || step.nodeId,
         nodeRunId: step.nodeRunId,
+        actionId: boundedString(step.actionId || step.action_id, 64),
+        attempt: boundedNumber(step.attempt ?? step.retryCount),
         group: boundedNumber(step.group),
         dependsOnNodeIds: Array.isArray(step.dependsOnNodeIds)
           ? step.dependsOnNodeIds.map(String).slice(0, 128)
@@ -2160,14 +2182,30 @@ export function normalizeAgentEvent(
     status: raw.status || step.status,
     recorded: raw.recorded === true,
     eventTiming: boundedString(raw.eventTiming, 64),
+    // Chat connection indicator: which model call is in flight, its ceiling and its duration.
+    // Enumeration plus bounded integers only; anything else is dropped here as well.
+    modelStage: ["ROUTE", "EVIDENCE", "GROUNDED", "LEGACY", "SUMMARY", "CONTRACT"].includes(String(raw.modelStage || ""))
+      ? String(raw.modelStage) : undefined,
+    modelOutcome: ["STARTED", "SUCCEEDED", "TIMEOUT", "FAILED"].includes(String(raw.modelOutcome || ""))
+      ? String(raw.modelOutcome) : undefined,
+    modelAttempt: Number.isInteger(Number(raw.modelAttempt)) && Number(raw.modelAttempt) >= 0 && Number(raw.modelAttempt) <= 8
+      ? Number(raw.modelAttempt) : undefined,
+    modelElapsedMs: Number.isInteger(Number(raw.modelElapsedMs)) && Number(raw.modelElapsedMs) >= 0 && Number(raw.modelElapsedMs) <= 600_000
+      ? Number(raw.modelElapsedMs) : undefined,
+    modelTimeoutMs: Number.isInteger(Number(raw.modelTimeoutMs)) && Number(raw.modelTimeoutMs) >= 0 && Number(raw.modelTimeoutMs) <= 240_000
+      ? Number(raw.modelTimeoutMs) : undefined,
     summary: raw.summary || raw.message || raw.description || step.reason,
     message: raw.message || raw.summary,
     stepId: raw.stepId || step.id || step.step_id,
+    actionId: boundedString(raw.actionId || step.actionId, 64),
     stepIndex: raw.stepIndex ?? step.index,
     toolCode: raw.toolCode || step.toolCode || step.tool_code || raw.tool,
     toolName: raw.toolName || raw.tool_name || raw.name,
     toolCallId: raw.toolCallId || raw.tool_call_id || raw.callId,
     taskId: raw.taskId || raw.task_id,
+    workflowRunId:
+      boundedNumber(raw.workflowRunId || responseRaw?.workflowRunId) ??
+      boundedNumber(step.workflowRunId),
     attempt: raw.attempt ?? raw.retryCount,
     maxAttempts: raw.maxAttempts ?? raw.max_retries,
     approvalId: raw.approvalId || raw.approval_id || responseRaw?.approvalId,
