@@ -53,7 +53,10 @@ public class AgentOrchestrator {
           "token",
           "accesstoken",
           "refreshtoken",
-          "password");
+          "password",
+          // The connection indicator's "model" fields are enumerations ("ROUTE", "STARTED") and
+          // bounded integers; a key merely containing "model" must not be dropped.
+          "modelprompt");
   private final AiConversationMemoryService memory;
   private final SecurityAgentTools tools;
   private final AiAgentRuntimeClient runtimeClient;
@@ -1060,13 +1063,24 @@ public class AgentOrchestrator {
       data.put("assessmentSource", progress.assessmentSource());
     }
     if (progress.guardReason() != null) data.put("guardReason", progress.guardReason());
+    // Chat connection indicator: which model call is in flight, its ceiling and its duration.
+    if ("MODEL_CALL".equals(progress.stage())) {
+      data.put("modelStage", progress.modelDecision());
+      data.put("modelOutcome", progress.assessmentSource());
+      if (progress.attempt() != null) data.put("modelAttempt", progress.attempt());
+      if (progress.elapsedMs() != null) data.put("modelElapsedMs", progress.elapsedMs());
+      if (progress.timeoutMs() != null) data.put("modelTimeoutMs", progress.timeoutMs());
+    }
     AgentPhase phase = switch (progress.stage()) {
       case "RETRIEVING", "EVIDENCE_READY", "ASSESSING", "ASSESSED" -> AgentPhase.RECONNAISSANCE;
       case "AUTHORIZING" -> AgentPhase.VALIDATION;
       default -> AgentPhase.ENGAGEMENT;
     };
+    // A model call that already finished is a fact about this turn, not a request in flight.
+    String status = "MODEL_CALL".equals(progress.stage())
+        && !"STARTED".equals(progress.assessmentSource()) ? "DONE" : "RUNNING";
     data.put("stage", phase.name());
-    emit(sink, sequence, "planner_progress", phase, "RUNNING", progress.message(), data);
+    emit(sink, sequence, "planner_progress", phase, status, progress.message(), data);
   }
 
   private AgentPhase phaseForRuntimeEvent(AiAgentRuntimeClient.RuntimeEvent event) {
