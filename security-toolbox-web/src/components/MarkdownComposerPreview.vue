@@ -1,83 +1,178 @@
 <script setup lang="ts">
-import { computed, ref, useId } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, useId } from "vue";
 import { renderMarkdown } from "../utils/markdown";
 import FluentIcon from "./FluentIcon.vue";
 
-const props = defineProps<{ content: string }>();
-const expanded = ref(true);
+/**
+ * Markdown preview for the composer draft, shown in a collapsible rail that
+ * slides in to the right of the textarea.
+ *
+ * The rail is a plain flex sibling of the editor inside the composer column:
+ * it never wraps, re-parents or re-sizes the textarea, so the input area keeps
+ * its own rules (one fixed step of height). Narrow composers hide the trigger,
+ * because there is no room for a useful rail next to the text.
+ */
+const props = defineProps<{ content: string; open?: boolean }>();
+const emit = defineEmits<{ "update:open": [value: boolean] }>();
 const regionId = useId();
+const toggleRef = ref<HTMLButtonElement | null>(null);
+
+const hasContent = computed(() => props.content.trim().length > 0);
+const expanded = computed(() => props.open === true && hasContent.value);
 // Keep the editable source and the outgoing message untouched. Preview uses
 // exactly the same safe, unlocalized rendering as a sent user message.
 const html = computed(() => renderMarkdown(props.content));
+
+const toggleLabel = computed(() =>
+  !hasContent.value
+    ? "暂无输入内容，预览不可用"
+    : expanded.value
+      ? "收起预览栏"
+      : "在右侧预览 Markdown 渲染效果",
+);
+
+function setOpen(value: boolean) {
+  if (props.open !== value) emit("update:open", value);
+}
+
+/** The editor is the only textarea in this composer; keep the caret there. */
+function editor() {
+  return toggleRef.value?.closest(".thread-composer, .welcome-composer")?.querySelector("textarea") ?? null;
+}
+
+async function close() {
+  setOpen(false);
+}
+
+function handleKeydown(event: KeyboardEvent) {
+  if (event.key !== "Escape" || !expanded.value) return;
+  const composer = toggleRef.value?.closest(".thread-composer, .welcome-composer");
+  const target = event.target;
+  // Only for the composer the user is working in, never for a dialog elsewhere.
+  if (!composer || !(target instanceof Node) || !composer.contains(target)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  void close().then(() => editor()?.focus({ preventScroll: true }));
+}
+
+onMounted(() => window.addEventListener("keydown", handleKeydown, true));
+onBeforeUnmount(() => window.removeEventListener("keydown", handleKeydown, true));
 </script>
 
 <template>
-  <section v-if="content.trim()" class="composer-preview" :class="{ 'composer-preview--expanded': expanded }" aria-label="输入内容预览">
-    <button type="button" class="composer-preview-toggle" :aria-expanded="expanded" :aria-controls="regionId" :aria-label="expanded ? '收起实时预览' : '展开实时预览'" :title="expanded ? '收起实时预览' : '展开实时预览'" @click="expanded = !expanded">
-      <span>实时预览</span><FluentIcon :name="expanded ? 'chevron-up' : 'chevron-down'" />
-    </button>
-    <div v-show="expanded" :id="regionId" class="composer-preview-body markdown-body" tabindex="0" aria-label="Markdown 实时预览，可滚动查看" v-html="html" />
-  </section>
+  <button
+    ref="toggleRef"
+    type="button"
+    class="composer-preview-toggle"
+    :class="{ 'is-active': expanded }"
+    :disabled="!hasContent"
+    :aria-expanded="expanded ? 'true' : 'false'"
+    :aria-controls="regionId"
+    :aria-label="toggleLabel"
+    :title="toggleLabel"
+    @click="setOpen(!expanded)"
+  >
+    <FluentIcon name="eye" aria-hidden="true" /><span>预览</span>
+  </button>
+  <aside
+    v-show="expanded"
+    :id="regionId"
+    class="composer-preview-rail"
+    :class="{ 'rail-open': expanded }"
+    role="complementary"
+    aria-label="Markdown 渲染预览"
+  >
+    <header class="composer-preview-head">
+      <span>实时预览</span>
+      <button type="button" class="composer-preview-close" aria-label="收起预览栏" title="收起预览栏" @click="setOpen(false)">
+        <FluentIcon name="chevron-right" aria-hidden="true" />
+      </button>
+    </header>
+    <div class="composer-preview-body markdown-body" tabindex="0" aria-label="Markdown 渲染预览，可滚动查看" v-html="html" />
+  </aside>
 </template>
 
 <style scoped>
-.composer-preview { min-width: 0; margin: 0 4px 8px; border-top: 1px solid var(--app-border); }
-.composer-preview-toggle { display: flex; align-items: center; gap: 6px; min-height: 32px; padding: 3px 0; border: 0; background: transparent; color: var(--app-text-muted); font: inherit; font-size: 12px; cursor: pointer; }
-.composer-preview-toggle .fluent-system-icon { width: 14px; height: 14px; }
-.composer-preview-body { max-height: min(180px, 24vh); min-width: 0; overflow: auto; overflow-wrap: anywhere; padding: 0 4px 4px; font-size: 14px; line-height: 1.6; color: var(--app-text); }
+/* Trigger matches the footer's other text controls and stays content-sized. */
+.composer-preview-toggle {
+  display: inline-flex;
+  width: fit-content;
+  min-height: 26px;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-text-muted);
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 100ms ease, border-color 100ms ease, color 100ms ease, opacity 100ms ease;
+}
+.composer-preview-toggle .fluent-system-icon { width: 14px; height: 14px; flex: none; }
+.composer-preview-toggle:hover:not(:disabled) { border-color: var(--app-border); background: var(--app-surface-soft); color: var(--app-text); }
+.composer-preview-toggle.is-active { border-color: var(--app-accent); color: var(--app-accent); }
+.composer-preview-toggle:disabled { opacity: 0.5; cursor: default; }
+.composer-preview-toggle:focus-visible,
+.composer-preview-close:focus-visible,
+.composer-preview-body:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 2px; }
+
+/* The rail is a fixed-width column beside the editor, never a layout driver. */
+.composer-preview-rail {
+  display: flex;
+  width: 300px;
+  min-width: 300px;
+  max-height: 220px;
+  flex: none;
+  flex-direction: column;
+  overflow: hidden;
+  align-self: stretch;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  background: var(--app-surface-soft);
+  color: var(--app-text);
+}
+.composer-preview-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px 4px 10px;
+  border-bottom: 1px solid var(--app-border);
+  color: var(--app-text-muted);
+  font-size: 11px;
+}
+.composer-preview-close {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--app-text-muted);
+  cursor: pointer;
+}
+.composer-preview-close:hover { background: var(--app-surface-strong); color: var(--app-text); }
+.composer-preview-close .fluent-system-icon { width: 14px; height: 14px; }
+.composer-preview-body {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--app-text);
+}
 .composer-preview-body :deep(> :first-child) { margin-top: 0; }
 .composer-preview-body :deep(> :last-child) { margin-bottom: 0; }
 .composer-preview-body :deep(table) { display: block; max-width: 100%; overflow-x: auto; }
 .composer-preview-body :deep(pre) { max-width: 100%; overflow-x: auto; }
-.composer-preview-toggle:focus-visible, .composer-preview-body:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 2px; }
-/* Query the actual composer width: the sidebar can leave a narrow editor even
-   on a wide desktop. References, editing notices and actions keep a full row. */
-:global(.chat-page :is(.welcome-composer, .thread-composer):has(.composer-preview)) {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  container: ai-composer / inline-size;
-}
-:global(:is(.welcome-composer, .thread-composer):has(.composer-preview) > *) {
-  grid-column: 1 / -1;
-  min-width: 0;
-}
-:global(.chat-page :is(.welcome-composer, .thread-composer):has(.composer-preview:not(.composer-preview--expanded))) {
-  grid-template-columns: minmax(0, 1fr) auto;
-}
-@container ai-composer (min-width: 580px) {
-  .composer-preview-toggle .fluent-system-icon { transform: rotate(90deg); }
-  :global(.chat-page :is(.welcome-composer, .thread-composer):has(.composer-preview) > textarea) {
-    grid-column: 1;
-    width: 100%;
-    min-width: 0;
-  }
-  :global(.chat-page :is(.welcome-composer, .thread-composer) > .composer-preview) {
-    grid-column: 2;
-    border-top: 0;
-    border-left: 1px solid var(--app-border);
-    margin: 8px 0;
-    padding: 0 12px;
-  }
-  .composer-preview:not(.composer-preview--expanded) { align-self: start; }
-  .composer-preview:not(.composer-preview--expanded) .composer-preview-toggle { white-space: nowrap; }
-  :global(.chat-page :is(.welcome-composer, .thread-composer):has(.composer-preview--expanded) > textarea) {
-    grid-column: 1;
-    width: 100%;
-    height: 100%;
-    min-height: 144px;
-    max-height: none;
-    box-sizing: border-box;
-    align-self: stretch;
-    overflow: auto;
-  }
-  :global(.chat-page :is(.welcome-composer, .thread-composer) > .composer-preview--expanded) {
-    grid-column: 2;
-    border-top: 0;
-    border-left: 1px solid var(--app-border);
-    margin: 8px 0;
-    padding: 0 12px;
-  }
-  .composer-preview--expanded .composer-preview-body { max-height: min(180px, 24vh); }
-}
-@media (max-height: 650px) { .composer-preview-body { max-height: 100px; } }
 </style>

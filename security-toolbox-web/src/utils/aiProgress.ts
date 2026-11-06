@@ -1,5 +1,6 @@
 import type { ConversationAgentEvent, ConversationMessage } from "../stores/conversations";
-import { aiToolLabel, aiProgressFailureText, isPublicAiProgressEvent, publicAiProgressText } from "./aiPresentation";
+import { aiToolLabel, aiProgressFailureText, isPublicAiProgressEvent, publicAiProgressText,
+  aiModelCallLabel, aiModelWaitingLabel } from "./aiPresentation";
 import { isAwaitingAiDispatch, isAiDispatchRejected, aiDispatchRejectedTitle, aiDispatchQuotaFailure } from "./aiApproval";
 
 export interface AiProgressTask {
@@ -295,9 +296,20 @@ export function buildAiProgress(message: ConversationMessage, tasks: AiProgressT
     : `${message.steps.length ? `${message.steps.length} 项计划` : "回答已生成"}${related.length ? `，${related.filter(task => task.status === "SUCCESS").length}/${related.length} 个任务成功` : ""}。可展开回看处理进展。`;
   const modelEntries = entries.filter(entry => isModelAssessment(entry.event)
     && publicAiProgressText(entry.event.summary || entry.event.message));
+  // Connection indicator: the last model-call hint decides whether we are still waiting, and if
+  // so the panel ticks the elapsed figure against the call's own ceiling instead of guessing.
+  const latestModelCall = [...(message.agentEvents || [])].reverse()
+    .find(event => event.modelOutcome && event.modelStage);
+  const modelCallActive = Boolean(latestModelCall && latestModelCall.modelOutcome === "STARTED" && modelActive);
+  const modelCallTitle = modelCallActive
+    ? aiModelWaitingLabel({ modelStage: latestModelCall?.modelStage, modelAttempt: latestModelCall?.modelAttempt,
+      modelTimeoutMs: latestModelCall?.modelTimeoutMs }, Math.max(0, now - lastUpdate))
+    : latestModelCall ? aiModelCallLabel(latestModelCall) : "";
+  const modelCallTimedOut = latestModelCall?.modelOutcome === "TIMEOUT";
   return { active, modelActive, interrupted, failed, waitingApproval, entries, modelEntries, summaryEntries, currentTitle, currentDetail, startedAt: start,
     elapsed: Number.isFinite(start) && end !== undefined && Number.isFinite(end) && end >= start ? end - start : undefined, quietFor: active && Number.isFinite(lastUpdate) ? Math.max(0, now - lastUpdate) : 0,
     showQuietHint: active && !failed && !waitingApproval && !rejectedApproval && !rejectedDispatch && Number.isFinite(lastUpdate) && now - lastUpdate >= 15000,
+    modelCallActive, modelCallTitle, modelCallTimedOut,
     evidenceCount, decision: decision ? publicAiProgressText(decision.event.summary || decision.event.message) : "",
     decisionLabel: decision ? aiProgressSourceLabel(decision.event) : "运行状态",
     related, unresolvedTasks, completeTasks: related.filter(task => terminalTasks.has(task.status)).length,

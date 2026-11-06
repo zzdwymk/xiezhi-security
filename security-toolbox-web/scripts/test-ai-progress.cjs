@@ -33,7 +33,7 @@ function load(file) {
   return module.exports;
 }
 const { buildAiProgress, aiProgressEventTitle } = load(path.join(__dirname, '../src/utils/aiProgress.ts'));
-const { publicAiProgressText, isPublicAiProgressEvent, aiProgressFailureText } = load(path.join(__dirname, '../src/utils/aiPresentation.ts'));
+const { publicAiProgressText, isPublicAiProgressEvent, aiProgressFailureText, aiModelCallLabel } = load(path.join(__dirname, '../src/utils/aiPresentation.ts'));
 const origin = Date.parse('2026-09-29T10:00:00Z');
 const at = seconds => new Date(origin + seconds * 1000).toISOString();
 const message = patch => ({ id: 'message', role: 'assistant', content: '', status: 'running', taskIds: [], steps: [], createdAt: at(0), updatedAt: at(0), ...patch });
@@ -334,12 +334,39 @@ test('live local task rows still win over the backend awaiting status', () => {
   assert.match(p.currentTitle, /1 个任务正在推进/);
   assert.match(p.currentDetail, /扫描3个授权端口/);
 });
-test('awaiting status is ignored for failed and approval-pending turns', () => {
-  const failed = message({ status: 'failed', modelStreamStatus: 'failed' });
-  const failedP = buildAiProgress(failed, [], origin + 9000, { phase: 'waiting_tasks', tasks: [{ id: 1, toolCode: 'tcp_ports', status: 'RUNNING' }] });
-  assert.match(failedP.currentTitle, /本轮处理未完成/);
-  const approval = message({ status: 'completed', modelStreamStatus: 'completed', approvalStatus: 'REQUIRED', progressFinishedAt: at(4) });
-  const approvalP = buildAiProgress(approval, [], origin + 9000, { phase: 'waiting_tasks', tasks: [{ id: 1, toolCode: 'tcp_ports', status: 'RUNNING' }] });
-  assert.equal(approvalP.currentTitle, '等待确认执行计划');
+// Chat connection indicator: a long model call must be legible while it runs, not only after it
+// fails. These checks pin the wording a user sees for a live call, a finished one and a timeout.
+test('live model call shows what is running and how long it has waited', () => {
+  const running = message({
+    modelStreamStatus: 'running',
+    agentEvents: [{ id: 'e1', type: 'plan', createdAt: at(1), modelStage: 'GROUNDED', modelOutcome: 'STARTED', modelAttempt: 2, modelTimeoutMs: 60000 }],
+  });
+  const p = buildAiProgress(running, [], origin + 33000);
+  assert.equal(p.modelCallActive, true);
+  assert.equal(p.modelCallTimedOut, false);
+  assert.match(p.modelCallTitle, /等待模型整理方案/);
+  assert.match(p.modelCallTitle, /第 2 次调用/);
+  // Wait time is measured from the hint itself (33 s in, event recorded at +1 s), so it keeps
+  // ticking with the panel's one-second timer instead of freezing at the first render.
+  assert.match(p.modelCallTitle, /32 秒/);
+  assert.match(p.modelCallTitle, /上限 1 分/);
 });
+test('finished model call reports its duration and stops the spinner', () => {
+  const done = message({
+    modelStreamStatus: 'running',
+    agentEvents: [{ id: 'e2', type: 'plan', createdAt: at(1), modelStage: 'ROUTE', modelOutcome: 'SUCCEEDED', modelAttempt: 1, modelElapsedMs: 18250 }],
+  });
+  const p = buildAiProgress(done, [], origin + 20000);
+  assert.equal(p.modelCallActive, false);
+  assert.match(p.modelCallTitle, /模型已返回理解请求/);
+  assert.match(p.modelCallTitle, /用时 18 秒/);
+  assert.equal(aiModelCallLabel({ modelOutcome: 'TIMEOUT', modelAttempt: 3, modelElapsedMs: 60000 }), '模型调用超时 · 第 3 次调用 · 已等 1 分');
+});
+test('a request without any model-call hint keeps the previous status wording', () => {
+  const p = buildAiProgress(message({ modelStreamStatus: 'running' }), [], origin + 5000);
+  assert.equal(p.modelCallTitle, '');
+  assert.equal(p.modelCallActive, false);
+});
+
 console.log(`${passed} AI progress behavior checks passed.`);
+

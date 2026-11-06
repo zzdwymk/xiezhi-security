@@ -61,6 +61,9 @@ const attention = computed(() => {
   return p.unresolvedTasks ? p.currentDetail : "";
 });
 const activity = computed(() => !props.hideAttention && !props.statusInPlan && progress.value.active && !attention.value ? progress.value.currentDetail : "");
+// The connection line stays visible while a call runs, after it returns, and when it timed out,
+// because "which model call is stuck and for how long" is exactly what a timeout hides today.
+const modelConnection = computed(() => (props.hideAttention || props.statusInPlan ? "" : progress.value.modelCallTitle));
 let timer: ReturnType<typeof setInterval> | undefined;
 watch(() => progress.value.active, active => {
   if (timer) clearInterval(timer);
@@ -117,6 +120,14 @@ function receivedAt(at: number) {
     </header>
     <p v-if="attention" class="progress-attention">{{ attention }}</p>
     <p v-else-if="activity" class="progress-activity" :title="activity">{{ activity }}</p>
+    <!-- Connection indicator: the call in flight, ticking against its own ceiling, so a long
+         reasoning-tuned answer never looks like a stalled one. -->
+    <p v-if="modelConnection" class="progress-model-call" :class="{ 'is-timeout': progress.modelCallTimedOut }"
+       :title="modelConnection" role="status" aria-live="polite">
+      <span v-if="progress.modelCallActive" class="progress-spinner model-spinner" aria-hidden="true" />
+      <FluentIcon v-else :name="progress.modelCallTimedOut ? 'warning' : 'checkmark-circle'" aria-hidden="true" />
+      <span>{{ modelConnection }}</span>
+    </p>
     <div v-if="progress.modelEntries.length" v-show="expanded" :id="`${message.id}-progress-timeline`" class="progress-timeline-wrap">
       <ol class="progress-timeline" tabindex="0" aria-label="模型决策摘要，可滚动查看">
         <li v-for="entry in progress.modelEntries" :key="entry.key" :class="entry.tone">
@@ -179,6 +190,10 @@ function receivedAt(at: number) {
 .progress-toggle:focus-visible, .task-link:focus-visible, .progress-tool-call > summary:focus-visible, .progress-timeline:focus-visible { outline: 2px solid var(--colorNeutralForeground1); outline-offset: -2px; }
 .progress-toggle > .fluent-system-icon { width: 16px; height: 16px; }
 .progress-activity, .progress-attention { margin: 0 0 8px 24px; overflow-wrap: anywhere; }
+.progress-model-call { display: flex; align-items: center; gap: 6px; margin: 0 0 8px 24px; color: var(--colorNeutralForeground2); font-size: 13px; line-height: 20px; overflow-wrap: anywhere; }
+.progress-model-call > .fluent-system-icon { flex: 0 0 16px; width: 16px; height: 16px; }
+.progress-model-call.is-timeout { color: var(--colorPaletteRedForeground1, var(--colorNeutralForeground1)); }
+.model-spinner { flex: 0 0 12px; width: 12px; height: 12px; }
 .progress-activity { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .progress-attention { color: var(--colorNeutralForeground1); }
 .progress-tool-stream { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; margin: 0 0 4px 24px; }

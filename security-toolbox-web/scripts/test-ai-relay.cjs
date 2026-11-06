@@ -168,8 +168,73 @@ async function main() {
   for (const raw of [event({choices: [{delta: {content: 'partial'}}]}) + 'data: [DONE]\n\n', event({choices: [{delta: {content: ''}, finish_reason: 'stop'}]})]) {
     await test('reject truncated or empty SSE', () => fixture({providers: [provider('a')], fetchImpl: async () => new Response(raw, {headers: {'content-type': 'text/event-stream'}})}, async (_, request) => assert.equal((await request()).status, 503)))
   }
+  // 上一条用例覆盖"没有终态 marker"与"stop 但空文本"。reasoning_content 只有救援价值：
+  // 有思考但没有终态 marker 说明流被截断，仍不得当成完整回答。
+  await test('reject SSE with reasoning but no terminal marker', () => fixture({providers: [provider('a')], fetchImpl: async () => new Response(
+    event({choices: [{index: 0, delta: {reasoning_content: '思考一半'}}]}) + 'data: [DONE]\n\n',
+    {headers: {'content-type': 'text/event-stream'}})}, async (_, request) => assert.equal((await request()).status, 503)))
   await test('chat SSE success buffers complete answer', () => fixture({providers: [provider('a')], fetchImpl: async () => new Response(event({choices: [{index: 0, delta: {content: 'O'}}]}) + event({choices: [{index: 0, delta: {content: 'K'}, finish_reason: 'stop'}]}) + 'data: [DONE]\n\n', {headers: {'content-type': 'text/event-stream'}})}, async (_, request) => {
     assert.equal((await (await request()).json()).choices[0].message.content, 'OK')
+  }))
+  // 推理型上游的真实形态：思考走 reasoning_content、content 始终为空、被 max_tokens 截断时
+  // 以 finish_reason=length 收尾。旧实现只看 content 且只认 finish_reason=stop，
+  // 于是把一次成功的模型调用误判成 upstream_incomplete（界面表现为 TURN_TIMEOUT）。
+  await test('reasoning-only SSE with finish_reason length is rescued instead of failed', () => fixture({providers: [provider('a')], fetchImpl: async () => new Response(
+    ': heartbeat\n\n' +
+    event({choices: [{index: 0, delta: {role: 'assistant', reasoning_content: '用户要求只回复'}}]}) +
+    event({choices: [{index: 0, delta: {reasoning_content: ' OK，先确认系统提示'}}]}) +
+    event({choices: [{index: 0, delta: {}, finish_reason: 'length'}]}) +
+    'data: [DONE]\n\n',
+    {headers: {'content-type': 'text/event-stream'}})}, async (_, request) => {
+    const response = await request()
+    assert.equal(response.status, 200)
+    const body = await response.json()
+    assert.equal(body.choices[0].message.content, '用户要求只回复 OK，先确认系统提示')
+    assert.equal(body.relay_notice, 'reasoning_only')
+  }))
+  for (const [label, raw] of [
+    // 非流式 JSON：content 为空、finish_reason=length，正文整段落在 reasoning_content。
+    ['non-stream reasoning_content', JSON.stringify({choices: [{message: {content: null, reasoning_content: '先分析再回答'}, finish_reason: 'length'}], usage: {prompt_tokens: 5, completion_tokens: 9}})],
+    // Responses 模式：预算耗在思考里，没有 output_text，只剩 reasoning summary。
+    ['responses reasoning summary', null],
+  ]) {
+    await test(`empty content is rescued from ${label}`, () => label === 'responses reasoning summary'
+      ? fixture({providers: [provider('a', {apiMode: 'responses'})], fetchImpl: async () => new Response(JSON.stringify({status: 'completed', output: [{type: 'reasoning', summary: [{type: 'summary_text', text: '先列出候选节点'}]}]}), {headers: {'content-type': 'application/json'}})}, async (_, request) => {
+        const body = await (await request()).json()
+        assert.equal(body.choices[0].message.content, '先列出候选节点')
+        assert.equal(body.relay_notice, 'reasoning_only')
+      })
+      : fixture({providers: [provider('a')], fetchImpl: async () => new Response(raw, {headers: {'content-type': 'application/json'}})}, async (relay, request) => {
+        const response = await request()
+        assert.equal(response.status, 200)
+        const body = await response.json()
+        assert.equal(body.choices[0].message.content, '先分析再回答')
+        assert.equal(body.relay_notice, 'reasoning_only')
+        assert.deepEqual(body.usage, {prompt_tokens: 5, completion_tokens: 9})
+        assert.equal(relay.status().providers[0].failures, 0)
+      }))
+  }
+  // 有正文但被 length 截断：仍按上游给出的真实形态返回，并标记 interrupted，
+  // 让调用方知道这段文本可能被截短，而不是悄悄当成完整回答。
+  await test('truncated content is returned with an interrupt notice', () => fixture({providers: [provider('a')], fetchImpl: async () => new Response(
+    event({choices: [{index: 0, delta: {content: '{"intent":"plan"'}}]}) +
+    event({choices: [{index: 0, delta: {}, finish_reason: 'length'}]}) + 'data: [DONE]\n\n',
+    {headers: {'content-type': 'text/event-stream'}})}, async (_, request) => {
+    const body = await (await request()).json()
+    assert.equal(body.choices[0].message.content, '{"intent":"plan"')
+    assert.equal(body.relay_notice, 'upstream_length')
+  }))
+  // 真正的上游中断（既无正文也无思考，或显式失败原因）仍必须失败，不能靠救援逻辑放行。
+  await test('explicit non-length finish still fails closed', () => fixture({providers: [provider('a')], fetchImpl: async () => new Response(
+    event({choices: [{index: 0, delta: {reasoning_content: '思考'}}]}) +
+    event({choices: [{index: 0, delta: {}, finish_reason: 'content_filter'}]}) + 'data: [DONE]\n\n',
+    {headers: {'content-type': 'text/event-stream'}})}, async (_, request) => {
+    assert.equal((await request()).status, 503)
+  }))
+  await test('length without any text still fails closed', () => fixture({providers: [provider('a')], fetchImpl: async () => new Response(
+    event({choices: [{index: 0, delta: {content: ''}, finish_reason: 'length'}]}) + 'data: [DONE]\n\n',
+    {headers: {'content-type': 'text/event-stream'}})}, async (_, request) => {
+    assert.equal((await request()).status, 503)
   }))
   await test('Responses JSON and explicit Codex headers', () => fixture({providers: [provider('a', {apiMode: 'responses', codexHeaders: true})], fetchImpl: async (_, init) => {
     assert.equal(init.headers.originator, 'codex_cli_rs')

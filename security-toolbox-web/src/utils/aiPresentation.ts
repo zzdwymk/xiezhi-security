@@ -38,7 +38,7 @@ const AI_RUNTIME_TIMEOUT_FAILURE =
   /(?:超过时间预算|TURN_TIMEOUT|长时间没有返回|连接超时|请求超时)/i;
 
 const RUNTIME_TIMEOUT_MESSAGE =
-  "模型在规定时间内没有完成回答，本轮已停止，未执行任何检测。请检查模型连接后重试。";
+  "模型在本轮时间预算内没有生成完回答（推理型模型单次回复耗时较长），本轮已停止，未执行任何检测。请稍后重试、缩短对话历史，或换用响应更快的模型/线路。";
 
 const MODEL_PROVIDER_FAILURES: ReadonlyArray<readonly [RegExp, string]> = [
   [
@@ -317,6 +317,73 @@ export function aiElapsedLabel(milliseconds: number): string {
   if (seconds < 60) return `${seconds} 秒`;
   const minutes = Math.floor(seconds / 60);
   return seconds % 60 ? `${minutes} 分 ${seconds % 60} 秒` : `${minutes} 分`;
+}
+
+/**
+ * Chat connection indicator.
+ *
+ * A reasoning-tuned model can sit on one call for a minute, during which the turn shows nothing
+ * but an ellipsis. These labels make that wait legible: which planner stage is waiting, for how
+ * long and against which ceiling — and when a call timed out, how long it actually waited.
+ * Only enumerations and bounded integers feed this, so no model text can reach the UI.
+ */
+const MODEL_STAGE_LABELS: Record<string, string> = {
+  ROUTE: "理解请求",
+  EVIDENCE: "评估证据",
+  GROUNDED: "整理方案",
+  LEGACY: "生成方案",
+  SUMMARY: "压缩较早对话",
+  CONTRACT: "检查输出格式",
+};
+
+export function aiModelStageLabel(stage?: string): string {
+  return MODEL_STAGE_LABELS[String(stage || "")] || "调用模型";
+}
+
+/** "2 分钟" style figure for a configured ceiling. */
+export function aiModelCeilingLabel(milliseconds?: number): string {
+  if (!milliseconds || milliseconds <= 0) return "";
+  return aiElapsedLabel(milliseconds);
+}
+
+export function aiModelCallLabel(event: {
+  modelStage?: string;
+  modelOutcome?: string;
+  modelAttempt?: number;
+  modelElapsedMs?: number;
+  modelTimeoutMs?: number;
+}): string {
+  const purpose = aiModelStageLabel(event.modelStage);
+  const attempt = Number(event.modelAttempt) > 0 ? `第 ${Math.min(Number(event.modelAttempt), 8)} 次调用` : "";
+  const ceiling = aiModelCeilingLabel(event.modelTimeoutMs);
+  const elapsed = Number.isFinite(Number(event.modelElapsedMs)) && event.modelElapsedMs !== undefined
+    ? aiElapsedLabel(Number(event.modelElapsedMs)) : "";
+  switch (event.modelOutcome) {
+    case "STARTED":
+      return ["等待模型" + purpose, attempt, ceiling ? `单次上限 ${ceiling}` : ""].filter(Boolean).join(" · ");
+    case "SUCCEEDED":
+      return ["模型已返回" + purpose, attempt, elapsed ? `用时 ${elapsed}` : ""].filter(Boolean).join(" · ");
+    case "TIMEOUT":
+      return ["模型调用超时", attempt, elapsed ? `已等 ${elapsed}` : ""].filter(Boolean).join(" · ");
+    case "FAILED":
+      return ["模型调用失败", attempt, elapsed ? `已等 ${elapsed}` : ""].filter(Boolean).join(" · ");
+    default:
+      return "";
+  }
+}
+
+/** Live wording for a call that is still running: the elapsed figure keeps ticking in the UI. */
+export function aiModelWaitingLabel(event: {
+  modelStage?: string;
+  modelAttempt?: number;
+  modelTimeoutMs?: number;
+}, elapsedMs: number): string {
+  const purpose = aiModelStageLabel(event.modelStage);
+  const attempt = Number(event.modelAttempt) > 0 ? `第 ${Math.min(Number(event.modelAttempt), 8)} 次调用` : "";
+  const ceiling = aiModelCeilingLabel(event.modelTimeoutMs);
+  const waited = aiElapsedLabel(Math.max(0, elapsedMs));
+  const budget = ceiling ? ` / 上限 ${ceiling}` : "";
+  return ["等待模型" + purpose, attempt, `${waited}${budget}`].filter(Boolean).join(" · ");
 }
 
 export function aiProgressFailureText(value: unknown, hasTasks: boolean, limit = 480): string {

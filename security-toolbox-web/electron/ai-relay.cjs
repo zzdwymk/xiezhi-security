@@ -149,10 +149,34 @@ function responseText(data) {
   return output || data.output_text || ''
 }
 
+// Responses-mode reasoning summaries are display text the provider produced on purpose; they are
+// only used when the response carries no output text at all (budget spent inside thinking).
+function responseReasoning(data) {
+  const output = (data?.output || []).filter(o => o.type === 'reasoning').flatMap(o => o.summary || [])
+    .filter(c => c && c.type === 'summary_text' && typeof c.text === 'string').map(c => c.text)
+  return output.join('\n')
+}
+
+// Reasoning models stream their thinking before the answer: DeepSeek-style gateways put it in
+// `delta.reasoning_content`, newer OpenAI-compatible ones in `delta.reasoning`. Upstreams that
+// run out of tokens mid-thought then finish with `length` and never emit `content`. Such a
+// response is not a relay failure — replaying it as an answer keeps the turn alive. `length`
+// still means the text may be cut off, so it is only used when the model produced no `content`
+// at all; a bare `length` with real content stays `upstream_incomplete` (truncated JSON contract).
+function reasoningText(source) {
+  if (!source) return ''
+  if (typeof source.reasoning_content === 'string') return source.reasoning_content
+  if (typeof source.reasoning === 'string') return source.reasoning
+  if (typeof source.thinking === 'string') return source.thinking
+  return ''
+}
+
 function decodeResponse(raw, contentType, mode) {
   let answer = '', completion = null
+  // Model-side text that is not the answer but is still usable when nothing else arrived.
+  let reasoning = '', contentSeen = false, interrupted = false
   if (/text\/event-stream/i.test(contentType) || /^\s*(?:event:|data:)/.test(raw)) {
-    let completed = false
+    let terminalReason = null
     for (const block of raw.replace(/\r\n/g, '\n').split(/\n\n/)) {
       const event = block.split('\n').find(line => line.startsWith('event:'))?.slice(6).trim()
       const data = block.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n')
@@ -164,31 +188,57 @@ function decodeResponse(raw, contentType, mode) {
       if (value.error || /(?:error|failed|incomplete)$/.test(value.type || '')) throw new RelayError('upstream_incomplete')
       if (mode === 'responses') {
         if (value.type === 'response.output_text.delta') answer += value.delta || ''
-        if (value.type === 'response.completed') { answer = responseText(value.response); completed = true }
+        if (value.type === 'response.reasoning_summary_text.delta') reasoning += value.delta || ''
+        if (value.type === 'response.completed') {
+          answer = responseText(value.response)
+          if (!answer) reasoning = responseReasoning(value.response) || reasoning
+          terminalReason = 'stop'
+        }
       } else {
         const choice = value.choices?.find(c => c.index === 0) || value.choices?.[0]
         if (typeof choice?.delta?.content === 'string') answer += choice.delta.content
-        if (choice?.finish_reason === 'stop') completed = true
-        else if (choice?.finish_reason) throw new RelayError('upstream_incomplete')
+        const thinking = reasoningText(choice?.delta)
+        if (thinking) reasoning += thinking
+        if (choice?.finish_reason === 'stop') terminalReason = 'stop'
+        // Only `length` is tolerated below; any other explicit reason is a real interruption.
+        else if (choice?.finish_reason) {
+          terminalReason = String(choice.finish_reason)
+          if (terminalReason !== 'length') throw new RelayError('upstream_incomplete')
+        }
       }
     }
     // A terminal marker alone does not establish a successful model completion.
-    if (!completed) throw new RelayError('upstream_incomplete')
+    if (terminalReason === null) throw new RelayError('upstream_incomplete')
+    if (terminalReason === 'length' && answer.trim()) interrupted = true
   } else {
     let value
     try { value = JSON.parse(raw) } catch { throw new RelayError('invalid_upstream_response') }
     if (value.error) throw new RelayError('upstream_error')
-    if (mode === 'responses') answer = responseText(value)
-    else {
+    if (mode === 'responses') {
+      answer = responseText(value)
+      if (!answer) reasoning = responseReasoning(value)
+    } else {
       const choice = value.choices?.[0]
-      if (!choice || choice.finish_reason !== 'stop') throw new RelayError('upstream_incomplete')
-      answer = choice.message?.content
+      if (!choice) throw new RelayError('upstream_incomplete')
+      const finish = choice.finish_reason
+      if (finish !== 'stop' && finish !== 'length') throw new RelayError('upstream_incomplete')
+      answer = choice.message?.content ?? ''
+      reasoning = reasoningText(choice.message)
+      if (finish === 'length' && answer.trim()) interrupted = true
       completion = value
     }
   }
-  if (typeof answer !== 'string' || !answer.trim()) throw new RelayError('empty_answer')
+  if (!answer.trim() && reasoning.trim()) {
+    // Token budget spent inside the reasoning channel: replay the model's own text instead of
+    // failing the route. Tokens reported by the upstream stay authoritative either way.
+    answer = reasoning
+    contentSeen = false
+  } else {
+    contentSeen = Boolean(answer.trim())
+  }
+  if (!answer.trim()) throw new RelayError('empty_answer')
   // Only expose the successful text; upstream metadata can contain internal URLs.
-  return { answer, usage: completion?.usage }
+  return { answer, usage: completion?.usage, interrupted, reasoningOnly: !contentSeen }
 }
 
 // 单次上游尝试必须给推理型模型留足时间：运行时侧的模型超时为 45 秒
@@ -295,6 +345,9 @@ function createAiRelay({providers = [], fetchImpl = globalThis.fetch, attemptTim
       const result = await complete(body, requestController.signal)
       if (requestController.signal.aborted || res.destroyed) return
       const common = {id: `chatcmpl-relay-${randomBytes(8).toString('hex')}`, created: Math.floor(Date.now() / 1000), model: result.model}
+      // Interrupted / reasoning-only answers are replayed verbatim but marked so a caller can tell
+      // a complete answer from a rescued one without reading any upstream payload.
+      const notice = result.interrupted ? 'upstream_length' : result.reasoningOnly ? 'reasoning_only' : null
       if (body.stream === true) {
         res.writeHead(200, {'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache'})
         res.write(`data: ${JSON.stringify({...common, object: 'chat.completion.chunk', choices: [{index: 0, delta: {role: 'assistant', content: result.answer}, finish_reason: null}]})}\n\n`)
@@ -302,7 +355,7 @@ function createAiRelay({providers = [], fetchImpl = globalThis.fetch, attemptTim
         res.end('data: [DONE]\n\n')
       } else {
         res.writeHead(200, {'Content-Type': 'application/json'})
-        res.end(JSON.stringify({...common, object: 'chat.completion', choices: [{index: 0, message: {role: 'assistant', content: result.answer}, finish_reason: 'stop'}], ...(result.usage ? {usage: result.usage} : {})}))
+        res.end(JSON.stringify({...common, object: 'chat.completion', choices: [{index: 0, message: {role: 'assistant', content: result.answer}, finish_reason: 'stop'}], ...(result.usage ? {usage: result.usage} : {}), ...(notice ? {relay_notice: notice} : {})}))
       }
     } catch (error) {
       if (error.code === 'request_cancelled') return
