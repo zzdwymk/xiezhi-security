@@ -78,6 +78,18 @@ final class RuntimeProtocolDiagnostics {
       if (failure.code() == Code.EVIDENCE_SCOPE_INVALID) {
         return "AI 生成的方案引用的证据超出授权范围或缺少必要依据，" + stopped + "请检查项目和目标授权范围后重试";
       }
+      // A field/contract mismatch is a version problem between the packaged runtime and
+      // this server, not corrupted model output. Reporting it as "完整性校验" sent operators
+      // looking for a broken model when the real fix was upgrading the runtime build.
+      if (failure.code() == Code.FIELD_CONTRACT_INVALID
+          || failure.code() == Code.EVENT_JSON_INVALID) {
+        return "智能服务与本地服务的通信协议不一致（字段契约不符），"
+            + stopped + "通常是智能服务组件版本过旧，请重新打包或升级智能服务后重试";
+      }
+      if (failure.code() == Code.STREAM_INCOMPLETE) {
+        return "智能服务在返回完整结果前中断了连接，"
+            + stopped + "请检查智能服务是否仍在运行后重试";
+      }
       return "智能服务返回内容未通过完整性校验，"
           + stopped + "请查看 AI 诊断记录后重试";
     }
@@ -99,7 +111,8 @@ final class RuntimeProtocolDiagnostics {
       case EVIDENCE_SCOPE_INVALID ->
           "AI 生成的方案引用的证据超出授权范围或缺少必要依据，" + stopped + "请检查项目和目标授权范围后重试";
       case TURN_TIMEOUT ->
-          "模型在规定时间内没有完成回答，" + stopped + "请检查模型连接后重试";
+          "模型在本轮时间预算内没有生成完回答（推理型模型单次回复耗时较长），" + stopped
+              + "请稍后重试、缩短对话历史，或在设置中换用响应更快的模型/线路";
       case MODEL_NOT_CONFIGURED ->
           "AI 模型未配置或未启用，" + stopped + "请在系统设置中配置并启用模型后重试";
       case MODEL_ACCESS_DENIED ->
