@@ -26,6 +26,35 @@ public interface SecurityTaskRepository extends JpaRepository<SecurityTask, Long
   int activateBlockedWorkflowTask(
       @Param("id") Long id, @Param("message") String message, @Param("now") Instant now);
 
+  /**
+   * Put a skipped successor back into the dependency queue without reviving its finished marker.
+   *
+   * <p>Guarded on the exact current state so a concurrent retry, cancel or completion can never
+   * be overwritten by a stale snapshot; callers must treat 0 rows as "someone changed it".
+   */
+  @Modifying(clearAutomatically = true, flushAutomatically = true)
+  @Transactional
+  @Query("""
+      update SecurityTask task set task.status = 'BLOCKED',
+        task.terminationReason = null, task.finishedAt = null,
+        task.errorMessage = null, task.progress = 0,
+        task.progressMessage = :message, task.progressUpdatedAt = :now
+      where task.id = :id and task.status = 'SKIPPED'
+        and task.terminationReason = :reason
+        and (task.workflowRunId is null or exists
+          (select run.id from WorkflowRun run
+           where run.id = task.workflowRunId and run.status = 'RUNNING'))
+      """)
+  int requeueSkippedWorkflowTask(
+      @Param("id") Long id,
+      @Param("reason") String reason,
+      @Param("message") String message,
+      @Param("now") Instant now);
+
+  /** Every successor that an earlier failed dependency turned into SKIPPED. */
+  List<SecurityTask> findAllByWorkflowRunIdAndStatusAndTerminationReason(
+      Long workflowRunId, String status, String terminationReason);
+
   List<SecurityTask> findAllByOrderByCreatedAtDesc();
 
   List<SecurityTask> findAllByProjectIdInOrderByCreatedAtDesc(Collection<Long> projectIds);

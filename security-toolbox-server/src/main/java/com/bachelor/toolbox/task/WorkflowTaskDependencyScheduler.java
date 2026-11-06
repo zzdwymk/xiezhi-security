@@ -23,6 +23,10 @@ public class WorkflowTaskDependencyScheduler {
   private static final Set<String> FAILED_TERMINALS =
       Set.of("FAILED", "TIMEOUT", "REJECTED", "CANCELLED", "SKIPPED");
 
+  /** Matches the reason the drain itself writes when a prerequisite did not succeed. */
+  static final String PREREQUISITE_NOT_COMPLETED = "PREREQUISITE_NOT_COMPLETED";
+  private static final String REQUIRED_DEPENDENCY_TERMINAL = "等待前置任务完成";
+
   private final SecurityTaskRepository tasks;
   private final TaskExecutionService execution;
   private final AssessmentProjectService projects;
@@ -164,7 +168,68 @@ public class WorkflowTaskDependencyScheduler {
           changed = activate(task) || changed;
         }
       }
+      // A skipped successor must get another chance once its prerequisite was retried
+      // successfully. The drain only walks BLOCKED rows, so without this the branch stays
+      // "已跳过" forever after a successful retry and the step looks like it never ran.
+      changed = requeueSkippedSuccessors() || changed;
     } while (changed);
+  }
+
+  /**
+   * Revive successors that a failed prerequisite skipped, now that every dependency is terminal.
+   *
+   * <p>Only re-queues rows whose blocking prerequisite succeeded; a dependency that is still
+   * failed or running leaves the row skipped, and the next drain decides again.
+   */
+  private boolean requeueSkippedSuccessors() {
+    boolean changed = false;
+    for (SecurityTask skipped :
+        tasks.findAllByStatusOrderByCreatedAtAsc("SKIPPED")) {
+      if (!PREREQUISITE_NOT_COMPLETED.equals(skipped.getTerminationReason())) continue;
+      List<Long> dependencyIds = dependencyIds(skipped);
+      if (dependencyIds.isEmpty()) continue;
+      Map<Long, SecurityTask> dependencies =
+          tasks.findAllById(dependencyIds).stream()
+              .collect(java.util.stream.Collectors.toMap(SecurityTask::getId, item -> item));
+      // A vanished or still-running dependency is not a reason to revive anything yet.
+      if (dependencies.size() != dependencyIds.size()) continue;
+      if (!dependencies.values().stream().allMatch(item ->
+          "SUCCESS".equals(item.getStatus()) || FAILED_TERMINALS.contains(item.getStatus()))) {
+        continue;
+      }
+      List<Long> successIds = skipped.getSuccessDependencyTaskIds() == null
+          ? dependencyIds : parseDependencyIds(skipped.getSuccessDependencyTaskIds());
+      if (successIds.stream()
+          .anyMatch(id -> FAILED_TERMINALS.contains(dependencies.get(id).getStatus()))) {
+        // Still genuinely blocked by a failed node: leave it skipped until that one is retried.
+        continue;
+      }
+      if (requeue(skipped)) changed = true;
+    }
+    return changed;
+  }
+
+  private boolean requeue(SecurityTask skipped) {
+    Instant now = Instant.now();
+    if (tasks.requeueSkippedWorkflowTask(
+            skipped.getId(), PREREQUISITE_NOT_COMPLETED, REQUIRED_DEPENDENCY_TERMINAL, now) != 1) {
+      return false;
+    }
+    skipped.setStatus("BLOCKED");
+    skipped.setTerminationReason(null);
+    skipped.setFinishedAt(null);
+    skipped.setErrorMessage(null);
+    skipped.setProgress(0);
+    skipped.setProgressMessage(REQUIRED_DEPENDENCY_TERMINAL);
+    skipped.setProgressUpdatedAt(now);
+    progressEvents.publish(skipped, "前置节点重试后重新排队");
+    audit.record(
+        "REQUEUE_WORKFLOW_TASK",
+        "TASK",
+        skipped.getId(),
+        "workflowNodeId=" + skipped.getWorkflowNodeId(),
+        "ACCEPTED");
+    return true;
   }
 
   private boolean activate(SecurityTask task) {
