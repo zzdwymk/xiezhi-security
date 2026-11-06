@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .progress import emit_progress
+from .progress import emit_model_call, emit_progress
 
 import asyncio
 import hashlib
@@ -10,6 +10,7 @@ import os
 import sys
 import re
 import secrets
+import time
 import unicodedata
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -22,7 +23,7 @@ from .authorization import (
     requested_port_intervals,
 )
 from .config import settings
-from .diagnostics import diagnostic_scope, record_diagnostic
+from .diagnostics import diagnostic_scope, record_diagnostic, record_vendor_diagnostic
 from .model import (
     AgentPlanner,
     HIGH_RISK_TOOLS,
@@ -124,6 +125,35 @@ _RISK_REASON_LABELS = {
     "HIGH": "高风险",
     "CRITICAL": "严重",
 }
+
+# Tools whose work cannot be meaningful before a port scan has finished. The desktop
+# uses this to tell "still waiting for a prerequisite" apart from "nothing is running",
+# which is why its "等待前置任务" rows looked unexplained.
+_PORT_DEPENDENT_TOOLS = frozenset(
+    {
+        "nmap_service_scan",
+        "http_headers",
+        "tls_config",
+        "dir_scan",
+        "http_security_check",
+        "nuclei_scan",
+        "afrog_scan",
+        "xray_scan",
+        "zap_scan",
+        "msf_scan",
+        "sqlmap_scan",
+        "zap_fuzz",
+    }
+)
+_PORT_PROBE_TOOLS = frozenset({"tcp_ports", "fscan_scan"})
+
+
+def _port_probe_tool(actions: list[dict[str, Any]]) -> str:
+    """Name the plan step that unblocks the port-dependent steps, if any."""
+    for action in actions:
+        if str(action.get("tool") or "") in _PORT_PROBE_TOOLS:
+            return str(action.get("tool") or "")
+    return ""
 
 CONTRACT_VERSION = 3
 RUNTIME_LEDGER_GENESIS_DIGEST = "sha256:" + ("0" * 64)
@@ -615,18 +645,39 @@ class LedgerAgentRuntime:
             int(request_budget.get("maxLlmCalls", settings.max_rag_llm_calls)),
         )
         remaining = max(0, max_llm_calls - call_count)
+        # Chat-side connection telemetry: which planner stage is waiting on the model, for how
+        # long and against which ceiling. Only finite enumerations and bounded integers cross
+        # this channel, so the UI can show "waiting 18 s of 60 s" without any prompt text.
+        model_stage = {"route": "ROUTE", "assess_evidence": "EVIDENCE", "grounded_plan": "GROUNDED",
+                       "plan": "LEGACY"}.get(getattr(method, "__name__", ""), "UNKNOWN")
+        attempt = call_count + 1
+        timeout_seconds = settings.llm_timeout_seconds
+        started = time.monotonic()
+        emit_model_call(model_stage, "STARTED", attempt=attempt,
+                        timeout_ms=int(max(0.0, timeout_seconds) * 1000))
         with diagnostic_scope(state.get("runId", "")), model_call_budget(remaining) as calls, contract_repair_budget(max(0, remaining - 1)):
             try:
                 result = await asyncio.wait_for(
-                    method(*args), timeout=settings.llm_timeout_seconds
+                    method(*args), timeout=timeout_seconds
                 )
             except Exception as exc:
+                elapsed_ms = int((time.monotonic() - started) * 1000)
                 exc.llm_calls_used = calls.used
                 stage = {"route": "ROUTE", "assess_evidence": "EVIDENCE", "grounded_plan": "GROUNDED",
                          "plan": "LEGACY"}.get(getattr(method, "__name__", ""), "UNKNOWN")
                 category, diagnostics = safe_model_diagnostic(exc)
                 record_diagnostic(stage, "REJECTED", category, diagnostics, attempt=exc.llm_calls_used)
+                emit_model_call(
+                    model_stage,
+                    "TIMEOUT" if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) else "FAILED",
+                    attempt=attempt,
+                    elapsed_ms=elapsed_ms,
+                )
                 raise
+            emit_model_call(
+                model_stage, "SUCCEEDED", attempt=attempt,
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+            )
             return result, call_count + calls.used
 
     @staticmethod
@@ -1152,11 +1203,40 @@ class LedgerAgentRuntime:
         self, state: AgentState, plan: dict[str, Any]
     ) -> AgentState:
         actions: list[dict[str, Any]] = []
+        # Java dispatches an approved plan as a graph: steps in the same group run together
+        # while a barrier tool (port sweep, crawler…) forces a serial dependency chain.
+        # A step that needs open ports but has no explicit upstream therefore still waits
+        # for the port probe in practice. Surfacing that here keeps the plan checklist
+        # honest instead of showing a step that looks parallel but will never start early.
+        port_probe_tool = _port_probe_tool(
+            [item for item in plan.get("actions", []) if isinstance(item, dict)]
+        )
         for action in plan.get("actions", []):
             if not isinstance(action, dict):
                 continue
             normalized = dict(action)
             normalized.setdefault("group", 0)
+            tool = str(normalized.get("tool") or "")
+            depends_on = [
+                str(node) for node in (normalized.get("dependsOnNodeIds") or [])
+            ]
+            waits_for_ports = bool(
+                port_probe_tool
+                and port_probe_tool != tool
+                and tool in _PORT_DEPENDENT_TOOLS
+                and not depends_on
+            )
+            if waits_for_ports:
+                normalized["dependsOnNodeIds"] = [
+                    probe
+                    for probe in (
+                        str(item.get("workflowNodeId") or "")
+                        for item in plan.get("actions", [])
+                        if isinstance(item, dict)
+                        and str(item.get("tool") or "") in _PORT_PROBE_TOOLS
+                    )
+                    if probe
+                ]
             action_payload = {
                 "runId": state.get("runId", ""),
                 "workflowNodeId": normalized.get("workflowNodeId"),
@@ -1200,6 +1280,13 @@ class LedgerAgentRuntime:
                         {
                             "toolCode": str(action.get("tool") or ""),
                             "tool": str(action.get("tool") or ""),
+                            # Stable across replans of the same step: the desktop uses
+                            # actionId to recognise "this is step N again" instead of
+                            # appending a duplicate row on every retry turn.
+                            "actionId": str(action.get("actionId") or ""),
+                            # Execution attempt counter, so a retry can supersede the
+                            # terminal status of the previous attempt.
+                            "attempt": int(state.get("retryCount", 0) or 0),
                             **(
                                 {
                                     "workflowNodeId": str(action["workflowNodeId"]),
@@ -1453,6 +1540,11 @@ class LedgerAgentRuntime:
     ) -> dict[str, Any]:
         """Annotate a legacy event with the public red-team stage."""
         result = dict(event)
+        # The rewritten stage name must not erase which legacy node actually
+        # produced the event: the desktop merges/retries steps by that identity, and
+        # "retry" / "authorization_guard" are otherwise indistinguishable.
+        if result.get("node"):
+            result["legacyNodeName"] = result["node"]
         result["node"] = stage
         if message:
             result["message"] = message
@@ -1957,6 +2049,11 @@ class LedgerAgentRuntime:
             settings.agent_turn_timeout_seconds, request.budget.timeoutSeconds
         )
         state_version = 0
+        # Bounded turn telemetry for the timeout diagnostic: which nodes finished, how many
+        # model calls they made and how long the last one took. Never prompt or model text.
+        completed_nodes: list[str] = []
+        observed_calls = 0
+        started_at = time.monotonic()
         try:
             # Keep the ContextVar scope alive across async-generator yields so all
             # LangGraph node model calls contribute to this run's terminal snapshot.
@@ -1983,9 +2080,14 @@ class LedgerAgentRuntime:
                         ):
                             if not isinstance(update, dict):
                                 continue
-                            for node_update in update.values():
+                            for node_name, node_update in update.items():
+                                if isinstance(node_name, str) and node_name not in completed_nodes:
+                                    completed_nodes.append(node_name)
                                 if not isinstance(node_update, dict):
                                     continue
+                                calls = node_update.get("llmCallCount")
+                                if type(calls) is int and calls > observed_calls:
+                                    observed_calls = calls
                                 for event in self._events_from_update(node_update):
                                     state_version += 1
                                     enveloped = envelope_runtime_event(
@@ -1998,6 +2100,17 @@ class LedgerAgentRuntime:
                                     previous_digest = enveloped["ledgerEntryDigest"]
                                     yield enveloped
         except TimeoutError:
+            # Bounded, server-owned numbers only: how long the turn ran, its budget, which graph
+            # nodes finished and how many model calls they made. No prompt, evidence or output.
+            usage = usage_snapshot()
+            record_vendor_diagnostic({
+                "code": "TURN_TIMEOUT",
+                "completedNodes": completed_nodes,
+                "elapsedSeconds": int(time.monotonic() - started_at),
+                "budgetSeconds": int(timeout_seconds),
+                "llmCallCount": observed_calls,
+                "modelCalls": int(usage.get("modelCalls") or 0),
+            })
             state_version += 1
             yield envelope_runtime_event(
                 _event(
