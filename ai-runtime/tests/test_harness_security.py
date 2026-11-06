@@ -308,6 +308,134 @@ def test_malicious_mixed_llm_plan_fails_closed_without_proposals(
     assert events[-1]["data"]["review"]["proposalCount"] == 0
 
 
+def test_plan_steps_carry_stable_identity_for_desktop_merging(tmp_path, monkeypatch):
+    runtime = SecurityAgentRuntime(ProjectIndexStore(tmp_path))
+
+    async def plan(_request: dict) -> dict:
+        return _valid_plan()
+
+    monkeypatch.setattr(runtime.planner, "plan", plan)
+    events = _collect(runtime, _request())
+
+    plan_event = next(event for event in events if event["type"] == "plan")
+    action = plan_event["data"]["actions"][0]
+    step = plan_event["data"]["steps"][0]
+    # The desktop merges by this identity, so re-planning the same step updates one row
+    # instead of appending a duplicate.
+    assert step["actionId"] == action["actionId"]
+    assert len(step["actionId"]) == 32
+    assert step["attempt"] == 0
+
+    # The same plan must reproduce the same identity across runs.
+    again = _collect(runtime, _request())
+    repeat = next(event for event in again if event["type"] == "plan")
+    assert repeat["data"]["steps"][0]["actionId"] == step["actionId"]
+
+
+def test_stage_events_keep_the_legacy_node_that_produced_them(tmp_path, monkeypatch):
+    runtime = SecurityAgentRuntime(ProjectIndexStore(tmp_path))
+
+    async def plan(_request: dict) -> dict:
+        return _valid_plan()
+
+    monkeypatch.setattr(runtime.planner, "plan", plan)
+    events = _collect(runtime, _request())
+
+    plan_event = next(event for event in events if event["type"] == "plan")
+    # `node` is rewritten to the public stage; the producer must survive.
+    assert plan_event["node"] == "engage"
+    assert plan_event["legacyNodeName"] == "planner"
+    guard = next(event for event in events if event["type"] == "authorization_guard")
+    assert guard["legacyNodeName"] == "authorization_guard"
+
+
+def test_port_dependent_steps_declare_the_probe_they_really_wait_for(tmp_path, monkeypatch):
+    runtime = SecurityAgentRuntime(ProjectIndexStore(tmp_path))
+
+    async def plan(_request: dict) -> dict:
+        return {
+            "summary": "先探端口再识别",
+            "answer": "已生成受控计划。",
+            "intent": "plan",
+            "actions": [
+                {
+                    "workflowNodeId": "ports-01",
+                    "tool": "tcp_ports",
+                    "parameters": {"ports": "80"},
+                    "risk": "SAFE",
+                    "requiresApproval": False,
+                    "group": 1,
+                },
+                {
+                    "workflowNodeId": "headers-01",
+                    "tool": "http_headers",
+                    "parameters": {},
+                    "risk": "SAFE",
+                    "requiresApproval": False,
+                    "group": 1,
+                },
+            ],
+        }
+
+    monkeypatch.setattr(runtime.planner, "plan", plan)
+    events = _collect(runtime, _request())
+
+    plan_event = next(event for event in events if event["type"] == "plan")
+    steps = {step["workflowNodeId"]: step for step in plan_event["data"]["steps"]}
+    # Dispatch turns the port sweep into a barrier, so the plain HTTP probe still waits.
+    # Declaring that keeps the plan honest instead of promising parallel work.
+    assert steps["headers-01"]["dependsOnNodeIds"] == ["ports-01"]
+    assert steps["ports-01"]["dependsOnNodeIds"] == []
+    # The declared identity is what the desktop renders as "等待前置任务".
+    actions = {step["actionId"]: step for step in plan_event["data"]["steps"]}
+    assert len(actions) == 2
+
+
+def test_explicit_upstream_dependencies_are_not_overwritten(tmp_path, monkeypatch):
+    runtime = SecurityAgentRuntime(ProjectIndexStore(tmp_path))
+
+    async def plan(_request: dict) -> dict:
+        return {
+            "summary": "带显式上游",
+            "answer": "已生成受控计划。",
+            "intent": "plan",
+            "actions": [
+                {
+                    "workflowNodeId": "ports-01",
+                    "tool": "tcp_ports",
+                    "parameters": {"ports": "80"},
+                    "risk": "SAFE",
+                    "requiresApproval": False,
+                    "group": 0,
+                },
+                {
+                    "workflowNodeId": "probe-01",
+                    "tool": "site_crawl",
+                    "parameters": {},
+                    "risk": "SAFE",
+                    "requiresApproval": False,
+                    "group": 1,
+                },
+                {
+                    "workflowNodeId": "headers-01",
+                    "tool": "http_headers",
+                    "parameters": {},
+                    "risk": "SAFE",
+                    "requiresApproval": False,
+                    "group": 2,
+                    "dependsOnNodeIds": ["probe-01"],
+                },
+            ],
+        }
+
+    monkeypatch.setattr(runtime.planner, "plan", plan)
+    events = _collect(runtime, _request())
+
+    plan_event = next(event for event in events if event["type"] == "plan")
+    steps = {step["workflowNodeId"]: step for step in plan_event["data"]["steps"]}
+    assert steps["headers-01"]["dependsOnNodeIds"] == ["probe-01"]
+
+
 def test_retry_invokes_only_failed_sibling_and_counts_once(
     tmp_path, monkeypatch
 ):
