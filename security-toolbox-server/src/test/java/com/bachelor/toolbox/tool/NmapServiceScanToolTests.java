@@ -8,6 +8,7 @@ import com.bachelor.toolbox.target.TargetPolicyService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -212,6 +213,53 @@ class NmapServiceScanToolTests {
     assertThat(data.path("extraports").isEmpty()).isTrue();
     assertThat(result.summary()).contains("2 个授权端口的扫描请求", "记录 0 个开放端口");
     assertThat(result.findings()).isEmpty();
+  }
+
+  @Test
+  void previewMatchesTheCommandThatIsReallyDispatched() throws Exception {
+    // 预览曾与真实下发各自成文：quick 少了 -Pn -T4，服务识别把 -sV -O --version-light 拆成
+    // 会被 Nmap 当成输出文件名的裸参数。预览必须逐字复现 buildCommand 的 argv。
+    NmapServiceScanTool tool = toolWithExecutable(createExecutable("nmap.exe"));
+
+    for (String mode : NmapServiceScanTool.NMAP_MODES) {
+      List<String> previewed = tool.commandPreview("192.0.2.10", "1-65535", mode);
+      List<String> dispatched = tool.buildCommand("192.0.2.10", "1-65535", mode);
+
+      List<String> expected = new ArrayList<>(dispatched);
+      expected.set(0, NmapServiceScanTool.PREVIEW_EXECUTABLE);
+      int fullRange = expected.indexOf("-p-");
+      if (fullRange >= 0) expected.set(fullRange, NmapServiceScanTool.CONSUMED_PORTS_PLACEHOLDER);
+      assertThat(previewed).as("模式 %s 的预览应与实际下发一致", mode).isEqualTo(expected);
+    }
+  }
+
+  @Test
+  void previewKeepsServiceIdentificationFlagsIntact() throws Exception {
+    NmapServiceScanTool tool = toolWithExecutable(createExecutable("nmap.exe"));
+
+    List<String> previewed = tool.commandPreview("192.0.2.10", "80,443", "service");
+
+    assertThat(previewed)
+        .containsSubsequence("-sV", "-T4", "-O", "--version-light")
+        .doesNotContain("-version-light")
+        .containsSubsequence("-p", "80,443")
+        .endsWith("192.0.2.10");
+  }
+
+  @Test
+  void previewNamesTheNarrowingInsteadOfClaimingAFullRangeSweep() throws Exception {
+    NmapServiceScanTool tool = toolWithExecutable(createExecutable("nmap.exe"));
+
+    List<String> quickFullRange = tool.commandPreview("192.0.2.10", "1-65535", "quick");
+    List<String> narrow = tool.commandPreview("192.0.2.10", "80,443", "quick");
+
+    assertThat(quickFullRange)
+        .contains(NmapServiceScanTool.CONSUMED_PORTS_PLACEHOLDER)
+        .contains("-Pn", "-T4")
+        .doesNotContain("-p-");
+    // 窄端口清单是规划者显式选定的，不会被收敛，预览照实显示。
+    assertThat(narrow).containsSubsequence("-p", "80,443").doesNotContain(
+        NmapServiceScanTool.CONSUMED_PORTS_PLACEHOLDER);
   }
 
   private NmapServiceScanTool toolWithExecutable(Path executable) {

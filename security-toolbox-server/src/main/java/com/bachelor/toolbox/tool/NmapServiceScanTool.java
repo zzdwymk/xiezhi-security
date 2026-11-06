@@ -30,6 +30,10 @@ import org.springframework.stereotype.Component;
 @Component
 public class NmapServiceScanTool implements SecurityTool {
   private static final int MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
+  /** 预览里代替真实可执行文件路径的名字；其余参数与真实下发逐字一致。 */
+  static final String PREVIEW_EXECUTABLE = "nmap";
+  /** 全端口请求会被前序端口探测的结果收敛，审批阶段只能标注而不能给出确定端口。 */
+  static final String CONSUMED_PORTS_PLACEHOLDER = "<前序探测到的开放端口>";
   /** 与 Zenmap 官方默认扫描配置文件对齐的受控模式；取值与前端下拉、AI 运行时枚举保持一致。 */
   static final List<String> NMAP_MODES =
       List.of(
@@ -192,10 +196,38 @@ public class NmapServiceScanTool implements SecurityTool {
     return buildCommand(requireExecutable(), host, canonicalPorts, mode);
   }
 
+  /**
+   * 审批弹窗“本轮将执行命令”的唯一构建来源。
+   *
+   * <p>预览曾经在前端另写一份拼装逻辑，结果与真实下发长期漂移：漏掉 quick 的 {@code -Pn -T4}、
+   * 把 {@code quick_plus/service} 的 {@code -sV -O --version-light} 渲染成裸参数（Nmap 会把
+   * {@code -version-light} 当作输出文件名），并在开启 consumeOpenPorts 时仍显示 {@code -p-}
+   * （实际执行前会被收敛到前序探测到的开放端口）。这里直接复用 {@link #buildCommand}，
+   * 只把可执行文件路径换成占位符 nmap，保证管理员看到的与真正执行的一致。
+   */
+  public List<String> commandPreview(String host, String ports, String mode) {
+    if (!NMAP_MODES.contains(mode))
+      throw new ApiException("Nmap 扫描模式无效，仅支持 " + String.join("、", NMAP_MODES));
+    String canonicalPorts = portRangeParser.canonicalizeCompact(ports, maxPorts);
+    List<String> preview =
+        new ArrayList<>(buildCommand(PREVIEW_EXECUTABLE, host, canonicalPorts, mode));
+    // 收敛到前序探测结果发生在任务执行阶段（TaskExecutionService#narrowPortsToDependencyResults），
+    // 由依赖任务的实际运行结果决定，审批时尚不可知；这里显式标注，而不是让管理员以为
+    // 会真的再跑一遍全端口扫描。
+    int fullRange = preview.indexOf("-p-");
+    if (fullRange >= 0) preview.set(fullRange, CONSUMED_PORTS_PLACEHOLDER);
+    return List.copyOf(preview);
+  }
+
   private List<String> buildCommand(
       Path executable, String host, String canonicalPorts, String mode) {
+    return buildCommand(executable.toString(), host, canonicalPorts, mode);
+  }
+
+  private List<String> buildCommand(
+      String executable, String host, String canonicalPorts, String mode) {
     List<String> command = new ArrayList<>();
-    command.add(executable.toString());
+    command.add(executable);
     // -sT 是本平台唯一的 TCP 扫描类型来源，任何模式下都只出现一次：Nmap
     // 明确拒绝同时指定多种 TCP 扫描类型（"more than one type of TCP scan"）。
     // UDP 必须与 TCP 合并为 -sSU 一个参数，分开写成 -sU -sT 同样会被拒绝。

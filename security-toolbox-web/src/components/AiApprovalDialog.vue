@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import type { ConversationMessage } from "../stores/conversations";
 import type { JudgeVerdictDocument } from "../api";
+import { apiFetch, getApiUrl } from "../apiClient";
 import { aiToolLabel } from "../utils/aiPresentation";
 import FluentIcon from "./FluentIcon.vue";
 
@@ -257,21 +258,98 @@ function parameterValueLabel(key: string, value: unknown, toolCode?: string): st
   return generic[raw.toLowerCase()] || raw;
 }
 
-// 与后端 NmapServiceScanTool.buildCommand 对齐的“实际执行命令”预览（仅展示，非真正下发）。
-const NMAP_MODE_FLAGS: Record<string, string> = {
-  quick: "",
-  regular: "-v",
-  intense: "-T4 -A -v",
-  intense_udp: "-sSU -T4 -A -v",
-  intense_all_tcp: "-T4 -A -v -p-",
-  intense_no_ping: "-T4 -A -v -Pn",
-  ping: "-sn -PE -PS443 -PA80",
-  quick_plus: "-sV -T4 -O --version-light",
-  quick_trace: "-sn --traceroute",
-  slow_comprehensive: "-sSU -T4 -A -v -p- --script default",
-  service: "-sV -T4 -O --version-light",
-};
-const NMAP_NO_PORT_MODES = new Set(["ping", "quick_trace"]);
+// 预览由后端 /api/tools/nmap/preview 生成，与真正下发的 argv 同源；前端不再自行拼装，
+// 因为两份实现已经漂移过（漏 -Pn -T4、-sV -O 被拆成裸参数、consumeOpenPorts 收敛未体现）。
+const NMAP_PREVIEW_TOOL = "nmap_service_scan";
+const nmapPreviews = ref<Record<string, string>>({});
+const nmapPreviewFailures = ref<Record<string, string>>({});
+let nmapPreviewSeq = 0;
+let nmapPreviewTimer: ReturnType<typeof setTimeout> | null = null;
+let nmapPreviewAbort: AbortController | null = null;
+
+function nmapPreviewKey(index: number, parameters: Record<string, any>): string {
+  return `${index}|${String(parameters?.mode || "quick")}|${String(parameters?.ports || "")}`;
+}
+
+function executeTargetArg(hosts: string[]): string {
+  return hosts.length ? hosts.join(" ") : "<目标>";
+}
+
+/** 后端不可达时的兜底：只给绝不会有歧义的骨架，并明确说明这不是最终命令。 */
+function nmapPreviewFallback(hosts: string[]): string {
+  return `后端未返回命令预览：nmap -sT -n … ${executeTargetArg(hosts)}`;
+}
+
+function nmapCommandPreview(index: number, parameters: Record<string, any>, hosts: string[]): string {
+  const key = nmapPreviewKey(index, parameters);
+  return nmapPreviews.value[key] ?? nmapPreviewFailures.value[key] ?? nmapPreviewFallback(hosts);
+}
+
+async function loadNmapPreviews() {
+  if (!props.visible) return;
+  const steps = props.message?.steps || [];
+  const pending = steps
+    .map((step, index) => ({ step, index }))
+    .filter(({ step }) => step.toolCode === NMAP_PREVIEW_TOOL);
+  if (!pending.length) return;
+  const seq = ++nmapPreviewSeq;
+  nmapPreviewAbort?.abort();
+  const controller = new AbortController();
+  nmapPreviewAbort = controller;
+  const host = executionHosts.value[0] || "";
+  const next: Record<string, string> = {};
+  const failures: Record<string, string> = {};
+  await Promise.all(
+    pending.map(async ({ index }) => {
+      const parameters = editableParameters.value[index] || {};
+      const key = nmapPreviewKey(index, parameters);
+      const query = new URLSearchParams({
+        mode: String(parameters.mode || "quick"),
+        ports: String(parameters.ports || "1-65535"),
+      });
+      if (host) query.set("host", host);
+      try {
+        const response = await apiFetch(getApiUrl(`/tools/nmap/preview?${query}`), {
+          signal: controller.signal,
+          headers: { Accept: "application/json" },
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = await response.json();
+        if (typeof payload?.command === "string" && payload.command) next[key] = payload.command;
+        else throw new Error("empty");
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        failures[key] = nmapPreviewFallback(executionHosts.value);
+      }
+    }),
+  );
+  // 较早的请求返回时必须丢弃，避免把旧参数的命令盖到新参数上。
+  if (seq !== nmapPreviewSeq || controller.signal.aborted) return;
+  nmapPreviews.value = next;
+  nmapPreviewFailures.value = failures;
+}
+
+watch(
+  () => [
+    props.visible,
+    props.message?.id,
+    JSON.stringify(editableParameters.value),
+    executionHosts.value[0],
+  ],
+  () => {
+    if (nmapPreviewTimer) clearTimeout(nmapPreviewTimer);
+    nmapPreviewTimer = setTimeout(() => {
+      nmapPreviewTimer = null;
+      void loadNmapPreviews();
+    }, 200);
+  },
+  { immediate: true },
+);
+
+onBeforeUnmount(() => {
+  if (nmapPreviewTimer) clearTimeout(nmapPreviewTimer);
+  nmapPreviewAbort?.abort();
+});
 
 // 从授权目标地址里取出纯主机名（去掉 http(s):// 协议、路径、端口以外的查询等），
 // 用于命令预览展示真实目标，而不是占位符「<目标>」。
@@ -303,20 +381,6 @@ const executionHosts = computed<string[]>(() => {
   }
   return hosts;
 });
-
-function nmapCommandPreview(parameters: Record<string, any>, hosts: string[]): string {
-  const mode = String(parameters?.mode || "quick");
-  const ports = String(parameters?.ports || "1-65535").trim();
-  const parts = ["nmap", "-sT", "-n"];
-  const flags = NMAP_MODE_FLAGS[mode] ?? "";
-  if (flags) parts.push(flags);
-  if (!NMAP_NO_PORT_MODES.has(mode)) parts.push(ports === "1-65535" ? "-p-" : `-p ${ports}`);
-  parts.push("--stats-every 1s", "-oX -");
-  // 多主机时以空格分隔列出全部真实目标（与后端逐目标下发一致）；无目标时回退占位符。
-  if (hosts.length) parts.push(...hosts);
-  else parts.push("<目标>");
-  return parts.join(" ");
-}
 
 const RISK_OPTIONS = [
   { value: 1, label: "1 级 (默认无害测试，不破坏数据)" },
@@ -699,7 +763,7 @@ function onApprove() {
               >
                 <span class="approval-command-preview-label">本轮将执行命令</span>
                 <code class="approval-command-preview-code">{{
-                  nmapCommandPreview(editableParameters[index], executionHosts)
+                  nmapCommandPreview(index, editableParameters[index], executionHosts)
                 }}</code>
               </div>
 
