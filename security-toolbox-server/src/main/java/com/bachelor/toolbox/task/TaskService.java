@@ -48,6 +48,8 @@ public class TaskService {
   @Autowired private org.springframework.transaction.PlatformTransactionManager transactionManager;
   @jakarta.persistence.PersistenceContext private jakarta.persistence.EntityManager entityManager;
   @Autowired(required = false) private com.bachelor.toolbox.target.PortRangeParser portRangeParser;
+  /** Used by node-level workflow retries to prove the run is still RUNNING. */
+  @Autowired(required = false) private WorkflowRunRepository runRepository;
   /** 与 AiAuthorizationGuard 共用同一组配额配置，保证批量执行与 AI 派发口径一致。 */
   @org.springframework.beans.factory.annotation.Value("${toolbox.ai.agent.max-active-tasks-per-target:4}")
   private int maxActiveTasksPerTarget = 4;
@@ -400,30 +402,19 @@ public class TaskService {
       List<Long> dependencyTaskIds,
       Long workflowRunId)
       throws JsonProcessingException {
-    if (workflowDigest == null || !workflowDigest.matches("sha256:[0-9a-f]{64}")) {
-      throw new ApiException("工作流摘要格式无效");
-    }
-    if (workflowNodeId == null || !workflowNodeId.matches("[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}")) {
-      throw new ApiException("工作流节点 ID 格式无效");
-    }
-    if (nodeRunId == null || !nodeRunId.matches("[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}")) {
-      throw new ApiException("节点运行 ID 格式无效");
-    }
-    List<Long> dependencies =
-        dependencyTaskIds == null ? List.of() : dependencyTaskIds.stream().distinct().toList();
-    if (dependencies.stream().anyMatch(id -> id == null || id <= 0)) {
-      throw new ApiException("任务依赖 ID 无效");
-    }
+    WorkflowNodeIdentity identity = WorkflowNodeIdentity.parse(
+        objectMapper, workflowDigest, workflowNodeId, nodeRunId, dependencyTaskIds);
     projectService.validateProjectTarget(request.projectId(), request.targetId());
     var target = targetService.getCurrentlyAuthorized(request.targetId(), request.projectId());
     var tool = registry.require(request.toolCode());
-    for (SecurityTask dependency : repository.findAllById(dependencies)) {
+    for (SecurityTask dependency : repository.findAllById(identity.dependencyIds())) {
       if (!request.projectId().equals(dependency.getProjectId())
           || !workflowDigest.equals(dependency.getWorkflowDigest())) {
         throw new ApiException("工作流任务依赖越过项目或快照边界");
       }
     }
-    if (repository.findAllById(dependencies).size() != dependencies.size()) {
+    if (repository.findAllById(identity.dependencyIds()).size()
+        != identity.dependencyIds().size()) {
       throw new ApiException("工作流任务依赖不存在");
     }
 
@@ -431,10 +422,11 @@ public class TaskService {
     task.setTargetId(request.targetId());
     task.setProjectId(request.projectId());
     task.setToolCode(request.toolCode());
-    task.setStatus(dependencies.isEmpty() ? "PENDING" : "BLOCKED");
+    task.setStatus(identity.dependencyIds().isEmpty() ? "PENDING" : "BLOCKED");
     task.setProgress(0);
     task.setProgressDeterminate(false);
-    task.setProgressMessage(dependencies.isEmpty() ? "等待本地执行资源" : "等待前置工作流节点完成");
+    task.setProgressMessage(
+        identity.dependencyIds().isEmpty() ? "等待本地执行资源" : "等待前置工作流节点完成");
     task.setProgressUpdatedAt(java.time.Instant.now());
     task.setQueueEnteredAt(java.time.Instant.now());
     task.setRequestJson(
@@ -445,11 +437,45 @@ public class TaskService {
     task.setWorkflowNodeId(workflowNodeId);
     task.setNodeRunId(nodeRunId);
     task.setWorkflowGroup(Math.max(0, workflowGroup));
-    task.setDependencyTaskIds(objectMapper.writeValueAsString(dependencies));
+    task.setDependencyTaskIds(objectMapper.writeValueAsString(identity.dependencyIds()));
     task.setEffectiveRisk(effectiveRisk == null ? "SAFE" : effectiveRisk);
     task.setWorkflowApprovalRequired(approvalRequired);
     snapshotService.capture(task, target, tool);
-    return saveTask(task, "CREATE_WORKFLOW_TASK", null, dependencies.isEmpty());
+    return saveTask(
+        task, "CREATE_WORKFLOW_TASK", null, identity.dependencyIds().isEmpty());
+  }
+
+  /**
+   * A workflow node's graph identity, validated once for both creation and retry.
+   *
+   * <p>Extracted so a node-level retry can never persist a half-validated graph node whose
+   * digest, node id or dependency edges disagree with what was reviewed.
+   */
+  private record WorkflowNodeIdentity(String digest, String nodeId, String nodeRunId,
+      List<Long> dependencyIds) {
+    static WorkflowNodeIdentity parse(
+        ObjectMapper mapper,
+        String workflowDigest,
+        String workflowNodeId,
+        String nodeRunId,
+        List<Long> dependencyTaskIds) {
+      if (workflowDigest == null || !workflowDigest.matches("sha256:[0-9a-f]{64}")) {
+        throw new ApiException("工作流摘要格式无效");
+      }
+      if (workflowNodeId == null
+          || !workflowNodeId.matches("[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}")) {
+        throw new ApiException("工作流节点 ID 格式无效");
+      }
+      if (nodeRunId == null || !nodeRunId.matches("[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}")) {
+        throw new ApiException("节点运行 ID 格式无效");
+      }
+      List<Long> dependencies =
+          dependencyTaskIds == null ? List.of() : dependencyTaskIds.stream().distinct().toList();
+      if (dependencies.stream().anyMatch(id -> id == null || id <= 0)) {
+        throw new ApiException("任务依赖 ID 无效");
+      }
+      return new WorkflowNodeIdentity(workflowDigest, workflowNodeId, nodeRunId, dependencies);
+    }
   }
 
   public SecurityTask createSkippedWorkflowTask(
@@ -529,11 +555,22 @@ public class TaskService {
 
   private SecurityTask retryTask(SecurityTask original, String retryKey) {
     // A failed workflow node is still bound to its reviewed graph and dependencies.
-    // Cloning it as a standalone task would silently discard that execution boundary.
-    if (original.getWorkflowDigest() != null || original.getWorkflowRunId() != null
-        || original.getWorkflowNodeId() != null || Boolean.TRUE.equals(original.getWorkflowApprovalRequired())) {
+    // Cloning it as a standalone task would silently discard that execution boundary, so
+    // workflow nodes use retryWorkflowNode() instead.
+    if (isWorkflowBound(original)) {
       throw new ApiException("工作流任务请重新提交原方案并确认执行，不能以普通重试跳过工作流依赖或审批");
     }
+    return retryableClone(original, retryKey, false);
+  }
+
+  private static boolean isWorkflowBound(SecurityTask task) {
+    return task.getWorkflowDigest() != null
+        || task.getWorkflowRunId() != null
+        || task.getWorkflowNodeId() != null
+        || Boolean.TRUE.equals(task.getWorkflowApprovalRequired());
+  }
+
+  private SecurityTask retryableClone(SecurityTask original, String retryKey, boolean workflowBound) {
     projectService.validateProjectTarget(original.getProjectId(), original.getTargetId());
     var target = targetService.getCurrentlyAuthorized(original.getTargetId(), original.getProjectId());
     var tool = registry.require(original.getToolCode());
@@ -572,8 +609,160 @@ public class TaskService {
     retry.setRequestJson(original.getRequestJson());
     retry.setSourceTaskId(original.getId());
     retry.setRetryRequestKey(retryKey);
+    if (workflowBound) {
+      // Preserve the reviewed graph boundary instead of cloning a free-standing task. The
+      // identity is re-validated here so a retry can never persist an inconsistent node.
+      WorkflowNodeIdentity identity = WorkflowNodeIdentity.parse(
+          objectMapper,
+          original.getWorkflowDigest(),
+          original.getWorkflowNodeId(),
+          original.getNodeRunId(),
+          parseDependencyIds(original.getDependencyTaskIds()));
+      retry.setWorkflowDigest(identity.digest());
+      retry.setWorkflowRunId(original.getWorkflowRunId());
+      retry.setWorkflowNodeId(identity.nodeId());
+      retry.setNodeRunId(identity.nodeRunId());
+      retry.setWorkflowGroup(original.getWorkflowGroup());
+      retry.setDependencyTaskIds(dependencyJson(identity.dependencyIds()));
+      retry.setSuccessDependencyTaskIds(original.getSuccessDependencyTaskIds());
+      retry.setEffectiveRisk(original.getEffectiveRisk());
+      // Approval was granted for this node when the run was confirmed; the retry is a
+      // re-execution of that same reviewed node, not a new unreviewed action.
+      retry.setWorkflowApprovalRequired(false);
+    } else {
+      // AI-dispatched step from an approved plan: keep the reviewed snapshot identity and
+      // the dependency edges (a retry must still wait for its prerequisites) and grouping.
+      List<Long> dependencies = parseDependencyIds(original.getDependencyTaskIds());
+      retry.setWorkflowDigest(original.getWorkflowDigest());
+      // The step's node identity is what ties the retry to the same planned step.
+      retry.setWorkflowNodeId(original.getWorkflowNodeId());
+      retry.setNodeRunId(original.getNodeRunId());
+      retry.setDependencyTaskIds(dependencyJson(dependencies));
+      retry.setSuccessDependencyTaskIds(original.getSuccessDependencyTaskIds());
+      retry.setWorkflowGroup(original.getWorkflowGroup());
+      retry.setEffectiveRisk(original.getEffectiveRisk());
+      // It was dispatched under an approved plan, so the retry is a re-execution of that
+      // same step rather than a new unreviewed action.
+      retry.setWorkflowApprovalRequired(false);
+      if (!dependencies.isEmpty()) {
+        // Same reasoning as createDependent: PENDING would be picked up before the
+        // prerequisite finishes and scan with empty ports. Wait for the drain instead.
+        retry.setStatus("BLOCKED");
+        retry.setProgressMessage("等待前置任务完成");
+      }
+    }
     snapshotService.capture(retry, target, tool);
-    return saveAndExecute(retry, "RETRY_TASK", original.getId());
+    return saveAndExecute(
+        retry, workflowBound ? "RETRY_WORKFLOW_NODE" : "RETRY_TASK", original.getId());
+  }
+
+  /**
+   * Re-execute one node of a running workflow run without re-planning the whole plan.
+   *
+   * <p>This is the node-level counterpart of {@link #retry}: it keeps the reviewed graph
+   * boundary (run, node identity, dependency edges) and re-runs only the failing node, so the
+   * other steps are never dispatched a second time. Every retry is a fresh authorization
+   * checkpoint — the old approval snapshot is not reused to skip it.
+   */
+  @Transactional(rollbackFor = Exception.class)
+  public SecurityTask retryWorkflowNode(Long taskId, String idempotencyKey) {
+    if (idempotencyKey == null || idempotencyKey.isBlank()) {
+      throw new ApiException("单节点重试必须提供 Idempotency-Key，避免重复创建任务");
+    }
+    if (!idempotencyKey.matches("[A-Za-z0-9_-]{1,128}")) {
+      throw new ApiException("Idempotency-Key 格式无效，长度应为 1–128 个字母、数字、下划线或连字符");
+    }
+    SecurityTask original = get(taskId);
+    // Only a run-bound task is a visual-workflow node. A task can carry a workflow digest or
+    // node id while never being bound to a run (older AI dispatches did exactly that), and
+    // such a task must be retried through its step identity, not through a run.
+    boolean workflowNode = isWorkflowBound(original) && original.getWorkflowRunId() != null;
+    // Two supported shapes:
+    //  - a visual-workflow node: needs its run to be RUNNING and its node identity intact;
+    //  - an AI-dispatched step from an approved plan: no run, possibly no dependency edges
+    //    (a root step has none), but it always carries the reviewed plan's workflow digest
+    //    or a node id. Those must keep their identity instead of being cloned free-standing.
+    boolean aiDispatchedStep = !workflowNode
+        && (isWorkflowBound(original) || !parseDependencyIds(original.getDependencyTaskIds()).isEmpty());
+    if (!workflowNode && !aiDispatchedStep) {
+      throw new ApiException("该任务不属于工作流或依赖步骤，请使用普通重试");
+    }
+    // BLOCKED is waiting on its prerequisites, not failing: only a terminal failure is retryable.
+    if (!RETRYABLE_STATUSES.contains(original.getStatus())) {
+      throw new ApiException("仅失败、超时、被拒绝或已取消的依赖步骤可以重试");
+    }
+    if (workflowNode) {
+      // findById(null) throws instead of returning empty. A task can carry a workflow digest
+      // or node id without ever being bound to a run (older dispatches), so guard the id.
+      Long runId = original.getWorkflowRunId();
+      WorkflowRun run = (runId == null || runRepository == null)
+          ? null : runRepository.findById(runId).orElse(null);
+      if (run == null) {
+        throw new ApiException("工作流运行记录不存在");
+      }
+      if (!"RUNNING".equals(run.getStatus())) {
+        throw new ApiException("工作流已停止，不能单点重试；请重新提交方案并确认执行");
+      }
+    }
+    prerequisiteGuard(original);
+    return retryableClone(original, deriveRetryKey(taskId, idempotencyKey), workflowNode);
+  }
+
+  /**
+   * A node may only be retried once its prerequisites are settled successfully.
+   *
+   * <p>The retry would otherwise fail for the same reason as the first attempt, and an
+   * in-flight prerequisite means the original ports/results it depends on are still moving.
+   */
+  private void prerequisiteGuard(SecurityTask original) {
+    List<Long> dependencyIds = parseDependencyIds(original.getDependencyTaskIds());
+    if (dependencyIds.isEmpty()) return;
+    Map<Long, SecurityTask> dependencies =
+        repository.findAllById(dependencyIds).stream()
+            .collect(java.util.stream.Collectors.toMap(SecurityTask::getId, item -> item));
+    if (dependencies.size() != dependencyIds.size()) {
+      throw new ApiException("前置任务记录缺失，不能重试该节点");
+    }
+    for (Long dependencyId : dependencyIds) {
+      SecurityTask dependency = dependencies.get(dependencyId);
+      if ("SUCCESS".equals(dependency.getStatus())) continue;
+      if (RETRYABLE_STATUSES.contains(dependency.getStatus())) {
+        throw new ApiException(
+            "前置节点 #" + dependencyId + " 未成功（" + dependency.getStatus() + "），请先重试前置节点");
+      }
+      throw new ApiException("前置节点 #" + dependencyId + " 尚未结束，暂不能重试本节点");
+    }
+  }
+
+  private List<Long> parseDependencyIds(String json) {
+    if (json == null || json.isBlank()) return List.of();
+    try {
+      Long[] ids = objectMapper.readValue(json, Long[].class);
+      return ids == null ? List.of() : List.of(ids);
+    } catch (Exception ex) {
+      // Persisted graph metadata is corrupt: fail closed instead of retrying blind.
+      throw new ApiException("工作流依赖记录不可读，不能重试该节点");
+    }
+  }
+
+  private String dependencyJson(List<Long> ids) {
+    try {
+      return objectMapper.writeValueAsString(ids);
+    } catch (JsonProcessingException ex) {
+      throw new ApiException("工作流依赖记录不可写");
+    }
+  }
+
+  /** Same idempotency contract as {@link #retry(Long, String)}, scoped to the retried task. */
+  private String deriveRetryKey(Long taskId, String idempotencyKey) {
+    try {
+      String input = taskId + "\n" + authorization.currentUsername() + "\n" + idempotencyKey;
+      return java.util.HexFormat.of().formatHex(
+          java.security.MessageDigest.getInstance("SHA-256")
+              .digest(input.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    } catch (java.security.NoSuchAlgorithmException ex) {
+      throw new IllegalStateException("SHA-256 unavailable", ex);
+    }
   }
 
   @Transactional(propagation = Propagation.REQUIRES_NEW)
