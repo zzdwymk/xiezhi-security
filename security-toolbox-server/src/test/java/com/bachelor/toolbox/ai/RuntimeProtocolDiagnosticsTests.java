@@ -101,6 +101,17 @@ class RuntimeProtocolDiagnosticsTests {
   }
 
   @Test
+  void turnTimeoutBlamesTheModelBudgetNotTheConnection() {
+    // Regression: this text used to send operators to "检查模型连接" although the connection was
+    // healthy and the real cause was a reasoning-tuned model exceeding the turn budget.
+    var failure = RuntimeProtocolDiagnostics.classify(
+        new AiAgentRuntimeClient.RuntimeProtocolException("AI Runtime 本轮未完成：TURN_TIMEOUT"));
+    assertThat(RuntimeProtocolDiagnostics.userMessage(failure))
+        .contains("时间预算", "推理型模型")
+        .doesNotContain("检查模型连接");
+  }
+
+  @Test
   void nullMessageIsUnknown() {
     assertThat(RuntimeProtocolDiagnostics.classify(
         new AiAgentRuntimeClient.RuntimeProtocolException(null)).code())
@@ -275,12 +286,35 @@ class RuntimeProtocolDiagnosticsTests {
       "AI Runtime 字段 EVIDENCE_ASSESSMENT_FAILED 格式无效",
       "AI Runtime 字段 MODEL_TIMEOUT 格式无效"
   })
-  void malformedResponseStillReportsProtocolValidationFailure(String message) {
+  void malformedResponseReportsTheCauseInsteadOfAGenericIntegrityFailure(String message) {
     var failure = RuntimeProtocolDiagnostics.classify(
         new AiAgentRuntimeClient.RuntimeProtocolException(message));
+    // A field-contract mismatch is a component-version problem and a truncated stream is a
+    // transport problem; lumping both into "完整性校验" sent operators hunting a broken
+    // model when the real fix was re-packaging the runtime.
     assertThat(RuntimeProtocolDiagnostics.userMessage(failure))
-        .contains("返回内容未通过完整性校验", "尚未提交审批申请", "未创建检测任务")
+        .contains("尚未提交审批申请", "未创建检测任务")
         .doesNotContain("未能完成证据评估", "模型服务连接超时");
+  }
+
+  @Test
+  void aFieldContractMismatchNamesTheVersionProblemRatherThanCorruptedOutput() {
+    var failure = RuntimeProtocolDiagnostics.classify(
+        new AiAgentRuntimeClient.RuntimeProtocolException("AI Runtime plan step 包含未知字段"));
+    assertThat(failure.code()).isEqualTo(RuntimeProtocolDiagnostics.Code.FIELD_CONTRACT_INVALID);
+    assertThat(RuntimeProtocolDiagnostics.userMessage(failure))
+        .contains("通信协议不一致")
+        .doesNotContain("返回内容未通过完整性校验");
+  }
+
+  @Test
+  void aTruncatedStreamNamesTheTransportProblem() {
+    var failure = RuntimeProtocolDiagnostics.classify(
+        new AiAgentRuntimeClient.RuntimeProtocolException("AI Runtime 流在终态前中断"));
+    assertThat(failure.code()).isEqualTo(RuntimeProtocolDiagnostics.Code.STREAM_INCOMPLETE);
+    assertThat(RuntimeProtocolDiagnostics.userMessage(failure))
+        .contains("中断了连接")
+        .doesNotContain("返回内容未通过完整性校验");
   }
 
   @Test

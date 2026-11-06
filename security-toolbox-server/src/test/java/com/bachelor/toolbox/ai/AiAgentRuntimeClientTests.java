@@ -1,6 +1,7 @@
 package com.bachelor.toolbox.ai;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -64,6 +65,52 @@ class AiAgentRuntimeClientTests {
       assertThat(value.stage()).isEqualTo("CONTRACT_RETRY");
       assertThat(value.message()).contains("一次结构纠正重试", "尚未执行工具").doesNotContain("private");
     });
+  }
+
+  @Test
+  void modelCallProgressDescribesTheRunningConnectionWithoutModelText() {
+    AiAgentRuntimeClient client = newClient();
+    var progress = new java.util.ArrayList<AiAgentRuntimeClient.PublicProgress>();
+    String comments = ": toolbox-progress {\"stage\":\"MODEL_CALL\",\"modelStage\":\"ROUTE\",\"outcome\":\"STARTED\",\"attempt\":1,\"timeoutMs\":60000}\n"
+        + ": toolbox-progress {\"stage\":\"MODEL_CALL\",\"modelStage\":\"ROUTE\",\"outcome\":\"SUCCEEDED\",\"attempt\":1,\"elapsedMs\":18250}\n"
+        + ": toolbox-progress {\"stage\":\"MODEL_CALL\",\"modelStage\":\"GROUNDED\",\"outcome\":\"TIMEOUT\",\"attempt\":2,\"elapsedMs\":60000}\n";
+    try (var scope = client.observePublicProgress(progress::add)) {
+      client.consumeStream(RUN_ID, comments + toNdjson(legalGeneralQaStream()), request(), null);
+    }
+    assertThat(progress).hasSize(3);
+    assertThat(progress.get(0).stage()).isEqualTo("MODEL_CALL");
+    assertThat(progress.get(0).message()).contains("等待模型", "理解当前请求", "第 1 次模型调用", "1 分钟");
+    assertThat(progress.get(0).timeoutMs()).isEqualTo(60000);
+    assertThat(progress.get(0).attempt()).isEqualTo(1);
+    assertThat(progress.get(1).message()).contains("已完成", "用时 18 秒");
+    assertThat(progress.get(1).elapsedMs()).isEqualTo(18250);
+    assertThat(progress.get(2).message()).contains("模型在 1 分钟内未返回", "本次调用已终止");
+    for (var value : progress) {
+      assertThat(value.modelDecision()).isIn("ROUTE", "GROUNDED");
+      assertThat(value.assessmentSource()).isIn("STARTED", "SUCCEEDED", "TIMEOUT", "FAILED");
+    }
+  }
+
+  @Test
+  void modelCallProgressDropsAnythingOutsideTheBoundedContract() {
+    AiAgentRuntimeClient client = newClient();
+    var progress = new java.util.ArrayList<AiAgentRuntimeClient.PublicProgress>();
+    String comments =
+        // Unknown stage name, outcome, oversized attempt and out-of-range durations.
+        ": toolbox-progress {\"stage\":\"MODEL_CALL\",\"modelStage\":\"PROMPT\",\"outcome\":\"SUCCEEDED\",\"attempt\":1,\"elapsedMs\":10}\n"
+        + ": toolbox-progress {\"stage\":\"MODEL_CALL\",\"modelStage\":\"ROUTE\",\"outcome\":\"PRIVATE\",\"attempt\":1,\"elapsedMs\":10}\n"
+        + ": toolbox-progress {\"stage\":\"MODEL_CALL\",\"modelStage\":\"ROUTE\",\"outcome\":\"SUCCEEDED\",\"attempt\":99,\"elapsedMs\":10}\n"
+        + ": toolbox-progress {\"stage\":\"MODEL_CALL\",\"modelStage\":\"ROUTE\",\"outcome\":\"SUCCEEDED\",\"attempt\":1,\"elapsedMs\":100000000}\n"
+        // STARTED must not carry a duration, terminal outcomes must not carry a ceiling.
+        + ": toolbox-progress {\"stage\":\"MODEL_CALL\",\"modelStage\":\"ROUTE\",\"outcome\":\"STARTED\",\"attempt\":1,\"timeoutMs\":60000,\"elapsedMs\":5}\n"
+        + ": toolbox-progress {\"stage\":\"MODEL_CALL\",\"modelStage\":\"ROUTE\",\"outcome\":\"SUCCEEDED\",\"attempt\":1,\"elapsedMs\":5,\"timeoutMs\":1}\n"
+        // Free text or nested payloads can never ride along.
+        + ": toolbox-progress {\"stage\":\"MODEL_CALL\",\"modelStage\":\"ROUTE\",\"outcome\":\"SUCCEEDED\",\"attempt\":1,\"elapsedMs\":5,\"prompt\":\"secret\"}\n"
+        + ": toolbox-progress {\"stage\":\"MODEL_CALL\",\"modelStage\":[\"ROUTE\"],\"outcome\":\"SUCCEEDED\",\"attempt\":1,\"elapsedMs\":5}\n";
+    try (var scope = client.observePublicProgress(progress::add)) {
+      client.consumeStream(RUN_ID, comments + toNdjson(legalGeneralQaStream()), request(), null);
+    }
+    assertThat(progress).isEmpty();
   }
 
   @Test
@@ -228,6 +275,108 @@ class AiAgentRuntimeClientTests {
     resign(events);
     assertThatThrownBy(() -> newClient().consumeStream(RUN_ID, toNdjson(events), autoRequest(), null))
         .isInstanceOf(AiAgentRuntimeClient.RuntimeProtocolException.class);
+  }
+
+  @Test
+  void producerIdentityIsAcceptedButStillBounded() {
+    // Regression: the runtime annotates every stage event with the node that produced it
+    // (legacyNodeName) before node is rewritten to the public stage. The envelope whitelist
+    // is strict, so without an entry for the field every single event was rejected as
+    // "事件包含未知字段", which the operator saw as a bogus "完整性校验" failure.
+    ObjectNode[] events = legalGeneralQaStream();
+    for (int index = 0; index < events.length; index++) {
+      String producer = switch (events[index].get("type").asText()) {
+        case "route" -> "route";
+        case "plan" -> "planner";
+        case "authorization_guard" -> "authorization_guard";
+        case "finish" -> "finish";
+        default -> "unknown-producer";
+      };
+      events[index].put("legacyNodeName", producer);
+    }
+    resign(events);
+    assertThat(newClient().consumeStream(RUN_ID, toNdjson(events), request(), null).answer())
+        .isEqualTo("这是一个通用回答。");
+  }
+
+  @Test
+  void producerIdentityCannotCarryUnboundedText() {
+    // The field is identity only, so it must not become a side channel for arbitrary text.
+    for (String forged : new String[] {"<script>", "a".repeat(65), "../../etc/passwd"}) {
+      ObjectNode[] events = legalGeneralQaStream();
+      events[0].put("legacyNodeName", forged);
+      resign(events);
+      assertThatThrownBy(() -> newClient().consumeStream(RUN_ID, toNdjson(events), request(), null))
+          .isInstanceOf(AiAgentRuntimeClient.RuntimeProtocolException.class);
+    }
+  }
+
+  @Test
+  void planStepIdentityFieldsAreAcceptedSoARetryUpdatesOneRow() throws Exception {
+    // Regression: steps carry actionId/attempt so the desktop can recognise "this is the
+    // same step re-planned". The step whitelist is strict, so without entries for them
+    // every plan with steps died as "plan step 包含未知字段" — which the operator saw as a
+    // bogus "完整性校验" failure. Asserted on validatePlanSteps directly so the test pins
+    // the whitelist rather than the whole lifecycle.
+    String actionId = "a".repeat(32);
+    ObjectNode action = mapper.createObjectNode();
+    action.put("actionId", actionId);
+    action.put("workflowNodeId", "service-scan-01");
+    action.put("tool", "tcp_ports");
+    action.set("parameters", mapper.createObjectNode().put("ports", "80"));
+    action.put("risk", "SAFE");
+    action.put("requiresApproval", false);
+    action.put("group", 0);
+    action.set("dependsOnNodeIds", mapper.createArrayNode());
+    action.set("evidenceRefs", mapper.createArrayNode());
+
+    ObjectNode step = mapper.createObjectNode();
+    step.put("toolCode", "tcp_ports");
+    step.put("tool", "tcp_ports");
+    step.put("title", "端口探测");
+    step.put("reason", "受控工具步骤");
+    step.put("risk", "SAFE");
+    step.put("requiresApproval", false);
+    step.put("workflowNodeId", "service-scan-01");
+    step.put("group", 0);
+    step.set("dependsOnNodeIds", mapper.createArrayNode());
+    step.set("parameters", mapper.createObjectNode().put("ports", "80"));
+    step.put("status", "pending");
+    step.put("actionId", actionId);
+    step.put("attempt", 0);
+
+    com.fasterxml.jackson.databind.node.ArrayNode steps = mapper.createArrayNode().add(step);
+    com.fasterxml.jackson.databind.node.ArrayNode actions = mapper.createArrayNode().add(action);
+    assertThatCode(() -> invokeValidatePlanSteps(steps, actions)).doesNotThrowAnyException();
+
+    // The identity must still be consistent with the action and bounded.
+    ((ObjectNode) steps.get(0)).put("actionId", "b".repeat(32));
+    assertThatThrownBy(() -> invokeValidatePlanSteps(steps, actions))
+        .isInstanceOf(AiAgentRuntimeClient.RuntimeProtocolException.class)
+        .hasMessageContaining("plan step actionId 无效");
+
+    ((ObjectNode) steps.get(0)).put("actionId", actionId).put("attempt", 33);
+    assertThatThrownBy(() -> invokeValidatePlanSteps(steps, actions))
+        .isInstanceOf(AiAgentRuntimeClient.RuntimeProtocolException.class)
+        .hasMessageContaining("plan step attempt 无效");
+  }
+
+  private void invokeValidatePlanSteps(JsonNode steps, JsonNode actions) throws Exception {
+    AiAgentRuntimeClient client = newClient();
+    var holderClass = Class.forName(
+        "com.bachelor.toolbox.ai.AiAgentRuntimeClient$Holder", true, getClass().getClassLoader());
+    var constructor = holderClass.getDeclaredConstructor(
+        AiAgentRuntimeClient.class, String.class, String.class, AiAgentRequest.class);
+    constructor.setAccessible(true);
+    Object holder = constructor.newInstance(client, RUN_ID, "java-authoritative-v1", request());
+    var method = holderClass.getDeclaredMethod("validatePlanSteps", JsonNode.class, JsonNode.class);
+    method.setAccessible(true);
+    try {
+      method.invoke(holder, steps, actions);
+    } catch (java.lang.reflect.InvocationTargetException ex) {
+      if (ex.getCause() instanceof RuntimeException runtime) throw runtime;
+      throw ex;
+    }
   }
 
   @Test
@@ -607,15 +756,48 @@ class AiAgentRuntimeClientTests {
   @Test
   void plannerBudgetSendsTheConfiguredRetrievalCeilingNotAStaleHardcode() {
     // Default constructor path uses 3; the payload must reflect it rather than the old 2.
+    // The turn budget follows the configured runtime read timeout instead of a fixed 90 s;
+    // this constructor uses 30 s, so it stays 15 s below it.
     assertThat(newClient().plannerBudget())
         .containsEntry("maxRetrievalRounds", 3)
         .containsEntry("maxLlmCalls", 4)
-        .containsEntry("timeoutSeconds", 90);
+        .containsEntry("timeoutSeconds", 15);
 
     assertThat(budgetClient(4).plannerBudget()).containsEntry("maxRetrievalRounds", 4);
     // Out-of-range values clamp to what the runtime schema accepts (1..4).
     assertThat(budgetClient(99).plannerBudget()).containsEntry("maxRetrievalRounds", 4);
     assertThat(budgetClient(0).plannerBudget()).containsEntry("maxRetrievalRounds", 1);
+  }
+
+  @Test
+  void plannerTurnBudgetStaysBelowTheRuntimeCeilingAndTheSocketTimeout() {
+    // 180 s read timeout (application default) => 105 s turn budget, above the runtime's old 90 s
+    // so reasoning-tuned models get the time they measurably need, yet below its 110 s ceiling.
+    assertThat(turnBudgetClient(180)).isEqualTo(105);
+    assertThat(turnBudgetClient(120)).isEqualTo(105);
+    // A tight read timeout keeps the turn budget strictly below it so the runtime still reports
+    // its own TURN_TIMEOUT instead of the socket dying first.
+    assertThat(turnBudgetClient(60)).isEqualTo(45);
+    assertThat(turnBudgetClient(10)).isEqualTo(10);
+  }
+
+  private int turnBudgetClient(int runtimeTimeoutSeconds) {
+    AiAgentRuntimeClient client =
+        new AiAgentRuntimeClient(
+            mapper,
+            mock(AssessmentProjectService.class),
+            mock(TargetService.class),
+            mock(SecurityTaskRepository.class),
+            mock(AgentWorkflowSpecService.class),
+            false,
+            "http://127.0.0.1:8090",
+            8090,
+            "test-token",
+            "test-signing-secret",
+            runtimeTimeoutSeconds,
+            20,
+            null);
+    return (int) client.plannerBudget().get("timeoutSeconds");
   }
 
   private AiAgentRuntimeClient budgetClient(int maxRetrievalRounds) {
