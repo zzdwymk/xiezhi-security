@@ -78,12 +78,11 @@ import AiStatusStamp from "../components/AiStatusStamp.vue";
 import AiFailureNotice from "../components/AiFailureNotice.vue";
 import AiDispatchNotice from "../components/AiDispatchNotice.vue";
 import FluentIcon from "../components/FluentIcon.vue";
-import MarkdownComposerPreview from "../components/MarkdownComposerPreview.vue";
 import ConversationAvatar from "../components/ConversationAvatar.vue";
 import AiApprovalDialog from "../components/AiApprovalDialog.vue";
 import FluentCodeBlock from "../components/FluentCodeBlock.vue";
 import { createAiApprovalPromptGate, isAwaitingAiApproval, isAwaitingAiDispatch, isAiDispatchRejected, aiDispatchFailureStatus, aiDispatchRejectedTitle, aiDispatchQuotaFailure } from "../utils/aiApproval";
-import { aiEventStepStatus, findMatchingAiStep, mergeAiStep } from "../utils/aiStepState";
+import { aiEventStepStatus, findMatchingAiStep, mergeAiStep, mergePlanSteps } from "../utils/aiStepState";
 import { mergeTaskDetailSnapshot } from "../utils/taskDetail";
 import { aiExecutionRequest } from "../utils/aiIntent";
 import { isAiStatusOutsideCard, conversationStatusBadge } from "../utils/aiStatus";
@@ -165,6 +164,8 @@ interface TaskRow {
   progressMessage?: string;
   executionLog?: string;
   errorMessage?: string;
+  terminationReason?: string;
+  workflowRunId?: number | null;
   startedAt?: string;
   finishedAt?: string;
   createdAt: string;
@@ -599,6 +600,85 @@ function planTaskSummary(message: ConversationMessage) {
   const related = tasks.value.filter(task => message.taskIds.includes(task.id));
   const ended = related.filter(task => ["SUCCESS", "FAILED", "TIMEOUT", "CANCELLED", "REJECTED", "SKIPPED"].includes(task.status)).length;
   return `已结束 ${ended}/${message.taskIds.length} 个任务`;
+}
+
+/** The task row behind one plan step, if the step owns a dispatched task. */
+function stepTask(message: ConversationMessage, index: number): TaskRow | undefined {
+  const step = message.steps[index];
+  const taskId = step?.taskId || message.taskIds[index];
+  return taskId ? tasks.value.find(item => item.id === taskId) : undefined;
+}
+
+/**
+ * One retry affordance per plan step, keyed by what the backend can actually do.
+ *
+ * <p>BLOCKED is waiting, not failing — the fix is to let the prerequisite finish, so the row
+ * says which node it waits for instead of offering a retry that must fail again. Only a
+ * terminal failure gets a node-level retry, and a run-bound step retries just itself.
+ */
+function planStepAction(message: ConversationMessage, index: number): {
+  kind: "retry" | "wait" | "prerequisite" | "none";
+  label?: string;
+} {
+  const step = message.steps[index];
+  const task = stepTask(message, index);
+  // No dispatched task yet: the plan is still awaiting confirmation.
+  if (!task) return { kind: "none" };
+  if (task.status === "BLOCKED") {
+    const prerequisite = (step.dependsOnNodeIds || [])
+      .map(nodeId => message.steps.find(item => item.workflowNodeId === nodeId)?.title)
+      .filter((title): title is string => Boolean(title));
+    return {
+      kind: "wait",
+      label: prerequisite.length
+        ? `等待前置：${prerequisite.join("、")}`
+        : "等待前置任务",
+    };
+  }
+  if (task.status === "SKIPPED" && task.terminationReason === "PREREQUISITE_NOT_COMPLETED") {
+    return { kind: "prerequisite", label: "需先重试前置节点" };
+  }
+  if (["FAILED", "TIMEOUT", "REJECTED", "CANCELLED"].includes(task.status)) {
+    // A workflow node retries through its run; an AI-dispatched dependent step has no run
+    // but still owns dependency edges, so it retries through the task-level step endpoint.
+    return { kind: "retry", label: "重试这一步" };
+  }
+  return { kind: "none" };
+}
+
+const retryingStepKeys = ref<Set<string>>(new Set());
+function stepRetryKey(message: ConversationMessage, index: number) {
+  return `${message.id}:${message.steps[index]?.actionId || index}`;
+}
+
+async function retryPlanStep(message: ConversationMessage, index: number) {
+  // Resolve the target task from the step itself first: message.steps[i].taskId is the
+  // authoritative link written at dispatch time. tasks.value is a polling cache that may
+  // not have picked the row up yet, and relying on it made the button a silent no-op.
+  const step = message.steps[index];
+  const taskId = step?.taskId || message.taskIds[index];
+  if (!taskId) return;
+  const key = stepRetryKey(message, index);
+  if (retryingStepKeys.value.has(key)) return;
+  // The run id only exists for visual-workflow nodes; AI-dispatched steps have none.
+  const runId = tasks.value.find(item => item.id === taskId)?.workflowRunId;
+  retryingStepKeys.value = new Set(retryingStepKeys.value).add(key);
+  try {
+    const idempotencyKey =
+      globalThis.crypto?.randomUUID?.() || `retry-${runId || "step"}-${taskId}-${Date.now()}`;
+    if (runId) await endpoints.retryWorkflowNode(runId, taskId, idempotencyKey);
+    else await endpoints.retryTaskStep(taskId, idempotencyKey);
+    ElMessage.success("已提交该步骤重试，其余步骤不会重跑");
+    await loadTasks();
+  } catch (error) {
+    ElMessage.error(
+      readableAiConversationError(error, "单节点重试失败，请检查前置节点与授权状态"),
+    );
+  } finally {
+    const next = new Set(retryingStepKeys.value);
+    next.delete(key);
+    retryingStepKeys.value = next;
+  }
 }
 
 function formatReferenceValue(value?: string) {
@@ -1441,7 +1521,7 @@ const sessionStats = computed(() => {
 });
 
 function eventStepIndex(message: ConversationMessage, event: AgentStreamEvent) {
-  const match = findMatchingAiStep(message.steps, { id: event.stepId, workflowNodeId: event.workflowNodeId, toolCallId: event.toolCallId, taskId: event.taskId });
+  const match = findMatchingAiStep(message.steps, { actionId: event.actionId, id: event.stepId, workflowNodeId: event.workflowNodeId, toolCallId: event.toolCallId, taskId: event.taskId });
   if (match) return message.steps.indexOf(match);
   return undefined;
 }
@@ -1463,6 +1543,10 @@ function normalizedStep(
         ? String(raw.workflowNodeId || raw.workflow_node_id || raw.nodeId)
         : undefined,
     nodeRunId: raw.nodeRunId ? String(raw.nodeRunId) : undefined,
+    actionId:
+      raw.actionId || raw.action_id ? String(raw.actionId || raw.action_id) : undefined,
+    attempt:
+      raw.attempt !== undefined ? Math.max(0, Number(raw.attempt) || 0) : undefined,
     group: raw.group !== undefined ? Number(raw.group) : undefined,
     dependsOnNodeIds: Array.isArray(raw.dependsOnNodeIds)
       ? raw.dependsOnNodeIds.map(String)
@@ -1535,6 +1619,11 @@ function applyAgentEvent(
       : undefined,
     executionDecision: event.executionDecision,
     modelUsage: event.modelUsage,
+    modelStage: event.modelStage,
+    modelOutcome: event.modelOutcome,
+    modelAttempt: event.modelAttempt,
+    modelElapsedMs: event.modelElapsedMs,
+    modelTimeoutMs: event.modelTimeoutMs,
     citation: event.citation ? publicCitation(event.citation) : undefined,
     contractVersion:
       event.contractVersion !== undefined
@@ -1618,10 +1707,13 @@ function applyAgentEvent(
       }
     ).actions) as Array<Record<string, unknown>> | undefined;
   if (Array.isArray(rawSteps) && rawSteps.length) {
-    steps = rawSteps.map((step, index) => {
-      const incoming = normalizedStep(step, index);
-      return mergeAiStep(findMatchingAiStep(steps, incoming), incoming);
-    });
+    // The runtime re-delivers the whole plan on every execution turn. Merging by plan
+    // identity keeps one row per step; appending made a retry appear to "run everything
+    // again" by adding a second copy of every step under the first.
+    steps = mergePlanSteps(
+      steps,
+      rawSteps.map((step, index) => normalizedStep(step, index)),
+    );
   }
   const index = eventStepIndex({ ...message, steps }, event);
   const stepStatus = aiEventStepStatus(event);
@@ -2813,6 +2905,8 @@ async function loadTasks() {
         progressMessage: task.progressMessage,
         executionLog: task.executionLog,
         errorMessage: task.errorMessage,
+        terminationReason: task.terminationReason,
+        workflowRunId: task.workflowRunId,
         startedAt: task.startedAt,
         finishedAt: task.finishedAt,
         createdAt: task.createdAt,
@@ -3316,7 +3410,6 @@ onBeforeUnmount(() => {
             : '例如：检查目标的开放端口；如需先看方案，可以说“先给方案，不执行”'"
           @keydown="handlePromptKeydown"
         />
-        <MarkdownComposerPreview :content="prompt" />
         <div class="composer-footer">
           <div class="target-scope">
             <el-radio-group
@@ -3730,6 +3823,20 @@ onBeforeUnmount(() => {
                     <span v-if="!hasDispatchNotice(message)" class="plan-step-status">{{
                       planStepState(message, index).label
                     }}</span>
+                    <button
+                      v-if="!hasDispatchNotice(message) && planStepAction(message, index).kind === 'retry'"
+                      type="button"
+                      class="plan-step-retry"
+                      :disabled="retryingStepKeys.has(stepRetryKey(message, index))"
+                      title="只重跑这一步，不会重新提交整份方案"
+                      @click="retryPlanStep(message, index)"
+                    >
+                      {{ retryingStepKeys.has(stepRetryKey(message, index)) ? "提交中…" : planStepAction(message, index).label }}
+                    </button>
+                    <span
+                      v-else-if="!hasDispatchNotice(message) && planStepAction(message, index).kind === 'prerequisite'"
+                      class="plan-step-hint"
+                    >{{ planStepAction(message, index).label }}</span>
                   </li>
                 </ol>
                 <footer v-if="message.taskIds.length" class="execution-plan-footer">
@@ -3974,7 +4081,6 @@ onBeforeUnmount(() => {
             placeholder="继续提问或说明下一步；只需方案时，请说“先给方案，不执行”"
             @keydown="handlePromptKeydown"
           />
-          <MarkdownComposerPreview :content="prompt" />
           <div class="thread-composer-footer">
             <span class="composer-shortcut">
               Enter 发送，Shift + Enter 换行<span v-if="sending"> · 当前对话处理中，回车将加入队列</span>
@@ -4338,7 +4444,13 @@ onBeforeUnmount(() => {
   overflow: auto;
   flex-direction: column;
   align-items: center;
-  padding: clamp(44px, 7vh, 86px) 20px 36px;
+  /* 图标、标题、统计条、输入框、快捷按钮在对话画布里垂直居中。safe 关键字是
+     必需的：窗口矮到放不下整屏欢迎内容时，退回顶部对齐，滚动条直接把用户带
+     到标题而不是把顶部内容顶出视野（不能安全居中时也不会被裁剪）。 */
+  justify-content: safe center;
+  /* 上下留白已经由 justify-content 平分，这里只补齐左右内边距和底部拖动安全
+     距离；顶部留一点点，避免内容贴住表头分割线（也避免窗口很矮时被裁掉）。 */
+  padding: 8px 20px 16px;
   text-align: center;
 }
 .welcome-mark {
@@ -4393,14 +4505,34 @@ onBeforeUnmount(() => {
   font-size: 14px;
   line-height: 1.65;
 }
+/* 输入区一次只占一档：空的时候是两行，有内容后平滑长到固定行数，之后多长都
+   在框内滚动，不再逐行跳动。 */
+.welcome-composer textarea,
+.thread-composer textarea {
+  /* 高度变化（空态 → 一档）走平滑过渡。 */
+  will-change: height;
+  transition: height 180ms cubic-bezier(0.2, 0.9, 0.2, 1);
+}
 .welcome-composer textarea {
-  min-height: 110px;
+  height: 120px;
+  min-height: 120px;
   max-height: 40vh;
   padding: 18px 19px 8px;
   /* 与 .thread-composer 同理：超长连续串必须能断行，否则撑破欢迎区布局 */
   overflow-wrap: anywhere;
   word-break: break-word;
   overflow-y: auto;
+}
+/* 欢迎页与对话页统一为“一档高度”：空态约两行，开始输入后平滑长到约四行，
+   再多就在框内滚动，不再随内容忽高忽低。 */
+.welcome-composer textarea:not(:placeholder-shown) {
+  height: 176px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .welcome-composer textarea,
+  .thread-composer textarea {
+    transition: none;
+  }
 }
 .welcome-composer textarea::placeholder,
 .thread-composer textarea::placeholder {
@@ -4886,13 +5018,18 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 .thread-composer textarea {
+  box-sizing: border-box;
+  height: 48px;
   max-height: 130px;
   min-height: 48px;
   padding: 4px 0;
-  /* 上千字符的连续串（没有空格可断行）会把输入区横向撑爆，把发送按钮挤到视口外 */
+  /* 有内容后长到固定的一档高度（约 4 行），再多就框内滚动。 */
   overflow-wrap: anywhere;
   word-break: break-word;
   overflow-y: auto;
+}
+.thread-composer:has(textarea:not(:placeholder-shown)) textarea {
+  height: 104px;
 }
 .composer-hint {
   display: block;
@@ -5198,6 +5335,27 @@ onBeforeUnmount(() => {
 }
 .execution-plan-list li.failed .plan-step-status {
   color: var(--fluent-danger-bg, #b42318);
+}
+/* Node-level retry: one row, no re-plan. */
+.plan-step-retry {
+  border: 1px solid var(--app-border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  background: var(--app-surface);
+  color: var(--app-accent);
+  font-size: var(--fluent-caption1-size, 12px);
+  line-height: 16px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.plan-step-retry:hover:not(:disabled) { background: var(--app-accent-soft); }
+.plan-step-retry:disabled { color: var(--app-muted); cursor: progress; }
+.execution-plan-list li.failed .plan-step-retry { color: var(--fluent-danger-bg, #b42318); }
+.plan-step-hint {
+  color: var(--app-muted);
+  font-size: var(--fluent-caption1-size, 12px);
+  line-height: 16px;
+  white-space: nowrap;
 }
 .execution-plan-list .el-progress {
   margin-top: 4px;
@@ -5994,7 +6152,9 @@ a.agent-citation-bubble {
   }
 }
 .chat-welcome {
-  padding: clamp(48px, 7vh, 88px) 24px 40px;
+  /* 居中后上下留白由剩余空间均分。这里只补左右与底部安全距离，不能再给顶部
+     加不对称的 padding，否则内容整体会被推偏。 */
+  padding: 8px 24px 16px;
 }
 .welcome-mark {
   width: 48px;
@@ -6038,7 +6198,8 @@ a.agent-citation-bubble {
   line-height: 1.55;
 }
 .welcome-composer textarea {
-  min-height: 112px;
+  /* 基础值由前面“一档高度”规则决定（空态 120px、输入后 176px），这里只对齐内边距。 */
+  min-height: 120px;
   padding: 18px 20px 8px;
 }
 .composer-footer {
@@ -6206,12 +6367,6 @@ a.agent-citation-bubble {
 .chat-welcome .welcome-composer {
   flex: 0 0 auto;
   min-height: 170px;
-}
-
-.chat-welcome .welcome-composer:not(:has(.composer-preview--expanded)) textarea {
-  box-sizing: border-box;
-  height: 112px;
-  min-height: 112px;
 }
 
 /* Keep labels readable in both light/dark and Windows high-contrast themes. */
