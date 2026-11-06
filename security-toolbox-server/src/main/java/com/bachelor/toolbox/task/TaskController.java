@@ -78,6 +78,22 @@ public class TaskController {
     return task;
   }
 
+  /**
+   * Retry one dependency step that belongs to a reviewed plan but not to a visual workflow run.
+   *
+   * <p>AI dispatch without a workflow uses dependency edges instead of a run, so
+   * {@code /workflow-runs/{runId}/nodes/{taskId}/retry} cannot address it. Kept as its own
+   * endpoint so the "retry only this step" intent stays explicit and idempotent.
+   */
+  @PostMapping("/{id}/retry-step")
+  @ResponseStatus(HttpStatus.ACCEPTED)
+  public SecurityTask retryStep(@PathVariable Long id,
+      @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
+    SecurityTask task = service.retryWorkflowNode(id, idempotencyKey);
+    progressEvents.publish(task, task.getProgressMessage());
+    return task;
+  }
+
   @PostMapping("/{id}/cancel")
   public SecurityTask cancel(@PathVariable Long id) {
     SecurityTask task = service.cancel(id);
