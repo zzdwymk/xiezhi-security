@@ -25,7 +25,7 @@ const { createRuntimeLogManager } = require("./runtime-log-manager.cjs");
 const { preparePostgresLogPolicy, readPostgresStartupTail } = require("./postgres-log-policy.cjs");
 const { observeMigrationProgress } = require("./migration-progress-stream.cjs");
 const { createInvalidatableCache } = require("./invalidatable-cache.cjs");
-const { createNotificationCenter, createServiceExitReporter, notificationSettingsFromStorage, updateNotificationStorage } = require("./notification-center.cjs");
+const { createNotificationCenter, createServiceExitReporter, notificationSettingsFromStorage, updateNotificationStorage, formatServiceExitCode } = require("./notification-center.cjs");
 const { evaluateInstalledRelease } = require("./dependency-version.cjs");
 const { selectEmbeddingTestConnection, runtimeModelEnvironment } = require("./ai-settings.cjs");
 const { createAiRelay, listProviderModels } = require("./ai-relay.cjs");
@@ -1901,7 +1901,7 @@ function runDependencyWorker(task, payload, onProgress = () => {}) {
         new UserFacingError(
           code === 0
             ? "后台安装任务未正常完成，请稍后重试"
-            : `后台安装任务异常退出（代码 ${code}），请稍后重试`,
+            : `后台安装任务异常退出（代码 ${formatServiceExitCode(code)}），请稍后重试`,
         ),
       );
     });
@@ -7562,7 +7562,7 @@ function waitForAiRuntime(port, timeoutMs = 90000) {
       if (aiRuntimeStartError) return reject(aiRuntimeStartError);
       if (aiRuntimeProcess && aiRuntimeProcess.exitCode !== null) {
         return reject(
-          new Error(`AI Runtime 已退出（代码 ${aiRuntimeProcess.exitCode}）`),
+          new Error(`AI Runtime 已退出（代码 ${formatServiceExitCode(aiRuntimeProcess.exitCode)}）`),
         );
       }
       if (Date.now() >= deadline)
@@ -7701,7 +7701,7 @@ function launchAiRuntimeProcess(slot) {
     if (aiRuntimeProcess === child) {
       if (!aiRuntimeConfig && !quitting) {
         aiRuntimeStartError = new Error(
-          `AI Runtime 已退出（代码 ${code ?? "unknown"}）`,
+          `AI Runtime 已退出（代码 ${formatServiceExitCode(code)}）`,
         );
       }
       aiRuntimeProcess = undefined;

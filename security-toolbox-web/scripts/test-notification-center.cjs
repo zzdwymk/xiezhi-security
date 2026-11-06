@@ -6,7 +6,19 @@ const vm = require("node:vm");
 const {
   createNotificationCenter, createServiceExitReporter, normalizeNotificationSettings,
   notificationSettingsFromStorage, updateNotificationStorage, safeNotificationRoute, shouldNotify,
+  formatServiceExitCode, describeServiceExit,
 } = require("../electron/notification-center.cjs");
+
+assert.equal(formatServiceExitCode(4294967295), "-1 / 4294967295（0xFFFFFFFF）");
+assert.equal(formatServiceExitCode(-1), "-1 / 4294967295（0xFFFFFFFF）", "signed -1 must keep its hex");
+assert.equal(formatServiceExitCode(1), "1（0x00000001）");
+assert.equal(formatServiceExitCode(0), "0（0x00000000）");
+assert.equal(formatServiceExitCode(null), "未知");
+assert.equal(formatServiceExitCode(undefined), "未知");
+assert.match(describeServiceExit(4294967295), /错误状态退出（-1）/);
+assert.match(describeServiceExit(0xc0000005 >>> 0), /访问冲突/);
+assert.match(describeServiceExit(0xc000013a >>> 0), /Ctrl\+C/);
+assert.match(describeServiceExit(null), /未取得退出码/);
 
 const defaults = normalizeNotificationSettings();
 assert.equal(defaults.enabled, true);
@@ -101,6 +113,9 @@ oldAi.emit("exit", 0);
 assert.equal(serviceNotices.length, 0, "late exit of the old process during restart is intentional");
 newAi.emit("exit", 1);
 assert.equal(serviceNotices.length, 1);
+assert.match(serviceNotices[0].body, /退出码 1（0x00000001）/, "service exit body must show the signed code and hex");
+child("java", "unsigned").emit("exit", 4294967295);
+assert.match(serviceNotices.at(-1).body, /退出码 -1 \/ 4294967295（0xFFFFFFFF）/, "0xFFFFFFFF must not be shown as a bare 10-digit number");
 assert.equal(serviceNotices[0].eventKey, "service:ai:new:exit");
 assert.equal(serviceNotices[0].category, "service");
 assert.equal(serviceNotices[0].route, "/settings");
@@ -109,8 +124,9 @@ reporter.markStopped(java);
 java.emit("exit", 143);
 quitting = true;
 child("ai", "quit").emit("exit", 0);
-assert.equal(serviceNotices.length, 1);
-assert.deepEqual(exited, [1], "intentional stop must suppress legacy renderer exit alerts too");
+assert.equal(serviceNotices.length, 2, "expected exits: ai/new and java/unsigned; intentional stops stay silent");
+assert.deepEqual(serviceNotices.map(item => item.eventKey), ["service:ai:new:exit", "service:java:unsigned:exit"]);
+assert.deepEqual(exited, [1, 4294967295], "intentional stop must suppress legacy renderer exit alerts too");
 
 // Execute the real preload bridge and verify listener cleanup and IPC argument isolation.
 let bridge;

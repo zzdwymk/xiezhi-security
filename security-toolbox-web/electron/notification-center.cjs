@@ -105,6 +105,50 @@ function createNotificationCenter({ Notification, getSettings, getWindow, maxKey
   };
 }
 
+// Node reports a process exit code as a 32-bit value. Windows hands back 0xFFFFFFFF for
+// "exited with -1 / killed", which is otherwise displayed as a scary 10-digit 4294967295.
+// Show the signed value plus the raw hex so the number stays traceable.
+function serviceExitCodeParts(code) {
+  if (!Number.isInteger(code)) return undefined;
+  const unsigned = code >>> 0;
+  const signed = unsigned > 0x7fffffff ? unsigned - 0x100000000 : unsigned;
+  const hex = `0x${unsigned.toString(16).toUpperCase().padStart(8, "0")}`;
+  return { signed, unsigned, hex };
+}
+
+function formatServiceExitCode(code) {
+  const parts = serviceExitCodeParts(code);
+  if (!parts) return "未知";
+  return parts.signed === parts.unsigned
+    ? `${parts.signed}（${parts.hex}）`
+    : `${parts.signed} / ${parts.unsigned}（${parts.hex}）`;
+}
+
+function describeServiceExit(code) {
+  const parts = serviceExitCodeParts(code);
+  if (!parts) return "进程被外部终止（未取得退出码）";
+  switch (parts.unsigned) {
+    case 0xffffffff:
+      return "服务以错误状态退出（-1），常见于启动失败或运行中被强制终止";
+    case 0xc000013a:
+      return "服务被 Ctrl+C 或控制台中断";
+    case 0xc0000005:
+      return "访问冲突（0xC0000005），JVM 或原生组件崩溃";
+    case 0xc0000142:
+      return "DLL 初始化失败（0xC0000142），通常是安装目录或系统库不完整";
+    case 0x40010004:
+      return "进程被调试器或系统终止";
+    case 0x80000003:
+      return "断点异常（0x80000003），进程被调试或强制挂起后终止";
+    case 0:
+      return "服务正常退出（退出码 0）";
+    default:
+      return parts.unsigned >= 0x80000000
+        ? `以异常码 ${parts.hex} 终止，通常是崩溃或被强制结束`
+        : "服务主动退出并报告了错误状态";
+  }
+}
+
 function createServiceExitReporter({ isQuitting, notify }) {
   const intentionallyStopped = new WeakSet();
   return {
@@ -118,7 +162,7 @@ function createServiceExitReporter({ isQuitting, notify }) {
           eventKey: `service:${service}:${lifecycleId}:exit`,
           category: "service", outcome: "error", type: "error", route: "/settings",
           title: `${label}意外退出`,
-          body: `${label}已停止（退出代码 ${code ?? "未知"}），请在设置中检查服务状态。`,
+          body: `${label}已停止，退出码 ${formatServiceExitCode(code)}。${describeServiceExit(code)}。请在设置中检查服务状态并查看运行日志。`,
         });
         onUnexpectedExit?.(code);
       });
@@ -129,4 +173,5 @@ function createServiceExitReporter({ isQuitting, notify }) {
 module.exports = {
   createNotificationCenter, normalizeNotificationSettings, notificationSettingsFromStorage,
   updateNotificationStorage, safeNotificationRoute, shouldNotify, createServiceExitReporter,
+  formatServiceExitCode, describeServiceExit,
 };
