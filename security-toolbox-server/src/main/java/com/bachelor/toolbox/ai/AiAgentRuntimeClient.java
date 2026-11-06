@@ -66,9 +66,16 @@ public class AiAgentRuntimeClient {
   }
 
   public record PublicProgress(String stage, String message, Integer evidenceCount, String evidenceDecision,
-      String modelDecision, List<String> reasonCodes, String assessmentSource, String guardReason) {
+      String modelDecision, List<String> reasonCodes, String assessmentSource, String guardReason,
+      Integer attempt, Integer elapsedMs, Integer timeoutMs) {
     public PublicProgress(String stage, String message, Integer evidenceCount, String evidenceDecision) {
-      this(stage, message, evidenceCount, evidenceDecision, null, List.of(), null, null);
+      this(stage, message, evidenceCount, evidenceDecision, null, List.of(), null, null, null, null, null);
+    }
+
+    public PublicProgress(String stage, String message, Integer evidenceCount, String evidenceDecision,
+        String modelDecision, List<String> reasonCodes, String assessmentSource, String guardReason) {
+      this(stage, message, evidenceCount, evidenceDecision, modelDecision, reasonCodes, assessmentSource,
+          guardReason, null, null, null);
     }
   }
   static final int CONTRACT_VERSION = 3;
@@ -81,6 +88,12 @@ public class AiAgentRuntimeClient {
   private static final String SAFE_ID_PATTERN = "[A-Za-z0-9][A-Za-z0-9_.:-]*";
   private static final List<String> ALLOWED_RUNTIME_TOOLS =
       AiToolCatalog.RUNTIME_CODES;
+  /** Tools that consume open ports: dispatch makes them wait for a port probe. */
+  private static final Set<String> PORT_DEPENDENT_TOOLS =
+      Set.of("nmap_service_scan", "http_headers", "tls_config", "dir_scan",
+          "http_security_check", "nuclei_scan", "afrog_scan", "xray_scan", "zap_scan",
+          "msf_scan", "sqlmap_scan", "zap_fuzz");
+  private static final Set<String> PORT_PROBE_TOOLS = Set.of("tcp_ports", "fscan_scan");
   private static final Set<String> FORBIDDEN_MSF_OPTIONS =
       Set.of("RHOST", "RHOSTS", "RPORT", "LHOST", "LPORT", "PAYLOAD", "CMD", "COMMAND",
           "SHELL", "CHOST", "CPORT");
@@ -120,6 +133,7 @@ public class AiAgentRuntimeClient {
   private final int maxActions;
   private final int maxTargetActions;
   private final int maxRetrievalRounds;
+  private final int plannerTurnBudgetSeconds;
 
   @Autowired
   public AiAgentRuntimeClient(
@@ -164,6 +178,14 @@ public class AiAgentRuntimeClient {
     if (!baseUrl.matches("https?://(127\\.0\\.0\\.1|localhost|\\[::1])(?::\\d+)?/?")) {
       throw new IllegalArgumentException("AI Runtime 仅允许连接本机回环地址");
     }
+    // One planning turn is route + evidence + grounded, each allowing a contract repair.
+    // Reasoning-tuned upstreams need 15-40 s per call, so the previous fixed 90 s turned healthy
+    // turns into TURN_TIMEOUT. Keep the turn budget strictly below the runtime's own 110 s ceiling
+    // and the socket read timeout, so whichever limit fires first is the one that reports the turn
+    // instead of an opaque transport failure.
+    this.plannerTurnBudgetSeconds =
+        Math.max(10, Math.min(105, Math.min(110, timeoutSeconds - 15)));
+
     SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
     requestFactory.setConnectTimeout(Duration.ofSeconds(2));
     requestFactory.setReadTimeout(Duration.ofSeconds(Math.max(10, timeoutSeconds)));
@@ -953,7 +975,7 @@ public class AiAgentRuntimeClient {
         "maxLlmCalls",
         RUNTIME_MAX_LLM_CALLS,
         "timeoutSeconds",
-        90);
+        plannerTurnBudgetSeconds);
   }
 
   private List<Map<String, Object>> buildPlannerMessages(
@@ -1028,8 +1050,48 @@ public class AiAgentRuntimeClient {
     // summary 标注“默认基线”，用户配置工作流后即被真实节点取代。
     if (result.isEmpty()) {
       result.addAll(defaultBaselineSteps(target));
+      return result;
     }
+    Set<String> capabilityNodes = new java.util.LinkedHashSet<>();
+    for (Map<String, Object> step : result) {
+      String nodeId = Objects.toString(step.get("nodeId"), "");
+      if (!nodeId.isBlank()) capabilityNodes.add(nodeId);
+    }
+    inferPortDependencies(result, capabilityNodes);
     return result;
+  }
+
+  /**
+   * Add the port-scan edges that dispatch would create anyway.
+   *
+   * <p>An approved plan is dispatched as a graph, and {@code WorkflowTaskSchedule} makes a
+   * barrier tool (port sweep, crawler…) block its siblings — so a step that needs open ports
+   * really does wait for the port probe even when the plan declares no edge. Mirrors
+   * {@code AiRuntime._prepare_plan_update}: without this the plan shows steps that look
+   * parallel but can never start early.
+   *
+   * <p>A step may only name a probe that is also a capability node. The runtime rejects an
+   * edge to an unknown node; the default-baseline nodes are deliberately invisible to it.
+   */
+  private void inferPortDependencies(List<Map<String, Object>> steps, Set<String> capabilityNodes) {
+    Set<String> probes = new java.util.LinkedHashSet<>();
+    for (Map<String, Object> step : steps) {
+      String tool = Objects.toString(step.get("tool"), "");
+      String nodeId = Objects.toString(step.get("nodeId"), "");
+      if (!nodeId.isBlank() && PORT_PROBE_TOOLS.contains(tool) && capabilityNodes.contains(nodeId)) {
+        probes.add(nodeId);
+      }
+    }
+    if (probes.isEmpty()) return;
+    for (Map<String, Object> step : steps) {
+      String tool = Objects.toString(step.get("tool"), "");
+      Object declared = step.get("dependsOnNodeIds");
+      boolean hasUpstream = declared instanceof List<?> list && !list.isEmpty();
+      if (hasUpstream || PORT_PROBE_TOOLS.contains(tool) || !PORT_DEPENDENT_TOOLS.contains(tool)) {
+        continue;
+      }
+      step.put("dependsOnNodeIds", List.copyOf(probes));
+    }
   }
 
   /**
@@ -1136,10 +1198,16 @@ public class AiAgentRuntimeClient {
           .with(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
           .with(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(text);
       if (data == null || !data.isObject() || !data.path("stage").isTextual()) return null;
+      boolean modelCall = "MODEL_CALL".equals(data.path("stage").textValue());
       for (var fields = data.fieldNames(); fields.hasNext();) {
-        if (!Set.of("stage", "count", "decision", "modelDecision", "reasonCodes", "assessmentSource", "guardReason")
-            .contains(fields.next())) return null;
+        String field = fields.next();
+        boolean known = modelCall
+            ? Set.of("stage", "modelStage", "outcome", "attempt", "elapsedMs", "timeoutMs").contains(field)
+            : Set.of("stage", "count", "decision", "modelDecision", "reasonCodes", "assessmentSource", "guardReason")
+                .contains(field);
+        if (!known) return null;
       }
+      if (modelCall) return parseModelCallProgress(data);
       String stage = data.path("stage").textValue();
       Integer count = null;
       String decision = null;
@@ -1205,6 +1273,74 @@ public class AiAgentRuntimeClient {
     }
   }
 
+  /**
+   * Model-call telemetry for the chat's connection indicator.
+   *
+   * <p>Every field is a finite enumeration or a bounded integer, so this method can describe
+   * "waiting on the model, 18 s of a 60 s ceiling" without carrying prompt, evidence or output
+   * text. Anything outside the whitelist drops the whole hint instead of relabeling it.
+   */
+  private PublicProgress parseModelCallProgress(JsonNode data) {
+    for (JsonNode value : data) {
+      if (value.isContainerNode() || value.isNull()) return null;
+    }
+    String modelStage = data.path("modelStage").isTextual() ? data.path("modelStage").textValue() : "";
+    String outcome = data.path("outcome").isTextual() ? data.path("outcome").textValue() : "";
+    if (!Set.of("ROUTE", "EVIDENCE", "GROUNDED", "LEGACY", "SUMMARY", "CONTRACT").contains(modelStage)) return null;
+    if (!Set.of("STARTED", "SUCCEEDED", "TIMEOUT", "FAILED").contains(outcome)) return null;
+    Integer attempt = boundedInt(data.path("attempt"), 0, 8);
+    if (attempt == null) return null;
+    Integer elapsedMs = null;
+    Integer timeoutMs = null;
+    if ("STARTED".equals(outcome)) {
+      timeoutMs = boundedInt(data.path("timeoutMs"), 0, 240_000);
+      if (timeoutMs == null || data.has("elapsedMs")) return null;
+    } else {
+      elapsedMs = boundedInt(data.path("elapsedMs"), 0, 600_000);
+      if (elapsedMs == null || data.has("timeoutMs")) return null;
+    }
+    String message = modelCallMessage(modelStage, outcome, attempt, elapsedMs, timeoutMs);
+    return message == null ? null : new PublicProgress("MODEL_CALL", message, null, null,
+        modelStage, List.of(), outcome, null, attempt, elapsedMs, timeoutMs);
+  }
+
+  private static Integer boundedInt(JsonNode value, int minimum, int maximum) {
+    if (!value.isIntegralNumber() || !value.canConvertToInt()) return null;
+    int parsed = value.intValue();
+    return parsed < minimum || parsed > maximum ? null : parsed;
+  }
+
+  private static String modelCallMessage(String modelStage, String outcome, int attempt,
+      Integer elapsedMs, Integer timeoutMs) {
+    String purpose = switch (modelStage) {
+      case "ROUTE" -> "理解当前请求";
+      case "EVIDENCE" -> "评估证据是否够用";
+      case "GROUNDED" -> "整理回答或检测方案";
+      case "LEGACY" -> "生成检测方案";
+      case "SUMMARY" -> "压缩较早的对话";
+      default -> "检查上一步输出格式";
+    };
+    String call = "第 " + attempt + " 次模型调用";
+    String duration = secondsLabel(elapsedMs);
+    String ceiling = secondsLabel(timeoutMs);
+    return switch (outcome) {
+      case "STARTED" -> "正在等待模型" + purpose + "（" + call + "，单次等待上限 " + ceiling + "）";
+      case "SUCCEEDED" -> "模型已完成" + purpose + "（" + call + "，用时 " + duration + "）";
+      case "TIMEOUT" -> "模型在 " + duration + "内未返回（" + call + "），本次调用已终止";
+      default -> "模型本次调用失败（" + call + "，用时 " + duration + "）";
+    };
+  }
+
+  private static String secondsLabel(Integer milliseconds) {
+    if (milliseconds == null) return "未知时长";
+    if (milliseconds < 1000) return "不足 1 秒";
+    long seconds = Math.round(milliseconds / 1000.0);
+    if (seconds < 60) return seconds + " 秒";
+    long minutes = seconds / 60;
+    long rest = seconds % 60;
+    return rest == 0 ? minutes + " 分钟" : minutes + " 分 " + rest + " 秒";
+  }
+
   private static String assessmentMessage(String decision, String modelDecision, List<String> reasonCodes,
       String assessmentSource, String guardReason) {
     if (modelDecision == null) {
@@ -1266,7 +1402,11 @@ public class AiAgentRuntimeClient {
             "stateVersion",
             "ledgerSequence",
             "ledgerEntryDigest",
-            "policyRevision");
+            "policyRevision",
+            // Additive, identity-only: the producer node before `node` was rewritten to
+            // the public stage. Without it a retry/guard event cannot be traced back to
+            // the node that emitted it. Validated below; never used for authorization.
+            "legacyNodeName");
     java.util.Iterator<String> fields = root.fieldNames();
     while (fields.hasNext()) {
       if (!allowedFields.contains(fields.next())) {
@@ -1299,6 +1439,11 @@ public class AiAgentRuntimeClient {
     String node = safeProtocolIdentifier(root, "node", 64);
     if (!node.equals(innerStep)) {
       throw new RuntimeProtocolException("AI Runtime innerStep 与 node 不一致");
+    }
+    // Optional producer identity. Bounded to the same identifier space as node and never
+    // consulted for authorization, so a forged value cannot widen anything.
+    if (root.has("legacyNodeName")) {
+      safeProtocolIdentifier(root, "legacyNodeName", 64);
     }
     if (!root.path("ledgerSequence").isIntegralNumber()
         || !root.path("ledgerSequence").canConvertToLong()
@@ -2723,7 +2868,11 @@ public class AiAgentRuntimeClient {
                 "group",
                 "dependsOnNodeIds",
                 "parameters",
-                "status"),
+                "status",
+                // Identity carried on the step so the desktop can merge a re-planned step
+                // into the existing row instead of appending a duplicate on every retry.
+                "actionId",
+                "attempt"),
             Set.of(
                 "toolCode",
                 "tool",
@@ -2760,6 +2909,24 @@ public class AiAgentRuntimeClient {
         strictParameters(tool, step.get("parameters"));
         if (!step.get("parameters").equals(action.get("parameters"))) {
           throw new RuntimeProtocolException("AI Runtime plan step parameters 与 action 不一致");
+        }
+        // Optional, additive identity so the desktop can recognise "the same step
+        // re-planned" instead of appending a duplicate row on every retry turn. A
+        // runtime that omits them stays valid.
+        JsonNode stepActionId = step.get("actionId");
+        if (stepActionId != null && !stepActionId.isNull()) {
+          if (!stepActionId.isTextual()
+              || !stepActionId.textValue().matches("[0-9a-f]{32}")
+              || !stepActionId.textValue().equals(strictText(action, "actionId", 64))) {
+            throw new RuntimeProtocolException("AI Runtime plan step actionId 无效");
+          }
+        }
+        JsonNode stepAttempt = step.get("attempt");
+        if (stepAttempt != null && !stepAttempt.isNull()
+            && (!stepAttempt.canConvertToInt()
+                || stepAttempt.asInt() < 0
+                || stepAttempt.asInt() > 32)) {
+          throw new RuntimeProtocolException("AI Runtime plan step attempt 无效");
         }
       }
     }
