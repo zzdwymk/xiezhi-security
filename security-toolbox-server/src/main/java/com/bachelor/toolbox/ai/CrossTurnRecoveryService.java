@@ -85,12 +85,16 @@ public class CrossTurnRecoveryService {
     }
     List<Long> taskIds = normalizeTaskIds(request.pendingTaskIds());
     List<SecurityTask> persisted = tasks.findAllById(taskIds);
+    // A project-scoped turn fans one plan out over several targets, so the boundary that
+    // matters is "every task belongs to this project and to a target this turn actually
+    // covered", not "every task sits on the one anchor target".
+    java.util.Set<Long> allowedTargets = request.allowedTaskTargets();
     if (persisted.size() != taskIds.size()
         || persisted.stream()
             .anyMatch(
                 task ->
                     !Objects.equals(task.getProjectId(), request.projectId())
-                        || !Objects.equals(task.getTargetId(), request.targetId()))) {
+                        || !allowedTargets.contains(task.getTargetId()))) {
       throw new ApiException("Agent 续接任务越过项目或目标边界");
     }
     String taskJson = write(taskIds);
@@ -554,10 +558,21 @@ public class CrossTurnRecoveryService {
       long ledgerSequence,
       String ledgerHeadDigest) {
     public CheckpointRequest bind(AiAgentRequest request, List<Long> pendingTaskIds) {
+      return bind(request, pendingTaskIds, request == null ? null : request.targetId());
+    }
+
+    /**
+     * @param anchorTargetId the target the tombstone stores. A project-scoped "all targets" turn
+     *     has no {@code request.targetId()}, but the tombstone column is non-null, so the caller
+     *     passes a concrete target it actually dispatched to. The full set travels in
+     *     {@code scopeTargetIds} and is what the boundary check validates against.
+     */
+    public CheckpointRequest bind(
+        AiAgentRequest request, List<Long> pendingTaskIds, Long anchorTargetId) {
       if (request == null) throw new ApiException("Agent 续接请求不能为空");
       return new CheckpointRequest(
           request.projectId(),
-          request.targetId(),
+          anchorTargetId,
           runId,
           request.nodeRunId(),
           sessionId,
@@ -569,7 +584,8 @@ public class CrossTurnRecoveryService {
           policyRevision,
           ledgerSequence,
           ledgerHeadDigest,
-          pendingTaskIds);
+          pendingTaskIds,
+          request.scopeTargetIds());
     }
   }
 
@@ -587,7 +603,60 @@ public class CrossTurnRecoveryService {
       String policyRevision,
       long ledgerSequence,
       String ledgerHeadDigest,
-      List<Long> pendingTaskIds) {}
+      List<Long> pendingTaskIds,
+      /**
+       * Every target this checkpoint's tasks may belong to.
+       *
+       * <p>A project-scoped turn ("all targets") fans one plan out over every registered target,
+       * so its tasks legitimately span several target ids while the tombstone still has to store
+       * a single anchor in {@code targetId}. Without this set the boundary check below could only
+       * accept single-target turns and rejected every project-scoped dispatch. Empty means
+       * "single-target turn": the tasks must all belong to {@code targetId}.
+       */
+      List<Long> scopeTargetIds) {
+
+    /** Back-compat for the single-target shape used throughout the tests. */
+    public CheckpointRequest(
+        Long projectId,
+        Long targetId,
+        String runId,
+        String nodeRunId,
+        String sessionId,
+        String turnId,
+        String workflowId,
+        long workflowRevision,
+        String workflowDigest,
+        String outerNodeId,
+        String policyRevision,
+        long ledgerSequence,
+        String ledgerHeadDigest,
+        List<Long> pendingTaskIds) {
+      this(
+          projectId,
+          targetId,
+          runId,
+          nodeRunId,
+          sessionId,
+          turnId,
+          workflowId,
+          workflowRevision,
+          workflowDigest,
+          outerNodeId,
+          policyRevision,
+          ledgerSequence,
+          ledgerHeadDigest,
+          pendingTaskIds,
+          List.of());
+    }
+
+    /** Targets a task of this checkpoint may legitimately belong to. */
+    java.util.Set<Long> allowedTaskTargets() {
+      java.util.Set<Long> allowed = new java.util.LinkedHashSet<>();
+      if (targetId != null) allowed.add(targetId);
+      if (scopeTargetIds != null) allowed.addAll(scopeTargetIds);
+      return allowed;
+    }
+  }
 
   public record ContinuationClaim(
       Long tombstoneId,

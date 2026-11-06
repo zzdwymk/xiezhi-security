@@ -180,6 +180,21 @@ public record AiAgentRequest(
     return scopeMode != null && scopeMode != ScopeMode.SINGLE;
   }
 
+  /**
+   * Targets this turn may create tasks for.
+   *
+   * <p>A project-scoped turn ("all targets" or a subset) legitimately produces tasks on several
+   * targets, while {@code targetId} remains a single anchor. Continuation checkpoints need the
+   * full set to validate task ownership without rejecting every multi-target dispatch.
+   */
+  @com.fasterxml.jackson.annotation.JsonIgnore
+  public java.util.List<Long> scopeTargetIds() {
+    if (!isProjectScoped() || targetIds == null || targetIds.isEmpty()) {
+      return java.util.List.of();
+    }
+    return targetIds;
+  }
+
   /** Called only after the trusted runtime decision and server intent policy agree. */
   public AiAgentRequest withResolvedExecution(boolean resolved) {
     return new AiAgentRequest(projectId, targetId, sessionId, prompt, resolved, contextRefs,

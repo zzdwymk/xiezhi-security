@@ -1,6 +1,7 @@
 package com.bachelor.toolbox.ai;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -8,6 +9,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.bachelor.toolbox.audit.AuditService;
+import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.project.AssessmentProjectService;
 import com.bachelor.toolbox.target.TargetService;
 import com.bachelor.toolbox.task.SecurityTask;
@@ -55,6 +57,45 @@ class CrossTurnRecoveryServiceTests {
             audit,
             900,
             300);
+  }
+
+  @Test
+  void projectScopedCheckpointAcceptsTasksFromEveryTargetItBlanketed() {
+    // Regression: a project-scoped "all targets" turn fans one plan out over several targets,
+    // so its tasks legitimately span more than one target id while the tombstone stores a
+    // single anchor. Comparing every task against that one anchor rejected the whole dispatch
+    // with "Agent 续接任务越过项目或目标边界" and rolled the turn back.
+    when(ledger.state(7L, "runtime-run-1", "node-run-1")).thenReturn(ledgerState());
+    when(tasks.findAllById(List.of(31L, 32L)))
+        .thenReturn(List.of(task(31L, 11L, "PENDING"), task(32L, 12L, "PENDING")));
+    when(tombstones.findByRunIdAndNodeRunId("runtime-run-1", "node-run-1"))
+        .thenReturn(Optional.empty());
+    when(tombstones.findByProjectIdAndTargetIdAndTurnIdAndWorkflowDigest(
+            7L, 11L, "turn-1", WORKFLOW_DIGEST))
+        .thenReturn(Optional.empty());
+    when(tombstones.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.checkpoint(checkpointAcrossTargets());
+
+    ArgumentCaptor<ConversationTombstone> stored =
+        ArgumentCaptor.forClass(ConversationTombstone.class);
+    verify(tombstones).save(stored.capture());
+    assertThat(stored.getValue().getPendingTaskIdsJson()).isEqualTo("[31,32]");
+    assertThat(stored.getValue().getTargetId()).isEqualTo(11L);
+  }
+
+  @Test
+  void checkpointStillRejectsATaskFromATargetOutsideTheBlanket() {
+    // The widened boundary must not become a free pass: a task on a target the turn never
+    // covered is exactly the cross-target leak this check exists to stop.
+    when(ledger.state(7L, "runtime-run-1", "node-run-1")).thenReturn(ledgerState());
+    when(tasks.findAllById(List.of(31L, 33L)))
+        .thenReturn(List.of(task(31L, 11L, "PENDING"), task(33L, 99L, "PENDING")));
+
+    assertThatThrownBy(() -> service.checkpoint(checkpointAcrossTargets()))
+        .isInstanceOf(ApiException.class)
+        .hasMessageContaining("越过项目或目标边界");
+    verify(tombstones, never()).save(any());
   }
 
   @Test
@@ -193,6 +234,26 @@ class CrossTurnRecoveryServiceTests {
         List.of(31L));
   }
 
+  /** A project-scoped turn: anchor stays 11, but the plan blanketed targets 11 and 12. */
+  private CrossTurnRecoveryService.CheckpointRequest checkpointAcrossTargets() {
+    return new CrossTurnRecoveryService.CheckpointRequest(
+        7L,
+        11L,
+        "runtime-run-1",
+        "node-run-1",
+        "conversation-1",
+        "turn-1",
+        "workflow-1",
+        3L,
+        WORKFLOW_DIGEST,
+        "ledger-agent",
+        AiAgentRuntimeClient.POLICY_REVISION,
+        9L,
+        LEDGER_DIGEST,
+        List.of(31L, 32L),
+        List.of(11L, 12L));
+  }
+
   private ConversationTombstone tombstone() {
     ConversationTombstone value = new ConversationTombstone();
     value.setId(5L);
@@ -219,10 +280,14 @@ class CrossTurnRecoveryServiceTests {
   }
 
   private SecurityTask task(Long id, String status) {
+    return task(id, 11L, status);
+  }
+
+  private SecurityTask task(Long id, Long targetId, String status) {
     SecurityTask value = new SecurityTask();
     value.setId(id);
     value.setProjectId(7L);
-    value.setTargetId(11L);
+    value.setTargetId(targetId);
     value.setStatus(status);
     return value;
   }

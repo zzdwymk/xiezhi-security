@@ -221,7 +221,7 @@ public class SecurityAgentTools {
       }
       AiPlanResponse normalized = prepareForHarness(request, proposedPlan);
       List<Long> taskIds = parseTaskIds(existing.getTaskIds());
-      checkpoint(request, recoveryAnchor, taskIds);
+      checkpoint(request, recoveryAnchor, taskIds, primaryTargetId);
       return new AiDispatchResponse(primaryTargetId, inExecutionOrder(normalized), taskIds.size(), taskIds);
     }
     AiAuthorizationGuard.GuardDecision decision = approvedPlan ? guard.evaluateApproved(request, proposedPlan) : guard.evaluate(request, proposedPlan);
@@ -352,7 +352,7 @@ public class SecurityAgentTools {
     record.setTaskIds(
         response.taskIds().stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(",")));
     dispatches.save(record);
-    checkpoint(request, recoveryAnchor, response.taskIds());
+    checkpoint(request, recoveryAnchor, response.taskIds(), primaryTargetId);
     return response;
   }
 
@@ -367,9 +367,10 @@ public class SecurityAgentTools {
   private void checkpoint(
       AiAgentRequest request,
       CrossTurnRecoveryService.RecoveryAnchor recoveryAnchor,
-      List<Long> taskIds) {
+      List<Long> taskIds,
+      Long anchorTargetId) {
     if (recoveryAnchor == null) return;
-    recoveryService.checkpoint(recoveryAnchor.bind(request, taskIds));
+    recoveryService.checkpoint(recoveryAnchor.bind(request, taskIds, anchorTargetId));
   }
 
   /** 该步骤是否声明了"复用前序端口探测结果"。 */
