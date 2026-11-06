@@ -1147,22 +1147,6 @@ export const endpoints = {
   }) => api.post("/tasks", payload),
   retryTask: (id: number, idempotencyKey?: string) => api.post(`/tasks/${id}/retry`, undefined,
     idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : undefined),
-  /**
-   * Re-run one failed workflow node without re-planning the whole plan.
-   * Requires Idempotency-Key: a double click must not queue two scans.
-   */
-  retryWorkflowNode: (runId: number, taskId: number, idempotencyKey: string) =>
-    api.post(`/workflow-runs/${runId}/nodes/${taskId}/retry`, undefined, {
-      headers: { "Idempotency-Key": idempotencyKey },
-    }),
-  /**
-   * Re-run one dependency step of an approved AI plan that has no visual workflow run.
-   * Same idempotency contract as retryWorkflowNode.
-   */
-  retryTaskStep: (taskId: number, idempotencyKey: string) =>
-    api.post(`/tasks/${taskId}/retry-step`, undefined, {
-      headers: { "Idempotency-Key": idempotencyKey },
-    }),
   cancelTask: (id: number) => api.post(`/tasks/${id}/cancel`),
   workflowRuns: (projectId: number) =>
     api.get<WorkflowRunSummary[]>("/workflow-runs", { params: { projectId } }),

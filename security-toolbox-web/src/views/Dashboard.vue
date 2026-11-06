@@ -610,14 +610,14 @@ function stepTask(message: ConversationMessage, index: number): TaskRow | undefi
 }
 
 /**
- * One retry affordance per plan step, keyed by what the backend can actually do.
+ * Explain a step that is waiting rather than failing.
  *
- * <p>BLOCKED is waiting, not failing — the fix is to let the prerequisite finish, so the row
- * says which node it waits for instead of offering a retry that must fail again. Only a
- * terminal failure gets a node-level retry, and a run-bound step retries just itself.
+ * <p>BLOCKED means the step is queued behind a prerequisite, which is a normal state and the
+ * single most confusing one to leave unexplained. It is a hint, not an action: a failed step
+ * is re-planned from the conversation, never retried in place.
  */
 function planStepAction(message: ConversationMessage, index: number): {
-  kind: "retry" | "wait" | "prerequisite" | "none";
+  kind: "wait" | "prerequisite" | "none";
   label?: string;
 } {
   const step = message.steps[index];
@@ -636,49 +636,9 @@ function planStepAction(message: ConversationMessage, index: number): {
     };
   }
   if (task.status === "SKIPPED" && task.terminationReason === "PREREQUISITE_NOT_COMPLETED") {
-    return { kind: "prerequisite", label: "需先重试前置节点" };
-  }
-  if (["FAILED", "TIMEOUT", "REJECTED", "CANCELLED"].includes(task.status)) {
-    // A workflow node retries through its run; an AI-dispatched dependent step has no run
-    // but still owns dependency edges, so it retries through the task-level step endpoint.
-    return { kind: "retry", label: "重试这一步" };
+    return { kind: "prerequisite", label: "前置未完成，本步已跳过" };
   }
   return { kind: "none" };
-}
-
-const retryingStepKeys = ref<Set<string>>(new Set());
-function stepRetryKey(message: ConversationMessage, index: number) {
-  return `${message.id}:${message.steps[index]?.actionId || index}`;
-}
-
-async function retryPlanStep(message: ConversationMessage, index: number) {
-  // Resolve the target task from the step itself first: message.steps[i].taskId is the
-  // authoritative link written at dispatch time. tasks.value is a polling cache that may
-  // not have picked the row up yet, and relying on it made the button a silent no-op.
-  const step = message.steps[index];
-  const taskId = step?.taskId || message.taskIds[index];
-  if (!taskId) return;
-  const key = stepRetryKey(message, index);
-  if (retryingStepKeys.value.has(key)) return;
-  // The run id only exists for visual-workflow nodes; AI-dispatched steps have none.
-  const runId = tasks.value.find(item => item.id === taskId)?.workflowRunId;
-  retryingStepKeys.value = new Set(retryingStepKeys.value).add(key);
-  try {
-    const idempotencyKey =
-      globalThis.crypto?.randomUUID?.() || `retry-${runId || "step"}-${taskId}-${Date.now()}`;
-    if (runId) await endpoints.retryWorkflowNode(runId, taskId, idempotencyKey);
-    else await endpoints.retryTaskStep(taskId, idempotencyKey);
-    ElMessage.success("已提交该步骤重试，其余步骤不会重跑");
-    await loadTasks();
-  } catch (error) {
-    ElMessage.error(
-      readableAiConversationError(error, "单节点重试失败，请检查前置节点与授权状态"),
-    );
-  } finally {
-    const next = new Set(retryingStepKeys.value);
-    next.delete(key);
-    retryingStepKeys.value = next;
-  }
 }
 
 function formatReferenceValue(value?: string) {
@@ -3823,18 +3783,8 @@ onBeforeUnmount(() => {
                     <span v-if="!hasDispatchNotice(message)" class="plan-step-status">{{
                       planStepState(message, index).label
                     }}</span>
-                    <button
-                      v-if="!hasDispatchNotice(message) && planStepAction(message, index).kind === 'retry'"
-                      type="button"
-                      class="plan-step-retry"
-                      :disabled="retryingStepKeys.has(stepRetryKey(message, index))"
-                      title="只重跑这一步，不会重新提交整份方案"
-                      @click="retryPlanStep(message, index)"
-                    >
-                      {{ retryingStepKeys.has(stepRetryKey(message, index)) ? "提交中…" : planStepAction(message, index).label }}
-                    </button>
                     <span
-                      v-else-if="!hasDispatchNotice(message) && planStepAction(message, index).kind === 'prerequisite'"
+                      v-if="!hasDispatchNotice(message) && planStepAction(message, index).kind !== 'none'"
                       class="plan-step-hint"
                     >{{ planStepAction(message, index).label }}</span>
                   </li>
@@ -5336,21 +5286,7 @@ onBeforeUnmount(() => {
 .execution-plan-list li.failed .plan-step-status {
   color: var(--fluent-danger-bg, #b42318);
 }
-/* Node-level retry: one row, no re-plan. */
-.plan-step-retry {
-  border: 1px solid var(--app-border);
-  border-radius: 4px;
-  padding: 2px 8px;
-  background: var(--app-surface);
-  color: var(--app-accent);
-  font-size: var(--fluent-caption1-size, 12px);
-  line-height: 16px;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.plan-step-retry:hover:not(:disabled) { background: var(--app-accent-soft); }
-.plan-step-retry:disabled { color: var(--app-muted); cursor: progress; }
-.execution-plan-list li.failed .plan-step-retry { color: var(--fluent-danger-bg, #b42318); }
+/* Explains a waiting/skipped step. Not an action: failures are re-planned in chat. */
 .plan-step-hint {
   color: var(--app-muted);
   font-size: var(--fluent-caption1-size, 12px);
