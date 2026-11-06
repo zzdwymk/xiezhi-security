@@ -996,7 +996,19 @@ def test_correction_wait_has_only_public_progress_and_is_cancelled_by_shared_tim
                 yield {"status": "FAILED", "calls": runtime._failed_llm_call_count(state, error)}
 
         output = [item async for item in with_public_progress(events())]
-        assert output == [("progress", {"stage": "CONTRACT_RETRY"}), ("event", {"status": "FAILED", "calls": 2})]
+        # Model-call telemetry is additive: the retry hint and the terminal event must not have
+        # moved, and the connection hints may only describe stages, attempts and durations.
+        kinds = [item[0] for item in output]
+        assert ("progress", {"stage": "CONTRACT_RETRY"}) in output
+        assert output[-1] == ("event", {"status": "FAILED", "calls": 2})
+        model_calls = [payload for kind, payload in output if kind == "progress" and payload.get("stage") == "MODEL_CALL"]
+        assert model_calls[0] == {
+            "stage": "MODEL_CALL", "modelStage": "ROUTE", "outcome": "STARTED",
+            "attempt": 1, "timeoutMs": 30,
+        }
+        assert model_calls[-1]["outcome"] == "TIMEOUT"
+        assert set(model_calls[-1]) == {"stage", "modelStage", "outcome", "attempt", "elapsedMs"}
+        assert kinds.count("progress") == len(model_calls) + 1
         assert cancelled.is_set() and len(chain.calls) == 2
         assert "PRIVATE_UNPARSEABLE_MODEL_OUTPUT" not in json.dumps(output)
         assert "PRIVATE_UNPARSEABLE_MODEL_OUTPUT" not in chain.calls[1]["contract_repair_feedback"]

@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from app import diagnostics as diagnostics_module
 from app import graph as graph_module
 from app import indexing as indexing_module
 from app.graph import SecurityAgentRuntime, verify_runtime_event_chain
@@ -1219,3 +1220,74 @@ def test_total_turn_timeout_emits_one_fail_closed_terminal_error(
     assert events[0]["stateVersion"] == 1
     assert events[0]["type"] == "error"
     assert events[0]["data"] == {"status": "FAILED", "errorCode": "TURN_TIMEOUT"}
+
+
+def test_turn_timeout_records_bounded_vendor_diagnostic(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A timeout must leave a trace: how much budget was left, what ran, how far it got.
+
+    Before this, TURN_TIMEOUT was invisible in every runtime-side log, so operators could only
+    guess whether the model was slow, unconfigured, or the budget was too small.
+    """
+    data_dir = tmp_path / "runtime-data"
+    monkeypatch.setattr(
+        graph_module,
+        "settings",
+        replace(
+            graph_module.settings,
+            llm_timeout_seconds=1,
+            agent_turn_timeout_seconds=0.001,
+            data_dir=data_dir,
+        ),
+    )
+    # Settings is frozen: redirect the diagnostics file through a module-level patch instead.
+    monkeypatch.setattr(
+        diagnostics_module, "settings", replace(diagnostics_module.settings, data_dir=data_dir)
+    )
+    runtime = SecurityAgentRuntime(_seed_store(tmp_path))
+    planner = FakePlannerApi(_project_route())
+
+    async def slow_route(_request: dict[str, Any]) -> dict[str, Any]:
+        await asyncio.sleep(0.03)
+        return _project_route()
+
+    planner.route = slow_route  # type: ignore[method-assign]
+    runtime.planner = planner
+
+    _collect(runtime, _request("rag-turn-timeout-diagnostic-0001"))
+
+    lines = (data_dir / "diagnostics" / "model-contract.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["stage"] == "TURN"
+    assert entry["category"] == "TIMEOUT"
+    assert entry["vendor"]["code"] == "TURN_TIMEOUT"
+    # Bounded, server-owned numbers only: no prompt, query, evidence or model text.
+    assert set(entry["vendor"]) == {
+        "code", "completedNodes", "elapsedSeconds", "budgetSeconds",
+        "llmCallCount", "modelCalls",
+    }
+    assert all(isinstance(value, (int, str, list)) for value in entry["vendor"].values())
+    assert entry["errors"] == []
+
+
+def test_vendor_diagnostic_rejects_unknown_fields_and_unbounded_values(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_dir = tmp_path / "runtime-data"
+    monkeypatch.setattr(
+        diagnostics_module, "settings", replace(diagnostics_module.settings, data_dir=data_dir)
+    )
+    path = data_dir / "diagnostics" / "model-contract.jsonl"
+
+    # Unknown code, injected graph node names and out-of-range counters all get dropped.
+    diagnostics_module.record_vendor_diagnostic({"code": "TURN_TIMEOUT", "completedNodes": ["route", "user prompt text", 7]})
+    diagnostics_module.record_vendor_diagnostic({"code": "not a code", "completedNodes": ["route"]})
+    diagnostics_module.record_vendor_diagnostic({"code": "TURN_TIMEOUT", "elapsedSeconds": 10**9, "modelCalls": -5})
+
+    entries = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert len(entries) == 2
+    assert entries[0]["vendor"]["completedNodes"] == ["route"]
+    assert entries[1]["vendor"]["elapsedSeconds"] == 3600
+    assert entries[1]["vendor"]["modelCalls"] == 0

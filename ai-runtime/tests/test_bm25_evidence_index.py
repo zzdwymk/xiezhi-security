@@ -53,7 +53,11 @@ def test_rag_runtime_limits_and_bm25_health_defaults():
     assert settings.max_evidence_chars == 10_000
     assert settings.retrieval_timeout_seconds == 5
     assert settings.max_rag_llm_calls == 5
-    assert settings.agent_turn_timeout_seconds == 90
+    # A planning turn needs route + grounded with one contract repair each; measured through the
+    # desktop relay that is 90-140 s on reasoning-tuned upstreams, so the turn budget is 110 s —
+    # still below the backend's 120 s socket read timeout.
+    assert settings.agent_turn_timeout_seconds == 110
+    assert settings.llm_timeout_seconds == 60
     assert settings.graph_recursion_limit == 32
 
 
