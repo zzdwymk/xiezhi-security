@@ -13,10 +13,15 @@ export function aiEventStepStatus(event: { type?: string; status?: string; error
 }
 
 export function findMatchingAiStep(steps: ConversationStep[], incoming: Partial<ConversationStep>): ConversationStep | undefined {
-  for (const key of ["taskId", "toolCallId", "id", "workflowNodeId"] as const) {
+  // actionId first: it is stable across replans of the same step, so a retry turn updates
+  // the existing row instead of appending a duplicate.
+  for (const key of ["actionId", "taskId", "toolCallId", "id", "workflowNodeId"] as const) {
     const value = incoming[key];
     if (!value || (key === "id" && /^(?:agent-step|plan-step)-\d+$/.test(String(value)))) continue;
-    const matches = steps.filter(step => step[key] === value && !(incoming.taskId && step.taskId && incoming.taskId !== step.taskId));
+    // An event that belongs to a different dispatched task must not be merged into this
+    // row — except when the identity matched on actionId, which outranks a taskId change.
+    const matches = steps.filter(step => step[key] === value
+      && (key === "actionId" || !(incoming.taskId && step.taskId && incoming.taskId !== step.taskId)));
     if (matches.length === 1) return matches[0];
   }
   return undefined;
@@ -32,4 +37,32 @@ export function mergeAiStep(current: ConversationStep | undefined, incoming: Con
     taskId: incoming.taskId || current.taskId,
     parameters: incoming.parameters || current.parameters,
   };
+}
+
+/** A step whose plan re-uses the same tool+parameters is the same step re-planned. */
+export function planStepKey(step: ConversationStep): string {
+  if (step.actionId) return `action:${step.actionId}`;
+  const parameters = step.parameters ? JSON.stringify(step.parameters) : "";
+  return `shape:${step.workflowNodeId || step.toolCode}:${parameters}`;
+}
+
+/**
+ * Merge an incoming plan into the current step list without duplicating steps.
+ *
+ * <p>The runtime re-delivers the complete plan on every execution turn, so a retry used to
+ * append a second copy of every step. Steps keep their identity (actionId, else tool +
+ * parameters) and only a higher attempt may replace a terminal status.
+ */
+export function mergePlanSteps(
+  current: ConversationStep[],
+  incoming: ConversationStep[],
+): ConversationStep[] {
+  const merged = [...current];
+  for (const step of incoming) {
+    const key = planStepKey(step);
+    const index = merged.findIndex(item => planStepKey(item) === key);
+    if (index >= 0) merged[index] = mergeAiStep(merged[index], step);
+    else merged.push(step);
+  }
+  return merged;
 }
