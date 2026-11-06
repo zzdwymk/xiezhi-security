@@ -237,6 +237,15 @@ const DEFAULT_MOTION_FLAGS = {
 
 const MOTION_FLAG_KEYS = Object.keys(DEFAULT_MOTION_FLAGS);
 
+/**
+ * 主窗口从创建到首次可显示等待的上限。
+ *
+ * 正常冷启动约 20 秒内即可显示；开发模式下 Vite 首次依赖预构建叠加后端冷启动曾把
+ * 首帧拖到 85 秒，而启动页只在主窗口 ready-to-show 里关闭，于是它一直浮在最上面。
+ * 超过这个上限就强制显示主窗口并销毁启动页，避免用户被一块静止的启动卡片挡住。
+ */
+const MAIN_WINDOW_FIRST_PAINT_FALLBACK_MS = 60 * 1000;
+
 /** 读取持久化的动画偏好；未配置时返回 null（由渲染进程按系统补一个基线）。 */
 function configuredMotionFlags(settings = readDesktopSettings()) {
   const stored = settings.motion;
@@ -7644,6 +7653,9 @@ function launchAiRuntimeProcess(slot) {
       "--project-signing-secret-file",
       signingSecretFile,
       "--log-level",
+      // Warnings and above reach the profile-external runtime logs. "error" hid every
+      // timeout/model-failure line, so a "模型没完成回答" turn left no trace outside the
+      // Java log; keep every log payload bounded in the runtime itself.
       "warning",
     ],
     {
@@ -7661,8 +7673,14 @@ function launchAiRuntimeProcess(slot) {
         AI_RUNTIME_EMBEDDING_MODEL: aiSettings.embeddingModel,
         // The semantic judge shares the planner's provider. A relay-fronted upstream can need
         // several seconds for its first token; 6s made the judge trip into Fail-Closed on every
-        // call, which is safe but noisy. 15s keeps the judge far below the 45s planner budget.
+        // call, which is safe but noisy. 15s keeps the judge far below the planner's per-call
+        // model timeout.
         AI_RUNTIME_JUDGE_TIMEOUT_SECONDS: "15",
+        // Per-call model timeout and the whole-turn budget both follow the backend's socket read
+        // timeout (toolbox.ai.agent.runtime-timeout-seconds, default 120s). The backend sends its
+        // own tightening turn budget in every request; these are only the runtime-side ceilings.
+        AI_RUNTIME_LLM_TIMEOUT_SECONDS: "60",
+        AI_RUNTIME_AGENT_TURN_TIMEOUT_SECONDS: "110",
       },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
@@ -7921,6 +7939,12 @@ function startBackend(java, jar, port, runtime = aiRuntimeSpawn) {
       "-Dsun.stdout.encoding=UTF-8",
       "-Dsun.stderr.encoding=UTF-8",
       "-XX:TieredStopAtLevel=1",
+      // Diagnostics escape hatch: with TOOLBOX_PROTOCOL_DIAGNOSTICS=1 the Java log
+      // prints the fixed validation-template text, which names the rejected field
+      // without ever containing request text, tool parameters or model output.
+      ...(process.env.TOOLBOX_PROTOCOL_DIAGNOSTICS === "1"
+        ? ["-Dtoolbox.diagnostics.protocolDetail=true"]
+        : []),
       ...(migrationProgressFromStdout ? ["-Dtoolbox.migration.legacy-h2-progress-file="] : []),
       "-jar",
       jar,
@@ -8135,6 +8159,35 @@ async function changeToolsDirectory(directory) {
   }
 }
 
+/**
+ * 关闭启动页。
+ *
+ * 启动页唯一的关闭时机原先挂在 mainWindow 的 ready-to-show 上：只要主窗口渲染进程
+ * 迟迟不产生首帧（冷启动的 Vite 依赖预构建 + Spring Boot 抢满 CPU，实测 85 秒），
+ * 回调就不执行，启动页会一直浮在最上面，看起来像"卡在检测依赖这一步"。这里显式
+ * 销毁并清空全局引用，任何路径（正常显示、超时兜底、渲染进程崩溃）都能关掉它。
+ */
+function dismissStartupWindow(target = startupWindow) {
+  const window = target;
+  if (target && startupWindow === target) startupWindow = undefined;
+  if (!window || window.isDestroyed()) return;
+  try {
+    window.hide();
+    window.close();
+  } catch {
+    // 关闭过程中窗口可能已被销毁。
+  }
+  // close() 是异步的：下一轮仍未销毁就直接 destroy()，避免被一块失效的启动页盖住。
+  setImmediate(() => {
+    if (window.isDestroyed()) return;
+    try {
+      window.destroy();
+    } catch {
+      // 已销毁。
+    }
+  });
+}
+
 function createStartupWindow() {
   const startupTheme = currentSystemTheme();
   startupWindow = new BrowserWindow({
@@ -8162,23 +8215,51 @@ function createStartupWindow() {
     },
   });
   const startupEntry = path.join(__dirname, "startup.html");
-  applyWindowIcon(startupWindow);
+  // 捕获局部窗口引用：关掉之后全局 startupWindow 会被置空（见 dismissStartupWindow），
+  // 迟到的回调不能再通过全局变量访问窗口，否则会把已关闭的启动页重新 show 出来。
+  const startup = startupWindow;
+  applyWindowIcon(startup);
   const guardStartupNavigation = (event, url) => {
     if (!isTrustedLocalFileUrl(url, startupEntry)) event.preventDefault();
   };
-  startupWindow.webContents.on("will-navigate", guardStartupNavigation);
-  startupWindow.webContents.on("will-redirect", guardStartupNavigation);
-  startupWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  startupWindow.loadFile(startupEntry);
-  startupWindow.webContents.on("did-finish-load", () => {
-    applySystemThemeToStaticWindow(startupWindow);
-    applyMotionToStartupWindow(startupWindow);
+  startup.webContents.on("will-navigate", guardStartupNavigation);
+  startup.webContents.on("will-redirect", guardStartupNavigation);
+  startup.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  // 启动页渲染进程崩溃/卡死时它既关不掉也画不出新帧，会一直浮在主窗口之上；
+  // 这种启动页已经没有诊断价值，直接销毁，让主窗口独占前台。
+  startup.webContents.on("render-process-gone", (_event, details) => {
+    writeDesktopStartupDiagnostic(
+      "startup-renderer-gone",
+      new Error(String(details?.reason || "unknown")),
+      { exitCode: details?.exitCode },
+    );
+    dismissStartupWindow(startup);
   });
-  startupWindow.once("ready-to-show", () => {
-    applySystemThemeToStaticWindow(startupWindow);
-    applyMotionToStartupWindow(startupWindow);
-    startupWindow.show();
+  startup.webContents.on("unresponsive", () => {
+    writeDesktopStartupLog("startup-renderer-unresponsive", "启动页渲染进程无响应");
+    dismissStartupWindow(startup);
   });
+  startup.webContents.on("did-finish-load", () => {
+    applySystemThemeToStaticWindow(startup);
+    applyMotionToStartupWindow(startup);
+  });
+  startup.once("ready-to-show", () => {
+    if (startup.isDestroyed()) return;
+    // 主窗口可能已经先显示（页面首帧很慢时），此时迟到的 ready-to-show 不得重新弹出启动页。
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible())
+      return;
+    try {
+      applySystemThemeToStaticWindow(startup);
+      applyMotionToStartupWindow(startup);
+      startup.show();
+    } catch {
+      // 窗口在回调排队期间已经被销毁：无需再显示。
+    }
+  });
+  startup.on("closed", () => {
+    if (startupWindow === startup) startupWindow = undefined;
+  });
+  startup.loadFile(startupEntry);
 }
 
 function createMainWindow(port) {
@@ -8286,19 +8367,48 @@ function createMainWindow(port) {
     });
   }
   mainWindow.once("ready-to-show", async () => {
-    const showTheme = currentSystemTheme();
-    if (!mainWindow.webContents.isDestroyed()) {
-      const surface = JSON.stringify(sharedChromeSurface(showTheme));
-      await mainWindow.webContents
-        .executeJavaScript(
-          `document.documentElement.style.setProperty('--shared-chrome-surface', ${surface})`,
-        )
-        .catch(() => {});
+    clearTimeout(revealMainWindowFallback);
+    try {
+      const showTheme = currentSystemTheme();
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      if (!mainWindow.webContents.isDestroyed()) {
+        const surface = JSON.stringify(sharedChromeSurface(showTheme));
+        await mainWindow.webContents
+          .executeJavaScript(
+            `document.documentElement.style.setProperty('--shared-chrome-surface', ${surface})`,
+          )
+          .catch(() => {});
+      }
+      if (mainWindow.isDestroyed()) return;
+      mainWindow.show();
+      // 启动页此前一直持有前台：从后台进程 show() 不会激活主窗口，主窗口会落在
+      // 其他窗口后面。这里主动抬到顶层并抢回焦点。
+      mainWindow.moveTop();
+      mainWindow.focus();
+    } finally {
+      // 无论设置共享背景色的脚本是否成功、窗口是否还在，启动页都必须在这一刻消失。
+      dismissStartupWindow();
     }
-    mainWindow.show();
-    if (startupWindow && !startupWindow.isDestroyed()) startupWindow.close();
   });
+  // 兜底：主窗口渲染进程迟迟不产生首帧（开发模式下 Vite 冷启动依赖预构建 + 后端
+  // 抢占 CPU 时实测接近 85 秒）时，ready-to-show 根本不会触发，启动页就会一直浮在
+  // 上面，看起来像卡在"检测工具依赖"这一步。超时后直接显示主窗口并销毁启动页，
+  // 让用户至少能看到进度并手动重试，而不是对着一块静止的启动卡片。
+  const revealMainWindowFallback = setTimeout(() => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    writeDesktopStartupLog("main-window-reveal-fallback", "主窗口首帧超时，强制显示并关闭启动页");
+    try {
+      mainWindow.show();
+      mainWindow.moveTop();
+      mainWindow.focus();
+    } catch {
+      // 显示失败时保留启动页，交由后续 did-fail-load 诊断提示。
+      return;
+    }
+    dismissStartupWindow();
+  }, MAIN_WINDOW_FIRST_PAINT_FALLBACK_MS);
   mainWindow.on("closed", () => {
+    clearTimeout(revealMainWindowFallback);
     mainWindow = undefined;
     void closeCaptureBrowser().catch(() => {});
     closeIcpBrowser();
