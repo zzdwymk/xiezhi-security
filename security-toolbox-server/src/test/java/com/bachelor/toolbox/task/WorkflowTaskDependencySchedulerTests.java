@@ -87,6 +87,58 @@ class WorkflowTaskDependencySchedulerTests {
   }
 
   @Test
+  void skippedSuccessorIsRequeuedAfterItsPrerequisiteIsRetried() {
+    SecurityTask retried = task(1L, "SUCCESS", "root");
+    SecurityTask skipped = task(2L, "SKIPPED", "child");
+    skipped.setDependencyTaskIds("[1]");
+    skipped.setTerminationReason("PREREQUISITE_NOT_COMPLETED");
+    when(tasks.findAllByStatusOrderByCreatedAtAsc("BLOCKED")).thenReturn(List.of());
+    when(tasks.findAllByStatusOrderByCreatedAtAsc("SKIPPED"))
+        .thenReturn(List.of(skipped), List.of());
+    when(tasks.findAllById(List.of(1L))).thenReturn(List.of(retried));
+    when(tasks.requeueSkippedWorkflowTask(
+        anyLong(), anyString(), anyString(), any())).thenReturn(1);
+
+    scheduler.drainBlockedTasks();
+
+    assertThat(skipped.getStatus()).isEqualTo("BLOCKED");
+    assertThat(skipped.getTerminationReason()).isNull();
+    verify(progress).publish(skipped, "前置节点重试后重新排队");
+  }
+
+  @Test
+  void skippedSuccessorStaysSkippedWhileItsGraphPrerequisiteStillFails() {
+    SecurityTask stillFailed = task(1L, "FAILED", "root");
+    SecurityTask skipped = task(2L, "SKIPPED", "child");
+    skipped.setDependencyTaskIds("[1]");
+    skipped.setTerminationReason("PREREQUISITE_NOT_COMPLETED");
+    when(tasks.findAllByStatusOrderByCreatedAtAsc("BLOCKED")).thenReturn(List.of());
+    when(tasks.findAllByStatusOrderByCreatedAtAsc("SKIPPED")).thenReturn(List.of(skipped));
+    when(tasks.findAllById(List.of(1L))).thenReturn(List.of(stillFailed));
+
+    scheduler.drainBlockedTasks();
+
+    assertThat(skipped.getStatus()).isEqualTo("SKIPPED");
+    verify(tasks, never()).requeueSkippedWorkflowTask(anyLong(), anyString(), anyString(), any());
+  }
+
+  @Test
+  void skippedSuccessorIsNotRevivedWhileADependencyIsStillRunning() {
+    SecurityTask running = task(1L, "RUNNING", "root");
+    SecurityTask skipped = task(2L, "SKIPPED", "child");
+    skipped.setDependencyTaskIds("[1]");
+    skipped.setTerminationReason("PREREQUISITE_NOT_COMPLETED");
+    when(tasks.findAllByStatusOrderByCreatedAtAsc("BLOCKED")).thenReturn(List.of());
+    when(tasks.findAllByStatusOrderByCreatedAtAsc("SKIPPED")).thenReturn(List.of(skipped));
+    when(tasks.findAllById(List.of(1L))).thenReturn(List.of(running));
+
+    scheduler.drainBlockedTasks();
+
+    assertThat(skipped.getStatus()).isEqualTo("SKIPPED");
+    verify(tasks, never()).requeueSkippedWorkflowTask(anyLong(), anyString(), anyString(), any());
+  }
+
+  @Test
   void doesNotActivateSuccessorWhenWorkflowIsStopping() {
     SecurityTask first = task(1L, "SUCCESS", "root");
     SecurityTask blocked = task(2L, "BLOCKED", "child");

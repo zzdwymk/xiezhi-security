@@ -68,6 +68,43 @@ class WorkflowDependencyPersistenceTests {
     assertThat(tasks.activateBlockedWorkflowTask(legacy.getId(), "ready", Instant.now())).isEqualTo(1);
   }
 
+  @Test
+  void skippedSuccessorIsRequeuedOnlyOnceWhileTheRunIsAlive() {
+    WorkflowRun run = run("RUNNING");
+    SecurityTask skipped = tasks.saveAndFlush(skipped(run.getId()));
+
+    assertThat(tasks.requeueSkippedWorkflowTask(
+        skipped.getId(), "PREREQUISITE_NOT_COMPLETED", "ready", Instant.now())).isEqualTo(1);
+    // Second drain pass must not resurrect it again once it is BLOCKED.
+    assertThat(tasks.requeueSkippedWorkflowTask(
+        skipped.getId(), "PREREQUISITE_NOT_COMPLETED", "ready", Instant.now())).isZero();
+    SecurityTask saved = tasks.findById(skipped.getId()).orElseThrow();
+    assertThat(saved.getStatus()).isEqualTo("BLOCKED");
+    assertThat(saved.getTerminationReason()).isNull();
+    assertThat(saved.getFinishedAt()).isNull();
+  }
+
+  @Test
+  void requeueRequiresTheExactSkippedReason() {
+    SecurityTask skipped = tasks.saveAndFlush(skipped(run("RUNNING").getId()));
+
+    assertThat(tasks.requeueSkippedWorkflowTask(
+        skipped.getId(), "MISSING_DEPENDENCY", "ready", Instant.now())).isZero();
+    assertThat(tasks.findById(skipped.getId()).orElseThrow().getStatus()).isEqualTo("SKIPPED");
+  }
+
+  @Test
+  void requeueCannotReviveASuccessorOfAStoppedRun() {
+    WorkflowRun run = run("RUNNING");
+    SecurityTask skipped = tasks.saveAndFlush(skipped(run.getId()));
+    run.setStatus("STOPPING");
+    runs.saveAndFlush(run);
+
+    assertThat(tasks.requeueSkippedWorkflowTask(
+        skipped.getId(), "PREREQUISITE_NOT_COMPLETED", "ready", Instant.now())).isZero();
+    assertThat(tasks.findById(skipped.getId()).orElseThrow().getStatus()).isEqualTo("SKIPPED");
+  }
+
   private WorkflowRun run(String status) {
     WorkflowRun run = new WorkflowRun();
     run.setProjectId(7L);
@@ -87,6 +124,15 @@ class WorkflowDependencyPersistenceTests {
     task.setToolCode("http_headers");
     task.setWorkflowRunId(runId);
     task.setStatus("BLOCKED");
+    return task;
+  }
+
+  private SecurityTask skipped(Long runId) {
+    SecurityTask task = blocked(runId);
+    task.setStatus("SKIPPED");
+    task.setTerminationReason("PREREQUISITE_NOT_COMPLETED");
+    task.setFinishedAt(Instant.now());
+    task.setProgress(100);
     return task;
   }
 }

@@ -24,7 +24,7 @@ class WorkflowRunPreflightConflictTests {
         Map.of("headers", List.of("http://192.168.136.132/")));
     when(service.start(any())).thenThrow(new WorkflowPreflightChangedException(current, List.of("headers")));
 
-    MockMvcBuilders.standaloneSetup(new WorkflowRunController(service))
+    MockMvcBuilders.standaloneSetup(new WorkflowRunController(service, null, null))
         .setControllerAdvice(new GlobalExceptionHandler()).build()
         .perform(post("/api/workflow-runs").contentType(MediaType.APPLICATION_JSON).content("""
             {"projectId":7,"targetId":9,"workflowId":"workflow-1","workflowRevision":3,
