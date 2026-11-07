@@ -830,7 +830,72 @@ function onGlobalCursorMove(e: PointerEvent) {
   });
 }
 
+function getActiveExecutionStatus(): {
+  hasActive: boolean;
+  hasTasks: boolean;
+  hasConversations: boolean;
+} {
+  const hasConversations =
+    taskbarProgress.hasActiveConversation() ||
+    conversations.items.some((conversation) =>
+      (conversation.messages || []).some((message: any) => {
+        if (message.role !== "assistant") return false;
+        return (
+          message.modelStreamStatus === "running" ||
+          ["sending", "planning", "running", "answering"].includes(message.status)
+        );
+      }),
+    );
+
+  const hasTasks =
+    taskbarProgress.hasActiveScanTasks() ||
+    conversations.items.some((conversation) =>
+      (conversation.messages || []).some(
+        (message: any) =>
+          message.role === "assistant" &&
+          (message.taskIds || []).some((id: number) => {
+            const status = conversations.taskStates[id]?.status;
+            return status === "RUNNING" || status === "PENDING" || status === "PREPARING";
+          }),
+      ),
+    );
+
+  return {
+    hasActive: hasConversations || hasTasks,
+    hasTasks,
+    hasConversations,
+  };
+}
+
+function hasActiveTasks(): boolean {
+  return getActiveExecutionStatus().hasActive;
+}
+
+if (typeof window !== "undefined") {
+  (window as any).__hasActiveTasks = hasActiveTasks;
+  (window as any).__getActiveExecutionStatus = getActiveExecutionStatus;
+}
+
+function handleBeforeUnload(event: BeforeUnloadEvent) {
+  if (window.toolboxDesktop?.isDesktop) {
+    return;
+  }
+  const status = getActiveExecutionStatus();
+  if (status.hasActive) {
+    event.preventDefault();
+    const promptText =
+      status.hasConversations && status.hasTasks
+        ? "当前有任务与对话正在进行中，确定要退出吗？"
+        : status.hasConversations
+          ? "当前有对话正在进行中，确定要退出吗？"
+          : "当前有任务正在执行中，确定要退出吗？";
+    event.returnValue = promptText;
+    return event.returnValue;
+  }
+}
+
 onMounted(() => {
+  window.addEventListener("beforeunload", handleBeforeUnload);
   window.addEventListener("pointermove", onGlobalCursorMove, { passive: true });
   stopNotificationClick = window.toolboxDesktop?.onNotificationClick?.(openNotificationDestination);
   window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
@@ -882,6 +947,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener("beforeunload", handleBeforeUnload);
   window.removeEventListener("pointermove", onGlobalCursorMove);
   if (taskStatePollTimer) clearTimeout(taskStatePollTimer);
   if (mouseMoveRaf) window.cancelAnimationFrame(mouseMoveRaf);

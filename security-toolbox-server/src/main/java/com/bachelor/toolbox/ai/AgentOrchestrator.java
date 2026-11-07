@@ -208,6 +208,10 @@ public class AgentOrchestrator {
     }
   }
 
+  public int inFlightSessionCount() {
+    return inFlightSessions.size();
+  }
+
   private static String sessionKeyOf(AiAgentRequest request) {
     if (request == null) return null;
     String sessionId = request.sessionId();

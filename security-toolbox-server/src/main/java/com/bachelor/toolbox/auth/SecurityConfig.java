@@ -57,6 +57,7 @@ public class SecurityConfig {
                     .requestMatchers(
                         "/api/auth/login",
                         "/api/system/health",
+                        "/api/system/active-tasks",
                         "/api/system/dependencies",
                         "/api/system/dependencies/stream",
                         "/api/system/shutdown",

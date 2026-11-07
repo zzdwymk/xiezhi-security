@@ -14,10 +14,14 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
+import com.bachelor.toolbox.ai.AgentOrchestrator;
+import com.bachelor.toolbox.task.SecurityTaskRepository;
 
 @ExtendWith(MockitoExtension.class)
 class SystemDependencyControllerTests {
   @Mock private DependencyDetectionService detectionService;
+  @Mock private SecurityTaskRepository taskRepository;
+  @Mock private AgentOrchestrator agentOrchestrator;
   @Mock private HttpServletRequest request;
   @InjectMocks private SystemDependencyController controller;
 
@@ -104,5 +108,37 @@ class SystemDependencyControllerTests {
               assertThat(exception.getReason()).isEqualTo("关机操作仅允许从本机访问");
             });
     verifyNoInteractions(detectionService);
+  }
+
+  @Test
+  void returnsActiveTasksForLoopbackRequest() {
+    when(request.getRemoteAddr()).thenReturn("127.0.0.1");
+    when(taskRepository.countByStatus("RUNNING")).thenReturn(2L);
+    when(taskRepository.countByStatus("PENDING")).thenReturn(1L);
+    when(taskRepository.countByStatus("PREPARING")).thenReturn(0L);
+    when(taskRepository.countByStatus("BLOCKED")).thenReturn(0L);
+    when(agentOrchestrator.inFlightSessionCount()).thenReturn(1);
+
+    var result = controller.activeTasks(request);
+    assertThat(result).containsEntry("running", 2L);
+    assertThat(result).containsEntry("pending", 1L);
+    assertThat(result).containsEntry("inFlightConversations", 1);
+    assertThat(result).containsEntry("active", 4L);
+    assertThat(result).containsEntry("hasActive", true);
+    assertThat(result).containsEntry("hasTasks", true);
+    assertThat(result).containsEntry("hasConversations", true);
+  }
+
+  @Test
+  void rejectsRemoteActiveTasksRequest() {
+    when(request.getRemoteAddr()).thenReturn("192.0.2.10");
+
+    assertThatThrownBy(() -> controller.activeTasks(request))
+        .isInstanceOfSatisfying(
+            ResponseStatusException.class,
+            exception -> {
+              assertThat(exception.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+              assertThat(exception.getReason()).isEqualTo("健康状态仅允许从本机访问");
+            });
   }
 }

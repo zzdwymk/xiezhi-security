@@ -1691,14 +1691,24 @@ function applyAgentEvent(
         event.type,
       ));
   if (isActionStepEvent) {
-    const targetIndex = index !== undefined ? index : steps.length;
-    if (!steps[targetIndex])
-      steps[targetIndex] = normalizedStep(
-        event as unknown as Record<string, unknown>,
-        targetIndex,
-      );
-    const current = steps[targetIndex];
-    steps[targetIndex] = mergeAiStep(current, {
+    let targetIndex = index;
+    if (targetIndex === undefined && event.toolCode) {
+      const matchIdx = steps.findIndex(s => s.toolCode === event.toolCode);
+      if (matchIdx >= 0 && steps.filter(s => s.toolCode === event.toolCode).length === 1) {
+        targetIndex = matchIdx;
+      }
+    }
+    if (targetIndex === undefined && ["step", "tool_call"].includes(event.type)) {
+      targetIndex = steps.length;
+    }
+    if (targetIndex !== undefined) {
+      if (!steps[targetIndex])
+        steps[targetIndex] = normalizedStep(
+          event as unknown as Record<string, unknown>,
+          targetIndex,
+        );
+      const current = steps[targetIndex];
+      steps[targetIndex] = mergeAiStep(current, {
       ...current,
       id: current.id || (event.stepId ? String(event.stepId) : undefined),
       workflowNodeId:
@@ -1747,6 +1757,7 @@ function applyAgentEvent(
           : current.maxAttempts,
       requiresApproval: event.type === "approval" || current.requiresApproval,
     });
+    }
   }
 
   const citations = [...(message.citations || [])];

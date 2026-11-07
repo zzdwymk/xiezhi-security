@@ -257,10 +257,45 @@ public class AiPlanContinuityService {
         changes.addAll(diff(old.get(index), current.get(index), path + "[" + (index + 1) + "]"));
       }
     } else {
-      changes.add(new Change(humanPath(path), old == null ? "（不存在）" : old.toString(),
-          current == null ? "（不存在）" : current.toString()));
+      changes.add(new Change(humanPath(path), humanNode(old), humanNode(current)));
     }
     return List.copyOf(changes);
+  }
+
+  private static String humanNode(JsonNode node) {
+    if (node == null || node.isNull()) return "（不存在）";
+    if (node.isTextual()) return node.asText();
+    if (node.isObject() && (node.has("toolCode") || node.has("workflowNodeId"))) {
+      String tool = node.path("toolCode").asText();
+      String nodeName = node.path("workflowNodeId").asText();
+      String title = humanTool(tool.isBlank() ? nodeName : tool);
+      if (!nodeName.isBlank() && !nodeName.equals(tool)) {
+        return "步骤「" + title + " (" + nodeName + ")」";
+      }
+      return "步骤「" + title + "」";
+    }
+    return node.toString();
+  }
+
+  private static String humanTool(String toolCode) {
+    if (toolCode == null || toolCode.isBlank()) return "未命名工具";
+    return switch (toolCode) {
+      case "tcp_ports" -> "TCP 端口探测";
+      case "nmap_service_scan" -> "Nmap 服务识别";
+      case "http_headers" -> "HTTP 响应头检查";
+      case "tls_config" -> "TLS 基础配置检查";
+      case "site_crawl" -> "站点链接爬取与信息收集";
+      case "http_security_check" -> "HTTP 常见安全检查";
+      case "nuclei_scan" -> "Nuclei 综合漏洞扫描";
+      case "afrog_scan" -> "Afrog 常见漏洞检测";
+      case "xray_scan" -> "Xray 进阶漏洞扫描";
+      case "zap_scan" -> "OWASP ZAP 扫描";
+      case "fscan_scan" -> "fscan 快速内网扫描";
+      case "msf_scan" -> "Metasploit 模块扫描";
+      case "sqlmap_scan" -> "sqlmap SQL 注入检测";
+      case "zap_fuzz" -> "ZAP 单次参数变异验证";
+      default -> toolCode;
+    };
   }
 
   /**
@@ -280,6 +315,7 @@ public class AiPlanContinuityService {
         .replace(".workflowNodeId", ".工作流节点")
         .replace("授权或工作流.", "授权范围或工作流 · ")
         .replace("方案.", "方案 · ");
+    human = human.replaceAll("第 (\\d+)\\]", "第 $1 步");
     if (human.contains("参数「") && !human.endsWith("」")) human = human + "」";
     return human;
   }

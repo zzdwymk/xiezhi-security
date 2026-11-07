@@ -7,9 +7,13 @@ import {
   ChatDotRound,
   Compass,
   Delete,
+  Document,
   Download,
+  Files,
+  FolderOpened,
   Key,
   MagicStick,
+  Refresh,
   Setting,
   View,
   Warning,
@@ -1113,6 +1117,107 @@ watch(
       aiForm.model = "gpt-5.6-sol";
   },
 );
+
+// ---- 运行日志（只读排查） ----
+interface RuntimeLogEntry {
+  name: string;
+  relativePath: string;
+  component: string;
+  kind: "status" | "receipt" | "archive" | "raw" | "other";
+  bytes: number;
+  sizeLabel: string;
+  modifiedAt: string;
+}
+interface RuntimeLogListing {
+  directory: string;
+  healthFile: string;
+  status: { status?: string; faults?: unknown[]; activeChildren?: number; activeWriters?: number } | null;
+  entries: RuntimeLogEntry[];
+  truncated: boolean;
+  totalCount?: number;
+  maxReadBytes: number;
+}
+const runtimeLogDialog = ref(false);
+const runtimeLogLoading = ref(false);
+const runtimeLogError = ref("");
+const runtimeLogListing = ref<RuntimeLogListing | null>(null);
+const runtimeLogFilter = ref("");
+const runtimeLogPreview = ref<{
+  name: string; sizeLabel: string; modifiedAt: string;
+  truncated: boolean; shownBytes: number; text: string;
+} | null>(null);
+const runtimeLogPreviewLoading = ref(false);
+
+const runtimeLogKindLabel: Record<string, string> = {
+  raw: "运行输出", archive: "压缩归档", receipt: "校验信息", status: "会话状态", other: "其他",
+};
+const runtimeLogComponentLabel: Record<string, string> = {
+  server: "本地 Java 服务", "ai-runtime": "AI 服务", electron: "主进程", logging: "日志系统", migration: "数据迁移",
+};
+const readableRuntimeLogEntries = computed(() =>
+  (runtimeLogListing.value?.entries || []).filter(
+    entry => (!runtimeLogFilter.value || entry.component === runtimeLogFilter.value) && entry.kind !== "archive" && entry.kind !== "receipt",
+  ),
+);
+const runtimeLogComponents = computed(() =>
+  Array.from(new Set((runtimeLogListing.value?.entries || []).map(entry => entry.component))).sort(),
+);
+const runtimeLogHealth = computed(() => runtimeLogListing.value?.status?.status || "未知");
+const runtimeLogFaultCount = computed(() => runtimeLogListing.value?.status?.faults?.length || 0);
+
+function formatLogTime(iso: string) {
+  if (!iso) return "—";
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
+}
+
+async function loadRuntimeLogs(open = false) {
+  if (!window.toolboxDesktop?.getRuntimeLogs) {
+    if (open) ElMessage.warning("当前版本不支持查看运行日志，请更新桌面应用");
+    return;
+  }
+  if (open) runtimeLogDialog.value = true;
+  runtimeLogLoading.value = true;
+  runtimeLogError.value = "";
+  try {
+    runtimeLogListing.value = await window.toolboxDesktop.getRuntimeLogs();
+  } catch (error) {
+    runtimeLogError.value = errorText(error, "无法读取运行日志");
+  } finally {
+    runtimeLogLoading.value = false;
+  }
+}
+
+async function previewRuntimeLog(entry: RuntimeLogEntry) {
+  if (!window.toolboxDesktop?.readRuntimeLog) return;
+  runtimeLogPreviewLoading.value = true;
+  try {
+    runtimeLogPreview.value = await window.toolboxDesktop.readRuntimeLog(entry.relativePath);
+  } catch (error) {
+    ElMessage.error(errorText(error, "无法读取该日志"));
+  } finally {
+    runtimeLogPreviewLoading.value = false;
+  }
+}
+
+async function openRuntimeLogDir() {
+  try {
+    await window.toolboxDesktop?.openRuntimeLogDirectory?.();
+  } catch (error) {
+    ElMessage.error(errorText(error, "无法打开日志目录"));
+  }
+}
+
+async function copyRuntimeLogPreview() {
+  const text = runtimeLogPreview.value?.text;
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    ElMessage.success("日志内容已复制");
+  } catch {
+    ElMessage.error("复制失败，请手动选择文本");
+  }
+}
 </script>
 
 <template>
@@ -1412,6 +1517,123 @@ watch(
             @click="saveNotificationSettings"
             >保存</el-button
           >
+        </template>
+      </el-dialog>
+
+      <section v-if="isDesktop" class="settings-group">
+        <header class="settings-group-title">运行诊断</header>
+        <div class="settings-list">
+          <button
+            type="button"
+            class="settings-row"
+            @click="loadRuntimeLogs(true)"
+          >
+            <el-icon class="settings-row-icon"><Document /></el-icon>
+            <span class="settings-row-copy">
+              <strong>运行日志</strong>
+              <small>查看本地 Java 服务、AI 服务与主进程的运行输出，用于排查启动失败、意外退出或退出码异常。</small>
+            </span>
+            <el-icon class="settings-row-chevron"><ArrowRight /></el-icon>
+          </button>
+        </div>
+      </section>
+
+      <el-dialog
+        v-model="runtimeLogDialog"
+        title="运行日志"
+        class="app-dialog app-dialog--md"
+        align-center
+        width="min(920px, 92vw)"
+        @open="loadRuntimeLogs()"
+      >
+        <div class="runtime-log-panel">
+          <div class="runtime-log-toolbar">
+            <el-tag
+              size="small"
+              effect="plain"
+              :type="runtimeLogHealth === 'OPEN' ? 'success' : runtimeLogHealth === 'DEGRADED' ? 'warning' : 'info'"
+              >日志状态：{{ runtimeLogHealth }}</el-tag
+            >
+            <el-tag v-if="runtimeLogFaultCount" size="small" type="danger" effect="plain"
+              >{{ runtimeLogFaultCount }} 项异常</el-tag
+            >
+            <span v-if="runtimeLogListing" class="runtime-log-path" :title="runtimeLogListing.directory"
+              >{{ runtimeLogListing.directory }}</span
+            >
+            <span class="runtime-log-spacer"></span>
+            <el-select
+              v-if="runtimeLogComponents.length > 1"
+              v-model="runtimeLogFilter"
+              size="small"
+              clearable
+              placeholder="全部组件"
+              style="width: 150px"
+            >
+              <el-option
+                v-for="component in runtimeLogComponents"
+                :key="component"
+                :label="runtimeLogComponentLabel[component] || component"
+                :value="component"
+              />
+            </el-select>
+            <el-button size="small" :icon="Refresh" :loading="runtimeLogLoading" @click="loadRuntimeLogs()"
+              >刷新</el-button
+            >
+            <el-button size="small" :icon="FolderOpened" @click="openRuntimeLogDir">打开目录</el-button>
+          </div>
+
+          <el-alert
+            v-if="runtimeLogError"
+            :title="runtimeLogError"
+            type="error"
+            :closable="false"
+            show-icon
+          />
+          <div
+            v-else-if="!runtimeLogLoading && runtimeLogListing && runtimeLogListing.entries.length === 0"
+            class="runtime-log-empty"
+          >
+            暂无运行日志。服务启动后，其标准输出与错误会记录在此目录。
+          </div>
+          <div v-else class="runtime-log-body" v-loading="runtimeLogLoading">
+            <ul class="runtime-log-list">
+              <li
+                v-for="entry in readableRuntimeLogEntries"
+                :key="entry.relativePath"
+                class="runtime-log-item"
+                :class="{ 'is-active': runtimeLogPreview?.name === entry.name }"
+                @click="previewRuntimeLog(entry)"
+              >
+                <el-icon class="runtime-log-item-icon"><Files /></el-icon>
+                <span class="runtime-log-item-main">
+                  <strong>{{ runtimeLogComponentLabel[entry.component] || entry.component }}</strong>
+                  <small
+                    >{{ runtimeLogKindLabel[entry.kind] || entry.kind }} · {{ entry.sizeLabel }} ·
+                    {{ formatLogTime(entry.modifiedAt) }}</small
+                  >
+                </span>
+              </li>
+              <li v-if="!readableRuntimeLogEntries.length" class="runtime-log-item runtime-log-item--hint">
+                当前筛选下没有可查看的文本日志，可切换组件或打开目录查看压缩归档。
+              </li>
+            </ul>
+            <div class="runtime-log-viewer" v-loading="runtimeLogPreviewLoading">
+              <template v-if="runtimeLogPreview">
+                <div class="runtime-log-viewer-head">
+                  <span>{{ runtimeLogPreview.name }} · {{ runtimeLogPreview.sizeLabel }}</span>
+                  <span class="runtime-log-viewer-actions">
+                    <small v-if="runtimeLogPreview.truncated">仅显示末尾内容</small>
+                    <el-button size="small" text @click="copyRuntimeLogPreview">复制</el-button>
+                  </span>
+                </div>
+                <pre class="runtime-log-text">{{ runtimeLogPreview.text || "（空文件）" }}</pre>
+              </template>
+              <div v-else class="runtime-log-placeholder">选择左侧日志查看末尾内容</div>
+            </div>
+          </div>
+        </div>
+        <template #footer>
+          <el-button @click="runtimeLogDialog = false">关闭</el-button>
         </template>
       </el-dialog>
 
@@ -2161,6 +2383,122 @@ watch(
 </template>
 
 <style scoped>
+.runtime-log-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+.runtime-log-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.runtime-log-path {
+  flex: 1 1 200px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--app-muted);
+}
+.runtime-log-spacer {
+  flex: 0 0 auto;
+}
+.runtime-log-body {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) 1fr;
+  gap: 12px;
+  min-height: 380px;
+  max-height: 62vh;
+}
+.runtime-log-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+}
+.runtime-log-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--app-border);
+}
+.runtime-log-item:last-child {
+  border-bottom: none;
+}
+.runtime-log-item:hover,
+.runtime-log-item.is-active {
+  background: var(--app-surface-alt, rgba(127, 127, 127, 0.09));
+}
+.runtime-log-item--hint {
+  cursor: default;
+  font-size: 12px;
+  color: var(--app-muted);
+}
+.runtime-log-item-icon {
+  flex: 0 0 auto;
+}
+.runtime-log-item-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.runtime-log-item-main small {
+  color: var(--app-muted);
+  font-size: 11px;
+}
+.runtime-log-viewer {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.runtime-log-viewer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--app-border);
+  background: var(--app-surface-alt, rgba(127, 127, 127, 0.05));
+}
+.runtime-log-viewer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--app-muted);
+}
+.runtime-log-text {
+  margin: 0;
+  padding: 12px;
+  flex: 1 1 auto;
+  overflow: auto;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.runtime-log-placeholder,
+.runtime-log-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 auto;
+  padding: 40px 12px;
+  font-size: 13px;
+  color: var(--app-muted);
+}
 .ai-settings-dialog {
   min-height: 0;
 }

@@ -54,7 +54,7 @@ class AiExecutionIntentPolicyTests {
   }
 
   @ParameterizedTest
-  @ValueSource(strings = {"目录也扫一下", "只扫80端口", "用nuclei跑一下", "并发降到5", "并发少点", "Lower concurrency to 5"})
+  @ValueSource(strings = {"目录也扫一下", "只扫80端口", "用nuclei跑一下", "并发降到5", "并发少点", "Lower concurrency to 5", "重试失败的任务"})
   void explicitToolAndParameterEditsCanReviseThePlanWithoutMagicRevisionWords(String prompt) {
     assertThat(AiExecutionIntentPolicy.permitsPlanRevision(prompt)).isTrue();
   }

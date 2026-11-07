@@ -97,6 +97,8 @@ let aiRuntimeTokenFile;
 let aiRuntimeSigningSecretFile;
 let shutdownToken;
 let quitting = false;
+let forceMainWindowClose = false;
+let isConfirmingClose = false;
 let backendStartError;
 let restartingBackend = false;
 let pendingDesktopSeedPassword;
@@ -6166,8 +6168,7 @@ function closeIcpBrowser() {
   return icpBrowserStatus();
 }
 
-function handleRendererIpc(channel, handler) {
-  ipcMain.handle(channel, async (event, ...args) => {
+function handleRendererIpc(channel, handler) {  ipcMain.handle(channel, async (event, ...args) => {
     try {
       return await handler(event, ...args);
     } catch (error) {
@@ -6237,6 +6238,79 @@ handleRendererIpc("toolbox:window-is-maximized", (event) => {
 handleRendererIpc("toolbox:window-close", (event) => {
   assertMainRenderer(event);
   mainWindow.close();
+});
+async function checkHasRunningTasks() {
+  let hasInstalls = false;
+  for (const session of activeInstalls.values()) {
+    if (
+      session.state === "running" &&
+      ["downloading-package", "downloading-templates"].includes(session.phase)
+    ) {
+      hasInstalls = true;
+      break;
+    }
+  }
+
+  let hasBackendTasks = false;
+  let hasBackendConversations = false;
+  if (backendPort) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 2000);
+      const response = await electronNet.fetch(
+        `http://127.0.0.1:${backendPort}/api/system/active-tasks`,
+        { signal: controller.signal },
+      );
+      clearTimeout(timeout);
+      if (response.ok) {
+        const data = await response.json();
+        if (data) {
+          if (data.hasTasks || data.running > 0 || data.pending > 0 || data.preparing > 0) {
+            hasBackendTasks = true;
+          }
+          if (data.hasConversations || data.inFlightConversations > 0) {
+            hasBackendConversations = true;
+          }
+        }
+      }
+    } catch {
+      // 忽略后端未就绪或临时请求失败
+    }
+  }
+
+  let hasRendererTasks = false;
+  let hasRendererConversations = false;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      const status = await mainWindow.webContents.executeJavaScript(
+        `window.__getActiveExecutionStatus ? window.__getActiveExecutionStatus() : { hasActive: Boolean(window.__hasActiveTasks && window.__hasActiveTasks()) }`,
+        true,
+      );
+      if (status) {
+        if (status.hasTasks) hasRendererTasks = true;
+        if (status.hasConversations) hasRendererConversations = true;
+        if (status.hasActive && !status.hasTasks && !status.hasConversations) {
+          hasRendererTasks = true;
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  const hasTasks = hasInstalls || hasBackendTasks || hasRendererTasks;
+  const hasConversations = hasBackendConversations || hasRendererConversations;
+  const hasActive = hasTasks || hasConversations;
+
+  return {
+    hasActive,
+    hasTasks,
+    hasConversations,
+  };
+}
+handleRendererIpc("toolbox:has-running-tasks", (event) => {
+  assertMainRenderer(event);
+  return checkHasRunningTasks();
 });
 handleRendererIpc("toolbox:open-external", (event, targetUrl) => {
   assertMainRenderer(event);
@@ -6349,11 +6423,151 @@ handleRendererIpc("toolbox:show-task-notification", (event, payload) => {
 function publicNotificationSettings(settings = readDesktopSettings()) {
   return notificationSettingsFromStorage(settings);
 }
+
+// ---- Runtime log access (read-only; strictly confined to the managed log root) ----
+const RUNTIME_LOG_MAX_READ_BYTES = 2 * 1024 * 1024;
+const RUNTIME_LOG_MAX_ENTRIES = 400;
+const RUNTIME_LOG_ALLOWED_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,180}$/;
+
+function runtimeLogRoot() {
+  return desktopRuntimeLogs().directory;
+}
+
+// Reject any path that does not resolve inside the managed log root. This uses the
+// resolved absolute path, so "../" and encoded traversal collapse before comparison.
+function assertRuntimeLogPath(candidate) {
+  const root = path.resolve(runtimeLogRoot());
+  const resolved = path.resolve(root, String(candidate || ""));
+  const relative = path.relative(root, resolved);
+  if (!relative || relative === ".." || path.isAbsolute(relative) || relative.startsWith(`..${path.sep}`)) {
+    throw new UserFacingError("日志路径不合法");
+  }
+  return resolved;
+}
+
+function humanBytes(value) {
+  const bytes = Number(value) || 0;
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB"];
+  let size = bytes / 1024;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit++; }
+  return `${size.toFixed(size >= 10 ? 0 : 1)} ${units[unit]}`;
+}
+
+function classifyRuntimeLogEntry(name) {
+  if (/\.status\.json$/.test(name)) return "status";
+  if (/\.log\.json$/.test(name)) return "receipt";
+  if (/\.log\.gz$/.test(name)) return "archive";
+  if (/\.log$/.test(name)) return "raw";
+  return "other";
+}
+
+// Entries live under per-component subdirectories (e.g. "server.out", "ai-runtime.err").
+// Only plain files inside those component folders are exposed; the health file at the
+// root is summarised separately and never listed as a readable log.
+async function collectRuntimeLogFiles(root) {
+  const files = [];
+  let dirents;
+  try {
+    dirents = await fs.promises.readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if (error && error.code === "ENOENT") return files;
+    throw new UserFacingError(`无法读取日志目录：${error?.message || error}`);
+  }
+  for (const dirent of dirents) {
+    if (!dirent.isDirectory() || !RUNTIME_LOG_ALLOWED_NAME.test(dirent.name)) continue;
+    const componentDir = path.join(root, dirent.name);
+    let inner;
+    try { inner = await fs.promises.readdir(componentDir, { withFileTypes: true }); } catch { continue; }
+    for (const file of inner) {
+      if (!file.isFile() || !RUNTIME_LOG_ALLOWED_NAME.test(file.name)) continue;
+      const full = path.join(componentDir, file.name);
+      let stat;
+      try { stat = await fs.promises.stat(full); } catch { continue; }
+      files.push({
+        name: file.name, relativePath: `${dirent.name}/${file.name}`,
+        component: dirent.name.split(".")[0] || dirent.name,
+        channel: path.extname(dirent.name).replace(".", "") || "log",
+        kind: classifyRuntimeLogEntry(file.name), bytes: stat.size,
+        sizeLabel: humanBytes(stat.size), modifiedAt: stat.mtime.toISOString(),
+      });
+    }
+  }
+  return files;
+}
+
+async function listRuntimeLogs() {
+  const manager = desktopRuntimeLogs();
+  const root = path.resolve(manager.directory);
+  let status = null;
+  try { status = manager.status(); } catch { status = null; }
+  const base = { directory: root, healthFile: manager.healthFile, status,
+    maxReadBytes: RUNTIME_LOG_MAX_READ_BYTES, truncated: false, entries: [] };
+  const files = await collectRuntimeLogFiles(root);
+  files.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+  const limited = files.slice(0, RUNTIME_LOG_MAX_ENTRIES);
+  return { ...base, truncated: files.length > limited.length, totalCount: files.length, entries: limited };
+}
+
+async function readRuntimeLog(candidate) {
+  const full = assertRuntimeLogPath(candidate);
+  let stat;
+  try { stat = await fs.promises.stat(full); }
+  catch (error) { throw new UserFacingError(error?.code === "ENOENT" ? "日志文件不存在" : `无法读取日志：${error?.message || error}`); }
+  if (!stat.isFile()) throw new UserFacingError("只能读取日志文件");
+  // Everything except plain-text logs is compressed or a JSON receipt; never gunzip here.
+  if (!/\.log$/.test(full)) throw new UserFacingError("该日志为压缩归档或元数据，请在目录中查看");
+  const start = Math.max(0, stat.size - RUNTIME_LOG_MAX_READ_BYTES);
+  const length = stat.size - start;
+  const handle = await fs.promises.open(full, "r");
+  let text;
+  try {
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, start);
+    text = buffer.toString("utf8");
+  } finally { await handle.close(); }
+  // Drop a possibly-split multi-byte character on the first line when we tailed the file.
+  if (start > 0) { const nl = text.indexOf("\n"); if (nl >= 0) text = text.slice(nl + 1); }
+  return {
+    name: path.basename(full), bytes: stat.size, sizeLabel: humanBytes(stat.size),
+    modifiedAt: stat.mtime.toISOString(), truncated: start > 0, shownBytes: Buffer.byteLength(text), text,
+  };
+}
+
+async function openRuntimeLogDirectory(candidateDir) {
+  const root = path.resolve(runtimeLogRoot());
+  let target = root;
+  if (candidateDir !== undefined && candidateDir !== null && String(candidateDir) !== "") {
+    target = path.resolve(root, String(candidateDir));
+    const relative = path.relative(root, target);
+    if (relative === ".." || path.isAbsolute(relative) || relative.startsWith(`..${path.sep}`)) {
+      throw new UserFacingError("日志路径不合法");
+    }
+  }
+  try { await fs.promises.mkdir(target, { recursive: true }); } catch {}
+  const error = await shell.openPath(target);
+  if (error) throw new UserFacingError(`无法打开日志目录：${error}`);
+  return { opened: true, directory: target };
+}
+
+handleRendererIpc("toolbox:get-runtime-logs", async (event) => {
+  assertMainRenderer(event);
+  return listRuntimeLogs();
+});
+handleRendererIpc("toolbox:read-runtime-log", async (event, relativePath) => {
+  assertMainRenderer(event);
+  return readRuntimeLog(relativePath);
+});
+handleRendererIpc("toolbox:open-runtime-log-directory", async (event, relativeDir) => {
+  assertMainRenderer(event);
+  return openRuntimeLogDirectory(relativeDir);
+});
+
 handleRendererIpc("toolbox:get-notification-settings", (event) => {
   assertMainRenderer(event);
   return publicNotificationSettings();
-});
-handleRendererIpc("toolbox:set-notification-settings", (event, payload) => {
+});handleRendererIpc("toolbox:set-notification-settings", (event, payload) => {
   assertMainRenderer(event);
   writeDesktopSettings(updateNotificationStorage(readDesktopSettings(), payload || {}));
   const settings = publicNotificationSettings();
@@ -8407,6 +8621,61 @@ function createMainWindow(port) {
     }
     dismissStartupWindow();
   }, MAIN_WINDOW_FIRST_PAINT_FALLBACK_MS);
+  forceMainWindowClose = false;
+  isConfirmingClose = false;
+  mainWindow.on("close", async (event) => {
+    if (forceMainWindowClose) return;
+    event.preventDefault();
+
+    if (isConfirmingClose) return;
+    isConfirmingClose = true;
+
+    try {
+      const status = await checkHasRunningTasks();
+      if (status && status.hasActive) {
+        let message = "当前有任务正在执行中，确定要退出程序吗？";
+        let detail = "如果现在退出程序，正在执行的安全检测任务将被中断。";
+
+        if (status.hasConversations && status.hasTasks) {
+          message = "当前有任务与对话正在进行中，确定要退出程序吗？";
+          detail = "如果现在退出程序，正在执行的安全检测任务和 AI 对话规划将被中断。";
+        } else if (status.hasConversations) {
+          message = "当前有对话正在进行中，确定要退出程序吗？";
+          detail = "如果现在退出程序，AI 助手的回答与任务规划将被中断。";
+        }
+
+        const choice = await dialog.showMessageBox(mainWindow, {
+          type: "warning",
+          title: "退出确认",
+          message,
+          detail,
+          buttons: ["确定退出", "取消"],
+          defaultId: 1,
+          cancelId: 1,
+          noLink: true,
+        });
+
+        if (choice.response === 0) {
+          forceMainWindowClose = true;
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.close();
+          }
+        }
+      } else {
+        forceMainWindowClose = true;
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.close();
+        }
+      }
+    } catch {
+      forceMainWindowClose = true;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.close();
+      }
+    } finally {
+      isConfirmingClose = false;
+    }
+  });
   mainWindow.on("closed", () => {
     clearTimeout(revealMainWindowFallback);
     mainWindow = undefined;
@@ -8534,6 +8803,11 @@ app.on("second-instance", () => {
   window.focus();
 });
 app.on("before-quit", (event) => {
+  if (!forceMainWindowClose && mainWindow && !mainWindow.isDestroyed()) {
+    event.preventDefault();
+    mainWindow.close();
+    return;
+  }
   quitting = true;
   for (const session of activeInstalls.values()) {
     if (

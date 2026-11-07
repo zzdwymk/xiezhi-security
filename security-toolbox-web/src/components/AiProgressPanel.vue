@@ -11,6 +11,13 @@ const props = defineProps<{ message: ConversationMessage; tasks: AiProgressTask[
 const emit = defineEmits<{ (event: "open-tasks"): void }>();
 const now = ref(Date.now());
 const expanded = ref(false);
+const activityExpanded = ref(false);
+
+function toggleActivity() {
+  const selection = window.getSelection();
+  if (selection && selection.toString().trim().length > 0) return;
+  activityExpanded.value = !activityExpanded.value;
+}
 
 function formatModelSummaryText(entry: any): string {
   const raw = String(entry.event?.summary || entry.event?.message || "").trim();
@@ -40,7 +47,10 @@ const displayTone = computed<ProgressTone>(() => summary.value.tone);
 const spinning = computed(() => summary.value.spinning);
 const completed = computed(() => summary.value.completed);
 watch(completed, (isDone) => {
-  if (isDone) expanded.value = false;
+  if (isDone) {
+    expanded.value = false;
+    activityExpanded.value = false;
+  }
 });
 const title = computed(() => summary.value.title);
 const taskLabels: Record<string, string> = { SUCCESS: "成功", FAILED: "失败", TIMEOUT: "超时", REJECTED: "已拒绝", CANCELLED: "已取消", SKIPPED: "已跳过", BLOCKED: "等待前置任务", PENDING: "排队中", RUNNING: "执行中" };
@@ -70,7 +80,10 @@ watch(() => progress.value.active, active => {
   timer = undefined; now.value = Date.now();
   if (active) timer = setInterval(() => { now.value = Date.now(); }, 1000);
 }, { immediate: true });
-watch(() => props.message.id, () => { expanded.value = false; });
+watch(() => props.message.id, () => {
+  expanded.value = false;
+  activityExpanded.value = false;
+});
 onBeforeUnmount(() => { if (timer) clearInterval(timer); });
 function taskDuration(task: AiProgressTask) {
   const elapsed = aiTaskElapsed(task, now.value);
@@ -119,7 +132,21 @@ function receivedAt(at: number) {
       </button>
     </header>
     <p v-if="attention" class="progress-attention">{{ attention }}</p>
-    <p v-else-if="activity" class="progress-activity" :title="activity">{{ activity }}</p>
+    <p
+      v-else-if="activity"
+      class="progress-activity"
+      :class="{ 'is-expanded': activityExpanded }"
+      :title="activityExpanded ? '点击收起' : `${activity}（点击展开完整动态）`"
+      role="button"
+      tabindex="0"
+      :aria-expanded="activityExpanded"
+      @click="toggleActivity"
+      @keydown.enter.prevent="toggleActivity"
+      @keydown.space.prevent="toggleActivity"
+    >
+      <span class="activity-text">{{ activity }}</span>
+      <FluentIcon :name="activityExpanded ? 'chevron-up' : 'chevron-down'" class="activity-chevron" aria-hidden="true" />
+    </p>
     <!-- Connection indicator: the call in flight, ticking against its own ceiling, so a long
          reasoning-tuned answer never looks like a stalled one. -->
     <p v-if="modelConnection" class="progress-model-call" :class="{ 'is-timeout': progress.modelCallTimedOut }"
@@ -194,7 +221,22 @@ function receivedAt(at: number) {
 .progress-model-call > .fluent-system-icon { flex: 0 0 16px; width: 16px; height: 16px; }
 .progress-model-call.is-timeout { color: var(--colorPaletteRedForeground1, var(--colorNeutralForeground1)); }
 .model-spinner { flex: 0 0 12px; width: 12px; height: 12px; }
-.progress-activity { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.progress-activity {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  border-radius: 4px;
+  user-select: text;
+}
+.progress-activity:hover { color: var(--colorNeutralForeground1); }
+.progress-activity:focus-visible { outline: 2px solid var(--colorBrandStroke1); outline-offset: 2px; }
+.activity-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.activity-chevron { flex: 0 0 14px; width: 14px; height: 14px; opacity: 0.7; transition: transform 120ms linear, opacity 120ms ease; }
+.progress-activity:hover .activity-chevron { opacity: 1; }
+.progress-activity.is-expanded { align-items: flex-start; }
+.progress-activity.is-expanded .activity-text { white-space: normal; overflow: visible; text-overflow: clip; }
+.progress-activity.is-expanded .activity-chevron { margin-top: 3px; }
 .progress-attention { color: var(--colorNeutralForeground1); }
 .progress-tool-stream { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; margin: 0 0 4px 24px; }
 .progress-tool-call { min-width: 0; border: 0; background: transparent; }
@@ -231,7 +273,7 @@ function receivedAt(at: number) {
 @keyframes fluent-progress-spin { to { transform: rotate(360deg); } }
 :root[data-system-theme="light"] .ai-progress-panel { color-scheme: light; }
 :root[data-system-theme="dark"] .ai-progress-panel { color-scheme: dark; }
-@media (prefers-reduced-motion: reduce) { .progress-spinner { animation: none; } .tool-chevron, .execution-chevron { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .progress-spinner { animation: none; } .tool-chevron, .execution-chevron, .activity-chevron { transition: none; } }
 @media (forced-colors: active) {
   .ai-progress-panel { --colorNeutralForeground1: CanvasText; --colorNeutralForeground2: CanvasText; --colorNeutralStroke2: ButtonBorder; --colorBrandStroke1: Highlight; --colorStatusSuccessForeground1: CanvasText; --colorStatusDangerForeground2: CanvasText; --colorStatusWarningForeground1: CanvasText; }
   .progress-spinner { forced-color-adjust: none; border-color: GrayText; border-top-color: Highlight; }

@@ -25,9 +25,9 @@ final class AiExecutionIntentPolicy {
       "(?i)^\\s*(?:请|帮我|麻烦|先|只|仅|现在|\\s)*(?:分析|解释|总结|查看|查询|审查|说明|讨论|阅读|翻译|评估|比较|规划|计划|设计|制定)"
           + "|^\\s*(?:please\\s+)?(?:analy[sz]e|explain|summari[sz]e|review|read|translate|compare)\\b");
   private static final Pattern DIRECT_ACTION = Pattern.compile(
-      "(?i)(?:扫描|扫一?下|扫一遍|检测|探测|检查|执行|运行|开始|确认执行|继续执行|跑一?下|跑一遍|测一?下|测一遍|查一?下)"
+      "(?i)(?:扫描|扫一?下|扫一遍|检测|探测|检查|执行|运行|开始|确认执行|继续执行|跑一?下|跑一遍|测一?下|测一遍|查一?下|重试|重新运行|重新执行)"
           + "|(?:看看|看一?下)[^，,。；;\\n]{0,12}(?:目标|端口|服务|站点|网站|响应头)"
-          + "|\\b(?:scan|check|probe|run|execute|start|test)\\b");
+          + "|\\b(?:scan|check|probe|run|execute|start|test|retry|rerun)\\b");
   /**
    * A short standalone confirmation ("确认" "那就用" "同意" "按这个来" "执行吧") refers to the
    * single plan the assistant just produced; the model resolves it against that plan. Only a
@@ -43,9 +43,9 @@ final class AiExecutionIntentPolicy {
           + "|^\\s*(?:the\\s+)?(?:log|document|webpage|report|email|output|previous reply)\\b"
           + "|^\\s*(?:he|she|they)\\s+(?:said|says|suggested|requested)\\b");
   private static final String REVISION_VERB =
-      "(?:加上|加个|加一个|加一项|添加|增加|新增|追加|补上|补充|移除|去掉|删掉|删除|删去|修改|更改|调整|改为|改成|换成|替换|重新规划|重做方案"
+      "(?:加上|加个|加一个|加一项|添加|增加|新增|追加|补上|补充|移除|去掉|删掉|删除|删去|修改|更改|调整|改为|改成|换成|替换|重新规划|重做方案|重试|重新运行|重新执行"
           + "|降低|调低|调高|提高|减少|缩小|(?:降|调|设|升|减|提)(?:到|成|为)"
-          + "|\\b(?:add|append|include|remove|drop|change|adjust|revise|replace|replan|lower|reduce|increase|set)\\b)";
+          + "|\\b(?:add|append|include|remove|drop|change|adjust|revise|replace|replan|retry|rerun|re-run|lower|reduce|increase|set)\\b)";
   private static final Pattern REVISION = Pattern.compile("(?i)" + REVISION_VERB);
   private static final String PLAN_OBJECT =
       "(?:目录|路径|端口|服务|指纹|响应头|证书|TLS|HTTP|Nmap|Nuclei|Afrog|Xray|ZAP|Fscan|dir_scan|[a-z]+_scan)";

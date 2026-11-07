@@ -38,6 +38,7 @@ interface ToolboxDesktopBridge {
   readonly toggleMaximizeWindow?: () => Promise<boolean>;
   readonly isWindowMaximized?: () => Promise<boolean>;
   readonly closeWindow?: () => Promise<void>;
+  readonly hasRunningTasks?: () => Promise<boolean>;
   readonly openExportedFile?: (payload: { filename: string; base64: string }) => Promise<boolean>;
   readonly onWindowMaximizedChanged?: (
     callback: (maximized: boolean) => void,
@@ -250,6 +251,9 @@ interface ToolboxDesktopBridge {
     type?: "info" | "error";
   }) => Promise<{ delivered: boolean; reason?: string }>;
   readonly getNotificationSettings?: () => Promise<NotificationSettings>;
+  readonly getRuntimeLogs?: () => Promise<RuntimeLogListing>;
+  readonly readRuntimeLog?: (relativePath: string) => Promise<RuntimeLogContent>;
+  readonly openRuntimeLogDirectory?: (relativeDir?: string) => Promise<{ opened: boolean; directory: string }>;
   readonly saveNotificationSettings?: (payload: Partial<Omit<NotificationSettings, "severities">> & { severities?: string[] }) => Promise<NotificationSettings>;
   readonly onNotificationClick?: (callback: (route: string) => void) => () => void;
   readonly onNotificationSettingsChanged?: (callback: (settings: NotificationSettings) => void) => () => void;
@@ -267,6 +271,40 @@ interface NotificationSettings {
   readonly scheduleNotifications: boolean;
   readonly trafficNotifications: boolean;
   readonly serviceNotifications: boolean;
+}
+
+interface RuntimeLogEntry {
+  readonly name: string;
+  readonly relativePath: string;
+  readonly component: string;
+  readonly channel: string;
+  readonly kind: "status" | "receipt" | "archive" | "raw" | "other";
+  readonly bytes: number;
+  readonly sizeLabel: string;
+  readonly modifiedAt: string;
+}
+interface RuntimeLogListing {
+  readonly directory: string;
+  readonly healthFile: string;
+  readonly status: {
+    readonly status?: string;
+    readonly faults?: unknown[];
+    readonly activeChildren?: number;
+    readonly activeWriters?: number;
+  } | null;
+  readonly entries: RuntimeLogEntry[];
+  readonly truncated: boolean;
+  readonly totalCount?: number;
+  readonly maxReadBytes: number;
+}
+interface RuntimeLogContent {
+  readonly name: string;
+  readonly bytes: number;
+  readonly sizeLabel: string;
+  readonly modifiedAt: string;
+  readonly truncated: boolean;
+  readonly shownBytes: number;
+  readonly text: string;
 }
 
 type NotificationSeverity =

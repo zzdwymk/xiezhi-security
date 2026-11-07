@@ -97,4 +97,14 @@ test('existing terminal status survives a lower-attempt event', () => {
   assert.equal(merged.status, 'success');
 });
 
+test('an approval payload without actionId or parameters merges into existing step', () => {
+  const first = [step({ actionId: 'a'.repeat(32), toolCode: 'sqlmap_scan', title: 'sqlmap SQL 注入检测', parameters: { path: '/less-1/?id=1' } })];
+  // Approval payload from runtime approval_required event
+  const approvalStep = step({ toolCode: 'sqlmap_scan', parameters: {} });
+  const again = mergePlanSteps(first, [approvalStep]);
+  assert.equal(again.length, 1);
+  assert.equal(again[0].actionId, 'a'.repeat(32));
+  assert.deepEqual(again[0].parameters, { path: '/less-1/?id=1' });
+});
+
 console.log(`\n${passed} ai step state checks passed`);

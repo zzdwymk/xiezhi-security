@@ -44,6 +44,47 @@ class TaskbarProgressManager {
   }
 
   /**
+   * Check if any tasks or workflow runs are currently active
+   */
+  public hasActiveScanTasks(): boolean {
+    for (const key of this.determinateItems.keys()) {
+      if (key.startsWith("task-") || key === "workflow-run") {
+        return true;
+      }
+    }
+    for (const key of this.indeterminateKeys) {
+      if (key.startsWith("task-") || key === "workflow-run") {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Check if AI conversation streaming/planning is currently active
+   */
+  public hasActiveConversation(): boolean {
+    for (const key of this.indeterminateKeys) {
+      if (key === "ai-agent-stream" || key.startsWith("ai-")) {
+        return true;
+      }
+    }
+    for (const key of this.determinateItems.keys()) {
+      if (key === "ai-agent-stream" || key.startsWith("ai-")) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Check if any tasks, workflows or conversations are currently active
+   */
+  public hasActiveTasks(): boolean {
+    return this.hasActiveScanTasks() || this.hasActiveConversation();
+  }
+
+  /**
    * Register an indeterminate activity (animation under taskbar icon)
    */
   public startIndeterminate(key: string) {

@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.invoke("toolbox:window-toggle-maximize"),
     isWindowMaximized: () => ipcRenderer.invoke("toolbox:window-is-maximized"),
     closeWindow: () => ipcRenderer.invoke("toolbox:window-close"),
+    hasRunningTasks: () => ipcRenderer.invoke("toolbox:has-running-tasks"),
     openExternal: (url) => ipcRenderer.invoke("toolbox:open-external", url),
     openExportedFile: (payload) =>
       ipcRenderer.invoke("toolbox:open-exported-file", payload),
@@ -174,6 +175,11 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.invoke("toolbox:show-task-notification", payload),
     getNotificationSettings: () =>
       ipcRenderer.invoke("toolbox:get-notification-settings"),
+    getRuntimeLogs: () => ipcRenderer.invoke("toolbox:get-runtime-logs"),
+    readRuntimeLog: (relativePath) =>
+      ipcRenderer.invoke("toolbox:read-runtime-log", relativePath),
+    openRuntimeLogDirectory: (relativeDir) =>
+      ipcRenderer.invoke("toolbox:open-runtime-log-directory", relativeDir),
     saveNotificationSettings: (payload) =>
       ipcRenderer.invoke("toolbox:set-notification-settings", payload),
     onNotificationClick: (callback) => {

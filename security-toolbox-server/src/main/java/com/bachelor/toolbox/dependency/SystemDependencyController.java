@@ -17,7 +17,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.server.ResponseStatusException;
+import com.bachelor.toolbox.ai.AgentOrchestrator;
+import com.bachelor.toolbox.task.SecurityTaskRepository;
 
 @RestController
 @RequestMapping("/api/system")
@@ -28,9 +31,16 @@ public class SystemDependencyController {
   private static final String SHUTDOWN_INVALID_TOKEN = "关机令牌无效";
 
   private final DependencyDetectionService detectionService;
+  private final SecurityTaskRepository taskRepository;
+  private final AgentOrchestrator agentOrchestrator;
 
-  public SystemDependencyController(DependencyDetectionService detectionService) {
+  public SystemDependencyController(
+      DependencyDetectionService detectionService,
+      @Autowired(required = false) SecurityTaskRepository taskRepository,
+      @Autowired(required = false) AgentOrchestrator agentOrchestrator) {
     this.detectionService = detectionService;
+    this.taskRepository = taskRepository;
+    this.agentOrchestrator = agentOrchestrator;
   }
 
   @GetMapping("/dependencies")
@@ -145,6 +155,28 @@ public class SystemDependencyController {
   public Map<String, String> health(HttpServletRequest request) {
     requireLoopbackAccess(request, HEALTH_LOCAL_ACCESS_ONLY);
     return Map.of("status", "UP");
+  }
+
+  @GetMapping("/active-tasks")
+  public Map<String, Object> activeTasks(HttpServletRequest request) {
+    requireLoopbackAccess(request, HEALTH_LOCAL_ACCESS_ONLY);
+    long running = taskRepository != null ? taskRepository.countByStatus("RUNNING") : 0L;
+    long pending = taskRepository != null ? taskRepository.countByStatus("PENDING") : 0L;
+    long preparing = taskRepository != null ? taskRepository.countByStatus("PREPARING") : 0L;
+    long blocked = taskRepository != null ? taskRepository.countByStatus("BLOCKED") : 0L;
+    int inFlightConversations = agentOrchestrator != null ? agentOrchestrator.inFlightSessionCount() : 0;
+    long activeTasks = running + pending + preparing;
+    long totalActive = activeTasks + inFlightConversations;
+    return Map.of(
+        "running", running,
+        "pending", pending,
+        "preparing", preparing,
+        "blocked", blocked,
+        "inFlightConversations", inFlightConversations,
+        "active", totalActive,
+        "hasActive", totalActive > 0,
+        "hasTasks", activeTasks > 0,
+        "hasConversations", inFlightConversations > 0);
   }
 
   @PostMapping("/shutdown")

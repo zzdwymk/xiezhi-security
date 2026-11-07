@@ -9,8 +9,18 @@ const hasTasks = computed(() => props.message.taskIds.length > 0);
 const detail = computed(() => aiProgressFailureText(props.message.content, hasTasks.value, 4000)
   || "服务未返回可显示的错误说明，请打开配置诊断检查连接。");
 const summary = computed(() => {
-  const explanation = detail.value.split(/\s*(?:变化|参数差异|变更明细)[：:]/, 1)[0]?.trim() || detail.value;
-  return explanation.length > 180 ? explanation.slice(0, 180) + "…" : explanation;
+  const explanation = detail.value.split(/\s*(?:变化|参数差异|变更明细|具体差异)[：:]/, 1)[0]?.trim() || detail.value;
+  return explanation.length > 240 ? explanation.slice(0, 240) + "…" : explanation;
+});
+const detailBody = computed(() => {
+  const match = detail.value.match(/\s*(?:变化|参数差异|变更明细|具体差异)[：:]([\s\S]*)$/);
+  if (match && match[1]?.trim()) {
+    return "具体差异：" + match[1];
+  }
+  return detail.value;
+});
+const hasExtraDetails = computed(() => {
+  return detail.value.trim() !== summary.value.trim();
 });
 </script>
 
@@ -19,9 +29,9 @@ const summary = computed(() => {
        technical payload behind a disclosure. Recovery stays in the toolbar. -->
   <section class="ai-failure-notice" aria-label="回复失败说明">
     <p class="failure-summary">{{ summary }}</p>
-    <details class="failure-details">
+    <details v-if="hasExtraDetails" class="failure-details">
       <summary><FluentIcon name="chevron-right" />错误详情</summary>
-      <p>{{ detail }}</p>
+      <p>{{ detailBody }}</p>
     </details>
   </section>
 </template>
