@@ -173,7 +173,7 @@ class AgentPlanContinuityTests {
       assertThat(event.type()).isEqualTo("error");
       assertThat(event.data()).containsEntry("code", "PLAN_CONTINUITY_MISMATCH")
           .containsEntry("executed", false).containsEntry("taskIds", List.of());
-      assertThat(event.data().get("changes").toString()).contains("oldValue=\"service\"", "newValue=\"quick\"");
+      assertThat(event.data().get("changes").toString()).contains("oldValue=service", "newValue=quick");
     });
     assertThat(events).noneMatch(event -> event.type().equals("done") || event.type().equals("approval"));
   }
