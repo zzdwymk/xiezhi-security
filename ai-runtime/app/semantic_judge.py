@@ -48,6 +48,7 @@ BEHAVIOUR_LABELS: tuple[str, ...] = (
     "敏感凭据读取",
     "破坏性系统命令",
     "未知高风险行为",
+    "初审未判定（需人工确认）",
     "判官熔断（无法判定）",
 )
 
@@ -125,15 +126,15 @@ class JudgeVerdict:
 def circuit_breaker(reason: str, *, detail: str = "") -> JudgeVerdict:
     """Build the verdict used whenever the judge cannot produce a trustworthy answer.
 
-    The label deliberately contains ``判官熔断`` so the approval dialog can highlight it, and the
-    risk is CRITICAL so no downstream layer can soften it into an auto-approval.
+    The label marks it as requiring manual confirmation, and the risk is CRITICAL
+    so no downstream layer can soften it into an auto-approval.
     """
     return JudgeVerdict(
         allow=False,
-        behaviour="判官熔断（无法判定）",
+        behaviour="初审未判定（需人工确认）",
         risk="CRITICAL",
         confidence=0.0,
-        summary="语义判官未能给出可信判定，已按最坏情况拦截并转人工确认",
+        summary="自动安全初审未能给出可信判定，已按审慎策略拦截并转人工确认",
         reasoning=detail or reason,
         degraded=True,
         degraded_reason=reason,
@@ -152,7 +153,7 @@ def baseline_for(tool_code: str) -> tuple[str, str, bool]:
 # Prompt
 # ---------------------------------------------------------------------------------------------
 
-_SYSTEM_PROMPT = """你是授权安全测试平台的"类型化安全判官"。
+_SYSTEM_PROMPT = """你是授权安全测试平台的"类型化安全风险审查引擎"。
 你不聊天、不解释、不生成方案，只对一个已经生成好的动作做分类判定。
 
 规则：
@@ -299,7 +300,7 @@ async def evaluate_action(action: dict[str, Any]) -> JudgeVerdict:
     baseline_behaviour, baseline_risk, baseline_requires_human = baseline_for(tool_code)
 
     if not settings.judge_enabled:
-        verdict = circuit_breaker("judge_disabled", detail="语义判官已禁用，按保守策略拦截")
+        verdict = circuit_breaker("judge_disabled", detail="安全初审已禁用，按保守策略拦截")
         return _merge_with_baseline(verdict, baseline_behaviour, baseline_risk, baseline_requires_human)
 
     system, user = _build_prompt(action)
@@ -310,7 +311,7 @@ async def evaluate_action(action: dict[str, Any]) -> JudgeVerdict:
     except asyncio.TimeoutError:
         LOGGER.warning("semantic judge timed out tool=%s", tool_code)
         return _merge_with_baseline(
-            circuit_breaker("judge_timeout", detail="判官调用超时"),
+            circuit_breaker("judge_timeout", detail="安全初审调用超时"),
             baseline_behaviour,
             baseline_risk,
             baseline_requires_human,
@@ -319,7 +320,7 @@ async def evaluate_action(action: dict[str, Any]) -> JudgeVerdict:
         LOGGER.warning("semantic judge failed tool=%s error=%s", tool_code, type(error).__name__)
         return _merge_with_baseline(
             circuit_breaker(
-                "judge_error", detail=f"判官调用失败：{type(error).__name__}"
+                "judge_error", detail=f"安全初审调用失败：{type(error).__name__}"
             ),
             baseline_behaviour,
             baseline_risk,
@@ -331,7 +332,7 @@ async def evaluate_action(action: dict[str, Any]) -> JudgeVerdict:
     except Exception as error:
         LOGGER.warning("semantic judge returned unusable output tool=%s error=%s", tool_code, error)
         return _merge_with_baseline(
-            circuit_breaker("judge_invalid_output", detail=f"判官输出无法解析：{error}"),
+            circuit_breaker("judge_invalid_output", detail=f"安全初审输出无法解析：{error}"),
             baseline_behaviour,
             baseline_risk,
             baseline_requires_human,
@@ -341,7 +342,7 @@ async def evaluate_action(action: dict[str, Any]) -> JudgeVerdict:
         merged = _merge_with_baseline(
             circuit_breaker(
                 "judge_low_confidence",
-                detail=f"判官置信度 {parsed.confidence:.2f} 低于阈值 {settings.judge_min_confidence:.2f}",
+                detail=f"初审分析置信度 {parsed.confidence:.2f} 低于阈值 {settings.judge_min_confidence:.2f}",
             ),
             baseline_behaviour,
             baseline_risk,
@@ -354,7 +355,7 @@ async def evaluate_action(action: dict[str, Any]) -> JudgeVerdict:
                 behaviour=merged.behaviour,
                 risk=merged.risk,
                 confidence=parsed.confidence,
-                summary=f"{merged.summary}（判官倾向：{parsed.summary}）",
+                summary=f"{merged.summary}（初审参考倾向：{parsed.summary}）",
                 reasoning=merged.reasoning,
                 degraded=True,
                 degraded_reason=merged.degraded_reason,

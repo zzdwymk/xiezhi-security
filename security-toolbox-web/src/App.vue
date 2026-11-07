@@ -30,6 +30,7 @@ import {
   Warning,
   DataAnalysis,
 } from "./components/fluentIcons";
+import FluentIcon from "./components/FluentIcon.vue";
 import { useAuthStore } from "./stores/auth";
 import { useConversationStore } from "./stores/conversations";
 import { conversationStatusBadge } from "./utils/aiStatus";
@@ -876,6 +877,55 @@ if (typeof window !== "undefined") {
   (window as any).__getActiveExecutionStatus = getActiveExecutionStatus;
 }
 
+let exitConfirming = false;
+let stopRequestClose: (() => void) | undefined;
+
+async function showExitConfirmDialog(status?: {
+  hasActive: boolean;
+  hasTasks: boolean;
+  hasConversations: boolean;
+}) {
+  if (exitConfirming) return;
+  exitConfirming = true;
+
+  const currentStatus = status || getActiveExecutionStatus();
+  let messageText = "当前有安全检测任务正在后台执行，退出后正在执行的任务将被中断。确定要退出程序吗？";
+
+  if (currentStatus.hasConversations && currentStatus.hasTasks) {
+    messageText = "当前有安全检测任务与 AI 对话正在执行中，退出后未完成的任务和生成将被中断。确定要退出程序吗？";
+  } else if (currentStatus.hasConversations) {
+    messageText = "当前有 AI 对话正在生成中，退出后未完成的回复与规划将被中断。确定要退出程序吗？";
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      messageText,
+      "退出确认",
+      {
+        confirmButtonText: "确定退出",
+        cancelButtonText: "取消",
+        type: "warning",
+        confirmButtonClass: "el-button--danger",
+        distinguishCancelAndClose: true,
+        autofocus: false,
+        closeOnClickModal: false,
+        closeOnPressEscape: true,
+        showClose: true,
+      },
+    );
+
+    if (window.toolboxDesktop?.confirmExit) {
+      await window.toolboxDesktop.confirmExit();
+    }
+  } catch {
+    if (window.toolboxDesktop?.cancelClose) {
+      void window.toolboxDesktop.cancelClose();
+    }
+  } finally {
+    exitConfirming = false;
+  }
+}
+
 function handleBeforeUnload(event: BeforeUnloadEvent) {
   if (window.toolboxDesktop?.isDesktop) {
     return;
@@ -896,6 +946,11 @@ function handleBeforeUnload(event: BeforeUnloadEvent) {
 
 onMounted(() => {
   window.addEventListener("beforeunload", handleBeforeUnload);
+  if (window.toolboxDesktop?.onRequestClose) {
+    stopRequestClose = window.toolboxDesktop.onRequestClose((status) => {
+      void showExitConfirmDialog(status);
+    });
+  }
   window.addEventListener("pointermove", onGlobalCursorMove, { passive: true });
   stopNotificationClick = window.toolboxDesktop?.onNotificationClick?.(openNotificationDestination);
   window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
@@ -947,6 +1002,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  stopRequestClose?.();
   window.removeEventListener("beforeunload", handleBeforeUnload);
   window.removeEventListener("pointermove", onGlobalCursorMove);
   if (taskStatePollTimer) clearTimeout(taskStatePollTimer);

@@ -32,6 +32,14 @@ contextBridge.exposeInMainWorld(
     isWindowMaximized: () => ipcRenderer.invoke("toolbox:window-is-maximized"),
     closeWindow: () => ipcRenderer.invoke("toolbox:window-close"),
     hasRunningTasks: () => ipcRenderer.invoke("toolbox:has-running-tasks"),
+    confirmExit: () => ipcRenderer.invoke("toolbox:confirm-exit"),
+    cancelClose: () => ipcRenderer.invoke("toolbox:cancel-close"),
+    onRequestClose: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on("toolbox:request-close", listener);
+      return () =>
+        ipcRenderer.removeListener("toolbox:request-close", listener);
+    },
     openExternal: (url) => ipcRenderer.invoke("toolbox:open-external", url),
     openExportedFile: (payload) =>
       ipcRenderer.invoke("toolbox:open-exported-file", payload),

@@ -65,7 +65,7 @@ public class SemanticJudgeClient {
             ? "http://127.0.0.1:" + Math.max(1, Math.min(port, 65535))
             : configuredBaseUrl.strip();
     if (!resolved.matches("https?://(127\\.0\\.0\\.1|localhost|\\[::1])(?::\\d+)?/?")) {
-      throw new IllegalArgumentException("语义判官仅允许连接本机回环地址");
+      throw new IllegalArgumentException("安全审查服务仅允许连接本机回环地址");
     }
     this.baseUrl = stripTrailingSlash(resolved);
     this.runtimeToken = runtimeToken == null ? "" : runtimeToken.strip();
@@ -108,7 +108,7 @@ public class SemanticJudgeClient {
       return document;
     }
     if (!enabled || baseUrl == null || baseUrl.isBlank()) {
-      return unavailableDocument("判官未启用或智能服务地址不可达，请人工判断");
+      return unavailableDocument("安全初审未启用或智能服务地址不可达，请人工判断");
     }
 
     int judgedCount = 0;
@@ -178,7 +178,7 @@ public class SemanticJudgeClient {
       HttpResponse<String> response =
           http.send(builder.build(), HttpResponse.BodyHandlers.ofString());
       if (response.statusCode() != 200) {
-        log.warn("语义判官返回非 200（{}），按未判定处理", response.statusCode());
+        log.warn("安全审查服务返回非 200（{}），按未判定处理", response.statusCode());
         return degradedVerdict("judge_http_" + response.statusCode());
       }
       JsonNode node = mapper.readTree(response.body());
@@ -195,7 +195,7 @@ public class SemanticJudgeClient {
       Thread.currentThread().interrupt();
       return degradedVerdict("judge_interrupted");
     } catch (Exception ex) {
-      log.warn("语义判官调用失败：{}", ex.getClass().getSimpleName());
+      log.warn("安全审查服务调用失败：{}", ex.getClass().getSimpleName());
       return degradedVerdict("judge_unavailable");
     }
   }
@@ -208,10 +208,10 @@ public class SemanticJudgeClient {
   private Map<String, Object> degradedVerdict(String reason) {
     Map<String, Object> verdict = new LinkedHashMap<>();
     verdict.put("allow", false);
-    verdict.put("behaviour", "判官熔断（无法判定）");
+    verdict.put("behaviour", "初审未判定（需人工确认）");
     verdict.put("risk", "CRITICAL");
     verdict.put("confidence", 0.0);
-    verdict.put("summary", "语义判官未能给出可信判定，已按最坏情况拦截并转人工确认");
+    verdict.put("summary", "安全初审未能给出可信判定，已按审慎策略拦截并转人工确认");
     verdict.put("degraded", true);
     verdict.put("degradedReason", reason);
     return verdict;
@@ -223,7 +223,7 @@ public class SemanticJudgeClient {
     document.put("steps", List.of());
     document.put("worstRisk", "CRITICAL");
     document.put("requiresHumanReview", true);
-    document.put("headline", "判官熔断（无法判定）");
+    document.put("headline", "安全初审未判定");
     document.put("degradedReason", reason);
     return document;
   }

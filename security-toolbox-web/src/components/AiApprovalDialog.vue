@@ -42,10 +42,18 @@ const judgeSeverity = computed<"critical" | "warning" | "clear">(() => {
 
 /** 后端仍可能返回含内部术语的文案，展示前统一替换为用户可读的说法。 */
 function userFacingJudgeText(value?: string): string {
-  return String(value || "")
-    .replace(/语义判官/g, "自动初审")
-    .replace(/判官熔断/g, "初审未能判定")
-    .replace(/判官/g, "自动初审");
+  if (!value) return "";
+  const trimmed = String(value).trim();
+  const match = trimmed.match(/（(?:判官|初审|预审|分析)?倾向[：:]([\s\S]*?)）\s*$/);
+  if (match) {
+    const inner = match[1].trim();
+    return `行为分析参考：${inner}`;
+  }
+  return trimmed
+    .replace(/语义判官/g, "安全初审")
+    .replace(/判官熔断/g, "初审未判定")
+    .replace(/判官倾向[：:]?/g, "初审参考：")
+    .replace(/判官/g, "安全初审");
 }
 
 const judgeTitle = computed(() => {
@@ -112,10 +120,16 @@ function judgeRiskPhrase(risk?: string): string {
 
 function judgeBehaviourLabel(behaviour?: string): string {
   const b = String(behaviour || "").trim();
-  if (!b || b === "判官熔断（无法判定）" || b === "无法判定") {
+  if (
+    !b ||
+    b === "判官熔断（无法判定）" ||
+    b === "无法判定" ||
+    b.startsWith("判官") ||
+    b.startsWith("初审未判定")
+  ) {
     return "需人工确认";
   }
-  return b;
+  return userFacingJudgeText(b);
 }
 
 // ------------------------------------------------------------------ 可交互参数编辑与选项元数据

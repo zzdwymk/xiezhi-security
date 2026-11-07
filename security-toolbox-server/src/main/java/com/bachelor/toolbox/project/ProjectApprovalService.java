@@ -126,7 +126,7 @@ public class ProjectApprovalService {
         } catch (RuntimeException ex) {
           approval.setAiJudgeJson(
               "{\"degraded\":true,\"requiresHumanReview\":true,\"worstRisk\":\"CRITICAL\","
-                  + "\"headline\":\"判官熔断（无法判定）\",\"steps\":[]}");
+                  + "\"headline\":\"安全初审未判定\",\"steps\":[]}");
         }
       }
       if (recoveryAnchor != null) approval.setAiRecoveryJson(mapper.writeValueAsString(recoveryAnchor));

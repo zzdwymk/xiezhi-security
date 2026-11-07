@@ -518,6 +518,55 @@ const planReviewJudge = computed<JudgeVerdictDocument | null>(() => {
   }
 });
 
+const RISK_LEVEL_LABELS: Record<string, string> = {
+  SAFE: "安全",
+  CAUTION: "需谨慎",
+  HIGH: "高风险",
+  CRITICAL: "严重",
+};
+
+function judgeRiskPhrase(risk?: string): string {
+  const key = String(risk || "").toUpperCase();
+  if (key === "SAFE") return "未发现风险";
+  const label = RISK_LEVEL_LABELS[key] || "待评估";
+  return `最高风险：${label}`;
+}
+
+function sanitizeJudgeText(text?: string): string {
+  if (!text) return "";
+  return String(text)
+    .replace(/语义判官/g, "安全初审")
+    .replace(/判官熔断/g, "初审未判定")
+    .replace(/判官倾向[：:]?/g, "初审参考：")
+    .replace(/判官/g, "安全初审");
+}
+
+function formatJudgeBehaviour(behaviour?: string): string {
+  const b = String(behaviour || "").trim();
+  if (
+    !b ||
+    b === "判官熔断（无法判定）" ||
+    b === "无法判定" ||
+    b.startsWith("判官") ||
+    b.startsWith("初审未判定")
+  ) {
+    return "需人工确认";
+  }
+  return sanitizeJudgeText(b);
+}
+
+function formatJudgeSummary(summary?: string): string {
+  if (!summary) return "";
+  const trimmed = String(summary).trim();
+  // 提取倾向分析内容，避免在每个步骤重复冗长的拦截套话
+  const match = trimmed.match(/（(?:判官|初审|预审|分析)?倾向[：:]([\s\S]*?)）\s*$/);
+  if (match) {
+    const inner = match[1].trim();
+    return `行为分析参考：${inner}`;
+  }
+  return sanitizeJudgeText(trimmed);
+}
+
 /** Judge banner severity: circuit-breaker is red, non-cleared is amber, cleared is quiet. */
 const planReviewJudgeSeverity = computed<"critical" | "warning" | "clear" | "unknown">(() => {
   const judge = planReviewJudge.value;
@@ -531,13 +580,31 @@ const planReviewJudgeTitle = computed(() => {
   const judge = planReviewJudge.value;
   if (!judge) return "";
   if (judge.degraded) {
-    const raw = String(judge.headline || "").replace(/^判官熔断[（(]?/, "").replace(/[)）]?$/, "");
-    return `安全审查预警 · 自动初审未能给出可信结论${raw ? `（${raw}）` : ""}`;
+    return "安全审查预警 · 自动初审未能给出确定结论";
   }
   if (judge.requiresHumanReview) {
-    return `疑似 ${judge.headline || "需人工确认的行为"}`;
+    const raw = sanitizeJudgeText(judge.headline || "需人工确认的操作");
+    return `行为分析 · 疑似 ${raw}`;
   }
-  return "未发现需要拦截的行为";
+  return "安全审查通过 · 未发现需拦截的高风险行为";
+});
+
+const planReviewJudgeDegradedNote = computed(() => {
+  const judge = planReviewJudge.value;
+  if (!judge?.degraded) return "";
+  const rawReason = judge.degradedReason?.trim();
+  let reasonText = "";
+  if (rawReason && rawReason !== "原因未知" && rawReason !== "无法判定") {
+    if (rawReason === "judge_low_confidence") reasonText = "初审分析置信度不足";
+    else if (rawReason === "judge_timeout") reasonText = "初审核验超时";
+    else if (rawReason === "judge_error") reasonText = "初审服务响应异常";
+    else if (rawReason === "judge_disabled") reasonText = "初审服务未启用";
+    else if (rawReason === "judge_invalid_output") reasonText = "初审解析异常";
+    else reasonText = sanitizeJudgeText(rawReason);
+  }
+  return reasonText
+    ? `自动初审未能给出高置信度结论（${reasonText}）。为安全起见，系统已按审慎策略标记为需人工确认，请人工逐项核对下方具体参数后再决定。`
+    : "自动初审未能给出确定结论。为安全起见，系统已按审慎策略标记为需人工确认，请人工逐项核对下方具体参数后再决定。";
 });
 
 function judgeRiskTagType(risk: string): "success" | "warning" | "danger" | "info" {
@@ -7878,31 +7945,40 @@ onUnmounted(() => {
               <FluentIcon :name="planReviewJudgeSeverity === 'critical' ? 'dismiss' : planReviewJudgeSeverity === 'warning' ? 'warning' : 'checkmark-circle'" />
             </span>
             <h3>{{ planReviewJudgeTitle }}</h3>
-            <el-tag
-              v-if="planReviewJudge"
-              size="small"
-              :type="judgeRiskTagType(planReviewJudge.worstRisk)"
-            >
-              最高风险 {{ planReviewJudge.worstRisk }}
-            </el-tag>
-            <el-tag v-if="planReviewJudge?.degraded" size="small" type="danger" effect="dark">
-              需人工确认
-            </el-tag>
+            <div class="plan-review-judge-tags">
+              <el-tag
+                v-if="planReviewJudge"
+                size="small"
+                :type="judgeRiskTagType(planReviewJudge.worstRisk)"
+              >
+                {{ judgeRiskPhrase(planReviewJudge.worstRisk) }}
+              </el-tag>
+              <el-tag v-if="planReviewJudge?.degraded" size="small" type="danger" effect="dark">
+                需人工确认
+              </el-tag>
+            </div>
           </header>
           <p v-if="planReviewJudge?.degraded" class="plan-review-judge-note">
-            自动初审未能给出可信判定（{{ planReviewJudge.degradedReason || '原因未知' }}）。
-            为安全起见，系统已按最坏情况标记为高风险，请人工逐项核对下方原始参数后再决定。
+            {{ planReviewJudgeDegradedNote }}
           </p>
           <ul v-if="planReviewJudge?.steps.length" class="plan-review-judge-steps">
-            <li v-for="item in planReviewJudge.steps" :key="item.workflowNodeId || item.toolCode">
-              <el-tag size="small" :type="judgeRiskTagType(item.risk)" effect="plain">
-                {{ item.behaviour }}
-              </el-tag>
-              <span class="plan-review-judge-tool">{{ aiToolLabel(item.toolCode) }}</span>
-              <span class="plan-review-judge-summary">{{ item.summary }}</span>
-              <span class="plan-review-judge-conf">
-                置信度 {{ Math.round((item.confidence || 0) * 100) }}%
-              </span>
+            <li
+              v-for="item in planReviewJudge.steps"
+              :key="item.workflowNodeId || item.toolCode"
+              class="plan-review-judge-step-card"
+            >
+              <div class="plan-review-judge-step-header">
+                <div class="plan-review-judge-step-meta">
+                  <span class="plan-review-judge-tool">{{ aiToolLabel(item.toolCode) }}</span>
+                  <el-tag size="small" :type="judgeRiskTagType(item.risk)" effect="plain">
+                    {{ formatJudgeBehaviour(item.behaviour) }}
+                  </el-tag>
+                </div>
+                <span class="plan-review-judge-conf">
+                  置信度 {{ Math.round((item.confidence || 0) * 100) }}%
+                </span>
+              </div>
+              <p class="plan-review-judge-summary">{{ formatJudgeSummary(item.summary) }}</p>
             </li>
           </ul>
           <p v-else-if="planReviewJudge?.degraded" class="plan-review-judge-note">
@@ -8167,39 +8243,68 @@ onUnmounted(() => {
 }
 .plan-review-summary, .plan-review-execution { display: grid; gap: 10px; }
 
-/* Semantic judge banner: the human's first read of what the plan actually does. */
+/* Semantic judge banner: Fluent 2 InfoBar & Card specification */
 .plan-review-judge {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   padding: 14px 16px;
-  border-radius: 10px;
-  border: 1px solid var(--app-border);
+  border-radius: var(--fluent-radius-card, 8px);
+  border: var(--fluent-stroke-thin, 1px) solid var(--app-border);
   background: var(--app-surface-soft);
+  transition: border-color var(--fluent-fast, 120ms) ease, background-color var(--fluent-fast, 120ms) ease;
 }
 .plan-review-judge--critical {
-  border-color: color-mix(in srgb, #d93025 55%, transparent);
-  background: color-mix(in srgb, #d93025 9%, var(--app-surface));
+  border-color: color-mix(in srgb, var(--fluent-danger-bg, #d93025) 45%, var(--app-border));
+  background: color-mix(in srgb, var(--fluent-danger-bg, #d93025) 6%, var(--app-surface));
 }
 .plan-review-judge--warning {
-  border-color: color-mix(in srgb, #d97706 55%, transparent);
-  background: color-mix(in srgb, #d97706 9%, var(--app-surface));
+  border-color: color-mix(in srgb, var(--fluent-warning-bg, #d97706) 45%, var(--app-border));
+  background: color-mix(in srgb, var(--fluent-warning-bg, #d97706) 6%, var(--app-surface));
 }
 .plan-review-judge--clear {
-  border-color: color-mix(in srgb, #1a7f37 45%, transparent);
+  border-color: color-mix(in srgb, var(--fluent-success-bg, #1a7f37) 40%, var(--app-border));
+  background: color-mix(in srgb, var(--fluent-success-bg, #1a7f37) 4%, var(--app-surface));
 }
 .plan-review-judge-heading {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   flex-wrap: wrap;
 }
-.plan-review-judge-heading h3 { flex: 1; min-width: 120px; margin: 0; overflow-wrap: anywhere; }
-.plan-review-judge-icon { flex: none; font-size: 15px; line-height: 1; }
+.plan-review-judge-heading h3 {
+  flex: 1;
+  min-width: 220px;
+  margin: 0;
+  font-family: var(--fluent-font);
+  font-size: var(--fluent-body1-size, 14px);
+  line-height: var(--fluent-body1-line, 20px);
+  font-weight: var(--fluent-weight-semibold, 600);
+  color: var(--app-text);
+  overflow-wrap: anywhere;
+}
+.plan-review-judge-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  font-size: 16px;
+  line-height: 1;
+}
+.plan-review-judge-icon.is-critical { color: var(--fluent-danger-bg, #d93025); }
+.plan-review-judge-icon.is-warning { color: var(--fluent-warning-bg, #d97706); }
+.plan-review-judge-icon.is-clear { color: var(--fluent-success-bg, #1a7f37); }
+.plan-review-judge-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
 .plan-review-judge-note {
   margin: 0;
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--app-muted);
+  font-family: var(--fluent-font);
+  font-size: var(--fluent-caption1-size, 12px);
+  line-height: var(--fluent-caption1-line, 16px);
+  color: var(--app-text-secondary, var(--app-muted));
   overflow-wrap: anywhere;
 }
 .plan-review-judge-steps {
@@ -8209,16 +8314,50 @@ onUnmounted(() => {
   padding: 0;
   list-style: none;
 }
-.plan-review-judge-steps > li {
+.plan-review-judge-step-card {
   display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px;
+  border-radius: var(--fluent-radius-large, 6px);
+  background: var(--app-surface);
+  border: var(--fluent-stroke-thin, 1px) solid color-mix(in srgb, var(--app-border) 70%, transparent);
+  box-shadow: var(--fluent-card-shadow, var(--fluent-shadow-2));
+  transition: background-color var(--fluent-fast, 120ms) ease, box-shadow var(--fluent-fast, 120ms) ease;
+}
+.plan-review-judge-step-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.plan-review-judge-step-meta {
+  display: inline-flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  font-size: 13px;
 }
-.plan-review-judge-tool { font-weight: 600; }
-.plan-review-judge-summary { flex: 1; min-width: 140px; overflow-wrap: anywhere; }
-.plan-review-judge-conf { color: var(--app-muted); font-variant-numeric: tabular-nums; }
+.plan-review-judge-tool {
+  font-family: var(--fluent-font);
+  font-weight: var(--fluent-weight-semibold, 600);
+  font-size: 13px;
+  color: var(--app-text);
+}
+.plan-review-judge-conf {
+  color: var(--app-muted);
+  font-size: var(--fluent-caption1-size, 12px);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex: none;
+}
+.plan-review-judge-summary {
+  margin: 0;
+  font-family: var(--fluent-font);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--app-text-secondary);
+  overflow-wrap: anywhere;
+}
 .plan-review-execution > h3 { display: flex; align-items: baseline; gap: 8px; }
 .plan-review-execution > h3 > span { font-size: 12px; font-weight: 400; color: var(--app-muted); }
 .plan-review-steps { display: grid; gap: 12px; list-style: none; padding: 0; margin: 0; }

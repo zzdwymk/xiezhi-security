@@ -142,6 +142,9 @@
   --app-overlay-bg: light-dark(#ffffff, #18181b);
   --app-overlay-text: light-dark(#111827, #f8fafc);
   --app-overlay-border: light-dark(#9ca3af, #71717a);
+  --fluent-overlay-bg: light-dark(#ffffff, #1a1a22);
+  --fluent-overlay-fg: light-dark(#111827, #f8fafc);
+  --fluent-overlay-hover-bg: light-dark(rgba(0, 0, 0, 0.06), rgba(255, 255, 255, 0.12));
   --app-hover-popup-bg: light-dark(#111827, #f8fafc);
   --app-hover-popup-text: light-dark(#ffffff, #111827);
   --app-hover-popup-border: light-dark(#374151, #cbd5e1);
@@ -363,6 +366,17 @@ body,
   --app-sidebar: Canvas;
   --v2-glass-panel: Canvas;
   --v2-glass-hover: color-mix(in srgb, CanvasText 5%, Canvas);
+}
+
+:root[data-system-theme="light"] {
+  --fluent-overlay-bg: #ffffff;
+  --fluent-overlay-fg: #18181b;
+  --fluent-overlay-muted-fg: #64748b;
+  --fluent-overlay-hover-bg: rgba(0, 0, 0, 0.06);
+  --fluent-overlay-selected-bg: color-mix(in srgb, var(--app-accent) 12%, #ffffff);
+  --app-overlay-bg: #ffffff;
+  --app-overlay-text: #18181b;
+  --app-overlay-border: rgba(0, 0, 0, 0.12);
 }
 
 :root[data-system-theme="dark"] {

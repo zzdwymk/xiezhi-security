@@ -6312,6 +6312,17 @@ handleRendererIpc("toolbox:has-running-tasks", (event) => {
   assertMainRenderer(event);
   return checkHasRunningTasks();
 });
+handleRendererIpc("toolbox:confirm-exit", (event) => {
+  assertMainRenderer(event);
+  forceMainWindowClose = true;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.close();
+  }
+});
+handleRendererIpc("toolbox:cancel-close", (event) => {
+  assertMainRenderer(event);
+  isConfirmingClose = false;
+});
 handleRendererIpc("toolbox:open-external", (event, targetUrl) => {
   assertMainRenderer(event);
   if (typeof targetUrl !== "string") return false;
@@ -8633,6 +8644,19 @@ function createMainWindow(port) {
     try {
       const status = await checkHasRunningTasks();
       if (status && status.hasActive) {
+        // 优先在主窗口中唤起美观的 Fluent Design 2 退出确认弹窗
+        if (
+          mainWindow &&
+          !mainWindow.isDestroyed() &&
+          !mainWindow.webContents.isCrashed()
+        ) {
+          mainWindow.webContents.send("toolbox:request-close", status);
+          if (mainWindow.isMinimized()) mainWindow.restore();
+          mainWindow.focus();
+          return;
+        }
+
+        // 兜底原生弹窗（仅在渲染进程无响应或崩溃时备用）
         let message = "当前有任务正在执行中，确定要退出程序吗？";
         let detail = "如果现在退出程序，正在执行的安全检测任务将被中断。";
 
@@ -8673,7 +8697,10 @@ function createMainWindow(port) {
         mainWindow.close();
       }
     } finally {
-      isConfirmingClose = false;
+      const status = await checkHasRunningTasks().catch(() => ({ hasActive: false }));
+      if (!status || !status.hasActive) {
+        isConfirmingClose = false;
+      }
     }
   });
   mainWindow.on("closed", () => {

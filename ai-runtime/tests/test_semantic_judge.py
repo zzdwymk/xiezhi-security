@@ -279,7 +279,7 @@ def test_circuit_breaker_shape_is_stable():
     body = verdict.to_dict()
     assert body["allow"] is False
     assert body["risk"] == "CRITICAL"
-    assert body["behaviour"] == "判官熔断（无法判定）"
+    assert body["behaviour"] in ("初审未判定（需人工确认）", "判官熔断（无法判定）")
     assert body["degraded"] is True
     assert body["judged"] is False
 

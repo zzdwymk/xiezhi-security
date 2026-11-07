@@ -202,6 +202,38 @@ const prompt = ref("");
  */
 const PROMPT_MAX_LENGTH = 4000;
 const composerInputRef = ref<HTMLTextAreaElement | null>(null);
+const composerViewMode = ref<"edit" | "preview">("edit");
+
+function setComposerMode(mode: "edit" | "preview") {
+  composerViewMode.value = mode;
+  if (mode === "edit") {
+    void nextTick(() => {
+      composerInputRef.value?.focus();
+    });
+  } else {
+    void nextTick(() => {
+      const surface = document.querySelector<HTMLElement>(".composer-preview-surface");
+      surface?.focus({ preventScroll: true });
+    });
+  }
+}
+
+function handlePreviewKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    setComposerMode("edit");
+    return;
+  }
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    void sendPrompt();
+  }
+}
+
+function renderPromptMarkdown(content: string): string {
+  if (!content.trim()) return '<div class="preview-empty-hint">暂无预览内容</div>';
+  return renderMarkdown(content);
+}
 type QuotedMessage = Pick<ConversationMessage, "id" | "role" | "content" | "createdAt">;
 const quotedMessage = ref<QuotedMessage>();
 interface MessageEditState {
@@ -745,6 +777,7 @@ async function copyMessage(message: ConversationMessage, format: "markdown" | "p
 onBeforeUnmount(() => { if (copiedMessageTimer) clearTimeout(copiedMessageTimer); });
 
 function focusComposer() {
+  composerViewMode.value = "edit";
   void nextTick(() => {
     const el =
       composerInputRef.value ||
@@ -2313,6 +2346,7 @@ async function runCompactCommand(sessionId: string) {
 }
 
 async function sendPrompt() {
+  composerViewMode.value = "edit";
   const text = prompt.value.trim();
   if (!text) return;
 
@@ -2417,6 +2451,7 @@ function editPendingPrompt(queueKey: string, id: string) {
   const item = list?.find((entry) => entry.id === id);
   if (!item) return;
   cancelPendingPrompt(queueKey, id);
+  composerViewMode.value = "edit";
   prompt.value = item.text;
   composerError.value = "";
   nextTick(() => {
@@ -3111,6 +3146,12 @@ watch(selectedTargetId, (value) => {
     localStorage.setItem("security_toolbox_dashboard_target", String(value));
 });
 
+watch(prompt, (val) => {
+  if (!val.trim() && composerViewMode.value === "preview") {
+    composerViewMode.value = "edit";
+  }
+});
+
 watch(
   () => selectedThread.value?.messages.map((m) => `${m.id}:${m.content.length}:${m.status}`).join(","),
   () => {
@@ -3310,24 +3351,29 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <div class="welcome-composer">
-        <div v-if="composerReferences.length" class="copilot-draft-refs">
-          <span
-            v-for="reference in composerReferences"
-            :key="`${reference.type}-${reference.id || reference.title || reference.label}`"
-            >{{ displayKnownTestName(reference.title || reference.label) || copilotReferenceTypeLabel(reference.type) }}</span
-          >
+      <!-- 待发送队列：独立位于欢迎输入框外上方（纵向排列） -->
+      <div
+        v-if="pendingForCurrentThread.length"
+        class="composer-queue-panel composer-queue-bar welcome-queue-panel"
+        role="status"
+        aria-label="待发送队列"
+      >
+        <div class="composer-queue-header">
+          <div class="composer-queue-header-left">
+            <span class="composer-queue-title">待发送队列（排队中 {{ pendingForCurrentThread.length }} 条）</span>
+            <span class="composer-queue-tip">当前轮处理完成后自动依次发送</span>
+          </div>
+          <button type="button" class="composer-queue-clear" @click="clearPendingQueue()">清空队列</button>
         </div>
-        <div v-if="composerError" class="composer-inline-error">{{ composerError }}</div>
-        <div
-          v-if="pendingForCurrentThread.length"
-          class="composer-queue-bar"
-          role="status"
-          aria-label="待发送队列"
-        >
-          <span class="composer-queue-title">排队中 {{ pendingForCurrentThread.length }} 条</span>
-          <ul class="composer-queue-list">
-            <li v-for="(item, qIndex) in pendingForCurrentThread" :key="item.id" :class="{ 'is-expanded': expandedPendingIds.has(item.id) }">
+        <ul class="composer-queue-list">
+          <li
+            v-for="(item, qIndex) in pendingForCurrentThread"
+            :key="item.id"
+            class="composer-queue-item"
+            :class="{ 'is-expanded': expandedPendingIds.has(item.id) }"
+          >
+            <div class="composer-queue-item-left">
+              <span class="composer-queue-badge">#{{ qIndex + 1 }}</span>
               <span class="composer-queue-order">
                 <button
                   type="button"
@@ -3352,35 +3398,95 @@ onBeforeUnmount(() => {
                 :title="item.text"
                 :aria-label="`预览排队消息：${quotePreview(item.text)}`"
                 @click="togglePendingPreview(item.id)"
-              >{{ expandedPendingIds.has(item.id) ? item.text : quotePreview(item.text) }}</button>
+              >
+                <span class="composer-queue-text-content">{{ expandedPendingIds.has(item.id) ? item.text : quotePreview(item.text) }}</span>
+                <span class="composer-queue-preview-toggle">{{ expandedPendingIds.has(item.id) ? '收起' : '展开' }}</span>
+              </button>
+            </div>
+            <div class="composer-queue-item-actions">
               <button
                 type="button"
                 class="composer-queue-edit"
                 :aria-label="`编辑排队消息：${quotePreview(item.text)}`"
-                title="编辑"
+                title="取回输入框重新编辑"
                 @click="editPendingPrompt(currentQueueKey, item.id)"
               >编辑</button>
               <button
                 type="button"
                 class="composer-queue-cancel"
                 :aria-label="`取消排队：${quotePreview(item.text)}`"
-                title="取消"
+                title="取消此条"
                 @click="cancelPendingPrompt(currentQueueKey, item.id)"
               >×</button>
-            </li>
-          </ul>
-          <button type="button" class="composer-queue-clear" @click="clearPendingQueue()">清空</button>
+            </div>
+          </li>
+        </ul>
+      </div>
+
+      <div class="welcome-composer">
+        <div v-if="composerReferences.length" class="copilot-draft-refs">
+          <span
+            v-for="reference in composerReferences"
+            :key="`${reference.type}-${reference.id || reference.title || reference.label}`"
+            >{{ displayKnownTestName(reference.title || reference.label) || copilotReferenceTypeLabel(reference.type) }}</span
+          >
         </div>
-        <textarea
-          ref="composerInputRef"
-          v-model="prompt"
-          rows="4"
-          :maxlength="PROMPT_MAX_LENGTH"
-          :placeholder="askScopeType === 'project'
-            ? '例如：对所选项目内全部目标进行开放端口与漏洞排查规划；如需先看方案，可以说“先给方案，不执行”'
-            : '例如：检查目标的开放端口；如需先看方案，可以说“先给方案，不执行”'"
-          @keydown="handlePromptKeydown"
-        />
+        <div v-if="composerError" class="composer-inline-error">{{ composerError }}</div>
+        <div class="composer-input-area">
+          <div
+            v-if="prompt.trim().length > 0"
+            class="composer-mode-tabs"
+            role="tablist"
+            aria-label="输入与预览模式切换"
+          >
+            <button
+              type="button"
+              class="composer-mode-tab"
+              :class="{ 'is-active': composerViewMode === 'edit' }"
+              role="tab"
+              :aria-selected="composerViewMode === 'edit'"
+              title="编辑输入内容"
+              @click="setComposerMode('edit')"
+            >
+              <FluentIcon name="edit" />
+              <span>编辑</span>
+            </button>
+            <button
+              type="button"
+              class="composer-mode-tab"
+              :class="{ 'is-active': composerViewMode === 'preview' }"
+              role="tab"
+              :aria-selected="composerViewMode === 'preview'"
+              title="预览 Markdown 排版"
+              @click="setComposerMode('preview')"
+            >
+              <FluentIcon name="eye" />
+              <span>预览</span>
+            </button>
+          </div>
+
+          <textarea
+            v-show="composerViewMode === 'edit'"
+            ref="composerInputRef"
+            v-model="prompt"
+            rows="4"
+            :maxlength="PROMPT_MAX_LENGTH"
+            :placeholder="askScopeType === 'project'
+              ? '例如：对所选项目内全部目标进行开放端口与漏洞排查规划；如需先看方案，可以说“先给方案，不执行”'
+              : '例如：检查目标的开放端口；如需先看方案，可以说“先给方案，不执行”'"
+            @keydown="handlePromptKeydown"
+          />
+
+          <div
+            v-show="composerViewMode === 'preview'"
+            class="composer-preview-surface markdown-body"
+            tabindex="0"
+            role="region"
+            aria-label="Markdown 预览效果，按 Esc 键返回编辑"
+            @keydown="handlePreviewKeydown"
+            v-html="renderPromptMarkdown(prompt)"
+          />
+        </div>
         <div class="composer-footer">
           <div class="target-scope">
             <el-radio-group
@@ -3950,6 +4056,79 @@ onBeforeUnmount(() => {
             >{{ displayKnownTestName(selectedThread.targetName) }}</strong
           ><small>如需更换目标，请新建对话</small>
         </div>
+
+        <!-- 待发送队列：独立位于输入框外上方（纵向排列） -->
+        <div
+          v-if="pendingForCurrentThread.length"
+          class="composer-queue-panel composer-queue-bar"
+          role="status"
+          aria-label="待发送队列"
+        >
+          <div class="composer-queue-header">
+            <div class="composer-queue-header-left">
+              <span class="composer-queue-title">待发送队列（排队中 {{ pendingForCurrentThread.length }} 条）</span>
+              <span class="composer-queue-tip">当前轮处理完成后自动依次发送</span>
+            </div>
+            <button type="button" class="composer-queue-clear" @click="clearPendingQueue()">清空队列</button>
+          </div>
+          <ul class="composer-queue-list">
+            <li
+              v-for="(item, qIndex) in pendingForCurrentThread"
+              :key="item.id"
+              class="composer-queue-item"
+              :class="{ 'is-expanded': expandedPendingIds.has(item.id) }"
+            >
+              <div class="composer-queue-item-left">
+                <span class="composer-queue-badge">#{{ qIndex + 1 }}</span>
+                <span class="composer-queue-order">
+                  <button
+                    type="button"
+                    class="composer-queue-move"
+                    :disabled="qIndex === 0"
+                    :aria-label="`上移排队消息：${quotePreview(item.text)}`"
+                    title="上移"
+                    @click="movePendingPrompt(currentQueueKey, item.id, -1)"
+                  >↑</button>
+                  <button
+                    type="button"
+                    class="composer-queue-move"
+                    :disabled="qIndex === pendingForCurrentThread.length - 1"
+                    :aria-label="`下移排队消息：${quotePreview(item.text)}`"
+                    title="下移"
+                    @click="movePendingPrompt(currentQueueKey, item.id, 1)"
+                  >↓</button>
+                </span>
+                <button
+                  type="button"
+                  class="composer-queue-text"
+                  :title="item.text"
+                  :aria-label="`预览排队消息：${quotePreview(item.text)}`"
+                  @click="togglePendingPreview(item.id)"
+                >
+                  <span class="composer-queue-text-content">{{ expandedPendingIds.has(item.id) ? item.text : quotePreview(item.text) }}</span>
+                  <span class="composer-queue-preview-toggle">{{ expandedPendingIds.has(item.id) ? '收起' : '展开' }}</span>
+                </button>
+              </div>
+              <div class="composer-queue-item-actions">
+                <button
+                  type="button"
+                  class="composer-queue-edit"
+                  :aria-label="`编辑排队消息：${quotePreview(item.text)}`"
+                  title="取回输入框重新编辑"
+                  @click="editPendingPrompt(currentQueueKey, item.id)"
+                >编辑</button>
+                <button
+                  type="button"
+                  class="composer-queue-cancel"
+                  :aria-label="`取消排队：${quotePreview(item.text)}`"
+                  title="取消此条"
+                  @click="cancelPendingPrompt(currentQueueKey, item.id)"
+                >×</button>
+              </div>
+            </li>
+          </ul>
+        </div>
+
         <div class="thread-composer">
           <div v-if="editingMessage" class="composer-edit-notice" role="status">
             <el-icon aria-hidden="true"><EditPen /></el-icon>
@@ -3982,66 +4161,59 @@ onBeforeUnmount(() => {
             >
           </div>
           <div v-if="composerError" class="composer-inline-error">{{ composerError }}</div>
-          <div
-            v-if="pendingForCurrentThread.length"
-            class="composer-queue-bar"
-            role="status"
-            aria-label="待发送队列"
-          >
-            <span class="composer-queue-title">排队中 {{ pendingForCurrentThread.length }} 条</span>
-            <ul class="composer-queue-list">
-              <li v-for="(item, qIndex) in pendingForCurrentThread" :key="item.id" :class="{ 'is-expanded': expandedPendingIds.has(item.id) }">
-                <span class="composer-queue-order">
-                  <button
-                    type="button"
-                    class="composer-queue-move"
-                    :disabled="qIndex === 0"
-                    :aria-label="`上移排队消息：${quotePreview(item.text)}`"
-                    title="上移"
-                    @click="movePendingPrompt(currentQueueKey, item.id, -1)"
-                  >↑</button>
-                  <button
-                    type="button"
-                    class="composer-queue-move"
-                    :disabled="qIndex === pendingForCurrentThread.length - 1"
-                    :aria-label="`下移排队消息：${quotePreview(item.text)}`"
-                    title="下移"
-                    @click="movePendingPrompt(currentQueueKey, item.id, 1)"
-                  >↓</button>
-                </span>
-                <button
-                  type="button"
-                  class="composer-queue-text"
-                  :title="item.text"
-                  :aria-label="`预览排队消息：${quotePreview(item.text)}`"
-                  @click="togglePendingPreview(item.id)"
-                >{{ expandedPendingIds.has(item.id) ? item.text : quotePreview(item.text) }}</button>
-                <button
-                  type="button"
-                  class="composer-queue-edit"
-                  :aria-label="`编辑排队消息：${quotePreview(item.text)}`"
-                  title="编辑"
-                  @click="editPendingPrompt(currentQueueKey, item.id)"
-                >编辑</button>
-                <button
-                  type="button"
-                  class="composer-queue-cancel"
-                  :aria-label="`取消排队：${quotePreview(item.text)}`"
-                  title="取消"
-                  @click="cancelPendingPrompt(currentQueueKey, item.id)"
-                >×</button>
-              </li>
-            </ul>
-            <button type="button" class="composer-queue-clear" @click="clearPendingQueue()">清空</button>
+          <div class="composer-input-area">
+            <div
+              v-if="prompt.trim().length > 0"
+              class="composer-mode-tabs"
+              role="tablist"
+              aria-label="输入与预览模式切换"
+            >
+              <button
+                type="button"
+                class="composer-mode-tab"
+                :class="{ 'is-active': composerViewMode === 'edit' }"
+                role="tab"
+                :aria-selected="composerViewMode === 'edit'"
+                title="编辑输入内容"
+                @click="setComposerMode('edit')"
+              >
+                <FluentIcon name="edit" />
+                <span>编辑</span>
+              </button>
+              <button
+                type="button"
+                class="composer-mode-tab"
+                :class="{ 'is-active': composerViewMode === 'preview' }"
+                role="tab"
+                :aria-selected="composerViewMode === 'preview'"
+                title="预览 Markdown 排版"
+                @click="setComposerMode('preview')"
+              >
+                <FluentIcon name="eye" />
+                <span>预览</span>
+              </button>
+            </div>
+
+            <textarea
+              v-show="composerViewMode === 'edit'"
+              ref="composerInputRef"
+              v-model="prompt"
+              rows="2"
+              :maxlength="PROMPT_MAX_LENGTH"
+              placeholder="继续提问或说明下一步；只需方案时，请说“先给方案，不执行”"
+              @keydown="handlePromptKeydown"
+            />
+
+            <div
+              v-show="composerViewMode === 'preview'"
+              class="composer-preview-surface markdown-body"
+              tabindex="0"
+              role="region"
+              aria-label="Markdown 预览效果，按 Esc 键返回编辑"
+              @keydown="handlePreviewKeydown"
+              v-html="renderPromptMarkdown(prompt)"
+            />
           </div>
-          <textarea
-            ref="composerInputRef"
-            v-model="prompt"
-            rows="2"
-            :maxlength="PROMPT_MAX_LENGTH"
-            placeholder="继续提问或说明下一步；只需方案时，请说“先给方案，不执行”"
-            @keydown="handlePromptKeydown"
-          />
           <div class="thread-composer-footer">
             <span class="composer-shortcut">
               Enter 发送，Shift + Enter 换行<span v-if="sending"> · 当前对话处理中，回车将加入队列</span>
@@ -4478,7 +4650,7 @@ onBeforeUnmount(() => {
   height: 120px;
   min-height: 120px;
   max-height: 40vh;
-  padding: 18px 19px 8px;
+  padding: 18px 96px 8px 20px;
   /* 与 .thread-composer 同理：超长连续串必须能断行，否则撑破欢迎区布局 */
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -4499,60 +4671,145 @@ onBeforeUnmount(() => {
 .thread-composer textarea::placeholder {
   color: var(--app-muted);
 }
-/* 行内校验提示（替代打断式弹窗） */
+/* 行内校验提示（严格遵循 Fluent UI 2 Callout / Badge 规范） */
 .composer-inline-error {
   margin: 8px 18px 0;
   padding: 6px 10px;
-  border-radius: 6px;
-  font-size: 12px;
-  line-height: 1.4;
-  color: var(--el-color-danger-dark-2, #b42318);
-  background: color-mix(in srgb, var(--el-color-danger, #f56c6c) 10%, transparent);
-  border: 1px solid color-mix(in srgb, var(--el-color-danger, #f56c6c) 30%, transparent);
+  border-radius: var(--fluent-radius-control, 4px);
+  font-family: var(--fluent-font, inherit);
+  font-size: var(--fluent-caption1-size, 12px);
+  font-weight: var(--fluent-weight-medium, 500);
+  line-height: var(--fluent-caption1-line, 16px);
+  color: var(--fluent-danger-bg, #b42318);
+  background: color-mix(in srgb, var(--fluent-danger-bg, #b42318) 10%, var(--app-surface-strong));
+  border: var(--fluent-stroke-thin, 1px) solid color-mix(in srgb, var(--fluent-danger-bg, #b42318) 32%, transparent);
 }
-/* 待发送队列条 */
-.composer-queue-bar {
+/* 待发送队列：独立位于输入框外上方（纵向排列面板） — 严格遵循 Fluent UI 2 设计规范 */
+.composer-queue-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 10px 14px;
+  border-radius: var(--fluent-radius-card, 8px);
+  border: var(--fluent-stroke-thin, 1px) solid color-mix(in srgb, var(--app-accent, #409eff) 30%, var(--app-border));
+  background: color-mix(in srgb, var(--app-surface-soft) 80%, var(--app-surface-strong));
+  box-shadow: var(--fluent-card-shadow, var(--fluent-shadow-2));
+  backdrop-filter: blur(16px) saturate(125%);
+  box-sizing: border-box;
+}
+/* 欢迎页中的外上方队列面板与 welcome-composer 居中对齐 */
+.welcome-queue-panel {
+  width: min(760px, 100%);
+  margin-top: 18px;
+  margin-bottom: 12px;
+}
+.composer-queue-header {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 6px;
+  border-bottom: var(--fluent-stroke-thin, 1px) solid color-mix(in srgb, var(--app-border) 60%, transparent);
+}
+.composer-queue-header-left {
+  display: flex;
+  align-items: center;
   gap: 8px;
-  margin: 8px 18px 0;
-  padding: 6px 10px;
-  border-radius: 8px;
-  font-size: 12px;
-  line-height: 1.4;
-  background: var(--app-surface-soft, rgba(0, 0, 0, 0.04));
-  border: 1px dashed color-mix(in srgb, var(--app-accent, #409eff) 40%, transparent);
+  min-width: 0;
 }
 .composer-queue-title {
-  font-weight: 600;
+  font-family: var(--fluent-font, inherit);
+  font-size: var(--fluent-caption1-size, 12px);
+  font-weight: var(--fluent-weight-semibold, 600);
+  line-height: var(--fluent-caption1-line, 16px);
   color: var(--app-accent, #409eff);
   white-space: nowrap;
 }
+.composer-queue-tip {
+  font-family: var(--fluent-font, inherit);
+  color: var(--app-muted, #909399);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-queue-clear {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border: var(--fluent-stroke-thin, 1px) solid transparent;
+  border-radius: var(--fluent-radius-control, 4px);
+  background: transparent;
+  color: var(--app-muted, #909399);
+  font-family: var(--fluent-font, inherit);
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: underline;
+  transition:
+    background-color var(--fluent-fast, 120ms) ease,
+    color var(--fluent-fast, 120ms) ease;
+}
+.composer-queue-clear:hover {
+  color: var(--app-accent, #409eff);
+  background: color-mix(in srgb, var(--app-accent, #409eff) 10%, transparent);
+  text-decoration: none;
+}
+.composer-queue-clear:focus-visible {
+  outline: var(--fluent-stroke-thick, 2px) solid var(--app-accent);
+  outline-offset: 1px;
+}
+/* 纵向列表：自上而下单列排列 */
 .composer-queue-list {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 6px;
   margin: 0;
   padding: 0;
   list-style: none;
-  min-width: 0;
+  max-height: 220px;
+  overflow-y: auto;
 }
-.composer-queue-list li {
-  display: inline-flex;
+.composer-queue-list li,
+.composer-queue-item {
+  display: flex;
   align-items: center;
-  gap: 4px;
-  max-width: 260px;
-  padding: 2px 4px 2px 6px;
-  border-radius: 999px;
-  background: var(--app-surface, #fff);
-  border: 1px solid var(--app-border, rgba(0, 0, 0, 0.12));
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: var(--fluent-radius-large, 6px);
+  background: var(--app-surface-strong, #fff);
+  border: var(--fluent-stroke-thin, 1px) solid var(--app-border, rgba(0, 0, 0, 0.08));
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  box-sizing: border-box;
+  transition:
+    border-color var(--fluent-fast, 120ms) ease,
+    box-shadow var(--fluent-fast, 120ms) ease,
+    background-color var(--fluent-fast, 120ms) ease;
 }
-/* 展开预览时：由药丸改为可换行的块，完整显示消息全文 */
-.composer-queue-list li.is-expanded {
-  max-width: 100%;
-  border-radius: 8px;
-  align-items: flex-start;
+.composer-queue-list li:hover {
+  border-color: color-mix(in srgb, var(--app-accent, #409eff) 50%, var(--app-border));
+  box-shadow: var(--fluent-shadow-2, 0 2px 4px rgba(0, 0, 0, 0.06));
+}
+.composer-queue-item-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.composer-queue-badge {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: var(--fluent-radius-control, 4px);
+  font-family: var(--fluent-font, inherit);
+  font-size: 11px;
+  font-weight: var(--fluent-weight-semibold, 600);
+  line-height: 1;
+  color: var(--app-accent, #409eff);
+  background: color-mix(in srgb, var(--app-accent, #409eff) 12%, transparent);
+  border: var(--fluent-stroke-thin, 1px) solid color-mix(in srgb, var(--app-accent, #409eff) 25%, transparent);
 }
 .composer-queue-order {
   display: inline-flex;
@@ -4564,94 +4821,171 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
+  width: 16px;
   height: 12px;
   padding: 0;
-  border: none;
+  border: var(--fluent-stroke-thin, 1px) solid transparent;
+  border-radius: var(--fluent-radius-control, 2px);
   background: transparent;
   color: var(--app-muted, #909399);
   cursor: pointer;
-  font-size: 10px;
+  font-size: 9px;
   line-height: 1;
+  transition:
+    background-color var(--fluent-fast, 120ms) ease,
+    color var(--fluent-fast, 120ms) ease,
+    transform var(--fluent-fast, 120ms) ease;
 }
 .composer-queue-move:hover:not(:disabled) {
   color: var(--app-accent, #409eff);
+  background: color-mix(in srgb, var(--app-accent, #409eff) 12%, transparent);
+}
+.composer-queue-move:active:not(:disabled) {
+  transform: scale(0.92);
 }
 .composer-queue-move:disabled {
-  opacity: 0.3;
+  opacity: 0.25;
   cursor: default;
 }
+.composer-queue-move:focus-visible {
+  outline: var(--fluent-stroke-thick, 2px) solid var(--app-accent);
+  outline-offset: 1px;
+}
 .composer-queue-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 2px 4px;
+  border: var(--fluent-stroke-thin, 1px) solid transparent;
+  border-radius: var(--fluent-radius-control, 4px);
+  background: transparent;
+  color: var(--app-text, inherit);
+  font-family: var(--fluent-font, inherit);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--fluent-fast, 120ms) ease,
+    color var(--fluent-fast, 120ms) ease;
+}
+.composer-queue-text:focus-visible {
+  outline: var(--fluent-stroke-thick, 2px) solid var(--app-accent);
+  outline-offset: 1px;
+}
+.composer-queue-text-content {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  /* 点击可展开预览：按按钮外观呈现，但保持纯文本观感 */
-  flex: 1 1 auto;
-  min-width: 0;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
+  font-size: var(--fluent-caption1-size, 12px);
+  line-height: var(--fluent-caption1-line, 16px);
 }
-.composer-queue-text:hover {
+.composer-queue-preview-toggle {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--app-muted, #909399);
+  padding: 1px 5px;
+  border-radius: var(--fluent-radius-control, 3px);
+  background: var(--app-surface-soft);
+  border: var(--fluent-stroke-thin, 1px) solid var(--app-border);
+}
+.composer-queue-text:hover .composer-queue-text-content {
   color: var(--app-accent, #409eff);
 }
+.composer-queue-text:hover .composer-queue-preview-toggle {
+  border-color: color-mix(in srgb, var(--app-accent, #409eff) 40%, var(--app-border));
+  color: var(--app-accent, #409eff);
+}
+/* 展开长文预览：Fluent Card 展开态 */
+.composer-queue-list li.is-expanded {
+  align-items: flex-start;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--app-surface-strong) 92%, var(--app-accent, #409eff));
+}
+.composer-queue-list li.is-expanded .composer-queue-item-left {
+  align-items: flex-start;
+}
 .composer-queue-list li.is-expanded .composer-queue-text {
+  flex-direction: column;
+  align-items: flex-start;
+}
+.composer-queue-list li.is-expanded .composer-queue-text-content {
   white-space: pre-wrap;
   overflow: visible;
   text-overflow: clip;
   overflow-wrap: anywhere;
-  line-height: 1.5;
+  line-height: var(--fluent-body1-line, 1.5);
+  color: var(--app-text);
 }
-.composer-queue-edit {
+.composer-queue-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   flex: 0 0 auto;
-  padding: 0 2px;
-  border: none;
-  background: transparent;
+}
+/* Fluent Subtle Button 规范 */
+.composer-queue-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  min-height: 22px;
+  border: var(--fluent-stroke-thin, 1px) solid color-mix(in srgb, var(--app-accent, #409eff) 30%, transparent);
+  border-radius: var(--fluent-radius-control, 4px);
+  background: color-mix(in srgb, var(--app-accent, #409eff) 8%, transparent);
   color: var(--app-accent, #409eff);
-  cursor: pointer;
-  font-size: 12px;
+  font-family: var(--fluent-font, inherit);
+  font-size: 11px;
+  font-weight: var(--fluent-weight-medium, 500);
   line-height: 1;
+  cursor: pointer;
   white-space: nowrap;
+  transition:
+    background-color var(--fluent-fast, 120ms) ease,
+    border-color var(--fluent-fast, 120ms) ease,
+    transform var(--fluent-fast, 120ms) ease;
 }
 .composer-queue-edit:hover {
-  text-decoration: underline;
+  background: color-mix(in srgb, var(--app-accent, #409eff) 16%, transparent);
+  border-color: var(--app-accent, #409eff);
+}
+.composer-queue-edit:active {
+  transform: scale(0.96);
+}
+.composer-queue-edit:focus-visible {
+  outline: var(--fluent-stroke-thick, 2px) solid var(--app-accent);
+  outline-offset: 1px;
 }
 .composer-queue-cancel {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
   padding: 0;
-  border: none;
-  border-radius: 50%;
+  border: var(--fluent-stroke-thin, 1px) solid transparent;
+  border-radius: var(--fluent-radius-circular, 10000px);
   background: transparent;
   color: var(--app-muted, #909399);
   cursor: pointer;
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1;
+  transition:
+    background-color var(--fluent-fast, 120ms) ease,
+    color var(--fluent-fast, 120ms) ease,
+    transform var(--fluent-fast, 120ms) ease;
 }
 .composer-queue-cancel:hover {
-  background: color-mix(in srgb, var(--el-color-danger, #f56c6c) 15%, transparent);
-  color: var(--el-color-danger-dark-2, #b42318);
+  background: color-mix(in srgb, var(--fluent-danger-bg, #b42318) 12%, transparent);
+  color: var(--fluent-danger-bg, #b42318);
+  border-color: color-mix(in srgb, var(--fluent-danger-bg, #b42318) 25%, transparent);
 }
-.composer-queue-clear {
-  margin-left: auto;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: var(--app-muted, #909399);
-  cursor: pointer;
-  font-size: 12px;
-  text-decoration: underline;
+.composer-queue-cancel:active {
+  transform: scale(0.92);
 }
-.composer-queue-clear:hover {
-  color: var(--app-accent, #409eff);
+.composer-queue-cancel:focus-visible {
+  outline: var(--fluent-stroke-thick, 2px) solid var(--fluent-danger-bg, #b42318);
+  outline-offset: 1px;
 }
 .send-button {
   position: relative;
@@ -4983,7 +5317,7 @@ onBeforeUnmount(() => {
   height: 48px;
   max-height: 130px;
   min-height: 48px;
-  padding: 4px 0;
+  padding: 4px 90px 4px 0;
   /* 有内容后长到固定的一档高度（约 4 行），再多就框内滚动。 */
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -4991,6 +5325,100 @@ onBeforeUnmount(() => {
 }
 .thread-composer:has(textarea:not(:placeholder-shown)) textarea {
   height: 104px;
+}
+
+/* 输入区容器与右上角编辑/预览模式切换 */
+.composer-input-area {
+  position: relative;
+  width: 100%;
+}
+.composer-mode-tabs {
+  position: absolute;
+  top: 4px;
+  right: 0;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  background: var(--app-surface-soft, rgba(0, 0, 0, 0.04));
+  border: 1px solid var(--app-border, rgba(0, 0, 0, 0.08));
+  box-shadow: 0 1px 3px color-mix(in srgb, CanvasText 5%, transparent);
+  user-select: none;
+  animation: fadeInTabs 120ms ease;
+}
+.welcome-composer .composer-mode-tabs {
+  top: 12px;
+  right: 14px;
+}
+@keyframes fadeInTabs {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.composer-mode-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--app-muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.35;
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+.composer-mode-tab .fluent-system-icon {
+  width: 12px;
+  height: 12px;
+}
+.composer-mode-tab:hover:not(.is-active) {
+  color: var(--app-text);
+  background: color-mix(in srgb, CanvasText 5%, transparent);
+}
+.composer-mode-tab.is-active {
+  color: var(--app-text);
+  background: var(--app-surface-strong, #ffffff);
+  box-shadow: 0 1px 2px color-mix(in srgb, CanvasText 8%, transparent);
+  font-weight: 600;
+}
+.composer-mode-tab:focus-visible {
+  outline: 2px solid var(--app-accent);
+  outline-offset: 1px;
+}
+.composer-preview-surface {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  color: var(--app-text);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.65;
+  outline: none;
+}
+.welcome-composer .composer-preview-surface {
+  min-height: 120px;
+  height: 176px;
+  max-height: 40vh;
+  padding: 18px 96px 8px 20px;
+}
+.thread-composer .composer-preview-surface {
+  min-height: 48px;
+  height: 104px;
+  max-height: 130px;
+  padding: 4px 90px 4px 0;
+}
+.preview-empty-hint {
+  color: var(--app-muted);
+  font-style: italic;
+  padding: 8px 0;
 }
 .composer-hint {
   display: block;
@@ -6147,7 +6575,7 @@ a.agent-citation-bubble {
 .welcome-composer textarea {
   /* 基础值由前面“一档高度”规则决定（空态 120px、输入后 176px），这里只对齐内边距。 */
   min-height: 120px;
-  padding: 18px 20px 8px;
+  padding: 18px 96px 8px 20px;
 }
 .composer-footer {
   grid-template-columns: minmax(0, 1fr) max-content 36px;

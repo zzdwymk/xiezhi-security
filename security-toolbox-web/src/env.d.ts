@@ -39,6 +39,15 @@ interface ToolboxDesktopBridge {
   readonly isWindowMaximized?: () => Promise<boolean>;
   readonly closeWindow?: () => Promise<void>;
   readonly hasRunningTasks?: () => Promise<boolean>;
+  readonly confirmExit?: () => Promise<void>;
+  readonly cancelClose?: () => Promise<void>;
+  readonly onRequestClose?: (
+    callback: (status?: {
+      hasActive: boolean;
+      hasTasks: boolean;
+      hasConversations: boolean;
+    }) => void,
+  ) => () => void;
   readonly openExportedFile?: (payload: { filename: string; base64: string }) => Promise<boolean>;
   readonly onWindowMaximizedChanged?: (
     callback: (maximized: boolean) => void,
