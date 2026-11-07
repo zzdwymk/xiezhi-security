@@ -6283,15 +6283,12 @@ async function checkHasRunningTasks() {
   if (mainWindow && !mainWindow.isDestroyed()) {
     try {
       const status = await mainWindow.webContents.executeJavaScript(
-        `window.__getActiveExecutionStatus ? window.__getActiveExecutionStatus() : { hasActive: Boolean(window.__hasActiveTasks && window.__hasActiveTasks()) }`,
+        `window.__getActiveExecutionStatus ? window.__getActiveExecutionStatus() : { hasActive: false, hasTasks: false, hasConversations: false }`,
         true,
       );
       if (status) {
         if (status.hasTasks) hasRendererTasks = true;
         if (status.hasConversations) hasRendererConversations = true;
-        if (status.hasActive && !status.hasTasks && !status.hasConversations) {
-          hasRendererTasks = true;
-        }
       }
     } catch {
       // ignore

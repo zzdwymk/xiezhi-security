@@ -147,7 +147,10 @@ function handleDocumentPointerDown(event: MouseEvent) {
 }
 
 function handleDocumentKeydown(event: KeyboardEvent) {
-  if (event.key === "Escape" && openStatsCard.value) closeStatsCards();
+  if (event.key === "Escape") {
+    if (openStatsCard.value) closeStatsCards();
+    if (activeDropdownMessageId.value) closeActiveDropdown();
+  }
 }
 
 interface TaskRow {
@@ -246,6 +249,8 @@ interface MessageEditState {
 const editingMessage = ref<MessageEditState>();
 const copiedMessageId = ref<string>();
 let copiedMessageTimer: ReturnType<typeof setTimeout> | undefined;
+const activeDropdownMessageId = ref<string | null>(null);
+const copyDropdownRefs = new Map<string, any>();
 const loading = ref(false);
 const compacting = ref(false);
 const activeSendingThreadIds = ref<Set<string>>(new Set());
@@ -761,6 +766,27 @@ function openAiDiagnostics() {
   void router.push({ path: "/settings", query: { ai: "diagnostics" } });
 }
 
+function setCopyDropdownRef(messageId: string, el: unknown) {
+  if (el) copyDropdownRefs.set(messageId, el);
+  else copyDropdownRefs.delete(messageId);
+}
+
+function handleCopyDropdownVisibleChange(messageId: string, visible: boolean) {
+  if (visible) {
+    activeDropdownMessageId.value = messageId;
+  } else if (activeDropdownMessageId.value === messageId) {
+    activeDropdownMessageId.value = null;
+  }
+}
+
+function closeActiveDropdown() {
+  if (activeDropdownMessageId.value) {
+    const dropdown = copyDropdownRefs.get(activeDropdownMessageId.value);
+    dropdown?.handleClose?.();
+    activeDropdownMessageId.value = null;
+  }
+}
+
 async function copyMessage(message: ConversationMessage, format: "markdown" | "plain" = "markdown") {
   try {
     const text = format === "plain" ? markdownToPlainText(message.content) : message.content;
@@ -771,10 +797,16 @@ async function copyMessage(message: ConversationMessage, format: "markdown" | "p
     ElMessage.success(format === "plain" ? "已复制无格式文本" : "已复制原始 Markdown");
   } catch {
     ElMessage.error("复制失败，请检查剪贴板权限后重试");
+  } finally {
+    activeDropdownMessageId.value = null;
   }
 }
 
-onBeforeUnmount(() => { if (copiedMessageTimer) clearTimeout(copiedMessageTimer); });
+onBeforeUnmount(() => {
+  if (copiedMessageTimer) clearTimeout(copiedMessageTimer);
+  closeActiveDropdown();
+  copyDropdownRefs.clear();
+});
 
 function focusComposer() {
   composerViewMode.value = "edit";
@@ -1131,6 +1163,7 @@ function distanceFromBottom(element: HTMLElement) {
 
 /** Track the user's scroll position: following resumes only when they return to the bottom. */
 function handleMessagesScroll() {
+  closeActiveDropdown();
   const container = messagesElement.value;
   if (!container) return;
   // A programmatic scroll fires a scroll event too; it must not be read as the user
@@ -3183,7 +3216,10 @@ async function loadDashboardStats() {
 }
 // Switching conversations must re-read that thread's pending state, otherwise the
 // card would show the previous thread's waiting tasks until the next poll tick.
-watch(() => selectedThread.value?.id, () => { void refreshAwaitingStatus(); });
+watch(() => selectedThread.value?.id, () => {
+  closeActiveDropdown();
+  void refreshAwaitingStatus();
+});
 
 onMounted(() => {
   for (const thread of conversations.items) {
@@ -3622,7 +3658,13 @@ onBeforeUnmount(() => {
               :key="message.id"
               :data-message-id="message.id"
               class="chat-message"
-              :class="[message.role, { 'is-turn-jump-highlight': highlightedTurnId === message.id }]"
+              :class="[
+                message.role,
+                {
+                  'is-turn-jump-highlight': highlightedTurnId === message.id,
+                  'has-active-menu': activeDropdownMessageId === message.id,
+                },
+              ]"
             >
             <ConversationAvatar class="message-avatar" :role="message.role" />
             <div class="message-column">
@@ -3934,8 +3976,25 @@ onBeforeUnmount(() => {
                     <span class="message-quote-icon" :style="messageQuoteStyle" aria-hidden="true" />
                   </button>
                 </el-tooltip>
-                <el-dropdown trigger="click" placement="bottom-start" :disabled="!message.content" @command="copyMessage(message, $event)">
-                  <button type="button" class="message-action" :class="{ 'is-copied': copiedMessageId === message.id }" :title="copiedMessageId === message.id ? '已复制，可选择格式再次复制' : '选择复制格式'" aria-label="选择复制格式" :disabled="!message.content">
+                <el-dropdown
+                  :ref="(el: any) => setCopyDropdownRef(message.id, el)"
+                  trigger="click"
+                  placement="bottom-start"
+                  :disabled="!message.content"
+                  @command="copyMessage(message, $event)"
+                  @visible-change="(visible: boolean) => handleCopyDropdownVisibleChange(message.id, visible)"
+                >
+                  <button
+                    type="button"
+                    class="message-action"
+                    :class="{
+                      'is-copied': copiedMessageId === message.id,
+                      'is-active': activeDropdownMessageId === message.id,
+                    }"
+                    :title="copiedMessageId === message.id ? '已复制，可选择格式再次复制' : '选择复制格式'"
+                    aria-label="选择复制格式"
+                    :disabled="!message.content"
+                  >
                     <el-icon aria-hidden="true"><CircleCheck v-if="copiedMessageId === message.id" /><CopyDocument v-else /></el-icon>
                   </button>
                   <template #dropdown>
@@ -5341,10 +5400,10 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 2px;
   padding: 2px;
-  border-radius: 6px;
-  background: var(--app-surface-soft, rgba(0, 0, 0, 0.04));
-  border: 1px solid var(--app-border, rgba(0, 0, 0, 0.08));
-  box-shadow: 0 1px 3px color-mix(in srgb, CanvasText 5%, transparent);
+  border-radius: var(--fluent-radius-control, 6px);
+  background: var(--app-surface-soft, #f1f5f9);
+  border: 1px solid var(--app-border, #e2e8f0);
+  box-shadow: 0 1px 2px color-mix(in srgb, CanvasText 4%, transparent);
   user-select: none;
   animation: fadeInTabs 120ms ease;
 }
@@ -5359,12 +5418,13 @@ onBeforeUnmount(() => {
 .composer-mode-tab {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  border: 0;
-  border-radius: 4px;
+  gap: 5px;
+  padding: 3px 10px;
+  min-height: 24px;
+  border: 1px solid transparent;
+  border-radius: calc(var(--fluent-radius-control, 6px) - 2px);
   background: transparent;
-  color: var(--app-muted);
+  color: var(--app-muted, #64748b);
   font: inherit;
   font-size: 11px;
   font-weight: 500;
@@ -5375,15 +5435,17 @@ onBeforeUnmount(() => {
 .composer-mode-tab .fluent-system-icon {
   width: 12px;
   height: 12px;
+  color: inherit;
 }
 .composer-mode-tab:hover:not(.is-active) {
-  color: var(--app-text);
-  background: color-mix(in srgb, CanvasText 5%, transparent);
+  color: var(--app-text, #0f172a);
+  background: color-mix(in srgb, CanvasText 4%, transparent);
 }
 .composer-mode-tab.is-active {
-  color: var(--app-text);
+  color: var(--app-text, #0f172a);
   background: var(--app-surface-strong, #ffffff);
-  box-shadow: 0 1px 2px color-mix(in srgb, CanvasText 8%, transparent);
+  border-color: var(--app-border-strong, rgba(0, 0, 0, 0.12));
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
   font-weight: 600;
 }
 .composer-mode-tab:focus-visible {
@@ -6804,7 +6866,8 @@ a.agent-citation-bubble {
   justify-content: flex-end;
 }
 .chat-message:hover .message-actions,
-.chat-message:focus-within .message-actions {
+.chat-message:focus-within .message-actions,
+.chat-message.has-active-menu .message-actions {
   opacity: 1;
   pointer-events: auto;
 }
@@ -6823,7 +6886,8 @@ a.agent-citation-bubble {
   font-size: 16px;
 }
 .message-actions .message-action:hover:not(:disabled),
-.message-actions .message-action:focus-visible {
+.message-actions .message-action:focus-visible,
+.message-actions .message-action.is-active {
   background: var(--app-surface-soft);
   color: var(--app-text);
 }

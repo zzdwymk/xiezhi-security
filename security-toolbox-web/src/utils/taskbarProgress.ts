@@ -64,17 +64,10 @@ class TaskbarProgressManager {
    * Check if AI conversation streaming/planning is currently active
    */
   public hasActiveConversation(): boolean {
-    for (const key of this.indeterminateKeys) {
-      if (key === "ai-agent-stream" || key.startsWith("ai-")) {
-        return true;
-      }
-    }
-    for (const key of this.determinateItems.keys()) {
-      if (key === "ai-agent-stream" || key.startsWith("ai-")) {
-        return true;
-      }
-    }
-    return false;
+    return (
+      this.indeterminateKeys.has("ai-agent-stream") ||
+      this.determinateItems.has("ai-agent-stream")
+    );
   }
 
   /**

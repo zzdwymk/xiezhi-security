@@ -836,16 +836,17 @@ function getActiveExecutionStatus(): {
   hasTasks: boolean;
   hasConversations: boolean;
 } {
+  // 仅当当前应用会话处于真实的流式生成/回复中时，才判定为“对话正在进行”。
+  // 严禁依赖 localStorage 历史消息的静态 status（历史任务消息会残留 status="running"），
+  // 否则在登录页、依赖页等未登录状态关闭窗口也会发生误报！
   const hasConversations =
     taskbarProgress.hasActiveConversation() ||
     conversations.items.some((conversation) =>
-      (conversation.messages || []).some((message: any) => {
-        if (message.role !== "assistant") return false;
-        return (
-          message.modelStreamStatus === "running" ||
-          ["sending", "planning", "running", "answering"].includes(message.status)
-        );
-      }),
+      (conversation.messages || []).some(
+        (message: any) =>
+          message.role === "assistant" &&
+          message.modelStreamStatus === "running",
+      ),
     );
 
   const hasTasks =
@@ -856,7 +857,10 @@ function getActiveExecutionStatus(): {
           message.role === "assistant" &&
           (message.taskIds || []).some((id: number) => {
             const status = conversations.taskStates[id]?.status;
-            return status === "RUNNING" || status === "PENDING" || status === "PREPARING";
+            return (
+              status === "RUNNING" ||
+              status === "PREPARING"
+            );
           }),
       ),
     );
@@ -910,7 +914,7 @@ async function showExitConfirmDialog(status?: {
         autofocus: false,
         closeOnClickModal: false,
         closeOnPressEscape: true,
-        showClose: true,
+        showClose: false,
       },
     );
 

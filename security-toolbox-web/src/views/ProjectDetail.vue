@@ -629,7 +629,13 @@ const planReviewText = computed(() => {
     `目标地址：${target?.targetValue || '目标详情暂不可用'}`,
     `授权端口：${target?.allowedPorts || '以登记的授权范围为准'}`,
   ];
-  if (approval.initiatedBy) lines.push(`发起人：${approval.initiatedBy}`);
+  if (approval.requestedBy === 'ai-agent') {
+    lines.push('方案来源：AI 渗透助手');
+    if (approval.initiatedBy) lines.push(`会话发起人：${approval.initiatedBy}`);
+  } else {
+    if (approval.requestedBy) lines.push(`方案来源：${formatAuditOperator(approval.requestedBy)}`);
+    if (approval.initiatedBy) lines.push(`发起人：${approval.initiatedBy}`);
+  }
   lines.push("", "方案说明", detail.plan.summary || "", "", "执行步骤");
   detail.plan.steps.forEach((step, index) => {
     lines.push(`${index + 1}. ${aiToolLabel(step.toolCode)} · ${step.risk === 'CAUTION' || step.requiresApproval ? '需谨慎确认' : '受控操作'}`);
@@ -7927,7 +7933,19 @@ onUnmounted(() => {
               <dd>{{ planReviewTarget?.name || planReview.targetId }}<span class="plan-review-address">{{ planReviewTarget?.targetValue || '目标详情暂不可用' }}</span></dd>
             </div>
             <div><dt>授权端口</dt><dd>{{ planReviewTarget?.allowedPorts || '以登记的授权范围为准' }}</dd></div>
-            <div v-if="planReviewApproval.initiatedBy"><dt>发起人</dt><dd>{{ planReviewApproval.initiatedBy }}</dd></div>
+            <div>
+              <dt>方案来源</dt>
+              <dd>
+                <el-tag v-if="planReviewApproval.requestedBy === 'ai-agent'" size="small" type="warning" effect="light">
+                  AI 渗透助手
+                </el-tag>
+                <span v-else>{{ formatAuditOperator(planReviewApproval.requestedBy) }}</span>
+              </dd>
+            </div>
+            <div v-if="planReviewApproval.initiatedBy">
+              <dt>{{ planReviewApproval.requestedBy === 'ai-agent' ? '会话发起人' : '发起人' }}</dt>
+              <dd>{{ planReviewApproval.initiatedBy }}</dd>
+            </div>
           </dl>
         </section>
         <section class="plan-review-summary" aria-label="方案说明">
@@ -8223,7 +8241,7 @@ onUnmounted(() => {
 .plan-review-heading > .el-tag { margin-left: auto; }
 .plan-review-metadata {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px 24px;
 }
 .plan-review-target { grid-column: 1 / -1; }
