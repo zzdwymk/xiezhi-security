@@ -188,6 +188,9 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.invoke("toolbox:read-runtime-log", relativePath),
     openRuntimeLogDirectory: (relativeDir) =>
       ipcRenderer.invoke("toolbox:open-runtime-log-directory", relativeDir),
+    clearRuntimeLogs: () => ipcRenderer.invoke("toolbox:clear-runtime-logs"),
+    deleteRuntimeLog: (relativePath) =>
+      ipcRenderer.invoke("toolbox:delete-runtime-log", relativePath),
     saveNotificationSettings: (payload) =>
       ipcRenderer.invoke("toolbox:set-notification-settings", payload),
     onNotificationClick: (callback) => {

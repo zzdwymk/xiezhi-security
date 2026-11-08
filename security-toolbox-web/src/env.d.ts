@@ -263,6 +263,24 @@ interface ToolboxDesktopBridge {
   readonly getRuntimeLogs?: () => Promise<RuntimeLogListing>;
   readonly readRuntimeLog?: (relativePath: string) => Promise<RuntimeLogContent>;
   readonly openRuntimeLogDirectory?: (relativeDir?: string) => Promise<{ opened: boolean; directory: string }>;
+  readonly clearRuntimeLogs?: () => Promise<{
+    cleared: boolean;
+    deletedFiles: number;
+    truncatedFiles: number;
+    clearedBytes: number;
+    clearedBytesLabel: string;
+  }>;
+  readonly deleteRuntimeLog?: (relativePath: string) => Promise<{
+    deleted: boolean;
+    truncated?: boolean;
+    reason?: string;
+  }>;
+  readonly desktopLoginWithHello?: () => Promise<{
+    verified: boolean;
+    available?: boolean;
+    reason?: string;
+    credentials?: { username: string; password: string };
+  }>;
   readonly saveNotificationSettings?: (payload: Partial<Omit<NotificationSettings, "severities">> & { severities?: string[] }) => Promise<NotificationSettings>;
   readonly onNotificationClick?: (callback: (route: string) => void) => () => void;
   readonly onNotificationSettingsChanged?: (callback: (settings: NotificationSettings) => void) => () => void;
@@ -287,10 +305,14 @@ interface RuntimeLogEntry {
   readonly relativePath: string;
   readonly component: string;
   readonly channel: string;
-  readonly kind: "status" | "receipt" | "archive" | "raw" | "other";
+  readonly kind: "raw" | "archive";
+  readonly encoding: "text" | "gzip";
+  readonly label: string;
+  readonly segments: number;
   readonly bytes: number;
   readonly sizeLabel: string;
   readonly modifiedAt: string;
+  readonly readable: boolean;
 }
 interface RuntimeLogListing {
   readonly directory: string;
@@ -314,6 +336,7 @@ interface RuntimeLogContent {
   readonly truncated: boolean;
   readonly shownBytes: number;
   readonly text: string;
+  readonly encoding?: "text" | "gzip";
 }
 
 type NotificationSeverity =

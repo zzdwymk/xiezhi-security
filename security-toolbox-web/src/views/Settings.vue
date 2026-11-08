@@ -6,6 +6,7 @@ import {
   ArrowRight,
   ChatDotRound,
   Compass,
+  CopyDocument,
   Delete,
   Document,
   Download,
@@ -14,6 +15,7 @@ import {
   Key,
   MagicStick,
   Refresh,
+  Search,
   Setting,
   View,
   Warning,
@@ -27,7 +29,7 @@ import {
 import { useCopilotStore } from "../stores/copilot";
 import { useAuthStore } from "../stores/auth";
 import { useConversationStore } from "../stores/conversations";
-import { endpoints, type TaskControlStatus } from "../api";
+import { api, endpoints, type TaskControlStatus } from "../api";
 import { toErrorMessage } from "../utils/errorMessage";
 import { DEFAULT_NOTIFICATION_PREFERENCES, loadNotificationPreferences, saveNotificationPreferences } from "../utils/notifications";
 import AiRelaySettings from "../components/AiRelaySettings.vue";
@@ -1123,10 +1125,15 @@ interface RuntimeLogEntry {
   name: string;
   relativePath: string;
   component: string;
-  kind: "status" | "receipt" | "archive" | "raw" | "other";
+  channel: string;
+  kind: "raw" | "archive";
+  encoding: "text" | "gzip";
+  label: string;
+  segments: number;
   bytes: number;
   sizeLabel: string;
   modifiedAt: string;
+  readable: boolean;
 }
 interface RuntimeLogListing {
   directory: string;
@@ -1142,28 +1149,66 @@ const runtimeLogLoading = ref(false);
 const runtimeLogError = ref("");
 const runtimeLogListing = ref<RuntimeLogListing | null>(null);
 const runtimeLogFilter = ref("");
+const runtimeLogSearch = ref("");
+const logTextFilter = ref("");
+const logViewerWrap = ref(false);
 const runtimeLogPreview = ref<{
   name: string; sizeLabel: string; modifiedAt: string;
-  truncated: boolean; shownBytes: number; text: string;
+  truncated: boolean; shownBytes: number; text: string; encoding?: "text" | "gzip";
 } | null>(null);
 const runtimeLogPreviewLoading = ref(false);
+const runtimeLogSelected = ref("");
 
-const runtimeLogKindLabel: Record<string, string> = {
-  raw: "运行输出", archive: "压缩归档", receipt: "校验信息", status: "会话状态", other: "其他",
-};
 const runtimeLogComponentLabel: Record<string, string> = {
   server: "本地 Java 服务", "ai-runtime": "AI 服务", electron: "主进程", logging: "日志系统", migration: "数据迁移",
 };
-const readableRuntimeLogEntries = computed(() =>
-  (runtimeLogListing.value?.entries || []).filter(
-    entry => (!runtimeLogFilter.value || entry.component === runtimeLogFilter.value) && entry.kind !== "archive" && entry.kind !== "receipt",
-  ),
+const visibleRuntimeLogEntries = computed(() => {
+  const compFilter = runtimeLogFilter.value;
+  const q = runtimeLogSearch.value.trim().toLowerCase();
+  return (runtimeLogListing.value?.entries || []).filter(entry => {
+    if (compFilter && entry.component !== compFilter) return false;
+    if (q) {
+      const name = (entry.name || "").toLowerCase();
+      const comp = (runtimeLogComponentName(entry) || "").toLowerCase();
+      const meta = entryMeta(entry).toLowerCase();
+      if (!name.includes(q) && !comp.includes(q) && !meta.includes(q)) return false;
+    }
+    return true;
+  });
+});
+const logDisplayLimit = ref(40);
+const displayedLogEntries = computed(() =>
+  visibleRuntimeLogEntries.value.slice(0, logDisplayLimit.value)
+);
+watch([runtimeLogFilter, runtimeLogSearch], () => {
+  logDisplayLimit.value = 40;
+});
+const liveLogEntries = computed(() => visibleRuntimeLogEntries.value.filter(e => e.kind === "raw"));
+const archiveLogEntries = computed(() => visibleRuntimeLogEntries.value.filter(e => e.kind === "archive"));
+const currentLogEntry = computed(() =>
+  (runtimeLogListing.value?.entries || []).find(e => e.relativePath === runtimeLogSelected.value)
 );
 const runtimeLogComponents = computed(() =>
   Array.from(new Set((runtimeLogListing.value?.entries || []).map(entry => entry.component))).sort(),
 );
 const runtimeLogHealth = computed(() => runtimeLogListing.value?.status?.status || "未知");
 const runtimeLogFaultCount = computed(() => runtimeLogListing.value?.status?.faults?.length || 0);
+const runtimeLogHealthText = computed(() => ({
+  OPEN: "日志记录正常", DEGRADED: "日志记录降级", CLOSING: "正在关闭", CLOSED: "已关闭",
+}[runtimeLogHealth.value] || "状态未知"));
+const runtimeLogHealthTag = computed(() =>
+  runtimeLogHealth.value === "OPEN" ? "success" : runtimeLogHealth.value === "DEGRADED" ? "warning" : "info",
+);
+
+function runtimeLogComponentName(entry: RuntimeLogEntry) {
+  const base = runtimeLogComponentLabel[entry.component] || entry.component;
+  return entry.channel === "err" ? `${base}（错误输出）` : base;
+}
+function entryMeta(entry: RuntimeLogEntry) {
+  const parts = [entry.kind === "archive" ? "已归档" : "实时输出", entry.sizeLabel, formatLogTime(entry.modifiedAt)];
+  if (entry.segments > 1) parts.splice(1, 0, `${entry.segments} 段`);
+  return parts.join(" · ");
+}
 
 function formatLogTime(iso: string) {
   if (!iso) return "—";
@@ -1171,16 +1216,51 @@ function formatLogTime(iso: string) {
   return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
 }
 
+function formatShortTime(iso: string) {
+  if (!iso) return "—";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const now = new Date();
+  const isToday = date.toDateString() === now.toDateString();
+  const timeStr = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  if (isToday) return `今日 ${timeStr}`;
+  const monthDay = `${date.getMonth() + 1}/${date.getDate()}`;
+  return `${monthDay} ${timeStr}`;
+}
+
+const filteredLogText = computed(() => {
+  const text = runtimeLogPreview.value?.text || "";
+  if (!text) return "（该日志暂无内容）";
+  const q = logTextFilter.value.trim().toLowerCase();
+  if (!q) return text;
+  const lines = text.split("\n");
+  const filtered = lines.filter(line => line.toLowerCase().includes(q));
+  if (!filtered.length) {
+    return `[未找到包含 "${logTextFilter.value}" 的日志行，总行数: ${lines.length}]`;
+  }
+  return filtered.join("\n");
+});
+
 async function loadRuntimeLogs(open = false) {
+  if (runtimeLogLoading.value) return;
   if (!window.toolboxDesktop?.getRuntimeLogs) {
     if (open) ElMessage.warning("当前版本不支持查看运行日志，请更新桌面应用");
     return;
   }
   if (open) runtimeLogDialog.value = true;
+  logDisplayLimit.value = 40;
   runtimeLogLoading.value = true;
   runtimeLogError.value = "";
   try {
     runtimeLogListing.value = await window.toolboxDesktop.getRuntimeLogs();
+    // Keep the preview in sync with the refreshed list.
+    if (runtimeLogPreview.value) {
+      const still = visibleRuntimeLogEntries.value.find(entry => entry.relativePath === runtimeLogSelected.value);
+      if (!still) { runtimeLogPreview.value = null; runtimeLogSelected.value = ""; }
+    }
+    if (!runtimeLogSelected.value && visibleRuntimeLogEntries.value.length > 0) {
+      void previewRuntimeLog(visibleRuntimeLogEntries.value[0]);
+    }
   } catch (error) {
     runtimeLogError.value = errorText(error, "无法读取运行日志");
   } finally {
@@ -1190,10 +1270,12 @@ async function loadRuntimeLogs(open = false) {
 
 async function previewRuntimeLog(entry: RuntimeLogEntry) {
   if (!window.toolboxDesktop?.readRuntimeLog) return;
+  runtimeLogSelected.value = entry.relativePath;
   runtimeLogPreviewLoading.value = true;
   try {
     runtimeLogPreview.value = await window.toolboxDesktop.readRuntimeLog(entry.relativePath);
   } catch (error) {
+    runtimeLogPreview.value = null;
     ElMessage.error(errorText(error, "无法读取该日志"));
   } finally {
     runtimeLogPreviewLoading.value = false;
@@ -1216,6 +1298,141 @@ async function copyRuntimeLogPreview() {
     ElMessage.success("日志内容已复制");
   } catch {
     ElMessage.error("复制失败，请手动选择文本");
+  }
+}
+
+const authVerifyDialog = ref(false);
+const authVerifyPassword = ref("");
+const authVerifyError = ref("");
+const authVerifying = ref(false);
+const windowsHelloVerifying = ref(false);
+const logToDelete = ref<RuntimeLogEntry | null>(null);
+const deleteTargetAll = ref(false);
+
+function handleClearAllRuntimeLogs() {
+  if (!visibleRuntimeLogEntries.value.length) {
+    return ElMessage.info("当前没有可清空的运行日志");
+  }
+  deleteTargetAll.value = true;
+  logToDelete.value = null;
+  authVerifyPassword.value = "";
+  authVerifyError.value = "";
+  authVerifyDialog.value = true;
+}
+
+function handleDeleteSingleLog(entry: RuntimeLogEntry) {
+  deleteTargetAll.value = false;
+  logToDelete.value = entry;
+  authVerifyPassword.value = "";
+  authVerifyError.value = "";
+  authVerifyDialog.value = true;
+}
+
+function handleDeleteCurrentLog() {
+  const current = currentLogEntry.value || visibleRuntimeLogEntries.value.find(e => e.relativePath === runtimeLogSelected.value);
+  if (!current) {
+    return ElMessage.info("请先选择需要删除的日志");
+  }
+  handleDeleteSingleLog(current);
+}
+
+async function verifyCurrentPassword(password: string): Promise<boolean> {
+  const username = auth.user?.username || "admin";
+  try {
+    await api.post("/auth/login", { username, password });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function executeDeletion() {
+  if (deleteTargetAll.value) {
+    if (!window.toolboxDesktop?.clearRuntimeLogs) {
+      ElMessage.warning("当前环境不支持清空运行日志");
+      return;
+    }
+    runtimeLogLoading.value = true;
+    try {
+      const res = await window.toolboxDesktop.clearRuntimeLogs();
+      authVerifyDialog.value = false;
+      authVerifyPassword.value = "";
+      runtimeLogPreview.value = null;
+      runtimeLogSelected.value = "";
+      ElMessage.success(
+        `运行日志已成功清空：清理 ${res.deletedFiles + res.truncatedFiles} 个会话文件 (${res.clearedBytesLabel})`,
+      );
+      await loadRuntimeLogs();
+    } catch (err) {
+      ElMessage.error(errorText(err, "清空运行日志失败"));
+    } finally {
+      runtimeLogLoading.value = false;
+    }
+  } else if (logToDelete.value) {
+    if (!window.toolboxDesktop?.deleteRuntimeLog) {
+      ElMessage.warning("当前环境不支持删除单条运行日志");
+      return;
+    }
+    const target = logToDelete.value;
+    runtimeLogLoading.value = true;
+    try {
+      const res = await window.toolboxDesktop.deleteRuntimeLog(target.relativePath);
+      authVerifyDialog.value = false;
+      authVerifyPassword.value = "";
+      if (res.truncated) {
+        ElMessage.success(`日志「${target.name}」处于活跃状态，已清空其内容`);
+      } else {
+        ElMessage.success(`已删除日志文件「${target.name}」`);
+      }
+      if (runtimeLogSelected.value === target.relativePath) {
+        runtimeLogPreview.value = null;
+        runtimeLogSelected.value = "";
+      }
+      await loadRuntimeLogs();
+    } catch (err) {
+      ElMessage.error(errorText(err, "删除日志文件失败"));
+    } finally {
+      runtimeLogLoading.value = false;
+    }
+  }
+}
+
+async function submitAuthAndDelete() {
+  if (!authVerifyPassword.value.trim()) {
+    authVerifyError.value = "请输入管理员密码以进行身份验证";
+    return;
+  }
+  authVerifying.value = true;
+  authVerifyError.value = "";
+  try {
+    const ok = await verifyCurrentPassword(authVerifyPassword.value);
+    if (!ok) {
+      authVerifyError.value = "密码验证未通过，请检查后重新输入";
+      return;
+    }
+    await executeDeletion();
+  } catch (err) {
+    authVerifyError.value = "身份验证请求异常，请稍后重试";
+  } finally {
+    authVerifying.value = false;
+  }
+}
+
+async function verifyWithWindowsHelloAndDelete() {
+  if (!window.toolboxDesktop?.desktopLoginWithHello) return;
+  windowsHelloVerifying.value = true;
+  authVerifyError.value = "";
+  try {
+    const result = await window.toolboxDesktop.desktopLoginWithHello();
+    if (result.verified) {
+      await executeDeletion();
+    } else if (result.reason) {
+      authVerifyError.value = result.reason;
+    }
+  } catch (err) {
+    authVerifyError.value = errorText(err, "Windows Hello 身份验证失败");
+  } finally {
+    windowsHelloVerifying.value = false;
   }
 }
 </script>
@@ -1538,50 +1755,80 @@ async function copyRuntimeLogPreview() {
         </div>
       </section>
 
+      <!-- 运行日志与诊断弹窗 (Fluent 2 Master-Detail Dialog) -->
       <el-dialog
         v-model="runtimeLogDialog"
-        title="运行日志"
-        class="app-dialog app-dialog--md"
+        class="app-dialog runtime-log-dialog"
         align-center
-        width="min(920px, 92vw)"
-        @open="loadRuntimeLogs()"
+        width="min(1060px, 92vw)"
       >
-        <div class="runtime-log-panel">
-          <div class="runtime-log-toolbar">
-            <el-tag
-              size="small"
-              effect="plain"
-              :type="runtimeLogHealth === 'OPEN' ? 'success' : runtimeLogHealth === 'DEGRADED' ? 'warning' : 'info'"
-              >日志状态：{{ runtimeLogHealth }}</el-tag
-            >
-            <el-tag v-if="runtimeLogFaultCount" size="small" type="danger" effect="plain"
-              >{{ runtimeLogFaultCount }} 项异常</el-tag
-            >
-            <span v-if="runtimeLogListing" class="runtime-log-path" :title="runtimeLogListing.directory"
-              >{{ runtimeLogListing.directory }}</span
-            >
-            <span class="runtime-log-spacer"></span>
-            <el-select
-              v-if="runtimeLogComponents.length > 1"
-              v-model="runtimeLogFilter"
-              size="small"
-              clearable
-              placeholder="全部组件"
-              style="width: 150px"
-            >
-              <el-option
-                v-for="component in runtimeLogComponents"
-                :key="component"
-                :label="runtimeLogComponentLabel[component] || component"
-                :value="component"
-              />
-            </el-select>
-            <el-button size="small" :icon="Refresh" :loading="runtimeLogLoading" @click="loadRuntimeLogs()"
-              >刷新</el-button
-            >
-            <el-button size="small" :icon="FolderOpened" @click="openRuntimeLogDir">打开目录</el-button>
-          </div>
+        <template #header>
+          <div class="runtime-log-dialog-header">
+            <div class="runtime-log-header-title-box">
+              <el-icon class="runtime-log-header-icon"><Document /></el-icon>
+              <div class="runtime-log-header-texts">
+                <div class="runtime-log-title-row">
+                  <h3 class="runtime-log-title">运行日志与诊断</h3>
+                  <span class="fluent-status-badge" :class="`is-${runtimeLogHealthTag}`">
+                    <span class="fluent-status-dot"></span>
+                    {{ runtimeLogHealthText }}
+                  </span>
+                  <span v-if="runtimeLogFaultCount" class="fluent-status-badge is-danger">
+                    {{ runtimeLogFaultCount }} 项异常
+                  </span>
+                </div>
+                <p class="runtime-log-subtitle">
+                  监控与排查本地 Java 服务、AI 服务与主进程的运行输出
+                </p>
+              </div>
+            </div>
 
+            <div class="runtime-log-header-toolbar">
+              <el-select
+                v-if="runtimeLogComponents.length > 1"
+                v-model="runtimeLogFilter"
+                size="small"
+                clearable
+                placeholder="全部服务"
+                class="runtime-log-component-select"
+              >
+                <el-option
+                  v-for="component in runtimeLogComponents"
+                  :key="component"
+                  :label="runtimeLogComponentLabel[component] || component"
+                  :value="component"
+                />
+              </el-select>
+              <el-button
+                size="small"
+                :icon="Refresh"
+                :loading="runtimeLogLoading"
+                @click="loadRuntimeLogs()"
+              >
+                刷新
+              </el-button>
+              <el-button
+                size="small"
+                :icon="FolderOpened"
+                @click="openRuntimeLogDir"
+              >
+                打开目录
+              </el-button>
+              <el-button
+                size="small"
+                type="danger"
+                plain
+                :icon="Delete"
+                :disabled="runtimeLogLoading || !visibleRuntimeLogEntries.length"
+                @click="handleClearAllRuntimeLogs"
+              >
+                清空全部
+              </el-button>
+            </div>
+          </div>
+        </template>
+
+        <div class="runtime-log-dialog-body" v-loading="runtimeLogLoading">
           <el-alert
             v-if="runtimeLogError"
             :title="runtimeLogError"
@@ -1593,47 +1840,243 @@ async function copyRuntimeLogPreview() {
             v-else-if="!runtimeLogLoading && runtimeLogListing && runtimeLogListing.entries.length === 0"
             class="runtime-log-empty"
           >
-            暂无运行日志。服务启动后，其标准输出与错误会记录在此目录。
+            <el-icon class="runtime-log-empty-icon"><Document /></el-icon>
+            <strong>暂无运行日志</strong>
+            <span>服务启动后，本地 Java 服务与 AI 服务的输出会自动记录在这里。</span>
           </div>
-          <div v-else class="runtime-log-body" v-loading="runtimeLogLoading">
-            <ul class="runtime-log-list">
-              <li
-                v-for="entry in readableRuntimeLogEntries"
-                :key="entry.relativePath"
-                class="runtime-log-item"
-                :class="{ 'is-active': runtimeLogPreview?.name === entry.name }"
-                @click="previewRuntimeLog(entry)"
-              >
-                <el-icon class="runtime-log-item-icon"><Files /></el-icon>
-                <span class="runtime-log-item-main">
-                  <strong>{{ runtimeLogComponentLabel[entry.component] || entry.component }}</strong>
-                  <small
-                    >{{ runtimeLogKindLabel[entry.kind] || entry.kind }} · {{ entry.sizeLabel }} ·
-                    {{ formatLogTime(entry.modifiedAt) }}</small
+          <div v-else class="runtime-log-split-view">
+            <!-- 左侧：日志会话列表 (Fluent 2 List) -->
+            <aside class="runtime-log-sidebar">
+              <div class="runtime-log-sidebar-search">
+                <el-input
+                  v-model="runtimeLogSearch"
+                  size="small"
+                  placeholder="搜索日志会话..."
+                  :prefix-icon="Search"
+                  clearable
+                />
+              </div>
+
+              <div class="runtime-log-list-scroll">
+                <ul class="runtime-log-list">
+                  <li
+                    v-for="(entry, idx) in displayedLogEntries"
+                    :key="entry.relativePath"
+                    class="runtime-log-item"
+                    :class="{ 'is-active': runtimeLogSelected === entry.relativePath }"
+                    tabindex="0"
+                    role="button"
+                    @click="previewRuntimeLog(entry)"
+                    @keydown.enter.prevent="previewRuntimeLog(entry)"
+                    @keydown.space.prevent="previewRuntimeLog(entry)"
                   >
-                </span>
-              </li>
-              <li v-if="!readableRuntimeLogEntries.length" class="runtime-log-item runtime-log-item--hint">
-                当前筛选下没有可查看的文本日志，可切换组件或打开目录查看压缩归档。
-              </li>
-            </ul>
-            <div class="runtime-log-viewer" v-loading="runtimeLogPreviewLoading">
+                    <el-icon class="runtime-log-item-icon"><Files /></el-icon>
+                    <div class="runtime-log-item-main">
+                      <div class="runtime-log-item-title-row">
+                        <strong class="runtime-log-item-name">{{ runtimeLogComponentName(entry) }}</strong>
+                        <span v-if="idx === 0" class="fluent-micro-pill is-live">最新</span>
+                        <span v-else-if="entry.kind === 'archive'" class="fluent-micro-pill is-archived">归档</span>
+                      </div>
+                      <div class="runtime-log-item-meta">
+                        <span>{{ formatShortTime(entry.modifiedAt) }}</span>
+                        <span class="meta-separator">·</span>
+                        <span>{{ entry.sizeLabel }}</span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      class="runtime-log-item-del-btn"
+                      title="删除此条日志"
+                      @click.stop="handleDeleteSingleLog(entry)"
+                    >
+                      <el-icon><Delete /></el-icon>
+                    </button>
+                  </li>
+                  <li
+                    v-if="visibleRuntimeLogEntries.length > displayedLogEntries.length"
+                    class="runtime-log-load-more"
+                    tabindex="0"
+                    role="button"
+                    @click="logDisplayLimit += 40"
+                    @keydown.enter.prevent="logDisplayLimit += 40"
+                  >
+                    加载更多历史记录（剩余 {{ visibleRuntimeLogEntries.length - displayedLogEntries.length }} 项）
+                  </li>
+                  <li v-if="!visibleRuntimeLogEntries.length" class="runtime-log-item--hint">
+                    无匹配日志
+                  </li>
+                </ul>
+              </div>
+            </aside>
+
+            <!-- 右侧：现代深色终端控制台 -->
+            <main class="runtime-log-detail" v-loading="runtimeLogPreviewLoading">
               <template v-if="runtimeLogPreview">
-                <div class="runtime-log-viewer-head">
-                  <span>{{ runtimeLogPreview.name }} · {{ runtimeLogPreview.sizeLabel }}</span>
-                  <span class="runtime-log-viewer-actions">
-                    <small v-if="runtimeLogPreview.truncated">仅显示末尾内容</small>
-                    <el-button size="small" text @click="copyRuntimeLogPreview">复制</el-button>
-                  </span>
+                <div class="runtime-log-detail-header">
+                  <div class="runtime-log-detail-top-row">
+                    <div class="runtime-log-detail-info">
+                      <strong class="runtime-log-detail-title">
+                        {{ currentLogEntry ? runtimeLogComponentName(currentLogEntry) : runtimeLogPreview.name }}
+                      </strong>
+                      <el-tag
+                        :type="currentLogEntry?.kind === 'raw' ? 'success' : 'info'"
+                        size="small"
+                        effect="plain"
+                      >
+                        {{ currentLogEntry?.kind === 'raw' ? '实时会话' : '已归档' }}
+                      </el-tag>
+                      <span class="runtime-log-detail-meta">
+                        {{ currentLogEntry ? formatShortTime(currentLogEntry.modifiedAt) : '' }}
+                      </span>
+                      <span class="meta-separator">·</span>
+                      <span class="runtime-log-detail-meta">{{ runtimeLogPreview.sizeLabel }}</span>
+                      <el-tag v-if="runtimeLogPreview.truncated" size="small" type="warning" effect="plain">仅显示末尾</el-tag>
+                    </div>
+                    <div class="runtime-log-detail-actions">
+                      <el-input
+                        v-model="logTextFilter"
+                        size="small"
+                        placeholder="在内容中查找..."
+                        :prefix-icon="Search"
+                        clearable
+                        class="runtime-log-search-box"
+                      />
+                      <el-tooltip :content="logViewerWrap ? '保持排版（单行不折行）' : '自动换行'" placement="top">
+                        <el-button
+                          size="small"
+                          :type="logViewerWrap ? 'primary' : 'default'"
+                          plain
+                          @click="logViewerWrap = !logViewerWrap"
+                        >
+                          {{ logViewerWrap ? '已换行' : '自动换行' }}
+                        </el-button>
+                      </el-tooltip>
+                      <el-button
+                        size="small"
+                        type="primary"
+                        plain
+                        :icon="CopyDocument"
+                        @click="copyRuntimeLogPreview"
+                      >
+                        复制
+                      </el-button>
+                      <el-button
+                        size="small"
+                        type="danger"
+                        plain
+                        :icon="Delete"
+                        @click="handleDeleteCurrentLog"
+                      >
+                        删除日志
+                      </el-button>
+                    </div>
+                  </div>
+                  <div class="runtime-log-detail-file-row">
+                    <el-icon class="file-icon"><Document /></el-icon>
+                    <span class="runtime-log-detail-filename" :title="`完整路径: ${runtimeLogPreview.name}`">
+                      {{ runtimeLogPreview.name }}
+                    </span>
+                  </div>
                 </div>
-                <pre class="runtime-log-text">{{ runtimeLogPreview.text || "（空文件）" }}</pre>
+
+                <div class="runtime-log-console-wrap">
+                  <pre class="runtime-log-text" :class="{ 'is-wrap': logViewerWrap }">{{ filteredLogText }}</pre>
+                </div>
               </template>
-              <div v-else class="runtime-log-placeholder">选择左侧日志查看末尾内容</div>
+              <div v-else class="runtime-log-placeholder">
+                <el-icon><Document /></el-icon>
+                <strong>从左侧选择一条日志查看内容</strong>
+                <span>支持高亮、单行代码排版及自动换行</span>
+              </div>
+            </main>
+          </div>
+        </div>
+
+        <template #footer>
+          <div class="app-dialog__footer-row">
+            <span class="app-dialog__footer-spacer" />
+            <el-button @click="runtimeLogDialog = false">关闭</el-button>
+          </div>
+        </template>
+      </el-dialog>
+
+      <!-- 日志删除/清空身份验证弹窗 -->
+      <el-dialog
+        v-model="authVerifyDialog"
+        title="安全身份验证"
+        class="app-dialog app-dialog--sm auth-verify-dialog"
+        align-center
+        :show-close="!authVerifying && !windowsHelloVerifying"
+        :close-on-click-modal="false"
+        width="460px"
+      >
+        <div class="auth-verify-body">
+          <el-alert
+            :title="deleteTargetAll ? '清空运行日志将删除所有本地历史日志文件并重置当前输出。此操作不可恢复，必须验证管理员身份。' : `确定要永久删除运行日志「${logToDelete?.name || ''}」吗？此操作不可恢复，必须验证管理员身份。`"
+            type="warning"
+            :closable="false"
+            show-icon
+          />
+          <div class="auth-verify-form">
+            <div class="auth-verify-field">
+              <label class="auth-verify-label">验证账号</label>
+              <el-input
+                :model-value="auth.user?.username || 'admin'"
+                disabled
+                readonly
+                size="default"
+              />
+            </div>
+            <div class="auth-verify-field">
+              <label class="auth-verify-label">管理员密码</label>
+              <el-input
+                v-model="authVerifyPassword"
+                type="password"
+                show-password
+                size="default"
+                placeholder="请输入当前账号登录密码"
+                :prefix-icon="Key"
+                :disabled="authVerifying || windowsHelloVerifying"
+                @keyup.enter="submitAuthAndDelete"
+              />
+            </div>
+            <div v-if="authVerifyError" class="auth-verify-error">
+              <el-icon><Warning /></el-icon>
+              <span>{{ authVerifyError }}</span>
+            </div>
+            <div v-if="isDesktop" class="auth-verify-desktop-quick">
+              <el-divider class="auth-verify-divider">或</el-divider>
+              <el-button
+                class="auth-verify-hello-btn"
+                size="default"
+                :icon="View"
+                :loading="windowsHelloVerifying"
+                :disabled="authVerifying"
+                @click="verifyWithWindowsHelloAndDelete"
+              >
+                使用 Windows Hello 本机凭据快速验证
+              </el-button>
             </div>
           </div>
         </div>
         <template #footer>
-          <el-button @click="runtimeLogDialog = false">关闭</el-button>
+          <div class="app-dialog__footer-row">
+            <span class="app-dialog__footer-spacer" />
+            <el-button
+              :disabled="authVerifying || windowsHelloVerifying"
+              @click="authVerifyDialog = false"
+            >
+              取消
+            </el-button>
+            <el-button
+              type="danger"
+              :loading="authVerifying"
+              :disabled="windowsHelloVerifying || !authVerifyPassword.trim()"
+              @click="submitAuthAndDelete"
+            >
+              {{ deleteTargetAll ? '验证并清空' : '验证并删除' }}
+            </el-button>
+          </div>
         </template>
       </el-dialog>
 
@@ -2383,121 +2826,483 @@ async function copyRuntimeLogPreview() {
 </template>
 
 <style scoped>
-.runtime-log-panel {
+/* ---- Fluent 2 运行日志与诊断弹窗样式 ---- */
+:global(.runtime-log-dialog.el-dialog) {
+  --app-dialog-width: min(1080px, calc(100vw - var(--desktop-sidebar-width, 240px) - 48px));
+  max-width: calc(100% - 32px);
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  min-height: 0;
 }
-.runtime-log-toolbar {
+:global(.runtime-log-dialog .el-dialog__header) {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--app-border);
+  margin-right: 0;
+}
+:global(.runtime-log-dialog .el-dialog__body) {
+  padding: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+:global(.runtime-log-dialog .el-dialog__footer) {
+  padding: 10px 20px;
+  border-top: 1px solid var(--app-border);
+}
+
+.runtime-log-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding-right: 32px;
+}
+.runtime-log-header-title-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.runtime-log-header-icon {
+  font-size: 20px;
+  color: var(--app-accent, #0f6cbd);
+  flex-shrink: 0;
+}
+.runtime-log-header-texts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.runtime-log-title-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
 }
-.runtime-log-path {
-  flex: 1 1 200px;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.runtime-log-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--app-text);
+}
+.runtime-log-subtitle {
+  margin: 0;
   font-size: 12px;
   color: var(--app-muted);
 }
-.runtime-log-spacer {
-  flex: 0 0 auto;
+.runtime-log-header-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
-.runtime-log-body {
+.runtime-log-component-select {
+  width: 130px;
+}
+
+/* 状态徽章 */
+.fluent-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.fluent-status-badge.is-success {
+  background: color-mix(in srgb, var(--el-color-success, #107c41) 12%, transparent);
+  color: var(--el-color-success, #107c41);
+  border: 1px solid color-mix(in srgb, var(--el-color-success, #107c41) 25%, transparent);
+}
+.fluent-status-badge.is-warning {
+  background: color-mix(in srgb, var(--el-color-warning, #d83b01) 12%, transparent);
+  color: var(--el-color-warning, #d83b01);
+  border: 1px solid color-mix(in srgb, var(--el-color-warning, #d83b01) 25%, transparent);
+}
+.fluent-status-badge.is-danger {
+  background: color-mix(in srgb, var(--el-color-danger, #c42b1c) 12%, transparent);
+  color: var(--el-color-danger, #c42b1c);
+  border: 1px solid color-mix(in srgb, var(--el-color-danger, #c42b1c) 25%, transparent);
+}
+.fluent-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* 对话框主体与分栏 */
+.runtime-log-dialog-body {
+  height: 560px;
+  max-height: calc(84vh - 130px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.runtime-log-split-view {
   display: grid;
-  grid-template-columns: minmax(220px, 300px) 1fr;
-  gap: 12px;
-  min-height: 380px;
-  max-height: 62vh;
+  grid-template-columns: 280px minmax(0, 1fr) !important;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* 左侧栏 */
+.runtime-log-sidebar {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--app-border);
+  background: var(--app-surface-soft, rgba(127, 127, 127, 0.03));
+  overflow: hidden;
+}
+.runtime-log-sidebar-search {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--app-border);
+  background: var(--app-surface);
+}
+.runtime-log-list-scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 6px;
 }
 .runtime-log-list {
   list-style: none;
   margin: 0;
   padding: 0;
-  overflow-y: auto;
-  border: 1px solid var(--app-border);
-  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 .runtime-log-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
+  gap: 10px;
+  padding: 8px 10px;
   cursor: pointer;
-  border-bottom: 1px solid var(--app-border);
+  border-radius: 6px;
+  position: relative;
+  transition: all 0.12s ease;
+  user-select: none;
+  background: transparent;
 }
-.runtime-log-item:last-child {
-  border-bottom: none;
+.runtime-log-item:hover {
+  background: var(--app-surface-alt, rgba(127, 127, 127, 0.06));
 }
-.runtime-log-item:hover,
+.runtime-log-item:focus-visible {
+  outline: 2px solid var(--app-accent, #0f6cbd);
+  outline-offset: -1px;
+}
 .runtime-log-item.is-active {
-  background: var(--app-surface-alt, rgba(127, 127, 127, 0.09));
+  background: var(--app-accent-soft, rgba(15, 108, 189, 0.09));
 }
-.runtime-log-item--hint {
-  cursor: default;
-  font-size: 12px;
-  color: var(--app-muted);
+/* Fluent 2 Pill 选中胶囊条 */
+.runtime-log-item.is-active::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--app-accent, #0f6cbd);
 }
 .runtime-log-item-icon {
-  flex: 0 0 auto;
+  font-size: 16px;
+  color: var(--app-muted);
+  flex-shrink: 0;
+}
+.runtime-log-item.is-active .runtime-log-item-icon {
+  color: var(--app-accent, #0f6cbd);
 }
 .runtime-log-item-main {
   display: flex;
   flex-direction: column;
+  gap: 2px;
   min-width: 0;
+  flex: 1 1 auto;
 }
-.runtime-log-item-main small {
-  color: var(--app-muted);
-  font-size: 11px;
-}
-.runtime-log-viewer {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  border: 1px solid var(--app-border);
-  border-radius: 10px;
-  overflow: hidden;
-}
-.runtime-log-viewer-head {
+.runtime-log-item-title-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 8px 12px;
-  font-size: 12px;
-  border-bottom: 1px solid var(--app-border);
-  background: var(--app-surface-alt, rgba(127, 127, 127, 0.05));
+  gap: 6px;
 }
-.runtime-log-viewer-actions {
+.runtime-log-item-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--app-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fluent-micro-pill {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-weight: 500;
+  flex-shrink: 0;
+  line-height: 1.3;
+}
+.fluent-micro-pill.is-live {
+  background: color-mix(in srgb, var(--el-color-success, #107c41) 14%, transparent);
+  color: var(--el-color-success, #107c41);
+}
+.fluent-micro-pill.is-archived {
+  background: var(--app-surface-alt, rgba(127, 127, 127, 0.1));
+  color: var(--app-muted);
+}
+.runtime-log-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--app-muted);
+}
+.meta-separator {
+  opacity: 0.5;
+}
+.runtime-log-item-del-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--app-muted);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  margin-left: auto;
+  transition: all 0.12s ease;
+}
+.runtime-log-item:hover .runtime-log-item-del-btn {
+  display: flex;
+}
+.runtime-log-item-del-btn:hover {
+  background: color-mix(in srgb, var(--el-color-danger, #c42b1c) 14%, transparent);
+  color: var(--el-color-danger, #c42b1c);
+}
+.runtime-log-load-more {
+  padding: 8px 10px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--app-accent, #0f6cbd);
+  cursor: pointer;
+  border-radius: 6px;
+  user-select: none;
+  transition: background 0.12s ease;
+}
+.runtime-log-load-more:hover {
+  background: var(--app-accent-soft, rgba(15, 108, 189, 0.08));
+}
+.runtime-log-item--hint {
+  padding: 24px 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--app-muted);
+}
+
+/* 右侧详情与控制台 */
+.runtime-log-detail {
+  display: flex;
+  flex-direction: column;
+  min-width: 0 !important;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--app-surface);
+}
+.runtime-log-detail-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 16px 8px 16px;
+  border-bottom: 1px solid var(--app-border);
+  background: var(--app-surface);
+  flex-shrink: 0;
+}
+.runtime-log-detail-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.runtime-log-detail-info {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.runtime-log-detail-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--app-text);
+  white-space: nowrap;
+}
+.runtime-log-detail-meta {
+  font-size: 12px;
   color: var(--app-muted);
+  white-space: nowrap;
+}
+.runtime-log-detail-file-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  color: var(--app-muted);
+  min-width: 0;
+  overflow: hidden;
+}
+.runtime-log-detail-file-row .file-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+  color: var(--app-muted);
+}
+.runtime-log-detail-filename {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+.runtime-log-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.runtime-log-search-box {
+  width: 150px;
+}
+.runtime-log-console-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0 !important;
+  width: calc(100% - 24px);
+  margin: 10px 12px 12px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  overflow-x: auto !important;
+  overflow-y: auto !important;
+  background: #1e1e24 !important;
+  position: relative;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.28) rgba(0, 0, 0, 0.25);
+}
+.runtime-log-console-wrap::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.runtime-log-console-wrap::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 4px;
+}
+.runtime-log-console-wrap::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 4px;
+}
+.runtime-log-console-wrap::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.4);
 }
 .runtime-log-text {
   margin: 0;
-  padding: 12px;
-  flex: 1 1 auto;
-  overflow: auto;
-  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  padding: 14px;
+  min-height: 100%;
+  box-sizing: border-box;
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  color: #e4e4e7 !important;
+  font-family: ui-monospace, "Cascadia Code", "Fira Code", Consolas, monospace !important;
   font-size: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
+  line-height: 1.6;
+  white-space: pre !important;
+  width: max-content !important;
+  min-width: 100% !important;
+  tab-size: 4;
+}
+.runtime-log-text.is-wrap {
+  width: 100% !important;
+  min-width: 0 !important;
+  white-space: pre-wrap !important;
+  word-break: break-all !important;
 }
 .runtime-log-placeholder,
 .runtime-log-empty {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 8px;
   flex: 1 1 auto;
   padding: 40px 12px;
   font-size: 13px;
   color: var(--app-muted);
+  text-align: center;
+}
+.runtime-log-empty strong,
+.runtime-log-placeholder strong {
+  font-size: 14px;
+  color: var(--app-text);
+}
+.runtime-log-empty .runtime-log-empty-icon,
+.runtime-log-placeholder .el-icon {
+  font-size: 32px;
+  opacity: 0.6;
+}
+
+/* 身份验证弹窗样式 */
+.auth-verify-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 4px 0;
+}
+.auth-verify-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.auth-verify-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.auth-verify-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--app-text);
+}
+.auth-verify-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--el-color-danger, #c42b1c);
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--el-color-danger, #c42b1c) 10%, transparent);
+}
+.auth-verify-desktop-quick {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.auth-verify-divider {
+  margin: 6px 0;
+}
+.auth-verify-hello-btn {
+  width: 100%;
 }
 .ai-settings-dialog {
   min-height: 0;

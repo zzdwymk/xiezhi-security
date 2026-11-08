@@ -6471,38 +6471,113 @@ function classifyRuntimeLogEntry(name) {
   return "other";
 }
 
-// Entries live under per-component subdirectories (e.g. "server.out", "ai-runtime.err").
-// Only plain files inside those component folders are exposed; the health file at the
-// root is summarised separately and never listed as a readable log.
+const zlib = require("zlib");
+
+// Strip the writer's `<component>-<timestamp>-<pid>-<uuid>-000001` noise so a session
+// reads as a single, friendly row instead of a wall of random ids.
+function friendlyRuntimeLogName(fileName, component) {
+  const base = fileName.replace(/\.(log\.gz|log\.json|status\.json|log)$/, "");
+  const m = base.match(/-\d{17}-\d+-(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-(\d{3,})$/);
+  if (!m) return fileName;
+  const seq = String(Number(m[1])).padStart(3, "0");
+  return `${component} · 第 ${seq} 段`;
+}
+
+// Decode a readable text payload: .log is read raw (tail), .log.gz is decompressed in
+// memory with a hard output cap so a huge archive cannot exhaust the main process.
+async function readRuntimeLogText(full, stat) {
+  if (/\.log\.gz$/.test(full)) {
+    const handle = await fs.promises.open(full, "r");
+    try {
+      const compressed = await handle.readFile();
+      const decompressed = zlib.gunzipSync(compressed, { maxOutputLength: RUNTIME_LOG_MAX_READ_BYTES * 4 });
+      let text = decompressed.toString("utf8");
+      if (text.length > RUNTIME_LOG_MAX_READ_BYTES) {
+        text = text.slice(-RUNTIME_LOG_MAX_READ_BYTES);
+        const nl = text.indexOf("\n"); if (nl >= 0) text = text.slice(nl + 1);
+        return { text, truncated: true };
+      }
+      return { text, truncated: false };
+    } finally { await handle.close(); }
+  }
+  const start = Math.max(0, stat.size - RUNTIME_LOG_MAX_READ_BYTES);
+  const length = stat.size - start;
+  const handle = await fs.promises.open(full, "r");
+  let text;
+  try {
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, start);
+    text = buffer.toString("utf8");
+  } finally { await handle.close(); }
+  if (start > 0) { const nl = text.indexOf("\n"); if (nl >= 0) text = text.slice(nl + 1); }
+  return { text, truncated: start > 0 };
+}
+
+// Components whose folders are one-session-per-log and add nothing to an end-user view.
+const HIDDEN_RUNTIME_LOG_COMPONENTS = new Set(["desktop-login", "desktop-startup"]);
+
 async function collectRuntimeLogFiles(root) {
-  const files = [];
+  const sessions = [];
   let dirents;
   try {
     dirents = await fs.promises.readdir(root, { withFileTypes: true });
   } catch (error) {
-    if (error && error.code === "ENOENT") return files;
+    if (error && error.code === "ENOENT") return sessions;
     throw new UserFacingError(`无法读取日志目录：${error?.message || error}`);
   }
   for (const dirent of dirents) {
     if (!dirent.isDirectory() || !RUNTIME_LOG_ALLOWED_NAME.test(dirent.name)) continue;
+    if (HIDDEN_RUNTIME_LOG_COMPONENTS.has(dirent.name)) continue;
     const componentDir = path.join(root, dirent.name);
     let inner;
     try { inner = await fs.promises.readdir(componentDir, { withFileTypes: true }); } catch { continue; }
+    const segments = [];
     for (const file of inner) {
       if (!file.isFile() || !RUNTIME_LOG_ALLOWED_NAME.test(file.name)) continue;
+      const kind = classifyRuntimeLogEntry(file.name);
+      if (kind !== "raw" && kind !== "archive" && kind !== "receipt") continue;
       const full = path.join(componentDir, file.name);
       let stat;
       try { stat = await fs.promises.stat(full); } catch { continue; }
-      files.push({
-        name: file.name, relativePath: `${dirent.name}/${file.name}`,
+      // sessionId = filename after stripping the trailing "-NNNNNN.ext" sequence.
+      const stem = file.name.replace(/-\d{6}\.log(?:\.gz|\.json)?$/, "");
+      segments.push({ kind, full, stat, name: file.name, sessionId: stem,
+        sequence: Number((file.name.match(/-(\d{6})\.log/) || [])[1] || 0) });
+    }
+    const bySession = new Map();
+    for (const seg of segments) {
+      const entry = bySession.get(seg.sessionId) || { sessionId: seg.sessionId, component: dirent.name,
+        raw: [], archive: [], receipt: [], latest: 0, bytes: 0 };
+      if (seg.kind === "raw") entry.raw.push(seg);
+      else if (seg.kind === "archive") entry.archive.push(seg);
+      else entry.receipt.push(seg);
+      entry.latest = Math.max(entry.latest, seg.stat.mtimeMs);
+      if (seg.kind !== "receipt") entry.bytes += seg.stat.size;
+      bySession.set(seg.sessionId, entry);
+    }
+    for (const entry of bySession.values()) {
+      const readableRaw = entry.raw.length > 0;
+      const viewable = readableRaw || entry.archive.length > 0;
+      // Only surface sessions that either have live raw text or archived (gzip) payloads.
+      if (!viewable) continue;
+      const primary = readableRaw
+        ? entry.raw.sort((a, b) => b.sequence - a.sequence)[0]
+        : entry.archive.sort((a, b) => b.sequence - a.sequence)[0];
+      const kind = readableRaw ? "raw" : "archive";
+      sessions.push({
+        name: primary.name, relativePath: `${dirent.name}/${primary.name}`,
         component: dirent.name.split(".")[0] || dirent.name,
         channel: path.extname(dirent.name).replace(".", "") || "log",
-        kind: classifyRuntimeLogEntry(file.name), bytes: stat.size,
-        sizeLabel: humanBytes(stat.size), modifiedAt: stat.mtime.toISOString(),
+        kind, encoding: kind === "archive" ? "gzip" : "text",
+        label: friendlyRuntimeLogName(primary.name, dirent.name),
+        segments: entry.raw.length + entry.archive.length,
+        bytes: entry.bytes, sizeLabel: humanBytes(entry.bytes),
+        modifiedAt: new Date(entry.latest).toISOString(),
+        readable: viewable,
       });
     }
   }
-  return files;
+  return sessions;
 }
 
 async function listRuntimeLogs() {
@@ -6524,22 +6599,15 @@ async function readRuntimeLog(candidate) {
   try { stat = await fs.promises.stat(full); }
   catch (error) { throw new UserFacingError(error?.code === "ENOENT" ? "日志文件不存在" : `无法读取日志：${error?.message || error}`); }
   if (!stat.isFile()) throw new UserFacingError("只能读取日志文件");
-  // Everything except plain-text logs is compressed or a JSON receipt; never gunzip here.
-  if (!/\.log$/.test(full)) throw new UserFacingError("该日志为压缩归档或元数据，请在目录中查看");
-  const start = Math.max(0, stat.size - RUNTIME_LOG_MAX_READ_BYTES);
-  const length = stat.size - start;
-  const handle = await fs.promises.open(full, "r");
-  let text;
-  try {
-    const buffer = Buffer.alloc(length);
-    await handle.read(buffer, 0, length, start);
-    text = buffer.toString("utf8");
-  } finally { await handle.close(); }
-  // Drop a possibly-split multi-byte character on the first line when we tailed the file.
-  if (start > 0) { const nl = text.indexOf("\n"); if (nl >= 0) text = text.slice(nl + 1); }
+  if (!/\.log(\.gz)?$/.test(full)) throw new UserFacingError("该文件不是可查看的运行日志");
+  let decoded;
+  try { decoded = await readRuntimeLogText(full, stat); }
+  catch (error) { throw new UserFacingError(`无法读取日志：${error?.message || error}`); }
   return {
     name: path.basename(full), bytes: stat.size, sizeLabel: humanBytes(stat.size),
-    modifiedAt: stat.mtime.toISOString(), truncated: start > 0, shownBytes: Buffer.byteLength(text), text,
+    modifiedAt: stat.mtime.toISOString(), truncated: decoded.truncated,
+    shownBytes: Buffer.byteLength(decoded.text), text: decoded.text,
+    encoding: /\.log\.gz$/.test(full) ? "gzip" : "text",
   };
 }
 
@@ -6559,6 +6627,86 @@ async function openRuntimeLogDirectory(candidateDir) {
   return { opened: true, directory: target };
 }
 
+async function clearRuntimeLogs() {
+  const root = path.resolve(runtimeLogRoot());
+  let deletedFiles = 0;
+  let truncatedFiles = 0;
+  let clearedBytes = 0;
+  let dirents;
+  try {
+    dirents = await fs.promises.readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if (error && error.code === "ENOENT")
+      return { cleared: true, deletedFiles: 0, truncatedFiles: 0, clearedBytes: 0, clearedBytesLabel: "0 B" };
+    throw new UserFacingError(`无法读取日志目录：${error?.message || error}`);
+  }
+  for (const dirent of dirents) {
+    if (!dirent.isDirectory() || !RUNTIME_LOG_ALLOWED_NAME.test(dirent.name)) continue;
+    if (HIDDEN_RUNTIME_LOG_COMPONENTS.has(dirent.name)) continue;
+    const componentDir = path.join(root, dirent.name);
+    let files;
+    try {
+      files = await fs.promises.readdir(componentDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const f of files) {
+      if (!f.isFile() || !RUNTIME_LOG_ALLOWED_NAME.test(f.name)) continue;
+      const full = path.join(componentDir, f.name);
+      try {
+        const stat = await fs.promises.stat(full);
+        clearedBytes += stat.size;
+        try {
+          await fs.promises.unlink(full);
+          deletedFiles++;
+        } catch (unlinkErr) {
+          if (unlinkErr && (unlinkErr.code === "EBUSY" || unlinkErr.code === "EPERM")) {
+            await fs.promises.truncate(full, 0);
+            truncatedFiles++;
+          } else {
+            throw unlinkErr;
+          }
+        }
+      } catch {
+        // ignore individual file errors
+      }
+    }
+  }
+  return {
+    cleared: true,
+    deletedFiles,
+    truncatedFiles,
+    clearedBytes,
+    clearedBytesLabel: humanBytes(clearedBytes),
+  };
+}
+
+async function deleteRuntimeLog(candidate) {
+  const full = assertRuntimeLogPath(candidate);
+  let stat;
+  try {
+    stat = await fs.promises.stat(full);
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      return { deleted: true, reason: "日志文件已不存在" };
+    }
+    throw new UserFacingError(`无法获取日志文件状态：${error?.message || error}`);
+  }
+  if (!stat.isFile()) throw new UserFacingError("只能删除日志文件");
+  if (!/\.log(\.gz|\.json)?$/.test(full)) throw new UserFacingError("该文件不是可删除的运行日志");
+
+  try {
+    await fs.promises.unlink(full);
+    return { deleted: true, truncated: false };
+  } catch (unlinkErr) {
+    if (unlinkErr && (unlinkErr.code === "EBUSY" || unlinkErr.code === "EPERM")) {
+      await fs.promises.truncate(full, 0);
+      return { deleted: true, truncated: true };
+    }
+    throw new UserFacingError(`无法删除日志文件：${unlinkErr?.message || unlinkErr}`);
+  }
+}
+
 handleRendererIpc("toolbox:get-runtime-logs", async (event) => {
   assertMainRenderer(event);
   return listRuntimeLogs();
@@ -6570,6 +6718,14 @@ handleRendererIpc("toolbox:read-runtime-log", async (event, relativePath) => {
 handleRendererIpc("toolbox:open-runtime-log-directory", async (event, relativeDir) => {
   assertMainRenderer(event);
   return openRuntimeLogDirectory(relativeDir);
+});
+handleRendererIpc("toolbox:clear-runtime-logs", async (event) => {
+  assertMainRenderer(event);
+  return clearRuntimeLogs();
+});
+handleRendererIpc("toolbox:delete-runtime-log", async (event, relativePath) => {
+  assertMainRenderer(event);
+  return deleteRuntimeLog(relativePath);
 });
 
 handleRendererIpc("toolbox:get-notification-settings", (event) => {
