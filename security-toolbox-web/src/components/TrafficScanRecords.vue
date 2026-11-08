@@ -70,6 +70,15 @@ const statusLabels: Record<string, string> = {
   RUNNING: "执行中", COMPLETED: "已完成", FAILED: "失败", TIMEOUT: "超时", CANCELLED: "已取消",
 };
 const statusLabel = (status?: string) => statusLabels[status || ""] || "状态待核实";
+const engineLabels: Record<string, string> = {
+  ZAP: "ZAP 扫描",
+  XRAY: "Xray 扫描",
+  SQLMAP: "sqlmap 检测",
+  FUZZ: "模糊测试",
+  AUTO: "自动检测",
+  LOOP: "循环检测",
+};
+const engineLabel = (engine?: string) => engineLabels[engine || ""] || engine || "未知引擎";
 const tagType = (status: string) => status === "COMPLETED" ? "success" : status === "RUNNING" ? "primary" : status === "FAILED" ? "danger" : "warning";
 const notice = computed(() => targetedScanPresentation({ ...detail.value?.entry, ...detail.value?.result }));
 const detailAlertType = computed(() => {
@@ -186,7 +195,7 @@ onBeforeUnmount(() => {
       </div>
       <div class="traffic-record-toolbar-actions">
         <el-select v-model="engine" clearable placeholder="全部引擎" aria-label="流量检测引擎" style="width: 140px">
-          <el-option v-for="item in engines" :key="item" :label="item === 'FUZZ' ? '模糊测试' : item" :value="item" />
+          <el-option v-for="item in engines" :key="item" :label="engineLabel(item)" :value="item" />
         </el-select>
         <el-button :loading="loading" :icon="Refresh" @click="refresh">刷新记录</el-button>
       </div>
@@ -213,7 +222,7 @@ onBeforeUnmount(() => {
             effect="light"
             class="engine-tag"
           >
-            {{ row.engine === 'FUZZ' ? '模糊测试' : row.engine }}
+            {{ engineLabel(row.engine) }}
           </el-tag>
         </template>
       </el-table-column>
@@ -293,13 +302,13 @@ onBeforeUnmount(() => {
         <template v-if="detail">
           <el-descriptions v-if="!isFindings" :column="2" border>
             <el-descriptions-item label="记录 ID">{{ detail.entry.id }}</el-descriptions-item>
-            <el-descriptions-item label="引擎">{{ detail.entry.engine }}</el-descriptions-item>
+            <el-descriptions-item label="引擎">{{ engineLabel(detail.entry.engine) }}</el-descriptions-item>
             <el-descriptions-item label="状态">{{ statusLabel(detail.entry.status) }}</el-descriptions-item>
             <el-descriptions-item label="命中数">{{ detail.entry.hitCount }}</el-descriptions-item>
             <el-descriptions-item label="目标 URL" :span="2">{{ detail.entry.url || detail.entry.host }}</el-descriptions-item>
             <el-descriptions-item label="开始时间" :span="2">{{ formatDateTime(detail.entry.createdAt) }}</el-descriptions-item>
           </el-descriptions>
-          <p v-else>来源记录 #{{ detail.entry.id }} · {{ detail.entry.engine }} · {{ detail.entry.url || detail.entry.host }}</p>
+          <p v-else>来源记录 #{{ detail.entry.id }} · {{ engineLabel(detail.entry.engine) }} · {{ detail.entry.url || detail.entry.host }}</p>
           <el-alert v-if="!isFindings" :title="notice.title || statusLabel(detail.entry.status)" :type="detailAlertType" :closable="false" show-icon />
           <p v-if="!isFindings && notice.guidance">{{ notice.guidance }}</p>
           <details v-if="!isFindings && notice.detail"><summary>技术详情</summary><pre>{{ notice.detail }}</pre></details>

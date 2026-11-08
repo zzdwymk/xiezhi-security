@@ -221,6 +221,18 @@ interface FuzzResult {
 function scanStatusLabel(status?: string) {
   return ({ COMPLETED: "已完成", FAILED: "失败", TIMEOUT: "超时", CANCELLED: "已取消" } as Record<string, string>)[status || ""] || "状态待核实";
 }
+function trafficEngineLabel(engine?: string) {
+  return (
+    {
+      ZAP: "ZAP 扫描",
+      XRAY: "Xray 扫描",
+      SQLMAP: "sqlmap 检测",
+      FUZZ: "模糊测试",
+      AUTO: "自动检测",
+      LOOP: "循环检测",
+    } as Record<string, string>
+  )[engine || ""] || engine || "未知引擎";
+}
 function fuzzResultStatus(result: FuzzResult) {
   return scanStatusLabel(result.status);
 }
@@ -2381,7 +2393,7 @@ function completeTargetedScan(live: TargetedScanResult, result: TargetedScanResu
 
 function failTargetedScan(live: TargetedScanResult, error: unknown) {
   live.status = "FAILED";
-  live.message = scanErrorDetail(error) || `${live.engine} 检测未完成`;
+  live.message = scanErrorDetail(error) || `${trafficEngineLabel(live.engine)} 检测未完成`;
   if (isCurrentTargetedScan(live)) ElMessage.error(targetedScanPresentation(live).title);
 }
 
@@ -3971,7 +3983,7 @@ onUnmounted(() => {
       <el-alert title="基于已保存报文分析，无需关联项目。进行主动检测时再选择授权目标。" type="info" :closable="false" />
       <div ref="chatMessagesElement" class="traffic-analysis-messages">
         <p v-if="!currentTrafficChat.length" class="manager-hint">描述关注的问题，或直接使用下方默认问题开始分析。</p>
-        <article v-for="message in currentTrafficChat" :key="message.id" class="traffic-chat-message" :class="{ user: message.role === 'USER' }"><strong>{{ message.role === 'USER' ? '你' : 'AI' }}</strong><small v-if="message.role === 'ASSISTANT'" class="traffic-answer-source">{{ aiAnswerSource(message.provider, message.status === 'failed') }}</small><MarkdownBody :content="message.content" :localize="false" /></article>
+        <article v-for="message in currentTrafficChat" :key="message.id" class="traffic-chat-message" :class="{ user: message.role === 'USER' }"><strong>{{ message.role === 'USER' ? '你' : 'AI' }}</strong><small v-if="message.role === 'ASSISTANT'" class="traffic-answer-source">{{ aiAnswerSource(message.provider, message.status === 'failed') }}</small><MarkdownBody :content="message.content" :localize="message.role === 'ASSISTANT'" /></article>
         <p v-if="currentTrafficChatSending">正在分析已有报文…</p>
       </div>
       <el-input v-model="trafficChatPrompt" type="textarea" :rows="3" placeholder="询问这条报文的风险、证据或验证建议" @keydown="handleTrafficChatKeydown" />
@@ -3996,12 +4008,12 @@ onUnmounted(() => {
         border
         max-height="420"
       >
-        <el-table-column label="引擎" width="90">
+        <el-table-column label="引擎" width="105">
           <template #default="{ row }">
             <el-tag
               :type="row.engine === 'SQLMAP' ? 'danger' : row.engine === 'XRAY' ? 'warning' : 'primary'"
               size="small"
-              >{{ row.engine }}</el-tag
+              >{{ trafficEngineLabel(row.engine) }}</el-tag
             >
           </template>
         </el-table-column>
