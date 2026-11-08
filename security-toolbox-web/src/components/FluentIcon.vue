@@ -104,6 +104,7 @@ const iconUrls: Record<string, string> = {
   mindmap: diagram,
   dismiss,
   document,
+  "document-text": documentText,
   "document-checkmark": documentCheckmark,
   "document-multiple": documentMultiple,
   report: documentText,

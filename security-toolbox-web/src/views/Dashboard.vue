@@ -237,6 +237,46 @@ function renderPromptMarkdown(content: string): string {
   if (!content.trim()) return '<div class="preview-empty-hint">暂无预览内容</div>';
   return renderMarkdown(content);
 }
+
+const isPromptCoveringButton = ref(false);
+let measureCanvasCtx: CanvasRenderingContext2D | null = null;
+
+function checkTextCoversButton(text: string, textareaEl: HTMLTextAreaElement | null): boolean {
+  if (!text || !textareaEl) return false;
+  if (textareaEl.scrollTop > 8) return true;
+
+  const firstLine = text.split("\n")[0];
+  if (!firstLine) return false;
+
+  const style = window.getComputedStyle(textareaEl);
+  const font = `${style.fontWeight || "400"} ${style.fontSize || "14px"} ${style.fontFamily || "sans-serif"}`;
+
+  if (!measureCanvasCtx) {
+    const canvas = document.createElement("canvas");
+    measureCanvasCtx = canvas.getContext("2d");
+  }
+  if (!measureCanvasCtx) {
+    return firstLine.length > 36;
+  }
+
+  measureCanvasCtx.font = font;
+  const textWidth = measureCanvasCtx.measureText(firstLine).width;
+  const paddingLeft = parseFloat(style.paddingLeft) || 20;
+  // 按钮组位于右上角（右侧边距 14px，宽度约 134px），左边缘距卡片右侧约 150px
+  // 预留 20px 安全间隙，因此当第一行文字延伸超过 clientWidth - 170px 时判定为到达按钮区域
+  const buttonAreaStart = textareaEl.clientWidth - 170;
+
+  return (paddingLeft + textWidth) >= buttonAreaStart;
+}
+
+function updatePromptCovering() {
+  const el = composerInputRef.value;
+  if (!el || !prompt.value.trim()) {
+    isPromptCoveringButton.value = false;
+    return;
+  }
+  isPromptCoveringButton.value = checkTextCoversButton(prompt.value, el);
+}
 type QuotedMessage = Pick<ConversationMessage, "id" | "role" | "content" | "createdAt">;
 const quotedMessage = ref<QuotedMessage>();
 interface MessageEditState {
@@ -317,6 +357,44 @@ const answeringMessages = new Set<string>();
 const retryingMessageIds = ref(new Set<string>());
 const activeDraft = ref<CopilotDraft>();
 const composerReferences = computed(() => (editingMessage.value?.references || activeDraft.value?.refs || []) as CopilotReference[]);
+
+function copilotReferenceIcon(type?: string): string {
+  switch (type) {
+    case "audit":
+    case "audit-log":
+      return "document-text";
+    case "traffic":
+    case "traffic-session":
+      return "branch-fork";
+    case "finding":
+    case "vulnerability":
+      return "warning";
+    case "task":
+      return "clipboard-task";
+    case "target":
+      return "target";
+    default:
+      return "document";
+  }
+}
+
+function removeComposerReference(index: number) {
+  if (editingMessage.value?.references) {
+    const updated = [...editingMessage.value.references];
+    updated.splice(index, 1);
+    editingMessage.value = {
+      ...editingMessage.value,
+      references: updated,
+    };
+  } else if (activeDraft.value?.refs) {
+    const updated = [...activeDraft.value.refs];
+    updated.splice(index, 1);
+    activeDraft.value = {
+      ...activeDraft.value,
+      refs: updated,
+    };
+  }
+}
 
 /**
  * 输入区的行内校验提示（替代打断式 ElMessage 弹窗）。
@@ -825,7 +903,11 @@ function clearQuotedMessage() {
 }
 
 function quotePreview(content: string) {
-  const text = content.replace(/\s+/g, " ").trim();
+  const text = (content || "")
+    .replace(/(?:^|\n)\s*#{1,6}\s+/g, " ")
+    .replace(/(?:^|\n)\s*>\s+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   return text.length > 140 ? `${text.slice(0, 140)}…` : text;
 }
 
@@ -3183,6 +3265,7 @@ watch(prompt, (val) => {
   if (!val.trim() && composerViewMode.value === "preview") {
     composerViewMode.value = "edit";
   }
+  void nextTick(updatePromptCovering);
 });
 
 watch(
@@ -3238,6 +3321,7 @@ onMounted(() => {
   void loadDashboardStats();
   document.addEventListener("pointerdown", handleDocumentPointerDown, true);
   document.addEventListener("keydown", handleDocumentKeydown);
+  window.addEventListener("resize", updatePromptCovering);
 });
 onBeforeUnmount(() => {
   if (pollTimer) clearInterval(pollTimer);
@@ -3247,6 +3331,7 @@ onBeforeUnmount(() => {
   stopTaskFeed?.();
   document.removeEventListener("pointerdown", handleDocumentPointerDown, true);
   document.removeEventListener("keydown", handleDocumentKeydown);
+  window.removeEventListener("resize", updatePromptCovering);
 });
 </script>
 
@@ -3460,18 +3545,51 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="welcome-composer">
-        <div v-if="composerReferences.length" class="copilot-draft-refs">
-          <span
-            v-for="reference in composerReferences"
-            :key="`${reference.type}-${reference.id || reference.title || reference.label}`"
-            >{{ displayKnownTestName(reference.title || reference.label) || copilotReferenceTypeLabel(reference.type) }}</span
+        <div v-if="composerReferences.length" class="copilot-draft-refs" aria-label="引用上下文实体">
+          <el-tooltip
+            v-for="(reference, refIndex) in composerReferences"
+            :key="`${reference.type}-${reference.id || reference.title || reference.label}-${refIndex}`"
+            placement="top"
+            :show-after="250"
           >
+            <template #content>
+              <div class="reference-tooltip-card">
+                <div class="reference-tooltip-header">
+                  <span class="reference-tooltip-type">{{ copilotReferenceTypeLabel(reference.type) }}</span>
+                  <span v-if="reference.id" class="reference-tooltip-id">#{{ reference.id }}</span>
+                </div>
+                <div v-if="reference.title || reference.label" class="reference-tooltip-title">
+                  {{ displayKnownTestName(reference.title || reference.label) }}
+                </div>
+                <div v-if="reference.summary || reference.subtitle" class="reference-tooltip-desc">
+                  {{ reference.summary || reference.subtitle }}
+                </div>
+                <div class="reference-tooltip-hint">提问时将作为背景实体上下文提交给安全助手</div>
+              </div>
+            </template>
+            <span class="copilot-draft-ref-chip">
+              <FluentIcon :name="copilotReferenceIcon(reference.type)" class="copilot-draft-ref-icon" />
+              <span class="copilot-draft-ref-title">
+                {{ displayKnownTestName(reference.title || reference.label) || `${copilotReferenceTypeLabel(reference.type)} #${reference.id || ''}` }}
+              </span>
+              <button
+                type="button"
+                class="copilot-draft-ref-remove"
+                :title="`取消引用：${displayKnownTestName(reference.title || reference.label) || reference.type}`"
+                :aria-label="`取消引用：${displayKnownTestName(reference.title || reference.label) || reference.type}`"
+                @click.stop="removeComposerReference(refIndex)"
+              >
+                <el-icon><Dismiss /></el-icon>
+              </button>
+            </span>
+          </el-tooltip>
         </div>
         <div v-if="composerError" class="composer-inline-error">{{ composerError }}</div>
         <div class="composer-input-area">
           <div
             v-if="prompt.trim().length > 0"
             class="composer-mode-tabs"
+            :class="{ 'is-covered': isPromptCoveringButton }"
             role="tablist"
             aria-label="输入与预览模式切换"
           >
@@ -3510,6 +3628,8 @@ onBeforeUnmount(() => {
             :placeholder="askScopeType === 'project'
               ? '例如：对所选项目内全部目标进行开放端口与漏洞排查规划；如需先看方案，可以说“先给方案，不执行”'
               : '例如：检查目标的开放端口；如需先看方案，可以说“先给方案，不执行”'"
+            @input="updatePromptCovering"
+            @scroll.passive="updatePromptCovering"
             @keydown="handlePromptKeydown"
           />
 
@@ -3627,7 +3747,7 @@ onBeforeUnmount(() => {
             >
               <el-icon :class="{ rotating: compacting }"
                 ><Refresh v-if="compacting" /><Promotion v-else
-              /></el-icon></button>
+              /></el-icon></button
           ></el-tooltip>
         </div>
       </div>
@@ -4195,35 +4315,74 @@ onBeforeUnmount(() => {
             <el-tooltip content="取消编辑（Esc）" placement="top" :show-after="350"><button type="button" :disabled="sending" aria-label="取消编辑" @click="cancelMessageEdit"><el-icon aria-hidden="true"><Dismiss /></el-icon></button></el-tooltip>
           </div>
           <div v-if="quotedMessage" class="composer-quote">
-            <span
-              ><strong
-                >引用
-                {{
-                  quotedMessage.role === "assistant" ? "安全助手" : "你"
-                }}</strong
-              >{{ quotePreview(quotedMessage.content) }}</span
-            >
-            <el-tooltip content="取消引用" placement="top" :show-after="350"
-              ><button
+            <div class="composer-quote-main">
+              <span class="composer-quote-title">
+                <span class="composer-quote-icon" :style="messageQuoteStyle" aria-hidden="true" />
+                <strong
+                  >引用
+                  {{
+                    quotedMessage.role === "assistant" ? "安全助手" : "你"
+                  }}</strong
+                >
+              </span>
+              <span class="composer-quote-preview">{{ quotePreview(quotedMessage.content) }}</span>
+            </div>
+            <el-tooltip content="取消引用" placement="top" :show-after="350">
+              <button
                 type="button"
+                class="composer-quote-cancel"
                 aria-label="取消引用"
                 @click="clearQuotedMessage"
               >
-                <el-icon><Dismiss /></el-icon></button
-            ></el-tooltip>
+                <el-icon><Dismiss /></el-icon>
+              </button>
+            </el-tooltip>
           </div>
-          <div v-if="composerReferences.length" class="copilot-draft-refs">
-            <span
-              v-for="reference in composerReferences"
-              :key="`${reference.type}-${reference.id || reference.title || reference.label}`"
-              >{{ displayKnownTestName(reference.title || reference.label) || copilotReferenceTypeLabel(reference.type) }}</span
+          <div v-if="composerReferences.length" class="copilot-draft-refs" aria-label="引用上下文实体">
+            <el-tooltip
+              v-for="(reference, refIndex) in composerReferences"
+              :key="`${reference.type}-${reference.id || reference.title || reference.label}-${refIndex}`"
+              placement="top"
+              :show-after="250"
             >
+              <template #content>
+                <div class="reference-tooltip-card">
+                  <div class="reference-tooltip-header">
+                    <span class="reference-tooltip-type">{{ copilotReferenceTypeLabel(reference.type) }}</span>
+                    <span v-if="reference.id" class="reference-tooltip-id">#{{ reference.id }}</span>
+                  </div>
+                  <div v-if="reference.title || reference.label" class="reference-tooltip-title">
+                    {{ displayKnownTestName(reference.title || reference.label) }}
+                  </div>
+                  <div v-if="reference.summary || reference.subtitle" class="reference-tooltip-desc">
+                    {{ reference.summary || reference.subtitle }}
+                  </div>
+                  <div class="reference-tooltip-hint">提问时将作为背景实体上下文提交给安全助手</div>
+                </div>
+              </template>
+              <span class="copilot-draft-ref-chip">
+                <FluentIcon :name="copilotReferenceIcon(reference.type)" class="copilot-draft-ref-icon" />
+                <span class="copilot-draft-ref-title">
+                  {{ displayKnownTestName(reference.title || reference.label) || `${copilotReferenceTypeLabel(reference.type)} #${reference.id || ''}` }}
+                </span>
+                <button
+                  type="button"
+                  class="copilot-draft-ref-remove"
+                  :title="`取消引用：${displayKnownTestName(reference.title || reference.label) || reference.type}`"
+                  :aria-label="`取消引用：${displayKnownTestName(reference.title || reference.label) || reference.type}`"
+                  @click.stop="removeComposerReference(refIndex)"
+                >
+                  <el-icon><Dismiss /></el-icon>
+                </button>
+              </span>
+            </el-tooltip>
           </div>
           <div v-if="composerError" class="composer-inline-error">{{ composerError }}</div>
           <div class="composer-input-area">
             <div
               v-if="prompt.trim().length > 0"
               class="composer-mode-tabs"
+              :class="{ 'is-covered': isPromptCoveringButton }"
               role="tablist"
               aria-label="输入与预览模式切换"
             >
@@ -4260,6 +4419,8 @@ onBeforeUnmount(() => {
               rows="2"
               :maxlength="PROMPT_MAX_LENGTH"
               placeholder="继续提问或说明下一步；只需方案时，请说“先给方案，不执行”"
+              @input="updatePromptCovering"
+              @scroll.passive="updatePromptCovering"
               @keydown="handlePromptKeydown"
             />
 
@@ -4709,7 +4870,7 @@ onBeforeUnmount(() => {
   height: 120px;
   min-height: 120px;
   max-height: 40vh;
-  padding: 18px 96px 8px 20px;
+  padding: 18px 20px 8px;
   /* 与 .thread-composer 同理：超长连续串必须能断行，否则撑破欢迎区布局 */
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -5376,7 +5537,7 @@ onBeforeUnmount(() => {
   height: 48px;
   max-height: 130px;
   min-height: 48px;
-  padding: 4px 90px 4px 0;
+  padding: 4px 0;
   /* 有内容后长到固定的一档高度（约 4 行），再多就框内滚动。 */
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -5386,7 +5547,7 @@ onBeforeUnmount(() => {
   height: 104px;
 }
 
-/* 输入区容器与右上角编辑/预览模式切换 */
+/* 输入区右上角编辑/预览模式切换（文字覆盖时完全透明，悬停时完全显现） */
 .composer-input-area {
   position: relative;
   width: 100%;
@@ -5394,22 +5555,45 @@ onBeforeUnmount(() => {
 .composer-mode-tabs {
   position: absolute;
   top: 4px;
-  right: 0;
+  right: 6px;
   z-index: 5;
   display: inline-flex;
   align-items: center;
   gap: 2px;
   padding: 2px;
   border-radius: var(--fluent-radius-control, 6px);
-  background: var(--app-surface-soft, #f1f5f9);
-  border: 1px solid var(--app-border, #e2e8f0);
-  box-shadow: 0 1px 2px color-mix(in srgb, CanvasText 4%, transparent);
+  background: color-mix(in srgb, var(--app-surface-soft, #f1f5f9) 65%, transparent);
+  border: 1px solid color-mix(in srgb, var(--app-border, #e2e8f0) 50%, transparent);
+  backdrop-filter: blur(8px) saturate(140%);
+  -webkit-backdrop-filter: blur(8px) saturate(140%);
   user-select: none;
+  opacity: 0.65;
+  transition:
+    opacity 160ms cubic-bezier(0.2, 0, 0, 1),
+    background-color 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
   animation: fadeInTabs 120ms ease;
 }
 .welcome-composer .composer-mode-tabs {
-  top: 12px;
+  top: 10px;
   right: 14px;
+}
+/* 当文字到达按钮覆盖区域时：完全透明，绝不遮挡文字 */
+.composer-mode-tabs.is-covered {
+  opacity: 0;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+/* 鼠标经过或悬停该区域时（或获得键盘焦点时）完全显现 */
+.composer-mode-tabs:hover,
+.composer-mode-tabs:focus-within {
+  opacity: 1 !important;
+  background: var(--app-surface-soft, #f1f5f9);
+  border-color: var(--app-border, #e2e8f0);
+  box-shadow: 0 2px 8px color-mix(in srgb, CanvasText 10%, transparent);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 @keyframes fadeInTabs {
   from { opacity: 0; transform: translateY(-2px); }
@@ -5469,13 +5653,13 @@ onBeforeUnmount(() => {
   min-height: 120px;
   height: 176px;
   max-height: 40vh;
-  padding: 18px 96px 8px 20px;
+  padding: 18px 20px 8px;
 }
 .thread-composer .composer-preview-surface {
   min-height: 48px;
   height: 104px;
   max-height: 130px;
-  padding: 4px 90px 4px 0;
+  padding: 4px 0;
 }
 .preview-empty-hint {
   color: var(--app-muted);
@@ -6160,19 +6344,20 @@ a.agent-citation-bubble {
   flex-direction: column;
   gap: 3px;
   margin-bottom: 6px;
-  padding: 7px 10px;
+  padding: 6px 10px;
   border-left: 3px solid var(--app-accent);
   border-radius: 0 6px 6px 0;
   background: var(--app-surface-soft);
 }
 .message-quote strong {
   color: var(--app-accent);
-  font-size: 10px;
+  font-size: 11px;
+  font-weight: 600;
 }
 .message-quote span {
   overflow: hidden;
   color: var(--app-muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.45;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -6182,41 +6367,90 @@ a.agent-citation-bubble {
 }
 .composer-quote {
   display: flex;
-  grid-column: 1/-1;
+  grid-column: 1 / -1;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 7px 9px;
-  border-bottom: 1px solid var(--app-border);
+  gap: 12px;
+  margin: 0 0 8px 0;
+  padding: 7px 10px 7px 12px;
+  border: var(--fluent-stroke-thin, 1px) solid var(--app-border);
+  border-radius: var(--fluent-radius-large, 6px);
+  background: var(--app-surface-soft);
   color: var(--app-muted);
-  font-size: 10px;
+  box-sizing: border-box;
+  transition: background-color var(--fluent-fast, 120ms) ease, border-color var(--fluent-fast, 120ms) ease;
 }
-.composer-quote span {
+.composer-quote:hover {
+  background: color-mix(in srgb, var(--app-accent) 4%, var(--app-surface-soft));
+  border-color: color-mix(in srgb, var(--app-accent) 25%, var(--app-border));
+}
+.composer-quote-main {
   display: flex;
-  min-width: 0;
   flex-direction: column;
+  min-width: 0;
+  flex: 1;
   gap: 2px;
+}
+.composer-quote-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1.35;
+}
+.composer-quote-icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  background: var(--app-accent);
+  mask-position: center;
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  opacity: 0.9;
+}
+.composer-quote-title strong {
+  color: var(--app-accent);
+  font-size: var(--fluent-caption1-size, 11px);
+  font-weight: var(--fluent-weight-semibold, 600);
+  letter-spacing: 0.2px;
+}
+.composer-quote-preview {
   overflow: hidden;
+  color: var(--app-muted);
+  font-size: var(--fluent-caption1-size, 12px);
+  line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
+  padding-left: 20px;
 }
-.composer-quote strong {
-  color: var(--app-accent);
-}
-.composer-quote button {
+.composer-quote button,
+.composer-quote-cancel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 24px;
   height: 24px;
   flex: none;
+  padding: 0;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--fluent-radius-control, 4px);
   background: transparent;
   color: var(--app-muted);
-  font-size: 17px;
+  font-size: 14px;
   cursor: pointer;
+  transition: background-color var(--fluent-fast, 120ms) ease, color var(--fluent-fast, 120ms) ease;
 }
-.composer-quote button:hover {
-  background: var(--app-surface-soft);
+.composer-quote button:hover,
+.composer-quote-cancel:hover {
+  background: color-mix(in srgb, var(--app-text) 8%, transparent);
   color: var(--app-text);
+}
+.composer-quote button:focus-visible,
+.composer-quote-cancel:focus-visible {
+  outline: var(--fluent-stroke-thick, 2px) solid var(--app-accent);
+  outline-offset: 1px;
 }
 .markdown-body {
   white-space: normal;
@@ -6329,21 +6563,115 @@ a.agent-citation-bubble {
 }
 .copilot-draft-refs {
   display: flex;
-  grid-column: 1/-1;
+  grid-column: 1 / -1;
   flex-wrap: wrap;
-  gap: 6px;
-  padding: 8px 12px 0;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 6px;
+  box-sizing: border-box;
 }
-.copilot-draft-refs span {
-  max-width: 240px;
-  overflow: hidden;
-  padding: 4px 8px;
-  border-radius: 6px;
-  background: var(--app-accent-soft);
+.welcome-composer .copilot-draft-refs {
+  padding: 12px 20px 4px 20px;
+}
+.thread-composer .copilot-draft-refs {
+  padding: 0 0 8px 0;
+}
+.welcome-composer:has(.copilot-draft-refs) textarea {
+  padding-top: 10px;
+}
+.copilot-draft-ref-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 360px;
+  padding: 3px 6px 3px 9px;
+  border: 1px solid color-mix(in srgb, var(--app-accent) 28%, var(--app-border));
+  border-radius: var(--fluent-radius-control, 6px);
+  background: color-mix(in srgb, var(--app-accent) 8%, var(--app-surface-soft));
+  color: var(--app-text);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: default;
+  transition: all var(--fluent-fast, 120ms) ease;
+}
+.copilot-draft-ref-chip:hover {
+  background: color-mix(in srgb, var(--app-accent) 14%, var(--app-surface-soft));
+  border-color: color-mix(in srgb, var(--app-accent) 45%, var(--app-border));
+}
+.copilot-draft-ref-icon {
+  font-size: 13px;
   color: var(--app-accent);
-  font-size: 10px;
+  flex-shrink: 0;
+}
+.copilot-draft-ref-title {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 500;
+  color: var(--app-accent-text, var(--app-accent));
+}
+.copilot-draft-ref-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  margin-left: 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--app-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background-color var(--fluent-fast, 120ms) ease, color var(--fluent-fast, 120ms) ease;
+}
+.copilot-draft-ref-remove:hover {
+  background: color-mix(in srgb, var(--app-text) 12%, transparent);
+  color: var(--app-text);
+}
+.copilot-draft-ref-remove:focus-visible {
+  outline: 2px solid var(--app-accent);
+  outline-offset: 1px;
+}
+.reference-tooltip-card {
+  max-width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 2px 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.reference-tooltip-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+.reference-tooltip-type {
+  color: var(--el-color-primary, #0078d4);
+}
+.reference-tooltip-id {
+  opacity: 0.8;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+}
+.reference-tooltip-title {
+  font-weight: 500;
+  color: #fff;
+}
+.reference-tooltip-desc {
+  font-size: 11px;
+  opacity: 0.9;
+  word-break: break-word;
+}
+.reference-tooltip-hint {
+  font-size: 10px;
+  opacity: 0.65;
+  border-top: 1px dashed rgba(255, 255, 255, 0.2);
+  padding-top: 4px;
+  margin-top: 2px;
 }
 .copilot-reference-card {
   width: min(720px, 94%);
@@ -6637,10 +6965,9 @@ a.agent-citation-bubble {
 .welcome-composer textarea {
   /* 基础值由前面“一档高度”规则决定（空态 120px、输入后 176px），这里只对齐内边距。 */
   min-height: 120px;
-  padding: 18px 96px 8px 20px;
+  padding: 18px 20px 8px;
 }
 .composer-footer {
-  grid-template-columns: minmax(0, 1fr) max-content 36px;
   padding: 8px 18px 10px;
 }
 .target-picker > span,
@@ -6952,6 +7279,7 @@ a.agent-citation-bubble {
   gap: 8px;
   min-height: 32px;
   padding: 0 4px;
+  margin-bottom: 6px;
   color: var(--app-text-muted);
   font-size: 12px;
   line-height: 18px;
@@ -7074,8 +7402,8 @@ a.agent-citation-bubble {
 }
 
 .composer-quote button {
-  width: 32px;
-  height: 32px;
+  width: 24px;
+  height: 24px;
 }
 
 .quick-actions {
