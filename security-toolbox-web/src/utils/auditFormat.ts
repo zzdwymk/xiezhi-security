@@ -22,6 +22,7 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
 
   // 任务与工具执行
   CREATE_TASK: "创建检测任务",
+  BATCH_CREATE_TASK: "批量创建任务",
   EXECUTE_TOOL: "执行安全工具",
   CANCEL_TASK: "取消检测任务",
   RETRY_TASK: "重试检测任务",
@@ -29,6 +30,7 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   // 工作流
   CREATE_WORKFLOW_TASK: "创建工作流任务",
   UNLOCK_WORKFLOW_TASK: "解锁后继任务",
+  REQUEUE_WORKFLOW_TASK: "重新排队工作流任务",
   SKIP_WORKFLOW_TASK: "跳过工作流任务",
   CANCEL_WORKFLOW_TASK: "取消工作流任务",
   START_WORKFLOW_RUN: "启动工作流",
@@ -82,6 +84,8 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   ROLLBACK_SECURITY_ACTION: "回滚受控动作",
   PROJECT_APPROVAL_REQUEST: "AI 提交行动方案",
   PROJECT_APPROVAL_DECIDE: "管理员确认行动方案",
+  AGENT_CAPABILITY_APPROVAL_REQUESTED: "申请受控能力审批",
+  AGENT_CAPABILITY_DENIED: "受控能力拦截",
 
   // AI 智能问答与调度
   AI_CREATE_PLAN: "AI 生成检测计划",
@@ -117,6 +121,7 @@ export const AUDIT_RESOURCE_LABELS: Record<string, string> = {
   TRAFFIC_CAPTURE_FILTER: "抓包过滤规则",
   AI_CONVERSATION: "AI 对话会话",
   SYSTEM_DATA: "系统数据",
+  AGENT_CAPABILITY: "受控安全能力",
 };
 
 export const AUDIT_RESULT_META: Record<
@@ -138,6 +143,7 @@ export const AUDIT_RESULT_META: Record<
   CANCELLED: { label: "已取消", tagType: "info" },
   SKIPPED: { label: "已跳过", tagType: "info" },
   WAITING_TASKS: { label: "等待前置", tagType: "info" },
+  DENIED: { label: "已拦截", tagType: "danger" },
 };
 
 export const APPROVAL_ACTION_LABELS: Record<string, string> = {
@@ -183,6 +189,21 @@ export const TASK_STATUS_LABELS: Record<string, string> = {
   SKIPPED: "已跳过",
 };
 
+export const AUDIT_TOOL_LABELS: Record<string, string> = {
+  tcp_ports: "TCP 端口探测",
+  nmap_service_scan: "Nmap 服务识别",
+  http_headers: "HTTP 响应头检查",
+  http_security_check: "HTTP 常见安全检查",
+  tls_config: "TLS 配置检查",
+  nuclei_scan: "Nuclei 漏洞扫描",
+  afrog_scan: "Afrog 漏洞扫描",
+  xray_scan: "Xray 漏洞扫描",
+  zap_scan: "OWASP ZAP 扫描",
+  sqlmap_scan: "sqlmap SQL 注入检测",
+  fscan_scan: "fscan 主机扫描",
+  msf_scan: "Metasploit 模块扫描",
+};
+
 export function formatApprovalAction(action?: string): string {
   if (!action) return "未知动作";
   const key = String(action).trim().toUpperCase();
@@ -198,43 +219,222 @@ export function formatAuditOperator(operator?: string): string {
   return op;
 }
 
+function formatStructuredAuditJson(parsed: Record<string, any>): string | null {
+  // 1. 清空业务数据：结构化 JSON 渲染为中文摘要，不暴露数据库 schema。
+  if (parsed.deletedByCategory !== undefined || parsed.deletedRecords !== undefined) {
+    const parts: string[] = [];
+    if (typeof parsed.deletedProjects === "number") {
+      parts.push(`评估项目 ${parsed.deletedProjects} 个`);
+    }
+    if (typeof parsed.deletedRecords === "number") {
+      parts.push(`业务记录 ${parsed.deletedRecords} 条`);
+    }
+    if (typeof parsed.runtimeDocumentsDeleted === "number" && parsed.runtimeDocumentsDeleted > 0) {
+      parts.push(`运行时索引文档 ${parsed.runtimeDocumentsDeleted} 条`);
+    }
+    const cleared = Object.entries((parsed.deletedByCategory as Record<string, number>) || {})
+      .filter(([, count]) => count > 0)
+      .map(([category, count]) => `${category} ${count} 条`);
+    if (cleared.length > 0) {
+      parts.push(`其中：${cleared.join("、")}`);
+    }
+    if (Array.isArray(parsed.preservedData) && parsed.preservedData.length > 0) {
+      parts.push(`已保留：${parsed.preservedData.join("、")}`);
+    }
+    return `已清空全部业务数据（${parts.join("；")}）`;
+  }
+
+  // 2. AI 对话交互 / 调度追踪 (AI_AGENT_TURN)
+  if (
+    parsed.schemaVersion !== undefined ||
+    parsed.executionDecision !== undefined ||
+    parsed.turnId !== undefined ||
+    parsed.ledgerSequence !== undefined ||
+    parsed.plannerSource !== undefined
+  ) {
+    const decisionMap: Record<string, string> = {
+      CLARIFY: "需向用户澄清",
+      EXECUTE: "执行安全方案",
+      PLAN_ONLY: "生成待确认方案",
+      STOP: "终止流程",
+      TERMINATE: "终止流程",
+      MANUAL: "转交人工确认",
+    };
+
+    let actionDesc = "";
+    if (parsed.error) {
+      actionDesc = `AI 交互异常：${parsed.error}`;
+    } else if (parsed.executionDecision && decisionMap[parsed.executionDecision]) {
+      actionDesc = `AI 决策：${decisionMap[parsed.executionDecision]}`;
+    } else if (parsed.executed) {
+      actionDesc = "AI 方案已执行";
+    } else {
+      actionDesc = "AI 交互已完成";
+    }
+
+    const parts: string[] = [];
+    if (parsed.projectId) {
+      parts.push(`项目 #${parsed.projectId}`);
+    }
+    if (parsed.targetId) {
+      parts.push(`目标 #${parsed.targetId}`);
+    }
+    if (Array.isArray(parsed.taskIds) && parsed.taskIds.length > 0) {
+      if (parsed.taskIds.length === 1) {
+        parts.push(`派发任务 #${parsed.taskIds[0]}`);
+      } else {
+        parts.push(
+          `派发任务 ${parsed.taskIds.length} 项（${parsed.taskIds.map((id: any) => `#${id}`).join("、")}）`,
+        );
+      }
+    } else if (parsed.executed === false) {
+      parts.push("未派发新任务");
+    }
+    if (parsed.fallback) {
+      const fbReason =
+        parsed.fallbackReason &&
+        parsed.fallbackReason !== "无" &&
+        parsed.fallbackReason !== "NONE"
+          ? `（${parsed.fallbackReason}）`
+          : "";
+      parts.push(`规则引擎兜底${fbReason}`);
+    }
+    if (parsed.ledgerSequence !== undefined && parsed.ledgerSequence !== null) {
+      parts.push(`账本序列 #${parsed.ledgerSequence}`);
+    }
+
+    return parts.length > 0 ? `${actionDesc}（${parts.join("，")}）` : actionDesc;
+  }
+
+  // 3. AI 会话清理 (AI_CONVERSATION_DELETE)
+  if (parsed.cleared !== undefined && (parsed.sessionId || parsed.projectId)) {
+    const parts: string[] = [];
+    if (parsed.projectId) parts.push(`项目 #${parsed.projectId}`);
+    if (parsed.targetId) parts.push(`目标 #${parsed.targetId}`);
+    if (parsed.sessionId) parts.push(`会话 #${String(parsed.sessionId).slice(0, 8)}`);
+    return `已清理 AI 对话记忆（${parts.join("，")}）`;
+  }
+
+  // 4. 指纹规则库更新 (UPDATE_FINGERPRINT_CATALOG)
+  if (parsed.ruleCount !== undefined) {
+    const parts: string[] = [`规则数：${parsed.ruleCount}`];
+    if (parsed.version) parts.push(`版本：${parsed.version}`);
+    if (parsed.source) parts.push(`来源：${parsed.source === "DEFAULT" ? "内置" : parsed.source}`);
+    return `已更新指纹规则库（${parts.join("，")}）`;
+  }
+
+  // 5. 护栏受控能力 (AGENT_CAPABILITY / AGENT_CAPABILITY_DENIED)
+  if (parsed.capability !== undefined) {
+    const capCode = String(parsed.capability);
+    const capName = AUDIT_TOOL_LABELS[capCode] || capCode;
+    if (parsed.deniedReason) {
+      const reasonMap: Record<string, string> = {
+        APPROVAL_REQUIRED: "需要人工逐次确认",
+        BLOCKED_CAPABILITY: "能力已被禁用",
+        TARGET_NOT_AUTHORIZED: "目标未经授权",
+        INVALID_PARAMETERS: "参数校验未通过",
+      };
+      const reason = reasonMap[parsed.deniedReason] || parsed.deniedReason;
+      return `受控能力拦截：${capName}（原因：${reason}）`;
+    }
+    const parts: string[] = [];
+    if (parsed.approvalLevel) parts.push(`审批等级：${parsed.approvalLevel}`);
+    return `受控能力放行：${capName}${parts.length > 0 ? `（${parts.join("，")}）` : ""}`;
+  }
+
+  // 6. 通用 JSON 对象的健壮中文化降级：键名与枚举翻译，彻底杜绝裸露 JSON
+  const IGNORED_JSON_KEYS = new Set([
+    "schemaVersion",
+    "turnId",
+    "runtimerRunId",
+    "runtimeRunId",
+    "workflowDigest",
+    "outerNodeId",
+    "nodeRunId",
+    "ledgerEntryDigest",
+    "indexRevision",
+    "evidenceIds",
+  ]);
+
+  const KEY_LABELS: Record<string, string> = {
+    projectId: "项目",
+    targetId: "目标",
+    taskId: "任务",
+    taskIds: "任务列表",
+    actionId: "动作",
+    sessionId: "会话",
+    status: "状态",
+    result: "结果",
+    reason: "原因",
+    error: "错误",
+    message: "信息",
+    count: "数量",
+    total: "总数",
+    port: "端口",
+    mode: "模式",
+    source: "来源",
+    version: "版本",
+    operator: "操作人",
+    approvalId: "审批单",
+    ledgerSequence: "账本序列",
+    capability: "能力",
+    executionDecision: "执行决策",
+    executionIntent: "执行意图",
+    plannerSource: "规划来源",
+  };
+
+  const VALUE_LABELS: Record<string, string> = {
+    SUCCESS: "成功",
+    FAILED: "失败",
+    FAILURE: "失败",
+    PENDING: "待处理",
+    AUTO: "自动",
+    MANUAL: "手动",
+    CLARIFY: "需向用户澄清",
+    EXECUTE: "执行安全方案",
+    PLAN_ONLY: "生成待确认方案",
+    NONE: "无",
+    true: "是",
+    false: "否",
+  };
+
+  const entries: string[] = [];
+  for (const [key, val] of Object.entries(parsed)) {
+    if (IGNORED_JSON_KEYS.has(key) || val === null || val === undefined || val === "") continue;
+    const label = KEY_LABELS[key] || key;
+    let formattedVal = String(val);
+    if (typeof val === "boolean") {
+      formattedVal = val ? "是" : "否";
+    } else if (Array.isArray(val)) {
+      if (val.length === 0) continue;
+      formattedVal = val.map((v) => VALUE_LABELS[String(v)] || String(v)).join("、");
+    } else if (typeof val === "string" && VALUE_LABELS[val]) {
+      formattedVal = VALUE_LABELS[val];
+    }
+    entries.push(`${label}：${formattedVal}`);
+  }
+
+  if (entries.length > 0) {
+    return entries.join("；");
+  }
+  return null;
+}
+
 export function formatAuditDetail(detail?: string): string {
   if (!detail) return "-";
   let text = String(detail).trim();
   if (!text) return "-";
 
-  // 清空业务数据：结构化 JSON 渲染为中文摘要，不暴露数据库 schema。
-  if (text.startsWith("{") && text.includes("deletedByCategory")) {
+  // 尝试解析结构化 JSON
+  if (text.startsWith("{") && text.endsWith("}")) {
     try {
-      const parsed = JSON.parse(text) as {
-        deletedRecords?: number;
-        deletedProjects?: number;
-        runtimeDocumentsDeleted?: number;
-        deletedByCategory?: Record<string, number>;
-        preservedData?: string[];
-      };
-      const parts: string[] = [];
-      if (typeof parsed.deletedProjects === "number") {
-        parts.push(`评估项目 ${parsed.deletedProjects} 个`);
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const formatted = formatStructuredAuditJson(parsed);
+        if (formatted) return formatted;
       }
-      if (typeof parsed.deletedRecords === "number") {
-        parts.push(`业务记录 ${parsed.deletedRecords} 条`);
-      }
-      if (typeof parsed.runtimeDocumentsDeleted === "number" && parsed.runtimeDocumentsDeleted > 0) {
-        parts.push(`运行时索引文档 ${parsed.runtimeDocumentsDeleted} 条`);
-      }
-      const cleared = Object.entries(parsed.deletedByCategory || {})
-        .filter(([, count]) => count > 0)
-        .map(([category, count]) => `${category} ${count} 条`);
-      if (cleared.length > 0) {
-        parts.push(`其中：${cleared.join("、")}`);
-      }
-      if (parsed.preservedData && parsed.preservedData.length > 0) {
-        parts.push(`已保留：${parsed.preservedData.join("、")}`);
-      }
-      return `已清空全部业务数据（${parts.join("；")}）`;
     } catch {
-      // JSON 解析失败则回退到通用处理。
+      // JSON 解析失败则回退到通用文本处理。
     }
   }
 
@@ -252,19 +452,24 @@ export function formatAuditDetail(detail?: string): string {
     "目标 #$1，监听端口：$2",
   );
 
-  // 结构化前缀处理
-  text = text.replace(/approvalId\s*=\s*(\d+)/gi, "审批单#$1");
-  text = text.replace(/projectId\s*=\s*(\d+)/gi, "项目#$1");
-  text = text.replace(/taskId\s*=\s*(\d+)/gi, "任务#$1");
-  text = text.replace(/actionId\s*=\s*(\d+)/gi, "动作#$1");
-  text = text.replace(/targetId\s*=\s*(\d+)/gi, "目标#$1");
-  text = text.replace(/runId\s*=\s*(\d+)/gi, "运行#$1");
-  text = text.replace(/baselineTaskId\s*=\s*(\d+)/gi, "基线任务#$1");
-  text = text.replace(/retestTaskId\s*=\s*(\d+)/gi, "复测任务#$1");
-  text = text.replace(/pathId\s*=\s*(\d+)/gi, "路径#$1");
-  text = text.replace(/sessionId\s*=\s*(\d+)/gi, "会话#$1");
-  text = text.replace(/sourceTaskId\s*=\s*(\d+)/gi, "源任务#$1");
-  text = text.replace(/workflowNodeId\s*=\s*([a-zA-Z0-9_-]+)/gi, "工作流节点#$1");
+  // 结构化前缀处理（优先匹配复合键名，添加单词边界避免子串误伤）
+  text = text.replace(/\bapprovalId\s*=\s*(\d+)/gi, "审批单#$1");
+  text = text.replace(/\bprojectId\s*=\s*(\d+)/gi, "项目#$1");
+  text = text.replace(/\bproject\s*=\s*(\d+)/gi, "项目#$1");
+  text = text.replace(/\bbaselineTaskId\s*=\s*(\d+)/gi, "基线任务#$1");
+  text = text.replace(/\bretestTaskId\s*=\s*(\d+)/gi, "复测任务#$1");
+  text = text.replace(/\bsourceTaskId\s*=\s*(\d+)/gi, "源任务#$1");
+  text = text.replace(/\btaskId\s*=\s*(\d+)/gi, "任务#$1");
+  text = text.replace(/\bactionId\s*=\s*(\d+)/gi, "动作#$1");
+  text = text.replace(/\btargetId\s*=\s*(\d+)/gi, "目标#$1");
+  text = text.replace(/\brunId\s*=\s*(\d+)/gi, "运行#$1");
+  text = text.replace(/\bpathId\s*=\s*(\d+)/gi, "路径#$1");
+  text = text.replace(/\bsessionId\s*=\s*([a-zA-Z0-9_-]+)/gi, "会话#$1");
+  text = text.replace(/\bworkflowNodeId\s*=\s*([a-zA-Z0-9_-]+)/gi, "工作流节点#$1");
+  text = text.replace(/\bledgerSequence\s*=\s*(\d+)/gi, "账本序列#$1");
+  text = text.replace(/\bturnId\s*=\s*([a-zA-Z0-9_-]+)/gi, "轮次#$1");
+  text = text.replace(/\bexecutionDecision\s*=\s*([a-zA-Z_]+)/gi, "执行决策：$1");
+  text = text.replace(/\bexecutionIntent\s*=\s*([a-zA-Z_]+)/gi, "执行意图：$1");
 
   // 指标统计与字段键名
   text = text.replace(/\bhits\s*=\s*(\d+)/gi, "检出 $1 个漏洞");
@@ -277,9 +482,23 @@ export function formatAuditDetail(detail?: string): string {
   text = text.replace(/\bdeletedPaths\s*=\s*(\d+)/gi, "已删除 $1 条路径");
   text = text.replace(/\bmissingPaths\s*=\s*(\d+)/gi, "缺失 $1 条路径");
   text = text.replace(/\bautomatedSteps\s*=\s*(\d+)/gi, "自动化步骤：$1 步");
+  text = text.replace(/\badded\s*=\s*(\d+)/gi, "新增 $1 项漏洞");
+  text = text.replace(/\bresolved\s*=\s*(\d+)/gi, "已修复 $1 项漏洞");
+  text = text.replace(/\bpersistent\s*=\s*(\d+)/gi, "持续存在 $1 项漏洞");
+  text = text.replace(/\bseverityChanged\s*=\s*(\d+)/gi, "等级变更 $1 项");
+  text = text.replace(/\breoccurred\s*=\s*true/gi, "漏洞复现：是");
+  text = text.replace(/\breoccurred\s*=\s*false/gi, "漏洞复现：否");
+  text = text.replace(/\bpasses\s*=\s*(\d+)/gi, "通过次数：$1");
+  text = text.replace(/\btargets\s*=\s*(\d+)/gi, "目标数：$1");
 
+  text = text.replace(/\bscope\s*=/gi, "范围：");
+  text = text.replace(/\btargetIds\s*=/gi, "目标列表：");
   text = text.replace(/\btaskIds\s*=/gi, "关联任务：");
   text = text.replace(/\bfindingIds\s*=/gi, "关联漏洞：");
+  text = text.replace(/\btool\s*=/gi, "工具：");
+  text = text.replace(/\bmodel disabled\b/gi, "模型服务未启用");
+  text = text.replace(/\bmodel response unavailable\b/gi, "模型无响应");
+  text = text.replace(/\bmodel unavailable\b/gi, "模型服务不可用");
   text = text.replace(/\bprovider\s*=\s*local-rule-fallback/gi, "服务源：本地规则兜底");
   text = text.replace(/\bprovider\s*=\s*local-rule/gi, "服务源：本地规则引擎");
   text = text.replace(/\bprovider\s*=\s*local-model/gi, "服务源：本地大模型");
@@ -306,18 +525,9 @@ export function formatAuditDetail(detail?: string): string {
   text = text.replace(/\bcleared\s*=\s*false/gi, "未清空");
 
   // 工具名称中文化
-  text = text.replace(/\btcp_ports\b/g, "TCP 端口探测");
-  text = text.replace(/\bnmap_service_scan\b/g, "Nmap 服务识别");
-  text = text.replace(/\bhttp_headers\b/g, "HTTP 响应头检查");
-  text = text.replace(/\bhttp_security_check\b/g, "HTTP 常见安全检查");
-  text = text.replace(/\btls_config\b/g, "TLS 配置检查");
-  text = text.replace(/\bnuclei_scan\b/g, "Nuclei 漏洞扫描");
-  text = text.replace(/\bafrog_scan\b/g, "Afrog 漏洞扫描");
-  text = text.replace(/\bxray_scan\b/g, "Xray 漏洞扫描");
-  text = text.replace(/\bzap_scan\b/g, "OWASP ZAP 扫描");
-  text = text.replace(/\bsqlmap_scan\b/g, "sqlmap SQL 注入检测");
-  text = text.replace(/\bfscan_scan\b/g, "fscan 主机扫描");
-  text = text.replace(/\bmsf_scan\b/g, "Metasploit 模块扫描");
+  Object.entries(AUDIT_TOOL_LABELS).forEach(([code, label]) => {
+    text = text.replace(new RegExp(`\\b${code}\\b`, "g"), label);
+  });
 
   // 统一中文化所有已知英文枚举（大小写不敏感，使用单词边界）
   const tokenMap: Record<string, string> = {
@@ -329,6 +539,19 @@ export function formatAuditDetail(detail?: string): string {
     NONE: "无",
     STOPPED: "已停止",
     IGNORED: "已忽略",
+    CLARIFY: "需向用户澄清",
+    EXECUTE: "执行安全方案",
+    PLAN_ONLY: "生成待确认方案",
+    AUTO: "自动",
+    MANUAL: "手动",
+    SINGLE: "单目标",
+    ALL: "全部目标",
+    SELECTED: "已选目标",
+    BLACKLIST: "黑名单",
+    WHITELIST: "白名单",
+    SUFFIX: "后缀匹配",
+    HOST: "域名匹配",
+    PATH: "路径匹配",
   };
   Object.entries(tokenMap).forEach(([en, zh]) => {
     text = text.replace(new RegExp(`\\b${en}\\b`, "gi"), zh);

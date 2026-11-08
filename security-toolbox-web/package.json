@@ -10,6 +10,7 @@
     "build": "vue-tsc -b && vite build",
     "build:desktop": "vue-tsc -b && vite build --mode desktop",
     "test:build-paths": "node scripts/test-build-paths.cjs",
+    "test:audit-format": "node scripts/test-audit-format.cjs",
     "test:json-file": "node scripts/test-json-file.cjs",
     "test:ai-settings": "node scripts/test-ai-settings.cjs",
     "test:ai-progress": "node scripts/test-ai-progress.cjs",
