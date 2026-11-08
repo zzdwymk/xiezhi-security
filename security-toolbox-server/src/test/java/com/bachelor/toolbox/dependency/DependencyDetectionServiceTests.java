@@ -372,6 +372,26 @@ class DependencyDetectionServiceTests {
   }
 
   @Test
+  void extractsSqlmapVersionWhenOutputPrecededByPythonSyntaxWarning() {
+    ExecutableLocator locator = locateCandidate("sqlmap.bat", Path.of("test-data/tools/sqlmap/sqlmap.bat"));
+    CommandRunner runner =
+        (executable, arguments, timeout) ->
+            CommandResult.completed(
+                0,
+                """
+                D:\\stbtools\\sqlmap\\lib\\core\\threads.py:170: SyntaxWarning: 'return' in a 'finally' block
+                  return
+                1.9.1.2#dev
+                [01:33:13] [WARNING] your sqlmap version is outdated
+                """);
+
+    DependencyStatus sqlmap = find(service(locator, runner).detect(), "sqlmap");
+
+    assertThat(sqlmap.status()).isEqualTo("AVAILABLE");
+    assertThat(sqlmap.version()).isEqualTo("1.9.1.2#dev");
+  }
+
+  @Test
   void reportsCommandFailureWithoutLeakingRunnerDetails() {
     ExecutableLocator locator = locateCandidate("nmap", Path.of("test-data/tools/nmap"));
     CommandRunner runner =

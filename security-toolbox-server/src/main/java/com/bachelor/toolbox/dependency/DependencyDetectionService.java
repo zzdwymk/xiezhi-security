@@ -526,7 +526,7 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
             output -> output != null && output.matches("(?s).*\\d+\\.\\d+\\.\\d+.*"),
             "检测到的命令不是 sqlmap（需 Python 运行时）。",
             Duration.ofSeconds(20),
-            DependencyDetectionService::firstNonBlankLine),
+            this::sqlmapVersion),
         descriptor(
             "PostgreSQL",
             postgresqlCandidates(windows),
@@ -1050,6 +1050,31 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
         .lines()
         .map(String::trim)
         .filter(line -> containsIgnoreCase(line, "Framework Version"))
+        .findFirst()
+        .orElseGet(() -> firstNonBlankLine(output));
+  }
+
+  // sqlmap --version 在高版本 Python（3.8+）下可能由于 threads.py 等历史语法的
+  // SyntaxWarning 或版本过旧警告，先向 stderr 打印警告行。
+  // 提取真正的语义版本号行（如 1.9.1.2#dev、1.10.9#stable 等）。
+  private String sqlmapVersion(String output) {
+    if (output == null || output.isBlank()) {
+      return UNKNOWN_VERSION;
+    }
+    return output
+        .lines()
+        .map(String::trim)
+        .filter(
+            line ->
+                !line.isBlank()
+                    && !line.startsWith("[")
+                    && !containsIgnoreCase(line, "warning")
+                    && !containsIgnoreCase(line, "error")
+                    && !containsIgnoreCase(line, "exception")
+                    && !containsIgnoreCase(line, "traceback")
+                    && (line.matches("^(?:sqlmap[\\s/])?\\d+\\.\\d+.*")
+                        || containsIgnoreCase(line, "#stable")
+                        || containsIgnoreCase(line, "#dev")))
         .findFirst()
         .orElseGet(() -> firstNonBlankLine(output));
   }
