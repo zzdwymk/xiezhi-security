@@ -75,15 +75,31 @@ const editForm = reactive({
 });
 const editSelectedPorts = ref<string[]>(["80", "443"]);
 const editFullPortAccess = ref(false);
+const editProjectIds = ref<number[]>([]);
+
+watch(
+  editProjectIds,
+  (ids) => {
+    editingProjects.value = projects.value.filter((p) => ids.includes(p.id));
+  },
+  { deep: true },
+);
 const searchQuery = ref("");
 const filteredRows = computed(() => {
   const q = searchQuery.value.trim().toLowerCase();
   if (!q) return rows.value;
-  return rows.value.filter((row) =>
-    [row.name, row.targetValue, row.targetType, row.authorizationNote]
+  return rows.value.filter((row) => {
+    const projectNames = projectsForTarget(row).map((p) => p.name).join(" ");
+    return [
+      row.name,
+      row.targetValue,
+      row.targetType,
+      row.authorizationNote,
+      projectNames,
+    ]
       .filter(Boolean)
-      .some((value) => String(value).toLowerCase().includes(q)),
-  );
+      .some((value) => String(value).toLowerCase().includes(q));
+  });
 });
 const {
   page,
@@ -202,13 +218,10 @@ function projectStatusLabel(status?: string) {
 }
 
 function projectsForTarget(row: Target) {
-  if (row.projectId) {
-    const directProject = projects.value.find(
-      (project) => project.id === row.projectId,
-    );
-    if (directProject) return [directProject];
-  }
   const projectIds = new Set<number>();
+  if (row.projectId) {
+    projectIds.add(row.projectId);
+  }
   for (const projectId of projectIdsByTarget.value[row.id] || []) {
     projectIds.add(projectId);
   }
@@ -647,7 +660,9 @@ async function remove(row: Target) {
 function openEditTarget(row: Target) {
   editingTargetId.value = row.id;
   originalEditTarget.value = { ...row };
-  editingProjects.value = projectsForTarget(row);
+  const linked = projectsForTarget(row);
+  editingProjects.value = linked;
+  editProjectIds.value = linked.map((p) => p.id);
   editForm.name = row.name || "";
   editForm.targetValue = row.targetValue || "";
   editForm.targetType = (row.targetType || "domain").toLowerCase();
@@ -702,6 +717,10 @@ function targetAuthorizationChanged(ports: string) {
 
 async function saveEditTarget() {
   if (!editingTargetId.value) return;
+  if (!editProjectIds.value.length) {
+    ElMessage.error("授权目标必须归属于至少一个评估项目");
+    return;
+  }
   if (
     editForm.authorizationValidFrom &&
     editForm.authorizationExpiresAt &&
@@ -743,6 +762,21 @@ async function saveEditTarget() {
         ? new Date(editForm.authorizationExpiresAt).toISOString()
         : undefined,
     });
+
+    const originalProjectIds = new Set(
+      projectsForTarget(originalEditTarget.value!).map((p) => p.id),
+    );
+    const currentProjectIds = new Set(editProjectIds.value);
+    const toAdd = editProjectIds.value.filter((id) => !originalProjectIds.has(id));
+    const toRemove = [...originalProjectIds].filter((id) => !currentProjectIds.has(id));
+
+    for (const projectId of toAdd) {
+      await endpoints.addProjectTarget(projectId, editingTargetId.value);
+    }
+    for (const projectId of toRemove) {
+      await endpoints.removeProjectTarget(projectId, editingTargetId.value);
+    }
+
     editDialog.value = false;
     await load();
     ElMessage.success("目标已更新");
@@ -810,10 +844,10 @@ onMounted(load);
         <el-input
           v-model="searchQuery"
           class="list-search-input"
-          placeholder="搜索名称 / 地址 / 类型 / 授权记录"
+          placeholder="搜索名称 / 地址 / 类型 / 授权记录 / 归属项目"
           clearable
           :prefix-icon="Search"
-          style="width: 300px"
+          style="width: 320px"
         />
         <el-button
           v-if="selectedTargets.length"
@@ -846,6 +880,26 @@ onMounted(load);
       <el-table-column prop="targetValue" label="地址" min-width="130" show-overflow-tooltip />
       <el-table-column label="类型" width="90">
         <template #default="scope">{{ targetTypeLabel(scope.row.targetType) }}</template>
+      </el-table-column>
+      <el-table-column label="归属项目" min-width="150">
+        <template #default="scope">
+          <div class="target-projects-cell">
+            <template v-if="projectsForTarget(scope.row).length">
+              <el-tag
+                v-for="project in projectsForTarget(scope.row)"
+                :key="project.id"
+                size="small"
+                type="info"
+                class="target-project-tag"
+                :title="`查看评估项目：${project.name}（${projectStatusLabel(project.status)}）`"
+                @click.stop="router.push(`/projects/${project.id}`)"
+              >
+                {{ project.name }}
+              </el-tag>
+            </template>
+            <span v-else class="target-no-project">未关联项目</span>
+          </div>
+        </template>
       </el-table-column>
       <el-table-column prop="allowedPorts" label="端口" min-width="90" show-overflow-tooltip />
       <el-table-column
@@ -1314,6 +1368,25 @@ onMounted(load);
     destroy-on-close
   >
     <el-form label-position="top" class="target-form">
+      <el-form-item label="归属评估项目" required>
+        <el-select
+          v-model="editProjectIds"
+          multiple
+          filterable
+          collapse-tags
+          collapse-tags-tooltip
+          placeholder="选择该目标归属的评估项目"
+          style="width: 100%"
+        >
+          <el-option
+            v-for="p in projects"
+            :key="p.id"
+            :label="`${p.name}（${projectStatusLabel(p.status)}）`"
+            :value="p.id"
+            :disabled="(p.status === 'ARCHIVED' || p.status === 'COMPLETED') && !editProjectIds.includes(p.id)"
+          />
+        </el-select>
+      </el-form-item>
       <div class="target-form-row">
         <el-form-item label="目标名称">
           <el-input v-model="editForm.name" placeholder="例如：主站" />
@@ -1837,6 +1910,31 @@ onMounted(load);
 .target-clear-btn {
   font-size: 13px;
   margin-right: 2px;
+}
+
+.target-projects-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.target-project-tag {
+  cursor: pointer;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: opacity 0.15s ease;
+}
+
+.target-project-tag:hover {
+  opacity: 0.8;
+}
+
+.target-no-project {
+  color: var(--color-text-muted, #8a8886);
+  font-size: 12px;
 }
 
 </style>
