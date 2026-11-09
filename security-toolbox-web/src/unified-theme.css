@@ -2674,7 +2674,8 @@ html .desktop-v2-native-frame .vuln-workbench {
   box-shadow: none !important;
 }
 
-.detail-header span {
+.detail-heading > span,
+.detail-code {
   color: var(--app-accent) !important;
 }
 

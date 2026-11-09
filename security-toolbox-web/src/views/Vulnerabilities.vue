@@ -2796,46 +2796,46 @@ onUnmounted(() => {
 .sev-tag--critical {
   border-color: color-mix(in srgb, #d03050 32%, transparent);
   background: color-mix(in srgb, #d03050 10%, transparent);
-  color: #c02c48;
+  color: #c02c48 !important;
 }
 .sev-tag--high {
   border-color: color-mix(in srgb, #f56c6c 32%, transparent);
   background: color-mix(in srgb, #f56c6c 10%, transparent);
-  color: #d84848;
+  color: #d84848 !important;
 }
 .sev-tag--medium {
   border-color: color-mix(in srgb, #e6a23c 36%, transparent);
   background: color-mix(in srgb, #e6a23c 12%, transparent);
-  color: #b58224;
+  color: #b58224 !important;
 }
 .sev-tag--low {
   border-color: color-mix(in srgb, #409eff 32%, transparent);
   background: color-mix(in srgb, #409eff 10%, transparent);
-  color: #337ec4;
+  color: #337ec4 !important;
 }
 .sev-tag--info {
   border-color: color-mix(in srgb, #909399 30%, transparent);
   background: color-mix(in srgb, #909399 10%, transparent);
-  color: #7a7d85;
+  color: #7a7d85 !important;
 }
 :root[data-system-theme="dark"] .sev-tag--critical {
-  color: #ff8896;
+  color: #ff8896 !important;
   background: color-mix(in srgb, #d03050 22%, transparent);
 }
 :root[data-system-theme="dark"] .sev-tag--high {
-  color: #ff9c9c;
+  color: #ff9c9c !important;
   background: color-mix(in srgb, #f56c6c 22%, transparent);
 }
 :root[data-system-theme="dark"] .sev-tag--medium {
-  color: #f0b45c;
+  color: #f0b45c !important;
   background: color-mix(in srgb, #e6a23c 22%, transparent);
 }
 :root[data-system-theme="dark"] .sev-tag--low {
-  color: #79b8ff;
+  color: #79b8ff !important;
   background: color-mix(in srgb, #409eff 22%, transparent);
 }
 :root[data-system-theme="dark"] .sev-tag--info {
-  color: #a6a9b0;
+  color: #a6a9b0 !important;
   background: color-mix(in srgb, #909399 22%, transparent);
 }
 .catalog-item-meta .source-chip {

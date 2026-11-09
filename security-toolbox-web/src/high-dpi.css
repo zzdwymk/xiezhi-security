@@ -385,7 +385,8 @@ select {
 .vuln-detail-pane {
   padding: 32px !important;
 }
-.detail-header span {
+.detail-heading > span,
+.detail-code {
   font-size: 13px !important;
 }
 .detail-header h2 {
