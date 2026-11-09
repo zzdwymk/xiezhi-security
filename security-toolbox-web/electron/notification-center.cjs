@@ -156,7 +156,6 @@ function serviceExitBody(label, code) {
     `${label}已停止。`,
     `退出码：${formatServiceExitCode(code)}`,
     `可能原因：${describeServiceExit(code)}`,
-    "下一步：打开 设置 → 运行诊断 → 运行日志 查看详细输出。",
   ].join("\n");
 }
 
