@@ -1241,8 +1241,8 @@ const filteredLogText = computed(() => {
   return filtered.join("\n");
 });
 
-async function loadRuntimeLogs(open = false) {
-  if (runtimeLogLoading.value) return;
+async function loadRuntimeLogs(open = false, force = false) {
+  if (runtimeLogLoading.value && !force) return;
   if (!window.toolboxDesktop?.getRuntimeLogs) {
     if (open) ElMessage.warning("当前版本不支持查看运行日志，请更新桌面应用");
     return;
@@ -1277,7 +1277,21 @@ async function previewRuntimeLog(entry: RuntimeLogEntry) {
     runtimeLogPreview.value = await window.toolboxDesktop.readRuntimeLog(entry.relativePath);
   } catch (error) {
     runtimeLogPreview.value = null;
-    ElMessage.error(errorText(error, "无法读取该日志"));
+    const msg = errorText(error, "无法读取该日志");
+    if (msg.includes("不存在") || msg.includes("ENOENT")) {
+      if (runtimeLogListing.value?.entries) {
+        runtimeLogListing.value.entries = runtimeLogListing.value.entries.filter(
+          e => e.relativePath !== entry.relativePath
+        );
+      }
+      if (runtimeLogSelected.value === entry.relativePath) {
+        runtimeLogSelected.value = visibleRuntimeLogEntries.value[0]?.relativePath || "";
+        if (runtimeLogSelected.value) {
+          void previewRuntimeLog(visibleRuntimeLogEntries.value[0]);
+        }
+      }
+    }
+    ElMessage.error(msg);
   } finally {
     runtimeLogPreviewLoading.value = false;
   }
@@ -1375,15 +1389,18 @@ async function executeDeletion() {
       authVerifyPassword.value = "";
       runtimeLogPreview.value = null;
       runtimeLogSelected.value = "";
+      if (runtimeLogListing.value) {
+        runtimeLogListing.value.entries = [];
+      }
       ElMessage.success(
         `运行日志已成功清空：清理 ${res.deletedFiles + res.truncatedFiles} 个会话文件 (${res.clearedBytesLabel})`,
       );
-      await loadRuntimeLogs();
     } catch (err) {
       ElMessage.error(errorText(err, "清空运行日志失败"));
     } finally {
       runtimeLogLoading.value = false;
     }
+    await loadRuntimeLogs(false, true);
   } else if (logToDelete.value) {
     if (!window.toolboxDesktop?.deleteRuntimeLog) {
       ElMessage.warning("当前环境不支持删除单条运行日志");
@@ -1395,6 +1412,11 @@ async function executeDeletion() {
       const res = await window.toolboxDesktop.deleteRuntimeLog(target.relativePath);
       authVerifyDialog.value = false;
       authVerifyPassword.value = "";
+      if (runtimeLogListing.value?.entries) {
+        runtimeLogListing.value.entries = runtimeLogListing.value.entries.filter(
+          e => e.relativePath !== target.relativePath
+        );
+      }
       if (res.truncated) {
         ElMessage.success(`日志「${target.name}」处于活跃状态，已清空其内容`);
       } else {
@@ -1403,13 +1425,16 @@ async function executeDeletion() {
       if (runtimeLogSelected.value === target.relativePath) {
         runtimeLogPreview.value = null;
         runtimeLogSelected.value = "";
+        if (visibleRuntimeLogEntries.value.length > 0) {
+          void previewRuntimeLog(visibleRuntimeLogEntries.value[0]);
+        }
       }
-      await loadRuntimeLogs();
     } catch (err) {
       ElMessage.error(errorText(err, "删除日志文件失败"));
     } finally {
       runtimeLogLoading.value = false;
     }
+    await loadRuntimeLogs(false, true);
   }
 }
 
