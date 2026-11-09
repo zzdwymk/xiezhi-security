@@ -123,6 +123,8 @@ security-toolbox-web/scripts/tmp-*.js
 # 实测、一次性布局测量/验证、现场演示与诊断脚本，写死了本机靶机地址或只服务
 # 于已修复的具体问题，仅供本地运行，不计入发布仓库。
 security-toolbox-web/scripts/*
+!security-toolbox-web/scripts/fixtures/
+!security-toolbox-web/scripts/fixtures/**
 !security-toolbox-web/scripts/ai-relay-runtime-probe.py
 !security-toolbox-web/scripts/generate-icon.cjs
 !security-toolbox-web/scripts/test-ai-intent-request.cjs
@@ -138,6 +140,7 @@ security-toolbox-web/scripts/*
 !security-toolbox-web/scripts/test-ai-settings.cjs
 !security-toolbox-web/scripts/test-ai-step-state.cjs
 !security-toolbox-web/scripts/test-build-paths.cjs
+!security-toolbox-web/scripts/test-chat-scroll-follow.cjs
 !security-toolbox-web/scripts/test-composer-stats-popovers.cjs
 !security-toolbox-web/scripts/test-desktop-ai-live-rounds.cjs
 !security-toolbox-web/scripts/test-desktop-dev-runner.cjs
