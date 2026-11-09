@@ -1718,10 +1718,9 @@ onUnmounted(() => {
           <div class="detail-badges">
             <el-tag v-if="selected.knownExploited" type="danger"
               >CISA KEV</el-tag
-            ><span :class="severityClass(selected.severity)"
-              ><i aria-hidden="true" />{{
-                severityLabel(selected.severity)
-              }}</span
+            ><span :class="severityClass(selected.severity)">{{
+              severityLabel(selected.severity)
+            }}</span
             >
           </div>
         </header>
@@ -2185,7 +2184,6 @@ onUnmounted(() => {
         <el-table-column label="严重度" width="90" align="center">
           <template #default="{ row }">
             <span :class="severityClass(row.severity)">
-              <i aria-hidden="true" />
               {{ severityLabel(row.severity) }}
             </span>
           </template>
@@ -2774,16 +2772,16 @@ onUnmounted(() => {
   color: var(--app-accent);
 }
 
-/* Severity badge: colored dot + soft tinted fill, replacing the default
+/* Severity badge: soft tinted fill + matching text, replacing the default
    el-tag outline which read as flat. Colors match SEVERITY_COLORS used by
    the project report severity legend for cross-page consistency. */
 .sev-tag {
   display: inline-flex;
   flex: none;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
   height: 22px;
-  padding: 0 9px 0 7px;
+  padding: 0 8px;
   border: 1px solid transparent;
   border-radius: 999px;
   font-family: inherit;
@@ -2793,17 +2791,6 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .sev-tag i {
-  width: 6px;
-  height: 6px;
-  flex: none;
-  border-radius: 50%;
-  color: inherit !important;
-  background: currentColor;
-}
-.catalog-list .sev-tag {
-  padding: 0 8px;
-}
-.catalog-list .sev-tag i {
   display: none;
 }
 .sev-tag--critical {
