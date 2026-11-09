@@ -36,6 +36,14 @@ Add-ProcessJvmOptions 'MAVEN_OPTS' @(
     '-Dsun.stderr.encoding=UTF-8'
 )
 
+# 确保 Electron 及打包工具依赖走国内官方同步镜像，避免 GitHub 504 超时并保持完整哈希校验
+if (-not $env:ELECTRON_MIRROR) {
+    $env:ELECTRON_MIRROR = 'https://npmmirror.com/mirrors/electron/'
+}
+if (-not $env:ELECTRON_BUILDER_BINARIES_MIRROR) {
+    $env:ELECTRON_BUILDER_BINARIES_MIRROR = 'https://npmmirror.com/mirrors/electron-builder-binaries/'
+}
+
 $workspace = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $backend = Join-Path $workspace 'security-toolbox-server'
 $frontend = Join-Path $workspace 'security-toolbox-web'
