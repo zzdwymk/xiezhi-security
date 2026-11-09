@@ -12,7 +12,7 @@ import type {
   PublicAgentNodeStatus,
 } from "./stores/conversations";
 
-export { api } from "./apiClient";
+export { api, getApiUrl } from "./apiClient";
 
 export interface Target {
   id: number;

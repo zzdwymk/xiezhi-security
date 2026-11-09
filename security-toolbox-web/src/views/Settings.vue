@@ -29,7 +29,7 @@ import {
 import { useCopilotStore } from "../stores/copilot";
 import { useAuthStore } from "../stores/auth";
 import { useConversationStore } from "../stores/conversations";
-import { api, endpoints, type TaskControlStatus } from "../api";
+import { api, endpoints, getApiUrl, type TaskControlStatus } from "../api";
 import { toErrorMessage } from "../utils/errorMessage";
 import { DEFAULT_NOTIFICATION_PREFERENCES, loadNotificationPreferences, saveNotificationPreferences } from "../utils/notifications";
 import AiRelaySettings from "../components/AiRelaySettings.vue";
@@ -1272,6 +1272,7 @@ async function previewRuntimeLog(entry: RuntimeLogEntry) {
   if (!window.toolboxDesktop?.readRuntimeLog) return;
   runtimeLogSelected.value = entry.relativePath;
   runtimeLogPreviewLoading.value = true;
+  logViewerWrap.value = false;
   try {
     runtimeLogPreview.value = await window.toolboxDesktop.readRuntimeLog(entry.relativePath);
   } catch (error) {
@@ -1339,9 +1340,24 @@ function handleDeleteCurrentLog() {
 async function verifyCurrentPassword(password: string): Promise<boolean> {
   const username = auth.user?.username || "admin";
   try {
-    await api.post("/auth/login", { username, password });
-    return true;
-  } catch {
+    const url = getApiUrl("/auth/login");
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    if (response.status === 401 || response.status === 400 || response.status === 403) {
+      return false;
+    }
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const data = await response.json();
+    return Boolean(data?.token);
+  } catch (error: any) {
+    if (error?.message && !error.message.startsWith("HTTP")) {
+      throw error;
+    }
     return false;
   }
 }
@@ -1419,18 +1435,26 @@ async function submitAuthAndDelete() {
 }
 
 async function verifyWithWindowsHelloAndDelete() {
-  if (!window.toolboxDesktop?.desktopLoginWithHello) return;
   windowsHelloVerifying.value = true;
   authVerifyError.value = "";
   try {
-    const result = await window.toolboxDesktop.desktopLoginWithHello();
-    if (result.verified) {
+    const desktop = window.toolboxDesktop;
+    const helloFn =
+      desktop?.verifyWindowsHello ||
+      desktop?.desktopLoginWithHello ||
+      desktop?.loginWithWindowsHello;
+    if (!helloFn) {
+      authVerifyError.value = "当前环境不支持 Windows Hello，请直接输入密码验证";
+      return;
+    }
+    const result = await helloFn();
+    if (result?.verified) {
       await executeDeletion();
-    } else if (result.reason) {
-      authVerifyError.value = result.reason;
+    } else {
+      authVerifyError.value = result?.reason || "Windows Hello 验证未通过，请使用密码验证";
     }
   } catch (err) {
-    authVerifyError.value = errorText(err, "Windows Hello 身份验证失败");
+    authVerifyError.value = errorText(err, "Windows Hello 身份验证失败，请使用密码验证");
   } finally {
     windowsHelloVerifying.value = false;
   }
@@ -1760,27 +1784,20 @@ async function verifyWithWindowsHelloAndDelete() {
         v-model="runtimeLogDialog"
         class="app-dialog runtime-log-dialog"
         align-center
-        width="min(1060px, 92vw)"
+        width="min(1100px, 94vw)"
       >
         <template #header>
           <div class="runtime-log-dialog-header">
             <div class="runtime-log-header-title-box">
               <el-icon class="runtime-log-header-icon"><Document /></el-icon>
-              <div class="runtime-log-header-texts">
-                <div class="runtime-log-title-row">
-                  <h3 class="runtime-log-title">运行日志与诊断</h3>
-                  <span class="fluent-status-badge" :class="`is-${runtimeLogHealthTag}`">
-                    <span class="fluent-status-dot"></span>
-                    {{ runtimeLogHealthText }}
-                  </span>
-                  <span v-if="runtimeLogFaultCount" class="fluent-status-badge is-danger">
-                    {{ runtimeLogFaultCount }} 项异常
-                  </span>
-                </div>
-                <p class="runtime-log-subtitle">
-                  监控与排查本地 Java 服务、AI 服务与主进程的运行输出
-                </p>
-              </div>
+              <h3 class="runtime-log-title">运行日志与诊断</h3>
+              <span class="fluent-status-badge" :class="`is-${runtimeLogHealthTag}`">
+                <span class="fluent-status-dot"></span>
+                {{ runtimeLogHealthText }}
+              </span>
+              <span v-if="runtimeLogFaultCount" class="fluent-status-badge is-danger">
+                {{ runtimeLogFaultCount }} 项异常
+              </span>
             </div>
 
             <div class="runtime-log-header-toolbar">
@@ -1941,14 +1958,14 @@ async function verifyWithWindowsHelloAndDelete() {
                         clearable
                         class="runtime-log-search-box"
                       />
-                      <el-tooltip :content="logViewerWrap ? '保持排版（单行不折行）' : '自动换行'" placement="top">
+                      <el-tooltip :content="logViewerWrap ? '当前已换行，点击切换为保持单行（横向滚动）' : '当前单行排版，点击切换为自动换行'" placement="top">
                         <el-button
                           size="small"
                           :type="logViewerWrap ? 'primary' : 'default'"
                           plain
                           @click="logViewerWrap = !logViewerWrap"
                         >
-                          {{ logViewerWrap ? '已换行' : '自动换行' }}
+                          自动换行
                         </el-button>
                       </el-tooltip>
                       <el-button
@@ -1967,7 +1984,7 @@ async function verifyWithWindowsHelloAndDelete() {
                         :icon="Delete"
                         @click="handleDeleteCurrentLog"
                       >
-                        删除日志
+                        删除
                       </el-button>
                     </div>
                   </div>
@@ -2828,14 +2845,14 @@ async function verifyWithWindowsHelloAndDelete() {
 <style scoped>
 /* ---- Fluent 2 运行日志与诊断弹窗样式 ---- */
 :global(.runtime-log-dialog.el-dialog) {
-  --app-dialog-width: min(1080px, calc(100vw - var(--desktop-sidebar-width, 240px) - 48px));
+  --app-dialog-width: min(1100px, calc(100vw - var(--desktop-sidebar-width, 240px) - 48px));
   max-width: calc(100% - 32px);
   padding: 0;
   display: flex;
   flex-direction: column;
 }
 :global(.runtime-log-dialog .el-dialog__header) {
-  padding: 14px 20px;
+  padding: 16px 24px;
   border-bottom: 1px solid var(--app-border);
   margin-right: 0;
 }
@@ -2850,19 +2867,54 @@ async function verifyWithWindowsHelloAndDelete() {
   padding: 10px 20px;
   border-top: 1px solid var(--app-border);
 }
+:global(.runtime-log-dialog .runtime-log-console-wrap) {
+  scrollbar-width: thin !important;
+  scrollbar-color: rgba(255, 255, 255, 0.45) #141418 !important;
+  overflow-x: auto !important;
+  overflow-y: auto !important;
+}
+:global(.runtime-log-dialog .runtime-log-console-wrap::-webkit-scrollbar) {
+  width: 10px !important;
+  height: 10px !important;
+  display: block !important;
+}
+:global(.runtime-log-dialog .runtime-log-console-wrap::-webkit-scrollbar:horizontal) {
+  height: 10px !important;
+  display: block !important;
+}
+:global(.runtime-log-dialog .runtime-log-console-wrap::-webkit-scrollbar-track:horizontal) {
+  background: #141418 !important;
+  display: block !important;
+  border-radius: 4px !important;
+}
+:global(.runtime-log-dialog .runtime-log-console-wrap::-webkit-scrollbar-thumb:horizontal) {
+  background: rgba(255, 255, 255, 0.35) !important;
+  display: block !important;
+  border-radius: 4px !important;
+  border: 2px solid #141418 !important;
+}
+:global(.runtime-log-dialog .runtime-log-console-wrap::-webkit-scrollbar-thumb:horizontal:hover) {
+  background: rgba(255, 255, 255, 0.6) !important;
+}
+:global(.runtime-log-dialog .runtime-log-console-wrap::-webkit-scrollbar-corner) {
+  background: #141418 !important;
+  display: block !important;
+  width: 10px !important;
+  height: 10px !important;
+}
 
 .runtime-log-dialog-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 20px;
   width: 100%;
-  padding-right: 32px;
+  padding-right: 36px;
 }
 .runtime-log-header-title-box {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   min-width: 0;
 }
 .runtime-log-header-icon {
@@ -2870,27 +2922,13 @@ async function verifyWithWindowsHelloAndDelete() {
   color: var(--app-accent, #0f6cbd);
   flex-shrink: 0;
 }
-.runtime-log-header-texts {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.runtime-log-title-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
 .runtime-log-title {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--app-text);
-}
-.runtime-log-subtitle {
-  margin: 0;
-  font-size: 12px;
-  color: var(--app-muted);
+  white-space: nowrap;
+  letter-spacing: -0.2px;
 }
 .runtime-log-header-toolbar {
   display: flex;
@@ -2901,16 +2939,32 @@ async function verifyWithWindowsHelloAndDelete() {
 .runtime-log-component-select {
   width: 130px;
 }
+.runtime-log-header-toolbar :deep(.el-select),
+.runtime-log-header-toolbar :deep(.el-select__wrapper),
+.runtime-log-header-toolbar :deep(.el-button) {
+  height: 32px !important;
+  min-height: 32px !important;
+  max-height: 32px !important;
+  line-height: 30px !important;
+  box-sizing: border-box !important;
+}
+.runtime-log-header-toolbar :deep(.el-button) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px !important;
+}
 
 /* 状态徽章 */
 .fluent-status-badge {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 1px 7px;
+  gap: 6px;
+  padding: 2px 9px;
   border-radius: 999px;
   font-size: 11px;
   font-weight: 500;
+  white-space: nowrap;
 }
 .fluent-status-badge.is-success {
   background: color-mix(in srgb, var(--el-color-success, #107c41) 12%, transparent);
@@ -3136,9 +3190,8 @@ async function verifyWithWindowsHelloAndDelete() {
 .runtime-log-detail-info {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-width: 0;
-  overflow: hidden;
+  gap: 6px;
+  flex-shrink: 0;
   white-space: nowrap;
 }
 .runtime-log-detail-title {
@@ -3180,7 +3233,24 @@ async function verifyWithWindowsHelloAndDelete() {
   flex-shrink: 0;
 }
 .runtime-log-search-box {
-  width: 150px;
+  width: 130px;
+  flex-shrink: 1;
+  min-width: 80px;
+}
+.runtime-log-detail-actions :deep(.el-input),
+.runtime-log-detail-actions :deep(.el-input__wrapper),
+.runtime-log-detail-actions :deep(.el-button) {
+  height: 28px !important;
+  min-height: 28px !important;
+  max-height: 28px !important;
+  line-height: 26px !important;
+  box-sizing: border-box !important;
+}
+.runtime-log-detail-actions :deep(.el-button) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px !important;
 }
 .runtime-log-console-wrap {
   flex: 1 1 auto;
@@ -3196,22 +3266,24 @@ async function verifyWithWindowsHelloAndDelete() {
   position: relative;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.28) rgba(0, 0, 0, 0.25);
+  scrollbar-color: rgba(255, 255, 255, 0.35) #141418;
 }
 .runtime-log-console-wrap::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px !important;
+  height: 10px !important;
+  display: block !important;
 }
 .runtime-log-console-wrap::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.25);
+  background: #141418 !important;
   border-radius: 4px;
 }
 .runtime-log-console-wrap::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.3) !important;
   border-radius: 4px;
+  border: 2px solid #141418;
 }
 .runtime-log-console-wrap::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.5) !important;
 }
 .runtime-log-text {
   margin: 0;
@@ -3226,6 +3298,9 @@ async function verifyWithWindowsHelloAndDelete() {
   font-size: 12px;
   line-height: 1.6;
   white-space: pre !important;
+  word-break: normal !important;
+  overflow-wrap: normal !important;
+  word-wrap: normal !important;
   width: max-content !important;
   min-width: 100% !important;
   tab-size: 4;
@@ -3235,6 +3310,7 @@ async function verifyWithWindowsHelloAndDelete() {
   min-width: 0 !important;
   white-space: pre-wrap !important;
   word-break: break-all !important;
+  overflow-wrap: anywhere !important;
 }
 .runtime-log-placeholder,
 .runtime-log-empty {
