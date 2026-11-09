@@ -133,13 +133,89 @@ const discoveryTarget = ref<number>();
 const discoveryRows = ref<DiscoveryResult[]>([]);
 // 方案 C：保留原始 DiscoveredPath 列表，用于按来源归类展示「页面/目录/表单/参数/API」五类资产。
 const discoveredPathRows = ref<DiscoveredPath[]>([]);
+
+type AssetCategory = "页面" | "目录" | "表单" | "参数" | "API";
+const ASSET_CATEGORY_ORDER: AssetCategory[] = [
+  "页面",
+  "目录",
+  "表单",
+  "参数",
+  "API",
+];
+
+function classifyAssetCategory(
+  p: DiscoveredPath | DiscoveryResult | Record<string, any>,
+): AssetCategory {
+  const url = String(
+    (p as any).url || (p as any).path || (p as any).targetValue || "",
+  );
+  const lower = url.toLowerCase();
+  const note = String((p as any).note || "");
+  const pathPart = lower.split("?")[0];
+  if (
+    lower.includes("?") ||
+    note.includes("可注入") ||
+    note.includes("参数")
+  ) {
+    return "参数";
+  }
+  if (/\/api(\/|$)/.test(pathPart) || /\/v\d+(\/|$)/.test(pathPart)) {
+    return "API";
+  }
+  if (
+    /(login|signin|register|form|submit|admin|user|auth|account|search)(\/|\.|$)/.test(
+      pathPart,
+    )
+  ) {
+    return "表单";
+  }
+  if (pathPart.endsWith("/")) {
+    return "目录";
+  }
+  return "页面";
+}
+
+function getDiscoveryRowCategory(row: DiscoveryResult): AssetCategory {
+  if ((row as any)._category) {
+    return (row as any)._category;
+  }
+  return classifyAssetCategory(row);
+}
+
+const selectedAssetCategory = ref<AssetCategory | "">("");
+
+const filteredDiscoveryRows = computed(() => {
+  if (!selectedAssetCategory.value) {
+    return discoveryRows.value;
+  }
+  return discoveryRows.value.filter(
+    (row) => getDiscoveryRowCategory(row) === selectedAssetCategory.value,
+  );
+});
+
+function toggleAssetCategory(category: AssetCategory) {
+  if (selectedAssetCategory.value === category) {
+    selectedAssetCategory.value = "";
+  } else {
+    selectedAssetCategory.value = category;
+  }
+}
+
+watch(selectedAssetCategory, () => {
+  discoveryPage.value = 1;
+});
+
+watch([() => id, discoveryTarget], () => {
+  selectedAssetCategory.value = "";
+});
+
 const showDiscoveryTopology = ref(false);
 const discoveryLoading = ref(false);
 const {
   page: discoveryPage,
   pageSize: discoveryPageSize,
   pagedItems: pagedDiscoveryRows,
-} = useClientPagination(discoveryRows);
+} = useClientPagination(filteredDiscoveryRows);
 const probing = ref(false);
 const fingerprintCatalog = ref<FingerprintCatalogInfo>();
 const fingerprintCatalogExpanded = ref(false);
@@ -2596,47 +2672,9 @@ function asWebPathAssets(paths: DiscoveredPath[]): DiscoveryResult[] {
       url: p.url || p.path || "",
       _webPath: true,
       _webPathId: rawId,
+      _category: classifyAssetCategory(p),
+      _rawPath: p,
     }));
-}
-
-// 方案 C：把融合发现的路径资产归为「页面 / 目录 / 表单 / 参数 / API」五类，用于资产分类概览。
-// 归类依据：URL 形态（是否以 / 结尾为目录、是否带查询串/疑似注入备注为参数、/api 前缀为 API、
-// 是否含表单/登录类动态脚本为表单）+ 来源（CRAWL/ACTIVE_ENUM 等）。
-type AssetCategory = "页面" | "目录" | "表单" | "参数" | "API";
-const ASSET_CATEGORY_ORDER: AssetCategory[] = [
-  "页面",
-  "目录",
-  "表单",
-  "参数",
-  "API",
-];
-
-function classifyAssetCategory(p: DiscoveredPath): AssetCategory {
-  const url = String(p.url || p.path || "");
-  const lower = url.toLowerCase();
-  const note = String(p.note || "");
-  const pathPart = lower.split("?")[0];
-  if (
-    lower.includes("?") ||
-    note.includes("可注入") ||
-    note.includes("参数")
-  ) {
-    return "参数";
-  }
-  if (/\/api(\/|$)/.test(pathPart) || /\/v\d+(\/|$)/.test(pathPart)) {
-    return "API";
-  }
-  if (
-    /(login|signin|register|form|submit|admin|user|auth|account|search)(\/|\.|$)/.test(
-      pathPart,
-    )
-  ) {
-    return "表单";
-  }
-  if (pathPart.endsWith("/")) {
-    return "目录";
-  }
-  return "页面";
 }
 
 const assetCategorySummary = computed(() => {
@@ -5218,59 +5256,57 @@ onUnmounted(() => {
           <div class="asset-category-heading">
             <strong>资产发现分类</strong>
             <span class="asset-category-total">共 {{ assetTotalCount }} 条</span>
+            <template v-if="selectedAssetCategory">
+              <span class="asset-category-filtered-badge">
+                当前筛选：{{ selectedAssetCategory }}（{{ filteredDiscoveryRows.length }} 条）
+              </span>
+              <el-button
+                link
+                type="primary"
+                size="small"
+                class="asset-category-reset"
+                @click="selectedAssetCategory = ''"
+              >
+                清除筛选
+              </el-button>
+            </template>
           </div>
-          <div class="asset-category-grid">
-            <div
+          <div class="asset-category-grid" role="group" aria-label="资产发现分类筛选">
+            <button
               v-for="group in assetCategorySummary"
               :key="group.category"
-              class="asset-category-card"
-              :class="{ 'is-empty': group.count === 0 }"
+              type="button"
+              class="asset-category-card asset-category-card--link"
+              :class="{
+                'is-active': selectedAssetCategory === group.category,
+                'is-empty': group.count === 0,
+              }"
+              :aria-pressed="selectedAssetCategory === group.category"
+              @click="toggleAssetCategory(group.category)"
             >
-              <div class="asset-category-card__count">{{ group.count }}</div>
-              <div class="asset-category-card__label">{{ group.category }}</div>
-              <el-popover
-                v-if="group.count"
-                placement="bottom"
-                :width="360"
-                trigger="click"
-              >
-                <template #reference>
-                  <el-button link size="small" class="asset-category-card__more"
-                    >查看</el-button
-                  >
-                </template>
-                <div class="asset-category-list">
-                  <div
-                    v-for="item in group.items"
-                    :key="item.id"
-                    class="asset-category-list__row"
-                  >
-                    <code class="asset-category-list__url">{{
-                      item.url || item.path
-                    }}</code>
-                    <span v-if="item.statusCode" class="asset-category-list__meta"
-                      >{{ item.statusCode }} · {{ item.source }}</span
-                    >
-                  </div>
-                </div>
-              </el-popover>
-            </div>
+              <strong class="asset-category-card__count">{{ group.count }}</strong>
+              <span class="asset-category-card__label">{{ group.category }}</span>
+            </button>
           </div>
         </div>
         <AssetTopology
           v-if="showDiscoveryTopology"
           :project-id="id"
-          :assets="discoveryRows"
+          :assets="filteredDiscoveryRows"
           :loading="discoveryLoading"
           @change="loadDiscovery"
         />
         <template v-if="!showDiscoveryTopology">
           <OfflineState
-            v-if="!discoveryRows.length"
+            v-if="!filteredDiscoveryRows.length"
             size="compact"
             icon="data"
-            title="暂无探测结果"
-            description="执行信息收集后，这里会展示探测到的资产。"
+            :title="selectedAssetCategory ? `暂无${selectedAssetCategory}资产` : '暂无探测结果'"
+            :description="
+              selectedAssetCategory
+                ? '当前分类下未发现相关资产，可点击分类卡片或点击「清除筛选」返回全部资产。'
+                : '执行信息收集后，这里会展示探测到的资产。'
+            "
           />
         <el-table v-else :data="pagedDiscoveryRows" stripe>
           <el-table-column label="目标" min-width="120" show-overflow-tooltip
@@ -5343,7 +5379,7 @@ onUnmounted(() => {
           v-model:page="discoveryPage"
           v-model:page-size="discoveryPageSize"
           class="project-table-pagination"
-          :total="discoveryRows.length"
+          :total="filteredDiscoveryRows.length"
         />
         </template>
         <el-dialog
@@ -9880,7 +9916,7 @@ onUnmounted(() => {
 }
 .asset-category-heading {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   margin-bottom: 10px;
 }
@@ -9888,59 +9924,89 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--el-text-color-secondary);
 }
+.asset-category-filtered-badge {
+  font-size: 12px;
+  color: var(--app-accent, #1677ff);
+  font-weight: 500;
+  margin-left: 8px;
+}
+.asset-category-reset {
+  margin-left: 2px;
+  font-size: 12px;
+}
 .asset-category-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
 }
 .asset-category-card {
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  padding: 10px 12px;
-  text-align: center;
   display: flex;
+  min-height: 84px;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  justify-content: center;
+  gap: 6px;
+  padding: 14px 12px;
+  border: 1px solid var(--app-border, var(--el-border-color));
+  border-radius: 12px;
+  background: var(--app-surface, #fff);
+  color: var(--app-text, inherit);
+  box-shadow: none;
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.12s ease;
+}
+.asset-category-card__count {
+  color: var(--app-text, #1f2937);
+  font-size: 26px;
+  font-weight: 650;
+  line-height: 1.1;
+}
+.asset-category-card__label {
+  color: var(--app-muted, #6b7280);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.asset-category-card--link:hover,
+.asset-category-card--link:focus-visible {
+  border-color: var(--app-accent, #1677ff);
+  background: var(
+    --app-accent-soft,
+    color-mix(in srgb, var(--app-accent, #1677ff) 10%, #fff)
+  );
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--app-accent, #1677ff) 25%, transparent);
+  outline: none;
+  transform: translateY(-1px);
+}
+.asset-category-card--link:active {
+  transform: translateY(0);
+}
+.asset-category-card.is-active {
+  border-color: var(--app-accent, #1677ff);
+  background: var(
+    --app-accent-soft,
+    color-mix(in srgb, var(--app-accent, #1677ff) 10%, #fff)
+  );
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--app-accent, #1677ff) 25%, transparent);
+  transform: translateY(-1px);
 }
 .asset-category-card.is-empty {
   opacity: 0.55;
 }
-.asset-category-card__count {
-  font-size: 22px;
-  font-weight: 700;
-  line-height: 1.1;
-  color: var(--el-color-primary);
+@media (max-width: 900px) {
+  .asset-category-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
-.asset-category-card__label {
-  font-size: 13px;
-  color: var(--el-text-color-regular);
-}
-.asset-category-card__more {
-  font-size: 12px;
-}
-.asset-category-list {
-  max-height: 320px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.asset-category-list__row {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 4px 6px;
-  border-radius: 4px;
-  background: var(--el-fill-color-light);
-}
-.asset-category-list__url {
-  font-size: 12px;
-  word-break: break-all;
-}
-.asset-category-list__meta {
-  font-size: 11px;
-  color: var(--el-text-color-secondary);
+@media (max-width: 560px) {
+  .asset-category-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 .project-tabs .project-subtitle {
   margin: 24px 0 12px;
