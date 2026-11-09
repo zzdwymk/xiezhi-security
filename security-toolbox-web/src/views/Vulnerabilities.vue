@@ -1661,14 +1661,13 @@ onUnmounted(() => {
           @click="selected = item"
         >
           <span class="catalog-item-meta"
-            ><span :class="severityClass(item.severity)"
-              ><i aria-hidden="true" />{{
-                severityLabel(item.severity)
-              }}</span
+            ><span :class="severityClass(item.severity)">{{
+              severityLabel(item.severity)
+            }}</span
             ><span :class="sourceChipClass(item.sourceType)">{{
               sourceLabel(item.sourceType)
             }}</span
-            ><i>{{ item.sourceExternalId || item.vulnerabilityCode }}</i
+            ><i class="catalog-item-code">{{ item.sourceExternalId || item.vulnerabilityCode }}</i
             ></span
           >
           <b>{{ item.name }}</b>
@@ -1704,7 +1703,7 @@ onUnmounted(() => {
       <template v-if="selected">
         <header class="detail-header">
           <div class="detail-heading">
-            <span>{{
+            <span class="detail-code">{{
               selected.sourceExternalId || selected.vulnerabilityCode
             }}</span>
             <h2>{{ selected.name }}</h2>
@@ -1733,10 +1732,10 @@ onUnmounted(() => {
               sourceLabel(selected.sourceType)
             }}</em></span
           >
-          <span v-if="selected.sourceName"
+          <span><b>版本</b>{{ selected.sourceVersion || "内置" }}</span>
+          <span v-if="selected.sourceName" class="source-fact--full source-fact--repo"
             ><b>来源仓库</b>{{ selected.sourceName }}</span
           >
-          <span><b>版本</b>{{ selected.sourceVersion || "内置" }}</span>
           <span><b>真实性</b>{{ verificationLabel(selected) }}</span>
           <span><b>执行分级</b>{{ safetyLabel(selected.scanSafety) }}</span>
           <span v-if="selected.cveIds"><b>CVE</b>{{ selected.cveIds }}</span>
@@ -1750,7 +1749,7 @@ onUnmounted(() => {
           <span v-if="selected.protocols"
             ><b>协议</b>{{ selected.protocols }}</span
           >
-          <span v-if="selected.templateSha256"
+          <span v-if="selected.templateSha256" class="source-fact--full"
             ><b>SHA-256</b><code>{{ selected.templateSha256 }}</code></span
           >
         </div>
@@ -2412,7 +2411,8 @@ onUnmounted(() => {
 .catalog-item-meta {
   min-width: 0;
 }
-.catalog-list i {
+.catalog-list .catalog-item-code,
+.catalog-item-meta > i {
   color: var(--app-muted);
   font-size: 10px;
   font-style: normal;
@@ -2444,7 +2444,8 @@ onUnmounted(() => {
   padding-bottom: 20px;
   border-bottom: 1px solid #e5e7eb;
 }
-.detail-header span {
+.detail-heading > span,
+.detail-code {
   color: #2563eb;
   font:
     11px Consolas,
@@ -2644,7 +2645,8 @@ onUnmounted(() => {
   color: var(--app-text);
 }
 .pane-title small,
-.catalog-list i,
+.catalog-list .catalog-item-code,
+.catalog-item-meta > i,
 .catalog-list small,
 .catalog-empty,
 .detail-tabs p,
@@ -2662,7 +2664,8 @@ onUnmounted(() => {
   background: var(--app-accent-soft-strong);
   box-shadow: none;
 }
-.detail-header span {
+.detail-heading > span,
+.detail-code {
   color: var(--app-accent);
 }
 .detail-tabs section,
@@ -2734,7 +2737,8 @@ onUnmounted(() => {
 .catalog-search :deep(.el-checkbox__label) {
   font-size: 11px;
 }
-.catalog-list i {
+.catalog-list .catalog-item-code,
+.catalog-item-meta > i {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2782,6 +2786,7 @@ onUnmounted(() => {
   padding: 0 9px 0 7px;
   border: 1px solid transparent;
   border-radius: 999px;
+  font-family: inherit;
   font-size: 11px;
   font-weight: 600;
   line-height: 20px;
@@ -2792,7 +2797,14 @@ onUnmounted(() => {
   height: 6px;
   flex: none;
   border-radius: 50%;
+  color: inherit !important;
   background: currentColor;
+}
+.catalog-list .sev-tag {
+  padding: 0 8px;
+}
+.catalog-list .sev-tag i {
+  display: none;
 }
 .sev-tag--critical {
   border-color: color-mix(in srgb, #d03050 32%, transparent);
@@ -2868,7 +2880,15 @@ onUnmounted(() => {
   color: var(--app-muted);
   font-size: 12px;
   line-height: 1.45;
-  word-break: break-all;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.source-facts span.source-fact--full {
+  grid-column: 1 / -1;
+}
+.source-facts span.source-fact--repo {
+  word-break: normal;
+  overflow-wrap: anywhere;
 }
 .source-facts b {
   display: block;
@@ -3045,7 +3065,8 @@ onUnmounted(() => {
 }
 .catalog-search :deep(.el-checkbox__label),
 .pane-title small,
-.catalog-list i,
+.catalog-list .catalog-item-code,
+.catalog-item-meta > i,
 .catalog-list small {
   font-size: 11px;
   line-height: 1.45;
