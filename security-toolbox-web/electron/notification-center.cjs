@@ -149,6 +149,17 @@ function describeServiceExit(code) {
   }
 }
 
+// Multi-line body: one fact per line, so the exit code, the likely cause and the
+// next step never read as one dense run-on sentence in the notification.
+function serviceExitBody(label, code) {
+  return [
+    `${label}已停止。`,
+    `退出码：${formatServiceExitCode(code)}`,
+    `可能原因：${describeServiceExit(code)}`,
+    "下一步：打开 设置 → 运行诊断 → 运行日志 查看详细输出。",
+  ].join("\n");
+}
+
 function createServiceExitReporter({ isQuitting, notify }) {
   const intentionallyStopped = new WeakSet();
   return {
@@ -162,7 +173,7 @@ function createServiceExitReporter({ isQuitting, notify }) {
           eventKey: `service:${service}:${lifecycleId}:exit`,
           category: "service", outcome: "error", type: "error", route: "/settings",
           title: `${label}意外退出`,
-          body: `${label}已停止，退出码 ${formatServiceExitCode(code)}。${describeServiceExit(code)}。请在设置中检查服务状态并查看运行日志。`,
+          body: serviceExitBody(label, code),
         });
         onUnexpectedExit?.(code);
       });
@@ -173,5 +184,5 @@ function createServiceExitReporter({ isQuitting, notify }) {
 module.exports = {
   createNotificationCenter, normalizeNotificationSettings, notificationSettingsFromStorage,
   updateNotificationStorage, safeNotificationRoute, shouldNotify, createServiceExitReporter,
-  formatServiceExitCode, describeServiceExit,
+  formatServiceExitCode, describeServiceExit, serviceExitBody,
 };
