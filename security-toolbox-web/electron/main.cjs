@@ -7078,6 +7078,17 @@ handleRendererIpc("toolbox:desktop-login-with-hello", async (event) => {
     },
   };
 });
+handleRendererIpc("toolbox:verify-windows-hello", async (event) => {
+  assertMainRenderer(event);
+  if (process.platform !== "win32") {
+    return {
+      verified: false,
+      available: false,
+      reason: "当前系统不支持 Windows Hello",
+    };
+  }
+  return verifyWindowsHello();
+});
 // Keep account-password / 本机安全凭据 / Windows Hello consistent: when the user changes the
 // login password in Settings, re-encrypt the local credential bundle with the new password so
 // every login path uses the same password (and no login button silently stops working).
@@ -7238,12 +7249,27 @@ function desktopChangeAdminPasswordThroughHello(newPassword) {
             }),
           });
           if (!loginResponse.ok) {
+            let errorDetail = "";
+            try {
+              const errJson = await loginResponse.json();
+              errorDetail = String(errJson?.message || errJson?.error || "").trim();
+            } catch {}
             writeDesktopStartupDiagnostic(
               "desktop-login-change",
-              new Error(`登录失败 HTTP ${loginResponse.status}`),
+              new Error(`登录失败 HTTP ${loginResponse.status}${errorDetail ? `: ${errorDetail}` : ""}`),
               { action: "verify-token" },
             );
-            resolve({ changed: false, reason: "本机密码校验失败，请重试" });
+            if (errorDetail) {
+              resolve({
+                changed: false,
+                reason: `本机已保存凭据验证失败：${errorDetail}。若已修改过密码或凭据已失效，请使用常规方式输入原密码修改，或重新绑定本机安全凭据`,
+              });
+            } else {
+              resolve({
+                changed: false,
+                reason: "本机已保存凭据验证失败（与当前数据库密码不匹配）。请使用常规方式输入当前密码修改，或重新绑定本机凭据",
+              });
+            }
             return;
           }
           const loginJson = await loginResponse.json();
@@ -7276,12 +7302,20 @@ function desktopChangeAdminPasswordThroughHello(newPassword) {
             },
           );
           if (!changeResponse.ok) {
+            let errorDetail = "";
+            try {
+              const errJson = await changeResponse.json();
+              errorDetail = String(errJson?.message || errJson?.error || "").trim();
+            } catch {}
             writeDesktopStartupDiagnostic(
               "desktop-login-change",
-              new Error(`改密失败 HTTP ${changeResponse.status}`),
+              new Error(`改密失败 HTTP ${changeResponse.status}${errorDetail ? `: ${errorDetail}` : ""}`),
               { action: "change" },
             );
-            resolve({ changed: false, reason: "后端拒绝修改密码，请重试" });
+            resolve({
+              changed: false,
+              reason: errorDetail ? `修改密码失败：${errorDetail}` : "后端拒绝修改密码，请重试",
+            });
             return;
           }
           updateDesktopAdminPassword(pw);

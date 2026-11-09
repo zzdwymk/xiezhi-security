@@ -117,6 +117,10 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.invoke("toolbox:unbind-desktop-login"),
     loginWithWindowsHello: () =>
       ipcRenderer.invoke("toolbox:desktop-login-with-hello"),
+    desktopLoginWithHello: () =>
+      ipcRenderer.invoke("toolbox:desktop-login-with-hello"),
+    verifyWindowsHello: () =>
+      ipcRenderer.invoke("toolbox:verify-windows-hello"),
     setDesktopAdminPassword: (password) =>
       ipcRenderer.invoke("toolbox:set-desktop-admin-password", password),
     changeDesktopAdminPassword: (password) =>

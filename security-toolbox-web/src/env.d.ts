@@ -281,6 +281,11 @@ interface ToolboxDesktopBridge {
     reason?: string;
     credentials?: { username: string; password: string };
   }>;
+  readonly verifyWindowsHello?: () => Promise<{
+    verified: boolean;
+    available?: boolean;
+    reason?: string;
+  }>;
   readonly saveNotificationSettings?: (payload: Partial<Omit<NotificationSettings, "severities">> & { severities?: string[] }) => Promise<NotificationSettings>;
   readonly onNotificationClick?: (callback: (route: string) => void) => () => void;
   readonly onNotificationSettingsChanged?: (callback: (settings: NotificationSettings) => void) => () => void;
