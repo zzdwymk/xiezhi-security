@@ -126,6 +126,7 @@ security-toolbox-web/scripts/*
 !security-toolbox-web/scripts/fixtures/
 !security-toolbox-web/scripts/fixtures/**
 !security-toolbox-web/scripts/ai-relay-runtime-probe.py
+!security-toolbox-web/scripts/apply-install-mirrors.cjs
 !security-toolbox-web/scripts/generate-icon.cjs
 !security-toolbox-web/scripts/test-ai-intent-request.cjs
 !security-toolbox-web/scripts/test-audit-format.cjs
