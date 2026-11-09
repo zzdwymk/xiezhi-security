@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox, type TableInstance } from "element-plus";
 import { MagicStick, Search, Document, EditPen, Delete } from "../components/fluentIcons";
+import FluentIcon from "../components/FluentIcon.vue";
 import {
   endpoints,
   safeGet,
@@ -876,36 +877,37 @@ onMounted(load);
       @selection-change="onSelectionChange"
     >
       <el-table-column type="selection" width="40" />
-      <el-table-column prop="name" label="名称" min-width="110" show-overflow-tooltip />
-      <el-table-column prop="targetValue" label="地址" min-width="130" show-overflow-tooltip />
-      <el-table-column label="类型" width="90">
-        <template #default="scope">{{ targetTypeLabel(scope.row.targetType) }}</template>
-      </el-table-column>
-      <el-table-column label="归属项目" min-width="150">
+      <el-table-column label="名称" min-width="145">
         <template #default="scope">
-          <div class="target-projects-cell">
-            <template v-if="projectsForTarget(scope.row).length">
-              <el-tag
-                v-for="project in projectsForTarget(scope.row)"
-                :key="project.id"
-                size="small"
-                type="info"
-                class="target-project-tag"
-                :title="`查看评估项目：${project.name}（${projectStatusLabel(project.status)}）`"
-                @click.stop="router.push(`/projects/${project.id}`)"
-              >
-                {{ project.name }}
-              </el-tag>
-            </template>
-            <span v-else class="target-no-project">未关联项目</span>
+          <div class="target-name-cell">
+            <span class="target-primary-name" :title="scope.row.name">{{ scope.row.name }}</span>
+            <div class="target-project-line">
+              <template v-if="projectsForTarget(scope.row).length">
+                <span
+                  v-for="project in projectsForTarget(scope.row)"
+                  :key="project.id"
+                  class="target-project-badge"
+                  :title="`归属评估项目：${project.name}（${projectStatusLabel(project.status)}）`"
+                  @click.stop="router.push(`/projects/${project.id}`)"
+                >
+                  <FluentIcon name="folder" class="target-project-icon" />
+                  <span class="target-project-text">{{ project.name }}</span>
+                </span>
+              </template>
+              <span v-else class="target-no-project">未关联项目</span>
+            </div>
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="allowedPorts" label="端口" min-width="90" show-overflow-tooltip />
+      <el-table-column prop="targetValue" label="地址" min-width="130" show-overflow-tooltip />
+      <el-table-column label="类型" width="85">
+        <template #default="scope">{{ targetTypeLabel(scope.row.targetType) }}</template>
+      </el-table-column>
+      <el-table-column prop="allowedPorts" label="端口" min-width="85" show-overflow-tooltip />
       <el-table-column
         prop="authorizationNote"
         label="授权记录"
-        min-width="120"
+        min-width="110"
         show-overflow-tooltip
       />
       <el-table-column label="授权有效期" min-width="135">
@@ -935,16 +937,15 @@ onMounted(load);
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="80"
-        ><template #default="scope"
-          ><el-tag
+      <el-table-column label="状态" width="75">
+        <template #default="scope">
+          <el-tag
             size="small"
             :type="targetWindowState(scope.row).type"
-            >{{ targetWindowState(scope.row).label }}</el-tag
-          ></template
-        ></el-table-column
-      >
-      <el-table-column label="操作" min-width="250"
+          >{{ targetWindowState(scope.row).label }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" min-width="210" width="220"
         ><template #default="scope"
           ><div class="row-actions row-actions--pair"
             ><el-button
@@ -1912,29 +1913,71 @@ onMounted(load);
   margin-right: 2px;
 }
 
-.target-projects-cell {
+.target-name-cell {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  align-items: center;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 1px 0;
 }
 
-.target-project-tag {
-  cursor: pointer;
-  max-width: 140px;
+.target-primary-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--app-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  transition: opacity 0.15s ease;
+  line-height: 1.35;
 }
 
-.target-project-tag:hover {
-  opacity: 0.8;
+.target-project-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.target-project-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--app-accent, #0078d4);
+  background: var(--app-accent-soft, rgba(0, 120, 212, 0.08));
+  padding: 1px 7px 1px 5px;
+  border-radius: var(--fluent-radius-control, 4px);
+  cursor: pointer;
+  max-width: 160px;
+  user-select: none;
+  transition: all 0.15s ease;
+}
+
+.target-project-badge:hover {
+  background: var(--app-accent-soft-strong, rgba(0, 120, 212, 0.16));
+  color: var(--app-accent-hover, #106ebe);
+}
+
+.target-project-icon {
+  font-size: 12px;
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  opacity: 0.9;
+}
+
+.target-project-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .target-no-project {
-  color: var(--color-text-muted, #8a8886);
-  font-size: 12px;
+  font-size: 11px;
+  color: var(--app-muted, #8a8886);
+  font-style: italic;
 }
 
 </style>
