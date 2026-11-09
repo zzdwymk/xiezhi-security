@@ -443,6 +443,9 @@ const pendingForCurrentThread = computed<PendingPrompt[]>(() => {
   return pendingPrompts.value.get(currentQueueKey.value) ?? [];
 });
 
+/** 待发送队列面板是否展开完整纵向列表（默认折叠为单行精简胶囊条，避免占用聊天空间）。 */
+const isQueueExpanded = ref(false);
+
 /** 生成一个本地唯一 id，用于排队项（不依赖 crypto，避免旧运行时缺失）。 */
 let pendingIdSeq = 0;
 function createPendingId(): string {
@@ -2579,7 +2582,52 @@ function editPendingPrompt(queueKey: string, id: string) {
   });
 }
 
-/** 调整排队消息顺序：direction = -1 上移一位，+1 下移一位。 */
+/** 拖拽排序状态 */
+const draggedQueueIndex = ref<number | null>(null);
+const dragOverQueueIndex = ref<number | null>(null);
+
+function handleQueueDragStart(event: DragEvent, index: number) {
+  draggedQueueIndex.value = index;
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", String(index));
+  }
+}
+
+function handleQueueDragOver(event: DragEvent, index: number) {
+  event.preventDefault();
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "move";
+  }
+  dragOverQueueIndex.value = index;
+}
+
+function handleQueueDrop(event: DragEvent, targetIndex: number) {
+  event.preventDefault();
+  const sourceIndex = draggedQueueIndex.value;
+  if (sourceIndex !== null && sourceIndex !== targetIndex) {
+    reorderPendingPrompts(currentQueueKey.value, sourceIndex, targetIndex);
+  }
+  draggedQueueIndex.value = null;
+  dragOverQueueIndex.value = null;
+}
+
+function handleQueueDragEnd() {
+  draggedQueueIndex.value = null;
+  dragOverQueueIndex.value = null;
+}
+
+/** 拖拽重排排队消息位置。 */
+function reorderPendingPrompts(queueKey: string, fromIndex: number, toIndex: number) {
+  const list = pendingPrompts.value.get(queueKey);
+  if (!list || fromIndex < 0 || fromIndex >= list.length || toIndex < 0 || toIndex >= list.length || fromIndex === toIndex) return;
+  const next = list.slice();
+  const [moved] = next.splice(fromIndex, 1);
+  next.splice(toIndex, 0, moved);
+  pendingPrompts.value = new Map(pendingPrompts.value).set(queueKey, next);
+}
+
+/** 调整排队消息顺序：direction = -1 上移一位，+1 下移一位（保留函数以兼容外部自动化测试）。 */
 function movePendingPrompt(queueKey: string, id: string, direction: -1 | 1) {
   const list = pendingPrompts.value.get(queueKey);
   if (!list?.length) return;
@@ -3472,70 +3520,94 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <!-- 待发送队列：独立位于欢迎输入框外上方（纵向排列） -->
+      <!-- 待发送队列：独立位于欢迎输入框外上方（默认单行极简条，可折叠展开管理，绝不挤占视口） -->
       <div
         v-if="pendingForCurrentThread.length"
         class="composer-queue-panel composer-queue-bar welcome-queue-panel"
+        :class="{ 'is-expanded': isQueueExpanded, 'is-single': pendingForCurrentThread.length === 1 }"
         role="status"
         aria-label="待发送队列"
       >
-        <div class="composer-queue-header">
-          <div class="composer-queue-header-left">
-            <span class="composer-queue-title">待发送队列（排队中 {{ pendingForCurrentThread.length }} 条）</span>
-            <span class="composer-queue-tip">当前轮处理完成后自动依次发送</span>
+        <!-- 紧凑单行概要条（默认高度仅 ~28px） -->
+        <div class="composer-queue-compact-bar">
+          <div class="composer-queue-compact-left">
+            <span class="composer-queue-badge">排队 {{ pendingForCurrentThread.length }} 条</span>
+            <span class="composer-queue-lead-preview" :title="pendingForCurrentThread[0]?.text">
+              <span class="composer-queue-lead-tag">首条</span>
+              <span class="composer-queue-lead-text">{{ quotePreview(pendingForCurrentThread[0]?.text) }}</span>
+            </span>
           </div>
-          <button type="button" class="composer-queue-clear" @click="clearPendingQueue()">清空队列</button>
+          <div class="composer-queue-compact-actions">
+            <button
+              v-if="pendingForCurrentThread.length > 1"
+              type="button"
+              class="composer-queue-expand-btn"
+              :aria-expanded="isQueueExpanded"
+              @click="isQueueExpanded = !isQueueExpanded"
+            >
+              <span>{{ isQueueExpanded ? '收起 ▴' : '管理队列 ▾' }}</span>
+            </button>
+            <template v-if="pendingForCurrentThread.length === 1">
+              <button
+                type="button"
+                class="composer-queue-inline-btn"
+                title="取回输入框重新编辑"
+                @click="editPendingPrompt(currentQueueKey, pendingForCurrentThread[0].id)"
+              >编辑</button>
+              <button
+                type="button"
+                class="composer-queue-inline-cancel"
+                title="取消排队"
+                @click="cancelPendingPrompt(currentQueueKey, pendingForCurrentThread[0].id)"
+              >×</button>
+            </template>
+            <button
+              v-if="pendingForCurrentThread.length > 1"
+              type="button"
+              class="composer-queue-clear"
+              title="清空当前所有排队消息"
+              @click="clearPendingQueue()"
+            >清空</button>
+          </div>
         </div>
-        <ul class="composer-queue-list">
+
+        <!-- 纵向管理列表（多条且点击展开时才呈现，支持抓手拖拽排序，紧凑微排版） -->
+        <ul v-if="pendingForCurrentThread.length > 1 && isQueueExpanded" class="composer-queue-list">
           <li
             v-for="(item, qIndex) in pendingForCurrentThread"
             :key="item.id"
             class="composer-queue-item"
-            :class="{ 'is-expanded': expandedPendingIds.has(item.id) }"
+            :class="{ 'is-dragging': draggedQueueIndex === qIndex, 'is-drag-over': dragOverQueueIndex === qIndex }"
+            draggable="true"
+            @dragstart="handleQueueDragStart($event, qIndex)"
+            @dragover="handleQueueDragOver($event, qIndex)"
+            @drop="handleQueueDrop($event, qIndex)"
+            @dragend="handleQueueDragEnd"
           >
             <div class="composer-queue-item-left">
-              <span class="composer-queue-badge">#{{ qIndex + 1 }}</span>
-              <span class="composer-queue-order">
-                <button
-                  type="button"
-                  class="composer-queue-move"
-                  :disabled="qIndex === 0"
-                  :aria-label="`上移排队消息：${quotePreview(item.text)}`"
-                  title="上移"
-                  @click="movePendingPrompt(currentQueueKey, item.id, -1)"
-                >↑</button>
-                <button
-                  type="button"
-                  class="composer-queue-move"
-                  :disabled="qIndex === pendingForCurrentThread.length - 1"
-                  :aria-label="`下移排队消息：${quotePreview(item.text)}`"
-                  title="下移"
-                  @click="movePendingPrompt(currentQueueKey, item.id, 1)"
-                >↓</button>
+              <span class="composer-queue-drag-handle" title="按住拖拽排序" aria-label="按住拖拽排序">
+                <svg class="drag-handle-dots" viewBox="0 0 10 16" width="9" height="13" aria-hidden="true">
+                  <circle cx="2.5" cy="2.5" r="1.3" fill="currentColor" />
+                  <circle cx="7.5" cy="2.5" r="1.3" fill="currentColor" />
+                  <circle cx="2.5" cy="8" r="1.3" fill="currentColor" />
+                  <circle cx="7.5" cy="8" r="1.3" fill="currentColor" />
+                  <circle cx="2.5" cy="13.5" r="1.3" fill="currentColor" />
+                  <circle cx="7.5" cy="13.5" r="1.3" fill="currentColor" />
+                </svg>
               </span>
-              <button
-                type="button"
-                class="composer-queue-text"
-                :title="item.text"
-                :aria-label="`预览排队消息：${quotePreview(item.text)}`"
-                @click="togglePendingPreview(item.id)"
-              >
-                <span class="composer-queue-text-content">{{ expandedPendingIds.has(item.id) ? item.text : quotePreview(item.text) }}</span>
-                <span class="composer-queue-preview-toggle">{{ expandedPendingIds.has(item.id) ? '收起' : '展开' }}</span>
-              </button>
+              <span class="composer-queue-sub-badge">#{{ qIndex + 1 }}</span>
+              <span class="composer-queue-item-text" :title="item.text">{{ quotePreview(item.text) }}</span>
             </div>
             <div class="composer-queue-item-actions">
               <button
                 type="button"
                 class="composer-queue-edit"
-                :aria-label="`编辑排队消息：${quotePreview(item.text)}`"
-                title="取回输入框重新编辑"
+                title="取回编辑"
                 @click="editPendingPrompt(currentQueueKey, item.id)"
               >编辑</button>
               <button
                 type="button"
                 class="composer-queue-cancel"
-                :aria-label="`取消排队：${quotePreview(item.text)}`"
                 title="取消此条"
                 @click="cancelPendingPrompt(currentQueueKey, item.id)"
               >×</button>
@@ -4236,70 +4308,94 @@ onBeforeUnmount(() => {
           ><small>如需更换目标，请新建对话</small>
         </div>
 
-        <!-- 待发送队列：独立位于输入框外上方（纵向排列） -->
+        <!-- 待发送队列：独立位于输入框外上方（默认单行极简条，可折叠展开管理，绝不挤占视口） -->
         <div
           v-if="pendingForCurrentThread.length"
           class="composer-queue-panel composer-queue-bar"
+          :class="{ 'is-expanded': isQueueExpanded, 'is-single': pendingForCurrentThread.length === 1 }"
           role="status"
           aria-label="待发送队列"
         >
-          <div class="composer-queue-header">
-            <div class="composer-queue-header-left">
-              <span class="composer-queue-title">待发送队列（排队中 {{ pendingForCurrentThread.length }} 条）</span>
-              <span class="composer-queue-tip">当前轮处理完成后自动依次发送</span>
+          <!-- 紧凑单行概要条（默认高度仅 ~28px） -->
+          <div class="composer-queue-compact-bar">
+            <div class="composer-queue-compact-left">
+              <span class="composer-queue-badge">排队 {{ pendingForCurrentThread.length }} 条</span>
+              <span class="composer-queue-lead-preview" :title="pendingForCurrentThread[0]?.text">
+                <span class="composer-queue-lead-tag">首条</span>
+                <span class="composer-queue-lead-text">{{ quotePreview(pendingForCurrentThread[0]?.text) }}</span>
+              </span>
             </div>
-            <button type="button" class="composer-queue-clear" @click="clearPendingQueue()">清空队列</button>
+            <div class="composer-queue-compact-actions">
+              <button
+                v-if="pendingForCurrentThread.length > 1"
+                type="button"
+                class="composer-queue-expand-btn"
+                :aria-expanded="isQueueExpanded"
+                @click="isQueueExpanded = !isQueueExpanded"
+              >
+                <span>{{ isQueueExpanded ? '收起 ▴' : '管理队列 ▾' }}</span>
+              </button>
+              <template v-if="pendingForCurrentThread.length === 1">
+                <button
+                  type="button"
+                  class="composer-queue-inline-btn"
+                  title="取回输入框重新编辑"
+                  @click="editPendingPrompt(currentQueueKey, pendingForCurrentThread[0].id)"
+                >编辑</button>
+                <button
+                  type="button"
+                  class="composer-queue-inline-cancel"
+                  title="取消排队"
+                  @click="cancelPendingPrompt(currentQueueKey, pendingForCurrentThread[0].id)"
+                >×</button>
+              </template>
+              <button
+                v-if="pendingForCurrentThread.length > 1"
+                type="button"
+                class="composer-queue-clear"
+                title="清空当前所有排队消息"
+                @click="clearPendingQueue()"
+              >清空</button>
+            </div>
           </div>
-          <ul class="composer-queue-list">
+
+          <!-- 纵向管理列表（多条且点击展开时才呈现，支持抓手拖拽排序，紧凑微排版） -->
+          <ul v-if="pendingForCurrentThread.length > 1 && isQueueExpanded" class="composer-queue-list">
             <li
               v-for="(item, qIndex) in pendingForCurrentThread"
               :key="item.id"
               class="composer-queue-item"
-              :class="{ 'is-expanded': expandedPendingIds.has(item.id) }"
+              :class="{ 'is-dragging': draggedQueueIndex === qIndex, 'is-drag-over': dragOverQueueIndex === qIndex }"
+              draggable="true"
+              @dragstart="handleQueueDragStart($event, qIndex)"
+              @dragover="handleQueueDragOver($event, qIndex)"
+              @drop="handleQueueDrop($event, qIndex)"
+              @dragend="handleQueueDragEnd"
             >
               <div class="composer-queue-item-left">
-                <span class="composer-queue-badge">#{{ qIndex + 1 }}</span>
-                <span class="composer-queue-order">
-                  <button
-                    type="button"
-                    class="composer-queue-move"
-                    :disabled="qIndex === 0"
-                    :aria-label="`上移排队消息：${quotePreview(item.text)}`"
-                    title="上移"
-                    @click="movePendingPrompt(currentQueueKey, item.id, -1)"
-                  >↑</button>
-                  <button
-                    type="button"
-                    class="composer-queue-move"
-                    :disabled="qIndex === pendingForCurrentThread.length - 1"
-                    :aria-label="`下移排队消息：${quotePreview(item.text)}`"
-                    title="下移"
-                    @click="movePendingPrompt(currentQueueKey, item.id, 1)"
-                  >↓</button>
+                <span class="composer-queue-drag-handle" title="按住拖拽排序" aria-label="按住拖拽排序">
+                  <svg class="drag-handle-dots" viewBox="0 0 10 16" width="9" height="13" aria-hidden="true">
+                    <circle cx="2.5" cy="2.5" r="1.3" fill="currentColor" />
+                    <circle cx="7.5" cy="2.5" r="1.3" fill="currentColor" />
+                    <circle cx="2.5" cy="8" r="1.3" fill="currentColor" />
+                    <circle cx="7.5" cy="8" r="1.3" fill="currentColor" />
+                    <circle cx="2.5" cy="13.5" r="1.3" fill="currentColor" />
+                    <circle cx="7.5" cy="13.5" r="1.3" fill="currentColor" />
+                  </svg>
                 </span>
-                <button
-                  type="button"
-                  class="composer-queue-text"
-                  :title="item.text"
-                  :aria-label="`预览排队消息：${quotePreview(item.text)}`"
-                  @click="togglePendingPreview(item.id)"
-                >
-                  <span class="composer-queue-text-content">{{ expandedPendingIds.has(item.id) ? item.text : quotePreview(item.text) }}</span>
-                  <span class="composer-queue-preview-toggle">{{ expandedPendingIds.has(item.id) ? '收起' : '展开' }}</span>
-                </button>
+                <span class="composer-queue-sub-badge">#{{ qIndex + 1 }}</span>
+                <span class="composer-queue-item-text" :title="item.text">{{ quotePreview(item.text) }}</span>
               </div>
               <div class="composer-queue-item-actions">
                 <button
                   type="button"
                   class="composer-queue-edit"
-                  :aria-label="`编辑排队消息：${quotePreview(item.text)}`"
-                  title="取回输入框重新编辑"
+                  title="取回编辑"
                   @click="editPendingPrompt(currentQueueKey, item.id)"
                 >编辑</button>
                 <button
                   type="button"
                   class="composer-queue-cancel"
-                  :aria-label="`取消排队：${quotePreview(item.text)}`"
                   title="取消此条"
                   @click="cancelPendingPrompt(currentQueueKey, item.id)"
                 >×</button>
@@ -4904,118 +5000,53 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, var(--fluent-danger-bg, #b42318) 10%, var(--app-surface-strong));
   border: var(--fluent-stroke-thin, 1px) solid color-mix(in srgb, var(--fluent-danger-bg, #b42318) 32%, transparent);
 }
-/* 待发送队列：独立位于输入框外上方（纵向排列面板） — 严格遵循 Fluent UI 2 设计规范 */
+/* 待发送队列：无缝紧贴输入框外上方（一体化附着顶栏模式，极简紧凑，支持拖拽排序） */
 .composer-queue-panel {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 3px;
   width: 100%;
-  margin-bottom: 8px;
-  padding: 10px 14px;
-  border-radius: var(--fluent-radius-card, 8px);
-  border: var(--fluent-stroke-thin, 1px) solid color-mix(in srgb, var(--app-accent, #409eff) 30%, var(--app-border));
-  background: color-mix(in srgb, var(--app-surface-soft) 80%, var(--app-surface-strong));
-  box-shadow: var(--fluent-card-shadow, var(--fluent-shadow-2));
-  backdrop-filter: blur(16px) saturate(125%);
+  margin-bottom: -1px; /* 彻底消除下间隙，与输入框顶部无缝融合 */
+  padding: 4px 12px;
+  border-radius: var(--fluent-radius-card, 8px) var(--fluent-radius-card, 8px) 0 0;
+  border: var(--fluent-stroke-thin, 1px) solid color-mix(in srgb, var(--app-accent, #409eff) 28%, var(--app-border));
+  border-bottom: var(--fluent-stroke-thin, 1px) solid color-mix(in srgb, var(--app-border) 70%, transparent);
+  background: color-mix(in srgb, var(--app-surface-soft) 88%, var(--app-surface-strong));
+  box-shadow: none;
+  backdrop-filter: blur(14px) saturate(120%);
   box-sizing: border-box;
+  position: relative;
+  z-index: 2;
+  transition: all var(--fluent-fast, 120ms) ease;
 }
-/* 欢迎页中的外上方队列面板与 welcome-composer 居中对齐 */
+.composer-queue-panel.is-expanded {
+  padding: 5px 12px 6px;
+}
+/* 当输入框上方有待发队列面板时，输入框顶部圆角平直贴合，融合成一个复合卡片 */
+.composer-queue-panel + .thread-composer,
+.composer-queue-panel + .welcome-composer {
+  border-top-left-radius: 0 !important;
+  border-top-right-radius: 0 !important;
+}
+/* 欢迎页中的无缝贴合排队顶栏与 welcome-composer 居中对齐 */
 .welcome-queue-panel {
   width: min(760px, 100%);
-  margin-top: 18px;
-  margin-bottom: 12px;
+  margin-top: 14px;
+  margin-bottom: -1px;
 }
-.composer-queue-header {
+/* 紧凑单行条（默认常驻，高仅 22px，极简轻巧） */
+.composer-queue-compact-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding-bottom: 6px;
-  border-bottom: var(--fluent-stroke-thin, 1px) solid color-mix(in srgb, var(--app-border) 60%, transparent);
+  gap: 8px;
+  min-height: 22px;
+  line-height: 1;
 }
-.composer-queue-header-left {
+.composer-queue-compact-left {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-.composer-queue-title {
-  font-family: var(--fluent-font, inherit);
-  font-size: var(--fluent-caption1-size, 12px);
-  font-weight: var(--fluent-weight-semibold, 600);
-  line-height: var(--fluent-caption1-line, 16px);
-  color: var(--app-accent, #409eff);
-  white-space: nowrap;
-}
-.composer-queue-tip {
-  font-family: var(--fluent-font, inherit);
-  color: var(--app-muted, #909399);
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.composer-queue-clear {
-  flex: 0 0 auto;
-  padding: 2px 6px;
-  border: var(--fluent-stroke-thin, 1px) solid transparent;
-  border-radius: var(--fluent-radius-control, 4px);
-  background: transparent;
-  color: var(--app-muted, #909399);
-  font-family: var(--fluent-font, inherit);
-  font-size: 11px;
-  cursor: pointer;
-  text-decoration: underline;
-  transition:
-    background-color var(--fluent-fast, 120ms) ease,
-    color var(--fluent-fast, 120ms) ease;
-}
-.composer-queue-clear:hover {
-  color: var(--app-accent, #409eff);
-  background: color-mix(in srgb, var(--app-accent, #409eff) 10%, transparent);
-  text-decoration: none;
-}
-.composer-queue-clear:focus-visible {
-  outline: var(--fluent-stroke-thick, 2px) solid var(--app-accent);
-  outline-offset: 1px;
-}
-/* 纵向列表：自上而下单列排列 */
-.composer-queue-list {
-  display: flex;
-  flex-direction: column;
   gap: 6px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  max-height: 220px;
-  overflow-y: auto;
-}
-.composer-queue-list li,
-.composer-queue-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  width: 100%;
-  padding: 6px 10px;
-  border-radius: var(--fluent-radius-large, 6px);
-  background: var(--app-surface-strong, #fff);
-  border: var(--fluent-stroke-thin, 1px) solid var(--app-border, rgba(0, 0, 0, 0.08));
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-  box-sizing: border-box;
-  transition:
-    border-color var(--fluent-fast, 120ms) ease,
-    box-shadow var(--fluent-fast, 120ms) ease,
-    background-color var(--fluent-fast, 120ms) ease;
-}
-.composer-queue-list li:hover {
-  border-color: color-mix(in srgb, var(--app-accent, #409eff) 50%, var(--app-border));
-  box-shadow: var(--fluent-shadow-2, 0 2px 4px rgba(0, 0, 0, 0.06));
-}
-.composer-queue-item-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
   min-width: 0;
   flex: 1 1 auto;
 }
@@ -5024,188 +5055,224 @@ onBeforeUnmount(() => {
   padding: 2px 6px;
   border-radius: var(--fluent-radius-control, 4px);
   font-family: var(--fluent-font, inherit);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: var(--fluent-weight-semibold, 600);
-  line-height: 1;
+  line-height: 1.2;
   color: var(--app-accent, #409eff);
   background: color-mix(in srgb, var(--app-accent, #409eff) 12%, transparent);
   border: var(--fluent-stroke-thin, 1px) solid color-mix(in srgb, var(--app-accent, #409eff) 25%, transparent);
 }
-.composer-queue-order {
-  display: inline-flex;
-  flex-direction: column;
-  gap: 0;
-  flex: 0 0 auto;
-}
-.composer-queue-move {
+.composer-queue-lead-preview {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 12px;
-  padding: 0;
-  border: var(--fluent-stroke-thin, 1px) solid transparent;
-  border-radius: var(--fluent-radius-control, 2px);
-  background: transparent;
-  color: var(--app-muted, #909399);
-  cursor: pointer;
-  font-size: 9px;
-  line-height: 1;
-  transition:
-    background-color var(--fluent-fast, 120ms) ease,
-    color var(--fluent-fast, 120ms) ease,
-    transform var(--fluent-fast, 120ms) ease;
-}
-.composer-queue-move:hover:not(:disabled) {
-  color: var(--app-accent, #409eff);
-  background: color-mix(in srgb, var(--app-accent, #409eff) 12%, transparent);
-}
-.composer-queue-move:active:not(:disabled) {
-  transform: scale(0.92);
-}
-.composer-queue-move:disabled {
-  opacity: 0.25;
-  cursor: default;
-}
-.composer-queue-move:focus-visible {
-  outline: var(--fluent-stroke-thick, 2px) solid var(--app-accent);
-  outline-offset: 1px;
-}
-.composer-queue-text {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1 1 auto;
+  gap: 4px;
   min-width: 0;
-  padding: 2px 4px;
-  border: var(--fluent-stroke-thin, 1px) solid transparent;
-  border-radius: var(--fluent-radius-control, 4px);
-  background: transparent;
-  color: var(--app-text, inherit);
-  font-family: var(--fluent-font, inherit);
-  text-align: left;
-  cursor: pointer;
-  transition:
-    background-color var(--fluent-fast, 120ms) ease,
-    color var(--fluent-fast, 120ms) ease;
+  overflow: hidden;
+  color: var(--app-text);
+  font-size: 11px;
 }
-.composer-queue-text:focus-visible {
-  outline: var(--fluent-stroke-thick, 2px) solid var(--app-accent);
-  outline-offset: 1px;
+.composer-queue-lead-tag {
+  flex: 0 0 auto;
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--app-surface-soft);
+  color: var(--app-muted, #909399);
 }
-.composer-queue-text-content {
+.composer-queue-lead-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--fluent-caption1-size, 12px);
-  line-height: var(--fluent-caption1-line, 16px);
 }
-.composer-queue-preview-toggle {
-  flex: 0 0 auto;
-  font-size: 10px;
-  color: var(--app-muted, #909399);
-  padding: 1px 5px;
-  border-radius: var(--fluent-radius-control, 3px);
-  background: var(--app-surface-soft);
-  border: var(--fluent-stroke-thin, 1px) solid var(--app-border);
-}
-.composer-queue-text:hover .composer-queue-text-content {
-  color: var(--app-accent, #409eff);
-}
-.composer-queue-text:hover .composer-queue-preview-toggle {
-  border-color: color-mix(in srgb, var(--app-accent, #409eff) 40%, var(--app-border));
-  color: var(--app-accent, #409eff);
-}
-/* 展开长文预览：Fluent Card 展开态 */
-.composer-queue-list li.is-expanded {
-  align-items: flex-start;
-  padding: 8px 10px;
-  background: color-mix(in srgb, var(--app-surface-strong) 92%, var(--app-accent, #409eff));
-}
-.composer-queue-list li.is-expanded .composer-queue-item-left {
-  align-items: flex-start;
-}
-.composer-queue-list li.is-expanded .composer-queue-text {
-  flex-direction: column;
-  align-items: flex-start;
-}
-.composer-queue-list li.is-expanded .composer-queue-text-content {
-  white-space: pre-wrap;
-  overflow: visible;
-  text-overflow: clip;
-  overflow-wrap: anywhere;
-  line-height: var(--fluent-body1-line, 1.5);
-  color: var(--app-text);
-}
-.composer-queue-item-actions {
+.composer-queue-compact-actions {
   display: flex;
   align-items: center;
   gap: 6px;
   flex: 0 0 auto;
 }
-/* Fluent Subtle Button 规范 */
-.composer-queue-edit {
+.composer-queue-expand-btn {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  padding: 2px 8px;
-  min-height: 22px;
-  border: var(--fluent-stroke-thin, 1px) solid color-mix(in srgb, var(--app-accent, #409eff) 30%, transparent);
+  padding: 2px 6px;
+  border: var(--fluent-stroke-thin, 1px) solid transparent;
   border-radius: var(--fluent-radius-control, 4px);
-  background: color-mix(in srgb, var(--app-accent, #409eff) 8%, transparent);
+  background: transparent;
   color: var(--app-accent, #409eff);
   font-family: var(--fluent-font, inherit);
   font-size: 11px;
   font-weight: var(--fluent-weight-medium, 500);
-  line-height: 1;
   cursor: pointer;
-  white-space: nowrap;
+  transition: all var(--fluent-fast, 120ms) ease;
+}
+.composer-queue-expand-btn:hover {
+  background: color-mix(in srgb, var(--app-accent, #409eff) 12%, transparent);
+}
+.composer-queue-inline-btn {
+  padding: 2px 6px;
+  border: var(--fluent-stroke-thin, 1px) solid color-mix(in srgb, var(--app-accent, #409eff) 25%, transparent);
+  border-radius: var(--fluent-radius-control, 4px);
+  background: transparent;
+  color: var(--app-accent, #409eff);
+  font-size: 10px;
+  cursor: pointer;
+}
+.composer-queue-inline-btn:hover {
+  background: color-mix(in srgb, var(--app-accent, #409eff) 15%, transparent);
+}
+.composer-queue-inline-cancel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--app-muted, #909399);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+.composer-queue-inline-cancel:hover {
+  background: color-mix(in srgb, var(--fluent-danger-bg, #b42318) 12%, transparent);
+  color: var(--fluent-danger-bg, #b42318);
+}
+.composer-queue-clear {
+  padding: 1px 4px;
+  border: none;
+  background: transparent;
+  color: var(--app-muted, #909399);
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.composer-queue-clear:hover {
+  color: var(--fluent-danger-bg, #b42318);
+}
+/* 纵向列表：仅在展开时出现，微型紧凑，支持抓手拖拽 */
+.composer-queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px; /* 极紧凑行距 */
+  margin: 3px 0 0;
+  padding: 3px 0 0;
+  border-top: var(--fluent-stroke-thin, 1px) dashed color-mix(in srgb, var(--app-border) 60%, transparent);
+  list-style: none;
+  max-height: 100px;
+  overflow-y: auto;
+}
+.composer-queue-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  padding: 2px 6px;
+  min-height: 22px;
+  border-radius: var(--fluent-radius-control, 4px);
+  background: var(--app-surface-strong, #fff);
+  border: var(--fluent-stroke-thin, 1px) solid var(--app-border, rgba(0, 0, 0, 0.08));
+  box-sizing: border-box;
+  cursor: grab;
+  user-select: none;
   transition:
-    background-color var(--fluent-fast, 120ms) ease,
     border-color var(--fluent-fast, 120ms) ease,
-    transform var(--fluent-fast, 120ms) ease;
+    background-color var(--fluent-fast, 120ms) ease,
+    opacity var(--fluent-fast, 120ms) ease;
+}
+.composer-queue-item:hover {
+  border-color: color-mix(in srgb, var(--app-accent, #409eff) 40%, var(--app-border));
+}
+.composer-queue-item:active {
+  cursor: grabbing;
+}
+/* 拖拽状态视觉反馈 */
+.composer-queue-item.is-dragging {
+  opacity: 0.35;
+  background: var(--app-surface-soft);
+}
+.composer-queue-item.is-drag-over {
+  border-color: var(--app-accent, #409eff);
+  background: color-mix(in srgb, var(--app-accent, #409eff) 10%, var(--app-surface-strong));
+  box-shadow: 0 0 0 1px var(--app-accent, #409eff);
+}
+.composer-queue-item-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+/* 拖拽抓手小图标 */
+.composer-queue-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 14px;
+  color: var(--app-muted, #909399);
+  cursor: grab;
+  flex: 0 0 auto;
+  transition: color var(--fluent-fast, 120ms) ease;
+}
+.composer-queue-drag-handle:hover {
+  color: var(--app-accent, #409eff);
+}
+.drag-handle-dots {
+  display: block;
+}
+.composer-queue-sub-badge {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--app-muted, #909399);
+}
+.composer-queue-item-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--app-text);
+  line-height: 1.3;
+}
+.composer-queue-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.composer-queue-edit {
+  padding: 1px 6px;
+  border: var(--fluent-stroke-thin, 1px) solid color-mix(in srgb, var(--app-accent, #409eff) 25%, transparent);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--app-accent, #409eff);
+  font-size: 10px;
+  cursor: pointer;
+  line-height: 1.2;
 }
 .composer-queue-edit:hover {
-  background: color-mix(in srgb, var(--app-accent, #409eff) 16%, transparent);
-  border-color: var(--app-accent, #409eff);
-}
-.composer-queue-edit:active {
-  transform: scale(0.96);
-}
-.composer-queue-edit:focus-visible {
-  outline: var(--fluent-stroke-thick, 2px) solid var(--app-accent);
-  outline-offset: 1px;
+  background: color-mix(in srgb, var(--app-accent, #409eff) 12%, transparent);
 }
 .composer-queue-cancel {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
   padding: 0;
-  border: var(--fluent-stroke-thin, 1px) solid transparent;
-  border-radius: var(--fluent-radius-circular, 10000px);
+  border: none;
+  border-radius: 50%;
   background: transparent;
   color: var(--app-muted, #909399);
   cursor: pointer;
-  font-size: 15px;
+  font-size: 13px;
   line-height: 1;
-  transition:
-    background-color var(--fluent-fast, 120ms) ease,
-    color var(--fluent-fast, 120ms) ease,
-    transform var(--fluent-fast, 120ms) ease;
 }
 .composer-queue-cancel:hover {
   background: color-mix(in srgb, var(--fluent-danger-bg, #b42318) 12%, transparent);
   color: var(--fluent-danger-bg, #b42318);
-  border-color: color-mix(in srgb, var(--fluent-danger-bg, #b42318) 25%, transparent);
-}
-.composer-queue-cancel:active {
-  transform: scale(0.92);
-}
-.composer-queue-cancel:focus-visible {
-  outline: var(--fluent-stroke-thick, 2px) solid var(--fluent-danger-bg, #b42318);
-  outline-offset: 1px;
 }
 .send-button {
   position: relative;
