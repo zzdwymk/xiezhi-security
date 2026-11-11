@@ -35,6 +35,7 @@
     "test:ai-relay-runtime": "node scripts/test-ai-relay-runtime.cjs",
     "test:offline": "node scripts/verify-offline-tools.cjs",
     "test:visual": "node scripts/visual-smoke.cjs",
+    "test:findings-footer": "node scripts/test-findings-footer-consistency.cjs",
     "test:composer-stats": "node scripts/test-composer-stats-popovers.cjs",
     "test:turn-rail-leftover": "node scripts/test-turn-rail-tooltip-leftover.cjs",
     "test:tooltip-mutex": "node scripts/test-tooltip-mutex-browser.cjs",

@@ -7,8 +7,9 @@ import { formatDateTime } from "../utils/dateTime";
 import { severityLabel } from "../utils/aiPresentation";
 import { targetedScanPresentation } from "../utils/targetedScanPresentation";
 import { toErrorMessage } from "../utils/errorMessage";
-import { InfoCircle, Refresh } from "./fluentIcons";
+import { Compass, DocumentChecked, InfoCircle, Refresh } from "./fluentIcons";
 import AppPagination from "./AppPagination.vue";
+import FluentCodeBlock from "./FluentCodeBlock.vue";
 import OfflineState from "./OfflineState.vue";
 
 interface ScanRecord {
@@ -56,7 +57,7 @@ const router = useRouter();
 const canRead = computed(() => auth.user?.role === "ADMIN");
 const rows = ref<ScanRecord[]>([]);
 const page = ref(1);
-const pageSize = ref(10);
+const pageSize = ref(props.mode === "tasks" ? 20 : 10);
 const total = ref(0);
 /** 由宿主 v-model 传入的引擎筛选；嵌入模式下工具条由宿主渲染。 */
 const engine = defineModel<string>("engine", { default: "" });
@@ -79,7 +80,28 @@ const engineLabels: Record<string, string> = {
   LOOP: "循环检测",
 };
 const engineLabel = (engine?: string) => engineLabels[engine || ""] || engine || "未知引擎";
+function engineTagType(engine?: string): "" | "success" | "warning" | "danger" | "info" {
+  switch ((engine || "").toUpperCase()) {
+    case "SQLMAP":
+      return "danger";
+    case "XRAY":
+      return "success";
+    case "ZAP":
+      return "";
+    case "FUZZ":
+      return "warning";
+    default:
+      return "info";
+  }
+}
 const tagType = (status: string) => status === "COMPLETED" ? "success" : status === "RUNNING" ? "primary" : status === "FAILED" ? "danger" : "warning";
+function severityTagType(severity?: string): "" | "danger" | "warning" | "info" | "success" {
+  const s = String(severity || "").toUpperCase();
+  if (s === "CRITICAL" || s === "HIGH" || s === "高危" || s === "严重") return "danger";
+  if (s === "MEDIUM" || s === "中危") return "warning";
+  if (s === "LOW" || s === "低危") return "";
+  return "info";
+}
 const notice = computed(() => targetedScanPresentation({ ...detail.value?.entry, ...detail.value?.result }));
 const detailAlertType = computed(() => {
   const entry = detail.value?.entry;
@@ -187,6 +209,7 @@ onBeforeUnmount(() => {
     v-if="canRead"
     class="traffic-scan-records"
     :class="{ 'is-bare': bare, 'is-embedded': embedded }"
+    :data-mode="mode"
   >
     <div v-if="!bare" class="traffic-record-toolbar">
       <div class="traffic-record-toolbar-desc">
@@ -218,7 +241,7 @@ onBeforeUnmount(() => {
         <template #default="{ row }">
           <el-tag
             size="small"
-            :type="row.engine === 'FUZZ' ? 'warning' : 'info'"
+            :type="engineTagType(row.engine)"
             effect="light"
             class="engine-tag"
           >
@@ -260,15 +283,15 @@ onBeforeUnmount(() => {
           <span class="time-cell">{{ formatDateTime(row.createdAt) }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="190" align="center">
+      <el-table-column label="操作" width="200" align="center">
         <template #default="{ row }">
-          <div class="table-actions">
-            <el-button link type="primary" size="small" @click="openDetail(row.id)">
+          <div class="table-actions row-actions row-actions--pair">
+            <el-button class="row-action" size="small" @click="openDetail(row.id)">
               {{ isFindings ? '查看发现' : '执行详情' }}
             </el-button>
             <el-button
               v-if="isFindings || (row.hitCount > 0 && row.engine !== 'FUZZ')"
-              link
+              class="row-action"
               size="small"
               @click="openRelated(row.id)"
             >
@@ -294,7 +317,14 @@ onBeforeUnmount(() => {
       </template>
     </el-table>
     <p v-if="busy" class="traffic-record-muted">执行中的记录每 3 秒自动更新。</p>
-    <AppPagination v-model:page="page" v-model:page-size="pageSize" :total="total" :page-sizes="[10, 20, 50]" @size-change="page = 1" />
+    <AppPagination
+      v-model:page="page"
+      v-model:page-size="pageSize"
+      class="traffic-records-pagination"
+      :total="total"
+      :page-sizes="mode === 'tasks' ? [20, 50, 100] : [10, 20, 50]"
+      @size-change="page = 1"
+    />
 
     <el-dialog v-model="detailVisible" :title="isFindings ? '流量安全发现' : '流量检测执行详情'" class="app-dialog app-dialog--wide traffic-record-dialog" align-center destroy-on-close @closed="closeDetail">
       <div v-loading="detailLoading" style="min-height: 100px">
@@ -308,20 +338,81 @@ onBeforeUnmount(() => {
             <el-descriptions-item label="目标 URL" :span="2">{{ detail.entry.url || detail.entry.host }}</el-descriptions-item>
             <el-descriptions-item label="开始时间" :span="2">{{ formatDateTime(detail.entry.createdAt) }}</el-descriptions-item>
           </el-descriptions>
-          <p v-else>来源记录 #{{ detail.entry.id }} · {{ engineLabel(detail.entry.engine) }} · {{ detail.entry.url || detail.entry.host }}</p>
-          <el-alert v-if="!isFindings" :title="notice.title || statusLabel(detail.entry.status)" :type="detailAlertType" :closable="false" show-icon />
+          <div v-else class="traffic-source-banner">
+            <div class="source-banner-left">
+              <span class="source-record-badge">来源记录 #{{ detail.entry.id }}</span>
+              <el-tag size="small" effect="plain" class="source-engine-tag">
+                {{ engineLabel(detail.entry.engine) }}
+              </el-tag>
+              <div class="source-url-chip" :title="detail.entry.url || detail.entry.host">
+                <el-icon class="source-url-icon"><Compass /></el-icon>
+                <span class="source-url-text">{{ detail.entry.url || detail.entry.host }}</span>
+              </div>
+            </div>
+            <div v-if="detail.entry.createdAt" class="source-banner-right">
+              <span>{{ formatDateTime(detail.entry.createdAt) }}</span>
+            </div>
+          </div>
+          <el-alert
+            v-if="!isFindings"
+            class="traffic-record-alert"
+            style="margin: 16px 0;"
+            :title="notice.title || statusLabel(detail.entry.status)"
+            :type="detailAlertType"
+            :closable="false"
+            show-icon
+          />
           <p v-if="!isFindings && notice.guidance">{{ notice.guidance }}</p>
           <details v-if="!isFindings && notice.detail"><summary>技术详情</summary><pre>{{ notice.detail }}</pre></details>
           <p v-if="!detail.result" class="traffic-record-muted">{{ detail.entry.status === 'RUNNING' ? '检测进行中，结果会在完成后自动更新。' : '这条历史记录仅保存了执行摘要，没有完整结果快照。' }}</p>
           <template v-else>
-            <p v-if="isFindings && detail.entry.status !== 'COMPLETED' && detail.result.hits?.length">以下是目前已保存的告警，本次检测未完整完成。</p>
-            <article v-for="(hit, index) in isFindings ? detail.result.hits || [] : []" :key="index" class="traffic-record-hit">
-              <h4>{{ hit.title }} <el-tag>{{ severityLabel(hit.severity) }}</el-tag></h4>
-              <p>{{ hit.description }}</p>
-              <p v-if="hit.parameter">参数：{{ hit.parameter }}</p>
-              <pre v-if="hit.evidence">{{ hit.evidence }}</pre>
-              <p v-if="hit.solution">修复建议：{{ hit.solution }}</p>
-            </article>
+            <el-alert
+              v-if="isFindings && detail.entry.status !== 'COMPLETED' && detail.result.hits?.length"
+              title="以下是目前已保存的告警，本次检测未完整完成。"
+              type="warning"
+              :closable="false"
+              show-icon
+              style="margin-bottom: 16px;"
+            />
+            <div v-if="isFindings && detail.result.hits?.length" class="traffic-findings-list">
+              <article v-for="(hit, index) in detail.result.hits" :key="index" class="traffic-finding-card">
+                <div class="finding-card-header">
+                  <div class="finding-title-row">
+                    <h3 class="finding-title">{{ hit.title }}</h3>
+                    <el-tag :type="severityTagType(hit.severity)" effect="light" class="finding-severity-tag">
+                      {{ severityLabel(hit.severity) }}
+                    </el-tag>
+                    <el-tag v-if="hit.parameter" size="small" type="info" effect="plain" class="finding-param-tag">
+                      参数: {{ hit.parameter }}
+                    </el-tag>
+                  </div>
+                </div>
+
+                <div v-if="hit.description" class="finding-desc-section">
+                  <p class="finding-description">{{ hit.description }}</p>
+                </div>
+
+                <div v-if="hit.evidence" class="finding-evidence-section">
+                  <FluentCodeBlock
+                    title="执行证据"
+                    :content="hit.evidence"
+                    monospace
+                    copyable
+                    wrap
+                    :min-rows="4"
+                    :max-rows="14"
+                  />
+                </div>
+
+                <div v-if="hit.solution" class="finding-solution-box">
+                  <div class="solution-box-title">
+                    <el-icon class="solution-box-icon"><DocumentChecked /></el-icon>
+                    <span>修复建议</span>
+                  </div>
+                  <p class="solution-box-content">{{ hit.solution }}</p>
+                </div>
+              </article>
+            </div>
             <p v-if="detail.entry.status === 'COMPLETED' && !detail.result.hits?.length && !detail.entry.hitCount && detail.entry.engine !== 'FUZZ'">本次检查未命中告警；结论仅适用于本次检查范围。</p>
             <p v-if="isFindings && !detail.result.hits?.length && detail.entry.hitCount > 0 && detail.entry.engine !== 'FUZZ'">此记录仅保存了告警数量，没有可展示的告警详情。</p>
             <p v-if="isFindings && detail.entry.engine === 'FUZZ'">模糊测试记录的是请求响应差异，不能直接确认为漏洞；请在来源记录查看执行证据。</p>
@@ -469,10 +560,7 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 .table-actions {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
+  width: 100%;
 }
 .traffic-empty-container {
   padding: 8px 0 4px;
@@ -503,6 +591,136 @@ onBeforeUnmount(() => {
   font-size: 12.5px;
   padding: 8px 0;
 }
+.traffic-source-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--app-surface-soft, rgba(0, 0, 0, 0.025));
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: var(--fluent-radius-card, 8px);
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.source-banner-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.source-record-badge {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--app-text, #1e293b);
+}
+.source-engine-tag {
+  font-size: 12px;
+  font-weight: 500;
+}
+.source-url-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono, Consolas, Monaco, monospace);
+  font-size: 12.5px;
+  color: var(--app-muted, #64748b);
+  background: var(--app-surface, #ffffff);
+  padding: 3px 10px;
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: var(--fluent-radius-control, 4px);
+  max-width: 520px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-url-icon {
+  font-size: 14px;
+  color: var(--app-accent, #0078d4);
+  flex-shrink: 0;
+}
+.source-url-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-banner-right {
+  font-size: 12px;
+  color: var(--app-muted, #64748b);
+}
+.traffic-findings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.traffic-finding-card {
+  background: var(--app-surface, #ffffff);
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: var(--fluent-radius-card, 8px);
+  padding: 18px 20px;
+  box-shadow: 0 1px 3px color-mix(in srgb, CanvasText 4%, transparent);
+}
+.finding-card-header {
+  margin-bottom: 12px;
+}
+.finding-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.finding-title {
+  margin: 0;
+  font-size: 15.5px;
+  font-weight: 600;
+  color: var(--app-text, #1e293b);
+  line-height: 1.4;
+}
+.finding-severity-tag {
+  font-weight: 600;
+  font-size: 12px;
+}
+.finding-param-tag {
+  font-family: var(--font-mono, Consolas, Monaco, monospace);
+  font-size: 12px;
+}
+.finding-desc-section {
+  margin-bottom: 14px;
+}
+.finding-description {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--app-text, #334155);
+}
+.finding-evidence-section {
+  margin-bottom: 14px;
+}
+.finding-solution-box {
+  background: color-mix(in srgb, var(--app-accent, #0078d4) 6%, var(--app-surface, #ffffff));
+  border: 1px solid color-mix(in srgb, var(--app-accent, #0078d4) 22%, var(--app-border, #e2e8f0));
+  border-left: 3px solid var(--app-accent, #0078d4);
+  border-radius: var(--fluent-radius-control, 4px);
+  padding: 12px 16px;
+}
+.solution-box-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--app-accent, #0078d4);
+  margin-bottom: 6px;
+}
+.solution-box-icon {
+  font-size: 15px;
+}
+.solution-box-content {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--app-text, #1e293b);
+}
 .traffic-record-hit {
   padding: 14px 0;
   border-bottom: 1px solid var(--app-border);
@@ -513,7 +731,8 @@ onBeforeUnmount(() => {
   align-items: center;
   margin: 0 0 12px;
 }
-.traffic-record-dialog .el-alert {
+.traffic-record-dialog :deep(.el-alert),
+.traffic-record-alert {
   margin: 16px 0;
 }
 pre {
@@ -522,8 +741,53 @@ pre {
   max-height: 300px;
   overflow: auto;
 }
-.traffic-scan-records > :last-child {
-  margin-top: 16px;
+/* Fluent 2 只读文本框：承载漏洞证据（如 SQL 注入输出），等宽字体、可滚动、可选中复制。 */
+.traffic-record-evidence {
+  display: block;
+  margin: 8px 0 10px;
+  width: 100%;
+}
+.traffic-record-evidence :deep(.el-textarea__inner) {
+  width: 100%;
+  font-family: var(--font-mono, "Cascadia Code", "Consolas", monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--app-text, #1e293b);
+  background: light-dark(rgba(0, 0, 0, 0.03), rgba(255, 255, 255, 0.05)) !important;
+  border: 0 !important;
+  border-radius: var(--fluent-radius-control, 4px) !important;
+  box-shadow: 0 0 0 1px light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.1)) inset !important;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  resize: none;
+  transition: box-shadow var(--fluent-fast, 150ms ease);
+}
+.traffic-record-evidence :deep(.el-textarea__inner:hover) {
+  box-shadow: 0 0 0 1px light-dark(rgba(0, 0, 0, 0.16), rgba(255, 255, 255, 0.18)) inset !important;
+}
+.traffic-record-evidence :deep(.el-textarea__inner:focus) {
+  outline: none !important;
+  box-shadow:
+    inset 0 0 0 1px var(--app-border-strong, #cbd5e1),
+    inset 0 -2px 0 0 var(--app-accent, #0078d4) !important;
+}
+/* 非嵌入态（任务控制中心 → 流量检测 的 bare 用法）分页右对齐并留白，
+   间距与同一页「项目任务」页签的 .tasks-pagination 完全一致（margin-top:12px、
+   无左右内边距），两个页签来回切时分页与表格的间隔不会跳。
+   注意：不能用 `:last-child` —— 组件根节点里 AppPagination 后面还跟着 <el-dialog>
+   （详情弹窗），它占住了 ":last-child" 的位置，导致分页规则一直没命中、
+   分页贴着表格左边和底边。改为直接命中分页自己的 class。
+   AppPagination 根节点是无 class 的 <div>，内层 el-pagination 需再对齐一次。 */
+.traffic-records-pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+.traffic-records-pagination :deep(.el-pagination) {
+  justify-content: flex-end;
+  font-size: 12px;
 }
 
 /* 空态作为表格的空行填充：与同页「项目发现」表格一致——空块给足高度
@@ -715,14 +979,36 @@ pre {
 .traffic-scan-records.is-embedded .traffic-records-table :deep(.el-table__row:hover > td.el-table__cell) {
   background: var(--app-accent-soft) !important;
 }
-/* 分页在嵌入态与同页其他列表共用同一条右对齐页脚。 */
-.traffic-scan-records.is-embedded > :last-child {
+/* 非嵌入态（独立使用）与嵌入态共用的基础形态：右对齐。
+   margin/padding 的缺省值只服务于独立使用场景。 */
+.traffic-records-pagination {
   display: flex;
-  flex: 0 0 auto;
   justify-content: flex-end;
-  margin-top: 12px;
-  padding: 16px 0 0;
-  border-top: var(--fluent-stroke-thin) solid var(--app-border);
+  margin-top: 12px !important;
+  padding: 0 !important;
+}
+.traffic-records-pagination :deep(.el-pagination) {
+  justify-content: flex-end;
+  font-size: 12px;
+}
+.traffic-scan-records[data-mode="tasks"] .traffic-records-pagination,
+.traffic-scan-records.is-bare .traffic-records-pagination {
+  margin-top: 12px !important;
+  padding: 0 !important;
+}
+/* 嵌入列表页页签时分页（安全发现→流量发现、任务控制中心→流量检测）：
+   与各页另一个页签（项目发现 / 项目任务）的页脚完全一致（badge 距表格底边
+   29px、右侧留白 16px）。margin-top 14px 是必须的：宿主的 14px 间隔
+   （发现页 pane 的 gap / 任务页 section 的 --page-gap）只作用于宿主的直接
+   子元素，够不到组件根内部的分页；padding 15px 16px 17px 与
+   .findings-pagination / .tasks-pagination 逐值相同。
+   必须 !important 且源序在 tasks/bare 基础规则之后：它们用 !important 写死了
+   margin-top:12px / padding:0，同为 !important 时先比特异性（本规则 (0,4,0)
+   持平）再比源序——放在最后才能稳定压住，否则像早先那样沦为死代码。 */
+.traffic-scan-records.is-embedded .traffic-records-pagination {
+  flex: 0 0 auto;
+  margin-top: 14px !important;
+  padding: 15px 16px 17px !important;
 }
 
 /* 内层 wrapper 只负责把内容裁进 10px 圆角（表头浅色底不裁的话会把圆角切成直角）。

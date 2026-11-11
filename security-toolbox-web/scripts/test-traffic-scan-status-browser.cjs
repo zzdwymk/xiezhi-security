@@ -139,7 +139,7 @@ const stream = events => events.map(event => `data: ${JSON.stringify(event)}\n\n
         assert.equal(await dialog.getByText('未命中', { exact: true }).count(), 0);
         const log = dialog.locator('details').filter({ has: page.locator('summary', { hasText: '查看执行日志' }) });
         await log.locator('summary').click();
-        assert.match(await log.locator('pre').innerText(), /sqlmap --batch/);
+        assert.match(await log.locator('textarea').innerText(), /sqlmap --batch/);
       }
       if (test.probe) {
         const row = dialog.locator('.targeted-probes').getByRole('row').filter({ hasText: 'Fixture probe' });

@@ -1278,6 +1278,7 @@ onUnmounted(() => {
       v-model:engine="trafficEngine"
       mode="tasks"
       bare
+      embedded
     />
     <template v-else>
     <div class="task-filter-bar" aria-label="任务筛选">
@@ -2209,6 +2210,18 @@ onUnmounted(() => {
   justify-content: flex-end;
   margin-top: 12px;
 }
+/* 主列表分页（section 直接子元素）：与「安全发现」页脚同一套——
+   section 自身有 gap: var(--page-gap)（14px，fluent-design-2 的 :is 规则），
+   margin-top 必须为 0，否则叠成 14+14+15=43px；padding 15px 16px 17px
+   （badge 距表格底边 29px、右侧留白 16px），两个页签（项目任务 / 流量检测）
+   与安全发现的分页来回对照时不再跳。
+   定时任务弹窗里的 .tasks-pagination 嵌在 el-dialog 内、不是直接子元素，
+   仍用上面的紧凑缺省值。 */
+.tasks-page > .tasks-pagination {
+  flex: 0 0 auto;
+  margin-top: 0;
+  padding: 15px 16px 17px;
+}
 .tasks-page :deep(.el-table) {
   font-size: 13px;
 }
@@ -2342,6 +2355,62 @@ onUnmounted(() => {
   border: 1px solid var(--app-border) !important;
   border-radius: 10px !important;
   background: var(--app-surface) !important;
+}
+.tasks-page :deep(.traffic-scan-records) {
+  display: flex;
+  flex: 0 0 auto;
+  width: 100%;
+  flex-direction: column;
+  padding: 0 !important;
+}
+.tasks-page :deep(.traffic-records-table) {
+  flex: 0 0 auto;
+  width: 100%;
+  overflow: hidden;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  --el-table-bg-color: var(--app-surface);
+  --el-table-tr-bg-color: var(--app-surface);
+  --el-table-header-bg-color: var(--app-surface-soft);
+  --el-table-border-color: var(--app-border);
+  --el-table-row-hover-bg-color: var(--fluent3-table-hover-bg);
+}
+.tasks-page :deep(.traffic-records-table .el-table__inner-wrapper) {
+  border-radius: 0 !important;
+}
+.tasks-page :deep(.traffic-records-table th.el-table__cell) {
+  height: 48px !important;
+  background: var(--app-surface-soft) !important;
+  color: color-mix(in srgb, var(--app-text) 86%, transparent);
+  font-size: 13px !important;
+  font-weight: 600;
+  border-bottom: 1px solid var(--app-border) !important;
+  padding: 0 !important;
+}
+.tasks-page :deep(.traffic-records-table td.el-table__cell) {
+  padding: 12px 0 !important;
+  border-bottom: 1px solid var(--app-border) !important;
+  color: var(--app-text);
+  font-size: 13px;
+}
+.tasks-page :deep(.traffic-records-table .cell) {
+  padding: 0 12px !important;
+  line-height: 1.45;
+}
+/* 流量检测页签的分页：与同页「项目任务」页脚（.tasks-page > .tasks-pagination）
+   及「安全发现」页脚同一套。组件内 .traffic-scan-records.is-embedded 规则
+   特异性更高且同为 !important（margin-top:0 / padding:15px 16px 17px），
+   已按 section gap 14px 的前提取值，两处保持一致即可，这里不再重复设置。 */
+.tasks-page :deep(.traffic-records-pagination) {
+  display: flex;
+  justify-content: flex-end;
+  border: none !important;
+}
+.tasks-page :deep(.traffic-records-pagination .el-pagination) {
+  justify-content: flex-end;
+  font-size: 12px;
 }
 .task-list-empty {
   flex: 1 1 auto;

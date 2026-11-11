@@ -1452,6 +1452,10 @@ html
   border-color: var(--app-hover-popup-border) !important;
   background: var(--app-hover-popup-bg) !important;
   color: var(--app-hover-popup-text) !important;
+  max-height: min(280px, 45vh);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
 }
 
 :where(

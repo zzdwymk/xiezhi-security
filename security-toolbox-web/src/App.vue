@@ -603,6 +603,9 @@ function ensureTooltipElement(): HTMLDivElement {
     // pop-ups). Re-parenting to <body> on every show keeps it last in DOM order.
     zIndex: "2147483000",
     maxWidth: "min(320px, calc(100vw - 16px))",
+    maxHeight: "min(280px, 45vh)",
+    overflowY: "auto",
+    overflowX: "hidden",
     padding: "6px 9px",
     pointerEvents: "none",
     boxSizing: "border-box",

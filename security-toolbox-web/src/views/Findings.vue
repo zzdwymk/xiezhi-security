@@ -1433,17 +1433,9 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
   gap: 6px;
   box-sizing: border-box;
 }
-/* AI actions opt out of the neutral row-button base: their accent text/border
-   comes from `.finding-action--ai` in unified-theme.css. Without this the
-   scoped `[data-v-…]` attribute pushes this rule to (0,4,0) and it silently
-   repaints the AI buttons black — the same failure the shared `.row-actions`
-   base had on the Tasks page. */
-.finding-row-actions
-  :deep(
-    .el-button:not(.finding-action--ai),
-    .el-button + .el-button:not(.finding-action--ai),
-    .finding-action:not(.finding-action--ai)
-  ) {
+/* All action buttons share the same grid slot size and zero margins so they stay aligned */
+.finding-row-actions :deep(.el-button),
+.finding-row-actions :deep(.el-button + .el-button) {
   width: 100% !important;
   height: 28px;
   margin: 0 !important;
@@ -1454,11 +1446,20 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
   align-items: center;
   justify-content: center;
   text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+}
+/* Neutral palette for non-AI, non-danger row actions.
+   AI actions opt out of this base so their accent text/border comes from
+   `.finding-action--ai` in unified-theme.css without being repainted black. */
+.finding-row-actions
+  :deep(
+    .el-button:not(.finding-action--ai):not(.row-action--danger),
+    .finding-action:not(.finding-action--ai):not(.row-action--danger)
+  ) {
   border-color: var(--app-border-strong);
   background: var(--app-surface-strong);
   color: var(--app-text);
-  font-size: 12px;
-  font-weight: 600;
 }
 .finding-row-actions :deep(.el-button > span) {
   display: inline-flex;
@@ -1467,8 +1468,8 @@ html[data-anim-decorative="off"] .findings-pane-leave-active {
   gap: 3px;
   white-space: nowrap;
 }
-.finding-row-actions :deep(.finding-action:hover),
-.finding-row-actions :deep(.finding-action:focus-visible) {
+.finding-row-actions :deep(.finding-action:not(.finding-action--ai):not(.row-action--danger):hover),
+.finding-row-actions :deep(.finding-action:not(.finding-action--ai):not(.row-action--danger):focus-visible) {
   border-color: var(--app-accent);
   background: var(--app-accent-soft);
   color: var(--app-text);

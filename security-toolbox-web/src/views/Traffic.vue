@@ -26,7 +26,7 @@ import {
   VideoPlay,
   Warning,
 } from "../components/fluentIcons";
-import { api, streamSqlmapScan, streamXrayScan, streamZapScan, type Target } from "../api";
+import { api, endpoints, safeGet, streamSqlmapScan, streamXrayScan, streamZapScan, type AssessmentProject, type ProjectTarget, type Target } from "../api";
 import AppPagination from "../components/AppPagination.vue";
 import OfflineState from "../components/OfflineState.vue";
 import { useClientPagination } from "../composables/useClientPagination";
@@ -166,7 +166,11 @@ const proxyStateKnown = ref(false);
 const browserStateKnown = ref(false);
 const aiDialogVisible = ref(false);
 const targetDialogVisible = ref(false);
+const operationProjectId = ref<number | "">("");
+const operationProjects = ref<AssessmentProject[]>([]);
+const operationProjectTargetsMap = ref<Record<number, number[]>>({});
 const operationTargetId = ref<number>();
+const operationInferredNotice = ref<{ type: "success" | "warning" | "info"; text: string } | null>(null);
 const operationZapOptionsVisible = ref(false);
 const zapScanStrength = ref<"LOW" | "MEDIUM" | "HIGH">("MEDIUM");
 const zapStrengthOptions = [
@@ -177,6 +181,13 @@ const zapStrengthOptions = [
 const zapStrengthDescription = computed(() => zapStrengthOptions.find(option => option.value === zapScanStrength.value)?.description);
 const operationUrl = ref("");
 let resolveOperationTarget: ((id?: number) => void) | undefined;
+const displayedOperationTargets = computed(() => {
+  if (!operationProjectId.value) {
+    return replayTargets.value;
+  }
+  const allowed = new Set(operationProjectTargetsMap.value[Number(operationProjectId.value)] || []);
+  return replayTargets.value.filter(t => allowed.has(t.id));
+});
 const deletingId = ref<number | string>();
 const markingId = ref<number | string>();
 const clearingSessions = ref(false);
@@ -1173,23 +1184,184 @@ function targetDisabledReason(target: Target) {
   return "";
 }
 
+function parseUrlHostAndPort(rawUrl: string): { hostname: string; port: number } {
+  let hostname = "";
+  let port = 80;
+  try {
+    const u = new URL(rawUrl.includes("://") ? rawUrl : `http://${rawUrl}`);
+    hostname = u.hostname.toLowerCase();
+    port = u.port ? Number(u.port) : (u.protocol === "https:" ? 443 : 80);
+  } catch {
+    const cleaned = rawUrl.replace(/^https?:\/\//i, "").split("/")[0];
+    if (cleaned.includes(":")) {
+      const [h, p] = cleaned.split(":");
+      hostname = h.toLowerCase();
+      port = Number(p) || 80;
+    } else {
+      hostname = cleaned.toLowerCase();
+      port = 80;
+    }
+  }
+  return { hostname, port };
+}
+
+function targetMatchesHost(target: Target, hostname: string): boolean {
+  if (!target?.targetValue || !hostname) return false;
+  let valHost = "";
+  try {
+    const val = target.targetValue.trim();
+    valHost = new URL(val.includes("://") ? val : `http://${val}`).hostname;
+  } catch {
+    valHost = target.targetValue.trim().replace(/^https?:\/\//i, "").split("/")[0].split(":")[0];
+  }
+  return valHost.toLowerCase() === hostname.toLowerCase();
+}
+
+function targetAllowsPort(target: Target, port: number): boolean {
+  if (!target?.allowedPorts?.trim()) return true;
+  const parts = target.allowedPorts.split(",");
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    if (trimmed.includes("-")) {
+      const [start, end] = trimmed.split("-").map(Number);
+      if (Number.isFinite(start) && Number.isFinite(end) && port >= start && port <= end) return true;
+    } else if (Number(trimmed) === port) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function inferTargetForProject(projectId: number | "", url: string) {
+  const { hostname, port } = parseUrlHostAndPort(url);
+  if (!hostname) {
+    operationInferredNotice.value = null;
+    return;
+  }
+
+  let candidates = replayTargets.value;
+  if (projectId) {
+    const allowed = new Set(operationProjectTargetsMap.value[Number(projectId)] || []);
+    candidates = candidates.filter(t => allowed.has(t.id));
+  }
+
+  const hostMatches = candidates.filter(t => !targetDisabledReason(t) && targetMatchesHost(t, hostname));
+
+  if (hostMatches.length === 0) {
+    operationTargetId.value = undefined;
+    const proj = operationProjects.value.find(p => p.id === projectId);
+    if (proj) {
+      operationInferredNotice.value = {
+        type: "warning",
+        text: `项目【${proj.name}】下未包含匹配主机 [${hostname}] 的有效目标，可切换项目或选择全部项目。`
+      };
+    } else {
+      operationInferredNotice.value = {
+        type: "warning",
+        text: `未找到与主机 [${hostname}] 匹配的有效授权目标，请前往“授权目标”配置或检查网络地址。`
+      };
+    }
+    return;
+  }
+
+  let portMatches = hostMatches.filter(t => targetAllowsPort(t, port));
+  if (portMatches.length === 0) {
+    portMatches = hostMatches;
+  }
+
+  if (portMatches.length === 1) {
+    const match = portMatches[0];
+    operationTargetId.value = match.id;
+    const proj = operationProjects.value.find(p => p.id === projectId);
+    if (proj) {
+      operationInferredNotice.value = {
+        type: "success",
+        text: `✔ 已自动根据项目【${proj.name}】推断并锁定授权目标：${match.name} · ${match.targetValue}`
+      };
+    } else {
+      operationInferredNotice.value = {
+        type: "success",
+        text: `✔ 已自动推断并锁定授权目标：${match.name} · ${match.targetValue}`
+      };
+    }
+  } else {
+    const proj = operationProjects.value.find(p => p.id === projectId);
+    operationInferredNotice.value = {
+      type: "info",
+      text: `${proj ? `在项目【${proj.name}】中` : "在系统内"}找到 ${portMatches.length} 个匹配的主机目标，请下拉选择具体端口或服务目标。`
+    };
+  }
+}
+
+function onOperationProjectChange(val: number | "") {
+  inferTargetForProject(val, operationUrl.value);
+}
+
+function onOperationTargetManualSelect(targetId: number) {
+  const target = replayTargets.value.find(t => t.id === targetId);
+  if (target) {
+    operationInferredNotice.value = {
+      type: "info",
+      text: `已手动指定授权目标：${target.name} · ${target.targetValue}`
+    };
+  }
+}
+
 async function chooseOperationTarget(url: string, preferredId?: number, showZapOptions = false): Promise<number | undefined> {
   try {
-    replayTargets.value = (await api.get<Target[]>("/targets")).data || [];
-    operationTargetId.value = replayTargets.value.some(t => t.id === preferredId && !targetDisabledReason(t)) ? preferredId : undefined;
-    if (!operationTargetId.value) {
-      let hostname = "";
-      try { hostname = new URL(url).hostname; } catch { /* Backend validates edited URLs. */ }
-      const matches = replayTargets.value.filter(t => {
-        if (targetDisabledReason(t)) return false;
-        let value = t.targetValue;
-        try { value = new URL(value.includes("://") ? value : `http://${value}`).hostname; } catch { return false; }
-        return value.toLowerCase() === hostname.toLowerCase();
-      });
-      if (matches.length === 1) operationTargetId.value = matches[0].id;
-    }
     operationUrl.value = url;
     operationZapOptionsVisible.value = showZapOptions;
+    operationInferredNotice.value = null;
+
+    const [targetsRes, projectsRes] = await Promise.all([
+      api.get<Target[]>("/targets"),
+      safeGet(endpoints.projects, [] as AssessmentProject[]),
+    ]);
+    replayTargets.value = targetsRes.data || [];
+    const allProjects = Array.isArray(projectsRes.data) ? projectsRes.data : [];
+    const activeProjects = allProjects.filter(p => p.status === "ACTIVE" || p.status === "READY");
+    operationProjects.value = activeProjects.length ? activeProjects : allProjects;
+
+    const memberships = await Promise.all(
+      operationProjects.value.map(async (project) => ({
+        projectId: project.id,
+        result: await safeGet<ProjectTarget[]>(() => endpoints.projectTargets(project.id), []),
+      }))
+    );
+    const pMap: Record<number, number[]> = {};
+    for (const m of memberships) {
+      pMap[m.projectId] = (m.result.data || []).map((item) => item.targetId);
+    }
+    operationProjectTargetsMap.value = pMap;
+
+    const { hostname } = parseUrlHostAndPort(url);
+
+    if (preferredId && replayTargets.value.some(t => t.id === preferredId && !targetDisabledReason(t))) {
+      operationTargetId.value = preferredId;
+      const ownerProj = operationProjects.value.find(p => (pMap[p.id] || []).includes(preferredId));
+      operationProjectId.value = ownerProj ? ownerProj.id : "";
+      inferTargetForProject(operationProjectId.value, url);
+    } else {
+      let bestProject: AssessmentProject | undefined;
+      for (const proj of operationProjects.value) {
+        const targetIds = pMap[proj.id] || [];
+        const matches = replayTargets.value.filter(t => targetIds.includes(t.id) && !targetDisabledReason(t) && targetMatchesHost(t, hostname));
+        if (matches.length > 0) {
+          bestProject = proj;
+          break;
+        }
+      }
+
+      if (bestProject) {
+        operationProjectId.value = bestProject.id;
+        inferTargetForProject(bestProject.id, url);
+      } else {
+        operationProjectId.value = "";
+        inferTargetForProject("", url);
+      }
+    }
+
     targetDialogVisible.value = true;
     return await new Promise(resolve => { resolveOperationTarget = resolve; });
   } catch (e) { ElMessage.error(readableError(e)); return undefined; }
@@ -2362,6 +2534,16 @@ const targetedScanResult = ref<TargetedScanResult | null>(null);
 const targetedScanEngine = ref<"ZAP" | "XRAY" | "SQLMAP">("ZAP");
 const targetedScanLogs = ref<string[]>([]);
 const targetedScanNotice = computed(() => targetedScanPresentation(targetedScanResult.value || {}));
+// 进度提示中「当前检查：……」独立成行，避免与进度/耗时信息挤在同一行难以扫读。
+const targetedScanNoticeLines = computed(() => {
+  const title = targetedScanNotice.value.title || "";
+  const marker = " · 当前检查：";
+  const idx = title.indexOf(marker);
+  if (idx < 0) return [title];
+  const head = title.slice(0, idx).trim();
+  const tail = title.slice(idx + " · ".length).trim();
+  return head ? [head, tail] : [tail];
+});
 const targetedScanAlertType = computed(() => {
   if (targetedScanLoading.value) return "info";
   const result = targetedScanResult.value;
@@ -3965,10 +4147,33 @@ onUnmounted(() => {
     <el-dialog v-model="targetDialogVisible" title="选择本次主动操作的授权目标" width="570px" class="app-dialog" align-center @closed="finishOperationTarget(false)">
       <p class="operation-url">{{ operationUrl }}</p>
       <el-alert title="发送前会校验实际地址、端口及授权有效期。选择目标不改变抓包范围或会话归属。" type="info" :closable="false" />
-      <el-select v-model="operationTargetId" placeholder="请选择授权目标" filterable style="width:100%; margin-top:16px">
-        <el-option v-for="target in replayTargets" :key="target.id" :value="target.id" :disabled="Boolean(targetDisabledReason(target))" :label="`${target.name} · ${target.targetValue}${targetDisabledReason(target) ? ' · ' + targetDisabledReason(target) : ''}`" />
-      </el-select>
-      <p v-if="!replayTargets.length" class="manager-hint">暂无授权目标。可先在“授权目标”页面创建，再回到此处继续，已抓取的报文会保留。</p>
+
+      <div style="margin-top: 14px; display: flex; flex-direction: column; gap: 12px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-size: 13px; color: var(--el-text-color-regular); white-space: nowrap; width: 68px;">评估项目</span>
+          <el-select v-model="operationProjectId" placeholder="按项目筛选目标（可选）" clearable filterable style="flex: 1" @change="onOperationProjectChange">
+            <el-option :value="''" label="全部项目 / 不限项目" />
+            <el-option v-for="proj in operationProjects" :key="proj.id" :value="proj.id" :label="`${proj.name} (${proj.status === 'ACTIVE' ? '已激活' : proj.status})`" />
+          </el-select>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-size: 13px; color: var(--el-text-color-regular); white-space: nowrap; width: 68px;">授权目标</span>
+          <el-select v-model="operationTargetId" placeholder="请选择授权目标" filterable style="flex: 1" @change="onOperationTargetManualSelect">
+            <el-option v-for="target in displayedOperationTargets" :key="target.id" :value="target.id" :disabled="Boolean(targetDisabledReason(target))" :label="`${target.name} · ${target.targetValue}${targetDisabledReason(target) ? ' · ' + targetDisabledReason(target) : ''}`" />
+          </el-select>
+        </div>
+      </div>
+
+      <div v-if="operationInferredNotice" style="margin-top: 10px; padding: 7px 12px; border-radius: 4px; font-size: 12px; line-height: 1.5;" :style="{
+        backgroundColor: operationInferredNotice.type === 'success' ? 'var(--el-color-success-light-9)' : operationInferredNotice.type === 'warning' ? 'var(--el-color-warning-light-9)' : 'var(--el-color-info-light-9)',
+        color: operationInferredNotice.type === 'success' ? 'var(--el-color-success)' : operationInferredNotice.type === 'warning' ? 'var(--el-color-warning)' : 'var(--el-color-info)',
+        border: `1px solid ${operationInferredNotice.type === 'success' ? 'var(--el-color-success-light-7)' : operationInferredNotice.type === 'warning' ? 'var(--el-color-warning-light-7)' : 'var(--el-color-info-light-7)'}`
+      }">
+        {{ operationInferredNotice.text }}
+      </div>
+
+      <p v-if="!replayTargets.length" class="manager-hint" style="margin-top: 10px;">暂无授权目标。可先在“授权目标”页面创建，再回到此处继续，已抓取的报文会保留。</p>
       <fieldset v-if="operationZapOptionsVisible" class="zap-strength-options">
         <legend>ZAP 检测强度</legend>
         <el-radio-group v-model="zapScanStrength" aria-label="ZAP 检测强度">
@@ -4068,7 +4273,12 @@ onUnmounted(() => {
             <template #title>
               <span class="targeted-scan-status">
                 <el-icon v-if="targetedScanLoading" class="is-loading"><Refresh /></el-icon>
-                <strong>{{ targetedScanNotice.title }}</strong>
+                <strong class="targeted-scan-status__text">
+                  <template v-for="(line, lineIdx) in targetedScanNoticeLines" :key="lineIdx">
+                    <span v-if="lineIdx > 0" class="targeted-scan-status__break" />
+                    <span>{{ line }}</span>
+                  </template>
+                </strong>
               </span>
             </template>
           </el-alert>
@@ -4170,7 +4380,14 @@ onUnmounted(() => {
           </div>
           <details v-if="targetedScanLogs.length" class="targeted-scan-diagnostics">
             <summary>查看执行日志</summary>
-            <pre>{{ targetedScanLogs.join("\n") }}</pre>
+            <el-input
+              :model-value="targetedScanLogs.join('\n')"
+              type="textarea"
+              :autosize="{ minRows: 4, maxRows: 14 }"
+              resize="none"
+              readonly
+              class="targeted-scan-log"
+            />
           </details>
         </div>
         <div v-else-if="targetedScanLoading" class="targeted-loading">
@@ -6804,6 +7021,18 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
 }
+/* 「当前检查」独立成行：块级文本 + 换行占位。 */
+.targeted-scan-status__text {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 4px;
+  row-gap: 2px;
+}
+.targeted-scan-status__break {
+  flex-basis: 100%;
+  height: 0;
+}
 .targeted-scan-guidance {
   margin: 0 0 14px;
   color: var(--app-text);
@@ -6827,6 +7056,38 @@ onUnmounted(() => {
   background: var(--app-surface-alt);
   font-size: 12px;
   line-height: 1.6;
+}
+/* Fluent 2 只读文本框：承载执行日志，等宽字体、可滚动、可选中复制。 */
+.targeted-scan-log {
+  display: block;
+  margin-top: 8px;
+  width: 100%;
+}
+.targeted-scan-log :deep(.el-textarea__inner) {
+  width: 100%;
+  font-family: var(--font-mono, "Cascadia Code", "Consolas", monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--app-text, #1e293b);
+  background: light-dark(rgba(0, 0, 0, 0.03), rgba(255, 255, 255, 0.05)) !important;
+  border: 0 !important;
+  border-radius: var(--fluent-radius-control, 4px) !important;
+  box-shadow: 0 0 0 1px light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.1)) inset !important;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  resize: none;
+  transition: box-shadow var(--fluent-fast, 150ms ease);
+}
+.targeted-scan-log :deep(.el-textarea__inner:hover) {
+  box-shadow: 0 0 0 1px light-dark(rgba(0, 0, 0, 0.16), rgba(255, 255, 255, 0.18)) inset !important;
+}
+.targeted-scan-log :deep(.el-textarea__inner:focus) {
+  outline: none !important;
+  box-shadow:
+    inset 0 0 0 1px var(--app-border-strong, #cbd5e1),
+    inset 0 -2px 0 0 var(--app-accent, #0078d4) !important;
 }
 .targeted-hits-list {
   margin-bottom: 4px;

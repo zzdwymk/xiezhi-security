@@ -1817,8 +1817,6 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
 
 .el-card,
 .el-collapse,
-.el-descriptions,
-.el-descriptions__body,
 .el-upload-dragger,
 .el-result,
 .el-skeleton__item {
@@ -1827,9 +1825,34 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
 
 .el-card,
 .el-collapse,
-.el-descriptions__body,
 .el-upload-dragger {
   overflow: hidden;
+}
+
+.el-descriptions--bordered .el-descriptions__body {
+  border: 1px solid var(--app-border) !important;
+  border-radius: var(--fluent-radius-card) !important;
+  overflow: hidden;
+}
+
+.el-descriptions--bordered .el-descriptions__table {
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+  width: 100%;
+}
+
+.el-descriptions--bordered .el-descriptions__cell {
+  border: none !important;
+  border-bottom: 1px solid var(--app-border) !important;
+  border-right: 1px solid var(--app-border) !important;
+}
+
+.el-descriptions--bordered tr:last-child > .el-descriptions__cell {
+  border-bottom: none !important;
+}
+
+.el-descriptions--bordered tr > .el-descriptions__cell:last-child {
+  border-right: none !important;
 }
 
 .el-dropdown-menu,
@@ -1851,7 +1874,10 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
     .el-dropdown__popper
   ):not(.el-picker__popper):not(.el-cascader__dropdown):not(
     .el-autocomplete__popper
-  ):not(.el-popover) {
+  ):not(.el-popover),
+.el-tooltip__popper:not(.el-select__popper):not(.el-dropdown__popper):not(
+    .el-picker__popper
+  ):not(.el-cascader__dropdown):not(.el-autocomplete__popper):not(.el-popover) {
   --el-text-color-primary: var(--app-hover-popup-text);
   --el-text-color-regular: var(--app-hover-popup-text);
   border-color: var(--app-hover-popup-border) !important;
@@ -1859,11 +1885,73 @@ html .desktop-v2-native-frame .chat-message.user .message-bubble {
   color: var(--app-hover-popup-text) !important;
   text-shadow: none !important;
   max-width: min(520px, calc(100vw - 32px)) !important;
+  max-height: min(280px, 45vh) !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  overscroll-behavior: contain !important;
   white-space: normal !important;
   word-break: break-word !important;
   overflow-wrap: anywhere !important;
   line-height: 1.55 !important;
-  box-sizing: border-box;
+  box-sizing: border-box !important;
+  scrollbar-width: thin !important;
+  scrollbar-color: color-mix(in srgb, var(--app-hover-popup-text) 35%, transparent) transparent !important;
+}
+
+:is(.el-popper[role="tooltip"], .el-tooltip__popper):not(.el-select__popper):not(
+    .el-dropdown__popper
+  ):not(.el-picker__popper):not(.el-cascader__dropdown):not(
+    .el-autocomplete__popper
+  ):not(.el-popover)::-webkit-scrollbar,
+:is(.el-popper[role="tooltip"], .el-tooltip__popper):not(.el-select__popper):not(
+    .el-dropdown__popper
+  ):not(.el-picker__popper):not(.el-cascader__dropdown):not(
+    .el-autocomplete__popper
+  ):not(.el-popover)::-webkit-scrollbar:vertical {
+  width: 6px !important;
+  display: block !important;
+}
+
+:is(.el-popper[role="tooltip"], .el-tooltip__popper):not(.el-select__popper):not(
+    .el-dropdown__popper
+  ):not(.el-picker__popper):not(.el-cascader__dropdown):not(
+    .el-autocomplete__popper
+  ):not(.el-popover)::-webkit-scrollbar-track,
+:is(.el-popper[role="tooltip"], .el-tooltip__popper):not(.el-select__popper):not(
+    .el-dropdown__popper
+  ):not(.el-picker__popper):not(.el-cascader__dropdown):not(
+    .el-autocomplete__popper
+  ):not(.el-popover)::-webkit-scrollbar-track:vertical {
+  background: transparent !important;
+  display: block !important;
+}
+
+:is(.el-popper[role="tooltip"], .el-tooltip__popper):not(.el-select__popper):not(
+    .el-dropdown__popper
+  ):not(.el-picker__popper):not(.el-cascader__dropdown):not(
+    .el-autocomplete__popper
+  ):not(.el-popover)::-webkit-scrollbar-thumb,
+:is(.el-popper[role="tooltip"], .el-tooltip__popper):not(.el-select__popper):not(
+    .el-dropdown__popper
+  ):not(.el-picker__popper):not(.el-cascader__dropdown):not(
+    .el-autocomplete__popper
+  ):not(.el-popover)::-webkit-scrollbar-thumb:vertical {
+  background: color-mix(in srgb, var(--app-hover-popup-text) 35%, transparent) !important;
+  border-radius: var(--fluent-radius-circular, 9999px) !important;
+  display: block !important;
+}
+
+:is(.el-popper[role="tooltip"], .el-tooltip__popper):not(.el-select__popper):not(
+    .el-dropdown__popper
+  ):not(.el-picker__popper):not(.el-cascader__dropdown):not(
+    .el-autocomplete__popper
+  ):not(.el-popover)::-webkit-scrollbar-thumb:vertical:hover,
+:is(.el-popper[role="tooltip"], .el-tooltip__popper):not(.el-select__popper):not(
+    .el-dropdown__popper
+  ):not(.el-picker__popper):not(.el-cascader__dropdown):not(
+    .el-autocomplete__popper
+  ):not(.el-popover)::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--app-hover-popup-text) 55%, transparent) !important;
 }
 
  .el-popper[role="tooltip"]:not(.el-select__popper):not(
@@ -2315,13 +2403,16 @@ html
   line-height: 1.4;
 }
 
-.app-dialog.el-dialog .el-alert + :is(.el-form, div, section, .el-table) {
+.app-dialog.el-dialog :is(.el-descriptions, .el-form, .el-table) + .el-alert,
+.app-dialog.el-dialog :is(.el-descriptions, .el-form, .el-table) ~ .el-alert,
+.app-dialog.el-dialog .el-alert + :is(.el-form, div, section, .el-table, .el-descriptions) {
   margin-top: 16px;
 }
 
 .app-dialog.el-dialog .el-descriptions {
   --el-descriptions-item-bordered-label-background: var(--app-surface-soft);
   font-size: var(--fluent-body1-size, 14px);
+  margin-bottom: 16px;
 }
 
 .app-dialog.el-dialog
@@ -2484,6 +2575,11 @@ html
   background: var(--fluent-overlay-bg) !important;
   color: var(--fluent-overlay-fg);
   box-shadow: var(--fluent-overlay-shadow);
+  max-height: min(420px, 70vh) !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  overscroll-behavior: contain !important;
+  box-sizing: border-box !important;
 }
 
 .el-popover.el-popper .el-popover__title {
