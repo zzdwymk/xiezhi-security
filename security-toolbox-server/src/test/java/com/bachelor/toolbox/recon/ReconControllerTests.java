@@ -24,6 +24,8 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 class ReconControllerTests {
   private final ReconService service = mock(ReconService.class);
+  private final com.bachelor.toolbox.project.ProjectAuthorizationService authorization =
+      mock(com.bachelor.toolbox.project.ProjectAuthorizationService.class);
   private MockMvc mockMvc;
 
   @BeforeEach
@@ -31,7 +33,7 @@ class ReconControllerTests {
     mockMvc =
         MockMvcBuilders.standaloneSetup(
                 new ReconController(
-                    service, mock(com.bachelor.toolbox.asset.DiscoveredPathService.class)))
+                    service, mock(com.bachelor.toolbox.asset.DiscoveredPathService.class), authorization))
             .setControllerAdvice(new GlobalExceptionHandler())
             .build();
   }

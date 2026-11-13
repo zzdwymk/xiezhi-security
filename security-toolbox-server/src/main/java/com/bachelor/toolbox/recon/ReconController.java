@@ -20,27 +20,36 @@ public class ReconController {
   private static final Logger log = LoggerFactory.getLogger(ReconController.class);
   private final ReconService service;
   private final DiscoveredPathService discoveredPaths;
+  private final com.bachelor.toolbox.project.ProjectAuthorizationService authorization;
 
-  public ReconController(ReconService service, DiscoveredPathService discoveredPaths) {
+  public ReconController(
+      ReconService service,
+      DiscoveredPathService discoveredPaths,
+      com.bachelor.toolbox.project.ProjectAuthorizationService authorization) {
     this.service = service;
     this.discoveredPaths = discoveredPaths;
+    this.authorization = authorization;
   }
 
   @PostMapping("/collect")
   public ReconResult collect(
       @PathVariable Long projectId, @Valid @RequestBody ReconRequest request) {
+    // 归属校验：非该项目所有者（且非管理员）不得采集/读取该项目的信息收集数据。
+    authorization.requireAccess(projectId);
     return service.collect(projectId, request);
   }
 
   @GetMapping("/results")
   public List<ReconResult> results(
       @PathVariable Long projectId, @RequestParam(required = false) Long targetId) {
+    authorization.requireAccess(projectId);
     return targetId == null ? service.history(projectId) : service.history(projectId, targetId);
   }
 
   @GetMapping("/paths")
   public List<DiscoveredPath> paths(
       @PathVariable Long projectId, @RequestParam(required = false) Long targetId) {
+    authorization.requireAccess(projectId);
     try {
       return targetId == null
           ? discoveredPaths.listByProject(projectId)
@@ -54,6 +63,7 @@ public class ReconController {
   @PostMapping("/icp/batch")
   public List<ReconService.IcpResult> icpBatch(
       @PathVariable Long projectId, @Valid @RequestBody ReconService.IcpBatchRequest request) {
+    authorization.requireAccess(projectId);
     return service.icpBatch(projectId, request);
   }
 }

@@ -23,12 +23,14 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 class ProbeControllerTests {
   private final ProbeService service = mock(ProbeService.class);
+  private final com.bachelor.toolbox.project.ProjectAuthorizationService authorization =
+      mock(com.bachelor.toolbox.project.ProjectAuthorizationService.class);
   private MockMvc mockMvc;
 
   @BeforeEach
   void setUp() {
     mockMvc =
-        MockMvcBuilders.standaloneSetup(new ProbeController(service))
+        MockMvcBuilders.standaloneSetup(new ProbeController(service, authorization))
             .setControllerAdvice(new GlobalExceptionHandler())
             .build();
   }

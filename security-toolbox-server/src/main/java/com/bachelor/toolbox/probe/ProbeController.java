@@ -18,13 +18,18 @@ import org.springframework.web.bind.annotation.RestController;
 public class ProbeController {
   private static final Logger log = LoggerFactory.getLogger(ProbeController.class);
   private final ProbeService service;
+  private final com.bachelor.toolbox.project.ProjectAuthorizationService authorization;
 
-  public ProbeController(ProbeService service) {
+  public ProbeController(
+      ProbeService service,
+      com.bachelor.toolbox.project.ProjectAuthorizationService authorization) {
     this.service = service;
+    this.authorization = authorization;
   }
 
   @PostMapping("/probe")
   public ProbeResult probe(@PathVariable Long projectId, @Valid @RequestBody ProbeRequest request) {
+    authorization.requireAccess(projectId);
     request.setProjectId(projectId);
     return service.probe(request);
   }
@@ -32,6 +37,7 @@ public class ProbeController {
   @GetMapping("/results")
   public List<ProbeResult> history(
       @PathVariable Long projectId, @RequestParam(required = false) Long targetId) {
+    authorization.requireAccess(projectId);
     try {
       return targetId == null ? service.history(projectId) : service.history(projectId, targetId);
     } catch (RuntimeException ex) {
@@ -43,6 +49,7 @@ public class ProbeController {
   /** 删除一条资产/结果节点：仅限该项目内，且受项目授权与目标归属约束。 */
   @DeleteMapping("/results/{id}")
   public void delete(@PathVariable Long projectId, @PathVariable Long id) {
+    authorization.requireAccess(projectId);
     service.delete(projectId, id);
   }
 }
