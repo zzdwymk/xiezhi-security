@@ -58,4 +58,28 @@ class AuditServiceTests {
     assertEquals(9L, log.getRelatedTaskId());
     assertNull(log.getRequestId());
   }
+
+  @Test
+  void truncatesOverLengthColumnsToAvoidIntegrityViolation() {
+    // Round 30：超长 action(>100)/result(>30) 会被截断，避免 DataIntegrityViolation。
+    String longAction = "A".repeat(250);
+    String longResult = "R".repeat(80);
+    service.record(longAction, "TASK", 1L, "d", longResult);
+
+    var captor = org.mockito.ArgumentCaptor.forClass(AuditLog.class);
+    verify(repository).save(captor.capture());
+    AuditLog log = captor.getValue();
+    assertEquals(100, log.getAction().length());
+    assertEquals(30, log.getResult().length());
+  }
+
+  @Test
+  void auditWriteFailureDoesNotPropagateToBusinessOperation() {
+    // Round 30：审计写入失败（如 DB 满）不应抛异常影响已完成的业务操作。
+    org.mockito.Mockito.doThrow(new RuntimeException("db full"))
+        .when(repository).save(org.mockito.ArgumentMatchers.any(AuditLog.class));
+    // 不应抛异常
+    service.record("CREATE_TASK", "TASK", 1L, "d", "SUCCESS");
+    verify(repository).save(org.mockito.ArgumentMatchers.any(AuditLog.class));
+  }
 }
