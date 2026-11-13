@@ -94,19 +94,9 @@ public class TrafficProxyService {
    * 仅对已绑定授权目标（targetId>0）的报文强制校验；未绑定目标（开放代理演示模式）保持原行为。
    */
   private void requirePacketAccess(TrafficPacket packet) {
-    if (projectTargets == null || authorization == null) return; // 单元测试未提供依赖时不阻断
-    Long targetId = packet.getTargetId();
-    if (targetId == null || targetId <= 0) return;
-    var links = projectTargets.findByTargetId(targetId);
-    for (var link : links) {
-      try {
-        authorization.requireAccess(link.getProjectId());
-        return;
-      } catch (RuntimeException ignored) {
-        // try next project
-      }
+    if (!canAccessPacket(packet)) {
+      throw new ApiException("无权访问该流量记录");
     }
-    throw new ApiException("无权访问该流量记录");
   }
 
   public synchronized Status start(TrafficDtos.StartRequest request) {
@@ -218,7 +208,26 @@ public class TrafficProxyService {
 
   public List<TrafficPacket> packets() {
     // Recording controls collection, not the scope of the traffic workspace history.
-    return packets.findAll(RECENT_PACKETS).getContent();
+    // Round 36：按报文目标归属过滤，避免列表跨用户泄露他人抓包（管理员/未绑定目标仍可见）。
+    return packets.findAll(RECENT_PACKETS).getContent().stream()
+        .filter(this::canAccessPacket)
+        .toList();
+  }
+
+  /** 非抛出式归属判断：targetId<=0（开放代理）或依赖未注入时放行；否则要求对目标所属项目有访问权。 */
+  private boolean canAccessPacket(TrafficPacket packet) {
+    if (projectTargets == null || authorization == null) return true;
+    Long targetId = packet.getTargetId();
+    if (targetId == null || targetId <= 0) return true;
+    for (var link : projectTargets.findByTargetId(targetId)) {
+      try {
+        authorization.requireAccess(link.getProjectId());
+        return true;
+      } catch (RuntimeException ignored) {
+        // try next
+      }
+    }
+    return false;
   }
 
   public TrafficPacket getPacket(Long id) {

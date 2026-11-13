@@ -76,4 +76,29 @@ class TrafficProxyPacketAccessTests {
     when(packets.findById(9L)).thenReturn(Optional.of(p));
     org.assertj.core.api.Assertions.assertThat(service().getPacket(9L)).isSameAs(p);
   }
+
+  @Test
+  @DisplayName("PA-4 列表只返回可访问目标的报文（过滤他人抓包）")
+  void listFiltersInaccessiblePackets() {
+    TrafficPacket mine = packet(1L, 88L);   // 可访问目标 88
+    TrafficPacket other = packet(2L, 99L);  // 他人目标 99
+    TrafficPacket unbound = packet(3L, 0L); // 开放模式
+    when(packets.findAll(org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class)))
+        .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(mine, other, unbound)));
+
+    var l88 = new ProjectTarget();
+    l88.setProjectId(3L);
+    l88.setTargetId(88L);
+    when(projectTargets.findByTargetId(88L)).thenReturn(List.of(l88));
+    when(authorization.requireAccess(3L))
+        .thenReturn(new com.bachelor.toolbox.project.AssessmentProject());
+    var l99 = new ProjectTarget();
+    l99.setProjectId(4L);
+    l99.setTargetId(99L);
+    when(projectTargets.findByTargetId(99L)).thenReturn(List.of(l99));
+    when(authorization.requireAccess(4L)).thenThrow(new ApiException("无权访问"));
+
+    var result = service().packets();
+    org.assertj.core.api.Assertions.assertThat(result).containsExactly(mine, unbound);
+  }
 }
