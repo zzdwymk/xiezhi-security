@@ -263,6 +263,9 @@ public class TaskService {
     if (request.toolCode() == null || request.toolCode().isBlank()) {
       throw new ApiException("工具代码不能为空");
     }
+    // Round 28：批量入口同为用户/AI 边界，拒绝自带框架内部信道键（防 SSRF/范围绕过）。
+    com.bachelor.toolbox.tool.ToolParameterPolicy.rejectUserSuppliedFrameworkKeys(
+        request.parameters());
     // 项目级入口先要求对项目有访问权与可执行授权，避免越权枚举他人项目的目标清单。
     var project = projectService.validateProjectExecution(request.projectId());
 

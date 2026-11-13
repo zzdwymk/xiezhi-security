@@ -302,6 +302,8 @@ public class SecurityAgentTools {
         CreateTaskRequest createRequest =
             new CreateTaskRequest(
                 request.projectId(), currentTargetId, step.toolCode(), stepParameters);
+        // Round 28：AI 模型给出的 step 参数不可信，拒绝其自带框架内部信道键（防 SSRF/范围绕过）。
+        com.bachelor.toolbox.tool.ToolParameterPolicy.rejectUserSuppliedFrameworkKeys(stepParameters);
         String nodeRunId = workflowBound
             ? (request.isProjectScoped()
                 ? (request.nodeRunId() + "." + currentTargetId + "." + step.workflowNodeId())

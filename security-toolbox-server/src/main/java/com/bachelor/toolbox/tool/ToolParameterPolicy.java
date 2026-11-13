@@ -131,6 +131,27 @@ public final class ToolParameterPolicy {
       Set.of(com.bachelor.toolbox.target.WebTargetResolver.PARAM_RESOLVED_BASES);
 
   /**
+   * 拒绝用户/模型在请求体里自带的"框架内部信道"参数（Round 28，SSRF/越权范围防护）。
+   *
+   * <p>{@code __} 前缀键与 {@link #FRAMEWORK_INJECTED_KEYS} 只允许服务端在派发前注入
+   * （如工作流/主动检测解析出的 {@code __resolvedWebBases}）。<b>用户在 REST/AI 工具调用里自带的同名键
+   * 必须被显式拒绝</b>——否则 {@code validateAtExecutionEntry} 会把它们当"框架键"跳过校验，随后被原样落库，
+   * 由 {@code WebTargetResolver.basesFromParameters} 读走，导致工具对用户指定的任意 URL（如内网地址）发起
+   * 请求，构成 SSRF / 授权范围绕过。此处只在用户/模型输入边界调用；内部受信链路不经此校验。
+   *
+   * @throws ApiException 若参数中出现任何框架内部信道键。
+   */
+  public static void rejectUserSuppliedFrameworkKeys(Map<String, Object> parameters) {
+    if (parameters == null) return;
+    for (String key : parameters.keySet()) {
+      if (key == null) continue;
+      if (key.startsWith("__") || FRAMEWORK_INJECTED_KEYS.contains(key)) {
+        throw new ApiException("参数 " + key + " 为系统内部保留键，不允许在请求中指定");
+      }
+    }
+  }
+
+  /**
    * 与 {@link #validate} 同语义，但用于 <strong>唯一执行入口</strong>（{@code TaskService.create}）。
    *
    * <p>两点差异（都是为了让"收敛到单一入口"不误伤既有合法路径）：

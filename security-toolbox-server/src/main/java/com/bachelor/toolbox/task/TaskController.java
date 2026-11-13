@@ -63,6 +63,8 @@ public class TaskController {
   @PostMapping
   @ResponseStatus(HttpStatus.ACCEPTED)
   public SecurityTask create(@Valid @RequestBody CreateTaskRequest request) throws Exception {
+    // Round 28：拒绝用户在请求体中自带的框架内部信道键（__ 前缀 / __resolvedWebBases），防 SSRF/范围绕过。
+    com.bachelor.toolbox.tool.ToolParameterPolicy.rejectUserSuppliedFrameworkKeys(request.parameters());
     SecurityTask task = service.create(request);
     progressEvents.publish(task, "任务已进入本地执行队列");
     return task;
