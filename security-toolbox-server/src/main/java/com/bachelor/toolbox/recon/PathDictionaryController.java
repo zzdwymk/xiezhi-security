@@ -45,7 +45,7 @@ public class PathDictionaryController {
 
   /** Validates a set of words without persisting. Returns a list of offending-word messages. */
   @PostMapping("/validate")
-  public Set<String> validate(@RequestBody ValidateRequest request) {
+  public Set<String> validate(@jakarta.validation.Valid @RequestBody ValidateRequest request) {
     return dictionary.validateWords(request.words());
   }
 
@@ -61,7 +61,10 @@ public class PathDictionaryController {
     return dictionary.update(request.additions(), request.removals());
   }
 
-  public record ValidateRequest(List<String> words) {}
+  public record ValidateRequest(
+      // Round 33：限制待校验词条数量，避免超大列表在校验时逐条生成问题串回显（内存放大）。
+      @jakarta.validation.constraints.Size(max = 100_000, message = "一次校验的词条数量超过 100000 条限制")
+          List<String> words) {}
 
   public record TextImportRequest(String text) {}
 
