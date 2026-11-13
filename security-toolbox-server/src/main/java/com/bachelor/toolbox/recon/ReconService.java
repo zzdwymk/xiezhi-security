@@ -127,12 +127,19 @@ public class ReconService {
           .followRedirects(HttpClient.Redirect.NEVER)
           .build();
 
-  /** 参数探测需要跟随同源目录重定向，单独复用另一个实例。 */
+  /**
+   * 参数探测专用客户端。
+   *
+   * <p>改回 {@code Redirect.NEVER}：原用 {@code Redirect.NORMAL} 虽在 {@link #mineProbe} 里对
+   * {@code resp.uri()} 做了主机校验，但重定向已由客户端实际跟随——请求早已发向重定向目标（可能是内网/
+   * 云元数据地址），主机校验只是丢弃结果、无法阻止越界出站，仍属 SSRF 残余面。改为不自动跟随，
+   * 由 {@link #mineProbe} 仅对同源 {@code Location} 手工再发一次，从而既不越界、又能覆盖目录补齐重定向。
+   */
   private final HttpClient paramProbeClient =
       HttpClient.newBuilder()
           .connectTimeout(Duration.ofSeconds(4))
           .version(HttpClient.Version.HTTP_1_1)
-          .followRedirects(HttpClient.Redirect.NORMAL)
+          .followRedirects(HttpClient.Redirect.NEVER)
           .build();
   private final PassiveResponseCache passiveCache =
       new PassiveResponseCache(PASSIVE_CACHE_MAX_ENTRIES);
@@ -1247,7 +1254,9 @@ public class ReconService {
       endpoints.add(url.contains("?") ? url.substring(0, url.indexOf('?')) : url);
     }
 
-    String targetHost = URI.create(base + "/").getHost();
+    URI baseUri = URI.create(base + "/");
+    String targetHost = baseUri.getHost();
+    int targetPort = effectivePort(baseUri);
     int tested = 0;
     int found = 0;
     int budget = paramProbeMaxEndpoints * 6 + 24; // 请求预算兜底，避免探测放大。
@@ -1266,14 +1275,14 @@ public class ReconService {
           timedOut = true;
           break outer;
         }
-        MineResponse baseResp = mineProbe(client, appendParam(endpoint, param, "1"), targetHost);
+        MineResponse baseResp = mineProbe(client, appendParam(endpoint, param, "1"), targetHost, targetPort);
         if (baseResp == null || baseResp.status() >= 500) continue;
         tested++;
         if (System.nanoTime() > deadline) {
           timedOut = true;
           break outer;
         }
-        MineResponse brkResp = mineProbe(client, appendParam(endpoint, param, "1'"), targetHost);
+        MineResponse brkResp = mineProbe(client, appendParam(endpoint, param, "1'" ), targetHost, targetPort);
         if (brkResp == null) continue;
         boolean errorTriggered =
             SQL_ERROR_SIGNATURE.matcher(brkResp.body()).find()
@@ -1310,7 +1319,7 @@ public class ReconService {
   /** 参数探测的单次响应快照（状态码、跟随重定向后的最终 URL、受限正文）。 */
   private record MineResponse(int status, String finalUrl, String body) {}
 
-  private MineResponse mineProbe(HttpClient client, String url, String targetHost) {
+  private MineResponse mineProbe(HttpClient client, String url, String targetHost, int targetPort) {
     try {
       HttpRequest req =
           HttpRequest.newBuilder(URI.create(url))
@@ -1319,11 +1328,27 @@ public class ReconService {
               .GET()
               .build();
       HttpResponse<byte[]> resp = client.send(req, HttpResponse.BodyHandlers.ofByteArray());
+      // 客户端不自动跟随重定向；仅当 Location 与授权 host:端口 同源时手工再发一次（覆盖目录补齐 301）。
+      int sc = resp.statusCode();
+      if (sc >= 300 && sc < 400) {
+        String location = resp.headers().firstValue("location").orElse(null);
+        if (location == null || location.isBlank()) return null;
+        URI followed = URI.create(url).resolve(location.trim());
+        if (!sameAuthorizedOrigin(followed, targetHost, targetPort)) {
+          // 跨主机或跨端口的重定向一律不跟随（防 SSRF 出站到内网其它服务）。
+          return null;
+        }
+        HttpRequest hop =
+            HttpRequest.newBuilder(followed)
+                .timeout(Duration.ofSeconds(6))
+                .header("User-Agent", USER_AGENT)
+                .GET()
+                .build();
+        resp = client.send(hop, HttpResponse.BodyHandlers.ofByteArray());
+      }
       URI finalUri = resp.uri();
-      // 重定向可能被跟随到其它主机——越界则丢弃，登记环节也会再兜底一次。
-      if (finalUri == null
-          || finalUri.getHost() == null
-          || (targetHost != null && !targetHost.equalsIgnoreCase(finalUri.getHost()))) {
+      // 兜底：最终 URI 仍必须与授权 host:端口 一致。
+      if (!sameAuthorizedOrigin(finalUri, targetHost, targetPort)) {
         return null;
       }
       byte[] raw = resp.body() == null ? new byte[0] : resp.body();
@@ -1333,6 +1358,19 @@ public class ReconService {
     } catch (Exception ex) {
       return null;
     }
+  }
+
+  /** 重定向/最终 URI 是否与授权基址同源（host + 有效端口一致，且 scheme 受限 http/https）。 */
+  private boolean sameAuthorizedOrigin(URI uri, String targetHost, int targetPort) {
+    if (uri == null || uri.getHost() == null || uri.getScheme() == null) return false;
+    if (!List.of("http", "https").contains(uri.getScheme().toLowerCase(Locale.ROOT))) return false;
+    if (targetHost == null || !targetHost.equalsIgnoreCase(uri.getHost())) return false;
+    return effectivePort(uri) == targetPort;
+  }
+
+  private static int effectivePort(URI uri) {
+    if (uri.getPort() > 0) return uri.getPort();
+    return "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
   }
 
   private String appendParam(String endpoint, String name, String value) {

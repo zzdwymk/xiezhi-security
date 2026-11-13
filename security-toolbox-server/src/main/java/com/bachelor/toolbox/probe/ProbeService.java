@@ -348,7 +348,9 @@ public class ProbeService {
           HttpClient.newBuilder()
               .connectTimeout(Duration.ofSeconds(4))
               .version(HttpClient.Version.HTTP_1_1)
-              .followRedirects(HttpClient.Redirect.NORMAL)
+              // 不跟随重定向：避免授权主机的 favicon 302 到内网/元数据地址造成 SSRF。
+              // 原用 Redirect.NORMAL 会在"校验主机"之后仍向重定向目标真实发起请求。
+              .followRedirects(HttpClient.Redirect.NEVER)
               .build();
       HttpRequest iconRequest =
           HttpRequest.newBuilder(iconUri)
