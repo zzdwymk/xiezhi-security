@@ -20,15 +20,30 @@ class TrafficAiChatServiceTests {
   private final TrafficPacketRepository packets = mock(TrafficPacketRepository.class);
   private final AiModelClient model = mock(AiModelClient.class);
   private final AuditService audit = mock(AuditService.class);
-  private final TrafficAiChatService service = new TrafficAiChatService(packets, model, audit);
+  private final com.bachelor.toolbox.project.ProjectTargetRepository projectTargets =
+      mock(com.bachelor.toolbox.project.ProjectTargetRepository.class);
+  private final com.bachelor.toolbox.project.ProjectAuthorizationService authorization =
+      mock(com.bachelor.toolbox.project.ProjectAuthorizationService.class);
+  private final TrafficAiChatService service =
+      new TrafficAiChatService(packets, model, audit, projectTargets, authorization);
+
+  private void grantAccess(Long targetId, Long projectId) {
+    var link = new com.bachelor.toolbox.project.ProjectTarget();
+    link.setProjectId(projectId);
+    link.setTargetId(targetId);
+    when(projectTargets.findByTargetId(targetId)).thenReturn(java.util.List.of(link));
+    when(authorization.requireAccess(projectId))
+        .thenReturn(new com.bachelor.toolbox.project.AssessmentProject());
+  }
 
   @Test
-  void sendsRedactedPacketAndConversationHistoryWithoutRequiringATarget() throws Exception {
+  void sendsRedactedPacketAndConversationHistoryForAuthorizedTarget() throws Exception {
     TrafficPacket packet = packet();
+    packet.setTargetId(11L);
+    grantAccess(11L, 5L);
     when(packets.findById(7L)).thenReturn(Optional.of(packet));
     when(model.enabled()).thenReturn(true);
     when(model.model()).thenReturn("test-model");
-    packet.setTargetId(0L);
     when(model.complete(contains("流量分析助手"), contains("[REDACTED]")))
         .thenReturn("这是分析结果");
 
@@ -47,8 +62,22 @@ class TrafficAiChatServiceTests {
   }
 
   @Test
+  void rejectsChatWhenUserHasNoAccessToPacketProject() {
+    // Round 34：IDOR —— 目标不属于任何当前用户可访问项目时拒绝，模型不应被调用。
+    TrafficPacket packet = packet();
+    packet.setTargetId(11L);
+    when(packets.findById(7L)).thenReturn(Optional.of(packet));
+    when(projectTargets.findByTargetId(11L)).thenReturn(java.util.List.of());
+    assertThatThrownBy(() -> service.chat(7L, new TrafficAiChatService.ChatRequest("总结", List.of())))
+        .isInstanceOf(ApiException.class).hasMessageContaining("无权访问");
+  }
+
+  @Test
   void rejectsTheQuestionWhenModelIsDisabled() {
-    when(packets.findById(7L)).thenReturn(Optional.of(packet()));
+    TrafficPacket p = packet();
+    p.setTargetId(11L);
+    grantAccess(11L, 5L);
+    when(packets.findById(7L)).thenReturn(Optional.of(p));
     when(model.enabled()).thenReturn(false);
 
     assertThatThrownBy(() -> service.chat(7L, new TrafficAiChatService.ChatRequest("总结", List.of())))
@@ -57,7 +86,10 @@ class TrafficAiChatServiceTests {
 
   @Test
   void hidesModelFailureDetailsFromTheResponse() throws Exception {
-    when(packets.findById(7L)).thenReturn(Optional.of(packet()));
+    TrafficPacket p = packet();
+    p.setTargetId(11L);
+    grantAccess(11L, 5L);
+    when(packets.findById(7L)).thenReturn(Optional.of(p));
     when(model.enabled()).thenReturn(true);
     when(model.complete(contains("流量分析助手"), contains("当前问题：总结")))
         .thenThrow(new IllegalStateException("secret-provider-detail"));
@@ -70,7 +102,10 @@ class TrafficAiChatServiceTests {
 
   @Test
   void rejectsAnEmptyModelAnswer() throws Exception {
-    when(packets.findById(7L)).thenReturn(Optional.of(packet()));
+    TrafficPacket p = packet();
+    p.setTargetId(11L);
+    grantAccess(11L, 5L);
+    when(packets.findById(7L)).thenReturn(Optional.of(p));
     when(model.enabled()).thenReturn(true);
     when(model.complete(contains("流量分析助手"), contains("当前问题：总结"))).thenReturn(" ");
     assertThatThrownBy(() -> service.chat(7L, new TrafficAiChatService.ChatRequest("总结", List.of())))

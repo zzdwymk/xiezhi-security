@@ -29,6 +29,7 @@ public class TrafficAnalysisService {
   private final AuditService audit;
   private final AiModelClient modelClient;
   private final ProjectTargetRepository projectTargets;
+  private final com.bachelor.toolbox.project.ProjectAuthorizationService authorization;
 
   public TrafficAnalysisService(
       TrafficPacketRepository packets,
@@ -36,18 +37,39 @@ public class TrafficAnalysisService {
       TaskService tasks,
       AuditService audit,
       AiModelClient modelClient,
-      ProjectTargetRepository projectTargets) {
+      ProjectTargetRepository projectTargets,
+      com.bachelor.toolbox.project.ProjectAuthorizationService authorization) {
     this.packets = packets;
     this.suggestions = suggestions;
     this.tasks = tasks;
     this.audit = audit;
     this.modelClient = modelClient;
     this.projectTargets = projectTargets;
+    this.authorization = authorization;
+  }
+
+  /** Round 34：按报文所属目标校验当前用户对其任一所属项目有访问权（防 IDOR 读取他人抓包）。
+   *  仅对**已绑定授权目标**（targetId>0）的报文强制校验；未绑定目标（如开放代理演示模式 targetId 0/null）
+   *  无项目归属可校验，保持原有行为。 */
+  void requirePacketAccess(TrafficPacket packet) {
+    Long targetId = packet.getTargetId();
+    if (targetId == null || targetId <= 0) return;
+    var links = projectTargets.findByTargetId(targetId);
+    for (var link : links) {
+      try {
+        authorization.requireAccess(link.getProjectId());
+        return;
+      } catch (RuntimeException ignored) {
+        // try next project the target belongs to
+      }
+    }
+    throw new ApiException("无权访问该流量记录");
   }
 
   public AnalysisResponse analyze(Long packetId, String mode) {
     TrafficPacket packet =
         packets.findById(packetId).orElseThrow(() -> new ApiException("流量记录不存在"));
+    requirePacketAccess(packet);
     TrafficSuggestion suggestion =
         suggestions.findByPacketId(packetId).orElseGet(() -> createSuggestion(packet));
     try {

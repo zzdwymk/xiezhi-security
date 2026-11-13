@@ -35,8 +35,21 @@ class TrafficAnalysisServiceTests {
   private final AuditService audit = mock(AuditService.class);
   private final AiModelClient modelClient = mock(AiModelClient.class);
   private final ProjectTargetRepository projectTargets = mock(ProjectTargetRepository.class);
+  private final com.bachelor.toolbox.project.ProjectAuthorizationService authorization =
+      mock(com.bachelor.toolbox.project.ProjectAuthorizationService.class);
   private final TrafficAnalysisService service =
-      new TrafficAnalysisService(packets, suggestions, tasks, audit, modelClient, projectTargets);
+      new TrafficAnalysisService(packets, suggestions, tasks, audit, modelClient, projectTargets,
+          authorization);
+
+  @org.junit.jupiter.api.BeforeEach
+  void grantDefaultAccess() {
+    var link = new ProjectTarget();
+    link.setProjectId(5L);
+    link.setTargetId(TARGET_ID);
+    when(projectTargets.findByTargetId(TARGET_ID)).thenReturn(List.of(link));
+    when(authorization.requireAccess(5L))
+        .thenReturn(new com.bachelor.toolbox.project.AssessmentProject());
+  }
 
   @ParameterizedTest
   @CsvSource({"EXECUTED,DONE", "IGNORED,IGNORED", "PENDING,PENDING"})
