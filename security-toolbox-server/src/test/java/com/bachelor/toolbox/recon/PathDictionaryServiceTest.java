@@ -135,6 +135,20 @@ class PathDictionaryServiceTest {
   }
 
   @Test
+  void rejectsOversizedUpdateAdditions() {
+    PathDictionaryService service = loadedService(tempDir);
+    // Round 20：update 原无词条数量上限（importText/replace 有）。构造 >10 万条 additions，
+    // 应在写入前被拒绝，避免内存/落盘 DoS。
+    java.util.List<String> huge = new java.util.ArrayList<>();
+    for (int i = 0; i < 100_001; i++) {
+      huge.add("w" + i);
+    }
+    assertThatThrownBy(() -> service.update(huge, java.util.Set.of()))
+        .isInstanceOf(ApiException.class)
+        .hasMessageContaining("100000");
+  }
+
+  @Test
   void paginatesAndFiltersANamedDictionary() {
     PathDictionaryService service = loadedService(tempDir);
     PathDictionaryService.WordPage page = service.pageWords("dirb-common", "admin", 1, 10);

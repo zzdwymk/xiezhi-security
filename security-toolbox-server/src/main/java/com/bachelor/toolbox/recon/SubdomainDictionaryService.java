@@ -152,6 +152,10 @@ public class SubdomainDictionaryService {
 
   /** Adds or removes words in bulk and persists the resulting dictionary. */
   public UpdateResult update(List<String> additions, Set<String> removals) {
+    // Round 20：与 importText/replace 对齐，强制词条数量上限，避免海量 additions 撑爆内存/落盘 DoS。
+    if (additions != null && additions.size() > MAX_WORDS) {
+      throw new ApiException("一次新增的词条数量超过 100000 条限制");
+    }
     Set<String> current = new LinkedHashSet<>(words);
     int added = 0;
     int removed = 0;
@@ -178,6 +182,9 @@ public class SubdomainDictionaryService {
       }
     }
     if (added > 0 || removed > 0) {
+      if (current.size() > MAX_WORDS) {
+        throw new ApiException("词典词条总数超过 100000 条限制");
+      }
       List<String> merged = new ArrayList<>(current);
       persist(merged);
       words = List.copyOf(merged);

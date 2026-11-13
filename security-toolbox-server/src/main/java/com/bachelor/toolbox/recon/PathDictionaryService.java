@@ -300,6 +300,12 @@ public class PathDictionaryService {
 
   /** Adds or removes words in the managed custom dictionary and persists the result. */
   public UpdateResult update(List<String> additions, Set<String> removals) {
+    // Round 20：update 原缺少词条数量上限，而 importText/replace 均强制 ≤ MAX_WORDS。
+    // 若不限制，管理端可一次灌入海量 additions 使自定义词典无限增长（内存 + 落盘 DoS），
+    // 且破坏"自定义词典 ≤ 100000 条"这一全局不变量。这里同时限制入参与最终规模。
+    if (additions != null && additions.size() > MAX_WORDS) {
+      throw new ApiException("一次新增的词条数量超过 100000 条限制");
+    }
     Set<String> current = new LinkedHashSet<>(words(CUSTOM_DICTIONARY_ID));
     int added = 0;
     int removed = 0;
@@ -326,6 +332,9 @@ public class PathDictionaryService {
       }
     }
     if (added > 0 || removed > 0) {
+      if (current.size() > MAX_WORDS) {
+        throw new ApiException("自定义词典词条总数超过 100000 条限制");
+      }
       List<String> merged = new ArrayList<>(current);
       persist(merged);
       putCustom(merged);
