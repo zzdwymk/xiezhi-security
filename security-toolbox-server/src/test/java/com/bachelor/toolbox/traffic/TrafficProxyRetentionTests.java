@@ -38,7 +38,9 @@ class TrafficProxyRetentionTests {
         mock(com.bachelor.toolbox.audit.AuditService.class),
         mock(MitmCertificateAuthority.class),
         mock(TrafficAssetSyncService.class),
-        mock(org.springframework.transaction.PlatformTransactionManager.class));
+        mock(org.springframework.transaction.PlatformTransactionManager.class),
+        null,
+        null);
   }
 
   private long invokeEvict(TrafficProxyService svc, Long sessionId) throws Exception {

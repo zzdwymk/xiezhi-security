@@ -48,7 +48,7 @@ class TrafficProxyLifecycleTests {
   @BeforeEach
   void prepare() {
     service = new TrafficProxyService(sessions, packets, suggestions, analysis, targets,
-        policy, filters, audit, certificateAuthority, assetSync, transactionManager);
+        policy, filters, audit, certificateAuthority, assetSync, transactionManager, null, null);
   }
 
   private void persistSessions() {

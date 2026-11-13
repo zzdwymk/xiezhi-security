@@ -153,6 +153,8 @@ class TrafficProxyQueryTests {
         audit,
         certificateAuthority,
         assetSync,
-        transactionManager);
+        transactionManager,
+        null,
+        null);
   }
 }

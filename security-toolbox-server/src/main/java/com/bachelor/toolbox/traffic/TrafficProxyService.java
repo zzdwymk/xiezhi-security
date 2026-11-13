@@ -51,6 +51,8 @@ public class TrafficProxyService {
   private final AuditService audit;
   private final MitmCertificateAuthority certificateAuthority;
   private final TrafficAssetSyncService assetSync;
+  private final com.bachelor.toolbox.project.ProjectTargetRepository projectTargets;
+  private final com.bachelor.toolbox.project.ProjectAuthorizationService authorization;
   private final Set<String> autoActions = ConcurrentHashMap.newKeySet();
   private final TransactionTemplate transactions;
   private LocalTrafficProxy proxy;
@@ -69,7 +71,9 @@ public class TrafficProxyService {
       AuditService audit,
       MitmCertificateAuthority certificateAuthority,
       TrafficAssetSyncService assetSync,
-      PlatformTransactionManager transactionManager) {
+      PlatformTransactionManager transactionManager,
+      com.bachelor.toolbox.project.ProjectTargetRepository projectTargets,
+      com.bachelor.toolbox.project.ProjectAuthorizationService authorization) {
     this.sessions = sessions;
     this.packets = packets;
     this.suggestions = suggestions;
@@ -81,6 +85,28 @@ public class TrafficProxyService {
     this.certificateAuthority = certificateAuthority;
     this.assetSync = assetSync;
     this.transactions = new TransactionTemplate(transactionManager);
+    this.projectTargets = projectTargets;
+    this.authorization = authorization;
+  }
+
+  /**
+   * Round 35：按报文所属目标校验当前用户访问权（防 IDOR 按 id 读取/篡改他人抓包）。
+   * 仅对已绑定授权目标（targetId>0）的报文强制校验；未绑定目标（开放代理演示模式）保持原行为。
+   */
+  private void requirePacketAccess(TrafficPacket packet) {
+    if (projectTargets == null || authorization == null) return; // 单元测试未提供依赖时不阻断
+    Long targetId = packet.getTargetId();
+    if (targetId == null || targetId <= 0) return;
+    var links = projectTargets.findByTargetId(targetId);
+    for (var link : links) {
+      try {
+        authorization.requireAccess(link.getProjectId());
+        return;
+      } catch (RuntimeException ignored) {
+        // try next project
+      }
+    }
+    throw new ApiException("无权访问该流量记录");
   }
 
   public synchronized Status start(TrafficDtos.StartRequest request) {
@@ -196,7 +222,10 @@ public class TrafficProxyService {
   }
 
   public TrafficPacket getPacket(Long id) {
-    return packets.findById(id).orElseThrow(() -> new ApiException("流量记录不存在"));
+    TrafficPacket packet =
+        packets.findById(id).orElseThrow(() -> new ApiException("流量记录不存在"));
+    requirePacketAccess(packet);
+    return packet;
   }
 
   public synchronized TrafficPacket markPacket(Long packetId, boolean marked) {
@@ -218,6 +247,7 @@ public class TrafficProxyService {
             ignored -> {
               TrafficPacket packet =
                   packets.findById(packetId).orElseThrow(() -> new ApiException("流量记录不存在"));
+              requirePacketAccess(packet);
               Long sessionId = packet.getSessionId();
               suggestions.findByPacketId(packetId).ifPresent(suggestions::delete);
               suggestions.flush();
