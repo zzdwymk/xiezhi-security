@@ -432,7 +432,32 @@ public class AiController {
 
   @GetMapping("/conversations")
   public List<Map<String, Object>> listConversations() {
-    return memoryService != null ? memoryService.listAllPersistedThreads() : List.of();
+    if (memoryService == null) return List.of();
+    // Round 37：按项目归属过滤，避免跨用户泄露他人 AI 对话线程（含 transcript 等可能敏感内容）。
+    java.util.Set<Long> accessible =
+        new java.util.HashSet<>(authorization.accessibleProjectIds());
+    List<Map<String, Object>> all = memoryService.listAllPersistedThreads();
+    if (authorization.isAdmin()) return all;
+    List<Map<String, Object>> filtered = new java.util.ArrayList<>(all.size());
+    for (Map<String, Object> thread : all) {
+      Long pid = asLong(thread.get("projectId"));
+      if (pid == null || accessible.contains(pid)) {
+        filtered.add(thread);
+      }
+    }
+    return filtered;
+  }
+
+  private static Long asLong(Object value) {
+    if (value instanceof Number n) return n.longValue();
+    if (value instanceof String s) {
+      try {
+        return Long.parseLong(s.trim());
+      } catch (NumberFormatException ignored) {
+        return null;
+      }
+    }
+    return null;
   }
 
   @PutMapping("/conversations/{sessionId}")
