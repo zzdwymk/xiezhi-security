@@ -441,9 +441,11 @@ class AssessmentProjectServiceTests {
     Finding vulnerability = finding("HIGH", "nuclei", "CVE-2026-0001");
     Finding information = finding("INFO", "tcp_ports", null);
     when(projects.findById(1L)).thenReturn(Optional.of(project));
-    when(tasks.findAllByProjectIdOrderByCreatedAtAsc(1L))
+    when(tasks.findAllByProjectId(org.mockito.ArgumentMatchers.eq(1L),
+            org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class)))
         .thenReturn(List.of(originalTask, retestTask));
-    when(findings.findAllByTaskIdInOrderByCreatedAtAsc(List.of(10L, 11L)))
+    when(findings.findAllByTaskIdIn(org.mockito.ArgumentMatchers.eq(List.of(10L, 11L)),
+            org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class)))
         .thenReturn(List.of(vulnerability, information));
     when(links.countByProjectId(1L)).thenReturn(3L);
     when(auditLogs.countByProjectId(1L, "1")).thenReturn(4L);
@@ -462,7 +464,9 @@ class AssessmentProjectServiceTests {
   @Test
   void skipsFindingQueryWhenProjectHasNoTasks() {
     when(projects.findById(1L)).thenReturn(Optional.of(project("ACTIVE")));
-    when(tasks.findAllByProjectIdOrderByCreatedAtAsc(1L)).thenReturn(List.of());
+    when(tasks.findAllByProjectId(org.mockito.ArgumentMatchers.eq(1L),
+            org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class)))
+        .thenReturn(List.of());
 
     ProjectDtos.Summary summary = service.summary(1L);
 

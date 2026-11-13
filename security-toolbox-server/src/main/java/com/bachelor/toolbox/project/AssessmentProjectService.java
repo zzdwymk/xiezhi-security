@@ -24,6 +24,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class AssessmentProjectService {
+  // Round 40：项目任务/发现整体载入的硬上限，防超大项目 OOM/超大响应。
+  private static final int MAX_PROJECT_TASKS = 5000;
+  private static final int MAX_PROJECT_FINDINGS = 20000;
   private static final Sort LIST_SORT =
       Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id"));
   private static final Set<String> STATUSES =
@@ -298,7 +301,11 @@ public class AssessmentProjectService {
   }
 
   private List<SecurityTask> loadProjectTasks(Long projectId) {
-    return taskRepository.findAllByProjectIdOrderByCreatedAtAsc(projectId);
+    // Round 40：项目级任务/发现列表原本无上限整体载入，超大扫描历史项目会 OOM/超大响应。
+    // 以固定上限分页封顶（与报告聚合口径一致）；正常项目远低于上限，不影响计数/展示。
+    return taskRepository.findAllByProjectId(
+        projectId,
+        PageRequests.bounded(0, MAX_PROJECT_TASKS, 1, MAX_PROJECT_TASKS, Sort.by(Sort.Order.asc("createdAt"), Sort.Order.asc("id"))));
   }
 
   private List<Finding> loadProjectFindings(List<SecurityTask> projectTasks) {
@@ -306,7 +313,9 @@ public class AssessmentProjectService {
     if (taskIds.isEmpty()) {
       return List.of();
     }
-    return findingRepository.findAllByTaskIdInOrderByCreatedAtAsc(taskIds);
+    return findingRepository.findAllByTaskIdIn(
+        taskIds,
+        PageRequests.bounded(0, MAX_PROJECT_FINDINGS, 1, MAX_PROJECT_FINDINGS, Sort.by(Sort.Order.asc("createdAt"), Sort.Order.asc("id"))));
   }
 
   private ProjectDtos.Summary buildSummary(
