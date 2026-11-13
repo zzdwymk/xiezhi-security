@@ -101,6 +101,8 @@ public class AiAgentRuntimeClient {
   private static final List<String> PROJECT_INDEX_SOURCES =
       List.of("project", "target", "task", "finding", "recon", "probe", "reference", "conversation");
   static final String POLICY_REVISION = "java-authoritative-v1";
+  /** SSE 单行上限（Round 17）：防上游无换行超长流导致 readLine 内存耗尽。 */
+  private static final int MAX_SSE_LINE_LENGTH = 1_000_000;
   private static final Set<String> MODEL_PROVIDER_FAILURE_CODES =
       Set.of("MODEL_NOT_CONFIGURED", "MODEL_ACCESS_DENIED", "MODEL_RATE_LIMITED", "MODEL_SERVICE_UNAVAILABLE",
           "MODEL_TIMEOUT", "MODEL_REQUEST_FAILED");
@@ -1160,10 +1162,13 @@ public class AiAgentRuntimeClient {
   }
 
   void readSse(BufferedReader reader, Consumer<RuntimeEvent> sink) throws IOException {
+    // Round 17：用有界行读取器，杜绝上游发送无换行超长流导致的 readLine 内存耗尽。
+    com.bachelor.toolbox.common.BoundedLineReader lines =
+        new com.bachelor.toolbox.common.BoundedLineReader(reader, MAX_SSE_LINE_LENGTH);
     StringBuilder data = new StringBuilder();
     int publicProgressCount = 0;
     String line;
-    while ((line = reader.readLine()) != null) {
+    while ((line = lines.readLine()) != null) {
       if (line.startsWith(": toolbox-progress ")) {
         if (++publicProgressCount <= 32 && line.length() <= 512) {
           PublicProgress progress = parsePublicProgress(line.substring(19));

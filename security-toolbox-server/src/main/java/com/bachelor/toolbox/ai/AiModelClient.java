@@ -23,6 +23,8 @@ import org.springframework.web.client.RestClient;
 
 @Component
 public class AiModelClient {
+  /** 流式单行上限（Round 17）：防上游无换行超长流导致 readLine 内存耗尽。 */
+  private static final int MAX_STREAM_LINE_LENGTH = 1_000_000;
   private final boolean enabled;
   private final String apiKey;
   private final String model;
@@ -250,10 +252,13 @@ public class AiModelClient {
 
   private String readResponseStream(BufferedReader reader, Consumer<AiModelStreamEvent> listener)
       throws IOException {
+    // Round 17：有界行读取，防上游无换行超长流导致 readLine 内存耗尽。
+    com.bachelor.toolbox.common.BoundedLineReader lines =
+        new com.bachelor.toolbox.common.BoundedLineReader(reader, MAX_STREAM_LINE_LENGTH);
     StringBuilder output = new StringBuilder();
     String completedText = "";
     String line;
-    while ((line = reader.readLine()) != null) {
+    while ((line = lines.readLine()) != null) {
       if (!line.startsWith("data:")) {
         continue;
       }
