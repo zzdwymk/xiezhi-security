@@ -63,4 +63,29 @@ class LoginAttemptServiceTests {
 
     assertThat(service.isBlocked("admin", "127.0.0.1")).isTrue();
   }
+
+  @Test
+  void 海量不同用户名不会导致条目无界增长内存耗尽() {
+    // 模拟攻击者用海量不同用户名各失败一次（不达阈值、不再重试）；
+    // 若无容量上限，条目会持续增长至 OOM。修复后条目数必须被上限约束。
+    int distinct = LoginAttemptService.MAX_ENTRIES * 3 + 137;
+    for (int i = 0; i < distinct; i++) {
+      service.recordFailure("victim-" + i, "127.0.0.1");
+    }
+    assertThat(service.size())
+        .as("登录尝试记录必须被容量上限约束，杜绝内存耗尽")
+        .isLessThanOrEqualTo(LoginAttemptService.MAX_ENTRIES);
+  }
+
+  @Test
+  void 容量控制不影响正常锁定语义() {
+    // 灌满大量无关条目后，对目标账号的节流仍然生效。
+    for (int i = 0; i < LoginAttemptService.MAX_ENTRIES + 500; i++) {
+      service.recordFailure("noise-" + i, "127.0.0.1");
+    }
+    for (int i = 0; i < 3; i++) {
+      service.recordFailure("realadmin", "127.0.0.1");
+    }
+    assertThat(service.isBlocked("realadmin", "127.0.0.1")).isTrue();
+  }
 }
