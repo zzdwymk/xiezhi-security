@@ -594,6 +594,9 @@ public class TrafficFuzzService {
         : groups.stream().mapToInt(List::size).max().orElse(0);
     List<Map<String, String>> plans = new ArrayList<>();
     for (int i = 0; i < count; i++) {
+      if (plans.size() >= MAX_PAYLOADS) {
+        break; // 防御性上限：即便某组异常超长也不超过 MAX_PAYLOADS 次重放
+      }
       Map<String, String> binding = new LinkedHashMap<>();
       for (int j = 0; j < names.size(); j++) {
         String name = names.get(j);
@@ -606,21 +609,30 @@ public class TrafficFuzzService {
   }
 
   private List<Map<String, String>> buildCartesian(List<String> names, List<List<String>> groups) {
+    // Round 22：Cartesian 组合数会随变量数指数膨胀（每个变量最多 200 个 payload）。
+    // 原实现仅在“每个变量处理完后”判断 plans.size()>MAX_PAYLOADS 并 break，且 break 后
+    // 未截断——单个变量维度的内外双重循环会在检查前临时构造 plans.size()*values.size()
+    // 个映射（如 200*200=40000），而返回的列表也可能达到 4 万条：loopFuzz 会对每一条都发起
+    // 一次真实重放请求 → 请求放大 DoS（远超 MAX_PAYLOADS=200 的设计上限）并造成内存尖峰。
+    // 修复：在构造过程中“边加边判”，总组合数一旦达到 MAX_PAYLOADS 立即停止，绝不超限。
     List<Map<String, String>> plans = new ArrayList<>();
     plans.add(new LinkedHashMap<>());
     for (int j = 0; j < names.size(); j++) {
+      List<String> values = groups.get(j);
       List<Map<String, String>> next = new ArrayList<>();
-      List<String> group = groups.get(j);
-      List<String> values = group;
+      outer:
       for (Map<String, String> base : plans) {
         for (String value : values) {
+          if (next.size() >= MAX_PAYLOADS) {
+            break outer;
+          }
           Map<String, String> copy = new LinkedHashMap<>(base);
           copy.put(names.get(j), value);
           next.add(copy);
         }
       }
       plans = next;
-      if (plans.size() > MAX_PAYLOADS) {
+      if (plans.size() >= MAX_PAYLOADS) {
         break;
       }
     }

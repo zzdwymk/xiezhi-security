@@ -823,6 +823,31 @@ class TrafficFuzzServiceTests {
     public void close() {}
   }
 
+  @Test
+  void clusterBombCombinationCountIsBoundedToMaxPayloads() throws Exception {
+    // Round 22：CLUSTER_BOMB 两变量各 200 payload → 原始笛卡尔积 40000 组合（每条都真实重放），
+    // 远超 MAX_PAYLOADS=200。修复后组合数必须 ≤ 200，且实际发往目标的模糊请求数也 ≤ 200。
+    server = LocalEchoServer.started();
+    arrangeSource(0L, server.port());
+    String origin = "http://127.0.0.1:" + server.port();
+    List<String> a = new java.util.ArrayList<>();
+    List<String> b = new java.util.ArrayList<>();
+    for (int i = 0; i < 200; i++) {
+      a.add("a" + i);
+      b.add("b" + i);
+    }
+    int before = server.requests.size();
+    var response = service.fuzz(PACKET_ID, new TrafficFuzzService.FuzzRequest(7L, "POST",
+        origin + "/§x§?y=§y§", "X-Pair: §x§|§y§", "x=§x§&y=§y§",
+        Map.of("x", a, "y", b), null, "LOOP", "CLUSTER_BOMB"));
+    int fuzzSent = server.requests.size() - before;
+    // baseline 1 次 + 组合 ≤ 200 次，总计应 ≤ 201（修复前为 1 + 40000）。
+    org.junit.jupiter.api.Assertions.assertTrue(response.results().size() <= 201,
+        "CLUSTER_BOMB 组合数应 ≤ MAX_PAYLOADS(200)，实际=" + (response.results().size() - 1));
+    org.junit.jupiter.api.Assertions.assertTrue(fuzzSent <= 201,
+        "发往目标的请求数(=baseline+组合)应 ≤ 201，实际=" + fuzzSent);
+  }
+
   private void arrangeSource(Long targetId, int port) {
     TrafficPacket packet = new TrafficPacket();
     packet.setId(PACKET_ID);
