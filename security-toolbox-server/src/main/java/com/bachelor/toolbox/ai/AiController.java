@@ -464,6 +464,17 @@ public class AiController {
   public Map<String, Object> saveConversation(
       @PathVariable String sessionId, @RequestBody Map<String, Object> payload) {
     if (memoryService != null) {
+      // Round 38：防止跨用户覆写/伪造对话线程（IDOR 写）。
+      // 已存在线程须属当前用户可访问项目；请求体声明的 projectId（若给出）亦须可访问。
+      AiConversationMemoryService.SessionScope existing = memoryService.scope(sessionId);
+      if (existing != null && existing.projectId() != null) {
+        authorization.requireAccess(existing.projectId());
+      }
+      Object declared = payload == null ? null : payload.get("projectId");
+      Long declaredPid = asLong(declared);
+      if (declaredPid != null) {
+        authorization.requireAccess(declaredPid);
+      }
       memoryService.saveClientThread(sessionId, payload);
     }
     return Map.of("sessionId", sessionId, "saved", true);
@@ -471,6 +482,12 @@ public class AiController {
 
   @DeleteMapping("/conversations/{sessionId}")
   public Map<String, Object> deleteConversation(@PathVariable String sessionId) {
+    // Round 38：删除前按会话所属项目校验访问权，防跨用户清除他人对话。
+    AiConversationMemoryService.SessionScope scope =
+        memoryService == null ? null : memoryService.scope(sessionId);
+    if (scope != null && scope.projectId() != null) {
+      authorization.requireAccess(scope.projectId());
+    }
     boolean cleared = agentOrchestrator.clearSession(sessionId);
     return Map.of("sessionId", sessionId, "cleared", cleared);
   }

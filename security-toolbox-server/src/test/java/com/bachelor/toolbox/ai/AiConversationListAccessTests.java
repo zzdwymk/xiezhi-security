@@ -65,4 +65,32 @@ class AiConversationListAccessTests {
     var result = controller(auth, mem).listConversations();
     assertThat(result).hasSize(2);
   }
+
+  @Test
+  @DisplayName("CL-3 保存到他人项目会话 → 拒绝")
+  void saveRejectsOtherProjectThread() {
+    ProjectAuthorizationService auth = mock(ProjectAuthorizationService.class);
+    AiConversationMemoryService mem = mock(AiConversationMemoryService.class);
+    when(mem.scope("s1"))
+        .thenReturn(new AiConversationMemoryService.SessionScope(9L, null));
+    org.mockito.Mockito.doThrow(new com.bachelor.toolbox.common.ApiException("无权访问"))
+        .when(auth).requireAccess(9L);
+    org.assertj.core.api.Assertions.assertThatThrownBy(
+            () -> controller(auth, mem).saveConversation("s1", new java.util.LinkedHashMap<>(Map.of("projectId", 9))))
+        .isInstanceOf(com.bachelor.toolbox.common.ApiException.class);
+  }
+
+  @Test
+  @DisplayName("CL-4 删除他人项目会话 → 拒绝")
+  void deleteRejectsOtherProjectThread() {
+    ProjectAuthorizationService auth = mock(ProjectAuthorizationService.class);
+    AiConversationMemoryService mem = mock(AiConversationMemoryService.class);
+    when(mem.scope("s2"))
+        .thenReturn(new AiConversationMemoryService.SessionScope(9L, null));
+    org.mockito.Mockito.doThrow(new com.bachelor.toolbox.common.ApiException("无权访问"))
+        .when(auth).requireAccess(9L);
+    org.assertj.core.api.Assertions.assertThatThrownBy(
+            () -> controller(auth, mem).deleteConversation("s2"))
+        .isInstanceOf(com.bachelor.toolbox.common.ApiException.class);
+  }
 }
