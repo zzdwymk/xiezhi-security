@@ -277,7 +277,7 @@ final class LocalTrafficProxy implements AutoCloseable {
       }
       body = readFixedBody(clientIn, contentLength);
 
-      String forwardedHeaders = rewriteHeaders(lines, method, path, version);
+      String forwardedHeaders = rewriteHeaders(lines, method, path, version, body.length, body.length > 0 || headerValue(lines, "Content-Length") != null);
       ExchangeResult result = forwardExchange(upstreamTls, clientOut, forwardedHeaders, body);
       capture.accept(
           new Capture(
@@ -497,7 +497,7 @@ final class LocalTrafficProxy implements AutoCloseable {
     int contentLength = parseContentLength(lines);
     if (contentLength > MAX_REQUEST_BODY) throw new ProxyHttpException(413, "代理请求体超过 1 MB 限制");
     byte[] body = readFixedBody(clientIn, contentLength);
-    String forwardedHeaders = rewriteHeaders(lines, method, path, version);
+    String forwardedHeaders = rewriteHeaders(lines, method, path, version, body.length, body.length > 0 || headerValue(lines, "Content-Length") != null);
 
     long responseBytes = 0;
     Integer status;
@@ -585,6 +585,27 @@ final class LocalTrafficProxy implements AutoCloseable {
         || headerTokens(lines, "Connection").contains("upgrade")) {
       throw new ProxyHttpException(501, "抓包代理暂不支持 WebSocket/Upgrade");
     }
+    // 请求走私防线：重复/冲突的 Content-Length 会让代理与上游对报文边界解析不一致
+    // （CL.CL 去同步）。这里统计所有 Content-Length 行，出现多个即拒绝（fail-closed）。
+    int contentLengthHeaders = 0;
+    String firstContentLength = null;
+    for (int i = 1; i < lines.length; i++) {
+      String line = lines[i];
+      int colon = line.indexOf(':');
+      if (colon <= 0) continue;
+      if (line.substring(0, colon).trim().equalsIgnoreCase("Content-Length")) {
+        contentLengthHeaders++;
+        String value = line.substring(colon + 1).trim();
+        if (firstContentLength == null) {
+          firstContentLength = value;
+        } else if (!firstContentLength.equals(value)) {
+          throw new ProxyHttpException(400, "抓包代理拒绝冲突的 Content-Length 请求头");
+        }
+      }
+    }
+    if (contentLengthHeaders > 1) {
+      throw new ProxyHttpException(400, "抓包代理拒绝重复的 Content-Length 请求头");
+    }
   }
 
   private byte[] readHeader(InputStream in) throws IOException {
@@ -606,7 +627,8 @@ final class LocalTrafficProxy implements AutoCloseable {
     return bytes.toByteArray();
   }
 
-  private String rewriteHeaders(String[] lines, String method, String path, String version) {
+  private String rewriteHeaders(String[] lines, String method, String path, String version,
+      int forwardedBodyLength, boolean hasBody) {
     StringBuilder b =
         new StringBuilder(method)
             .append(' ')
@@ -622,10 +644,21 @@ final class LocalTrafficProxy implements AutoCloseable {
           || lower.startsWith("connection:")
           || lower.startsWith("keep-alive:")
           || lower.startsWith("transfer-encoding:")
+          // 丢弃客户端所有 Content-Length：改写为唯一一条与实际转发体长一致的值，
+          // 避免重复/冲突 CL 造成上游 CL.CL 去同步（请求走私）。
+          || lower.startsWith("content-length:")
           || line.isBlank()) continue;
       b.append(line).append("\r\n");
     }
+    if (hasBody) {
+      b.append("Content-Length: ").append(forwardedBodyLength).append("\r\n");
+    }
     return b.append("Connection: close\r\n\r\n").toString();
+  }
+
+  /** 兼容旧调用点：body 非空时按其长度写 Content-Length。 */
+  private String rewriteHeaders(String[] lines, String method, String path, String version) {
+    return rewriteHeaders(lines, method, path, version, 0, false);
   }
 
   private String[] parseRequestLine(String[] lines) {
