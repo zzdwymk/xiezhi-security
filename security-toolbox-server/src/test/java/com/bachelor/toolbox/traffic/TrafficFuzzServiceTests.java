@@ -848,6 +848,27 @@ class TrafficFuzzServiceTests {
         "发往目标的请求数(=baseline+组合)应 ≤ 201，实际=" + fuzzSent);
   }
 
+  @Test
+  void loopFuzzAbortsWhenWallClockBudgetExceeded() throws Exception {
+    // Round 24：把 LOOP 整体预算调到极小（1 纳秒 → 立即超时），有组合时应在基线后不再重放，
+    // engine 标为 LOOP_TRUNCATED，避免单个请求长时阻塞线程。
+    server = LocalEchoServer.started();
+    arrangeSource(0L, server.port());
+    String origin = "http://127.0.0.1:" + server.port();
+    java.lang.reflect.Field f =
+        TrafficFuzzService.class.getDeclaredField("loopFuzzDeadlineNanos");
+    f.setAccessible(true);
+    f.setLong(service, 1L);
+    int before = server.requests.size();
+    var response = service.fuzz(PACKET_ID, new TrafficFuzzService.FuzzRequest(7L, "GET",
+        origin + "/§x§", "X: §x§", "",
+        Map.of("x", List.of("1", "2", "3")), null, "LOOP", "SNIPER"));
+    int sent = server.requests.size() - before;
+    // 只有 baseline 1 次（组合因立即超时被跳过）
+    org.junit.jupiter.api.Assertions.assertEquals(1, sent, "超时后不应再重放组合");
+    org.junit.jupiter.api.Assertions.assertEquals("LOOP_TRUNCATED", response.engine());
+  }
+
   private void arrangeSource(Long targetId, int port) {
     TrafficPacket packet = new TrafficPacket();
     packet.setId(PACKET_ID);

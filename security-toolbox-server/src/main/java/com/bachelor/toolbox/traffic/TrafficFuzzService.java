@@ -63,6 +63,16 @@ public class TrafficFuzzService {
   private static final Pattern DICTIONARY_EDGE_WHITESPACE =
       Pattern.compile("^[\\s\\p{Z}\\uFEFF]+|[\\s\\p{Z}\\uFEFF]+$");
   private static final long ZAP_FUZZ_DEADLINE_MINUTES = 8;
+  /**
+   * LOOP 模式的整体墙钟预算（分钟，Round 24）。
+   *
+   * <p>{@link #loopFuzz} 逐条串行重放，单条 replay 最长等待上游 30s；修复前无整体时限：200 条组合
+   * 最坏可阻塞一个请求线程约 100 分钟（200×30s），并反复新建套接字。并发少量此类请求即耗尽 HTTP
+   * 线程池。这里加硬件级时限：超时即停止并返回已完成的部分结果（标注 truncated）。
+   */
+  private static final long LOOP_FUZZ_DEADLINE_MINUTES = 5;
+  /** 实例级 LOOP 预算（纳秒），默认由常量换算；测试可经反射调小以验证超时截断。 */
+  private volatile long loopFuzzDeadlineNanos = TimeUnit.MINUTES.toNanos(LOOP_FUZZ_DEADLINE_MINUTES);
 
   private final TrafficReplayService replay;
   private final ZapDaemonSupplier daemonSupplier;
@@ -443,7 +453,14 @@ public class TrafficFuzzService {
             requestSnapshot(baselineRequest, baseline)));
 
     List<Map<String, String>> combos = buildCombinations(variables, payloadGroups, combination);
+    // Round 24：LOOP 串行重放加整体墙钟预算，超时即停止并返回已完成部分（避免单个请求阻塞线程数十分钟）。
+    long loopDeadline = System.nanoTime() + loopFuzzDeadlineNanos;
+    boolean loopTimedOut = false;
     for (Map<String, String> bindings : combos) {
+      if (System.nanoTime() >= loopDeadline) {
+        loopTimedOut = true;
+        break;
+      }
       String label = describeBindings(bindings);
       ReplayRequest resolvedRequest = resolveRequest(request, url, body, headers, bindings);
       ReplayResponse result = replay.replay(packetId, resolvedRequest);
@@ -462,7 +479,8 @@ public class TrafficFuzzService {
               changed,
               requestSnapshot(resolvedRequest, result)));
     }
-    return new FuzzResponse(packetId, request.method(), url, results, combos.size(), "LOOP");
+    String engine = loopTimedOut ? "LOOP_TRUNCATED" : "LOOP";
+    return new FuzzResponse(packetId, request.method(), url, results, combos.size(), engine);
   }
 
   /**
