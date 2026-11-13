@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 端点注册表：把 (HTTP 方法, 路径) 映射到自动派生的能力（设计文档 §4.2 路线 B、§6.5 第二重约束）。
@@ -48,13 +49,13 @@ import java.util.TreeMap;
 public final class EndpointRegistry {
 
   /** 键为 {@code METHOD /path/template}，保证同一方法+路径只登记一次。 */
-  private final Map<String, EndpointCapability> byKey = new LinkedHashMap<>();
+  private final Map<String, EndpointCapability> byKey = new ConcurrentHashMap<>();
 
   /** 按路径模板分组的方法集合，供覆盖率统计与调试。 */
-  private final Map<String, Set<String>> methodsByPath = new TreeMap<>();
+  private final Map<String, Set<String>> methodsByPath = new ConcurrentHashMap<>();
 
   /** 缓存：具体请求路径 → 命中的端点能力。空值用 {@link Optional#empty()} 表示，避免重复匹配开销。 */
-  private final Map<String, Optional<EndpointCapability>> matchCache = new LinkedHashMap<>();
+  private final Map<String, Optional<EndpointCapability>> matchCache = new ConcurrentHashMap<>();
 
   private int maxCacheSize = 4096;
 
@@ -98,7 +99,7 @@ public final class EndpointRegistry {
       return;
     }
     byKey.put(key, endpoint);
-    methodsByPath.computeIfAbsent(path, ignored -> new LinkedHashSet<>()).add(method);
+    methodsByPath.computeIfAbsent(path, ignored -> ConcurrentHashMap.newKeySet()).add(method);
     matchCache.clear();
   }
 

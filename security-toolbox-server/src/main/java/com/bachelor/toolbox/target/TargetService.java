@@ -153,6 +153,7 @@ public class TargetService {
     }
   }
 
+  @Transactional
   public AuthorizedTarget update(Long id, TargetRequest request) {
     AuthorizedTarget target = get(id);
     requireTargetManage(target);
@@ -233,6 +234,9 @@ public class TargetService {
   }
 
   private void validateTargetValue(String targetType, String targetValue) {
+    if (!"DOMAIN".equals(targetType) && !"IP".equals(targetType) && !"URL".equals(targetType)) {
+      throw new ApiException("目标类型无效：仅支持 IP、URL 或 DOMAIN");
+    }
     if ("DOMAIN".equals(targetType) && !DOMAIN_PATTERN.matcher(targetValue).matches()) {
       throw new ApiException("域名格式不正确：请填写不含空格、协议或路径的主机名");
     }

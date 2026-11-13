@@ -6,7 +6,10 @@ import com.bachelor.toolbox.common.PageRequests;
 import com.bachelor.toolbox.project.ProjectAuthorizationService;
 import com.bachelor.toolbox.task.SecurityTask;
 import com.bachelor.toolbox.task.SecurityTaskRepository;
+import jakarta.persistence.criteria.Order;
 import jakarta.persistence.criteria.Predicate;
+import jakarta.persistence.criteria.Root;
+import jakarta.persistence.criteria.Subquery;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -27,14 +30,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
-import jakarta.persistence.criteria.Order;
 
 @RestController
 @RequestMapping("/api/findings")
 public class FindingController {
-  /** 归属过滤时一次性载入的任务 ID 上限，与任务列表上限保持一致 */
-  private static final int ACCESSIBLE_TASK_LIMIT = 1000;
-
   private final FindingRepository repository;
   private final SecurityTaskRepository taskRepository;
   private final AuditService auditService;
@@ -222,33 +221,24 @@ public class FindingController {
 
   /**
    * 结果的可见范围。管理员可见全部；普通用户仅可见其可访问项目下任务产生的结果。
+   * 通过 JPA Criteria 子查询动态过滤，消除内存上限限制与 SQL IN 批量参数溢出。
    * 返回 null 表示不附加限制（Specification.allOf 会忽略 null 判定）。
    */
   private Specification<Finding> accessibleScope() {
     if (authorization.isAdmin()) {
       return (root, criteriaQuery, builder) -> builder.conjunction();
     }
-    List<Long> taskIds = accessibleTaskIds();
-    if (taskIds.isEmpty()) {
+    List<Long> projectIds = authorization.accessibleProjectIds();
+    if (projectIds.isEmpty()) {
       return (root, criteriaQuery, builder) -> builder.disjunction();
     }
-    return (root, criteriaQuery, builder) -> root.get("taskId").in(taskIds);
-  }
-
-  /** 当前用户可访问项目下的全部任务 ID */
-  private List<Long> accessibleTaskIds() {
-    List<Long> projectIds =
-        authorization.accessibleProjectIds();
-    if (projectIds.isEmpty()) {
-      return List.of();
-    }
-    return taskRepository.findAllByProjectIdIn(
-            projectIds,
-            PageRequests.bounded(0, ACCESSIBLE_TASK_LIMIT, 1, ACCESSIBLE_TASK_LIMIT,
-                Sort.by(Sort.Direction.DESC, "id")))
-        .stream()
-        .map(SecurityTask::getId)
-        .toList();
+    return (root, criteriaQuery, builder) -> {
+      Subquery<Long> subquery = criteriaQuery.subquery(Long.class);
+      Root<SecurityTask> taskRoot = subquery.from(SecurityTask.class);
+      subquery.select(taskRoot.get("id"))
+          .where(taskRoot.get("projectId").in(projectIds));
+      return root.get("taskId").in(subquery);
+    };
   }
 
   /**
@@ -274,13 +264,20 @@ public class FindingController {
 
 
   private Specification<Finding> buildSpecification(String keyword) {
-    String pattern = "%" + keyword.toLowerCase(Locale.ROOT) + "%";
+    // 通配符转义：用户输入的 % 与 _ 作为普通字符参与模糊匹配，避免被当作 LIKE 通配符
+    // （否则 "%" 会匹配全部、"_" 会匹配任意单字符，造成“查非所查”的语义偏差）。
+    String escaped =
+        keyword.toLowerCase(Locale.ROOT)
+            .replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_");
+    String pattern = "%" + escaped + "%";
     Long numericKeyword = parseLong(keyword);
     return (root, criteriaQuery, builder) -> {
       List<Predicate> predicates = new ArrayList<>();
       for (String field :
           List.of("title", "severity", "sourceTool", "status", "ruleCode", "vulnerabilityCode")) {
-        predicates.add(builder.like(builder.lower(root.get(field)), pattern));
+        predicates.add(builder.like(builder.lower(root.get(field)), pattern, '\\'));
       }
       if (numericKeyword != null) {
         predicates.add(builder.equal(root.get("targetId"), numericKeyword));
@@ -291,17 +288,21 @@ public class FindingController {
   }
 
   private void populateProjectId(List<Finding> findings) {
-    if (findings.isEmpty()) return;
+    if (findings == null || findings.isEmpty()) return;
     List<Long> taskIds =
         findings.stream().map(Finding::getTaskId).filter(Objects::nonNull).distinct().toList();
     if (taskIds.isEmpty()) return;
-    Map<Long, Long> taskProject =
-        taskRepository.findAllById(taskIds).stream()
-            .collect(Collectors.toMap(SecurityTask::getId, SecurityTask::getProjectId));
+    Map<Long, Long> taskProject = new java.util.HashMap<>();
+    for (SecurityTask task : taskRepository.findAllById(taskIds)) {
+      if (task.getProjectId() != null) {
+        taskProject.put(task.getId(), task.getProjectId());
+      }
+    }
     for (Finding finding : findings) {
       finding.setProjectId(taskProject.get(finding.getTaskId()));
     }
   }
+
   private Long parseLong(String value) {
     try {
       return Long.valueOf(value);
@@ -311,6 +312,7 @@ public class FindingController {
   }
 
   @PutMapping("/{id}/status")
+  @Transactional
   public Finding updateStatus(@PathVariable Long id, @RequestBody StatusRequest request) {
     String status = request.status() == null ? "" : request.status().trim().toUpperCase();
     if (!List.of("OPEN", "CONFIRMED", "FALSE_POSITIVE", "FIXED").contains(status)) {

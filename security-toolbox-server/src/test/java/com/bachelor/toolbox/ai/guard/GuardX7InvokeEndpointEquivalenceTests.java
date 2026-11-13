@@ -379,11 +379,16 @@ class GuardX7InvokeEndpointEquivalenceTests {
           params("path", "http://192.168.10.10/?id=1", "extraFlags", "--os-shell"));
     }
 
-    /** B-3：不在策略白名单里的工具码 → L-C' 拒绝（工具白名单已可达且生效）。 */
+    /**
+     * B-3：不在策略白名单里的工具码 → L-C' 拒绝（工具白名单已可达且生效）。
+     *
+     * <p><strong>Round 9 更新</strong>：{@code zap_fuzz} 此前不在护栏白名单（属真实漂移），
+     * 已按 dispatch 层补齐——因此不能再拿它当"白名单外"的例子。改用真正无效的工具码。
+     */
     @Test
-    @DisplayName("B-3 toolCode=zap_fuzz（未在策略白名单）→ L-C' ENDPOINT_PARAMETER_POLICY 拒绝")
+    @DisplayName("B-3 toolCode=not_a_real_tool（白名单外）→ L-C' ENDPOINT_PARAMETER_POLICY 拒绝")
     void toolOutsideSafeWhitelistIsRejectedByPolicy() {
-      assertParameterPolicyDenied("zap_fuzz", params("fuzzRequestUrl", "http://192.168.10.10/"));
+      assertParameterPolicyDenied("not_a_real_tool", params("anything", "x"));
     }
 
     /**

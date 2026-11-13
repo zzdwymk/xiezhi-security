@@ -154,6 +154,9 @@ public class TaskService {
     projectService.validateProjectTarget(request.projectId(), request.targetId());
     var target = targetService.getCurrentlyAuthorized(request.targetId(), request.projectId());
     var tool = registry.require(request.toolCode());
+    // Round 10：依赖任务也是创建路径，同样在唯一入口做工具参数校验。
+    com.bachelor.toolbox.tool.ToolParameterPolicy.validateAtExecutionEntry(
+        request.toolCode(), request.parameters() == null ? Map.of() : request.parameters());
     List<SecurityTask> dependencyTasks = repository.findAllById(dependencies);
     if (dependencyTasks.size() != dependencies.size()) {
       throw new ApiException("任务依赖不存在");
@@ -222,6 +225,11 @@ public class TaskService {
     var target = targetService.getCurrentlyAuthorized(request.targetId(), request.projectId());
     var tool = registry.require(request.toolCode());
     Map<String, Object> parameters = request.parameters() == null ? Map.of() : request.parameters();
+    // Round 10：唯一执行入口统一工具参数校验。所有创建路径（REST、AI dispatch、能力层、
+    // invoke_endpoint、流量建议、扫描计划）最终都汇聚到此 funnel，因此在这里对
+    // ToolParameterPolicy（全平台唯一白名单）执行一次校验，即可消除上游多份白名单的漂移。
+    // 对策略未覆盖的已注册工具 fail-open 跳过（见 validateAtExecutionEntry 的说明）。
+    com.bachelor.toolbox.tool.ToolParameterPolicy.validateAtExecutionEntry(request.toolCode(), parameters);
     SecurityTask task = new SecurityTask();
     task.setTargetId(request.targetId());
     task.setProjectId(request.projectId());

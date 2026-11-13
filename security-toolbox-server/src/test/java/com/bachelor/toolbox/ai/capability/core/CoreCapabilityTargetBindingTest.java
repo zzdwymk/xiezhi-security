@@ -12,6 +12,7 @@ import com.bachelor.toolbox.ai.capability.CapabilityRegistry;
 import com.bachelor.toolbox.ai.capability.RiskLevel;
 import com.bachelor.toolbox.ai.guard.TargetBindingProbe;
 import com.bachelor.toolbox.common.ApiException;
+import com.bachelor.toolbox.tool.ToolParameterPolicy;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;

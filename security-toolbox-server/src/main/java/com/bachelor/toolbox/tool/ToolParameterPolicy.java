@@ -1,4 +1,4 @@
-package com.bachelor.toolbox.ai.capability.core;
+package com.bachelor.toolbox.tool;
 
 import com.bachelor.toolbox.common.ApiException;
 import java.util.LinkedHashSet;
@@ -8,36 +8,22 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 安全工具参数的取值白名单（与 {@code AiTaskDispatchService#normalizeParameters} 对齐）。
+ * 安全工具参数的取值白名单——<strong>全平台唯一事实来源</strong>（Round 10 下沉到 {@code tool} 包）。
  *
- * <h2>为什么需要这个类：一个"覆盖不全"缺口的修复</h2>
+ * <h2>为什么从 ai.capability.core 迁到 tool 包</h2>
  *
- * <p>本任务在实现 {@code create_task} 时自查发现：能力层只校验了 {@code toolCode} 非空与"是否已注册"，
- * 把工具<strong>参数取值</strong>的校验完全交给了下游 {@code TaskService.create}。这是一个真实缺口，理由：
+ * <p>此前同一套工具/参数白名单存在三份实现：{@code EndpointParameterPolicy}（护栏 L-C'）、
+ * 本类（能力层）、{@code ActiveScanService.ruleParameterKeys}（检测规则侧），外加 dispatch 层
+ * {@code AiTaskDispatchService.normalizeParameters} 的 switch。多份实现必然漂移（Round 9 实测已发现
+ * {@code dir_scan}/{@code zap_fuzz}/{@code udp}/{@code consumeOpenPorts} 等漏项）。
  *
- * <ol>
- *   <li><strong>拒绝理由的精确性</strong>：护栏 L-C 的审计会记录"能力层校验通过"，而实际被下游拒绝 → 审计与事实不符，
- *       §9.5 的越权拦截率无法正确归因；
- *   <li><strong>保护会静默消失</strong>：下游路径一旦重构，这层保护就没了，而能力层的 Javadoc 仍声称校验过；
- *   <li>这与 guard-verifier 发现的 D-1..D-6 属<strong>同一模式</strong>——"校验被写在某个具体入口上，而不是所有入口上"。
- * </ol>
+ * <p>根治办法（本类落地）：把本类移到中立的 {@code tool} 包，使其可被 <strong>task 包（唯一执行入口
+ * {@code TaskService.create}）</strong> 直接依赖。在 {@code TaskService.create} 的创建/派发漏斗里统一执行
+ * 本类的 {@link #validate}，从而让 REST、AI dispatch、能力层、{@code invoke_endpoint} 等<strong>所有入口</strong>
+ * 共用同一份校验，而不是各写一份。
  *
- * <h2>本类的定位：把 dispatch 层的规则集显式化，而不是"再抄一份"</h2>
- *
- * <p>纯粹复制一份白名单会立刻产生第二个漂移源（这正是 D-1..D-5 的成因）。因此本类：
- *
- * <ul>
- *   <li>把规则集<strong>集中在一处</strong>并带来源注释（每条规则注明 dispatch 层的对应行），便于代码审查比对；
- *   <li>提供 {@link #assertNoDrift(List)} 供测试断言"本类的工具清单 == dispatch 层的可执行工具清单"，
- *       一旦 dispatch 层增删工具而本类未同步，测试<strong>立即失败</strong>——把"人工记得同步"变成"机器强制同步"。
- * </ul>
- *
- * <h2>⚠️ 已知的架构局限（如实记录）</h2>
- *
- * <p>本类仍是 dispatch 层规则的<strong>第二份实现</strong>。正确的长期修法是把校验<strong>下沉到唯一执行入口</strong>
- * （{@code TaskService.create}），让所有上游路径（REST、AI dispatch、能力层、invoke_endpoint）共用同一份校验。
- * 但那需要修改 {@code task/} 包（不在本任务写作用域内），因此本任务采取的是"显式化 + 漂移断言"这一折中：
- * 它把"静默漂移"变成"测试失败"，但没有消除重复实现本身。这一点必须写进论文的已知局限。
+ * <p>方法本身的校验规则不变：工具必须在清单内、参数键必须在白名单内、枚举取值/结构性约束必须合法。
+ * 这层<strong>不</strong>校验端口是否在授权范围内（那需要 {@code AuthorizedTarget}，属护栏 L-A/L-C' 的职责）。
  */
 public final class ToolParameterPolicy {
 
@@ -46,7 +32,7 @@ public final class ToolParameterPolicy {
       List.of(
           "nmap_service_scan", "tcp_ports", "http_headers", "http_security_check", "tls_config",
           "nuclei_scan", "afrog_scan", "xray_scan", "zap_scan", "fscan_scan", "sqlmap_scan",
-          "msf_scan", "zap_fuzz", "site_crawl");
+          "msf_scan", "zap_fuzz", "dir_scan", "site_crawl");
 
   /** 项目内只读检索工具（非执行类，无工具参数）。 */
   public static final List<String> READ_ONLY_TOOLS = List.of("retrieve_project_context");
@@ -54,14 +40,17 @@ public final class ToolParameterPolicy {
   /** 各工具允许的参数键（对齐 {@code AiTaskDispatchService:238-252}）。 */
   private static final Map<String, Set<String>> ALLOWED_KEYS =
       Map.ofEntries(
-          // tcp_ports 的扫描面只由 ports 决定（缺省 = 授权全段），故不接受 mode；udp 追加 UDP 探测。
+          // tcp_ports 的扫描面只由 ports 决定（缺省 = 授权全段）；udp 追加 UDP 探测。
           Map.entry("tcp_ports", Set.of("ports", "udp")),
-          Map.entry("nmap_service_scan", Set.of("ports", "mode")),
+          Map.entry("nmap_service_scan", Set.of("ports", "mode", "consumeOpenPorts")),
           Map.entry("fscan_scan", Set.of("ports", "vulnMode")),
           Map.entry("afrog_scan", Set.of("pocCodes", "allPocs")),
           Map.entry("xray_scan", Set.of("pocCodes", "allPocs")),
           Map.entry("nuclei_scan", Set.of("pocCodes", "allPocs")),
           Map.entry("zap_scan", Set.of("spider", "strength")),
+          Map.entry("dir_scan", Set.of("dictionary", "concurrency", "depth", "maxRequests", "extensions")),
+          Map.entry("zap_fuzz",
+              Set.of("fuzzRequestUrl", "method", "fuzzPostBody", "fuzzPayload", "fuzzTargetField")),
           Map.entry("msf_scan", Set.of("module", "modules", "options")),
           Map.entry("sqlmap_scan", Set.of("path", "level", "risk", "technique")),
           Map.entry("http_security_check", Set.of("check")),
@@ -94,8 +83,7 @@ public final class ToolParameterPolicy {
   /**
    * 校验工具与参数：工具必须在清单内、参数键必须在白名单内、枚举取值必须合法。
    *
-   * <p>刻意<strong>不</strong>校验端口是否在授权范围内——那需要 {@code AuthorizedTarget}，属护栏 L-A 与 L-C' 的职责，
-   * 在这里重复实现会产生第三份端口规则。
+   * <p>刻意<strong>不</strong>校验端口是否在授权范围内——那需要 {@code AuthorizedTarget}，属护栏 L-A 与 L-C' 的职责。
    *
    * @throws ApiException 任一规则不满足
    */
@@ -129,6 +117,46 @@ public final class ToolParameterPolicy {
       }
     }
     validateToolSpecific(toolCode, safe);
+  }
+
+  /**
+   * 框架内部传输参数（服务端在派发前注入，不是用户可配置的工具选项）。
+   *
+   * <p>{@code ActiveScanService}/{@code WebTargetResolver} 会在创建任务前把
+   * {@code __resolvedWebBases}（预解析 Web 基址）与路径类工具的 {@code path} 注入参数。
+   * 这些键属于服务端内部信道，不应被"用户参数白名单"误拦，但它们也<strong>不是</strong>用户可提交的自由参数——
+   * 因此在唯一入口校验时把它们从"待校验键集合"中剔除，只对<strong>剩余的用户键</strong>套用白名单。
+   */
+  private static final Set<String> FRAMEWORK_INJECTED_KEYS =
+      Set.of(com.bachelor.toolbox.target.WebTargetResolver.PARAM_RESOLVED_BASES);
+
+  /**
+   * 与 {@link #validate} 同语义，但用于 <strong>唯一执行入口</strong>（{@code TaskService.create}）。
+   *
+   * <p>两点差异（都是为了让"收敛到单一入口"不误伤既有合法路径）：
+   * <ol>
+   *   <li>先剔除框架注入键（{@link #FRAMEWORK_INJECTED_KEYS} 及 {@code __} 前缀键），只校验剩余用户键；
+   *   <li>对<strong>本策略未知</strong>的工具码 fail-open 跳过（交由 {@code registry.require} 负责存在性）。
+   * </ol>
+   * 对已纳入白名单的工具，剩余用户键仍严格校验（键白名单 + 枚举 + 结构性约束）。
+   */
+  public static void validateAtExecutionEntry(String toolCode, Map<String, Object> parameters) {
+    if (!isKnownTool(toolCode)) {
+      // 策略未覆盖该工具：交由注册表存在性校验，此处不拦。
+      return;
+    }
+    Map<String, Object> filtered = new java.util.LinkedHashMap<>();
+    if (parameters != null) {
+      for (Map.Entry<String, Object> entry : parameters.entrySet()) {
+        String key = entry.getKey();
+        if (key == null) continue;
+        if (key.startsWith("__") || FRAMEWORK_INJECTED_KEYS.contains(key)) {
+          continue; // 框架内部信道，非用户参数
+        }
+        filtered.put(key, entry.getValue());
+      }
+    }
+    validate(toolCode, filtered);
   }
 
   /** 工具特有的结构性校验（对齐 dispatch 层的 msf 模块前缀、PoC 选择等）。 */
@@ -222,14 +250,7 @@ public final class ToolParameterPolicy {
     }
   }
 
-  /**
-   * 漂移断言：确认本类的工具清单与给定的权威清单一致。
-   *
-   * <p>供测试调用。一旦 dispatch 层增删工具而本类未同步，测试立即失败——把"人工记得同步"变成"机器强制同步"。
-   *
-   * @param authoritativeTools 权威工具码集合（来自 {@code AiToolCatalog.EXECUTABLE_TOOLS}）
-   * @throws ApiException 两侧不一致时
-   */
+  /** 漂移断言：确认本类的工具清单与给定的权威清单一致（供测试调用）。 */
   public static void assertNoDrift(java.util.Collection<String> authoritativeTools) {
     Set<String> authoritative = new LinkedHashSet<>(authoritativeTools);
     Set<String> local = new LinkedHashSet<>(EXECUTABLE_TOOLS);
@@ -246,24 +267,12 @@ public final class ToolParameterPolicy {
   /**
    * 由服务端在派发时注入、因而不出现在"用户可配置键"白名单里的参数。
    *
-   * <p>{@code ActiveScanService} 在规则参数校验<b>之后</b>才根据请求注入 PoC 选择
-   * （{@code parameters.put("allPocs"/"pocCodes", ...)}），所以规则侧白名单不含它们并不是漂移。
-   * 列在这里而不是放宽断言，是为了让"哪些键属于服务端注入"成为显式记录——将来新增注入键时，
-   * 这里漏写会让测试失败，而不是被静默放过。
+   * <p>{@code ActiveScanService} 在规则参数校验<b>之后</b>才根据请求注入 PoC 选择，
+   * 所以规则侧白名单不含它们并不是漂移。列在这里是让"服务端注入键"成为显式记录。
    */
   private static final Set<String> SERVER_INJECTED_KEYS = Set.of("allPocs", "pocCodes");
 
-  /**
-   * 参数键漂移断言：AI 侧允许的参数键必须是检测规则侧允许键的<b>子集</b>。
-   *
-   * <p>两侧刻意不同：检测规则由运维配置并持久化，需要承载 ZAP 认证、HTTP 路径等运维专属参数；
-   * AI 方案只开放模型可提议的最小集合。所以不能要求相等，但必须保证
-   * <strong>AI 能提议的键规则侧一定接受</strong>——否则同一工具在同一目标上会出现"规则能配、
-   * AI 却不能"的割裂。这层关系在此之前只能靠人工比对，没有任何测试会发现。
-   *
-   * @param ruleKeysFor 给定工具码返回规则侧允许键（由 {@code ActiveScanService} 提供真实取值）
-   * @throws ApiException AI 侧存在规则侧不认识的参数键时
-   */
+  /** 参数键漂移断言：AI 侧允许的参数键必须是检测规则侧允许键的子集。 */
   public static void assertAllowedKeysAreRuleSubset(
       java.util.function.Function<String, Set<String>> ruleKeysFor) {
     for (String toolCode : EXECUTABLE_TOOLS) {

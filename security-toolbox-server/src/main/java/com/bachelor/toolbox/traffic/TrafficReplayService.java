@@ -55,6 +55,10 @@ public class TrafficReplayService {
           "te",
           "trailer");
 
+  /** 允许重复出现的请求头（RFC 7230 §3.2.2 明确可合并的少数几个）；其余重复名一律拒绝。 */
+  private static final Set<String> DUPLICATE_ALLOWED_HEADERS =
+      Set.of("cookie", "accept", "accept-encoding", "accept-language", "cache-control", "pragma");
+
   private final TrafficPacketRepository packets;
   private final AuditService audit;
   private final TargetService targets;
@@ -230,6 +234,11 @@ public class TrafficReplayService {
     if (raw.getBytes(StandardCharsets.UTF_8).length > MAX_HEADERS)
       throw new ApiException("发包请求头不能超过 64 KB");
     List<HeaderLine> result = new ArrayList<>();
+    // 请求走私（CL/TE 混淆）防线：即使 Transfer-Encoding 因大小写/空白变体被下面的分支遗漏，
+    // 也要记录是否出现过框架头，最后统一判定，绝不把二者或重复头透传到目标。
+    boolean sawTransferEncoding = false;
+    boolean sawContentLength = false;
+    java.util.Set<String> seenNames = new java.util.LinkedHashSet<>();
     boolean firstContentLine = true;
     for (String line : raw.split("\\r?\\n", -1)) {
       if (line.isBlank()) continue;
@@ -246,16 +255,44 @@ public class TrafficReplayService {
       if (!HEADER_NAME.matcher(name).matches()) throw new ApiException("请求头名称无效: " + name);
       validateHeaderValue(value);
       String lower = name.toLowerCase(Locale.ROOT);
+      // 关键：大小写/尾部空白归一后再判定，杜绝 "Transefer-Encoding"、"Transfer-Encoding "
+      // 之类的变体绕过下面的精确匹配（否则会经 SKIPPED_HEADERS 之外的路径漏进真实报文）。
+      if ("transfer-encoding".equals(lower)) {
+        sawTransferEncoding = true;
+        continue;
+      }
+      if ("content-length".equals(lower)) {
+        sawContentLength = true;
+        continue;
+      }
       if ("host".equals(lower)) {
+        // Host 也只允许出现一次（重复 Host 会让不同跳得到不同解析）。
+        if (!seenNames.add("host")) {
+          throw new ApiException("发包请求头不能重复: " + name + "（避免请求走私/解析不一致）");
+        }
         validateHostHeader(value, uri);
         continue;
       }
-      if ("transfer-encoding".equals(lower) || "upgrade".equals(lower)) {
+      if ("upgrade".equals(lower)) {
         throw new ApiException("发包器不支持请求头 " + name);
       }
       if (lower.startsWith(":")) throw new ApiException("发包器不接受 HTTP/2 伪首部");
+      // 请求走私的另一面：同名头重复（尤其 Cookie/Authorization 之外的框架头）会让
+      // 目标与中间设备得到不同解析结果。除少数可合法重复的头外，一律拒绝重复名。
+      if (!DUPLICATE_ALLOWED_HEADERS.contains(lower) && !seenNames.add(lower)) {
+        throw new ApiException("发包请求头不能重复: " + name + "（避免请求走私/解析不一致）");
+      }
       if (SKIPPED_HEADERS.contains(lower)) continue;
       result.add(new HeaderLine(name, value));
+    }
+    // 收口判定：请求体恒以字节长度确定，Content-Length 由 buildRequestHeaders 重新生成。
+    // 出现任何 Transfer-Encoding（不论大小写/取值）或客户端自带 Content-Length 与外层冲突，
+    // 都可能构成 CL.TE / TE.CL 走私，一律拒绝。
+    if (sawTransferEncoding) {
+      throw new ApiException("发包器不支持请求头 Transfer-Encoding（避免请求走私风险）");
+    }
+    if (sawContentLength) {
+      throw new ApiException("发包请求头不接受手动指定 Content-Length（由发包器按请求体长度生成）");
     }
     return result;
   }

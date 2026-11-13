@@ -103,6 +103,31 @@ class FindingTaskFilterPersistenceTests {
         .getTotalElements()).isZero();
   }
 
+  @Test
+  void keywordWildcardsAreEscapedSoLikeMetacharactersMatchLiterally() {
+    when(authorization.isAdmin()).thenReturn(true);
+    // 标题分别含字面百分号、字面下划线、普通文本，用来验证 %/_ 不再被当作通配符。
+    Finding percent = finding(task(10L), "50% off discount", "HIGH");
+    Finding underscore = finding(task(10L), "user_id leak", "HIGH");
+    finding(task(10L), "ordinary issue", "HIGH");
+
+    // 搜索 "50%" 只应命中字面含 "50%" 的条目，不应命中所有条目。
+    assertThat(controller.list(0, 10, "50%", null, null, null, null, "id-asc", null)
+        .getContent()).extracting(Finding::getId).containsExactly(percent.getId());
+
+    // 搜索 "user_id" 应精确命中含下划线的条目（"_" 按字面匹配）。
+    assertThat(controller.list(0, 10, "user_id", null, null, null, null, "id-asc", null)
+        .getContent()).extracting(Finding::getId).containsExactly(underscore.getId());
+
+    // 单独一个 "_" 若要匹配任意单字符需未转义；转义后 "___" 只会命中含连续下划线的字面记录。
+    assertThat(controller.list(0, 10, "___", null, null, null, null, "id-asc", null)
+        .getTotalElements()).isZero();
+
+    // 普通关键词依然正常命中。
+    assertThat(controller.list(0, 10, "ordinary", null, null, null, null, "id-asc", null)
+        .getTotalElements()).isEqualTo(1);
+  }
+
   private SecurityTask task(Long projectId) {
     SecurityTask task = new SecurityTask();
     task.setProjectId(projectId);

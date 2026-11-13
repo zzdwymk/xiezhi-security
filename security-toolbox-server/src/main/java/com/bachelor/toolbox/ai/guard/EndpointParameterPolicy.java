@@ -59,11 +59,21 @@ import java.util.Set;
  */
 public final class EndpointParameterPolicy {
 
-  /** 与 {@code AiTaskDispatchService} 一致的工具参数白名单。 */
+  /**
+   * 与 {@code AiTaskDispatchService#normalizeParameters} 逐工具对齐的工具参数白名单。
+   *
+   * <p><strong>漂移修复（Round 9）</strong>：此前本表漏掉了 dispatch 层已承认的若干合法键
+   * （{@code tcp_ports.udp}、{@code nmap_service_scan.consumeOpenPorts}、{@code dir_scan} 全部键、
+   * {@code zap_fuzz} 键），且缺少 {@code dir_scan} 与 {@code zap_fuzz} 两个工具条目。后果是
+   * 经 {@code invoke_endpoint} 提交这些工具时，L-C' 会以"未允许的字段"误拒合法请求——即
+   * <strong>护栏比执行侧更严导致的漂移</strong>（功能缺失而非安全缺口，但违反"单一事实来源"）。
+   * 现按 dispatch 层 {@code normalizeParameters} 的 {@code allowedKeys} 逐条补齐。
+   * 漂移由 {@code ToolParameterPolicyDriftTests} 强制断言（与本类白名单比对）。
+   */
   private static final Map<String, Set<String>> ALLOWED_TOOL_PARAMETERS =
       Map.ofEntries(
-          Map.entry("tcp_ports", Set.of("ports")),
-          Map.entry("nmap_service_scan", Set.of("ports", "mode")),
+          Map.entry("tcp_ports", Set.of("ports", "udp")),
+          Map.entry("nmap_service_scan", Set.of("ports", "mode", "consumeOpenPorts")),
           Map.entry("fscan_scan", Set.of("ports", "vulnMode")),
           Map.entry("afrog_scan", Set.of("pocCodes", "allPocs")),
           Map.entry("xray_scan", Set.of("pocCodes", "allPocs")),
@@ -72,6 +82,10 @@ public final class EndpointParameterPolicy {
           Map.entry("msf_scan", Set.of("module", "modules", "options")),
           Map.entry("sqlmap_scan", Set.of("path", "level", "risk", "technique")),
           Map.entry("http_security_check", Set.of("check")),
+          Map.entry("dir_scan", Set.of("dictionary", "concurrency", "depth", "maxRequests", "extensions")),
+          Map.entry("zap_fuzz",
+              Set.of("fuzzRequestUrl", "method", "fuzzPostBody", "fuzzPayload", "fuzzTargetField")),
+          Map.entry("site_crawl", Set.of("fuse")),
           Map.entry("http_headers", Set.of()),
           Map.entry("tls_config", Set.of()));
 

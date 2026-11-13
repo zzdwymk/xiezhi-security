@@ -341,10 +341,12 @@ onBeforeUnmount(() => {
           <div v-else class="traffic-source-banner">
             <div class="source-banner-left">
               <span class="source-record-badge">来源记录 #{{ detail.entry.id }}</span>
+              <span class="source-banner-divider" aria-hidden="true">/</span>
               <el-tag size="small" effect="plain" class="source-engine-tag">
                 {{ engineLabel(detail.entry.engine) }}
               </el-tag>
-              <div class="source-url-chip" :title="detail.entry.url || detail.entry.host">
+              <span class="source-banner-divider" aria-hidden="true">/</span>
+              <div class="source-url-display" :title="detail.entry.url || detail.entry.host">
                 <el-icon class="source-url-icon"><Compass /></el-icon>
                 <span class="source-url-text">{{ detail.entry.url || detail.entry.host }}</span>
               </div>
@@ -363,7 +365,16 @@ onBeforeUnmount(() => {
             show-icon
           />
           <p v-if="!isFindings && notice.guidance">{{ notice.guidance }}</p>
-          <details v-if="!isFindings && notice.detail"><summary>技术详情</summary><pre>{{ notice.detail }}</pre></details>
+          <details v-if="!isFindings && notice.detail" class="traffic-record-technical"><summary>技术详情</summary>
+            <el-input
+              :model-value="notice.detail"
+              type="textarea"
+              :autosize="{ minRows: 3, maxRows: 14 }"
+              resize="none"
+              readonly
+              class="traffic-record-evidence traffic-record-technical__text"
+            />
+          </details>
           <p v-if="!detail.result" class="traffic-record-muted">{{ detail.entry.status === 'RUNNING' ? '检测进行中，结果会在完成后自动更新。' : '这条历史记录仅保存了执行摘要，没有完整结果快照。' }}</p>
           <template v-else>
             <el-alert
@@ -614,21 +625,23 @@ onBeforeUnmount(() => {
   font-weight: 600;
   color: var(--app-text, #1e293b);
 }
+.source-banner-divider {
+  color: var(--app-border, #cbd5e1);
+  font-size: 12px;
+  user-select: none;
+}
 .source-engine-tag {
   font-size: 12px;
   font-weight: 500;
+  border-radius: var(--fluent-radius-control, 4px);
 }
-.source-url-chip {
+.source-url-display {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   font-family: var(--font-mono, Consolas, Monaco, monospace);
   font-size: 12.5px;
-  color: var(--app-muted, #64748b);
-  background: var(--app-surface, #ffffff);
-  padding: 3px 10px;
-  border: 1px solid var(--app-border, #e2e8f0);
-  border-radius: var(--fluent-radius-control, 4px);
+  color: var(--app-text-secondary, #475569);
   max-width: 520px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -697,11 +710,14 @@ onBeforeUnmount(() => {
   margin-bottom: 14px;
 }
 .finding-solution-box {
-  background: color-mix(in srgb, var(--app-accent, #0078d4) 6%, var(--app-surface, #ffffff));
+  background: color-mix(in srgb, var(--app-accent, #0078d4) 5%, var(--app-surface, #ffffff));
   border: 1px solid color-mix(in srgb, var(--app-accent, #0078d4) 22%, var(--app-border, #e2e8f0));
-  border-left: 3px solid var(--app-accent, #0078d4);
-  border-radius: var(--fluent-radius-control, 4px);
+  border-radius: var(--fluent-radius-card, 8px);
   padding: 12px 16px;
+  transition: border-color var(--fluent-fast, 150ms ease);
+}
+.finding-solution-box:hover {
+  border-color: color-mix(in srgb, var(--app-accent, #0078d4) 38%, var(--app-border, #e2e8f0));
 }
 .solution-box-title {
   display: flex;
@@ -772,6 +788,17 @@ pre {
   box-shadow:
     inset 0 0 0 1px var(--app-border-strong, #cbd5e1),
     inset 0 -2px 0 0 var(--app-accent, #0078d4) !important;
+}
+/* 「技术详情」可折叠区块：summary 可点击，展开后为 Fluent 只读文本框。 */
+.traffic-record-technical {
+  margin: 10px 0;
+}
+.traffic-record-technical > summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.traffic-record-technical__text {
+  margin-top: 8px;
 }
 /* 非嵌入态（任务控制中心 → 流量检测 的 bare 用法）分页右对齐并留白，
    间距与同一页「项目任务」页签的 .tasks-pagination 完全一致（margin-top:12px、

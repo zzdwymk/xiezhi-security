@@ -170,7 +170,22 @@ const operationProjectId = ref<number | "">("");
 const operationProjects = ref<AssessmentProject[]>([]);
 const operationProjectTargetsMap = ref<Record<number, number[]>>({});
 const operationTargetId = ref<number>();
-const operationInferredNotice = ref<{ type: "success" | "warning" | "info"; text: string } | null>(null);
+interface OperationNotice {
+  type: "success" | "warning" | "info";
+  title: string;
+  description: string;
+}
+const operationInferredNotice = ref<OperationNotice | null>(null);
+const targetDialogNotice = computed<OperationNotice>(() => {
+  if (operationInferredNotice.value) {
+    return operationInferredNotice.value;
+  }
+  return {
+    type: "info",
+    title: "请确认本次主动操作绑定的授权目标",
+    description: "发送前系统会严格校验目标地址、端口及授权有效期。选择目标不改变抓包范围或会话归属。",
+  };
+});
 const operationZapOptionsVisible = ref(false);
 const zapScanStrength = ref<"LOW" | "MEDIUM" | "HIGH">("MEDIUM");
 const zapStrengthOptions = [
@@ -1254,12 +1269,14 @@ function inferTargetForProject(projectId: number | "", url: string) {
     if (proj) {
       operationInferredNotice.value = {
         type: "warning",
-        text: `项目【${proj.name}】下未包含匹配主机 [${hostname}] 的有效目标，可切换项目或选择全部项目。`
+        title: `项目【${proj.name}】下未包含匹配的主机资产`,
+        description: `未找到与 [${hostname}] 匹配的有效授权目标，可切换项目或选择“全部项目”。`,
       };
     } else {
       operationInferredNotice.value = {
         type: "warning",
-        text: `未找到与主机 [${hostname}] 匹配的有效授权目标，请前往“授权目标”配置或检查网络地址。`
+        title: `未找到与主机 [${hostname}] 匹配的授权目标`,
+        description: "请前往“授权目标”配置该资产并绑定到有效项目，或检查网络地址。",
       };
     }
     return;
@@ -1277,19 +1294,22 @@ function inferTargetForProject(projectId: number | "", url: string) {
     if (proj) {
       operationInferredNotice.value = {
         type: "success",
-        text: `✔ 已自动根据项目【${proj.name}】推断并锁定授权目标：${match.name} · ${match.targetValue}`
+        title: `已根据项目【${proj.name}】自动锁定授权目标`,
+        description: `匹配目标：${match.name} · ${match.targetValue}，已通过授权与端口预检。`,
       };
     } else {
       operationInferredNotice.value = {
         type: "success",
-        text: `✔ 已自动推断并锁定授权目标：${match.name} · ${match.targetValue}`
+        title: "已自动推断并锁定授权目标",
+        description: `匹配目标：${match.name} · ${match.targetValue}，已通过授权与端口预检。`,
       };
     }
   } else {
     const proj = operationProjects.value.find(p => p.id === projectId);
     operationInferredNotice.value = {
       type: "info",
-      text: `${proj ? `在项目【${proj.name}】中` : "在系统内"}找到 ${portMatches.length} 个匹配的主机目标，请下拉选择具体端口或服务目标。`
+      title: proj ? `在项目【${proj.name}】中找到 ${portMatches.length} 个候选目标` : `找到 ${portMatches.length} 个候选授权目标`,
+      description: "检测到多项候选资产，请在下方下拉框中选择具体的测试目标与端口。",
     };
   }
 }
@@ -1303,7 +1323,8 @@ function onOperationTargetManualSelect(targetId: number) {
   if (target) {
     operationInferredNotice.value = {
       type: "info",
-      text: `已手动指定授权目标：${target.name} · ${target.targetValue}`
+      title: `已指定授权目标：${target.name}`,
+      description: `目标地址：${target.targetValue}，发送前将严格校验端口与授权有效期。`,
     };
   }
 }
@@ -1320,8 +1341,8 @@ async function chooseOperationTarget(url: string, preferredId?: number, showZapO
     ]);
     replayTargets.value = targetsRes.data || [];
     const allProjects = Array.isArray(projectsRes.data) ? projectsRes.data : [];
-    const activeProjects = allProjects.filter(p => p.status === "ACTIVE" || p.status === "READY");
-    operationProjects.value = activeProjects.length ? activeProjects : allProjects;
+    const activeProjects = allProjects.filter(p => p.status === "ACTIVE");
+    operationProjects.value = activeProjects;
 
     const memberships = await Promise.all(
       operationProjects.value.map(async (project) => ({
@@ -4146,14 +4167,22 @@ onUnmounted(() => {
 
     <el-dialog v-model="targetDialogVisible" title="选择本次主动操作的授权目标" width="570px" class="app-dialog" align-center @closed="finishOperationTarget(false)">
       <p class="operation-url">{{ operationUrl }}</p>
-      <el-alert title="发送前会校验实际地址、端口及授权有效期。选择目标不改变抓包范围或会话归属。" type="info" :closable="false" />
+      
+      <el-alert
+        :type="targetDialogNotice.type"
+        :title="targetDialogNotice.title"
+        :description="targetDialogNotice.description"
+        show-icon
+        :closable="false"
+        style="margin-bottom: 14px;"
+      />
 
-      <div style="margin-top: 14px; display: flex; flex-direction: column; gap: 12px;">
+      <div style="display: flex; flex-direction: column; gap: 12px;">
         <div style="display: flex; align-items: center; gap: 10px;">
           <span style="font-size: 13px; color: var(--el-text-color-regular); white-space: nowrap; width: 68px;">评估项目</span>
           <el-select v-model="operationProjectId" placeholder="按项目筛选目标（可选）" clearable filterable style="flex: 1" @change="onOperationProjectChange">
             <el-option :value="''" label="全部项目 / 不限项目" />
-            <el-option v-for="proj in operationProjects" :key="proj.id" :value="proj.id" :label="`${proj.name} (${proj.status === 'ACTIVE' ? '已激活' : proj.status})`" />
+            <el-option v-for="proj in operationProjects" :key="proj.id" :value="proj.id" :label="proj.name" />
           </el-select>
         </div>
 
@@ -4165,15 +4194,8 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div v-if="operationInferredNotice" style="margin-top: 10px; padding: 7px 12px; border-radius: 4px; font-size: 12px; line-height: 1.5;" :style="{
-        backgroundColor: operationInferredNotice.type === 'success' ? 'var(--el-color-success-light-9)' : operationInferredNotice.type === 'warning' ? 'var(--el-color-warning-light-9)' : 'var(--el-color-info-light-9)',
-        color: operationInferredNotice.type === 'success' ? 'var(--el-color-success)' : operationInferredNotice.type === 'warning' ? 'var(--el-color-warning)' : 'var(--el-color-info)',
-        border: `1px solid ${operationInferredNotice.type === 'success' ? 'var(--el-color-success-light-7)' : operationInferredNotice.type === 'warning' ? 'var(--el-color-warning-light-7)' : 'var(--el-color-info-light-7)'}`
-      }">
-        {{ operationInferredNotice.text }}
-      </div>
-
-      <p v-if="!replayTargets.length" class="manager-hint" style="margin-top: 10px;">暂无授权目标。可先在“授权目标”页面创建，再回到此处继续，已抓取的报文会保留。</p>
+      <p class="manager-hint" style="margin-top: 12px; margin-bottom: 0;">提示：选择授权目标不改变抓包范围或会话归属。发送前会严格校验实际地址、端口及授权有效期。</p>
+      <p v-if="!replayTargets.length" class="manager-hint" style="margin-top: 6px;">暂无授权目标。可先在“授权目标”页面创建，再回到此处继续，已抓取的报文会保留。</p>
       <fieldset v-if="operationZapOptionsVisible" class="zap-strength-options">
         <legend>ZAP 检测强度</legend>
         <el-radio-group v-model="zapScanStrength" aria-label="ZAP 检测强度">

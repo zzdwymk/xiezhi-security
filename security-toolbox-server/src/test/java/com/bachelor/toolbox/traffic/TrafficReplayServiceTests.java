@@ -121,7 +121,6 @@ class TrafficReplayServiceTests {
                     + server.port()
                     + "\r\n"
                     + "Content-Type: application/json\r\n"
-                    + "Content-Length: 999\r\n"
                     + "Connection: keep-alive\r\n",
                 body));
 
