@@ -53,6 +53,16 @@ final class LocalTrafficProxy implements AutoCloseable {
   private final MitmCertificateAuthority certificateAuthority;
   private final Consumer<Capture> capture;
   private final ExecutorService workers = Executors.newCachedThreadPool();
+  /**
+   * 并发连接上限（Round 27）。原为无界 cached 线程池：每条被接受的客户端连接都会新建一个处理线程，
+   * 代理在工作线程内还为中继隧道再 submit 两个 copy 子任务。对活跃目标/对抗性客户端的一波并发连接
+   * 会无限创建线程 → 线程/内存耗尽 DoS。此处用信号量对「同时处理的连接数」封顶，超出即拒绝并关闭
+   * 新连接（背压），从根本上限制线程总数；池本身仍为 cached 以承载双向 copy 子任务（避免隧道死锁）。
+   */
+  private static final int MAX_CONCURRENT_CONNECTIONS = 128;
+
+  private final java.util.concurrent.Semaphore connectionPermits =
+      new java.util.concurrent.Semaphore(MAX_CONCURRENT_CONNECTIONS);
   private final Object lifecycle = new Object();
   private final Set<ConnectionScope> connections = new HashSet<>();
   private volatile boolean running;
@@ -96,7 +106,25 @@ final class LocalTrafficProxy implements AutoCloseable {
       ConnectionScope connection = new ConnectionScope();
       try {
         Socket client = connection.track(listener.accept());
-        workers.execute(() -> handle(client, connection));
+        // Round 27：并发连接封顶——无法取得许可则拒绝并关闭新连接（背压），避免线程无界增长。
+        if (!connectionPermits.tryAcquire()) {
+          LOGGER.debug("流量代理并发连接已达上限 {}，拒绝新连接", MAX_CONCURRENT_CONNECTIONS);
+          connection.close();
+          continue;
+        }
+        try {
+          workers.execute(
+              () -> {
+                try {
+                  handle(client, connection);
+                } finally {
+                  connectionPermits.release();
+                }
+              });
+        } catch (RejectedExecutionException rejected) {
+          connectionPermits.release();
+          throw rejected;
+        }
       } catch (IOException | RejectedExecutionException failure) {
         connection.close();
         if (!running) return;
