@@ -21,4 +21,9 @@ public interface DiscoveredPathRepository extends JpaRepository<DiscoveredPath, 
   List<DiscoveredPath> findByTargetIdOrderByDiscoveredAtDescIdDesc(Long targetId);
 
   List<DiscoveredPath> findByProjectIdOrderByDiscoveredAtDescIdDesc(Long projectId);
+
+  List<DiscoveredPath> findByTargetIdOrderByDiscoveredAtDescIdDesc(Long targetId, Pageable pageable);
+
+  List<DiscoveredPath> findByProjectIdOrderByDiscoveredAtDescIdDesc(
+      Long projectId, Pageable pageable);
 }

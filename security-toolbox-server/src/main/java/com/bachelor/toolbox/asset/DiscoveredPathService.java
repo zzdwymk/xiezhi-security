@@ -17,6 +17,8 @@ import org.springframework.transaction.annotation.Transactional;
 public class DiscoveredPathService {
   private static final Logger log = LoggerFactory.getLogger(DiscoveredPathService.class);
   private static final int MAX_PATHS_PER_TARGET = 2000;
+  /** Round 41：聚合查询（跨目标）单次最多返回的路径数，防超大项目(2000×多目标)整体载入 OOM。 */
+  static final int MAX_LIST_ROWS = 20_000;
 
   private final DiscoveredPathRepository repository;
   private final TargetPolicyService policyService;
@@ -27,17 +29,27 @@ public class DiscoveredPathService {
     this.policyService = policyService;
   }
 
+  private static org.springframework.data.domain.Pageable cap() {
+    return org.springframework.data.domain.PageRequest.of(
+        0,
+        MAX_LIST_ROWS,
+        org.springframework.data.domain.Sort.by(
+            org.springframework.data.domain.Sort.Order.desc("discoveredAt"),
+            org.springframework.data.domain.Sort.Order.desc("id")));
+  }
+
   public List<DiscoveredPath> list(Long projectId, Long targetId) {
-    return repository.findByProjectIdAndTargetIdOrderByDiscoveredAtDescIdDesc(projectId, targetId);
+    return repository.findByProjectIdAndTargetIdOrderByDiscoveredAtDescIdDesc(
+        projectId, targetId, cap());
   }
 
   public List<DiscoveredPath> listByTarget(Long targetId) {
-    return repository.findByTargetIdOrderByDiscoveredAtDescIdDesc(targetId);
+    return repository.findByTargetIdOrderByDiscoveredAtDescIdDesc(targetId, cap());
   }
 
   /** 返回某项目下全部已发现 Web URL 资产（跨目标），用于资产拓扑等聚合视图。 */
   public List<DiscoveredPath> listByProject(Long projectId) {
-    return repository.findByProjectIdOrderByDiscoveredAtDescIdDesc(projectId);
+    return repository.findByProjectIdOrderByDiscoveredAtDescIdDesc(projectId, cap());
   }
 
   /**
