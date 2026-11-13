@@ -1,6 +1,12 @@
 server:
   address: ${SERVER_ADDRESS:127.0.0.1}
   port: 8080
+  tomcat:
+    # 纵深防御（Round 25）：限制连接吞掉（swallow）与表单 POST 体积，避免超大请求体拖垮线程/内存；
+    # JSON 请求体大小另由 RequestSizeLimitFilter 在反序列化前按 Content-Length 拒绝。
+    max-swallow-size: ${SERVER_MAX_SWALLOW_SIZE:64MB}
+    max-http-form-post-size: ${SERVER_MAX_FORM_POST_SIZE:32MB}
+    max-http-request-header-size: ${SERVER_MAX_REQUEST_HEADER_SIZE:64KB}
 
 spring:
   application:
