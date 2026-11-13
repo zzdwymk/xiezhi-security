@@ -86,11 +86,16 @@ public class AuthController {
     if (!encoder.matches(currentPassword, user.getPasswordHash())) {
       throw new ApiException("当前密码不正确");
     }
-    if ("admin123".equals(request.newPassword())) {
+    // Round 26：拒绝过短新口令（降低弱口令风险；登录端点可被本机暴力/撞库，弱口令会放大风险）。
+    String newPassword = request.newPassword();
+    if (newPassword == null || newPassword.length() < 8) {
+      throw new ApiException("新密码长度不得少于 8 个字符");
+    }
+    if ("admin123".equals(newPassword)) {
       throw new ApiException("该口令为受限的开发默认口令，请更换后重试");
     }
 
-    user.setPasswordHash(encoder.encode(request.newPassword()));
+    user.setPasswordHash(encoder.encode(newPassword));
     users.save(user);
     return Map.of("changed", true);
   }
