@@ -66,7 +66,7 @@ class AiAnswerServiceTests {
         auditService, new ObjectMapper(), client);
     when(taskRepository.findAllById(List.of(11L)))
         .thenReturn(List.of(task(11L, 7L, "http_headers", "SUCCESS")));
-    when(findingRepository.findAllByTaskIdInOrderByCreatedAtAsc(List.of(11L))).thenReturn(List.of());
+    when(findingRepository.findAllByTaskIdIn(org.mockito.ArgumentMatchers.eq(List.of(11L)), org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class))).thenReturn(List.of());
 
     AiAnswerResponse response = service.answer(new AiAnswerRequest(PROJECT, 7L, "检查结果怎么样？", List.of(11L)));
 
@@ -87,7 +87,7 @@ class AiAnswerServiceTests {
     Finding finding = finding(11L, 7L, "缺少 Content-Security-Policy", "MEDIUM");
     finding.setRemediation("配置严格的 Content-Security-Policy 响应头");
     when(taskRepository.findAllById(List.of(11L, 12L))).thenReturn(List.of(success, failed));
-    when(findingRepository.findAllByTaskIdInOrderByCreatedAtAsc(List.of(11L, 12L)))
+    when(findingRepository.findAllByTaskIdIn(org.mockito.ArgumentMatchers.eq(List.of(11L, 12L)), org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class)))
         .thenReturn(List.of(finding));
 
     AiAnswerResponse response =
@@ -124,7 +124,7 @@ class AiAnswerServiceTests {
     Finding medium = finding(13L, 7L, "缺少 Content-Security-Policy", "MEDIUM");
     medium.setRemediation("配置严格的 Content-Security-Policy 响应头");
     when(taskRepository.findAllById(List.of(13L))).thenReturn(List.of(success));
-    when(findingRepository.findAllByTaskIdInOrderByCreatedAtAsc(List.of(13L)))
+    when(findingRepository.findAllByTaskIdIn(org.mockito.ArgumentMatchers.eq(List.of(13L)), org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class)))
         .thenReturn(List.of(low, medium));
 
     AiAnswerResponse response =
@@ -141,7 +141,7 @@ class AiAnswerServiceTests {
     SecurityTask completed = task(41L, 7L, "http_headers", status);
     completed.setErrorMessage("检测未能完成");
     when(taskRepository.findAllById(List.of(41L))).thenReturn(List.of(completed));
-    when(findingRepository.findAllByTaskIdInOrderByCreatedAtAsc(List.of(41L)))
+    when(findingRepository.findAllByTaskIdIn(org.mockito.ArgumentMatchers.eq(List.of(41L)), org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class)))
         .thenReturn(List.of());
 
     AiAnswerResponse response = service.answer(new AiAnswerRequest(PROJECT, 7L, "解释未完成的检测", List.of(41L)));
@@ -159,7 +159,7 @@ class AiAnswerServiceTests {
     SecurityTask completed = task(42L, 7L, "unknown_internal_tool", "SUCCESS");
     Finding found = finding(42L, 7L, "待确认发现", code);
     when(taskRepository.findAllById(List.of(42L))).thenReturn(List.of(completed));
-    when(findingRepository.findAllByTaskIdInOrderByCreatedAtAsc(List.of(42L))).thenReturn(List.of(found));
+    when(findingRepository.findAllByTaskIdIn(org.mockito.ArgumentMatchers.eq(List.of(42L)), org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class))).thenReturn(List.of(found));
     AiAnswerResponse response = service.answer(new AiAnswerRequest(PROJECT, 7L, "优先处理什么", List.of(42L)));
     assertThat(localSummaryTemplate()).contains("[" + label + "]", "安全检测工具")
         .doesNotContain(code, "unknown_internal_tool");
@@ -253,7 +253,7 @@ class AiAnswerServiceTests {
   private void prepareCompletedTask() {
     when(taskRepository.findAllById(List.of(11L)))
         .thenReturn(List.of(task(11L, 7L, "http_headers", "SUCCESS")));
-    when(findingRepository.findAllByTaskIdInOrderByCreatedAtAsc(List.of(11L))).thenReturn(List.of());
+    when(findingRepository.findAllByTaskIdIn(org.mockito.ArgumentMatchers.eq(List.of(11L)), org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class))).thenReturn(List.of());
   }
 
   private String localSummaryTemplate() throws Exception {

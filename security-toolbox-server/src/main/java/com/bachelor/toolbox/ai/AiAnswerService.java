@@ -30,6 +30,8 @@ public class AiAnswerService {
   private static final Logger log = LoggerFactory.getLogger(AiAnswerService.class);
   private static final int MAX_TASKS = 20;
   private static final int MAX_FINDING_DETAILS = 50;
+  // Round 43：汇总回答时载入发现的硬上限，防 20 个任务发现数叠加过大整体载入 OOM（超限统计为"至少 N"）。
+  private static final int MAX_ANSWER_FINDINGS = 20_000;
   private static final int MAX_MODEL_CONTEXT_CHARS = 40_000;
   private static final Set<String> TERMINAL_STATUSES =
       Set.of("SUCCESS", "FAILED", "TIMEOUT", "REJECTED", "CANCELLED", "SKIPPED");
@@ -66,7 +68,14 @@ public class AiAnswerService {
       AuthorizedTarget target = targetService.get(request.targetId());
       List<Long> requestedIds = validateTaskIds(request.taskIds());
       List<SecurityTask> tasks = loadAuthorizedTerminalTasks(target, request.projectId(), requestedIds);      List<Finding> findings =
-          findingRepository.findAllByTaskIdInOrderByCreatedAtAsc(requestedIds).stream()
+          findingRepository.findAllByTaskIdIn(
+                  requestedIds,
+                  com.bachelor.toolbox.common.PageRequests.bounded(
+                      0, MAX_ANSWER_FINDINGS, 1, MAX_ANSWER_FINDINGS,
+                      org.springframework.data.domain.Sort.by(
+                          org.springframework.data.domain.Sort.Order.asc("createdAt"),
+                          org.springframework.data.domain.Sort.Order.asc("id"))))
+              .stream()
               .filter(finding -> Objects.equals(finding.getTargetId(), target.getId()))
               .toList();
 
