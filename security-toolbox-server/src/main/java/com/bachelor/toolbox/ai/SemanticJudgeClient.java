@@ -74,6 +74,8 @@ public class SemanticJudgeClient {
         HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(2))
             .version(HttpClient.Version.HTTP_1_1)
+            // 不跟随重定向：评判端点不应重定向；即便运行时被劫持/异常也不能把请求引导到内网地址。
+            .followRedirects(HttpClient.Redirect.NEVER)
             .build();
   }
 
