@@ -26,6 +26,13 @@ public class TrafficProxyService {
   private static final Logger LOGGER = LoggerFactory.getLogger(TrafficProxyService.class);
   private static final int PACKET_LIST_LIMIT = 200;
   private static final int CLEANUP_BATCH_SIZE = 200;
+  /**
+   * 每个流量会话保留的最大报文条数（Round 23）。
+   *
+   * <p>原实现每次捕获都无条件落库、无任何保留上限：代理长时间运行对着活跃目标会持续累积报文行
+   * （每行含请求/响应体快照），最终耗尽磁盘。这里设每会话上限，超过即淘汰最旧报文（保留被标记的）。
+   */
+  private static final int MAX_PACKETS_PER_SESSION = 5_000;
   private static final Pageable RECENT_PACKETS =
       PageRequest.of(
           0,
@@ -380,9 +387,35 @@ public class TrafficProxyService {
     TrafficSession stored =
         sessions.findById(session.getId()).orElseThrow(() -> new ApiException("流量会话不存在"));
     long packetCount = stored.getPacketCount() + 1;
-    stored.setPacketCount(packetCount);
+    // Round 23：每会话保留上限，超出则淘汰最旧（未标记）报文，避免长时间抓包耗尽磁盘。
+    long evicted = evictBeyondRetention(session.getId());
+    stored.setPacketCount(Math.max(0, packetCount - evicted));
     sessions.save(stored);
-    return new CaptureResult(packet, packetCount);
+    long effectiveCount = stored.getPacketCount();
+    return new CaptureResult(packet, effectiveCount);
+  }
+
+  /**
+   * 淘汰某会话中超出 {@link #MAX_PACKETS_PER_SESSION} 的最旧报文（保留 marked=true 的）。
+   * 返回被删除的条数。批量删除，避免一次性载入过多。
+   */
+  private long evictBeyondRetention(Long sessionId) {
+    long count = packets.countBySessionId(sessionId);
+    if (count <= MAX_PACKETS_PER_SESSION) {
+      return 0;
+    }
+    long toEvict = count - MAX_PACKETS_PER_SESSION;
+    int pageSize = (int) Math.min(CLEANUP_BATCH_SIZE, Math.max(1, toEvict));
+    List<TrafficPacket> oldest =
+        packets.findAllBySessionIdOrderByIdAsc(sessionId, PageRequest.of(0, pageSize));
+    List<TrafficPacket> victims = oldest.stream().filter(p -> !p.isMarked()).toList();
+    if (!victims.isEmpty()) {
+      List<Long> ids = victims.stream().map(TrafficPacket::getId).toList();
+      suggestions.deleteAllByPacketIdIn(ids);
+      packets.deleteAllInBatch(victims);
+      packets.flush();
+    }
+    return victims.size();
   }
 
   @PreDestroy

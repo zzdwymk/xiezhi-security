@@ -19,6 +19,9 @@ public interface TrafficPacketRepository extends JpaRepository<TrafficPacket, Lo
 
   long countBySessionId(Long sessionId);
 
+  /** 某会话按 id 升序（最旧在前）分页，用于保留上限淘汰（Round 23）。 */
+  List<TrafficPacket> findAllBySessionIdOrderByIdAsc(Long sessionId, Pageable pageable);
+
   /** 代理观测到的某主机去重路径（含查询串）。用于被动子路径聚合。 */
   @Query(
       "select distinct p.scheme, p.host, p.port, p.path from TrafficPacket p"
