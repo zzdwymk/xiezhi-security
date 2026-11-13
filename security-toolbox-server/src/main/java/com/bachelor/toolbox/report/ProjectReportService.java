@@ -42,6 +42,8 @@ public class ProjectReportService {
       "<svg class=\"notice-icon\" viewBox=\"0 0 20 20\" fill=\"currentColor\" aria-hidden=\"true\"><path fill-rule=\"evenodd\" d=\"M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.247.25v3.5a.75.75 0 001.5 0v-3.5A1.75 1.75 0 009.253 9H9z\" clip-rule=\"evenodd\"/></svg>";
   private static final List<String> SEVERITY_ORDER =
       List.of("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO");
+  /** 单目标报告允许载入的最大任务/发现条数（Round 21）：防超大目标致报告生成 OOM。 */
+  static final int MAX_REPORT_RECORDS = 20_000;
 
   private final TargetService targetService;
   private final SecurityTaskRepository taskRepository;
@@ -346,7 +348,15 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
   private ProjectData load(Long targetId) {
     AuthorizedTarget target = targetService.get(targetId);
     List<SecurityTask> tasks = taskRepository.findAllByTargetIdOrderByCreatedAtAsc(targetId);
+    if (tasks.size() > MAX_REPORT_RECORDS) {
+      throw new com.bachelor.toolbox.common.ApiException(
+          "目标报告数据量过大（任务超过 " + MAX_REPORT_RECORDS + " 条），请清理历史任务后重试");
+    }
     List<Finding> findings = findingRepository.findAllByTargetIdOrderByCreatedAtAsc(targetId);
+    if (findings.size() > MAX_REPORT_RECORDS) {
+      throw new com.bachelor.toolbox.common.ApiException(
+          "目标报告数据量过大（发现超过 " + MAX_REPORT_RECORDS + " 条），请清理历史数据后重试");
+    }
     LinkedHashMap<String, Long> severityCounts = new LinkedHashMap<>();
     SEVERITY_ORDER.forEach(severity -> severityCounts.put(severity, 0L));
     findings.forEach(

@@ -310,4 +310,19 @@ class ProjectReportSummaryServiceTests {
       return List.copyOf(values.subList(from, to));
     };
   }
+
+  @Test
+  void rejectsOversizedReportDataToPreventOom() {
+    // 构造 20501 条任务（> MAX_REPORT_RECORDS=20000）
+    int n = ProjectReportSummaryService.MAX_REPORT_RECORDS + 501;
+    List<SecurityTask> huge =
+        java.util.stream.IntStream.range(0, n)
+            .mapToObj(i -> task((long) i + 1, Instant.parse("2026-01-01T00:00:00Z")))
+            .toList();
+    when(tasks.findAllByProjectId(eq(PROJECT_ID), any(Pageable.class))).thenAnswer(pages(huge));
+
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.load(PROJECT_ID))
+        .isInstanceOf(com.bachelor.toolbox.common.ApiException.class)
+        .hasMessageContaining("过大");
+  }
 }

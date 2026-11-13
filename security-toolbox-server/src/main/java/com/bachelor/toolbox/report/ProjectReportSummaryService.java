@@ -31,6 +31,14 @@ import org.springframework.stereotype.Service;
 @Service
 public class ProjectReportSummaryService {
   static final int REPORT_BATCH_SIZE = 500;
+  /**
+   * 单类记录（任务/发现/信息收集/审批……）在一次报告聚合中允许载入的最大条数（Round 21）。
+   *
+   * <p>{@link #loadAll} 原无总量上限，会把项目下<strong>全部</strong>任务/发现/信息收集/审批等一次性读入内存，
+   * 随后 HTML/PDF 生成再逐条拼接字符串 —— 一个拥有海量发现的超大项目即可把报告生成打成 OOM。
+   * 这里设硬上限：超过即 fail-closed 抛出「数据量过大，请缩小范围后重试」，避免 OOM，也不静默产出残缺报告。
+   */
+  static final int MAX_REPORT_RECORDS = 20_000;
   private static final Sort CREATED_ASC_ID_ASC =
       Sort.by(Sort.Order.asc("createdAt"), Sort.Order.asc("id"));
   private static final Sort CREATED_DESC_ID_DESC =
@@ -154,6 +162,11 @@ public class ProjectReportSummaryService {
           PageRequests.bounded(page, REPORT_BATCH_SIZE, REPORT_BATCH_SIZE, REPORT_BATCH_SIZE, sort);
       List<T> batch = pageLoader.apply(pageable);
       result.addAll(batch);
+      if (result.size() > MAX_REPORT_RECORDS) {
+        // 防止超大项目把全量数据读入内存后 OOM；fail-closed 并给出可操作提示。
+        throw new com.bachelor.toolbox.common.ApiException(
+            "报告数据量过大（单类记录超过 " + MAX_REPORT_RECORDS + " 条），请缩小评估范围或清理历史数据后重试");
+      }
       if (batch.size() < REPORT_BATCH_SIZE) {
         return List.copyOf(result);
       }
