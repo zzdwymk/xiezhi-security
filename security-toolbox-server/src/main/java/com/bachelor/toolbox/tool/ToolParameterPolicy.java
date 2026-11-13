@@ -177,6 +177,8 @@ public final class ToolParameterPolicy {
         } else if (parameters.containsKey("module")) {
           requireMsfModule(parameters.get("module"));
         }
+        // Round 15：嵌套 options/msfOptions 的键值命令注入防护（唯一入口即拒绝）。
+        validateMsfOptionMaps(parameters);
       }
       case "nuclei_scan", "afrog_scan", "xray_scan" -> validatePocSelection(parameters);
       case "zap_scan" -> {
@@ -192,6 +194,61 @@ public final class ToolParameterPolicy {
       }
       default -> {
         // 其余工具无额外结构约束。
+      }
+    }
+  }
+
+  /**
+   * Round 15：MSF 选项键/值的命令注入防护（在唯一执行入口就拒绝，而非仅执行阶段）。
+   *
+   * <p>{@code msf_scan} 的 {@code options}/{@code msfOptions} 中的键值会被拼进
+   * {@code msfconsole -x "set KEY VALUE;"} 脚本。原能力层只校验了顶层键（module/modules/options），
+   * 未深入嵌套 options，攻击者可用 {@code "A;setg RHOSTS 8.8.8.8"} 之类的键注入额外命令（越权/RCE 前置）。
+   * 这里对嵌套选项名强制严格标识符、对值拒绝 ';'/换行/回车/控制字符。
+   */
+  private static void validateMsfOptionMaps(Map<String, Object> parameters) {
+    Object options = parameters.get("options");
+    if (options instanceof Map<?, ?> map) {
+      requireSafeMsfOptions(map);
+    } else if (options != null) {
+      throw new ApiException("MSF options 必须是对象");
+    }
+    Object perModule = parameters.get("msfOptions");
+    if (perModule != null) {
+      if (!(perModule instanceof Map<?, ?> outer)) {
+        throw new ApiException("MSF msfOptions 必须是对象");
+      }
+      for (Map.Entry<?, ?> e : outer.entrySet()) {
+        if (!(e.getValue() instanceof Map<?, ?> inner)) {
+          throw new ApiException("MSF msfOptions 每个模块的值必须是对象");
+        }
+        requireSafeMsfOptions(inner);
+      }
+    }
+  }
+
+  private static void requireSafeMsfOptions(Map<?, ?> options) {
+    for (Map.Entry<?, ?> entry : options.entrySet()) {
+      String key = String.valueOf(entry.getKey()).trim();
+      // 禁止覆盖授权边界相关选项
+      String upper = key.toUpperCase(Locale.ROOT);
+      if (java.util.Set.of("RHOST", "RHOSTS", "RPORT", "LHOST", "LPORT", "PAYLOAD", "CMD",
+              "COMMAND", "SHELL", "CHOST", "CPORT").contains(upper)) {
+        throw new ApiException("不允许覆盖 MSF 选项：" + key);
+      }
+      if (key.isBlank() || !upper.matches("[A-Z0-9_]{1,64}")) {
+        throw new ApiException("MSF 模块参数名不合法");
+      }
+      String value = String.valueOf(entry.getValue()).trim();
+      if (value.contains(";") || value.contains("\n") || value.contains("\r")) {
+        throw new ApiException("MSF 模块参数不合法");
+      }
+      for (int i = 0; i < value.length(); i++) {
+        char c = value.charAt(i);
+        if (c == '\t') continue;
+        if (c < 0x20 || c == 0x7f) {
+          throw new ApiException("MSF 模块参数包含非法控制字符");
+        }
       }
     }
   }

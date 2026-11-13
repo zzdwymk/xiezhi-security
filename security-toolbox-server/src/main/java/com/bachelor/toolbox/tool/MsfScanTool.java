@@ -173,13 +173,38 @@ public class MsfScanTool implements SecurityTool {
       if (FORBIDDEN_OPTION_KEYS.contains(key)) {
         throw new ApiException("不允许覆盖 MSF 选项：" + key);
       }
+      // 关键：选项名（KEY）会被拼进 msfconsole 的 -x 脚本 "set KEY VALUE;"。
+      // 原实现只校验了 VALUE 不含 ';'/换行，却未校验 KEY —— 攻击者用形如
+      // "A;setg RHOSTS 8.8.8.8" 的键即可注入额外 msfconsole 命令（改 RHOSTS 越权 / 执行任意模块）。
+      // 因此强制 KEY 为严格标识符（大写字母/数字/下划线），杜绝命令注入。
+      requireSafeOptionKey(key);
       String value = Objects.toString(entry.getValue(), "").trim();
-      if (key.isBlank() || value.contains(";") || value.contains("\n")) {
-        throw new ApiException("MSF 模块参数不合法");
-      }
+      requireSafeOptionValue(value);
       result.put(key, value);
     }
     return result;
+  }
+
+  /** 选项名必须是严格标识符，防止借 key 注入额外的 msfconsole 命令。 */
+  private static void requireSafeOptionKey(String key) {
+    if (key.isBlank() || !key.matches("[A-Z0-9_]{1,64}")) {
+      throw new ApiException("MSF 模块参数名不合法");
+    }
+  }
+
+  /** 选项值不得含命令分隔符或任何控制字符（含 '\\r'），防止注入 msfconsole 脚本。 */
+  private static void requireSafeOptionValue(String value) {
+    if (value.contains(";") || value.contains("\n") || value.contains("\r")) {
+      throw new ApiException("MSF 模块参数不合法");
+    }
+    for (int i = 0; i < value.length(); i++) {
+      char c = value.charAt(i);
+      // 允许可打印字符 + 制表符；拒绝其余控制字符。
+      if (c == '\t') continue;
+      if (c < 0x20 || c == 0x7f) {
+        throw new ApiException("MSF 模块参数包含非法控制字符");
+      }
+    }
   }
 
   private Map<String, Map<String, Object>> sanitizedPerModuleOptions(
@@ -197,14 +222,13 @@ public class MsfScanTool implements SecurityTool {
       }
       Map<String, Object> clean = new LinkedHashMap<>();
       for (Map.Entry<?, ?> entry : ((Map<?, ?>) moduleRaw).entrySet()) {
-        String key = String.valueOf(entry.getKey()).trim();
-        if (FORBIDDEN_OPTION_KEYS.contains(key.toUpperCase(Locale.ROOT))) {
+        String key = String.valueOf(entry.getKey()).trim().toUpperCase(Locale.ROOT);
+        if (FORBIDDEN_OPTION_KEYS.contains(key)) {
           throw new ApiException("不允许覆盖 MSF 选项：" + key);
         }
+        requireSafeOptionKey(key);
         String value = Objects.toString(entry.getValue(), "").trim();
-        if (key.isBlank() || value.contains(";") || value.contains("\n")) {
-          throw new ApiException("MSF 模块参数不合法");
-        }
+        requireSafeOptionValue(value);
         clean.put(key, value);
       }
       if (!clean.isEmpty()) {

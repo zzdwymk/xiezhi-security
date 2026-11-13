@@ -95,4 +95,24 @@ class TaskServiceToolParameterGateTests {
     service.create(new CreateTaskRequest(1L, 3L, "dir_scan", Map.of("dictionary", "common")));
     verify(repository, org.mockito.Mockito.atLeast(2)).save(any(SecurityTask.class));
   }
+
+  @Test
+  @DisplayName("GATE-5 MSF 选项键注入（A;setg RHOSTS）→ 唯一入口创建即被拒（Round 15）")
+  void rejectsMsfOptionInjectionAtCreation() {
+    ApiException ex = assertThrows(ApiException.class, () -> service.create(
+        new CreateTaskRequest(1L, 3L, "msf_scan",
+            Map.of("module", "auxiliary/scanner/ssh/ssh_login",
+                "options", Map.of("A;setg RHOSTS 8.8.8.8", "1")))));
+    org.assertj.core.api.Assertions.assertThat(ex.getMessage()).contains("MSF");
+    verify(repository, never()).save(any());
+  }
+
+  @Test
+  @DisplayName("GATE-6 MSF 合法选项（USERNAME/THREADS）→ 通过（不误拦）")
+  void allowsValidMsfOptions() throws Exception {
+    service.create(new CreateTaskRequest(1L, 3L, "msf_scan",
+        Map.of("module", "auxiliary/scanner/ssh/ssh_login",
+            "options", Map.of("USERNAME", "root", "THREADS", "4"))));
+    verify(repository).save(any(SecurityTask.class));
+  }
 }
