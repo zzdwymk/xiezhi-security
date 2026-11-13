@@ -43,7 +43,8 @@ public record AiAgentRequest(
         String nodeRunId,
     ExecutionIntent executionIntent,
     @Size(max = 4000, message = "本轮用户原句不得超过 4000 个字符") String userPrompt,
-    List<Long> targetIds,
+    // Round 31：限制子集目标数，避免超长 targetIds 在授权校验阶段逐目标 DB 校验产生无界扇出。
+    @Size(max = 200, message = "单次最多指定 200 个目标") List<Long> targetIds,
     ScopeMode scopeMode) {
   public enum ExecutionIntent { AUTO }
   public enum ScopeMode { SINGLE, PROJECT_ALL, PROJECT_SUBSET }

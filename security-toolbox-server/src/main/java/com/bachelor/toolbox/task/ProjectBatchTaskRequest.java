@@ -2,6 +2,7 @@ package com.bachelor.toolbox.task;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import java.util.List;
 import java.util.Map;
 
@@ -15,7 +16,8 @@ public record ProjectBatchTaskRequest(
     @NotNull(message = "项目 ID 不能为空") Long projectId,
     @NotBlank(message = "工具代码不能为空") String toolCode,
     Map<String, Object> parameters,
-    List<Long> targetIds) {
+    // Round 31：限制显式子集大小，避免超长 targetIds 触发逐目标的 DB 归属校验产生无界扇出。
+    @Size(max = 200, message = "单次批量下发最多指定 200 个目标") List<Long> targetIds) {
 
   /** 目标范围为空即代表项目内全部目标。 */
   public boolean allTargets() {
