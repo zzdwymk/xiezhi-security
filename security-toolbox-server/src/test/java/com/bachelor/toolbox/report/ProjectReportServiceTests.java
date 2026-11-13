@@ -121,7 +121,7 @@ class ProjectReportServiceTests {
     finding.setRemediation("立即修复");
 
     when(targetService.get(7L)).thenReturn(target);
-    when(taskRepository.findAllByTargetIdOrderByCreatedAtAsc(7L)).thenReturn(List.of(task));
-    when(findingRepository.findAllByTargetIdOrderByCreatedAtAsc(7L)).thenReturn(List.of(finding));
+    when(taskRepository.findAllByTargetIdOrderByCreatedAtAsc(org.mockito.ArgumentMatchers.eq(7L), org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class))).thenReturn(List.of(task));
+    when(findingRepository.findAllByTargetIdOrderByCreatedAtAsc(org.mockito.ArgumentMatchers.eq(7L), org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class))).thenReturn(List.of(finding));
   }
 }

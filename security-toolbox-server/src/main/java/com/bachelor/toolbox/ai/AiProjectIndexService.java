@@ -42,6 +42,9 @@ public class AiProjectIndexService {
   private static final int MAX_DOCUMENTS = 200;
   private static final int MAX_DOCUMENT_CHARS = 12_000;
   private static final int MAX_TOTAL_CHARS = 250_000;
+  // Round 42：项目 AI 证据索引构建时整体载入任务/发现的硬上限，防超大项目 OOM（统计口径在超限时为"至少 N"）。
+  private static final int MAX_INDEX_TASKS = 5_000;
+  private static final int MAX_INDEX_FINDINGS = 20_000;
   private static final DateTimeFormatter DISPLAY_TIME =
       DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.of("Asia/Shanghai"));
 
@@ -210,11 +213,24 @@ public class AiProjectIndexService {
                     "target",
                     Map.of("targetId", target.getId().toString(), "kind", "authorized-target")));
 
-    List<SecurityTask> allProjectTasks = tasks.findAllByProjectIdOrderByCreatedAtAsc(projectId);
+    List<SecurityTask> allProjectTasks =
+        tasks.findAllByProjectId(
+            projectId,
+            com.bachelor.toolbox.common.PageRequests.bounded(
+                0, MAX_INDEX_TASKS, 1, MAX_INDEX_TASKS,
+                org.springframework.data.domain.Sort.by(
+                    org.springframework.data.domain.Sort.Order.asc("createdAt"),
+                    org.springframework.data.domain.Sort.Order.asc("id"))));
     List<SecurityTask> projectTasks = tail(allProjectTasks, 60);
     List<Long> allTaskIds = allProjectTasks.stream().map(SecurityTask::getId).toList();
     List<Finding> allProjectFindings = allTaskIds.isEmpty() ? List.of()
-        : findings.findAllByTaskIdInOrderByCreatedAtAsc(allTaskIds);
+        : findings.findAllByTaskIdIn(
+            allTaskIds,
+            com.bachelor.toolbox.common.PageRequests.bounded(
+                0, MAX_INDEX_FINDINGS, 1, MAX_INDEX_FINDINGS,
+                org.springframework.data.domain.Sort.by(
+                    org.springframework.data.domain.Sort.Order.asc("createdAt"),
+                    org.springframework.data.domain.Sort.Order.asc("id"))));
     if (!links.isEmpty() || !allProjectTasks.isEmpty()) {
       // Project-level questions need the whole project's summary even when the UI
       // retains one selected target. Individual evidence remains target-scoped.

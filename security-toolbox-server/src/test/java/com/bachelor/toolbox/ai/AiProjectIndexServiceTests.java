@@ -56,7 +56,7 @@ class AiProjectIndexServiceTests {
     project.setAuthorizationExpiresAt(Instant.parse("2026-07-30T00:00:00Z"));
     when(projects.get(1L)).thenReturn(project);
     when(projectTargets.findByProjectId(1L)).thenReturn(List.of());
-    when(tasks.findAllByProjectIdOrderByCreatedAtAsc(1L)).thenReturn(List.of());
+    when(tasks.findAllByProjectId(org.mockito.ArgumentMatchers.eq(1L), org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class))).thenReturn(List.of());
     when(recon.findByProjectIdOrderByCollectedAtDesc(1L)).thenReturn(List.of());
     when(probes.findByProjectIdOrderByDetectedAtDesc(1L)).thenReturn(List.of());
     when(discoveredPaths.listByProject(1L)).thenReturn(List.of());
@@ -69,8 +69,8 @@ class AiProjectIndexServiceTests {
     task.setId(10L); task.setProjectId(1L); task.setTargetId(9L);
     task.setStatus("TIMEOUT"); task.setProgress(57);
     task.setProgressMessage("任务执行超时");
-    when(tasks.findAllByProjectIdOrderByCreatedAtAsc(1L)).thenReturn(List.of(task));
-    when(findings.findAllByTaskIdInOrderByCreatedAtAsc(List.of(10L))).thenReturn(List.of());
+    when(tasks.findAllByProjectId(org.mockito.ArgumentMatchers.eq(1L), org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class))).thenReturn(List.of(task));
+    when(findings.findAllByTaskIdIn(org.mockito.ArgumentMatchers.eq(List.of(10L)), org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class))).thenReturn(List.of());
     assertTrue(service.refreshBestEffort(1L));
     verify(runtime).indexProject(eq(1L), argThat(documents -> documents.stream().anyMatch(d ->
         d.source().equals("task") && d.text().contains("最近执行事件：任务执行超时")
@@ -191,8 +191,8 @@ class AiProjectIndexServiceTests {
     first.setId(10L); first.setTargetId(9L); first.setStatus("SUCCESS");
     var second = new com.bachelor.toolbox.task.SecurityTask();
     second.setId(11L); second.setTargetId(20L); second.setStatus("FAILED");
-    when(tasks.findAllByProjectIdOrderByCreatedAtAsc(1L)).thenReturn(List.of(first, second));
-    when(findings.findAllByTaskIdInOrderByCreatedAtAsc(List.of(10L, 11L))).thenReturn(List.of());
+    when(tasks.findAllByProjectId(org.mockito.ArgumentMatchers.eq(1L), org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class))).thenReturn(List.of(first, second));
+    when(findings.findAllByTaskIdIn(org.mockito.ArgumentMatchers.eq(List.of(10L, 11L)), org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class))).thenReturn(List.of());
     assertTrue(service.refreshBestEffort(1L));
     verify(runtime).indexProject(eq(1L), argThat(documents -> documents.stream().anyMatch(d ->
         d.source().equals("project") && "project-overview".equals(d.metadata().get("kind"))
@@ -214,8 +214,8 @@ class AiProjectIndexServiceTests {
     task.setExecutionLog("received: " + mapper.writeValueAsString(Map.of(
         "response", nested, "token", "log-token-secret", "elapsedMs", 12)) + "; scan finished");
     task.setErrorMessage("diagnostic; password=\"first\\\"error-tail-secret\"; HTTP 200");
-    when(tasks.findAllByProjectIdOrderByCreatedAtAsc(1L)).thenReturn(List.of(task));
-    when(findings.findAllByTaskIdInOrderByCreatedAtAsc(List.of(10L))).thenReturn(List.of());
+    when(tasks.findAllByProjectId(org.mockito.ArgumentMatchers.eq(1L), org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class))).thenReturn(List.of(task));
+    when(findings.findAllByTaskIdIn(org.mockito.ArgumentMatchers.eq(List.of(10L)), org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class))).thenReturn(List.of());
 
     var document = service.collect(1L).stream().filter(d -> d.source().equals("task"))
         .findFirst().orElseThrow();

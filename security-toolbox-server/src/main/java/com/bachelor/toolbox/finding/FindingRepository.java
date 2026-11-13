@@ -27,6 +27,8 @@ public interface FindingRepository
 
   List<Finding> findAllByTargetIdOrderByCreatedAtAsc(Long targetId);
 
+  List<Finding> findAllByTargetIdOrderByCreatedAtAsc(Long targetId, Pageable pageable);
+
   long countBySeverityIn(List<String> severities);
 
   long deleteBySourceToolInAndTitleStartingWithAndVulnerabilityCodeIsNull(

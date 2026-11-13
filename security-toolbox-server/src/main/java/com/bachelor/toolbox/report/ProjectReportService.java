@@ -347,12 +347,20 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
 
   private ProjectData load(Long targetId) {
     AuthorizedTarget target = targetService.get(targetId);
-    List<SecurityTask> tasks = taskRepository.findAllByTargetIdOrderByCreatedAtAsc(targetId);
+    // Round 42：以 MAX_REPORT_RECORDS+1 为页大小载入，超限即拒绝——避免 R21 "先全量载入再判断" 的 OOM 残余。
+    int probe = MAX_REPORT_RECORDS + 1;
+    org.springframework.data.domain.Pageable cap =
+        org.springframework.data.domain.PageRequest.of(
+            0, probe,
+            org.springframework.data.domain.Sort.by(
+                org.springframework.data.domain.Sort.Order.asc("createdAt"),
+                org.springframework.data.domain.Sort.Order.asc("id")));
+    List<SecurityTask> tasks = taskRepository.findAllByTargetIdOrderByCreatedAtAsc(targetId, cap);
     if (tasks.size() > MAX_REPORT_RECORDS) {
       throw new com.bachelor.toolbox.common.ApiException(
           "目标报告数据量过大（任务超过 " + MAX_REPORT_RECORDS + " 条），请清理历史任务后重试");
     }
-    List<Finding> findings = findingRepository.findAllByTargetIdOrderByCreatedAtAsc(targetId);
+    List<Finding> findings = findingRepository.findAllByTargetIdOrderByCreatedAtAsc(targetId, cap);
     if (findings.size() > MAX_REPORT_RECORDS) {
       throw new com.bachelor.toolbox.common.ApiException(
           "目标报告数据量过大（发现超过 " + MAX_REPORT_RECORDS + " 条），请清理历史数据后重试");

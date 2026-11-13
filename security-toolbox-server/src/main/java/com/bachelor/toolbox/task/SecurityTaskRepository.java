@@ -63,6 +63,8 @@ public interface SecurityTaskRepository extends JpaRepository<SecurityTask, Long
 
   List<SecurityTask> findAllByTargetIdOrderByCreatedAtAsc(Long targetId);
 
+  List<SecurityTask> findAllByTargetIdOrderByCreatedAtAsc(Long targetId, Pageable pageable);
+
   List<SecurityTask> findAllByProjectIdOrderByCreatedAtAsc(Long projectId);
 
   List<SecurityTask> findAllByProjectId(Long projectId, Pageable pageable);
