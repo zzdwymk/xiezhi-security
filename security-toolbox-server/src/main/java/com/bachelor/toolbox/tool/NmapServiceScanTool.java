@@ -301,8 +301,9 @@ public class NmapServiceScanTool implements SecurityTool {
   private String readDiagnostics(InputStream input, ToolExecutionObserver observer)
       throws Exception {
     StringBuilder output = new StringBuilder();
-    try (BufferedReader reader =
-        new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
+    try (InputStreamReader input2 = new InputStreamReader(input, StandardCharsets.UTF_8)) {
+      com.bachelor.toolbox.common.BoundedLineReader reader =
+          new com.bachelor.toolbox.common.BoundedLineReader(input2, 64 * 1024 * 1024);
       String line;
       while ((line = reader.readLine()) != null) {
         if (output.length() + line.length() > MAX_OUTPUT_BYTES) {

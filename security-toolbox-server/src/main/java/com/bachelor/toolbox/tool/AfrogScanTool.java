@@ -316,9 +316,11 @@ public class AfrogScanTool implements SecurityTool {
 
   String readExecutionEvidence(BufferedReader reader) throws Exception {
     StringBuilder output = new StringBuilder();
+    com.bachelor.toolbox.common.BoundedLineReader lines =
+        new com.bachelor.toolbox.common.BoundedLineReader(reader, 64 * 1024 * 1024);
     String pendingResponse = null;
     String line;
-    while ((line = reader.readLine()) != null) {
+    while ((line = lines.readLine()) != null) {
       String clean = line.replaceAll("\\u001B\\[[;\\d]*[A-Za-z]", "").trim();
       if (pendingResponse != null) {
         if (HTTP_STATUS.matcher(clean).matches()) output.append(pendingResponse).append('\n');

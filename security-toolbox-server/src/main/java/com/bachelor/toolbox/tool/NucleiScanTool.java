@@ -506,9 +506,10 @@ public class NucleiScanTool implements SecurityTool {
 
   private String readLimited(
       Process process, ToolExecutionObserver observer, StringBuffer output) throws Exception {
-    try (BufferedReader reader =
-        new BufferedReader(
-            new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+    try (java.io.InputStreamReader input =
+            new java.io.InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8)) {
+      com.bachelor.toolbox.common.BoundedLineReader reader =
+          new com.bachelor.toolbox.common.BoundedLineReader(input, 64 * 1024 * 1024);
       String line;
       while ((line = reader.readLine()) != null) {
         if (output.length() + line.length() + 1 > MAX_OUTPUT_CHARS) {

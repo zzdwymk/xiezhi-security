@@ -393,9 +393,9 @@ public class SqlmapScanTool implements SecurityTool {
   private String readLimited(Process process, InputStream input, Consumer<String> onLine)
       throws Exception {
     StringBuilder output = new StringBuilder();
-    BufferedReader reader =
-        new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8));
-    try {
+    try (InputStreamReader inputReader = new InputStreamReader(input, StandardCharsets.UTF_8)) {
+      com.bachelor.toolbox.common.BoundedLineReader reader =
+          new com.bachelor.toolbox.common.BoundedLineReader(inputReader, 64 * 1024 * 1024);
       String line;
       while ((line = reader.readLine()) != null) {
         if (output.length() + line.length() + 1 > MAX_READ_BYTES) {
@@ -410,8 +410,6 @@ public class SqlmapScanTool implements SecurityTool {
           }
         }
       }
-    } finally {
-      reader.close();
     }
     return output.toString();
   }

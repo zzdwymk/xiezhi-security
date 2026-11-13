@@ -760,8 +760,10 @@ http:
 
   private String readLimited(Process process) throws Exception {
     StringBuilder output = new StringBuilder();
-    try (BufferedReader reader =
-        new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+    try (InputStreamReader input =
+        new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8)) {
+      com.bachelor.toolbox.common.BoundedLineReader reader =
+          new com.bachelor.toolbox.common.BoundedLineReader(input, 64 * 1024 * 1024);
       String line;
       while ((line = reader.readLine()) != null) {
         if (output.length() + line.length() > MAX_OUTPUT_CHARS) {
