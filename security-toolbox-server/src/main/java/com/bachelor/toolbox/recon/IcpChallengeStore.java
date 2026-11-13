@@ -15,14 +15,40 @@ import org.springframework.stereotype.Component;
 public class IcpChallengeStore {
 
   private static final Duration TTL = Duration.ofMinutes(10);
+  /**
+   * 硬上限（Round 29，纵深防御）：即便攻击者/操作者在 TTL 窗口内反复调用 /captcha 触发 register，
+   * 也保证内存中未消费挑战条目数封顶，避免无界增长（每条目持有 MIIT token/密钥/图片字节）。
+   * 超出时按注册时间最早优先淘汰（近似 LRU，按插入序驱逐）。
+   */
+  private static final int MAX_ENTRIES = 500;
 
   private final ConcurrentHashMap<String, Entry> store = new ConcurrentHashMap<>();
 
   public synchronized String register(MiitIcpClient.PendingCaptcha pending) {
     purge();
+    if (store.size() >= MAX_ENTRIES) {
+      evictOldest();
+    }
     String id = UUID.randomUUID().toString();
-    store.put(id, new Entry(pending, Instant.now().plus(TTL)));
+    Instant now = Instant.now();
+    store.put(id, new Entry(pending, now, now.plus(TTL)));
     return id;
+  }
+
+  /** 淘汰注册时间最早的一条（条目数已达上限时调用）。 */
+  private void evictOldest() {
+    String oldestKey = null;
+    Instant oldest = null;
+    for (var e : store.entrySet()) {
+      Instant at = e.getValue().registeredAt();
+      if (oldest == null || at.isBefore(oldest)) {
+        oldest = at;
+        oldestKey = e.getKey();
+      }
+    }
+    if (oldestKey != null) {
+      store.remove(oldestKey);
+    }
   }
 
   /**
@@ -43,5 +69,5 @@ public class IcpChallengeStore {
     store.entrySet().removeIf(e -> e.getValue().expiresAt().isBefore(now));
   }
 
-  private record Entry(MiitIcpClient.PendingCaptcha pending, Instant expiresAt) {}
+  private record Entry(MiitIcpClient.PendingCaptcha pending, Instant registeredAt, Instant expiresAt) {}
 }
