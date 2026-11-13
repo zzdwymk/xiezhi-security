@@ -441,7 +441,8 @@ public class AiController {
     List<Map<String, Object>> filtered = new java.util.ArrayList<>(all.size());
     for (Map<String, Object> thread : all) {
       Long pid = asLong(thread.get("projectId"));
-      if (pid == null || accessible.contains(pid)) {
+      // 非管理员：仅展示明确归属且可访问的线程；无项目归属的孤立线程不展示（防他人灌入的 null 线程泄露）。
+      if (pid != null && accessible.contains(pid)) {
         filtered.add(thread);
       }
     }
@@ -464,14 +465,14 @@ public class AiController {
   public Map<String, Object> saveConversation(
       @PathVariable String sessionId, @RequestBody Map<String, Object> payload) {
     if (memoryService != null) {
-      // Round 38：防止跨用户覆写/伪造对话线程（IDOR 写）。
-      // 已存在线程须属当前用户可访问项目；请求体声明的 projectId（若给出）亦须可访问。
+      // Round 38/39：防止跨用户覆写/伪造对话线程（IDOR 写）。会话已有归属须可访问；
+      // 请求体声明的 projectId（若给出）亦须可访问。孤立(无 projectId)线程不会泄露给他人——
+      // 由 listConversations 对非管理员过滤掉 null 项目线程来保证。
       AiConversationMemoryService.SessionScope existing = memoryService.scope(sessionId);
       if (existing != null && existing.projectId() != null) {
         authorization.requireAccess(existing.projectId());
       }
-      Object declared = payload == null ? null : payload.get("projectId");
-      Long declaredPid = asLong(declared);
+      Long declaredPid = asLong(payload == null ? null : payload.get("projectId"));
       if (declaredPid != null) {
         authorization.requireAccess(declaredPid);
       }

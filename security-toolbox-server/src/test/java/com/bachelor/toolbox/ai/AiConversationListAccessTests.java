@@ -67,6 +67,22 @@ class AiConversationListAccessTests {
   }
 
   @Test
+  @DisplayName("CL-5 非管理员不显示无项目归属(null)孤立线程")
+  void nonAdminHidesOrphanThreads() {
+    ProjectAuthorizationService auth = mock(ProjectAuthorizationService.class);
+    AiConversationMemoryService mem = mock(AiConversationMemoryService.class);
+    when(auth.isAdmin()).thenReturn(false);
+    when(auth.accessibleProjectIds()).thenReturn(List.of(5L));
+    Map<String, Object> orphan = new LinkedHashMap<>();
+    orphan.put("id", "orphan"); // 无 projectId
+    orphan.put("messages", List.of());
+    when(mem.listAllPersistedThreads()).thenReturn(List.of(thread(5L, "mine"), orphan));
+
+    var result = controller(auth, mem).listConversations();
+    assertThat(result).extracting(m -> m.get("id")).containsExactly("mine");
+  }
+
+  @Test
   @DisplayName("CL-3 保存到他人项目会话 → 拒绝")
   void saveRejectsOtherProjectThread() {
     ProjectAuthorizationService auth = mock(ProjectAuthorizationService.class);
