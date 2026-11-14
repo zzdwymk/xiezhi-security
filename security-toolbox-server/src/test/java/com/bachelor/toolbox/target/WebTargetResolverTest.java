@@ -54,6 +54,18 @@ class WebTargetResolverTests {
   }
 
   @Test
+  void joinRejectsAbsolutePathPointingOutsideAuthorizedTarget() {
+    // Round 78：与 HttpSecurityCheckTool.join / HttpHeaderTool.resolverJoin 同一纵深防御——
+    // 绝对 URL 路径仅允许与基址同 host+port，跨主机/跨端口抛 ApiException。
+    assertThatThrownBy(
+            () -> resolver.join(URI.create("https://10.0.0.5:8443"), "http://169.254.169.254/meta"))
+        .isInstanceOf(com.bachelor.toolbox.common.ApiException.class);
+    assertThatThrownBy(
+            () -> resolver.join(URI.create("https://10.0.0.5:8443"), "https://10.0.0.5:9443/app"))
+        .isInstanceOf(com.bachelor.toolbox.common.ApiException.class);
+  }
+
+  @Test
   void explicitUrlTargetIsUsedWithoutProbe() throws Exception {
     AuthorizedTarget target = target("https://10.0.0.5:8443/app", "URL", "80,443,8443");
     when(policy.validatedHttpUri(target)).thenReturn(URI.create("https://10.0.0.5:8443/app"));

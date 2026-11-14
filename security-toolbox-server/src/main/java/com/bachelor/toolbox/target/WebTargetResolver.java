@@ -170,9 +170,27 @@ public class WebTargetResolver {
     String p = path.trim();
     if (p.startsWith("http://") || p.startsWith("https://")) {
       try {
-        return URI.create(p);
-      } catch (RuntimeException ex) {
-        return base;
+        URI absolute = URI.create(p);
+        // Round 78：与 HttpSecurityCheckTool.join / HttpHeaderTool.resolverJoin 同一纵深防御——
+        // 绝对 URL 路径仅允许与基址同 host+port（调用方如 SqlmapScanTool 会在拼接后复核，
+        // 此处为统一兜底；无效绝对地址不再静默回退 base 而是保持原样语义由调用方复核）。
+        int expectedPort =
+            base.getPort() > 0
+                ? base.getPort()
+                : ("https".equalsIgnoreCase(base.getScheme()) ? 443 : 80);
+        int actualPort =
+            absolute.getPort() > 0
+                ? absolute.getPort()
+                : ("https".equalsIgnoreCase(absolute.getScheme()) ? 443 : 80);
+        if (absolute.getHost() == null
+            || !absolute.getHost().equalsIgnoreCase(base.getHost())
+            || actualPort != expectedPort) {
+          throw new com.bachelor.toolbox.common.ApiException(
+              "path 不允许指向授权目标之外的主机或端口: " + p);
+        }
+        return absolute;
+      } catch (IllegalArgumentException ex) {
+        throw new com.bachelor.toolbox.common.ApiException("path 绝对地址无效: " + p);
       }
     }
     if (!p.startsWith("/")) p = "/" + p;
