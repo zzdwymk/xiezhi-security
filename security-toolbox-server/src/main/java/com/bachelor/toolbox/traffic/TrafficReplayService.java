@@ -39,6 +39,9 @@ public class TrafficReplayService {
   private static final int MAX_HEADERS = 64 * 1024;
   private static final int MAX_REQUEST_BODY = 1024 * 1024;
   private static final int MAX_RESPONSE_BODY = 4 * 1024 * 1024;
+  // Round 45：响应读取循环的防无界上限（1xx 信息响应连续次数 / chunked trailer 行数）。
+  private static final int MAX_INFORMATIONAL_RESPONSES = 8;
+  private static final int MAX_TRAILER_LINES = 64;
   private static final Pattern METHOD = Pattern.compile("[!#$%&'*+.^_`|~0-9A-Za-z-]{1,32}");
   private static final Pattern HEADER_NAME = Pattern.compile("[!#$%&'*+.^_`|~0-9A-Za-z-]+");
   private static final Pattern REQUEST_LINE =
@@ -343,6 +346,9 @@ public class TrafficReplayService {
   }
 
   private ResponseHead readFinalResponseHead(InputStream input) throws IOException {
+    // Round 45：恶意/异常目标可持续返回 1xx 信息响应（每次 SO_TIMEOUT 只在空闲时触发，
+    // 持续发送则 while(true) 无限循环）。1xx 连续次数按 RFC 合理上限封顶，超限即视为响应无效。
+    int informational = 0;
     while (true) {
       byte[] raw = readHeader(input);
       if (raw.length == 0) throw new IOException("目标未返回 HTTP 响应");
@@ -356,7 +362,12 @@ public class TrafficReplayService {
       } catch (NumberFormatException ex) {
         throw new IOException("目标 HTTP 状态码无效");
       }
-      if (status >= 100 && status < 200 && status != 101) continue;
+      if (status >= 100 && status < 200 && status != 101) {
+        if (++informational > MAX_INFORMATIONAL_RESPONSES) {
+          throw new IOException("目标返回过多 1xx 信息响应，已中止（防无界循环）");
+        }
+        continue;
+      }
       if (status == 101) throw new IOException("发包器不支持 Upgrade/WebSocket 响应");
       String transferEncoding = headerValue(lines, "Transfer-Encoding");
       boolean chunked =
@@ -388,7 +399,13 @@ public class TrafficReplayService {
           throw new IOException("目标分块响应长度无效");
         }
         if (size == 0) {
-          while (!readLine(input, MAX_HEADERS).isEmpty()) {}
+          // Round 45：trailer 行数同样封顶，防恶意目标以海量 trailer 行造成无界循环。
+          int trailerLines = 0;
+          while (!readLine(input, MAX_HEADERS).isEmpty()) {
+            if (++trailerLines > MAX_TRAILER_LINES) {
+              throw new IOException("目标分块响应 trailer 行数过多，已中止");
+            }
+          }
           break;
         }
         readFixed(input, size, body);
