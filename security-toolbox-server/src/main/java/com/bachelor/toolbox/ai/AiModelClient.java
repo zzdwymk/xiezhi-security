@@ -25,6 +25,12 @@ import org.springframework.web.client.RestClient;
 public class AiModelClient {
   /** 流式单行上限（Round 17）：防上游无换行超长流导致 readLine 内存耗尽。 */
   private static final int MAX_STREAM_LINE_LENGTH = 1_000_000;
+  // Round 61：模型提供方 SSE 消费的总时长/总行数/输出字符防无界上限——读超时仅防空闲，
+  // 持续发事件即可无限循环；output StringBuilder 逐 delta 无界累积同样需封顶。
+  // 正常一轮规划/回答远小于这些上限；异常(被攻陷/故障)提供方在此 fail-closed。
+  private static final long MAX_STREAM_SECONDS = 600;
+  private static final long MAX_STREAM_LINES = 100_000;
+  private static final int MAX_OUTPUT_CHARS = 4_000_000;
   private final boolean enabled;
   private final String apiKey;
   private final String model;
@@ -255,10 +261,16 @@ public class AiModelClient {
     // Round 17：有界行读取，防上游无换行超长流导致 readLine 内存耗尽。
     com.bachelor.toolbox.common.BoundedLineReader lines =
         new com.bachelor.toolbox.common.BoundedLineReader(reader, MAX_STREAM_LINE_LENGTH);
+    // Round 61：总时长/总行数/输出字符三重上限（同 R46 RuntimeClient 的修复——读超时仅防空闲）。
+    long deadline = System.nanoTime() + MAX_STREAM_SECONDS * 1_000_000_000L;
+    long totalLines = 0;
     StringBuilder output = new StringBuilder();
     String completedText = "";
     String line;
     while ((line = lines.readLine()) != null) {
+      if (++totalLines > MAX_STREAM_LINES || System.nanoTime() - deadline > 0) {
+        throw new IOException("AI 模型事件流超过总时长/行数限制，已中止");
+      }
       if (!line.startsWith("data:")) {
         continue;
       }
@@ -274,6 +286,9 @@ public class AiModelClient {
       if ("response.output_text.delta".equals(type)) {
         String delta = event.path("delta").asText("");
         output.append(delta);
+        if (output.length() > MAX_OUTPUT_CHARS) {
+          throw new IOException("AI 模型输出超过大小限制，已中止");
+        }
         listener.accept(new AiModelStreamEvent("output_delta", delta));
       } else if (type.contains("reasoning_summary") && type.endsWith(".delta")) {
         // Responses reasoning summaries are explicitly produced for display. Never expose

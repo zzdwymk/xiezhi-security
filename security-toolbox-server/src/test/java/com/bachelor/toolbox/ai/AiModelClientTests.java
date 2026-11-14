@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -79,5 +80,39 @@ class AiModelClientTests {
             event -> "reasoning_summary".equals(event.type()) && "检查授权范围".equals(event.text()));
     assertThat(events).anyMatch(event -> "output_delta".equals(event.type()));
     assertThat(events).noneMatch(event -> event.text().contains("hidden-cot"));
+  }
+
+  @Test
+  void endlessModelStreamAbortsAtTotalLineCap() throws Exception {
+    // Round 61：被攻陷/故障的模型提供方持续发数（读超时只防空闲）时，
+    // SSE 消费必须在总行数上限处中止（与 R46 RuntimeClient 同族修复）。
+    AiModelClient client =
+        new AiModelClient(
+            new ObjectMapper(), true, "http://127.0.0.1:1", "", "test-model", "responses", 1);
+    StringBuilder endless = new StringBuilder();
+    for (int i = 0; i < 150_000; i++) {
+      endless.append("data: {\"type\":\"response.created\"}\n\n");
+    }
+    assertThatThrownBy(() -> client.parseResponseStream(endless.toString()))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("总时长/行数限制");
+  }
+
+  @Test
+  void oversizedModelOutputAbortsAtCharacterCap() throws Exception {
+    // Round 61：output StringBuilder 逐 delta 无界累积 -> 达 4MB 字符上限即中止。
+    AiModelClient client =
+        new AiModelClient(
+            new ObjectMapper(), true, "http://127.0.0.1:1", "", "test-model", "responses", 1);
+    StringBuilder stream = new StringBuilder();
+    for (int i = 0; i < 6; i++) {
+      // 单行 delta < 1MB（行上限），6 条累计 > 4MB（输出上限）
+      stream.append("data: {\"type\":\"response.output_text.delta\",\"delta\":\"")
+          .append("x".repeat(900_000))
+          .append("\"}\n\n");
+    }
+    assertThatThrownBy(() -> client.parseResponseStream(stream.toString()))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("输出超过大小限制");
   }
 }
