@@ -213,6 +213,42 @@ class AiAgentRuntimeClientTests {
 
   private final ObjectMapper mapper = new ObjectMapper();
 
+  @Test
+  void endlessRuntimeStreamAbortsAtTotalLineCap() throws Exception {
+    // Round 46：被攻陷/异常 Runtime 持续发数（读超时只防空闲）时，SSE 消费必须在总行数上限处中止。
+    AiAgentRuntimeClient client = newClient();
+    // BoundedLineReader 逐字符读取（R17 的意义所在），因此用永远返回 '\n' 的 Reader 模拟"只发空行"的流：
+    // 不积累 data、不触发事件解析，纯耗循环直至总行数上限。
+    java.io.Reader endlessNewlines =
+        new java.io.Reader() {
+          @Override public int read() {
+            return '\n';
+          }
+
+          @Override public int read(char[] cbuf, int off, int len) {
+            java.util.Arrays.fill(cbuf, off, off + len, '\n');
+            return len;
+          }
+
+          @Override public void close() {}
+        };
+    assertThatThrownBy(
+            () ->
+                client.readSse(
+                    new java.io.BufferedReader(endlessNewlines), ignored -> {}))
+        .isInstanceOf(AiAgentRuntimeClient.RuntimeProtocolException.class)
+        .hasMessageContaining("总时长/行数限制");
+  }
+
+  @Test
+  void boundedRuntimeStreamCompletesNormally() throws Exception {
+    // 不误伤：正常小流量（100 行）照常消费完。
+    AiAgentRuntimeClient client = newClient();
+    java.io.BufferedReader bounded =
+        new java.io.BufferedReader(new java.io.StringReader("\n".repeat(100)));
+    assertThatCode(() -> client.readSse(bounded, ignored -> {})).doesNotThrowAnyException();
+  }
+
   private AiAgentRuntimeClient newClient() {
     return newClientWithLedger(null);
   }

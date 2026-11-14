@@ -103,6 +103,9 @@ public class AiAgentRuntimeClient {
   static final String POLICY_REVISION = "java-authoritative-v1";
   /** SSE 单行上限（Round 17）：防上游无换行超长流导致 readLine 内存耗尽。 */
   private static final int MAX_SSE_LINE_LENGTH = 1_000_000;
+  // Round 46：SSE 消费的总时长/总行数防无界上限（读超时仅防空闲，不防持续发数）。
+  private static final long MAX_STREAM_SECONDS = 600;
+  private static final long MAX_STREAM_LINES = 100_000;
   private static final Set<String> MODEL_PROVIDER_FAILURE_CODES =
       Set.of("MODEL_NOT_CONFIGURED", "MODEL_ACCESS_DENIED", "MODEL_RATE_LIMITED", "MODEL_SERVICE_UNAVAILABLE",
           "MODEL_TIMEOUT", "MODEL_REQUEST_FAILED");
@@ -1165,10 +1168,20 @@ public class AiAgentRuntimeClient {
     // Round 17：用有界行读取器，杜绝上游发送无换行超长流导致的 readLine 内存耗尽。
     com.bachelor.toolbox.common.BoundedLineReader lines =
         new com.bachelor.toolbox.common.BoundedLineReader(reader, MAX_SSE_LINE_LENGTH);
+    // Round 46：单行/单事件有界之外，还需**总时长/总行数**上限——读超时仅在空闲时触发，
+    // 被攻陷或异常的 Runtime 持续发送事件即可无限占用调用线程（plan 的 HTTP 线程、以及
+    // AgentContinuationWorker.drain 为 synchronized，会卡死整个续接调度）。
+    // 正常一轮 ≤110s；600s / 100k 行远高于合法流量、远低于无限。
+    long deadline = System.nanoTime() + MAX_STREAM_SECONDS * 1_000_000_000L;
+    long totalLines = 0;
     StringBuilder data = new StringBuilder();
     int publicProgressCount = 0;
     String line;
     while ((line = lines.readLine()) != null) {
+      if (++totalLines > MAX_STREAM_LINES
+          || System.nanoTime() - deadline > 0) {
+        throw new RuntimeProtocolException("AI Runtime 事件流超过总时长/行数限制，已中止");
+      }
       if (line.startsWith(": toolbox-progress ")) {
         if (++publicProgressCount <= 32 && line.length() <= 512) {
           PublicProgress progress = parsePublicProgress(line.substring(19));
