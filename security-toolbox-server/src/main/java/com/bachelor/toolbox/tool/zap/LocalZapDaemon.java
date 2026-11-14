@@ -47,14 +47,22 @@ final class LocalZapDaemon implements ZapDaemon {
   private final HttpClient httpClient;
   private final ObjectMapper objectMapper;
   private final String apiKey;
+  private final int maxAlerts;
   private volatile Process process;
   private final Set<String> fuzzReceipts = ConcurrentHashMap.newKeySet();
 
   LocalZapDaemon(String executable, String host, int port, Duration startupTimeout) {
+    this(executable, host, port, startupTimeout, 500);
+  }
+
+  LocalZapDaemon(
+      String executable, String host, int port, Duration startupTimeout, int maxAlerts) {
     this.executable = executable;
     this.host = host;
     this.port = port;
     this.startupTimeout = startupTimeout;
+    // Round 48：源端告警上限——此前 yml 的 zap-max-alerts 是死配置，alerts() 无上限返回全部告警。
+    this.maxAlerts = Math.max(1, maxAlerts);
     this.reader = Executors.newSingleThreadExecutor(r -> new Thread(r, "zap-daemon"));
     this.httpClient =
         HttpClient.newBuilder()
@@ -509,10 +517,17 @@ final class LocalZapDaemon implements ZapDaemon {
 
   @Override
   public List<ZapAlert> alerts() throws Exception {
-    JsonNode root = getJsonRequired("core/view/alerts", Map.of());
+    // Round 48：向 ZAP 传分页参数（start/count）从 API 层限流，并在客户端再截断一次兜底。
+    JsonNode root =
+        getJsonRequired(
+            "core/view/alerts", Map.of("start", "0", "count", String.valueOf(maxAlerts)));
     if (!root.path("alerts").isArray()) throw new ApiException("ZAP 告警响应不完整，无法确认检查结果");
     List<ZapAlert> result = new ArrayList<>();
     for (JsonNode node : root.path("alerts")) {
+      if (result.size() >= maxAlerts) {
+        LOGGER.warn("ZAP 告警数达到上限 {}，已截断剩余告警", maxAlerts);
+        break;
+      }
       if (!node.isObject() || !node.path("url").isTextual() || node.path("url").asText().isBlank()
           || (node.path("alert").asText("").isBlank() && node.path("name").asText("").isBlank())) {
         throw new ApiException("ZAP 告警记录不完整，无法确认检查结果");

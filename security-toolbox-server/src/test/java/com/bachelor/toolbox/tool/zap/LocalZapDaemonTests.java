@@ -154,6 +154,41 @@ class LocalZapDaemonTests {
     assertThat(alerts.get(1).risk()).isEqualTo("INFO");
   }
 
+  @Test
+  void alertsAreCappedAtSourceWithPagingParams() throws Exception {
+    // Round 48：zap-max-alerts 源端落地——向 ZAP 传 start/count 分页参数，并对超量返回客户端截断。
+    java.util.concurrent.atomic.AtomicReference<String> alertsQuery =
+        new java.util.concurrent.atomic.AtomicReference<>("");
+    server.createContext(
+        "/json/core/view/alerts",
+        exchange -> {
+          alertsQuery.set(exchange.getRequestURI().getRawQuery());
+          StringBuilder body = new StringBuilder("{\"alerts\":[");
+          for (int i = 0; i < 600; i++) {
+            if (i > 0) body.append(',');
+            body.append("{\"url\":\"http://127.0.0.1:80/a").append(i)
+                .append("\",\"alert\":\"Bulk").append(i)
+                .append("\",\"risk\":\"Low\",\"confidence\":\"Medium\",\"cweid\":\"16\",\"description\":\"d\"}");
+          }
+          body.append("]}");
+          byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
+          exchange.getResponseHeaders().add("Content-Type", "application/json");
+          exchange.sendResponseHeaders(200, payload.length);
+          try (OutputStream out = exchange.getResponseBody()) {
+            out.write(payload);
+          }
+        });
+
+    LocalZapDaemon capped =
+        new LocalZapDaemon("ignored", "127.0.0.1", port, Duration.ofSeconds(1), 500);
+
+    List<ZapDaemon.ZapAlert> alerts = capped.alerts();
+    assertThat(alerts).hasSize(500);
+    assertThat(alerts.get(0).name()).isEqualTo("Bulk0");
+    assertThat(alerts.get(499).name()).isEqualTo("Bulk499");
+    assertThat(alertsQuery.get()).contains("count=500").contains("start=0");
+  }
+
   private Map<String, String> publicParameters(com.sun.net.httpserver.HttpExchange exchange) {
     Map<String, String> result = new LinkedHashMap<>();
     for (String item : exchange.getRequestURI().getRawQuery().split("&")) {
