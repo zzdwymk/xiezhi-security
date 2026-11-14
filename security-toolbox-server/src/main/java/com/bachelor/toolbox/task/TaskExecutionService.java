@@ -678,12 +678,15 @@ public class TaskExecutionService {
       Finding finding = new Finding();
       finding.setTaskId(task.getId());
       finding.setTargetId(target.getId());
-      finding.setTitle(draft.title());
-      finding.setSeverity(draft.severity());
+      // Round 47：按列长截断（title/securityKey=300）。扫描器结果 JSON（如 Xray ≤16MB）中的
+      // 超长 vuln_class/匹配 URL 若直接落库会触发 DataIntegrityViolation —— 任务在全部工作完成
+      // 后失败且发现丢失。在唯一持久入口统一截断，保护所有工具。
+      finding.setTitle(fit(draft.title(), 300));
+      finding.setSeverity(fit(draft.severity(), 20));
       finding.setSourceTool(tool.code());
       finding.setRuleCode(task.getRuleCode());
       finding.setVulnerabilityCode(resolveVulnerabilityCode(task, draft));
-      finding.setSecurityKey(draft.securityKey() == null ? null : draft.securityKey().trim());
+      finding.setSecurityKey(fit(draft.securityKey() == null ? null : draft.securityKey().trim(), 300));
       finding.setDescription(draft.description());
       finding.setEvidence(draft.evidence());
       finding.setRemediation(draft.remediation());
@@ -703,6 +706,12 @@ public class TaskExecutionService {
             "正在保存检测结果 " + findingIndex + "/" + findingTotal);
       }
     }
+  }
+
+  /** Round 47：按数据库列长截断，防扫描器结果里的超长字段触发落库约束冲突。 */
+  private static String fit(String value, int max) {
+    if (value == null) return null;
+    return value.length() <= max ? value : value.substring(0, max);
   }
 
   private String resolveVulnerabilityCode(SecurityTask task, FindingDraft draft) {

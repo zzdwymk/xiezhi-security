@@ -206,6 +206,66 @@ class TaskExecutionServiceTests {
   }
 
   @Test
+  void overlongFindingTitleAndSecurityKeyAreTruncatedToColumnLimits() throws Exception {
+    // Round 47：扫描器结果 JSON 中的超长 title/securityKey 直接落库会触发列长约束冲突
+    // （任务在全部工作完成后失败且发现丢失）。唯一持久入口必须按列长（300）截断。
+    SecurityTaskRepository taskRepository = mock(SecurityTaskRepository.class);
+    FindingRepository findingRepository = mock(FindingRepository.class);
+    TargetService targetService = mock(TargetService.class);
+    AssessmentProjectService projectService = mock(AssessmentProjectService.class);
+    SecurityToolRegistry registry = mock(SecurityToolRegistry.class);
+    AuditService auditService = mock(AuditService.class);
+    TaskSnapshotService snapshotService = mock(TaskSnapshotService.class);
+    TaskProgressEventService progressEvents = mock(TaskProgressEventService.class);
+    ProjectAuthorizationService authorization = mock(ProjectAuthorizationService.class);
+    TaskExecutionControlService executionControl = new TaskExecutionControlService(1, 1);
+    when(authorization.callWithSystemAccess(any(Callable.class)))
+        .thenAnswer(invocation -> ((Callable<?>) invocation.getArgument(0)).call());
+
+    SecurityTask task = task();
+    AuthorizedTarget target = new AuthorizedTarget();
+    target.setId(7L);
+    target.setTargetValue("192.168.222.149");
+    SecurityTool tool = mock(SecurityTool.class);
+    when(taskRepository.findById(42L)).thenReturn(Optional.of(task));
+    when(targetService.getCurrentlyAuthorized(7L)).thenReturn(target);
+    when(registry.require("TEST_TOOL")).thenReturn(tool);
+    when(tool.code()).thenReturn("TEST_TOOL");
+    String longTitle = "V".repeat(400);
+    String longKey = "poc=" + "K".repeat(400);
+    when(tool.execute(any(AuthorizedTarget.class), anyMap(), any(ToolExecutionObserver.class)))
+        .thenReturn(
+            new com.bachelor.toolbox.tool.ToolExecutionResult(
+                "scan done",
+                java.util.Map.of(),
+                java.util.List.of(
+                    new com.bachelor.toolbox.tool.FindingDraft(
+                        longTitle, "HIGH", "desc", "evidence", "remediation", null, longKey))));
+
+    new TaskExecutionService(
+            taskRepository,
+            findingRepository,
+            targetService,
+            projectService,
+            registry,
+            auditService,
+            new ObjectMapper(),
+            snapshotService,
+            executionControl,
+            progressEvents,
+            authorization)
+        .executeAsync(42L);
+
+    var captor = org.mockito.ArgumentCaptor.forClass(com.bachelor.toolbox.finding.Finding.class);
+    org.mockito.Mockito.verify(findingRepository, org.mockito.Mockito.atLeastOnce())
+        .save(captor.capture());
+    com.bachelor.toolbox.finding.Finding saved = captor.getValue();
+    assertThat(saved.getTitle()).hasSize(300).startsWith("VVVV");
+    assertThat(saved.getSecurityKey()).hasSize(300).startsWith("poc=KKKK");
+    assertThat(task.getStatus()).isEqualTo("SUCCESS");
+  }
+
+  @Test
   void userCancellationWinsOverWrappedModuleTimeoutAndCannotPublishSuccess() throws Exception {
     SecurityTaskRepository repository = mock(SecurityTaskRepository.class);
     FindingRepository findings = mock(FindingRepository.class);
