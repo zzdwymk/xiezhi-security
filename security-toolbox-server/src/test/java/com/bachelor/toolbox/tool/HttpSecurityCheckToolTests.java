@@ -1,6 +1,7 @@
 package com.bachelor.toolbox.tool;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 
 import com.bachelor.toolbox.target.AuthorizedTarget;
@@ -129,5 +130,29 @@ class HttpSecurityCheckToolTests {
 
   private HttpHeaders headers(Map<String, List<String>> values) {
     return HttpHeaders.of(values, (name, value) -> true);
+  }
+
+  @Test
+  void joinRejectsAbsolutePathPointingOutsideAuthorizedTarget() throws Exception {
+    // Round 63：path 为绝对 URL 时仅允许与授权目标同 host+port（防潜在 SSRF 纵深防御）。
+    var method =
+        HttpSecurityCheckTool.class.getDeclaredMethod("join", java.net.URI.class, String.class);
+    method.setAccessible(true);
+    var base = java.net.URI.create("http://192.168.222.158:80/");
+    // 同目标绝对 URL → 通过
+    var same =
+        (java.net.URI)
+            method.invoke(tool, base, "http://192.168.222.158:80/login?id=1");
+    org.assertj.core.api.Assertions.assertThat(same.getHost()).isEqualTo("192.168.222.158");
+    // 跨目标绝对 URL → ApiException（fail-closed）
+    assertThatThrownBy(
+            () -> method.invoke(tool, base, "http://169.254.169.254/latest/meta-data/"))
+        .isInstanceOf(java.lang.reflect.InvocationTargetException.class)
+        .hasCauseInstanceOf(com.bachelor.toolbox.common.ApiException.class);
+    // 同目标不同端口 → 拒
+    assertThatThrownBy(
+            () -> method.invoke(tool, base, "http://192.168.222.158:8080/"))
+        .isInstanceOf(java.lang.reflect.InvocationTargetException.class)
+        .hasCauseInstanceOf(com.bachelor.toolbox.common.ApiException.class);
   }
 }
