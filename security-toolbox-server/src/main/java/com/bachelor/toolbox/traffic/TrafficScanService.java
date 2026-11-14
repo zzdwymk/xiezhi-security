@@ -34,6 +34,9 @@ import org.springframework.stereotype.Service;
 @Service
 public class TrafficScanService {
   private static final Logger LOGGER = LoggerFactory.getLogger(TrafficScanService.class);
+  // Round 44：单包靶向扫描的命中/探针累积硬上限。ZAP 告警数无源端上限（zap-max-alerts 此前未落地），
+  // 大目标可返回海量告警 → hits/probes 无界增长 → 内存/ledger/响应放大。此处封顶并截断。
+  private static final int MAX_TARGETED_HITS = 500;
 
   public record TargetedScanHit(
       String title,
@@ -255,6 +258,10 @@ public class TrafficScanService {
           List<ZapDaemon.ZapAlert> alerts = daemon.alerts();
           if (alerts == null) throw new ApiException("ZAP 未返回有效告警结果，检测未完成");
           for (ZapDaemon.ZapAlert alert : alerts) {
+            if (hits.size() >= MAX_TARGETED_HITS) {
+              LOGGER.warn("靶向 ZAP 扫描命中数达上限 {}，已截断剩余告警", MAX_TARGETED_HITS);
+              break;
+            }
             if (alert != null && alertMatchesTarget(alert.url(), uri)) {
               TargetedScanHit hit =
                   new TargetedScanHit(

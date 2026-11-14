@@ -337,6 +337,22 @@ class TrafficScanServiceTests {
     assertRecorded("COMPLETED", "SUCCESS");
   }
 
+  @Test
+  void targetedZapHitsAreCappedToPreventUnboundedAccumulation() throws Exception {
+    // Round 44：ZAP 告警无源端上限，大目标可返回海量告警；hits/probes 必须封顶（≤500）防内存/响应放大。
+    String base = "http://127.0.0.1:" + packet.getPort();
+    java.util.List<ZapDaemon.ZapAlert> many = new java.util.ArrayList<>();
+    for (int i = 0; i < 600; i++) {
+      many.add(new ZapDaemon.ZapAlert(base + "/p" + i, "Bulk-" + i, "MEDIUM", "HIGH", "CWE-16", "d", 1));
+    }
+    when(daemon.alerts()).thenReturn(many);
+    TrafficScanService.TargetedScanResult result = run();
+    assertThat(result.status()).isEqualTo("COMPLETED");
+    assertThat(result.hits().size()).isLessThanOrEqualTo(500);
+    assertThat(result.probes().size()).isLessThanOrEqualTo(500);
+    assertRecorded("COMPLETED", "SUCCESS");
+  }
+
   @ParameterizedTest
   @ValueSource(strings = {"host", "port", "disabled"})
   void directPacketTargetBindingMustRemainEnabledAndMatchExactHostPort(String invalid) {
