@@ -316,4 +316,45 @@ class DirScanToolTests {
 
     assertThat(requestedPaths).contains("/admin", "/admin.php", "/admin.txt");
   }
+
+  @Test
+  void oversizedResponseBodyIsTruncatedAtTheReadCap() throws Exception {
+    // Round 64：目标返回超大响应体时读取在 MAX_READ_BYTES 处中止（length 记为上限），
+    // 不再 ofByteArray 全量读入内存。
+    int hugeBytes = DirScanTool.MAX_READ_BYTES * 2;
+    HttpServer huge = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    huge.createContext(
+        "/huge.html",
+        exchange -> {
+          byte[] chunk = new byte[64 * 1024];
+          java.util.Arrays.fill(chunk, (byte) 'z');
+          exchange.sendResponseHeaders(200, hugeBytes);
+          try (OutputStream output = exchange.getResponseBody()) {
+            long written = 0;
+            while (written < hugeBytes) {
+              int len = (int) Math.min(chunk.length, hugeBytes - written);
+              output.write(chunk, 0, len);
+              written += len;
+            }
+          }
+        });
+    huge.start();
+    try {
+      int savedPort = port;
+      port = huge.getAddress().getPort();
+      DiscoveredPathService discovered = recordingDiscovered();
+      DirScanTool tool = tool(dictionariesWith(List.of("huge.html")), discovered);
+      ToolExecutionResult result =
+          tool.execute(
+              target(), Map.of("concurrency", 1, "projectId", 1L, "maxRequests", 50));
+
+      @SuppressWarnings("unchecked")
+      List<Map<String, Object>> paths = (List<Map<String, Object>>) result.data().get("paths");
+      assertThat(paths).extracting(item -> item.get("path")).contains("/huge.html");
+      assertThat(paths.get(0)).containsEntry("length", (long) DirScanTool.MAX_READ_BYTES);
+      port = savedPort;
+    } finally {
+      huge.stop(0);
+    }
+  }
 }

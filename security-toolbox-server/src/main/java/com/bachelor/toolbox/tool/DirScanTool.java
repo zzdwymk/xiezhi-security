@@ -85,6 +85,13 @@ public class DirScanTool implements SecurityTool {
   /** Bodies larger than this are not retained, only their length. */
   private static final int MAX_BODY_BYTES = 256 * 1024;
 
+  /**
+   * Round 64：响应体读取硬上限——ofByteArray 会把目标返回的整个响应体读入内存（恶意/异常目标
+   * 可返回超大响应致 OOM）。超限即中止读取，length 记为该上限；软-404 基线与命中哈希使用同一
+   * 截断逻辑，检测语义不变（软-404 基线体都很小）。
+   */
+  public static final int MAX_READ_BYTES = 4 * 1024 * 1024;
+
   /** Tolerance when comparing a candidate body length against the soft-404 baseline. */
   private static final int SOFT_404_LENGTH_TOLERANCE = 24;
 
@@ -691,16 +698,38 @@ public class DirScanTool implements SecurityTool {
                 .header("User-Agent", USER_AGENT)
                 .GET()
                 .build();
-        HttpResponse<byte[]> response =
-            client.send(request, HttpResponse.BodyHandlers.ofByteArray());
-        byte[] raw = response.body() == null ? new byte[0] : response.body();
-        int length = raw.length;
+        HttpResponse<java.io.InputStream> response =
+            client.send(request, HttpResponse.BodyHandlers.ofInputStream());
+        // Round 64：有界读取——仅保留前 MAX_BODY_BYTES 供哈希，计数至 MAX_READ_BYTES 即中止，
+        // 防止恶意/异常目标以超大响应体耗尽内存。
+        byte[] raw;
+        long length;
+        try (java.io.InputStream body = response.body()) {
+          byte[] buf = new byte[8192];
+          java.io.ByteArrayOutputStream stored = new java.io.ByteArrayOutputStream();
+          long total = 0;
+          boolean truncated = false;
+          int n;
+          while ((n = body.read(buf)) != -1) {
+            total += n;
+            if (stored.size() < MAX_BODY_BYTES) {
+              stored.write(buf, 0, (int) Math.min(n, MAX_BODY_BYTES - stored.size()));
+            }
+            if (total >= MAX_READ_BYTES) {
+              truncated = true;
+              break;
+            }
+          }
+          raw = stored.toByteArray();
+          length = truncated ? MAX_READ_BYTES : total;
+        }
+        int lengthInt = (int) Math.min(length, Integer.MAX_VALUE);
         String hash = "";
-        if (length <= MAX_BODY_BYTES) {
+        if (lengthInt <= MAX_BODY_BYTES) {
           hash = Integer.toHexString(java.util.Arrays.hashCode(raw));
         }
         String redirect = response.headers().firstValue("location").orElse(null);
-        return new Probe(response.statusCode(), length, hash, redirect, null);
+        return new Probe(response.statusCode(), lengthInt, hash, redirect, null);
       } catch (ApiException ex) {
         // Out-of-scope port: report as an error so it is never counted as a hit.
         return Probe.error("PORT_OUT_OF_SCOPE");
