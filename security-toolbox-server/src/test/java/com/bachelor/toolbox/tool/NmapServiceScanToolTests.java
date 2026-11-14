@@ -66,6 +66,10 @@ class NmapServiceScanToolTests {
     List<String> command = tool.buildCommand("127.0.0.1", "80,443", "ping");
 
     assertThat(command).contains("-sn").doesNotContain("-p", "80,443");
+    // Round 77 回归：-sn 与任何扫描类型（含 -sT）互斥，Nmap 直接退出（退出码 1）。
+    assertThat(command).as("ping 模式不得携带 -sT").doesNotContain("-sT");
+    List<String> trace = tool.buildCommand("127.0.0.1", "80,443", "quick_trace");
+    assertThat(trace).as("quick_trace 模式不得携带 -sT").doesNotContain("-sT").contains("--traceroute");
   }
 
   @Test
@@ -73,8 +77,11 @@ class NmapServiceScanToolTests {
     // Nmap 拒绝同时指定多种 TCP 扫描类型：
     // "You specified more than one type of TCP scan. Please choose only one of ..."
     // 这条断言覆盖全部模式，防止再次出现 -sS/-sU 与固定的 -sT 冲突。
+    // Round 77：主机发现模式（ping/quick_trace）用 -sn 跳过端口扫描，与任何扫描类型互斥
+    // （"-sn ... not valid with any other scan types"），因此它们应为 0 种 TCP 扫描类型。
     NmapServiceScanTool tool = toolWithExecutable(createExecutable("nmap.exe"));
     Set<String> tcpScanFlags = Set.of("-sA", "-b", "-sT", "-sF", "-sI", "-sM", "-sN", "-sS", "-sW", "-sX");
+    Set<String> hostDiscoveryModes = Set.of("ping", "quick_trace");
     for (String mode : List.of(
         "quick", "regular", "intense", "intense_udp", "intense_all_tcp",
         "intense_no_ping", "ping", "quick_plus", "quick_trace", "slow_comprehensive", "service")) {
@@ -83,9 +90,16 @@ class NmapServiceScanToolTests {
       long tcpTypes = command.stream()
           .filter(arg -> tcpScanFlags.contains(arg) || arg.equals("-sSU"))
           .count();
-      assertThat(tcpTypes)
-          .as("模式 %s 指定了 %d 种 TCP 扫描类型，Nmap 只允许 1 种：%s", mode, tcpTypes, command)
-          .isEqualTo(1);
+      if (hostDiscoveryModes.contains(mode)) {
+        assertThat(tcpTypes)
+            .as("主机发现模式 %s 不得携带任何 TCP 扫描类型（-sn 互斥）：%s", mode, command)
+            .isEqualTo(0);
+        assertThat(command).as("主机发现模式 %s 应携带 -sn", mode).contains("-sn");
+      } else {
+        assertThat(tcpTypes)
+            .as("模式 %s 指定了 %d 种 TCP 扫描类型，Nmap 只允许 1 种：%s", mode, tcpTypes, command)
+            .isEqualTo(1);
+      }
       if (mode.equals("intense_udp") || mode.equals("slow_comprehensive")) {
         assertThat(command).as("模式 %s 应使用合并的 -sSU", mode).contains("-sSU");
         assertThat(command).as("模式 %s 不应出现裸 -sU", mode).doesNotContain("-sU");

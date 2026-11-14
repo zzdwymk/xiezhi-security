@@ -231,9 +231,14 @@ public class NmapServiceScanTool implements SecurityTool {
     // -sT 是本平台唯一的 TCP 扫描类型来源，任何模式下都只出现一次：Nmap
     // 明确拒绝同时指定多种 TCP 扫描类型（"more than one type of TCP scan"）。
     // UDP 必须与 TCP 合并为 -sSU 一个参数，分开写成 -sU -sT 同样会被拒绝。
+    // Round 77 修复：ping/quick_trace 是主机发现模式（-sn = 跳过端口扫描），Nmap 同样
+    // 拒绝 -sn 与任何扫描类型（含 -sT）并存（"-sn ... not valid with any other scan types"），
+    // 因此这两类模式不得添加 -sT/-sSU——历史实现无条件添加导致 ping/quick_trace 100% 失败。
     boolean hostDiscovery = "ping".equals(mode) || "quick_trace".equals(mode);
-    boolean udp = "intense_udp".equals(mode) || "slow_comprehensive".equals(mode);
-    command.add(udp ? "-sSU" : "-sT");
+    boolean udp = !hostDiscovery && ("intense_udp".equals(mode) || "slow_comprehensive".equals(mode));
+    if (!hostDiscovery) {
+      command.add(udp ? "-sSU" : "-sT");
+    }
     command.add("-n");
     switch (mode) {
       case "quick" -> {
