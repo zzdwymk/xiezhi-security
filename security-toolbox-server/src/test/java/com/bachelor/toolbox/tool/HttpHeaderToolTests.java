@@ -1,6 +1,7 @@
 package com.bachelor.toolbox.tool;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.PortRangeParser;
@@ -45,5 +46,27 @@ class HttpHeaderToolTests {
     } finally {
       server.stop(0);
     }
+  }
+
+  @Test
+  void resolverJoinRejectsAbsolutePathPointingOutsideAuthorizedTarget() throws Exception {
+    // Round 67：与 HttpSecurityCheckTool.join 同一纵深防御——绝对 URL 路径仅允许与授权目标同 host+port。
+    var method =
+        HttpHeaderTool.class.getDeclaredMethod("resolverJoin", java.net.URI.class, String.class);
+    method.setAccessible(true);
+    var tool = new HttpHeaderTool(new com.bachelor.toolbox.target.TargetPolicyService(false, new com.bachelor.toolbox.target.PortRangeParser()));
+    var base = java.net.URI.create("http://192.168.222.158:80/");
+    var same =
+        (java.net.URI)
+            method.invoke(tool, base, "http://192.168.222.158:80/login?id=1");
+    org.assertj.core.api.Assertions.assertThat(same.getHost()).isEqualTo("192.168.222.158");
+    assertThatThrownBy(
+            () -> method.invoke(tool, base, "http://169.254.169.254/latest/meta-data/"))
+        .isInstanceOf(java.lang.reflect.InvocationTargetException.class)
+        .hasCauseInstanceOf(com.bachelor.toolbox.common.ApiException.class);
+    assertThatThrownBy(
+            () -> method.invoke(tool, base, "http://192.168.222.158:8080/"))
+        .isInstanceOf(java.lang.reflect.InvocationTargetException.class)
+        .hasCauseInstanceOf(com.bachelor.toolbox.common.ApiException.class);
   }
 }

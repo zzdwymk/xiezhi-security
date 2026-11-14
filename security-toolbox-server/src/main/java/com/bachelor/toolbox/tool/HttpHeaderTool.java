@@ -1,5 +1,6 @@
 package com.bachelor.toolbox.tool;
 
+import com.bachelor.toolbox.common.ApiException;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.TargetPolicyService;
 import com.bachelor.toolbox.target.WebTargetResolver;
@@ -153,9 +154,25 @@ public class HttpHeaderTool implements SecurityTool {
     String p = path.trim();
     if (p.startsWith("http://") || p.startsWith("https://")) {
       try {
-        return URI.create(p);
-      } catch (RuntimeException ex) {
-        return base;
+        URI absolute = URI.create(p);
+        // Round 67：与 HttpSecurityCheckTool.join 同一纵深防御——绝对 URL 路径仅允许与
+        // 授权目标同 host+port（path 参数当前在所有 funnel 入口已被拒，此处为兜底）。
+        int expectedPort =
+            base.getPort() > 0
+                ? base.getPort()
+                : ("https".equalsIgnoreCase(base.getScheme()) ? 443 : 80);
+        int actualPort =
+            absolute.getPort() > 0
+                ? absolute.getPort()
+                : ("https".equalsIgnoreCase(absolute.getScheme()) ? 443 : 80);
+        if (absolute.getHost() == null
+            || !absolute.getHost().equalsIgnoreCase(base.getHost())
+            || actualPort != expectedPort) {
+          throw new ApiException("path 不允许指向授权目标之外的主机或端口: " + p);
+        }
+        return absolute;
+      } catch (IllegalArgumentException ex) {
+        throw new ApiException("path 绝对地址无效或超出授权目标范围: " + p);
       }
     }
     if (!p.startsWith("/")) p = "/" + p;
