@@ -12,6 +12,17 @@ import type {
   PublicAgentNodeStatus,
 } from "./stores/conversations";
 
+// Round 99：前端事件流读取缓冲上限——`buffer += decode` 无上限累积（无换行流/超长行）
+// 会在渲染进程内存耗尽（与后端 R46/R61/R64 家族同类）。后端虽为受信自有服务（已有上限），
+// 此处为纵深防御：超限即抛错中止流，错误处理路径沿用各调用方既有逻辑。
+const MAX_STREAM_BUFFER_CHARS = 8 * 1024 * 1024;
+
+function assertStreamBufferWithinLimit(buffer: string) {
+  if (buffer.length > MAX_STREAM_BUFFER_CHARS) {
+    throw new Error("事件流缓冲超过安全大小限制，连接已中止");
+  }
+}
+
 export { api, getApiUrl } from "./apiClient";
 
 export interface Target {
@@ -1693,6 +1704,7 @@ async function streamTaskEventPath(
     if (done) break;
 
     buffer += decoder.decode(value, { stream: true });
+    assertStreamBufferWithinLimit(buffer);
     buffer = buffer.replace(/\r\n/g, "\n");
     let end: number;
     while ((end = buffer.indexOf("\n\n")) >= 0) {
@@ -1805,6 +1817,7 @@ export async function streamWorkflowSuggestions(
     const { value, done } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
+    assertStreamBufferWithinLimit(buffer);
     buffer = buffer.replace(/\r\n/g, "\n");
     let end: number;
     while ((end = buffer.indexOf("\n\n")) >= 0) {
@@ -2514,6 +2527,7 @@ export async function dispatchAiStreaming(
       // transport is active; it does not manufacture a visible progress event.
       if (value.byteLength) markStreamActivity();
       buffer += decoder.decode(value, { stream: true });
+      assertStreamBufferWithinLimit(buffer);
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() || "";
       lines.forEach(processLine);
@@ -2645,6 +2659,7 @@ async function streamTargetedScan(
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
+      assertStreamBufferWithinLimit(buffer);
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() || "";
       for (const line of lines) {
