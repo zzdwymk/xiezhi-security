@@ -103,12 +103,15 @@ public class ZapScanTool implements SecurityTool {
       daemon.start();
       observer.operation("ZAP daemon 已就绪，正在将目标纳入扫描范围");
       daemon.includeInScope(targetUri);
-      configureAuthIfPresent(daemon, parameters);
+      configureAuthIfPresent(daemon, target, parameters);
       observer.operation("正在确认目标网站可以访问（不跟随重定向）");
       daemon.accessUrl(targetUri);
 
       boolean openApiImported = false;
       if (openApiUrl != null && !openApiUrl.isBlank()) {
+        // Round 113 修复：openApiUrl 经规则路径用户可控（ActiveScanService toolParams 合并），
+        // ZAP 会 GET 该 URL —— 必须强制归属授权目标（防经 ZAP 的 SSRF）。
+        assertZapUrlWithinScope(openApiUrl, target);
         openApiImported = daemon.importOpenApi(openApiUrl);
       }
       if (withSpider && !openApiImported) {
@@ -387,7 +390,10 @@ public class ZapScanTool implements SecurityTool {
   }
 
   // 若调用方传了登录相关参数，则在爬虫/主动扫描前为上下文配置表单认证。
-  private void configureAuthIfPresent(ZapDaemon daemon, Map<String, Object> parameters)
+  // Round 113 修复：authLoginUrl 同样经规则路径用户可控（ZAP 会向其 POST 认证表单），
+  // 强制归属授权目标（防经 ZAP 的 SSRF）。
+  private void configureAuthIfPresent(
+      ZapDaemon daemon, AuthorizedTarget target, Map<String, Object> parameters)
       throws Exception {
     if (parameters == null) {
       return;
@@ -397,6 +403,7 @@ public class ZapScanTool implements SecurityTool {
     if (loginUrl.isBlank() || username.isBlank()) {
       return;
     }
+    assertZapUrlWithinScope(loginUrl, target);
     String password = Objects.toString(parameters.get("authPassword"), "");
     String userField = Objects.toString(parameters.get("authUsernameField"), "username").trim();
     String passField = Objects.toString(parameters.get("authPasswordField"), "password").trim();
@@ -404,6 +411,35 @@ public class ZapScanTool implements SecurityTool {
     String postData = "username=" + username + "&password=" + password;
     daemon.configureFormAuthentication(
         new ZapDaemon.FormAuthSpec(null, loginUrl, loginUrl, userField, passField, postData, authType));
+  }
+
+  /**
+   * Round 113：ZAP 附加 URL（openApiUrl/authLoginUrl）强制归属授权目标——仅 http/https、
+   * 无用户信息/片段、host 与授权目标一致、端口在授权范围内。防经 ZAP 进程的 SSRF。
+   */
+  void assertZapUrlWithinScope(String url, AuthorizedTarget target) {
+    URI candidate;
+    try {
+      candidate = URI.create(url);
+    } catch (IllegalArgumentException ex) {
+      throw new ApiException("ZAP 附加 URL 格式无效: " + url);
+    }
+    String scheme = candidate.getScheme();
+    if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)) {
+      throw new ApiException("ZAP 附加 URL 仅支持 http/https: " + url);
+    }
+    if (candidate.getRawUserInfo() != null || candidate.getRawFragment() != null) {
+      throw new ApiException("ZAP 附加 URL 不允许包含用户信息或片段");
+    }
+    String host = policy.validatedHost(target);
+    if (candidate.getHost() == null || !candidate.getHost().equalsIgnoreCase(host)) {
+      throw new ApiException("ZAP 附加 URL 不在授权目标范围内: " + url);
+    }
+    int port =
+        candidate.getPort() > 0
+            ? candidate.getPort()
+            : ("https".equalsIgnoreCase(scheme) ? 443 : 80);
+    policy.validateAuthorizedPort(target, port);
   }
 
   private boolean isAjaxSpiderRequested(Map<String, Object> parameters) {

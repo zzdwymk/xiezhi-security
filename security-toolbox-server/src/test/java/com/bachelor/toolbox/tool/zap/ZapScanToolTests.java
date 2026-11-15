@@ -296,4 +296,37 @@ class ZapScanToolTests {
         .isInstanceOf(ApiException.class)
         .hasMessageContaining("任务已取消");
   }
+
+  @Test
+  void zapUrlScopeCheckRejectsForeignHostsAndPorts() {
+    // Round 113：openApiUrl/authLoginUrl 经规则路径用户可控（ActiveScanService toolParams 合并），
+    // ZAP 会 GET/POST 该 URL —— 必须强制归属授权目标（防经 ZAP 的 SSRF）。
+    ZapScanTool tool = tool(mock(ZapDaemon.class));
+    AuthorizedTarget authorized = target();
+    when(policy.validatedHost(authorized)).thenReturn("127.0.0.1");
+
+    // 同目标同端口 → 通过
+    tool.assertZapUrlWithinScope("https://127.0.0.1:8443/openapi.json", authorized);
+    // 跨主机（元数据服务）→ 拒绝
+    assertThatThrownBy(
+            () ->
+                tool.assertZapUrlWithinScope(
+                    "http://169.254.169.254/latest/meta-data/", authorized))
+        .isInstanceOf(ApiException.class)
+        .hasMessageContaining("不在授权目标范围内");
+    // 同主机不同端口（未授权端口）→ 拒绝（policy.validateAuthorizedPort 打桩抛出）
+    doThrow(new ApiException("fscan 请求端口超出目标授权端口范围"))
+        .when(policy)
+        .validateAuthorizedPort(authorized, 9999);
+    assertThatThrownBy(() -> tool.assertZapUrlWithinScope("https://127.0.0.1:9999/x", authorized))
+        .isInstanceOf(ApiException.class);
+    // 非 http/https 协议 → 拒绝
+    assertThatThrownBy(() -> tool.assertZapUrlWithinScope("ftp://127.0.0.1/x", authorized))
+        .isInstanceOf(ApiException.class)
+        .hasMessageContaining("仅支持 http/https");
+    // 用户信息 → 拒绝
+    assertThatThrownBy(() -> tool.assertZapUrlWithinScope("http://user:secret@127.0.0.1:8443/x", authorized))
+        .isInstanceOf(ApiException.class)
+        .hasMessageContaining("不允许包含用户信息");
+  }
 }
