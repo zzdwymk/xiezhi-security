@@ -44,10 +44,13 @@ public class LoginAttemptService {
   }
 
   /** 当前是否处于锁定窗口内 */
-  public boolean isBlocked(String username, String clientAddress) {
+  public synchronized boolean isBlocked(String username, String clientAddress) {
     Attempt attempt = attempts.get(key(username, clientAddress));
     if (attempt == null) {
-      return false;
+      evictIfNeeded();
+      // All remaining entries may be actively locked. Fail closed for a new key rather
+      // than evicting another account's lock or creating untracked authentication attempts.
+      return attempts.size() >= MAX_ENTRIES;
     }
     attempt.touch();
     if (attempt.lockedUntil == null) {
@@ -72,10 +75,14 @@ public class LoginAttemptService {
   }
 
   /** 记录一次失败；达到阈值后进入锁定 */
-  public void recordFailure(String username, String clientAddress) {
-    evictIfNeeded();
+  public synchronized void recordFailure(String username, String clientAddress) {
+    String attemptKey = key(username, clientAddress);
+    if (!attempts.containsKey(attemptKey)) {
+      evictIfNeeded();
+      if (attempts.size() >= MAX_ENTRIES) return;
+    }
     Attempt attempt =
-        attempts.computeIfAbsent(key(username, clientAddress), ignored -> new Attempt());
+        attempts.computeIfAbsent(attemptKey, ignored -> new Attempt());
     attempt.touch();
     int failures = attempt.failures.incrementAndGet();
     if (failures >= maxAttempts) {
@@ -94,8 +101,8 @@ public class LoginAttemptService {
   }
 
   /**
-   * 容量控制：先移除已过锁定窗口的陈旧条目；若仍超过上限，按最近访问时间淘汰最旧的一条，
-   * 直到回落到上限以内。锁外调用，竞态下最多短暂多出少量条目，随后会被下一次写入收敛。
+   * 容量控制：在服务监视器内调用，先移除过期锁，再淘汰未锁定的最旧条目。
+   * 活跃锁不能因用户名轮换被删除；若全为活跃锁，则新键在 isBlocked 中被拒绝。
    */
   private void evictIfNeeded() {
     if (attempts.size() < MAX_ENTRIES) {
@@ -107,12 +114,15 @@ public class LoginAttemptService {
       Instant lockedUntil = entry.getValue().lockedUntil;
       return lockedUntil != null && now.isAfter(lockedUntil);
     });
-    // ② 仍超上限则按最近访问时间淘汰最旧
+    // Active lockouts are security state, not expendable cache entries.
     while (attempts.size() >= MAX_ENTRIES) {
-      attempts.entrySet().stream()
+      String oldestUnlocked = attempts.entrySet().stream()
+          .filter(entry -> entry.getValue().lockedUntil == null)
           .min(Comparator.comparingLong(entry -> entry.getValue().lastTouchedNanos))
           .map(Map.Entry::getKey)
-          .ifPresent(attempts::remove);
+          .orElse(null);
+      if (oldestUnlocked == null) return;
+      attempts.remove(oldestUnlocked);
     }
   }
 

@@ -78,6 +78,28 @@ class LoginAttemptServiceTests {
   }
 
   @Test
+  void lockedAccountSurvivesUnrelatedUsernameChurn() {
+    for (int i = 0; i < 3; i++) service.recordFailure("locked-victim", "127.0.0.1");
+    for (int i = 0; i < LoginAttemptService.MAX_ENTRIES + 10; i++) {
+      service.recordFailure("churn-" + i, "127.0.0.1");
+    }
+    assertThat(service.isBlocked("locked-victim", "127.0.0.1")).isTrue();
+    assertThat(service.size()).isLessThanOrEqualTo(LoginAttemptService.MAX_ENTRIES);
+  }
+
+  @Test
+  void saturatedActiveLocksDenyNewKeysWithoutDiscardingLocks() {
+    LoginAttemptService locked = new LoginAttemptService(1, 300);
+    for (int i = 0; i < LoginAttemptService.MAX_ENTRIES; i++) {
+      locked.recordFailure("locked-" + i, "127.0.0.1");
+    }
+    assertThat(locked.isBlocked("new-key", "127.0.0.1")).isTrue();
+    locked.recordFailure("new-key", "127.0.0.1");
+    assertThat(locked.isBlocked("locked-0", "127.0.0.1")).isTrue();
+    assertThat(locked.size()).isEqualTo(LoginAttemptService.MAX_ENTRIES);
+  }
+
+  @Test
   void 容量控制不影响正常锁定语义() {
     // 灌满大量无关条目后，对目标账号的节流仍然生效。
     for (int i = 0; i < LoginAttemptService.MAX_ENTRIES + 500; i++) {
