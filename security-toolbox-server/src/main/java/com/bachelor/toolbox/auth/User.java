@@ -29,6 +29,7 @@ public class User implements UserDetails {
   @Column(nullable = false, unique = true, length = 64)
   private String username;
 
+  @com.fasterxml.jackson.annotation.JsonIgnore
   @Column(nullable = false)
   private String passwordHash;
 
@@ -41,6 +42,7 @@ public class User implements UserDetails {
   @Column(nullable = false, updatable = false)
   private Instant createdAt = Instant.now();
 
+  @com.fasterxml.jackson.annotation.JsonIgnore
   @Override
   public String getPassword() {
     return passwordHash;
