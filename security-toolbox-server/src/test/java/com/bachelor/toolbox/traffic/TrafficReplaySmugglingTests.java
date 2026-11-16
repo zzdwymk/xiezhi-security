@@ -157,6 +157,7 @@ class TrafficReplaySmugglingTests {
     long clCount = raw.toLowerCase().split("content-length:", -1).length - 1;
     assertThat(clCount).isEqualTo(1);
     assertThat(raw).containsIgnoringCase("Content-Length: 5");
+    assertThat(raw).endsWith("hello");
   }
 
   // ---------------------------------------------------------------- 本地服务器
@@ -179,10 +180,29 @@ class TrafficReplaySmugglingTests {
 
     private void serve() {
       try (Socket client = socket.accept()) {
+        client.setSoTimeout(5_000);
         InputStream in = client.getInputStream();
-        byte[] buf = new byte[8192];
-        int n = in.read(buf);
-        raw = n > 0 ? new String(buf, 0, n, StandardCharsets.ISO_8859_1) : "";
+        var received = new java.io.ByteArrayOutputStream();
+        int window = 0;
+        while (true) {
+          int next = in.read();
+          if (next < 0) throw new IOException("Incomplete test request headers");
+          received.write(next);
+          if (received.size() > 64 * 1024) throw new IOException("Test headers exceed limit");
+          window = (window << 8) | next;
+          if (window == 0x0d0a0d0a) break;
+        }
+        String header = received.toString(StandardCharsets.ISO_8859_1);
+        var length = java.util.regex.Pattern.compile("(?im)^Content-Length: ([0-9]+)\\r?$")
+            .matcher(header);
+        int declared = length.find() ? Integer.parseInt(length.group(1)) : 0;
+        if (declared > 1024 * 1024) throw new IOException("Test body exceeds limit");
+        byte[] requestBody = in.readNBytes(declared);
+        if (requestBody.length != declared) throw new IOException("Incomplete test request body");
+        received.write(requestBody);
+        raw = received.toString(StandardCharsets.ISO_8859_1);
+        // A TCP read is not a message boundary. Drain the request before replying/closing,
+        // otherwise unread body bytes can turn the socket close into a reset on Windows.
         byte[] body = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".getBytes(StandardCharsets.ISO_8859_1);
         OutputStream out = client.getOutputStream();
         out.write(body);
