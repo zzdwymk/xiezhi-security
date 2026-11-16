@@ -123,6 +123,9 @@ public class SecurityConfig {
                     .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.DELETE, "/api/scan-schedules/**")
                     .hasRole("ADMIN")
+                    // Audit records contain global security operations, not just project data.
+                    .requestMatchers(HttpMethod.GET, "/api/audits", "/api/audits/**")
+                    .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.POST, "/api/traffic/**")
                     .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.DELETE, "/api/traffic/**")
