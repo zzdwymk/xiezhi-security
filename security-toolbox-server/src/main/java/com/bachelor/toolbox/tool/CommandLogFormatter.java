@@ -93,6 +93,17 @@ public final class CommandLogFormatter {
             .chars()
             .allMatch(ch -> Character.isLetterOrDigit(ch) || "-._/:,=[]".indexOf(ch) >= 0))
       return value;
-    return '"' + value.replace("\\", "\\\\").replace("\"", "\\\"") + '"';
+    StringBuilder escaped = new StringBuilder(value.length());
+    for (int i = 0; i < value.length(); i++) {
+      char character = value.charAt(i);
+      if (Character.isISOControl(character) || character == '\u2028' || character == '\u2029') {
+        escaped.append(String.format(Locale.ROOT, "\\u%04x", (int) character));
+      } else if (character == '\\' || character == '"') {
+        escaped.append('\\').append(character);
+      } else {
+        escaped.append(character);
+      }
+    }
+    return '"' + escaped.toString() + '"';
   }
 }

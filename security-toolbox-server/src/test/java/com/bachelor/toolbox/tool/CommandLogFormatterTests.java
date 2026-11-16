@@ -31,6 +31,17 @@ class CommandLogFormatterTests {
   }
 
   @Test
+  void controlCharactersCannotCreateForgedLogLines() {
+    String rendered = CommandLogFormatter.format(List.of("tool", "payload\r\nFAKE_SUCCESS\t\u0000\u001b"));
+    assertFalse(rendered.contains("\r"));
+    assertFalse(rendered.contains("\n"));
+    assertFalse(rendered.contains("\t"));
+    assertFalse(rendered.contains("\u0000"));
+    assertFalse(rendered.contains("\u001b"));
+    assertTrue(rendered.contains("FAKE_SUCCESS"));
+  }
+
+  @Test
   void removesUriCredentialsAndSensitiveQueryValues() {
     String rendered =
         CommandLogFormatter.format(
