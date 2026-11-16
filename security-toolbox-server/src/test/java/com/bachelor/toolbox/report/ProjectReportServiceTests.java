@@ -52,7 +52,7 @@ class ProjectReportServiceTests {
   }
 
   @Test
-  void escapesHostileFindingTextAndDoubleQuotedDataAttributes() {
+  void escapesHostileFindingTextAndDoubleQuotedDataAttributes() throws java.io.IOException {
     prepareData();
     Finding hostile = new Finding();
     hostile.setId(20L);
@@ -77,6 +77,11 @@ class ProjectReportServiceTests {
             "&lt;iframe src=javascript:alert(5)&gt;")
         .doesNotContain("<img src=x", "<svg onload", "<script>alert(4)",
             "<iframe src=javascript", "data-title=\"\" autofocus");
+    // Optional local QA artifact: export the actual service output, not a recreated template.
+    String artifact = System.getProperty("report.security.fixture");
+    if (artifact != null && !artifact.isBlank()) {
+      java.nio.file.Files.writeString(java.nio.file.Path.of(artifact), html, StandardCharsets.UTF_8);
+    }
   }
 
   @Test
