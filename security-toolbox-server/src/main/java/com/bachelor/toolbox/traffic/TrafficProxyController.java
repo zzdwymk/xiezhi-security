@@ -205,7 +205,7 @@ public class TrafficProxyController {
     } catch (Exception ex) {
       try {
         sendEvent(
-            emitter, Map.of("type", "error", "message", String.valueOf(ex.getMessage())));
+            emitter, Map.of("type", "error", "message", safeStreamError(ex)));
       } catch (Exception ignored) {
         // 客户端已断开，忽略
       }
@@ -213,6 +213,16 @@ public class TrafficProxyController {
       // The scan may finish after its listener stopped writing to a disconnected client.
       emitter.complete();
     }
+  }
+
+  private static String safeStreamError(Exception failure) {
+    String message = failure.getMessage();
+    // Preserve only fixed authentication/authorization guidance, never arbitrary exception text.
+    if ("无权访问该评估项目".equals(message)
+        || "请先登录后再继续操作".equals(message)) {
+      return message;
+    }
+    return "流量扫描未完成，请检查目标授权和服务状态后重试";
   }
 
   @FunctionalInterface
