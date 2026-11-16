@@ -52,6 +52,34 @@ class ProjectReportServiceTests {
   }
 
   @Test
+  void escapesHostileFindingTextAndDoubleQuotedDataAttributes() {
+    prepareData();
+    Finding hostile = new Finding();
+    hostile.setId(20L);
+    hostile.setTaskId(11L);
+    hostile.setTargetId(7L);
+    hostile.setSeverity("CRITICAL");
+    hostile.setStatus("OPEN");
+    hostile.setTitle("\" autofocus onfocus=alert(1) ><img src=x onerror=alert(2)> &quot;");
+    hostile.setSourceTool("<svg onload=alert(3)>");
+    hostile.setDescription("</p><script>alert(4)</script>");
+    hostile.setRemediation("<iframe src=javascript:alert(5)>");
+    when(findingRepository.findAllByTargetIdOrderByCreatedAtAsc(
+        org.mockito.ArgumentMatchers.eq(7L),
+        org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class)))
+        .thenReturn(List.of(hostile));
+
+    String html = service.generateHtml(7L);
+    assertThat(html)
+        .contains("data-title=\"&quot; autofocus onfocus=alert(1) &gt;&lt;img")
+        .contains("&amp;quot;", "&lt;svg onload=alert(3)&gt;",
+            "&lt;/p&gt;&lt;script&gt;alert(4)&lt;/script&gt;",
+            "&lt;iframe src=javascript:alert(5)&gt;")
+        .doesNotContain("<img src=x", "<svg onload", "<script>alert(4)",
+            "<iframe src=javascript", "data-title=\"\" autofocus");
+  }
+
+  @Test
   void generatesAValidPdfDocument() {
     prepareData();
 
