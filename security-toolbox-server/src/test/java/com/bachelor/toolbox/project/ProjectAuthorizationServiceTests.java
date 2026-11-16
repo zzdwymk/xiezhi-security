@@ -70,6 +70,37 @@ class ProjectAuthorizationServiceTests {
     assertThat(service.currentUsername()).isEqualTo("alice");
   }
 
+  @Test
+  void ownerCanAccessButAnotherAuthenticatedUserCannot() {
+    AssessmentProject project = project(1L, "alice");
+    when(projects.findById(1L)).thenReturn(Optional.of(project));
+    SecurityContextHolder.getContext().setAuthentication(
+        new UsernamePasswordAuthenticationToken("alice", null,
+            List.of(new SimpleGrantedAuthority("ROLE_USER"))));
+    assertThat(service.requireAccess(1L)).isSameAs(project);
+    SecurityContextHolder.getContext().setAuthentication(
+        new UsernamePasswordAuthenticationToken("bob", null,
+            List.of(new SimpleGrantedAuthority("ROLE_USER"))));
+    assertThatThrownBy(() -> service.requireAccess(1L))
+        .isInstanceOf(ApiException.class).hasMessage("无权访问该评估项目");
+    assertThatThrownBy(() -> service.requireManage(1L))
+        .isInstanceOf(ApiException.class).hasMessage("无权访问该评估项目");
+  }
+
+  @Test
+  void nestedSystemAccessDoesNotEscapeItsOuterScope() throws Exception {
+    service.callWithSystemAccess(() -> {
+      assertThat(service.hasSystemAccess()).isTrue();
+      service.callWithSystemAccess(() -> {
+        assertThat(service.currentUsername()).isEqualTo("SYSTEM");
+        return null;
+      });
+      assertThat(service.hasSystemAccess()).isTrue();
+      return null;
+    });
+    assertThat(service.hasSystemAccess()).isFalse();
+  }
+
   private AssessmentProject project(Long id, String owner) {
     AssessmentProject project = new AssessmentProject();
     project.setId(id);
