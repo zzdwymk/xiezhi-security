@@ -53,6 +53,50 @@ class RequestSizeLimitFilterTest {
   }
 
   @Test
+  void oversizedUnknownLengthBodyIsRejectedBeforeBusiness() throws Exception {
+    MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/tasks") {
+      @Override public long getContentLengthLong() { return -1; }
+      @Override public int getContentLength() { return -1; }
+    };
+    request.setContent(new byte[1024 * 1024 + 1]);
+    var response = new MockHttpServletResponse();
+    var chain = mock(FilterChain.class);
+    filter.doFilter(request, response, chain);
+    assertThat(response.getStatus()).isEqualTo(413);
+    org.mockito.Mockito.verifyNoInteractions(chain);
+  }
+
+  @Test
+  void validUnknownLengthBodyRemainsReadableAtTheLimit() throws Exception {
+    MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/tasks") {
+      @Override public long getContentLengthLong() { return -1; }
+      @Override public int getContentLength() { return -1; }
+    };
+    byte[] body = new byte[1024 * 1024];
+    body[body.length - 1] = 42;
+    request.setContent(body);
+    var response = new MockHttpServletResponse();
+    filter.doFilter(request, response, (wrapped, ignored) ->
+        assertThat(wrapped.getInputStream().readAllBytes()).isEqualTo(body));
+    assertThat(response.getStatus()).isEqualTo(200);
+  }
+
+  @Test
+  void unknownLengthServletFormsRequireDeclaredSize() throws Exception {
+    for (String type : new String[] {"multipart/form-data; boundary=qa", "application/x-www-form-urlencoded"}) {
+      MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/upload") {
+        @Override public long getContentLengthLong() { return -1; }
+      };
+      request.setContentType(type);
+      var response = new MockHttpServletResponse();
+      var chain = mock(FilterChain.class);
+      filter.doFilter(request, response, chain);
+      assertThat(response.getStatus()).isEqualTo(411);
+      org.mockito.Mockito.verifyNoInteractions(chain);
+    }
+  }
+
+  @Test
   @DisplayName("RSL-3 GET 即便带大 Content-Length 也跳过限制（无体）")
   void getSkipsLimit() throws Exception {
     MockHttpServletRequest req = new MockHttpServletRequest("GET", "/api/projects");
