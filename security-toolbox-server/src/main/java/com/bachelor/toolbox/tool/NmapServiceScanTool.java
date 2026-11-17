@@ -252,17 +252,17 @@ public class NmapServiceScanTool implements SecurityTool {
       case "intense_udp" -> command.addAll(List.of("-T4", "-A", "-v"));
       case "intense_all_tcp" -> command.addAll(List.of("-T4", "-A", "-v"));
       case "intense_no_ping" -> command.addAll(List.of("-T4", "-A", "-v", "-Pn"));
-      case "ping" -> command.addAll(List.of("-sn", "-PE", "-PS443", "-PA80"));
+      case "ping" -> command.addAll(List.of("-sn", "-PE", "-PS" + canonicalPorts, "-PA" + canonicalPorts));
       case "quick_plus", "service" -> command.addAll(List.of("-sV", "-T4", "-O", "--version-light"));
       case "quick_trace" -> command.addAll(List.of("-sn", "--traceroute"));
       case "slow_comprehensive" -> command.addAll(
-          List.of("-T4", "-A", "-v", "-PE", "-PS80", "-PA443", "-PP", "--script", "default"));
+          List.of("-T4", "-A", "-v", "-PE", "-PS" + canonicalPorts,
+              "-PA" + canonicalPorts, "-PP", "--script", "default"));
       default -> throw new ApiException("Nmap 扫描模式无效：" + mode);
     }
     // 端口选择：全端口统一用 -p-；主机发现类模式不扫描端口。
-    if ("intense_all_tcp".equals(mode) || "slow_comprehensive".equals(mode)) {
-      command.add("-p-");
-    } else if (!hostDiscovery) {
+    // Presets may change scan techniques, but must never widen the validated port scope.
+    if (!hostDiscovery) {
       if ("1-65535".equals(canonicalPorts)) command.add("-p-");
       else command.addAll(List.of("-p", canonicalPorts));
     }

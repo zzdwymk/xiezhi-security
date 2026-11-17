@@ -53,11 +53,22 @@ class NmapServiceScanToolTests {
   }
 
   @Test
-  void intenseAllTcpForcesFullPortRange() throws Exception {
+  void intenseAndSlowModesDoNotExpandValidatedPortSelection() throws Exception {
     NmapServiceScanTool tool = toolWithExecutable(createExecutable("nmap.exe"));
-    List<String> command = tool.buildCommand("127.0.0.1", "80,443", "intense_all_tcp");
+    for (String mode : List.of("intense_all_tcp", "slow_comprehensive")) {
+      List<String> command = tool.buildCommand("127.0.0.1", "80,3306", mode);
+      assertThat(command).doesNotContain("-p-").containsSubsequence("-p", "80,3306");
+    }
+  }
 
-    assertThat(command).contains("-T4", "-A", "-v", "-p-");
+  @Test
+  void explicitTcpDiscoveryProbesUseOnlyValidatedPorts() throws Exception {
+    NmapServiceScanTool tool = toolWithExecutable(createExecutable("nmap.exe"));
+    for (String mode : List.of("ping", "slow_comprehensive")) {
+      List<String> command = tool.buildCommand("127.0.0.1", "80,3306", mode);
+      assertThat(command).doesNotContain("-PS443", "-PA443")
+          .contains("-PS80,3306", "-PA80,3306");
+    }
   }
 
   @Test
