@@ -73,7 +73,7 @@ export function downloadBlob(blob: Blob | null | undefined, filename: string): v
           };
           reader.readAsDataURL(blob);
         } else {
-          window.open(url, "_blank");
+          window.open(url, "_blank", "noopener,noreferrer");
         }
       })
       .catch(() => {
