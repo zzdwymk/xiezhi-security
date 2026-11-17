@@ -448,14 +448,8 @@ function readDesktopSettings() {
 
 function writeDesktopSettings(settings) {
   const target = settingsPath();
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  const temporary = `${target}.${crypto.randomUUID()}.tmp`;
-  fs.writeFileSync(temporary, JSON.stringify(settings, null, 2), {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  if (fs.existsSync(target)) fs.unlinkSync(target);
-  fs.renameSync(temporary, target);
+  // Preserve the previous settings if replacement fails; never unlink them first.
+  writeJsonFileAtomic(target, settings);
   try {
     fs.chmodSync(target, 0o600);
   } catch {
