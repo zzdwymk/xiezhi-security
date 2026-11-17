@@ -4708,7 +4708,7 @@ async function startDesktopPostgres(binDir, dataDir, config) {
   try { logPolicy = preparePostgresLogPolicy({ runtimeDirectory: desktopRuntimeLogs().directory, dataDirectory: dataDir }); }
   catch (error) {
     desktopRuntimeLogs().recordFault("postgres", { code: "POSTGRES_LOG_POLICY_FAILED", message: diagnosticError(error), at: new Date().toISOString(), fatal: true });
-    throw new UserFacingError(`无法准备 PostgreSQL 运行日志：${diagnosticError(error)}`);
+    throw new UserFacingError("无法准备 PostgreSQL 运行日志，请检查日志目录权限并查看桌面诊断记录");
   }
   const logFile = logPolicy.bootstrapFile;
   // Windows clients use the loopback TCP listener. Forcing a Unix socket into the
