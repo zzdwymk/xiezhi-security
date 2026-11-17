@@ -47,6 +47,19 @@ const notice = (id, extra = {}) => ({ id, eventKey: 'task:' + id, category: 'tas
 let passed = 0;
 async function test(name, run) { await run(); console.log('PASS ' + name); passed++; }
 (async () => {
+  await test('expired session notification clicks never navigate', async () => {
+    const foreground = harness();
+    await foreground.delivery([notice(900)]);
+    foreground.expire();
+    foreground.shown[0].open();
+    assert.equal(foreground.navigated.length, 0);
+    const background = harness();
+    background.background();
+    await background.delivery([notice(901)]);
+    background.expire();
+    background.browser[0].onclick();
+    assert.equal(background.navigated.length, 0);
+  });
   await test('master switch and independent categories, including findings-only mode', () => {
     const h = harness(), prefs = h.utils.normalizeNotificationPreferences({ taskCompleteNotifications: false });
     assert.equal(h.utils.shouldNotify(notice(1), prefs), false);

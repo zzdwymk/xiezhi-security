@@ -33,7 +33,7 @@ export function createNotificationDelivery(options: NotificationDeliveryOptions)
         body: baseBody + findingHint,
       };
       const destination = notificationRoute(notice.route);
-      const open = () => { if (destination) options.navigate(destination); };
+      const open = () => { if (destination && options.isCurrent()) options.navigate(destination); };
       const background = document.hidden || !document.hasFocus();
       if (background && window.toolboxDesktop?.showTaskNotification) {
         try {
