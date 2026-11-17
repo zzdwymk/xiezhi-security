@@ -264,14 +264,36 @@ non-json diagnostic
   }
 
   private Process fixtureProcess(String mode) throws Exception {
-    String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
-    return new ProcessBuilder(java, "-cp", System.getProperty("java.class.path"),
-        ProcessFixture.class.getName(), mode).redirectErrorStream(true).start();
+    String javaExecutable = Path.of(System.getProperty("java.home"), "bin", "java").toString();
+    Path ready = java.nio.file.Files.createTempFile("nuclei-test-ready-", ".signal");
+    Process process = null;
+    try {
+      process = new ProcessBuilder(javaExecutable, "-cp", System.getProperty("java.class.path"),
+          ProcessFixture.class.getName(), mode, ready.toString()).redirectErrorStream(true).start();
+      long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+      while (java.nio.file.Files.size(ready) == 0) {
+        if (!process.isAlive() || System.nanoTime() >= deadline) {
+          process.destroyForcibly();
+          throw new java.io.IOException("Nuclei test JVM did not signal readiness");
+        }
+        Thread.sleep(10);
+      }
+      return process;
+    } catch (Exception failure) {
+      if (process != null) process.destroyForcibly();
+      throw failure;
+    } finally {
+      java.nio.file.Files.deleteIfExists(ready);
+    }
   }
 
   public static class ProcessFixture {
     public static void main(String[] args) throws Exception {
       String mode = args[0];
+      if (args.length > 1) {
+        // Signal that JVM/class initialization finished before the scanner's one-second budget.
+        java.nio.file.Files.writeString(Path.of(args[1]), "ready");
+      }
       if (mode.startsWith("outcome-")) {
         if ("outcome-empty".equals(mode)) return;
         String requests = "outcome-no-requests".equals(mode) ? "0" : "10";
