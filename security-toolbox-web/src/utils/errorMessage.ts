@@ -22,6 +22,8 @@ export function toErrorMessage(error: unknown, fallback: string): string {
     .replace(REMOTE_METHOD_PREFIX, "")
     .trim();
   const status = value.response?.status;
+  // Public errors are short guidance, not an unbounded diagnostic/log surface.
+  if (raw.length > 2048) return status ? `${fallback}（HTTP ${status}）` : fallback;
 
   if (value.code === "ECONNABORTED" || /\btimeout\b/i.test(raw)) {
     return `${fallback}：请求超时，请稍后重试`;
@@ -38,7 +40,7 @@ export function toErrorMessage(error: unknown, fallback: string): string {
     return `${fallback}：请求失败（HTTP ${status || raw.match(/\d+/)?.[0]}）`;
   }
   const containsInternalDetail =
-    /(?:exception|traceback|stack trace|\bat\s+\S+\([^)]*:\d+\)|[a-z]:\\|\/(?:home|users|usr|var|opt)\/)/i.test(
+    /(?:exception|traceback|stack trace|\bat\s+\S+\([^)]*:\d+\)|\b[a-z]:[\\/]|\/(?:home|users|usr|var|opt|tmp|private)\/|\b[\w-]*(?:password|passwd|token|api[-_ ]?key|secret|authorization)[\w-]*["']?\s*[:=])/i.test(
       raw,
     );
   if (/[\u3400-\u9fff]/.test(raw) && !containsInternalDetail) return raw;
