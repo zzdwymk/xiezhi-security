@@ -235,6 +235,7 @@ export async function decryptAesGcm(value: string, password: string) {
     throw new Error("密文不是有效的 AES 加密包");
   }
   if (
+    !payload || typeof payload !== "object" || Array.isArray(payload) ||
     payload.version !== 1 ||
     payload.algorithm !== "AES-GCM" ||
     !payload.salt ||
@@ -243,9 +244,14 @@ export async function decryptAesGcm(value: string, password: string) {
   ) {
     throw new Error("AES 加密包字段不完整");
   }
+  const iterations = payload.iterations === undefined ? 210_000 : payload.iterations;
+  // Ciphertext is untrusted input; never pass an attacker-selected unbounded CPU budget to PBKDF2.
+  if (!Number.isSafeInteger(iterations) || iterations < 1 || iterations > 1_000_000) {
+    throw new Error("AES 加密包迭代次数必须是 1–1000000 的整数");
+  }
   const salt = base64ToBytes(payload.salt);
   const iv = base64ToBytes(payload.iv);
-  const key = await deriveAesKey(password, salt, payload.iterations || 210_000);
+  const key = await deriveAesKey(password, salt, iterations);
   try {
     const plaintext = await crypto.subtle.decrypt(
       { name: "AES-GCM", iv },
