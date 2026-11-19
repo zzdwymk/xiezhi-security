@@ -36,6 +36,22 @@ class PageRequestsTests {
   }
 
   @Test
+  void maximumPageOffsetDoesNotOverflowAnInteger() {
+    var request = PageRequests.bounded(Integer.MAX_VALUE, 1000, 1, 1000, CREATED_AT_DESC);
+    assertEquals(2_147_483_647_000L, request.getOffset());
+    assertEquals(1000, request.getPageSize());
+  }
+
+  @Test
+  void rejectsNonpositiveMinimumAndClampsExtremeNegativeInputs() {
+    assertThrows(IllegalArgumentException.class,
+        () -> PageRequests.bounded(0, 1, 0, 100, CREATED_AT_DESC));
+    var request = PageRequests.bounded(Integer.MIN_VALUE, Integer.MIN_VALUE, 10, 100, CREATED_AT_DESC);
+    assertEquals(0L, request.getOffset());
+    assertEquals(10, request.getPageSize());
+  }
+
+  @Test
   void rejectsInvalidBounds() {
     assertThrows(
         IllegalArgumentException.class, () -> PageRequests.bounded(0, 20, 50, 10, CREATED_AT_DESC));
