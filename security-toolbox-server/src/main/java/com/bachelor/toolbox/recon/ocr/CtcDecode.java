@@ -33,6 +33,9 @@ final class CtcDecode {
     for (String line : content.split("\n")) {
       words.add(line);
     }
+    // PP-OCRv3's use_space_char adds one class after the dictionary entries.
+    // Do not silently discard that valid final class or duplicate custom dictionaries.
+    if (!words.contains(" ")) words.add(" ");
     return new CtcDecode(words);
   }
 
