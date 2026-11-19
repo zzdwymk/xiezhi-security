@@ -47,6 +47,12 @@ public class DiscoveredPathService {
     return repository.findByTargetIdOrderByDiscoveredAtDescIdDesc(targetId, cap());
   }
 
+  public List<DiscoveredPath> listByTarget(Long targetId, List<Long> accessibleProjectIds) {
+    if (accessibleProjectIds == null || accessibleProjectIds.isEmpty()) return List.of();
+    return repository.findByTargetIdAndProjectIdInOrderByDiscoveredAtDescIdDesc(
+        targetId, accessibleProjectIds, cap());
+  }
+
   /** 返回某项目下全部已发现 Web URL 资产（跨目标），用于资产拓扑等聚合视图。 */
   public List<DiscoveredPath> listByProject(Long projectId) {
     return repository.findByProjectIdOrderByDiscoveredAtDescIdDesc(projectId, cap());

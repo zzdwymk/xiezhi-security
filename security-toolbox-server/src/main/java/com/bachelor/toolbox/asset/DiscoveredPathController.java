@@ -13,16 +13,21 @@ import org.springframework.web.bind.annotation.RestController;
 public class DiscoveredPathController {
   private final DiscoveredPathService service;
   private final TargetService targets;
+  private final com.bachelor.toolbox.project.ProjectAuthorizationService authorization;
 
-  public DiscoveredPathController(DiscoveredPathService service, TargetService targets) {
+  public DiscoveredPathController(DiscoveredPathService service, TargetService targets,
+      com.bachelor.toolbox.project.ProjectAuthorizationService authorization) {
     this.service = service;
     this.targets = targets;
+    this.authorization = authorization;
   }
 
   @GetMapping
   public List<DiscoveredPath> list(@PathVariable Long targetId) {
     // 归属校验：必须对该授权目标有访问权，否则任何人可按 targetId 枚举他人资产的已发现路径。
     targets.get(targetId);
-    return service.listByTarget(targetId);
+    // Access to one shared target does not grant access to every project's evidence.
+    return authorization.isAdmin() ? service.listByTarget(targetId)
+        : service.listByTarget(targetId, authorization.accessibleProjectIds());
   }
 }

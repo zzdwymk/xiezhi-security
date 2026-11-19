@@ -59,7 +59,7 @@ class AssetAccessControlTests {
   @Test
   @DisplayName("IDOR-3 redesign/targets/{id}/discovered-paths 对无权目标被拒")
   void discoveredPathsByTargetRejectsInaccessibleTarget() {
-    DiscoveredPathController c = new DiscoveredPathController(paths, targets);
+    DiscoveredPathController c = new DiscoveredPathController(paths, targets, authorization);
     when(targets.get(9L)).thenThrow(new ApiException("无权访问该授权目标"));
 
     assertThatThrownBy(() -> c.list(9L))
@@ -71,11 +71,12 @@ class AssetAccessControlTests {
   @Test
   @DisplayName("IDOR-4 有权目标时 discovered-paths 正常返回")
   void discoveredPathsByTargetAllowsAccessible() {
-    DiscoveredPathController c = new DiscoveredPathController(paths, targets);
-    when(paths.listByTarget(9L)).thenReturn(List.of());
+    DiscoveredPathController c = new DiscoveredPathController(paths, targets, authorization);
+    when(authorization.accessibleProjectIds()).thenReturn(List.of(1L));
+    when(paths.listByTarget(9L, List.of(1L))).thenReturn(List.of());
     c.list(9L);
     verify(targets).get(9L);
-    verify(paths).listByTarget(9L);
+    verify(paths).listByTarget(9L, List.of(1L));
   }
 
   @Test
