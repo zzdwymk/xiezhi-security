@@ -33,7 +33,7 @@ public final class FindingClassification {
   private static final String MISSING_HEADER_PATTERN =
       "(?i)missing(?: safe| security)? (response )?(headers?)|"
           + "missing (anti[- ]?clickjacking|content[- ]?security[- ]?policy|content-security)|"
-          + "clickjacking|csp header not set|not set";
+          + "clickjacking|csp header not set";
 
   private FindingClassification() {}
 
