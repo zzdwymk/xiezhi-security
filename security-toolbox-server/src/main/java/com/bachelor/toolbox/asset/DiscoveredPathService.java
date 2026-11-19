@@ -74,6 +74,10 @@ public class DiscoveredPathService {
     } catch (RuntimeException ex) {
       return false;
     }
+    if ((!"http".equalsIgnoreCase(uri.getScheme()) && !"https".equalsIgnoreCase(uri.getScheme()))
+        || uri.getRawUserInfo() != null) {
+      return false;
+    }
     String host = uri.getHost();
     if (host == null) {
       return false;
