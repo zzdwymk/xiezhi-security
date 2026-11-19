@@ -240,23 +240,29 @@ public final class OcrEngine implements AutoCloseable {
 
   /** Runs the PP-OCR recognition head on the given sub-image box and returns the decoded text. */
   private String recognize(BufferedImage image, int[] box) throws Exception {
-    int x0 = Math.max(0, box[0] - 2);
-    int y0 = Math.max(0, box[1] - 2);
-    int x1 = Math.min(image.getWidth(), box[2] + 2);
-    int y1 = Math.min(image.getHeight(), box[3] + 2);
+    // DB probabilities describe a shrunken text kernel, not the complete glyph.
+    // Approximate Paddle's unclip distance with the axis-aligned box perimeter.
+    double width = Math.max(1, box[2] - box[0]);
+    double height = Math.max(1, box[3] - box[1]);
+    int margin = Math.max(2, (int) Math.ceil(width * height * 1.5 / (2 * (width + height))) + 2);
+    int x0 = Math.max(0, box[0] - margin);
+    int y0 = Math.max(0, box[1] - margin);
+    int x1 = Math.min(image.getWidth(), box[2] + margin);
+    int y1 = Math.min(image.getHeight(), box[3] + margin);
     if (x1 <= x0 || y1 <= y0) {
       return "";
     }
     BufferedImage crop = image.getSubimage(x0, y0, x1 - x0, y1 - y0);
 
-    // PP-OCR rec expects a fixed height (48 here); recompute width to preserve the box aspect ratio.
+    // PP-OCRv3 uses height 48 and at least width 320; narrow crops must be padded,
+    // not fed as tiny-width tensors that the recognition head cannot interpret.
     int recH = 48;
-    int recW = Math.max(10, Math.round((float) (x1 - x0) * recH / (y1 - y0)));
-    BufferedImage resized = ImageOps.resize(crop, recW, recH);
-    // PaddleOCR rec normalizes to 0..1 (mean = std = 0.5).
-    float[] input = ImageOps.toChw(resized, recH, recW, 3);
-
     String inputName = new ArrayList<>(recSession.getInputInfo().keySet()).get(0);
+    long[] declared = ((TensorInfo) recSession.getInputInfo().get(inputName).getInfo()).getShape();
+    int fixedWidth = intDim(declared, declared.length - 1, -1);
+    int recW = fixedWidth > 0 ? fixedWidth : Math.max(320, (int) Math.ceil((double) crop.getWidth() * recH / crop.getHeight()));
+    float[] input = recognitionInput(crop, recH, recW);
+
     long[] shape = {1, 3, recH, recW};
     float[] logits;
     long[] outShape;
@@ -276,6 +282,26 @@ public final class OcrEngine implements AutoCloseable {
     }
     String text = ctc.decode(logits, (int) timesteps, (int) vocab);
     return text == null ? "" : text.trim();
+  }
+
+  static float[] recognitionInput(BufferedImage image, int height, int width) {
+    int resizedWidth = Math.min(width, Math.max(1, (int) Math.ceil((double) image.getWidth() * height / image.getHeight())));
+    BufferedImage resized = ImageOps.resize(image, resizedWidth, height);
+    float[] rgb = ImageOps.toChw(resized, height, resizedWidth, 3);
+    float[] padded = new float[3 * height * width];
+    int sourcePlane = height * resizedWidth;
+    int targetPlane = height * width;
+    // Paddle/OpenCV recognition input is BGR, centered to [-1,1]. Padding is zero
+    // in normalized space, matching PaddleOCR's resize_norm_img contract.
+    for (int channel = 0; channel < 3; channel++) {
+      for (int y = 0; y < height; y++) {
+        for (int x = 0; x < resizedWidth; x++) {
+          padded[channel * targetPlane + y * width + x] =
+              (rgb[(2 - channel) * sourcePlane + y * resizedWidth + x] - 0.5f) / 0.5f;
+        }
+      }
+    }
+    return padded;
   }
 
   private List<int[]> detect(BufferedImage image) throws Exception {
@@ -325,13 +351,15 @@ public final class OcrEngine implements AutoCloseable {
       System.arraycopy(prob, y * ow, map[y], 0, ow);
     }
     List<int[]> boxes = db.boxes(map);
-    for (int[] box : boxes) {
-      box[0] = Math.round(box[0] * scaleX);
-      box[1] = Math.round(box[1] * scaleY);
-      box[2] = Math.round(box[2] * scaleX);
-      box[3] = Math.round(box[3] * scaleY);
-    }
+    boxes.replaceAll(region -> detectionRegionToBox(region, scaleX, scaleY));
     return boxes;
+  }
+
+  static int[] detectionRegionToBox(int[] region, float scaleX, float scaleY) {
+    // DB postprocessing emits [x,y,width,height], but recognition and click
+    // centering consume absolute [left,top,right,bottom] coordinates.
+    return new int[] {Math.round(region[0] * scaleX), Math.round(region[1] * scaleY),
+        Math.round((region[0] + region[2]) * scaleX), Math.round((region[1] + region[3]) * scaleY)};
   }
 
   @Override
