@@ -18,6 +18,7 @@ import org.springframework.stereotype.Component;
 public class IcpBrowserCaptureStore {
 
   private static final Duration TTL = Duration.ofHours(24);
+  private static final int MAX_ENTRIES = 500;
 
   private final ConcurrentHashMap<String, Entry> store = new ConcurrentHashMap<>();
 
@@ -29,8 +30,14 @@ public class IcpBrowserCaptureStore {
     List<Map<String, Object>> snapshot = records == null ? List.of() : records.stream()
         .map(row -> java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(row)))
         .toList();
-    store.put(key(projectId, targetId),
-        new Entry(domain, snapshot, Instant.now().plus(TTL)));
+    String captureKey = key(projectId, targetId);
+    // Expired entries have already been purged. Evict only for a new key;
+    // replacing an existing capture must not discard another project's record.
+    if (!store.containsKey(captureKey) && store.size() >= MAX_ENTRIES) {
+      store.entrySet().stream().min(java.util.Comparator.comparing(e -> e.getValue().expiresAt()))
+          .ifPresent(oldest -> store.remove(oldest.getKey()));
+    }
+    store.put(captureKey, new Entry(domain, snapshot, Instant.now().plus(TTL)));
   }
 
   public synchronized Capture take(Long projectId, Long targetId) {
