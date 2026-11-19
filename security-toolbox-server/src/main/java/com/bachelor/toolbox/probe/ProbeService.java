@@ -268,7 +268,17 @@ public class ProbeService {
             .header("User-Agent", USER_AGENT)
             .GET()
             .build();
-    return client.send(request, HttpResponse.BodyHandlers.ofString());
+    return client.send(request, info -> {
+      java.nio.charset.Charset charset = java.nio.charset.StandardCharsets.UTF_8;
+      try {
+        var type = org.springframework.http.MediaType.parseMediaType(
+            info.headers().firstValue("Content-Type").orElse("text/html"));
+        if (type.getCharset() != null) charset = type.getCharset();
+      } catch (IllegalArgumentException ignored) { /* Match the UTF-8 fallback for unknown charset. */ }
+      final var encoding = charset;
+      return HttpResponse.BodySubscribers.mapping(new ProbeBodySubscriber(2 * 1024 * 1024),
+          bytes -> new String(bytes, encoding));
+    });
   }
 
   private static final Pattern FAVICON_LINK =
@@ -362,7 +372,7 @@ public class ProbeService {
               .GET()
               .build();
 
-      HttpResponse<byte[]> iconResponse = client.send(iconRequest, HttpResponse.BodyHandlers.ofByteArray());
+      HttpResponse<byte[]> iconResponse = client.send(iconRequest, info -> new ProbeBodySubscriber(512 * 1024));
       if (iconResponse.statusCode() == 200 && iconResponse.body() != null && iconResponse.body().length > 0) {
         byte[] bytes = iconResponse.body();
         // 限制 Favicon 大小为 512KB 以内
