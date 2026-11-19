@@ -24,6 +24,7 @@ public class IcpBrowserCaptureStore {
 
   public synchronized void store(Long projectId, Long targetId, String domain,
       List<Map<String, Object>> records) {
+    validatePayload(domain, records);
     purge();
     // Controller records contain canonical scalar fields. Snapshot both collection
     // levels so neither the importer nor a later reader can rewrite saved results.
@@ -59,6 +60,27 @@ public class IcpBrowserCaptureStore {
       return;
     }
     store.remove(key(projectId, targetId));
+  }
+
+  private static void validatePayload(String domain, List<Map<String, Object>> records) {
+    if (domain != null && domain.length() > 253) throw new com.bachelor.toolbox.common.ApiException("捕获域名长度超过限制");
+    if (records == null) return;
+    if (records.size() > 500) throw new com.bachelor.toolbox.common.ApiException("一次捕获最多保存 500 条记录");
+    long characters = domain == null ? 0 : domain.length();
+    for (Map<String, Object> row : records) {
+      if (row == null || row.size() > 16) throw new com.bachelor.toolbox.common.ApiException("捕获记录字段数量无效");
+      for (var field : row.entrySet()) {
+        if (field.getKey() == null || field.getKey().length() > 64)
+          throw new com.bachelor.toolbox.common.ApiException("捕获记录字段名无效");
+        Object value = field.getValue();
+        if (value != null && !(value instanceof String))
+          throw new com.bachelor.toolbox.common.ApiException("捕获记录字段仅允许文本");
+        String text = value == null ? "" : (String) value;
+        if (text.length() > 2048) throw new com.bachelor.toolbox.common.ApiException("捕获记录单字段超过 2048 字符限制");
+        characters += field.getKey().length() + text.length();
+        if (characters > 100_000) throw new com.bachelor.toolbox.common.ApiException("捕获记录总文本超过 100000 字符限制");
+      }
+    }
   }
 
   private void purge() {
