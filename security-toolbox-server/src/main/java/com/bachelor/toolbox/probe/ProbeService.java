@@ -340,7 +340,10 @@ public class ProbeService {
       }
 
       // 仅允许探测同一主机的 Favicon，避免 SSRF 或越界
-      if (iconUri.getHost() == null || !iconUri.getHost().equalsIgnoreCase(baseUri.getHost())) {
+      if (iconUri.getHost() == null || !iconUri.getHost().equalsIgnoreCase(baseUri.getHost())
+          || iconUri.getRawUserInfo() != null
+          || !java.util.Objects.equals(iconUri.getScheme(), baseUri.getScheme())
+          || effectiveHttpPort(iconUri) != effectiveHttpPort(baseUri)) {
         return new FaviconData("", "");
       }
 
@@ -373,6 +376,10 @@ public class ProbeService {
       log.debug("Favicon 抓取失败或不存在，url={}", pageUrl, ex);
     }
     return new FaviconData("", "");
+  }
+
+  private static int effectiveHttpPort(URI uri) {
+    return uri.getPort() >= 0 ? uri.getPort() : ("https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80);
   }
 
   private String extractFaviconHref(String html) {
