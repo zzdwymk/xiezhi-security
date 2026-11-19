@@ -1,5 +1,6 @@
 package com.bachelor.toolbox.recon;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
@@ -23,6 +24,11 @@ public class IcpChallengeStore {
   private static final int MAX_ENTRIES = 500;
 
   private final ConcurrentHashMap<String, Entry> store = new ConcurrentHashMap<>();
+  private final Clock clock;
+
+  public IcpChallengeStore() { this(Clock.systemUTC()); }
+
+  IcpChallengeStore(Clock clock) { this.clock = java.util.Objects.requireNonNull(clock); }
 
   public synchronized String register(MiitIcpClient.PendingCaptcha pending) {
     purge();
@@ -30,7 +36,7 @@ public class IcpChallengeStore {
       evictOldest();
     }
     String id = UUID.randomUUID().toString();
-    Instant now = Instant.now();
+    Instant now = clock.instant();
     store.put(id, new Entry(pending, now, now.plus(TTL)));
     return id;
   }
@@ -61,12 +67,14 @@ public class IcpChallengeStore {
     }
     purge();
     Entry entry = store.remove(challengeId);
-    return entry == null ? null : entry.pending();
+    // purge and remove are separate operations; time can cross the deadline
+    // between them. Validate the entry again at the actual consumption boundary.
+    return entry == null || !entry.expiresAt().isAfter(clock.instant()) ? null : entry.pending();
   }
 
   private void purge() {
-    Instant now = Instant.now();
-    store.entrySet().removeIf(e -> e.getValue().expiresAt().isBefore(now));
+    Instant now = clock.instant();
+    store.entrySet().removeIf(e -> !e.getValue().expiresAt().isAfter(now));
   }
 
   private record Entry(MiitIcpClient.PendingCaptcha pending, Instant registeredAt, Instant expiresAt) {}
