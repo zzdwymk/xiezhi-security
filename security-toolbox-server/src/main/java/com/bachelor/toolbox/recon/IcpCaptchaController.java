@@ -466,6 +466,9 @@ if (isLabelToken(approveDate)) approveDate = "";
     if (value.matches("^[a-z0-9+.-]+://.*")) {
       try {
         value = URI.create(value).getHost();
+        // A valid URI may have no host (for example file:///...). Such capture
+        // fragments are not domains; let the caller use its authorized query root.
+        if (value == null || value.isBlank()) return "";
       } catch (Exception exception) {
         value = value.replaceFirst("^[a-z0-9+.-]+://", "");
       }
