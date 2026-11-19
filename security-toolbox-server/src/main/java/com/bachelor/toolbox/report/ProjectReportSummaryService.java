@@ -150,6 +150,10 @@ public class ProjectReportSummaryService {
       result.addAll(
           loadAll(
               pageable -> findings.findAllByTaskIdIn(taskIdBatch, pageable), CREATED_ASC_ID_ASC));
+      if (result.size() > MAX_REPORT_RECORDS) {
+        throw new com.bachelor.toolbox.common.ApiException(
+            "报告数据量过大（发现总数超过 " + MAX_REPORT_RECORDS + " 条），请缩小评估范围或清理历史数据后重试");
+      }
     }
     result.sort(FINDING_ORDER);
     return List.copyOf(result);
