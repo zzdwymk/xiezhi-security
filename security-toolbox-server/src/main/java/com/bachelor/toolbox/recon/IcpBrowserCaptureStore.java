@@ -24,8 +24,13 @@ public class IcpBrowserCaptureStore {
   public synchronized void store(Long projectId, Long targetId, String domain,
       List<Map<String, Object>> records) {
     purge();
+    // Controller records contain canonical scalar fields. Snapshot both collection
+    // levels so neither the importer nor a later reader can rewrite saved results.
+    List<Map<String, Object>> snapshot = records == null ? List.of() : records.stream()
+        .map(row -> java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(row)))
+        .toList();
     store.put(key(projectId, targetId),
-        new Entry(domain, records, Instant.now().plus(TTL)));
+        new Entry(domain, snapshot, Instant.now().plus(TTL)));
   }
 
   public synchronized Capture take(Long projectId, Long targetId) {
