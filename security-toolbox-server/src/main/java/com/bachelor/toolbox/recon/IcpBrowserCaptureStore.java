@@ -1,5 +1,6 @@
 package com.bachelor.toolbox.recon;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -21,6 +22,10 @@ public class IcpBrowserCaptureStore {
   private static final int MAX_ENTRIES = 500;
 
   private final ConcurrentHashMap<String, Entry> store = new ConcurrentHashMap<>();
+  private final Clock clock;
+
+  public IcpBrowserCaptureStore() { this(Clock.systemUTC()); }
+  IcpBrowserCaptureStore(Clock clock) { this.clock = java.util.Objects.requireNonNull(clock); }
 
   public synchronized void store(Long projectId, Long targetId, String domain,
       List<Map<String, Object>> records) {
@@ -38,7 +43,7 @@ public class IcpBrowserCaptureStore {
       store.entrySet().stream().min(java.util.Comparator.comparing(e -> e.getValue().expiresAt()))
           .ifPresent(oldest -> store.remove(oldest.getKey()));
     }
-    store.put(captureKey, new Entry(domain, snapshot, Instant.now().plus(TTL)));
+    store.put(captureKey, new Entry(domain, snapshot, clock.instant().plus(TTL)));
   }
 
   public synchronized Capture take(Long projectId, Long targetId) {
@@ -47,7 +52,10 @@ public class IcpBrowserCaptureStore {
       return null;
     }
     Entry entry = store.get(key(projectId, targetId));
-    if (entry == null) {
+    if (entry == null) return null;
+    // Time may cross the deadline after purge, even while the store lock is held.
+    if (!entry.expiresAt().isAfter(clock.instant())) {
+      store.remove(key(projectId, targetId), entry);
       return null;
     }
     // A capture remains available until the store is explicitly cleared (mirrors an imported
@@ -84,8 +92,8 @@ public class IcpBrowserCaptureStore {
   }
 
   private void purge() {
-    Instant now = Instant.now();
-    store.entrySet().removeIf(e -> e.getValue().expiresAt().isBefore(now));
+    Instant now = clock.instant();
+    store.entrySet().removeIf(e -> !e.getValue().expiresAt().isAfter(now));
   }
 
   private String key(Long projectId, Long targetId) {
