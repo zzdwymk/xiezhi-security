@@ -70,11 +70,12 @@ public class SubdomainDictionaryService {
       all = all.stream().filter(w -> w.contains(needle)).toList();
     }
     int total = all.size();
-    int from = (safePage - 1) * safeSize;
-    if (from >= total) {
+    long start = (long) (safePage - 1) * safeSize;
+    if (start >= total) {
       return new WordPage(List.of(), safePage, safeSize, total);
     }
-    int to = Math.min(from + safeSize, total);
+    int from = (int) start;
+    int to = (int) Math.min(start + safeSize, total);
     return new WordPage(all.subList(from, to), safePage, safeSize, total);
   }
 
