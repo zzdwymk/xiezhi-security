@@ -203,8 +203,10 @@ final class ReportFormatters {
   /** HTML 属性转义，用于写入 data-* 属性值，避免标题中的引号/尖括号破坏标签结构。 */
   public static String escAttr(String value) {
     if (value == null) return "";
+    // 同时转义单引号：当前调用方使用双引号属性，但未来复用到单引号属性时不能留下缺口。
     return value.replace("&", "&amp;")
         .replace("\"", "&quot;")
+        .replace("'", "&#39;")
         .replace("<", "&lt;")
         .replace(">", "&gt;");
   }
