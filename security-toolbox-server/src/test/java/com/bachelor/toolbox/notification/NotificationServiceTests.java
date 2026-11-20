@@ -108,6 +108,15 @@ class NotificationServiceTests {
         .containsExactly("queued-after-commit");
   }
 
+  @Test void truncatesOverLengthStringColumns() {
+    service.publish(
+        "k".repeat(300), null, false, "c".repeat(80), "o".repeat(40), "标题", "正文", "/tasks", List.of());
+    var saved = repository.findAll().get(0);
+    assertThat(saved.getEventKey()).hasSize(240);
+    assertThat(saved.getCategory()).hasSize(40);
+    assertThat(saved.getOutcome()).hasSize(20);
+  }
+
   @Test void severityComesFromPersistedFindingsEvenWithoutResultJson() {
     saveFinding(101L, "HIGH");
     saveFinding(102L, "LOW");

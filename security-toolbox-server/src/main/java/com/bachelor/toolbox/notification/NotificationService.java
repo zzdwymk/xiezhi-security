@@ -60,11 +60,12 @@ public class NotificationService {
   public void publish(String eventKey, Long projectId, boolean adminOnly, String category,
       String outcome, String title, String body, String route, List<String> severities) {
     SystemNotification notification = new SystemNotification();
-    notification.setEventKey(Objects.requireNonNull(eventKey));
+    // Round 241：所有字符串列都按实体列宽截断，避免超长 eventKey/category/outcome 静默丢通知。
+    notification.setEventKey(truncate(Objects.requireNonNull(eventKey), 240));
     notification.setProjectId(projectId);
     notification.setAdminOnly(adminOnly);
-    notification.setCategory(category);
-    notification.setOutcome(outcome);
+    notification.setCategory(truncate(category, 40));
+    notification.setOutcome(truncate(outcome, 20));
     notification.setTitle(truncate(title, 180));
     notification.setBody(truncate(body, 2000));
     notification.setRoute(truncate(route, 500));
