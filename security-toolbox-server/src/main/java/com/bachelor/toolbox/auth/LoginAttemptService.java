@@ -43,6 +43,46 @@ public class LoginAttemptService {
     this.lockDuration = Duration.ofSeconds(Math.max(1, lockSeconds));
   }
 
+  /**
+   * 在密码校验前原子认领一个尝试名额。
+   *
+   * <p>原实现由调用方先 {@link #isBlocked} 再校验密码、最后 {@link #recordFailure}。这三步不在同一
+   * 临界区，并发请求会在任何失败被记录之前全部通过 {@code isBlocked}，从而把失败阈值放大到并发数
+   * （实测 120 个并发请求中有 114 个进入密码校验，而阈值只有 5）。这里把"检查是否锁定 + 占用名额"
+   * 合并为一个同步操作：失败次数与在途尝试次数之和达到阈值后直接拒绝，未完成的尝试通过
+   * {@link #recordFailure} 或 {@link #cancelAttempt} 释放名额。
+   *
+   * @return true 表示可以继续做凭据校验；false 表示已被限流或锁定，调用方不得再查库/校验密码
+   */
+  public synchronized boolean beginAttempt(String username, String clientAddress) {
+    String attemptKey = key(username, clientAddress);
+    Instant now = Instant.now();
+    Attempt attempt = attempts.get(attemptKey);
+    if (attempt != null && attempt.lockedUntil != null) {
+      if (now.isAfter(attempt.lockedUntil)) {
+        attempts.remove(attemptKey, attempt);
+        attempt = null;
+      } else {
+        attempt.touch();
+        return false;
+      }
+    }
+    if (attempt == null) {
+      evictIfNeeded();
+      if (attempts.size() >= MAX_ENTRIES) {
+        return false;
+      }
+      attempt = attempts.computeIfAbsent(attemptKey, ignored -> new Attempt());
+    }
+    attempt.touch();
+    // synchronized 保证 failures 与 inFlight 的组合判断和自增对所有登录线程是原子的。
+    if (attempt.failures.get() + attempt.inFlight.get() >= maxAttempts) {
+      return false;
+    }
+    attempt.inFlight.incrementAndGet();
+    return true;
+  }
+
   /** 当前是否处于锁定窗口内 */
   public synchronized boolean isBlocked(String username, String clientAddress) {
     Attempt attempt = attempts.get(key(username, clientAddress));
@@ -77,21 +117,45 @@ public class LoginAttemptService {
   /** 记录一次失败；达到阈值后进入锁定 */
   public synchronized void recordFailure(String username, String clientAddress) {
     String attemptKey = key(username, clientAddress);
-    if (!attempts.containsKey(attemptKey)) {
+    Attempt attempt = attempts.get(attemptKey);
+    if (attempt == null) {
       evictIfNeeded();
       if (attempts.size() >= MAX_ENTRIES) return;
+      attempt = attempts.computeIfAbsent(attemptKey, ignored -> new Attempt());
     }
-    Attempt attempt =
-        attempts.computeIfAbsent(attemptKey, ignored -> new Attempt());
     attempt.touch();
+    // beginAttempt 已认领名额时先归还；直接调用 recordFailure 的旧调用方没有认领，inFlight==0。
+    if (attempt.inFlight.get() > 0) {
+      attempt.inFlight.decrementAndGet();
+    }
     int failures = attempt.failures.incrementAndGet();
     if (failures >= maxAttempts) {
       attempt.lockedUntil = Instant.now().plus(lockDuration);
     }
   }
 
+  /**
+   * 凭据校验过程发生非失败类异常时归还名额，不增加失败次数。
+   *
+   * <p>例如数据库暂时不可用；若不归还，认领的名额会被永久占用并逐步收紧节流窗口。
+   */
+  public synchronized void cancelAttempt(String username, String clientAddress) {
+    String attemptKey = key(username, clientAddress);
+    Attempt attempt = attempts.get(attemptKey);
+    if (attempt == null) {
+      return;
+    }
+    if (attempt.inFlight.get() > 0) {
+      attempt.inFlight.decrementAndGet();
+    }
+    attempt.touch();
+    if (attempt.failures.get() == 0 && attempt.inFlight.get() == 0) {
+      attempts.remove(attemptKey, attempt);
+    }
+  }
+
   /** 登录成功后清除计数 */
-  public void recordSuccess(String username, String clientAddress) {
+  public synchronized void recordSuccess(String username, String clientAddress) {
     attempts.remove(key(username, clientAddress));
   }
 
@@ -118,6 +182,7 @@ public class LoginAttemptService {
     while (attempts.size() >= MAX_ENTRIES) {
       String oldestUnlocked = attempts.entrySet().stream()
           .filter(entry -> entry.getValue().lockedUntil == null)
+          .filter(entry -> entry.getValue().inFlight.get() == 0)
           .min(Comparator.comparingLong(entry -> entry.getValue().lastTouchedNanos))
           .map(Map.Entry::getKey)
           .orElse(null);
@@ -134,6 +199,8 @@ public class LoginAttemptService {
 
   private static final class Attempt {
     private final AtomicInteger failures = new AtomicInteger();
+    /** 已通过 beginAttempt 认领、但尚未以成功/失败结束的在途凭据校验数。 */
+    private final AtomicInteger inFlight = new AtomicInteger();
     private volatile Instant lockedUntil;
     /** 最近一次访问的单调纳秒时间，用于 LRU 淘汰。 */
     private volatile long lastTouchedNanos = System.nanoTime();

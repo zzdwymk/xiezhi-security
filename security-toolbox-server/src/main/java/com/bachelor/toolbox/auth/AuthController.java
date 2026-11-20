@@ -41,30 +41,45 @@ public class AuthController {
     String clientAddress = http.getRemoteAddr();
     String username = request.username();
 
-    if (loginAttempts.isBlocked(username, clientAddress)) {
+    // Round 223：先原子认领尝试名额，再查库/比对密码。否则并发请求会全部在失败被记录前
+    // 通过 isBlocked 检查，把失败阈值放大到并发数（实测 120 并发可放行 114 次密码校验）。
+    if (!loginAttempts.beginAttempt(username, clientAddress)) {
       long remaining = loginAttempts.remainingLockSeconds(username, clientAddress);
-      auditService.record("LOGIN", "USER", null, "账户暂时锁定：" + username, "BLOCKED");
-      throw new ApiException("登录尝试过于频繁，请在 " + remaining + " 秒后重试");
+      auditService.record("LOGIN", "USER", null, "登录尝试被限流：" + username, "BLOCKED");
+      if (remaining > 0) {
+        throw new ApiException("登录尝试过于频繁，请在 " + remaining + " 秒后重试");
+      }
+      throw new ApiException("登录尝试过于频繁，请稍后重试");
     }
 
-    User user =
-        users
-            .findByUsername(username)
-            .filter(User::isEnabled)
-            .filter(candidate -> encoder.matches(request.password(), candidate.getPasswordHash()))
-            .orElse(null);
+    boolean attemptCompleted = false;
+    try {
+      User user =
+          users
+              .findByUsername(username)
+              .filter(User::isEnabled)
+              .filter(candidate -> encoder.matches(request.password(), candidate.getPasswordHash()))
+              .orElse(null);
 
-    if (user == null) {
-      loginAttempts.recordFailure(username, clientAddress);
-      auditService.record("LOGIN", "USER", null, "登录失败：" + username, "FAILED");
-      // 统一错误信息，不区分“用户不存在”与“密码错误”，避免用户枚举
-      throw new BadCredentialsException("用户名或密码错误");
+      if (user == null) {
+        loginAttempts.recordFailure(username, clientAddress);
+        attemptCompleted = true;
+        auditService.record("LOGIN", "USER", null, "登录失败：" + username, "FAILED");
+        // 统一错误信息，不区分“用户不存在”与“密码错误”，避免用户枚举
+        throw new BadCredentialsException("用户名或密码错误");
+      }
+
+      loginAttempts.recordSuccess(username, clientAddress);
+      attemptCompleted = true;
+      auditService.record("LOGIN", "USER", user.getId(), "登录成功：" + username, "SUCCESS");
+      return new AuthResponse(
+          jwt.createToken(user), "Bearer", jwt.expirationSeconds(), AuthResponse.UserView.from(user));
+    } finally {
+      // 数据库异常等非凭据失败路径必须归还名额，避免一次故障永久占用节流额度。
+      if (!attemptCompleted) {
+        loginAttempts.cancelAttempt(username, clientAddress);
+      }
     }
-
-    loginAttempts.recordSuccess(username, clientAddress);
-    auditService.record("LOGIN", "USER", user.getId(), "登录成功：" + username, "SUCCESS");
-    return new AuthResponse(
-        jwt.createToken(user), "Bearer", jwt.expirationSeconds(), AuthResponse.UserView.from(user));
   }
 
   @GetMapping("/me")
