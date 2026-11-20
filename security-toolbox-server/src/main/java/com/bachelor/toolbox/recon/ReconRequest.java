@@ -1,6 +1,7 @@
 package com.bachelor.toolbox.recon;
 
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import java.util.List;
 
 public record ReconRequest(
@@ -8,9 +9,10 @@ public record ReconRequest(
     Boolean includeHttp,
     Boolean includeTls,
     Boolean enumerateSubdomains,
-    List<String> subdomainWords,
+    // Round 264：先限制请求体列表大小，避免在服务层 limit 之前整包反序列化超大列表。
+    @Size(max = 2000, message = "子域字典词数量不能超过 2000") List<String> subdomainWords,
     Boolean enumeratePaths,
-    List<String> pathWords,
+    @Size(max = 10000, message = "路径字典词数量不能超过 10000") List<String> pathWords,
     Boolean crawlSite,
     Boolean aggregateProxyPaths,
     Boolean activeNetworkProbe,
