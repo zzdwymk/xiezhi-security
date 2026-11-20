@@ -1,5 +1,6 @@
 package com.bachelor.toolbox.ai.guard;
 
+import com.bachelor.toolbox.common.ApiException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
@@ -61,12 +62,16 @@ public class InMemoryCapabilityApprovalGrantResolver implements CapabilityApprov
   /** {@link ApprovalLevel#BATCH} 的默认有效期。 */
   public static final Duration BATCH_TTL = Duration.ofMinutes(10);
 
+  /** 已签发凭据容量上限，防止长期运行/异常批量批准造成无界内存增长。 */
+  public static final int MAX_GRANTS = 256;
+
   private final Map<String, CapabilityApprovalGrant> grants = new ConcurrentHashMap<>();
   private final AtomicLong grantCounter = new AtomicLong();
 
   @Override
   public boolean hasValidApproval(
       String capabilityCode, String targetId, String parameterDigest) {
+    if (grants.size() >= MAX_GRANTS) evictExpired();
     String key = key(capabilityCode, targetId, parameterDigest);
     CapabilityApprovalGrant grant = grants.get(key);
     if (grant == null) {
@@ -94,6 +99,11 @@ public class InMemoryCapabilityApprovalGrantResolver implements CapabilityApprov
     if (effective == ApprovalLevel.FORBIDDEN) {
       // 禁止的能力不签发凭据——申请也不该走到这里（护栏在 L-B 已拒）。
       throw new IllegalArgumentException("禁止的能力不能签发授权凭据: " + request.capabilityCode());
+    }
+    evictExpired();
+    if (grants.size() >= MAX_GRANTS) {
+      // Fail closed：不为了挤进新凭据而删除仍然有效的旧批准；提示用户稍后重试。
+      throw new ApiException("待授权凭据数量已达上限，请稍后重试");
     }
     Instant now = Instant.now();
     Instant expiresAt =
@@ -125,7 +135,15 @@ public class InMemoryCapabilityApprovalGrantResolver implements CapabilityApprov
 
   /** 已签发的凭据数量（未过期的近似值，供运维观测）。 */
   public int size() {
+    evictExpired();
     return grants.size();
+  }
+
+  /** 惰性清理过期凭据；避免长期运行时过期条目永久占用容量。 */
+  private void evictExpired() {
+    Instant now = Instant.now();
+    grants.entrySet().removeIf(
+        entry -> entry.getValue().expiresAt() != null && !now.isBefore(entry.getValue().expiresAt()));
   }
 
   /** 累计签发次数（供运维观测）。 */
