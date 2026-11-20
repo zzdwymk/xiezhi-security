@@ -25,6 +25,7 @@ const { createRuntimeLogManager } = require("./runtime-log-manager.cjs");
 const { preparePostgresLogPolicy, readPostgresStartupTail } = require("./postgres-log-policy.cjs");
 const { observeMigrationProgress } = require("./migration-progress-stream.cjs");
 const { createInvalidatableCache } = require("./invalidatable-cache.cjs");
+const { prepareExportedFile } = require("./exported-file-policy.cjs");
 const { createNotificationCenter, createServiceExitReporter, notificationSettingsFromStorage, updateNotificationStorage, formatServiceExitCode } = require("./notification-center.cjs");
 const { evaluateInstalledRelease } = require("./dependency-version.cjs");
 const { selectEmbeddingTestConnection, runtimeModelEnvironment } = require("./ai-settings.cjs");
@@ -6326,19 +6327,16 @@ handleRendererIpc("toolbox:open-external", (event, targetUrl) => {
 });
 handleRendererIpc("toolbox:open-exported-file", async (event, payload) => {
   assertMainRenderer(event);
-  if (!payload || typeof payload !== "object") return false;
-  const filename = String(payload.filename || "security-report.pdf").trim();
-  const safeFilename = path.basename(filename).replace(/[\\/:*?"<>|]/g, "_");
-  const base64 = String(payload.base64 || "");
-  if (!base64) return false;
   try {
     const downloadsDir = app.getPath("downloads") || app.getPath("temp");
-    const targetPath = path.join(downloadsDir, safeFilename);
-    const buffer = Buffer.from(base64, "base64");
-    fs.writeFileSync(targetPath, buffer);
-    const errMsg = await shell.openPath(targetPath);
+    // Only report-preview documents are accepted. Arbitrary .exe/.bat/.ps1 payloads
+    // from a compromised renderer must never be written and handed to shell.openPath().
+    const prepared = prepareExportedFile(payload, downloadsDir);
+    if (!prepared) return false;
+    fs.writeFileSync(prepared.targetPath, prepared.buffer);
+    const errMsg = await shell.openPath(prepared.targetPath);
     if (errMsg) {
-      shell.showItemInFolder(targetPath);
+      shell.showItemInFolder(prepared.targetPath);
     }
     return true;
   } catch (err) {
