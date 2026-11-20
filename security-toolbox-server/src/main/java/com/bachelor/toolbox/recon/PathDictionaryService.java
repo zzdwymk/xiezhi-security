@@ -61,6 +61,8 @@ public class PathDictionaryService {
   public static final String CUSTOM_DICTIONARY_ID = "custom";
 
   private static final int MAX_WORDS = 100_000;
+  /** 外部/托管字典文件读取上限，避免单个超大文件在首次选择时把内存打满。 */
+  private static final long MAX_DICTIONARY_BYTES = 8L * 1024 * 1024;
   private static final Pattern PATH_WORD = Pattern.compile("[A-Za-z0-9._/\\[\\]-]{1,255}");
 
   private final Path managedFile;
@@ -402,7 +404,7 @@ public class PathDictionaryService {
       }
     }
     if (CUSTOM_DICTIONARY_ID.equals(id)) {
-      if (Files.isRegularFile(managedFile, LinkOption.NOFOLLOW_LINKS)) {
+      if (isLoadableDictionary(managedFile)) {
         try {
           return parseAndDedupe(Files.readString(managedFile, StandardCharsets.UTF_8));
         } catch (IOException ex) {
@@ -413,7 +415,7 @@ public class PathDictionaryService {
     }
     // External dictionary registered from the configured directory.
     Path external = externalFile(id);
-    if (external != null) {
+    if (external != null && isLoadableDictionary(external)) {
       try {
         return parseAndDedupe(Files.readString(external, StandardCharsets.UTF_8));
       } catch (IOException ex) {
@@ -446,6 +448,24 @@ public class PathDictionaryService {
               });
     } catch (IOException ex) {
       log.debug("扫描外部字典目录失败 {}: {}", externalDir, ex.getMessage());
+    }
+  }
+
+  /** Regular, non-symlink file within the dictionary byte budget. */
+  private boolean isLoadableDictionary(Path file) {
+    if (file == null || !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
+      return false;
+    }
+    try {
+      long size = Files.size(file);
+      if (size > MAX_DICTIONARY_BYTES) {
+        log.warn("路径字典文件超过 {} 字节上限，已拒绝加载：{}", MAX_DICTIONARY_BYTES, file);
+        return false;
+      }
+      return true;
+    } catch (IOException ex) {
+      log.warn("读取路径字典文件大小失败：{}", ex.getMessage());
+      return false;
     }
   }
 
