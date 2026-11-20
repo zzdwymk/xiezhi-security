@@ -14,7 +14,10 @@ import java.util.Map;
  */
 public record ProjectBatchTaskRequest(
     @NotNull(message = "项目 ID 不能为空") Long projectId,
-    @NotBlank(message = "工具代码不能为空") String toolCode,
+    @NotBlank(message = "工具代码不能为空")
+        // Round 248：SecurityTask.toolCode 列宽 50，批量下发同样先校验。
+        @Size(max = 50, message = "工具代码不能超过 50 个字符")
+        String toolCode,
     Map<String, Object> parameters,
     // Round 31：限制显式子集大小，避免超长 targetIds 触发逐目标的 DB 归属校验产生无界扇出。
     @Size(max = 200, message = "单次批量下发最多指定 200 个目标") List<Long> targetIds) {
