@@ -52,6 +52,22 @@ class AiConversationMemoryPersistenceTests {
   }
 
   @Test
+  void clientThreadStringColumnsAreTruncatedToEntityWidths() {
+    AiConversationMemoryService service = service(mock(AiAgentRuntimeClient.class));
+    service.saveClientThread(
+        "long-client-thread",
+        java.util.Map.of(
+            "title", "T".repeat(400),
+            "projectId", 101L,
+            "targetId", 202L,
+            "targetName", "N".repeat(400),
+            "messages", java.util.List.of()));
+    var saved = repository.findById("long-client-thread").orElseThrow();
+    assertThat(saved.getTitle()).hasSize(255);
+    assertThat(saved.getTargetName()).hasSize(255);
+  }
+
+  @Test
   void deliveredPlanAndOriginalMessagesSurviveRealJpaRestart() {
     var first = service(mock(AiAgentRuntimeClient.class));
     var fixture = new AiPlanContinuityServiceTests.Fixture(first);

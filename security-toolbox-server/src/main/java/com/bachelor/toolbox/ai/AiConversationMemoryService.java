@@ -639,6 +639,10 @@ public class AiConversationMemoryService {
     return clean.length() <= 4_000 ? clean : clean.substring(0, 4_000);
   }
 
+  private static String bounded(String value, int max) {
+    return value == null || value.length() <= max ? value : value.substring(0, max);
+  }
+
   public record SessionHandle(String id, Object monitor, Long projectId, Long targetId) {}
 
   public record SessionScope(Long projectId, Long targetId) {}
@@ -692,13 +696,14 @@ public class AiConversationMemoryService {
       record.setLastAccess(Instant.now());
       if (threadData != null) {
         Object title = threadData.get("title");
-        if (title != null) record.setTitle(String.valueOf(title));
+        // Round 242：title/targetName 是 VARCHAR(255)，客户端可传任意长字符串；截断避免 save 静默失败。
+        if (title != null) record.setTitle(bounded(String.valueOf(title), 255));
         Object proj = threadData.get("projectId");
         if (proj instanceof Number n) record.setProjectId(n.longValue());
         Object tgt = threadData.get("targetId");
         if (tgt instanceof Number n) record.setTargetId(n.longValue());
         Object tgtName = threadData.get("targetName");
-        if (tgtName != null) record.setTargetName(String.valueOf(tgtName));
+        if (tgtName != null) record.setTargetName(bounded(String.valueOf(tgtName), 255));
         record.setThreadJson(objectMapper.writeValueAsString(threadData));
       }
       repository.save(record);
