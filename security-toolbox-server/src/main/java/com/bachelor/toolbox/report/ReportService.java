@@ -22,6 +22,8 @@ import org.springframework.stereotype.Service;
 @Service
 public class ReportService {
   private static final Logger log = LoggerFactory.getLogger(ReportService.class);
+  /** 单个请求/结果 JSON 在报告 HTML 中展示的字符预算，避免超大工具输出复制放大。 */
+  static final int MAX_REPORT_JSON_CHARS = 2_000_000;
   private static final DateTimeFormatter TIME_FORMATTER = ReportFormatters.TIME_FORMATTER;
   private static final String FLUENT_INFO_ICON =
       "<svg class=\"notice-icon\" viewBox=\"0 0 20 20\" fill=\"currentColor\" aria-hidden=\"true\"><path fill-rule=\"evenodd\" d=\"M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.247.25v3.5a.75.75 0 001.5 0v-3.5A1.75 1.75 0 009.253 9H9z\" clip-rule=\"evenodd\"/></svg>";
@@ -259,10 +261,21 @@ public class ReportService {
 
   private String formatJsonBlock(String json) {
     if (json == null || json.isBlank()) return "未提供";
-    String pretty = ReportFormatters.prettyPrintJson(json);
+    String pretty = ReportFormatters.prettyPrintJson(limitJsonForReport(json));
     return "<pre style=\"margin:4px 0;background:#f8fafc;color:#1e293b;border:1px solid #e2e8f0;padding:10px;font-family:Consolas,monospace;font-size:12px;border-radius:6px;white-space:pre-wrap;\"><code>"
         + text(pretty)
         + "</code></pre>";
+  }
+
+  /** Bound the report-side copy of an untrusted/large tool result before pretty-printing it. */
+  static String limitJsonForReport(String json) {
+    if (json == null || json.length() <= MAX_REPORT_JSON_CHARS) {
+      return json;
+    }
+    return json.substring(0, MAX_REPORT_JSON_CHARS)
+        + "\n…（报告展示已截断，原始长度 "
+        + json.length()
+        + " 字符）";
   }
 
   private String row(String label, Object value) {
