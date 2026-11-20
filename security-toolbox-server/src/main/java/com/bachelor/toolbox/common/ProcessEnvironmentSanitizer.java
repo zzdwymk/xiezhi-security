@@ -9,6 +9,9 @@ public final class ProcessEnvironmentSanitizer {
   private static final Set<String> SENSITIVE_NAMES =
       Set.of(
           "ADMIN_PASSWORD",
+          "DB_PASSWORD",
+          "TOOLBOX_DESKTOP_SEED_ADMIN_PASSWORD",
+          "TOOLBOX_SHUTDOWN_TOKEN",
           "JWT_SECRET",
           "TRAFFIC_MITM_CA_PASSWORD",
           "AI_API_KEY",

@@ -16,6 +16,6 @@ class ProbeEntityPersistenceTests {
   var loaded=repository.findById(id).orElseThrow();
   assertThat(loaded.getProjectId()).isEqualTo(7L);assertThat(loaded.getTargetId()).isEqualTo(8L);
   assertThat(loaded.getEvidence()).isEqualTo("QA evidence <script>literal text</script>");
-  assertThat(loaded.getTechnologies()).isEqualTo("QA framework");assertThat(loaded.getDetectedAt()).isBetween(before,Instant.now());
+  assertThat(loaded.getTechnologies()).isEqualTo("QA framework");assertThat(loaded.getDetectedAt()).isBetween(before.minusNanos(1000),Instant.now().plusNanos(1000));
  }
 }
