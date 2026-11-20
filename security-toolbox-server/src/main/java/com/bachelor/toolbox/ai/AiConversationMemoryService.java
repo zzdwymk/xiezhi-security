@@ -717,6 +717,31 @@ public class AiConversationMemoryService {
     evictAllLocal();
   }
 
+  /** 普通用户只清理自己可访问项目下的持久对话，不能借“清空全部”删除他人线程。 */
+  @org.springframework.transaction.annotation.Transactional
+  public void clearPersistedThreadsForProjects(java.util.Collection<Long> projectIds) {
+    if (projectIds == null || projectIds.isEmpty()) {
+      return;
+    }
+    if (repository != null) {
+      repository.deleteByProjectIdIn(projectIds);
+    }
+    synchronized (lifecycleMonitor) {
+      sessions.entrySet().removeIf(
+          entry -> {
+            Session session = entry.getValue();
+            if (session.projectId == null || !projectIds.contains(session.projectId)) {
+              return false;
+            }
+            synchronized (session.monitor) {
+              session.memory.clear();
+              session.turns.clear();
+            }
+            return true;
+          });
+    }
+  }
+
   private static final class Session {
     private final Long projectId;
     private final Long targetId;

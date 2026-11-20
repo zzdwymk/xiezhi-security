@@ -1,6 +1,7 @@
 package com.bachelor.toolbox.ai;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -12,4 +13,6 @@ public interface AiConversationSessionRepository
   Optional<AiConversationSessionRecord> findFirstByOrderByLastAccessAsc();
 
   List<AiConversationSessionRecord> findAllByOrderByLastAccessDesc();
+
+  void deleteByProjectIdIn(Collection<Long> projectIds);
 }

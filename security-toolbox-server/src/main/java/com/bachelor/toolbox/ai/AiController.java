@@ -496,7 +496,12 @@ public class AiController {
   @DeleteMapping("/conversations")
   public Map<String, Object> clearAllConversations() {
     if (memoryService != null) {
-      memoryService.clearAllPersistedThreads();
+      // Round 233：普通用户只能清空可访问项目下的线程；全局 clearAll 仅管理员可用。
+      if (authorization.isAdmin()) {
+        memoryService.clearAllPersistedThreads();
+      } else {
+        memoryService.clearPersistedThreadsForProjects(authorization.accessibleProjectIds());
+      }
     }
     return Map.of("cleared", true);
   }
