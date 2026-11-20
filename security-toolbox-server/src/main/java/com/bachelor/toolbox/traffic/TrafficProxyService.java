@@ -384,6 +384,10 @@ public class TrafficProxyService {
     }
   }
 
+  static String bounded(String value, int max) {
+    return value == null || value.length() <= max ? value : value.substring(0, max);
+  }
+
   private void executeAutomaticSafeAction(TrafficSession session, TrafficPacket packet) {
     try {
       TrafficAnalysisService.AnalysisResponse result =
@@ -403,19 +407,20 @@ public class TrafficProxyService {
     TrafficPacket packet = new TrafficPacket();
     packet.setSessionId(session.getId());
     packet.setTargetId(session.getTargetId());
-    packet.setProtocol(capture.protocol());
-    packet.setMethod(capture.method());
-    packet.setScheme(capture.scheme());
-    packet.setHost(capture.host());
+    // Round 251：代理抓包字段来自不可信 HTTP 报文，先按 TrafficPacket 列宽截断，避免单条超长头导致抓包落库失败。
+    packet.setProtocol(bounded(capture.protocol(), 16));
+    packet.setMethod(bounded(capture.method(), 16));
+    packet.setScheme(bounded(capture.scheme(), 10));
+    packet.setHost(bounded(capture.host(), 253));
     packet.setPort(capture.port());
-    packet.setPath(capture.path());
+    packet.setPath(bounded(capture.path(), 2048));
     packet.setStatusCode(capture.statusCode());
-    packet.setContentType(capture.contentType());
+    packet.setContentType(bounded(capture.contentType(), 200));
     packet.setRequestBytes(capture.requestBytes());
     packet.setResponseBytes(capture.responseBytes());
     packet.setDurationMs(capture.durationMs());
-    packet.setCaptureState(capture.captureState());
-    packet.setErrorMessage(capture.errorMessage());
+    packet.setCaptureState(bounded(capture.captureState(), 20));
+    packet.setErrorMessage(bounded(capture.errorMessage(), 2000));
     packet.setRequestHeaders(capture.requestHeaders());
     packet.setRequestBody(capture.requestBody());
     packet.setResponseHeaders(capture.responseHeaders());
