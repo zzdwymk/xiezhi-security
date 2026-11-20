@@ -26,10 +26,8 @@ import org.slf4j.LoggerFactory;
  * third-party lookup service: the server performs the auth handshake, obtains the verification
  * image challenge and, when a signature can be established, queries the abbreviation list.
  *
- * <p>Because the MIIT portal enforces a point / slider challenge, this implementation performs a
- * deterministic single-pass attempt and reports a typed {@code CAPTCHA_REQUIRED} outcome when the
- * challenge cannot be satisfied automatically, so the coordinator can fall back to a trusted
- * manually configured API.
+ * <p>Verification is operator-assisted. The server obtains a manual challenge and submits
+ * operator-selected coordinates; it does not recognize or automatically solve the challenge.
  */
 final class MiitIcpClient {
   private static final Logger log = LoggerFactory.getLogger(MiitIcpClient.class);
@@ -53,40 +51,14 @@ final class MiitIcpClient {
 
   private final ObjectMapper json;
   private final HttpClient client;
-  private final String modelsPath;
-
   MiitIcpClient(ObjectMapper json) {
-    this(json, null);
-  }
-
-  MiitIcpClient(ObjectMapper json, String modelsPath) {
     this.json = json;
-    this.modelsPath = modelsPath;
     this.client =
         HttpClient.newBuilder()
             .connectTimeout(CONNECT_TIMEOUT)
             .version(HttpClient.Version.HTTP_1_1)
             .followRedirects(HttpClient.Redirect.NEVER)
             .build();
-  }
-
-  public MiitResult queryByUnit(String unit) {
-    try {
-      String accessToken = authenticate();
-      String clientUid = "point-" + UUID.randomUUID();
-      Challenge challenge = fetchChallenge(accessToken, clientUid);
-      String sign = verify(challenge, accessToken);
-      return queryRecords(unit, sign, challenge.uuid(), accessToken);
-    } catch (MiitCaptchaRequiredException exception) {
-      log.info("MIIT 点选验证无法自动完成，需回退手动数据源，domain={}", unit);
-      return MiitResult.captchaRequired(exception.getMessage());
-    } catch (MiitException exception) {
-      log.warn("MIIT 直接查询失败，domain={}", unit, exception);
-      return MiitResult.failure(exception.getMessage());
-    } catch (Exception exception) {
-      log.warn("MIIT 直接查询意外失败，domain={}", unit, exception);
-      return MiitResult.failure("工信部备案查询服务暂不可用");
-    }
   }
 
   /**
@@ -196,39 +168,6 @@ final class MiitIcpClient {
       v = response.path("params").path(key).asText("");
     }
     return v;
-  }
-
-  private void requireSecret(String challengeSecret, String message) throws MiitException {
-    if (challengeSecret == null || challengeSecret.isBlank()) {
-      throw new MiitException(message);
-    }
-  }
-
-  private String verify(Challenge challenge, String accessToken)
-      throws IOException, InterruptedException, MiitCaptchaRequiredException {
-    requireSecret(challenge.secretKey(), "MIIT 点选验证无法完成（当前接口未返回 secretKey）");
-    List<Map<String, Object>> solved =
-        MiitCaptchaSolver.solve(challenge.bigImage(), challenge.smallImage(), modelsPath);
-    if (solved == null) {
-      throw new MiitCaptchaRequiredException("MIIT 点选验证无法自动完成，请配置手动数据源");
-    }
-    String pointJson = aesEcbEncrypt(compactPoints(solved), challenge.secretKey());
-    String body =
-        json.writeValueAsString(
-            Map.of(
-                "token", challenge.uuid(),
-                "secretKey", challenge.secretKey(),
-                "clientUid", challenge.clientUid(),
-                "pointJson", pointJson));
-    JsonNode response = postJson(CHECK_IMAGE_PATH, accessToken, body);
-    if (response.path("code").asInt(-1) != 200) {
-      throw new MiitException("MIIT 点选验证校验失败");
-    }
-    String sign = response.path("params").path("sign").asText("");
-    if (sign.isBlank()) {
-      throw new MiitException("MIIT 验证后未返回签名");
-    }
-    return sign;
   }
 
   private MiitResult queryRecords(String unit, String sign, String uuid, String accessToken)

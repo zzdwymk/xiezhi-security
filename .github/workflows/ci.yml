@@ -45,7 +45,7 @@ jobs:
                 ;;
               scripts/count_code.py|scripts/code_line_metrics.py|scripts/requirements-code-count.txt|scripts/test_count_code.py|scripts/test_code_line_metrics.py)
                 ;;
-              scripts/README-e2e.md|scripts/fetch-ocr-e2e-models.py|scripts/run-ai-runtime-e2e.ps1)
+              scripts/README-e2e.md|scripts/run-ai-runtime-e2e.ps1)
                 ;;
               .gitignore|README.md|compose.yaml|package-desktop-release.cmd|start-all.cmd|start-desktop.cmd|stop-all.cmd|LICENSE|LICENSE.*|CONTRIBUTING.md|SECURITY.md|CODE_OF_CONDUCT.md|.editorconfig)
                 ;;

@@ -204,6 +204,19 @@ class ReconServiceTest {
   }
 
   @Test
+  void browserOnlyIcpFlowNeverConstructsAnAutomaticClient() {
+    AuthorizedTarget target = authorizedTarget("example.test", "443");
+    when(targets.findById(target.getId())).thenReturn(Optional.of(target));
+    ReconService service = service(false);
+    ReflectionTestUtils.setField(service, "miitEnabled", true);
+    try (var clients = org.mockito.Mockito.mockConstruction(MiitIcpClient.class)) {
+      var result = service.icpBatch(1L, new ReconService.IcpBatchRequest(List.of(target.getId()))).get(0);
+      assertThat(result.status()).isEqualTo("BROWSER_REQUIRED");
+      assertThat(clients.constructed()).isEmpty();
+    }
+  }
+
+  @Test
   void rejectsNonHttpsIcpSourceWithoutSendingARequest() {
     AuthorizedTarget target = authorizedTarget("example.com", "443");
     when(targets.findById(target.getId())).thenReturn(Optional.of(target));

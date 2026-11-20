@@ -153,11 +153,6 @@ public class ReconService {
   @Value("${toolbox.recon.icp-mi-enabled:true}")
   private boolean miitEnabled;
 
-  @Value("${toolbox.recon.icp-mi-auto-enabled:false}")
-  private boolean miitAutoEnabled;
-
-  @Value("${toolbox.recon.icp-ocr-models-path:./data/models/icp}")
-  private String icpOcrModelsPath;
 
   @Value("${toolbox.recon.param-probe-enabled:true}")
   private boolean paramProbeEnabled;
@@ -1548,27 +1543,7 @@ public class ReconService {
     }
 
     if (miitEnabled) {
-      if (miitAutoEnabled) {
-        MiitIcpClient.MiitResult builtIn =
-            new MiitIcpClient(json, icpOcrModelsPath).queryByUnit(domain);
-        if (builtIn.success()) {
-          return new IcpResult(
-              targetId, domain, "AVAILABLE", "",
-              Map.of(
-                  "source", "miit",
-                  "records", convertRecords(builtIn.records),
-                  "total", builtIn.total));
-        }
-        if (!hasManualIcpSource()) {
-          return new IcpResult(
-              targetId, domain, "CAPTCHA_REQUIRED", builtIn.reason,
-              Map.of("source", "miit", "reason", builtIn.reason));
-        }
-        return collectManualIcpResult(targetId, domain);
-      }
-      // The MIIT gateway no longer returns a challenge secretKey, so the built-in
-      // auto chain cannot satisfy its point challenge. Route the operator to the
-      // desktop browser assistant (浏览器代填) instead of surfacing an internal error.
+      // Operators complete verification in the browser; no local automatic solver.
       if (!hasManualIcpSource()) {
         log.info("[icp-batch] targetId={} -> BROWSER_REQUIRED (no captured, auto disabled)",
             targetId);
@@ -1612,25 +1587,6 @@ public class ReconService {
     }
   }
 
-  private List<Map<String, Object>> convertRecords(List<IcpRecord> records) {
-    if (records == null) {
-      return List.of();
-    }
-    List<Map<String, Object>> rows = new ArrayList<>();
-    for (IcpRecord record : records) {
-      Map<String, Object> row = new LinkedHashMap<>();
-      row.put("owner", record.owner());
-      row.put("domain", record.domain());
-      row.put("mainLicense", record.mainLicense());
-      row.put("serviceLicense", record.serviceLicense());
-      row.put("type", record.type());
-      row.put("approvedContent", record.approvedContent());
-      row.put("limitAccess", record.limitAccess());
-      row.put("approveDate", record.approveDate());
-      rows.add(row);
-    }
-    return rows;
-  }
 
   private String buildIcpEndpoint(String domain) {
     String encodedDomain = URLEncoder.encode(domain, StandardCharsets.UTF_8);

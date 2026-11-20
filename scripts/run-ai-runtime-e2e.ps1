@@ -1,4 +1,4 @@
-param([string]$Python = 'python', [switch]$FullRegression, [string]$OcrModels)
+param([string]$Python = 'python', [switch]$FullRegression)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $run = Join-Path $root ('reports\runtime-e2e-' + [guid]::NewGuid().ToString('N'))
@@ -9,12 +9,6 @@ try {
   foreach ($port in @(18091,18092)) {
     $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $port)
     try { $listener.Start() } finally { $listener.Stop() }
-  }
-  if ($FullRegression) {
-    $env:ICP_OCR_MODELS = if ($OcrModels) { (Resolve-Path $OcrModels).Path } else { Join-Path $root 'security-toolbox-server\data\models\icp' }
-    foreach ($asset in @('det.onnx','rec.onnx','ppocr_keys_v1.txt')) {
-      if (!(Test-Path -LiteralPath (Join-Path $env:ICP_OCR_MODELS $asset) -PathType Leaf)) { throw 'Full regression requires real OCR assets; run fetch-ocr-e2e-models.py first' }
-    }
   }
   $env:AI_RUNTIME_E2E = 'true'
   $env:AI_RUNTIME_URL = 'http://127.0.0.1:18092'
