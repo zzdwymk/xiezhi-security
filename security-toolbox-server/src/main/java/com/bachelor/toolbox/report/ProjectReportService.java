@@ -161,13 +161,13 @@ th{background:#f5f8fc}.notice{display:flex;gap:12px;align-items:flex-start;paddi
       html.append(ReportFormatters.severityChipBar(infoFindings));
       for (Finding finding : infoFindings) appendFinding(html, finding);
     }
-    return html.append(
+    html.append(
             "<h2>报告说明</h2><div class=\"notice\">")
         .append(FLUENT_INFO_ICON)
         .append("<div class=\"notice-body\">报告聚合该授权目标下的历史任务与发现，并保留各任务创建时的工具、规则和模板快照。结果应结合授权有效期与人工复核使用。</div></div>")
         .append(ReportFormatters.REPORT_FILTER_SCRIPT)
-        .append("</main></body></html>")
-        .toString();
+        .append("</main></body></html>");
+    return ReportHtmlSecurity.secure(html.toString());
   }
 
   public byte[] generatePdf(Long targetId) {

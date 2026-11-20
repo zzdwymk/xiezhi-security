@@ -178,7 +178,7 @@ public class ProjectAggregateReportService {
         .append("</td></tr></table>")
         .append(ReportFormatters.REPORT_FILTER_SCRIPT)
         .append("</main></body></html>");
-    return html.toString();
+    return ReportHtmlSecurity.secure(html.toString());
   }
 
   public byte[] generatePdf(Long projectId) {

@@ -212,7 +212,7 @@ public class ReportService {
         .append("。报告内容基于任务执行时保存的数据自动生成。</footer>")
         .append(ReportFormatters.REPORT_FILTER_SCRIPT)
         .append("</main></body></html>");
-    return html.toString();
+    return ReportHtmlSecurity.secure(html.toString());
   }
 
   private String generateAiSummary(SecurityTask task) {
