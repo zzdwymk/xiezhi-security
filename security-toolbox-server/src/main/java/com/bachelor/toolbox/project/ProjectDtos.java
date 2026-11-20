@@ -24,7 +24,8 @@ public final class ProjectDtos {
       @Size(max = 4000, message = "授权声明长度不得超过 4000 个字符") String authorizationStatement,
       Instant authorizationValidFrom,
       Instant authorizationExpiresAt,
-      String owner) {}
+      // Round 246：owner 列宽 100，更新请求也必须限制，避免超长值导致 DB 写入失败。
+      @Size(max = 100, message = "项目负责人长度不得超过 100 个字符") String owner) {}
 
   public record Status(@NotBlank(message = "项目状态不能为空") String status) {}
 
