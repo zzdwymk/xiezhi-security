@@ -65,13 +65,15 @@ class AuditServiceTests {
     String longAction = "A".repeat(250);
     String longResult = "R".repeat(80);
     String longDetail = "D".repeat(25_000);
-    service.record(longAction, "TASK", 1L, longDetail, longResult);
+    String longResourceId = "I".repeat(300);
+    service.record(longAction, "TASK", longResourceId, longDetail, longResult);
 
     var captor = org.mockito.ArgumentCaptor.forClass(AuditLog.class);
     verify(repository).save(captor.capture());
     AuditLog log = captor.getValue();
     assertEquals(100, log.getAction().length());
     assertEquals(30, log.getResult().length());
+    assertEquals(255, log.getResourceId().length());
     assertEquals(10_000, log.getDetail().length());
   }
 
