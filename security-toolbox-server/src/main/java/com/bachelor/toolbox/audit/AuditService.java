@@ -17,6 +17,7 @@ public class AuditService {
   // 与 AuditLog 的列长度一致（见实体 @Column length）。超长会被截断，避免 DataIntegrityViolation（Round 30）。
   private static final int MAX_ACTION = 100;
   private static final int MAX_RESOURCE_TYPE = 50;
+  private static final int MAX_DETAIL = 10_000;
   private static final int MAX_RESULT = 30;
   private static final int MAX_OPERATOR = 100;
   private static final int MAX_OPERATOR_ROLES = 100;
@@ -69,7 +70,8 @@ public class AuditService {
     log.setAction(truncate(action, MAX_ACTION));
     log.setResourceType(truncate(resourceType, MAX_RESOURCE_TYPE));
     log.setResourceId(resourceId == null ? null : resourceId.toString());
-    log.setDetail(detail);
+    // Round 239：detail 来自用户可控字段/结构化证据，限制单条长度，避免审计表被超大文本拖垮。
+    log.setDetail(truncate(detail, MAX_DETAIL));
     log.setResult(truncate(result, MAX_RESULT));
     log.setRelatedTaskId(relatedTaskId);
     log.setAuthorizationSnapshotHash(truncate(authorizationSnapshotHash, MAX_SNAPSHOT_HASH));

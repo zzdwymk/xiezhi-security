@@ -64,13 +64,15 @@ class AuditServiceTests {
     // Round 30：超长 action(>100)/result(>30) 会被截断，避免 DataIntegrityViolation。
     String longAction = "A".repeat(250);
     String longResult = "R".repeat(80);
-    service.record(longAction, "TASK", 1L, "d", longResult);
+    String longDetail = "D".repeat(25_000);
+    service.record(longAction, "TASK", 1L, longDetail, longResult);
 
     var captor = org.mockito.ArgumentCaptor.forClass(AuditLog.class);
     verify(repository).save(captor.capture());
     AuditLog log = captor.getValue();
     assertEquals(100, log.getAction().length());
     assertEquals(30, log.getResult().length());
+    assertEquals(10_000, log.getDetail().length());
   }
 
   @Test
