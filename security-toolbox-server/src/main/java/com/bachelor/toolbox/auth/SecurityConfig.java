@@ -133,6 +133,9 @@ public class SecurityConfig {
                     .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.DELETE, "/api/traffic/**")
                     .hasRole("ADMIN")
+                    // 抓包排除/白名单规则是全局代理配置，PUT 修改同样必须管理员。
+                    .requestMatchers(HttpMethod.PUT, "/api/traffic/**")
+                    .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.POST, "/api/projects/*/security-actions/**")
                     .hasRole("ADMIN")
                     .requestMatchers("/api/**")

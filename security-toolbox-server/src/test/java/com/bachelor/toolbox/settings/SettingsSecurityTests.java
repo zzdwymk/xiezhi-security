@@ -4,6 +4,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.bachelor.toolbox.auth.JwtService;
@@ -53,6 +54,22 @@ class SettingsSecurityTests {
             new BusinessDataResetService.ResetResult(Instant.now(), 0, true, 0, 0));
     mockMvc.perform(clearRequest(jwt.createToken(admin))).andExpect(status().isOk());
     verify(resetService).clear("永久清空");
+  }
+
+  @Test
+  void trafficFilterUpdateRequiresAdministrator() throws Exception {
+    User regular = new User();
+    regular.setUsername("traffic-filter-user");
+    regular.setPasswordHash("unused-test-hash");
+    regular.setRole("USER");
+    regular = users.save(regular);
+    mockMvc
+        .perform(
+            put("/api/traffic/filters/1")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"listType\":\"BLACKLIST\",\"type\":\"URL\",\"pattern\":\"example\"}")
+                .header("Authorization", "Bearer " + jwt.createToken(regular)))
+        .andExpect(status().isForbidden());
   }
 
   private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder clearRequest(
