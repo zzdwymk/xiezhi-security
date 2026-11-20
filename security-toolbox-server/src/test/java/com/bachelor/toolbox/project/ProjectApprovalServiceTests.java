@@ -162,6 +162,18 @@ class ProjectApprovalServiceTests {
   }
 
   @Test
+  void truncatesOverlongDecisionCommentToEntityColumnWidth() {
+    authenticateAs("审批人", "ROLE_ADMIN");
+    ProjectApproval approval = approval(7L, 3L, "snapshot-hash");
+    when(repository.findForUpdate(7L, 3L)).thenReturn(Optional.of(approval));
+    when(repository.save(approval)).thenReturn(approval);
+
+    ProjectApproval decided = service.decide(3L, 7L, "REJECTED", "C".repeat(2500));
+
+    assertThat(decided.getComment()).hasSize(2000);
+  }
+
+  @Test
   void reportsMissingApprovalAsStableChineseApiException() {
     when(repository.findForUpdate(99L, 3L)).thenReturn(Optional.empty());
 

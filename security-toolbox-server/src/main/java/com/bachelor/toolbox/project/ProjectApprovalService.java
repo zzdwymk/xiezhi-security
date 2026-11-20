@@ -64,6 +64,7 @@ public class ProjectApprovalService {
   }
 
   private static final int HASH_COLUMN_LENGTH = 64;
+  private static final int MAX_COMMENT = 2000;
 
   @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
   public ProjectApproval requestAiPlan(com.bachelor.toolbox.ai.AiAgentRequest request,
@@ -263,7 +264,10 @@ public class ProjectApprovalService {
 
   private void applyDecision(ProjectApproval approval, String status, String comment) {
     approval.setStatus(status);
-    approval.setComment(comment);
+    // Round 249：ProjectApproval.comment 列宽 2000，审批意见来自请求体，截断避免裁决落库失败。
+    approval.setComment(comment == null || comment.length() <= MAX_COMMENT
+        ? comment
+        : comment.substring(0, MAX_COMMENT));
     approval.setApprovedBy(currentOperator());
     approval.setDecidedAt(Instant.now());
   }
