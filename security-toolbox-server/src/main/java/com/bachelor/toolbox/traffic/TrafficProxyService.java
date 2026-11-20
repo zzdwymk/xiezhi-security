@@ -219,7 +219,9 @@ public class TrafficProxyService {
   private boolean canAccessPacket(TrafficPacket packet) {
     if (projectTargets == null || authorization == null) return true;
     Long targetId = packet.getTargetId();
-    if (targetId == null || targetId <= 0) return true;
+    // Round 255：开放代理（targetId<=0）抓包可能包含任意请求头/体，不能向普通用户公开，
+    // 仅管理员可读；绑定目标仍按项目归属校验。
+    if (targetId == null || targetId <= 0) return authorization.isAdmin();
     for (var link : projectTargets.findByTargetId(targetId)) {
       try {
         authorization.requireAccess(link.getProjectId());

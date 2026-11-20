@@ -70,15 +70,26 @@ class TrafficProxyPacketAccessTests {
   }
 
   @Test
-  @DisplayName("PA-3 未绑定目标(targetId=0，开放代理) → 允许（保持原行为）")
-  void allowsUnboundPacket() {
+  @DisplayName("PA-3 未绑定目标(targetId=0，开放代理) → 仅管理员可读")
+  void allowsUnboundPacketOnlyForAdmin() {
     TrafficPacket p = packet(9L, 0L);
     when(packets.findById(9L)).thenReturn(Optional.of(p));
+    when(authorization.isAdmin()).thenReturn(true);
     org.assertj.core.api.Assertions.assertThat(service().getPacket(9L)).isSameAs(p);
   }
 
   @Test
-  @DisplayName("PA-4 列表只返回可访问目标的报文（过滤他人抓包）")
+  @DisplayName("PA-3b 开放代理抓包不能向普通用户泄露")
+  void rejectsUnboundPacketForNormalUser() {
+    TrafficPacket p = packet(9L, 0L);
+    when(packets.findById(9L)).thenReturn(Optional.of(p));
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> service().getPacket(9L))
+        .isInstanceOf(ApiException.class)
+        .hasMessageContaining("无权访问该流量记录");
+  }
+
+  @Test
+  @DisplayName("PA-4 列表只返回可访问目标的报文（过滤他人及开放代理抓包）")
   void listFiltersInaccessiblePackets() {
     TrafficPacket mine = packet(1L, 88L);   // 可访问目标 88
     TrafficPacket other = packet(2L, 99L);  // 他人目标 99
@@ -99,6 +110,6 @@ class TrafficProxyPacketAccessTests {
     when(authorization.requireAccess(4L)).thenThrow(new ApiException("无权访问"));
 
     var result = service().packets();
-    org.assertj.core.api.Assertions.assertThat(result).containsExactly(mine, unbound);
+    org.assertj.core.api.Assertions.assertThat(result).containsExactly(mine);
   }
 }
