@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -26,6 +27,9 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 @RestController
 @RequestMapping("/api/traffic")
 public class TrafficProxyController {
+  /** 同时运行的流式扫描上限。每个流式扫描可能持续数分钟并占用外部扫描器进程。 */
+  private static final int MAX_CONCURRENT_STREAM_SCANS = 4;
+
   private static final ExecutorService SCAN_STREAM_EXECUTOR =
       Executors.newCachedThreadPool(
           runnable -> {
@@ -44,6 +48,8 @@ public class TrafficProxyController {
   private final TrafficScanLedgerService scanLedger;
   private final TrafficAssetSyncService assetSync;
   private final ExecutorService scanStreamExecutor;
+  /** 流式扫描总预算：防止大量 SSE 请求把扫描器进程和无界线程堆积到本机。 */
+  private final Semaphore streamScanPermits = new Semaphore(MAX_CONCURRENT_STREAM_SCANS);
   private TrafficFuzzBatchService fuzzBatches;
 
   @Autowired(required = false)
@@ -190,10 +196,36 @@ public class TrafficProxyController {
   @PostMapping(value = "/packets/{id}/zap-scan/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
   public SseEmitter zapScanStream(
       @PathVariable Long id, @RequestBody(required = false) TrafficScanService.ZapScanRequest request) {
-    SseEmitter emitter = new SseEmitter(scanService.zapScanStreamTimeoutMillis());
-    scanStreamExecutor.execute(
-        AuditRequestContext.wrap(
-            () -> runStream(emitter, () -> scanService.zapScan(id, request, listenerFor(emitter)))));
+    return startStreamScan(
+        scanService.zapScanStreamTimeoutMillis(),
+        emitter -> () -> scanService.zapScan(id, request, listenerFor(emitter)));
+  }
+
+  /**
+   * 统一流式扫描准入：每个流式扫描持续数分钟，必须限制同时运行的扫描器进程数量，
+   * 否则大量 SSE 请求会无界创建线程并叠加外部工具进程。
+   */
+  private SseEmitter startStreamScan(
+      long timeoutMillis, java.util.function.Function<SseEmitter, ScanAction> actionFactory) {
+    if (!streamScanPermits.tryAcquire()) {
+      throw new com.bachelor.toolbox.common.ApiException("并发流式扫描任务过多，请稍后重试");
+    }
+    SseEmitter emitter = new SseEmitter(timeoutMillis);
+    try {
+      ScanAction action = actionFactory.apply(emitter);
+      scanStreamExecutor.execute(
+          AuditRequestContext.wrap(
+              () -> {
+                try {
+                  runStream(emitter, action);
+                } finally {
+                  streamScanPermits.release();
+                }
+              }));
+    } catch (RuntimeException ex) {
+      streamScanPermits.release();
+      throw ex;
+    }
     emitter.onTimeout(emitter::complete);
     emitter.onError(error -> {});
     return emitter;
@@ -284,13 +316,8 @@ public class TrafficProxyController {
   @PostMapping(value = "/packets/{id}/xray-scan/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
   public SseEmitter xrayScanStream(
       @PathVariable Long id, @RequestBody(required = false) TrafficScanService.XrayScanRequest request) {
-    SseEmitter emitter = new SseEmitter(240_000L);
-    scanStreamExecutor.execute(
-        AuditRequestContext.wrap(
-            () -> runStream(emitter, () -> scanService.xrayScan(id, request, listenerFor(emitter)))));
-    emitter.onTimeout(emitter::complete);
-    emitter.onError(error -> {});
-    return emitter;
+    return startStreamScan(
+        240_000L, emitter -> () -> scanService.xrayScan(id, request, listenerFor(emitter)));
   }
 
   @PostMapping("/packets/{id}/sqlmap-scan")
@@ -302,13 +329,8 @@ public class TrafficProxyController {
   @PostMapping(value = "/packets/{id}/sqlmap-scan/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
   public SseEmitter sqlmapScanStream(
       @PathVariable Long id, @RequestBody(required = false) TrafficScanService.SqlmapScanRequest request) {
-    SseEmitter emitter = new SseEmitter(600_000L);
-    scanStreamExecutor.execute(
-        AuditRequestContext.wrap(
-            () -> runStream(emitter, () -> scanService.sqlmapScan(id, request, listenerFor(emitter)))));
-    emitter.onTimeout(emitter::complete);
-    emitter.onError(error -> {});
-    return emitter;
+    return startStreamScan(
+        600_000L, emitter -> () -> scanService.sqlmapScan(id, request, listenerFor(emitter)));
   }
 
   @PostMapping("/packets/{id}/fuzz")
