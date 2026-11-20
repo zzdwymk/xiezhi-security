@@ -106,6 +106,9 @@ public class SecurityConfig {
                     .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.PUT, "/api/ai/workflow")
                     .hasRole("ADMIN")
+                    // 能力审批是“用户确认 Agent 高风险动作”的最后一道人工边界，不能由普通用户自行批准。
+                    .requestMatchers("/api/ai/guard/approvals/**")
+                    .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.DELETE, "/api/ai/agent/sessions/*")
                     .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.GET, "/api/ai/agent/sessions/*/status")
