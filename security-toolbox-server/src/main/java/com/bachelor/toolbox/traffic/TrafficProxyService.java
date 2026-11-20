@@ -113,7 +113,8 @@ public class TrafficProxyService {
         target == null ? "ASK" : request.handlingMode() == null ? "ASK" : request.handlingMode();
     TrafficSession session = new TrafficSession();
     session.setTargetId(target == null ? 0L : target.getId());
-    session.setName(target == null ? "通用流量会话" : target.getName() + " 流量会话");
+    // Round 252：TrafficSession.name 列宽 100；目标名自身可到 100，拼接后缀后可能超宽。
+    session.setName(bounded(target == null ? "通用流量会话" : target.getName() + " 流量会话", 100));
     session.setListenPort(port);
     session.setHandlingMode(mode);
     session.setStatus("STARTING");

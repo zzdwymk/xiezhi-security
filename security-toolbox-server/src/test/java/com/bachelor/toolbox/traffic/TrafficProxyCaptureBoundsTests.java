@@ -11,6 +11,7 @@ class TrafficProxyCaptureBoundsTests {
     assertThat(TrafficProxyService.bounded("h".repeat(300), 253)).hasSize(253);
     assertThat(TrafficProxyService.bounded("p".repeat(3000), 2048)).hasSize(2048);
     assertThat(TrafficProxyService.bounded("c".repeat(300), 200)).hasSize(200);
+    assertThat(TrafficProxyService.bounded("s".repeat(120), 100)).hasSize(100);
     assertThat(TrafficProxyService.bounded(null, 253)).isNull();
   }
 }
