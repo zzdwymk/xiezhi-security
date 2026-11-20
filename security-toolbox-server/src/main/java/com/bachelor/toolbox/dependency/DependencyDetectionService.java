@@ -56,6 +56,7 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
   private final NmapExecutableResolver nmapExecutableResolver;
   private final Environment environment;
   private final ToolDirectoryHasher toolDirectoryHasher;
+  private final AtomicInteger streamingDetectionInFlight = new AtomicInteger();
   private volatile CachedDetection cachedDetection;
 
   public DependencyDetectionService(
@@ -123,41 +124,72 @@ private static final Duration CACHE_TTL = Duration.ofSeconds(60);
       onComplete.accept(cached.dependencies());
       return;
     }
+    // Round 225：流式依赖检测是未登录的本地入口；原实现每次 SSE 请求各自创建一个
+    // 12 线程池，多个并发请求会叠加线程/子进程，导致本地资源耗尽。这里只允许一个
+    // 检测批次同时运行，其余请求复用缓存或快速失败。
+    if (streamingDetectionInFlight.incrementAndGet() > 1) {
+      streamingDetectionInFlight.decrementAndGet();
+      SystemDependenciesResponse cachedDuringFlight = findCachedResponse(System.nanoTime());
+      if (cachedDuringFlight != null) {
+        onManifest.accept(manifests(dependencyDescriptors()));
+        cachedDuringFlight.dependencies().forEach(onEach);
+        onComplete.accept(cachedDuringFlight.dependencies());
+        return;
+      }
+      throw new com.bachelor.toolbox.common.ApiException("依赖检测正在进行，请稍后重试");
+    }
     List<DependencyDescriptor> descriptors = dependencyDescriptors();
-    // 先回传“清单”：列出将在检测的每项依赖（无状态/哈希），让前端逐项预置为“检测中”占位。
-    onManifest.accept(manifests(descriptors));
-    int workerCount = Math.min(MAX_DETECTION_WORKERS, descriptors.size());
-    ExecutorService workers = Executors.newFixedThreadPool(workerCount);
-    List<DependencyStatus> results = Collections.synchronizedList(new ArrayList<>());
-    AtomicInteger remaining = new AtomicInteger(descriptors.size());
+    boolean submittedAny = false;
+    try {
+      // 先回传“清单”：列出将在检测的每项依赖（无状态/哈希），让前端逐项预置为“检测中”占位。
+      onManifest.accept(manifests(descriptors));
+      int workerCount = Math.min(MAX_DETECTION_WORKERS, descriptors.size());
+      ExecutorService workers = Executors.newFixedThreadPool(workerCount);
+      List<DependencyStatus> results = Collections.synchronizedList(new ArrayList<>());
+      AtomicInteger remaining = new AtomicInteger(descriptors.size());
 
-    for (DependencyDescriptor descriptor : descriptors) {
-      workers.submit(
-          () -> {
-            DependencyStatus status = detectSafely(descriptor);
-            results.add(status);
-            try {
-              onEach.accept(status);
-            } catch (Exception ignored) {
-              // SSE 连接可能已断开，检测继续执行并写入缓存。
-            }
-            if (remaining.decrementAndGet() == 0) {
-              List<DependencyStatus> sorted = sortInDescriptorOrder(results, descriptors);
-              SystemDependenciesResponse response =
-                  new SystemDependenciesResponse(
-                      System.getProperty("os.name", "unknown"),
-                      System.getProperty("os.arch", "unknown"),
-                      activeDatabaseName(),
-                      sorted);
-              cachedDetection = new CachedDetection(System.nanoTime(), response);
+      for (DependencyDescriptor descriptor : descriptors) {
+        submittedAny = true;
+        workers.submit(
+            () -> {
               try {
-                onComplete.accept(sorted);
-              } catch (Exception ignored) {
-                // 连接已断开，忽略。
+                DependencyStatus status = detectSafely(descriptor);
+                results.add(status);
+                try {
+                  onEach.accept(status);
+                } catch (Exception ignored) {
+                  // SSE 连接可能已断开，检测继续执行并写入缓存。
+                }
+              } finally {
+                // 无论单任务成功还是异常，都必须递减并释放单飞名额，避免后续检测永久被拒。
+                if (remaining.decrementAndGet() == 0) {
+                  try {
+                    List<DependencyStatus> sorted = sortInDescriptorOrder(results, descriptors);
+                    SystemDependenciesResponse response =
+                        new SystemDependenciesResponse(
+                            System.getProperty("os.name", "unknown"),
+                            System.getProperty("os.arch", "unknown"),
+                            activeDatabaseName(),
+                            sorted);
+                    cachedDetection = new CachedDetection(System.nanoTime(), response);
+                    try {
+                      onComplete.accept(sorted);
+                    } catch (Exception ignored) {
+                      // 连接已断开，忽略。
+                    }
+                  } finally {
+                    streamingDetectionInFlight.decrementAndGet();
+                    workers.shutdown();
+                  }
+                }
               }
-              workers.shutdown();
-            }
-          });
+            });
+      }
+    } catch (RuntimeException ex) {
+      if (!submittedAny) {
+        streamingDetectionInFlight.decrementAndGet();
+      }
+      throw ex;
     }
   }
 
