@@ -111,6 +111,9 @@ public class AuthController {
     }
 
     user.setPasswordHash(encoder.encode(newPassword));
+    // Round 224：递增令牌版本，使改密前签发的所有 JWT 立即失效（同一账号可能有多端会话）。
+    long nextTokenVersion = (user.getTokenVersion() == null ? 0L : user.getTokenVersion()) + 1;
+    user.setTokenVersion(nextTokenVersion);
     users.save(user);
     return Map.of("changed", true);
   }

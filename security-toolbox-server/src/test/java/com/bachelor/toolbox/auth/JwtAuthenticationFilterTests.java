@@ -42,6 +42,36 @@ class JwtAuthenticationFilterTests {
         assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull());
   }
 
+  @Test void 令牌版本不匹配时不认证() throws Exception {
+    Claims claims = mock(Claims.class);
+    when(claims.getSubject()).thenReturn("member");
+    when(claims.get("ver")).thenReturn(2);
+    when(jwt.parse("test-token")).thenReturn(claims);
+    User user = new User();
+    user.setUsername("member");
+    user.setEnabled(true);
+    user.setRole("USER");
+    user.setTokenVersion(1L);
+    when(users.findByUsername("member")).thenReturn(Optional.of(user));
+    filter.doFilter(request(), new MockHttpServletResponse(), (req, res) ->
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull());
+  }
+
+  @Test void 令牌版本匹配时认证成功() throws Exception {
+    Claims claims = mock(Claims.class);
+    when(claims.getSubject()).thenReturn("member");
+    when(claims.get("ver")).thenReturn(3);
+    when(jwt.parse("test-token")).thenReturn(claims);
+    User user = new User();
+    user.setUsername("member");
+    user.setEnabled(true);
+    user.setRole("USER");
+    user.setTokenVersion(3L);
+    when(users.findByUsername("member")).thenReturn(Optional.of(user));
+    filter.doFilter(request(), new MockHttpServletResponse(), (req, res) ->
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNotNull());
+  }
+
   @Test void authoritiesFollowCurrentDatabaseRoleNotTokenClaim() throws Exception {
     Claims claims = mock(Claims.class);
     when(claims.getSubject()).thenReturn("member");

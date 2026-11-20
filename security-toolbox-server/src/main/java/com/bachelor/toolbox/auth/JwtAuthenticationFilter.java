@@ -1,5 +1,6 @@
 package com.bachelor.toolbox.auth;
 
+import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import jakarta.servlet.*;
 import jakarta.servlet.http.*;
@@ -29,10 +30,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     String header = request.getHeader(HttpHeaders.AUTHORIZATION);
     if (header != null && header.startsWith("Bearer "))
       try {
-        String username = jwtService.parse(header.substring(7)).getSubject();
+        Claims claims = jwtService.parse(header.substring(7));
+        String username = claims.getSubject();
+        long tokenVersion = tokenVersion(claims);
         users
             .findByUsername(username)
             .filter(User::isEnabled)
+            .filter(user -> tokenVersion == currentTokenVersion(user))
             .ifPresent(
                 user ->
                     SecurityContextHolder.getContext()
@@ -45,5 +49,15 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         SecurityContextHolder.clearContext();
       }
     chain.doFilter(request, response);
+  }
+
+  /** 旧版本签发的令牌没有 ver 声明，按版本 0 处理以保持升级兼容。 */
+  private static long tokenVersion(Claims claims) {
+    Object value = claims.get("ver");
+    return value instanceof Number number ? number.longValue() : 0L;
+  }
+
+  private static long currentTokenVersion(User user) {
+    return user.getTokenVersion() == null ? 0L : user.getTokenVersion();
   }
 }

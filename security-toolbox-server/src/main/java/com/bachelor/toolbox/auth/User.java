@@ -39,6 +39,15 @@ public class User implements UserDetails {
   @Column(nullable = false)
   private boolean enabled = true;
 
+  /**
+   * 令牌版本号。修改密码/重置密码时递增，旧 JWT 的 {@code ver} 声明会因此不再匹配。
+   *
+   * <p>使用可空包装类型是为了兼容旧数据库：新增列时既有行可为 NULL，读取时按 0 处理。
+   */
+  @com.fasterxml.jackson.annotation.JsonIgnore
+  @Column
+  private Long tokenVersion = 0L;
+
   @Column(nullable = false, updatable = false)
   private Instant createdAt = Instant.now();
 

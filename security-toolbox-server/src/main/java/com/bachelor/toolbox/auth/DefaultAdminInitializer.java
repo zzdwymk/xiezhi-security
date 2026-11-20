@@ -146,6 +146,7 @@ public class DefaultAdminInitializer implements ApplicationRunner {
         admin.setRole("ADMIN");
       }
       admin.setPasswordHash(encoder.encode(desktopSeedAdminPassword));
+      bumpTokenVersion(admin);
       users.saveAndFlush(admin);
       log.info("已按桌面端一次性种子更新管理员账号密码");
     }
@@ -189,9 +190,16 @@ public class DefaultAdminInitializer implements ApplicationRunner {
     }
     if (adminUsesLegacyPassword) {
       admin.setPasswordHash(migratedHash);
+      bumpTokenVersion(admin);
       users.saveAndFlush(admin);
     }
     log.info("旧版开发凭据已迁移为受保护的生成值");
+  }
+
+  /** 密码被系统重置时同样递增令牌版本，避免旧 JWT 在改密后继续可用。 */
+  private static void bumpTokenVersion(User admin) {
+    long current = admin.getTokenVersion() == null ? 0L : admin.getTokenVersion();
+    admin.setTokenVersion(current + 1);
   }
 
   private static final class FixedObjectProvider

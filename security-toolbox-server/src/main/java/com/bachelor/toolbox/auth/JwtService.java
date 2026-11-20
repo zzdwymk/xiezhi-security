@@ -37,6 +37,8 @@ public class JwtService {
     return Jwts.builder()
         .subject(user.getUsername())
         .claim("role", user.getRole())
+        // Round 224：令牌版本参与签名，修改密码后旧令牌无法再通过过滤器。
+        .claim("ver", user.getTokenVersion() == null ? 0L : user.getTokenVersion())
         .issuedAt(Date.from(now))
         .expiration(Date.from(now.plusSeconds(expirationSeconds)))
         .signWith(key)
