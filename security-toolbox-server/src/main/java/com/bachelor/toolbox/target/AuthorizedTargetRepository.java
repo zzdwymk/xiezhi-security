@@ -1,6 +1,7 @@
 package com.bachelor.toolbox.target;
 
 import jakarta.persistence.LockModeType;
+import java.util.Collection;
 import java.util.Optional;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -26,6 +27,19 @@ public interface AuthorizedTargetRepository extends JpaRepository<AuthorizedTarg
       """)
   Page<AuthorizedTarget> findAccessibleByProjectOwner(
       @Param("owner") String owner, Pageable pageable);
+
+  @Query(
+      """
+      select count(distinct target)
+      from AuthorizedTarget target
+      where exists (
+        select link.id
+        from ProjectTarget link
+        where link.targetId = target.id
+          and link.projectId in :projectIds
+      )
+      """)
+  long countAccessibleByProjectIds(@Param("projectIds") Collection<Long> projectIds);
 
   @Lock(LockModeType.PESSIMISTIC_WRITE)
   @Query("select target from AuthorizedTarget target where target.id = :id")

@@ -31,6 +31,29 @@ public interface FindingRepository
 
   long countBySeverityIn(List<String> severities);
 
+  @Query(
+      """
+      select count(f)
+      from Finding f
+      where f.taskId in (
+        select task.id from SecurityTask task where task.projectId in :projectIds
+      )
+      """)
+  long countByProjectIds(@Param("projectIds") Collection<Long> projectIds);
+
+  @Query(
+      """
+      select count(f)
+      from Finding f
+      where upper(f.severity) in :severities
+        and f.taskId in (
+          select task.id from SecurityTask task where task.projectId in :projectIds
+        )
+      """)
+  long countByProjectIdsAndSeverityIn(
+      @Param("projectIds") Collection<Long> projectIds,
+      @Param("severities") Collection<String> severities);
+
   long deleteBySourceToolInAndTitleStartingWithAndVulnerabilityCodeIsNull(
       Collection<String> sourceTools, String titlePrefix);
 }

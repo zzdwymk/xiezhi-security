@@ -77,6 +77,10 @@ public interface SecurityTaskRepository extends JpaRepository<SecurityTask, Long
 
   long countByStatusIn(Collection<String> statuses);
 
+  long countByProjectIdIn(Collection<Long> projectIds);
+
+  long countByProjectIdInAndStatusIn(Collection<Long> projectIds, Collection<String> statuses);
+
   boolean existsByTargetIdAndStatusIn(Long targetId, List<String> statuses);
 
   long countByTargetIdAndStatusIn(Long targetId, List<String> statuses);
