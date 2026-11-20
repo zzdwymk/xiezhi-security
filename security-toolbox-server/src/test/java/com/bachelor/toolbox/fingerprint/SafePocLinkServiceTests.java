@@ -69,6 +69,19 @@ class SafePocLinkServiceTests {
   }
 
   @Test
+  void disabledInactiveAndPathlessTemplatesCannotBeRecommended() {
+    var disabled = approvedDefinition("NT-DISABLED", "Spring disabled", "HIGH");
+    disabled.setEnabled(false);
+    var inactive = approvedDefinition("NT-INACTIVE", "Spring inactive", "HIGH");
+    inactive.setSourceActive(false);
+    var pathless = approvedDefinition("NT-PATHLESS", "Spring missing path", "HIGH");
+    pathless.setTemplateRelativePath(" ");
+    when(definitions.findAllBySourceType(NucleiTemplateCatalogService.SOURCE_TYPE))
+        .thenReturn(List.of(disabled, inactive, pathless));
+    assertThat(service.recommend(List.of("spring-boot"))).isEmpty();
+  }
+
+  @Test
   void limitsRecommendationsAfterSorting() {
     List<VulnerabilityDefinition> candidates = new ArrayList<>();
     for (int index = 204; index >= 0; index--) {
