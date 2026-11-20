@@ -200,6 +200,11 @@ public class GlobalExceptionHandler {
     if (message == null || message.isBlank()) {
       return fallback;
     }
+    if (message.length() > 2048 || java.util.regex.Pattern.compile(
+        "(?i)(?:\\b[a-z]:[\\\\/]|/(?:home|users|usr|var|opt|tmp|private)/|exception|traceback|stack trace|\\b[\\w-]*(?:password|passwd|token|api[-_ ]?key|secret|authorization)[\\w-]*[\"']?\\s*[:=])")
+        .matcher(message).find()) {
+      return fallback;
+    }
     boolean containsChinese =
         message
             .codePoints()
