@@ -776,12 +776,32 @@ public class TrafficFuzzService {
    */
   public record FuzzRequest(
       Long targetId,
-      String method,
-      String url,
-      String headers,
-      String body,
-      Map<String, List<String>> multiPayloads,
-      List<String> payloads,
+      @jakarta.validation.constraints.Size(max = 32, message = "HTTP 方法不能超过 32 个字符")
+          String method,
+      @jakarta.validation.constraints.Size(max = 4096, message = "Fuzz URL 不能超过 4096 个字符")
+          String url,
+      @jakarta.validation.constraints.Size(max = 64 * 1024, message = "Fuzz 请求头不能超过 64 KB")
+          String headers,
+      @jakarta.validation.constraints.Size(max = 1024 * 1024, message = "Fuzz 请求体不能超过 1 MB")
+          String body,
+      // Round 274：multiPayloads 会在进入服务层 MAX_PAYLOADS/MAX_PAYLOAD_LENGTH 裁剪前被完整
+      // 反序列化，因此必须在请求体层就限定组数、每组条数与单条长度，否则超大字典会先占用堆内存。
+      @jakarta.validation.constraints.Size(max = 32, message = "Fuzz 变量组数不能超过 32 组")
+          Map<
+                  String,
+                  @jakarta.validation.constraints.Size(max = MAX_PAYLOADS, message = "单组 payload 不能超过 200 条")
+                      List<
+                          @jakarta.validation.constraints.Size(
+                                  max = MAX_PAYLOAD_LENGTH,
+                                  message = "单条 payload 不能超过 4096 个字符")
+                              String>>
+              multiPayloads,
+      @jakarta.validation.constraints.Size(max = MAX_PAYLOADS, message = "payload 不能超过 200 条")
+          List<
+                  @jakarta.validation.constraints.Size(
+                          max = MAX_PAYLOAD_LENGTH, message = "单条 payload 不能超过 4096 个字符")
+                      String>
+              payloads,
       String engine,
       String combination) {
 
