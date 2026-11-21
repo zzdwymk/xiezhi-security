@@ -503,4 +503,26 @@ class TaskServiceTests {
     assertEquals("本地任务队列已满，请稍后重试", retry.getErrorMessage());
     return retry;
   }
+
+  @Test
+  void cancellingQueuedTaskClearsExecutionControlState() {
+    SecurityTask pending = task("PENDING");
+    when(repository.findById(7L)).thenReturn(Optional.of(pending));
+    when(executionControl.hasActiveWorker(7L)).thenReturn(false);
+
+    service.cancel(7L);
+
+    verify(executionControl).clear(7L);
+  }
+
+  @Test
+  void cancellingRunningTaskLeavesCleanupToTheWorker() {
+    SecurityTask running = task("RUNNING");
+    when(repository.findById(7L)).thenReturn(Optional.of(running));
+    when(executionControl.hasActiveWorker(7L)).thenReturn(true);
+
+    service.cancel(7L);
+
+    verify(executionControl, never()).clear(7L);
+  }
 }

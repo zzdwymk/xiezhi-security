@@ -793,6 +793,12 @@ public class TaskService {
     task.setFinishedAt(java.time.Instant.now());
     task.setErrorMessage("用户取消任务");
     repository.save(task);
+    // Round 277：只有被 worker 取走的任务才会在 worker 的 finally 里 clear()；
+    // 排队阶段（PENDING）被取消的任务永远不会进入 worker，其取消标记会永久驻留。
+    // 这里在确认没有活跃 worker 时立即清理，保证 cancellations 不会随取消次数无界增长。
+    if (!executionControl.hasActiveWorker(id)) {
+      executionControl.clear(id);
+    }
     progressEvents.publish(task, "用户取消任务");
     publishTerminalAfterCommit(task.getId());
     auditService.record("CANCEL_TASK", "TASK", id, task.getToolCode(), "CANCELLED");
