@@ -91,6 +91,17 @@ public class GlobalExceptionHandler {
     return error(HttpStatus.NOT_FOUND, "请求资源不存在");
   }
 
+  /**
+   * Round 288：并发更新冲突（乐观锁 / 悲观锁读到的版本已过期）是**预期内**的业务结果，
+   * 不能落到通用的 {@link DataAccessException} 分支被报成 500。
+   */
+  @ExceptionHandler(org.springframework.dao.OptimisticLockingFailureException.class)
+  public ResponseEntity<ApiErrorResponse> handleOptimisticLock(
+      org.springframework.dao.OptimisticLockingFailureException ex) {
+    log.warn("并发更新冲突: {}", ex.getMessage());
+    return error(HttpStatus.CONFLICT, "数据已被其他操作修改，请刷新后重试");
+  }
+
   @ExceptionHandler(DataAccessException.class)
   public ResponseEntity<ApiErrorResponse> handleDataAccess(DataAccessException ex) {
     log.error("数据库或本地存储访问异常", ex);

@@ -239,12 +239,28 @@ class TaskRetryIdempotencyTransactionTests {
       assertThat(retryStarted.await(5, TimeUnit.SECONDS)).isTrue();
       assertThatThrownBy(() -> retry.get(200, TimeUnit.MILLISECONDS))
           .isInstanceOf(java.util.concurrent.TimeoutException.class);
-      project.setOwner("revoked-owner");
-      projects.saveAndFlush(project);
+      // Round 288：项目已加乐观锁版本号，夹具不能跨事务复用旧快照，保存前重新加载。
+      var revoked = projects.findById(project.getId()).orElseThrow();
+      revoked.setOwner("revoked-owner");
+      projects.saveAndFlush(revoked);
       release.countDown();
       holder.get(10, TimeUnit.SECONDS);
       assertThatThrownBy(() -> retry.get(10, TimeUnit.SECONDS))
-          .hasCauseInstanceOf(ApiException.class).hasRootCauseMessage("无权访问该评估项目");
+          .satisfies(
+              thrown -> {
+                // Round 288：与上同理——并发改权限后，重试必须以业务错误或并发冲突失败。
+                Throwable cause = thrown.getCause();
+                assertThat(
+                        cause instanceof ApiException
+                            || cause
+                                instanceof
+                                org.springframework.dao.OptimisticLockingFailureException)
+                    .as("旧项目快照必须被业务校验或乐观锁拒绝")
+                    .isTrue();
+                if (cause instanceof ApiException api) {
+                  assertThat(api).hasMessageContaining("无权访问");
+                }
+              });
       assertThat(tasks.count()).isEqualTo(1);
       verifyNoInteractions(execution);
     } finally {

@@ -47,6 +47,15 @@ public class AssessmentProject {
   @Column(nullable = false, updatable = false)
   private Instant createdAt;
 
+  /**
+   * Round 288：乐观锁版本号。项目的授权声明与授权时间窗是整套任务的授权来源，
+   * 而 update() 是「读—改—写」且原先没有版本校验：两个运维并发编辑同一项目时，
+   * 后提交者会用旧快照覆盖前者刚收窄的授权时间窗。列定义带 DEFAULT 0，保证既有库可原地升级。
+   */
+  @jakarta.persistence.Version
+  @Column(nullable = false, columnDefinition = "BIGINT DEFAULT 0")
+  private long version;
+
   private Instant updatedAt;
 
   @PrePersist

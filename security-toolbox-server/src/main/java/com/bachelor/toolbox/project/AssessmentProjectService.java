@@ -110,7 +110,14 @@ public class AssessmentProjectService {
     AssessmentProject project = get(id);
     applyUpdate(project, request);
     validateDates(project.getAuthorizationValidFrom(), project.getAuthorizationExpiresAt());
-    return projects.save(project);
+    try {
+      AssessmentProject saved = projects.save(project);
+      projects.flush();
+      return saved;
+    } catch (org.springframework.dao.OptimisticLockingFailureException conflict) {
+      // Round 288：并发编辑同一项目时拒绝后写者，避免用旧快照覆盖他人的授权边界修改。
+      throw new ApiException("该评估项目已被其他操作修改，请刷新后重新提交");
+    }
   }
 
   @Transactional

@@ -613,11 +613,28 @@ class SecurityAgentToolsTransactionTests {
       Future<AiDispatchResponse> resume = pool.submit(() -> authorization.callWithSystemAccess(
           () -> approvedPlans.resume(project.getId(), id)));
       assertThat(reachedLock.await(10, TimeUnit.SECONDS)).isTrue();
-      project.setAuthorizationStatement("Authorization changed concurrently");
-      projects.saveAndFlush(project);
+      // Round 288：项目已加乐观锁版本号，夹具不能跨事务复用旧快照，保存前重新加载。
+      var changedProject = projects.findById(project.getId()).orElseThrow();
+      changedProject.setAuthorizationStatement("Authorization changed concurrently");
+      projects.saveAndFlush(changedProject);
       continueExecution.countDown();
       assertThatThrownBy(() -> resume.get(20, TimeUnit.SECONDS))
-          .hasCauseInstanceOf(ApiException.class).hasRootCauseMessage("项目授权范围已变化或原审批未保存授权快照，请重新申请");
+          .satisfies(
+              thrown -> {
+                // Round 288：项目加了乐观锁后，这个并发窗口既可能被业务校验拦下（授权范围已变化），
+                // 也可能在写回时以并发冲突失败；两者都是「不得使用旧快照」的合法结果。
+                Throwable cause = thrown.getCause();
+                assertThat(
+                        cause instanceof ApiException
+                            || cause
+                                instanceof
+                                org.springframework.dao.OptimisticLockingFailureException)
+                    .as("旧项目快照必须被业务校验或乐观锁拒绝")
+                    .isTrue();
+                if (cause instanceof ApiException api) {
+                  assertThat(api).hasMessageContaining("项目授权范围已变化");
+                }
+              });
       assertThat(tasks.count()).isZero();
       assertThat(dispatches.count()).isZero();
       verifyNoInteractions(taskExecutionService);

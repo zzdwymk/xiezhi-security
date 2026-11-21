@@ -215,11 +215,14 @@ class ProjectApprovalIdempotencyTransactionTests {
   void sameTurnCannotReuseChangedProjectOrTargetAuthorization() {
     var request = request(project.getId(), target.getId(), "authorization-change");
     service.requestAiPlan(request, plan(Map.of()), null);
-    project.setAuthorizationStatement("changed authorization");
-    projects.saveAndFlush(project);
+    // Round 288：项目已加乐观锁版本号，夹具不能跨事务复用旧快照，保存前重新加载。
+    var changed = projects.findById(project.getId()).orElseThrow();
+    changed.setAuthorizationStatement("changed authorization");
+    projects.saveAndFlush(changed);
     assertConflict(() -> service.requestAiPlan(request, plan(Map.of()), null));
-    project.setAuthorizationStatement("authorized fixture");
-    projects.saveAndFlush(project);
+    var restored = projects.findById(project.getId()).orElseThrow();
+    restored.setAuthorizationStatement("authorized fixture");
+    projects.saveAndFlush(restored);
     target.setAllowedPorts("8081");
     targets.saveAndFlush(target);
     assertConflict(() -> service.requestAiPlan(request, plan(Map.of()), null));
