@@ -21,6 +21,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class TargetService {
+  /** 创建目标且未指定授权端口时的默认范围；更新路径保留原值，不回落到该默认集合。 */
+  private static final String DEFAULT_ALLOWED_PORTS = "80,443,3000,8080";
+
   private static final Pattern DOMAIN_PATTERN =
       Pattern.compile(
           "(?i)^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$");
@@ -216,6 +219,10 @@ public class TargetService {
    * 否则一次与启停无关的局部编辑会把运维已停用的目标静默重新启用，而
    * {@code validateCurrentlyAuthorized} 正是以 {@code enabled} 判断授权范围——
    * 等于把已移出授权范围的目标重新变为可扫描对象。
+   *
+   * <p>Round 284：{@code allowedPorts} 同理。{@code TargetPolicyService} 以该字段拦截
+   * 「目标端口 X 不在授权端口范围内」，更新时若把空白值回落成默认集合，会把运维收窄过的端口
+   * 授权静默放宽（例如只剩 443 的目标被放宽到 80/443/3000/8080）。故更新路径保持原值。
    */
   private void apply(AuthorizedTarget target, TargetRequest request, boolean creating) {
     target.setName(request.name().trim());
@@ -227,7 +234,7 @@ public class TargetService {
     target.setAuthorizationNote(request.authorizationNote().trim());
     String allowedPorts =
         request.allowedPorts() == null || request.allowedPorts().isBlank()
-            ? "80,443,3000,8080"
+            ? (creating ? DEFAULT_ALLOWED_PORTS : target.getAllowedPorts())
             : request.allowedPorts().trim();
     target.setAllowedPorts(portRangeParser.canonicalizeCompact(allowedPorts, maxAuthorizedPorts));
     target.setEnabled(

@@ -478,6 +478,44 @@ class TargetServiceTests {
         11L, new TargetRequest("停用目标", "http://192.168.222.158", "URL", "授权记录", "80", null));
 
     assertThat(existing.isEnabled()).as("局部更新不应把已停用目标静默重新启用").isFalse();
+  }  @Test
+  void updatingWithoutAllowedPortsKeepsTheNarrowedScope() {
+    AuthorizedTargetRepository repository = mock(AuthorizedTargetRepository.class);
+    AuditService auditService = mock(AuditService.class);
+    AssessmentProjectRepository projects = mock(AssessmentProjectRepository.class);
+    ProjectTargetRepository projectTargets = mock(ProjectTargetRepository.class);
+    ProjectAuthorizationService authorization = mock(ProjectAuthorizationService.class);
+    when(authorization.isAdmin()).thenReturn(true);
+    when(authorization.currentUsername()).thenReturn("admin");
+
+    AuthorizedTarget existing = new AuthorizedTarget();
+    existing.setId(12L);
+    existing.setName("窄端口目标");
+    existing.setTargetValue("http://192.168.222.158");
+    existing.setTargetType("URL");
+    existing.setAuthorizationNote("授权记录");
+    existing.setAllowedPorts("443");
+    existing.setEnabled(true);
+    when(repository.findById(12L)).thenReturn(Optional.of(existing));
+    when(repository.save(any(AuthorizedTarget.class))).thenAnswer(inv -> inv.getArgument(0));
+
+    TargetService service =
+        new TargetService(
+            repository,
+            auditService,
+            new PortRangeParser(),
+            projects,
+            projectTargets,
+            authorization,
+            65535);
+
+    service.update(
+        12L, new TargetRequest("窄端口目标", "http://192.168.222.158", "URL", "授权记录", null, null));
+
+    assertThat(existing.getAllowedPorts())
+        .as("局部更新不应把已收窄的授权端口范围静默放宽为默认集合")
+        .isEqualTo("443");
   }}
+
 
 
