@@ -12,6 +12,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -192,8 +193,36 @@ public class GlobalExceptionHandler {
     return error(HttpStatus.INTERNAL_SERVER_ERROR, "服务器处理失败，请稍后重试");
   }
 
+  /**
+   * Round 278：错误响应必须与请求可接受的媒体类型兼容。
+   *
+   * <p>报告类端点声明 {@code produces = text/html}；若此处无条件写 JSON 体，Spring 找不到可写转换器，
+   * 异常处理器自身会抛 {@code HttpMessageNotWritableException}，把本应是 400/403 的拒绝放大成
+   * 500 ServletException（错误页还可能带出内部异常链）。因此仅当调用方能接受 JSON 时写结构化错误体，
+   * 否则返回同状态码的空体：状态语义正确，且不向 HTML 调用方暴露内部细节。
+   */
   private ResponseEntity<ApiErrorResponse> error(HttpStatusCode status, String message) {
+    if (!acceptsJson()) {
+      return ResponseEntity.status(status).build();
+    }
     return ResponseEntity.status(status).body(ApiErrorResponse.of(status.value(), message));
+  }
+
+  /** 缺省或无 Accept 头按 JSON 处理（保持既有 API 契约）；显式只接受 HTML/文本时降级为空体。 */
+  private static boolean acceptsJson() {
+    var attributes =
+        org.springframework.web.context.request.RequestContextHolder.getRequestAttributes();
+    if (!(attributes
+        instanceof
+        org.springframework.web.context.request.ServletRequestAttributes servletAttributes)) {
+      return true;
+    }
+    String accept = servletAttributes.getRequest().getHeader(HttpHeaders.ACCEPT);
+    if (accept == null || accept.isBlank()) return true;
+    String normalized = accept.toLowerCase(java.util.Locale.ROOT);
+    return normalized.contains("*/*")
+        || normalized.contains("application/json")
+        || normalized.contains("application/*");
   }
 
   private String localizedMessage(String message, String fallback) {
