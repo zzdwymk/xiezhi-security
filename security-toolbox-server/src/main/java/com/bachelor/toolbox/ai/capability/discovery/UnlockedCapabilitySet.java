@@ -47,6 +47,16 @@ public class UnlockedCapabilitySet {
   /** 单个会话可解锁的能力数上限，防止用解锁把 L2 全量拉进 prompt（等价于取消了分层）。 */
   public static final int MAX_UNLOCKED_PER_SESSION = 60;
 
+  /**
+   * Round 290：会话桶数量上限。
+   *
+   * <p>每个 AI 会话都会建立自己的解锁桶，而 {@code clearSession} 只清对话记忆、从不清理这里的桶，
+   * 用户"开个会话问一句就关掉"是最常见用法——桶会随会话数无界增长。解锁集合按本类约定
+   * **不是安全机制**（只影响提示词体量），因此按容量上限驱逐最旧的桶是安全的：被驱逐会话下次
+   * 解锁时会重新建立空桶，行为等价于"还没解锁过"。
+   */
+  public static final int MAX_SESSIONS = 512;
+
   private final CapabilityRegistry registry;
 
   /** sessionId → 已解锁能力码（按解锁顺序）。 */
@@ -83,6 +93,7 @@ public class UnlockedCapabilitySet {
     }
     Set<String> sessionUnlocks =
         unlocked.computeIfAbsent(session, ignored -> new LinkedHashSet<>());
+    evictOldSessionsKeeping(session);
     synchronized (sessionUnlocks) {
       if (sessionUnlocks.contains(normalized)) {
         return new UnlockResult(true, normalized, "能力已处于解锁状态: " + normalized);
@@ -138,6 +149,22 @@ public class UnlockedCapabilitySet {
     unlocked.remove(normalizeSession(sessionId));
   }
 
+  /**
+   * Round 290：会话桶数超过 {@link #MAX_SESSIONS} 时驱逐其它会话的桶。
+   *
+   * <p>只驱逐"非当前会话"的条目，保证正在进行的这轮解锁不会被自己挤掉；被驱逐会话下次解锁时
+   * 会重新得到空桶（等价于尚未解锁），不影响任何授权判定（解锁本就不是安全机制）。
+   */
+  private void evictOldSessionsKeeping(String keepSession) {
+    if (unlocked.size() <= MAX_SESSIONS) return;
+    java.util.Iterator<String> iterator = unlocked.keySet().iterator();
+    while (unlocked.size() > MAX_SESSIONS && iterator.hasNext()) {
+      String candidate = iterator.next();
+      if (candidate.equals(keepSession)) continue;
+      iterator.remove();
+    }
+  }
+
   /** 全部会话的解锁数量统计（供审计与调试）。 */
   public int sessionCount() {
     return unlocked.size();
@@ -150,3 +177,5 @@ public class UnlockedCapabilitySet {
   /** 解锁结果。 */
   public record UnlockResult(boolean accepted, String code, String message) {}
 }
+
+
