@@ -130,7 +130,7 @@ public class TargetService {
     authorization.requireManage(request.projectId());
     validateProjectAssignable(request.projectId());
     AuthorizedTarget target = new AuthorizedTarget();
-    apply(target, request);
+    apply(target, request, true);
     AuthorizedTarget saved = repository.save(target);
     projectTargets.save(new ProjectTarget(request.projectId(), saved.getId()));
     auditService.record(
@@ -163,7 +163,7 @@ public class TargetService {
         throw new ApiException("目标不属于该评估项目");
       }
     }
-    apply(target, request);
+    apply(target, request, false);
     AuthorizedTarget saved = repository.save(target);
     auditService.record(
         "UPDATE_TARGET", "TARGET", saved.getId(), saved.getTargetValue(), "SUCCESS");
@@ -211,7 +211,13 @@ public class TargetService {
         .anyMatch(authorization::canAccess);
   }
 
-  private void apply(AuthorizedTarget target, TargetRequest request) {
+  /**
+   * Round 283：{@code enabled} 可空。创建时缺省启用；更新时缺省表示「保持原状态」。
+   * 否则一次与启停无关的局部编辑会把运维已停用的目标静默重新启用，而
+   * {@code validateCurrentlyAuthorized} 正是以 {@code enabled} 判断授权范围——
+   * 等于把已移出授权范围的目标重新变为可扫描对象。
+   */
+  private void apply(AuthorizedTarget target, TargetRequest request, boolean creating) {
     target.setName(request.name().trim());
     String targetValue = request.targetValue().trim();
     String targetType = request.targetType().trim().toUpperCase();
@@ -224,7 +230,8 @@ public class TargetService {
             ? "80,443,3000,8080"
             : request.allowedPorts().trim();
     target.setAllowedPorts(portRangeParser.canonicalizeCompact(allowedPorts, maxAuthorizedPorts));
-    target.setEnabled(request.enabled() == null || request.enabled());
+    target.setEnabled(
+        request.enabled() != null ? request.enabled() : (creating || target.isEnabled()));
     if (request.authorizationValidFrom() != null
         && request.authorizationExpiresAt() != null
         && !request.authorizationValidFrom().isBefore(request.authorizationExpiresAt()))
