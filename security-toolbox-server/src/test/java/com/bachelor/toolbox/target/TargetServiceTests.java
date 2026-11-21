@@ -559,7 +559,89 @@ class TargetServiceTests {
         .contains("443")
         .contains("443,8443")
         .contains("enabled");
+  }  @Test
+  void updatingWithoutAuthorizationWindowKeepsTheExpiredWindow() {
+    AuthorizedTargetRepository repository = mock(AuthorizedTargetRepository.class);
+    AuditService auditService = mock(AuditService.class);
+    AssessmentProjectRepository projects = mock(AssessmentProjectRepository.class);
+    ProjectTargetRepository projectTargets = mock(ProjectTargetRepository.class);
+    ProjectAuthorizationService authorization = mock(ProjectAuthorizationService.class);
+    when(authorization.isAdmin()).thenReturn(true);
+    when(authorization.currentUsername()).thenReturn("admin");
+
+    java.time.Instant expiredAt = java.time.Instant.parse("2020-01-01T00:00:00Z");
+    AuthorizedTarget existing = new AuthorizedTarget();
+    existing.setId(14L);
+    existing.setName("已过期目标");
+    existing.setTargetValue("http://192.168.222.158");
+    existing.setTargetType("URL");
+    existing.setAuthorizationNote("授权记录");
+    existing.setAllowedPorts("443");
+    existing.setEnabled(true);
+    existing.setAuthorizationValidFrom(java.time.Instant.parse("2019-12-01T00:00:00Z"));
+    existing.setAuthorizationExpiresAt(expiredAt);
+    when(repository.findById(14L)).thenReturn(Optional.of(existing));
+    when(repository.save(any(AuthorizedTarget.class))).thenAnswer(inv -> inv.getArgument(0));
+
+    TargetService service =
+        new TargetService(
+            repository,
+            auditService,
+            new PortRangeParser(),
+            projects,
+            projectTargets,
+            authorization,
+            65535);
+
+    service.update(
+        14L, new TargetRequest("已过期目标", "http://192.168.222.158", "URL", "授权记录", "443", null));
+
+    assertThat(existing.getAuthorizationExpiresAt())
+        .as("局部更新不得清空授权到期时间（清空等于解除时间限制）")
+        .isEqualTo(expiredAt);
+  }  @Test
+  void explicitClearFlagRemovesTheAuthorizationWindow() {
+    AuthorizedTargetRepository repository = mock(AuthorizedTargetRepository.class);
+    AuditService auditService = mock(AuditService.class);
+    AssessmentProjectRepository projects = mock(AssessmentProjectRepository.class);
+    ProjectTargetRepository projectTargets = mock(ProjectTargetRepository.class);
+    ProjectAuthorizationService authorization = mock(ProjectAuthorizationService.class);
+    when(authorization.isAdmin()).thenReturn(true);
+    when(authorization.currentUsername()).thenReturn("admin");
+
+    AuthorizedTarget existing = new AuthorizedTarget();
+    existing.setId(15L);
+    existing.setName("清窗目标");
+    existing.setTargetValue("http://192.168.222.158");
+    existing.setTargetType("URL");
+    existing.setAuthorizationNote("授权记录");
+    existing.setAllowedPorts("443");
+    existing.setEnabled(true);
+    existing.setAuthorizationValidFrom(java.time.Instant.parse("2019-12-01T00:00:00Z"));
+    existing.setAuthorizationExpiresAt(java.time.Instant.parse("2020-01-01T00:00:00Z"));
+    when(repository.findById(15L)).thenReturn(Optional.of(existing));
+    when(repository.save(any(AuthorizedTarget.class))).thenAnswer(inv -> inv.getArgument(0));
+
+    TargetService service =
+        new TargetService(
+            repository,
+            auditService,
+            new PortRangeParser(),
+            projects,
+            projectTargets,
+            authorization,
+            65535);
+
+    service.update(
+        15L,
+        new TargetRequest(
+            "清窗目标", "http://192.168.222.158", "URL", "授权记录", "443", true, null, null, null, true));
+
+    assertThat(existing.getAuthorizationValidFrom()).isNull();
+    assertThat(existing.getAuthorizationExpiresAt()).isNull();
   }}
+
+
 
 
 

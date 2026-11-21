@@ -28,7 +28,12 @@ public record TargetRequest(
     Boolean enabled,
     Instant authorizationValidFrom,
     Instant authorizationExpiresAt,
-    Long projectId) {
+    Long projectId,
+    /**
+     * Round 286：显式清空授权时间窗。{@code null} 的时间窗字段在更新时表示「保持不变」，
+     * 因此清空必须是显式动作，不能靠省略字段达成（省略即放宽是必须避免的）。
+     */
+    Boolean clearAuthorizationWindow) {
   public TargetRequest(
       String name,
       String targetValue,
@@ -36,6 +41,30 @@ public record TargetRequest(
       String authorizationNote,
       String allowedPorts,
       Boolean enabled) {
-    this(name, targetValue, targetType, authorizationNote, allowedPorts, enabled, null, null, null);
+    this(name, targetValue, targetType, authorizationNote, allowedPorts, enabled, null, null, null, null);
+  }
+
+  /** 兼容既有 9 参调用（不含清空标志）。 */
+  public TargetRequest(
+      String name,
+      String targetValue,
+      String targetType,
+      String authorizationNote,
+      String allowedPorts,
+      Boolean enabled,
+      Instant authorizationValidFrom,
+      Instant authorizationExpiresAt,
+      Long projectId) {
+    this(
+        name,
+        targetValue,
+        targetType,
+        authorizationNote,
+        allowedPorts,
+        enabled,
+        authorizationValidFrom,
+        authorizationExpiresAt,
+        projectId,
+        null);
   }
 }

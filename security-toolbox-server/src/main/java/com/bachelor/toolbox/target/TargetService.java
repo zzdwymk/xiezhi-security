@@ -170,20 +170,26 @@ public class TargetService {
     // 在审计里完全看不到，事后无法证明「谁在何时把授权范围放宽/收窄」。
     String portsBefore = target.getAllowedPorts();
     boolean enabledBefore = target.isEnabled();
+    Instant validFromBefore = target.getAuthorizationValidFrom();
+    Instant expiresAtBefore = target.getAuthorizationExpiresAt();
     apply(target, request, false);
     AuthorizedTarget saved = repository.save(target);
     auditService.record(
         "UPDATE_TARGET",
         "TARGET",
         saved.getId(),
-        describeScopeChange(saved, portsBefore, enabledBefore),
+        describeScopeChange(saved, portsBefore, enabledBefore, validFromBefore, expiresAtBefore),
         "SUCCESS");
     return saved;
   }
 
-  /** 生成授权范围变更摘要；仅在端口范围或启停状态实际变化时追加对应片段。 */
+  /** 生成授权范围变更摘要；仅在授权边界字段实际变化时追加对应片段。 */
   static String describeScopeChange(
-      AuthorizedTarget saved, String portsBefore, boolean enabledBefore) {
+      AuthorizedTarget saved,
+      String portsBefore,
+      boolean enabledBefore,
+      Instant validFromBefore,
+      Instant expiresAtBefore) {
     StringBuilder detail = new StringBuilder(saved.getTargetValue());
     if (!java.util.Objects.equals(portsBefore, saved.getAllowedPorts())) {
       detail
@@ -194,6 +200,21 @@ public class TargetService {
     }
     if (enabledBefore != saved.isEnabled()) {
       detail.append("; enabled ").append(enabledBefore).append("→").append(saved.isEnabled());
+    }
+    // Round 286：授权时间窗同属授权边界，变更同样需要可举证。
+    if (!java.util.Objects.equals(validFromBefore, saved.getAuthorizationValidFrom())) {
+      detail
+          .append("; validFrom ")
+          .append(validFromBefore)
+          .append("→")
+          .append(saved.getAuthorizationValidFrom());
+    }
+    if (!java.util.Objects.equals(expiresAtBefore, saved.getAuthorizationExpiresAt())) {
+      detail
+          .append("; expiresAt ")
+          .append(expiresAtBefore)
+          .append("→")
+          .append(saved.getAuthorizationExpiresAt());
     }
     return detail.toString();
   }
@@ -264,12 +285,26 @@ public class TargetService {
     target.setAllowedPorts(portRangeParser.canonicalizeCompact(allowedPorts, maxAuthorizedPorts));
     target.setEnabled(
         request.enabled() != null ? request.enabled() : (creating || target.isEnabled()));
-    if (request.authorizationValidFrom() != null
-        && request.authorizationExpiresAt() != null
-        && !request.authorizationValidFrom().isBefore(request.authorizationExpiresAt()))
+    // Round 286：时间窗字段可空。更新时 null 表示「保持不变」——否则一次无关编辑会把
+    // authorizationExpiresAt 清成 null，而 validateCurrentlyAuthorized 把 null 视为「无到期限制」，
+    // 等于让已过期目标重新变成可扫描对象。清空必须是显式动作（clearAuthorizationWindow）。
+    boolean clearWindow = Boolean.TRUE.equals(request.clearAuthorizationWindow());
+    Instant validFrom =
+        clearWindow
+            ? null
+            : request.authorizationValidFrom() != null
+                ? request.authorizationValidFrom()
+                : (creating ? null : target.getAuthorizationValidFrom());
+    Instant expiresAt =
+        clearWindow
+            ? null
+            : request.authorizationExpiresAt() != null
+                ? request.authorizationExpiresAt()
+                : (creating ? null : target.getAuthorizationExpiresAt());
+    if (validFrom != null && expiresAt != null && !validFrom.isBefore(expiresAt))
       throw new ApiException("授权开始时间必须早于授权到期时间");
-    target.setAuthorizationValidFrom(request.authorizationValidFrom());
-    target.setAuthorizationExpiresAt(request.authorizationExpiresAt());
+    target.setAuthorizationValidFrom(validFrom);
+    target.setAuthorizationExpiresAt(expiresAt);
   }
 
   private void validateTargetValue(String targetType, String targetValue) {
