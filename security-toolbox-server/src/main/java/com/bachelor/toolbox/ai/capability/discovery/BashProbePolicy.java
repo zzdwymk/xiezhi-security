@@ -101,10 +101,17 @@ public final class BashProbePolicy {
   public static final List<String> ENV_WHITELIST =
       List.of("PATH", "HOME", "LANG", "LC_ALL", "TZ", "TMPDIR", "TEMP", "TMP", "SYSTEMROOT", "COMSPEC");
 
-  /** 提权前缀（POSIX 与 Windows）。 */
+  /**
+   * 提权前缀（POSIX 与 Windows）。
+   *
+   * <p>Round 289：原实现要求关键字前必须是行首/{@code ; & |}/空白，因此
+   * {@code /usr/bin/sudo id} 这种**最直接的绝对路径写法**不会被识别。现允许任意层级的
+   * 路径前缀（{@code /usr/bin/}、{@code ./}、{@code C:\Windows\System32\} 等）后再匹配命令名，
+   * 命令名之后仍要求空白或行尾，避免误杀 {@code sudoku}、{@code ssh} 这类普通单词。
+   */
   private static final Pattern PRIVILEGE_ESCALATION =
       Pattern.compile(
-          "(^|[;&|\\s])(sudo|su|doas|pkexec|runas)(\\s|$)",
+          "(^|[;&|\\s])(?:[\\w.\\-]*[\\\\/])*(sudo|su|doas|pkexec|runas)(\\s|$)",
           Pattern.CASE_INSENSITIVE);
 
   /** Windows 的 RunAs 写法。 */
