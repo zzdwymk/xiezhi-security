@@ -188,12 +188,15 @@ class TaskRetryIdempotencyTransactionTests {
   void replayRechecksCurrentTargetAuthorizationAndProjectAccess() {
     service.retry(original.getId(), "check-auth");
     clearInvocations(execution);
-    target.setAuthorizationExpiresAt(Instant.now().minusSeconds(1));
-    targets.saveAndFlush(target);
+    // Round 287：授权目标已加乐观锁版本号，测试不能跨事务复用旧快照，必须先重新加载再修改。
+    var expired = targets.findById(target.getId()).orElseThrow();
+    expired.setAuthorizationExpiresAt(Instant.now().minusSeconds(1));
+    targets.saveAndFlush(expired);
     assertThatThrownBy(() -> service.retry(original.getId(), "check-auth"))
         .isInstanceOf(ApiException.class).hasMessageContaining("目标授权已过期");
-    target.setAuthorizationExpiresAt(Instant.now().plusSeconds(3600));
-    targets.saveAndFlush(target);
+    var restored = targets.findById(target.getId()).orElseThrow();
+    restored.setAuthorizationExpiresAt(Instant.now().plusSeconds(3600));
+    targets.saveAndFlush(restored);
     project.setOwner("different-owner");
     projects.saveAndFlush(project);
     assertThatThrownBy(() -> service.retry(original.getId(), "check-auth"))

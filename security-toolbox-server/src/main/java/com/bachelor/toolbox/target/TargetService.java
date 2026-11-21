@@ -173,7 +173,15 @@ public class TargetService {
     Instant validFromBefore = target.getAuthorizationValidFrom();
     Instant expiresAtBefore = target.getAuthorizationExpiresAt();
     apply(target, request, false);
-    AuthorizedTarget saved = repository.save(target);
+    AuthorizedTarget saved;
+    try {
+      saved = repository.save(target);
+      // 立刻 flush，让 @Version 校验在审计写入之前发生。
+      repository.flush();
+    } catch (org.springframework.dao.OptimisticLockingFailureException conflict) {
+      // Round 287：并发编辑同一目标时拒绝后写者，避免用旧快照覆盖他人的授权边界修改。
+      throw new ApiException("该授权目标已被其他操作修改，请刷新后重新提交");
+    }
     auditService.record(
         "UPDATE_TARGET",
         "TARGET",

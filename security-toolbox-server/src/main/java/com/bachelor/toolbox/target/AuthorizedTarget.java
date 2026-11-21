@@ -16,6 +16,14 @@ public class AuthorizedTarget {
   @GeneratedValue(strategy = GenerationType.IDENTITY)
   private Long id;
 
+  /**
+   * Round 287：乐观锁版本号。目标更新是「读—改—写」且没有版本校验，两个运维并发编辑同一目标时
+   * 后提交者会用自己读到的旧快照覆盖前者对授权边界（端口/时间窗/启停）的修改，静默丢失安全变更。
+   */
+  @Version
+  @Column(nullable = false, columnDefinition = "BIGINT DEFAULT 0")
+  private long version;
+
   @Column(nullable = false, length = 100)
   private String name;
 
@@ -46,3 +54,4 @@ public class AuthorizedTarget {
     createdAt = Instant.now();
   }
 }
+
