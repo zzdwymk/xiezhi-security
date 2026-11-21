@@ -166,11 +166,36 @@ public class TargetService {
         throw new ApiException("目标不属于该评估项目");
       }
     }
+    // Round 285：授权范围变更必须可追溯。原实现只记录目标地址，端口范围与启停状态的变化
+    // 在审计里完全看不到，事后无法证明「谁在何时把授权范围放宽/收窄」。
+    String portsBefore = target.getAllowedPorts();
+    boolean enabledBefore = target.isEnabled();
     apply(target, request, false);
     AuthorizedTarget saved = repository.save(target);
     auditService.record(
-        "UPDATE_TARGET", "TARGET", saved.getId(), saved.getTargetValue(), "SUCCESS");
+        "UPDATE_TARGET",
+        "TARGET",
+        saved.getId(),
+        describeScopeChange(saved, portsBefore, enabledBefore),
+        "SUCCESS");
     return saved;
+  }
+
+  /** 生成授权范围变更摘要；仅在端口范围或启停状态实际变化时追加对应片段。 */
+  static String describeScopeChange(
+      AuthorizedTarget saved, String portsBefore, boolean enabledBefore) {
+    StringBuilder detail = new StringBuilder(saved.getTargetValue());
+    if (!java.util.Objects.equals(portsBefore, saved.getAllowedPorts())) {
+      detail
+          .append("; allowedPorts ")
+          .append(portsBefore == null ? "-" : portsBefore)
+          .append("→")
+          .append(saved.getAllowedPorts() == null ? "-" : saved.getAllowedPorts());
+    }
+    if (enabledBefore != saved.isEnabled()) {
+      detail.append("; enabled ").append(enabledBefore).append("→").append(saved.isEnabled());
+    }
+    return detail.toString();
   }
 
   @Transactional

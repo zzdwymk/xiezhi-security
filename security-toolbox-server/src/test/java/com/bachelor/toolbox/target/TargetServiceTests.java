@@ -3,6 +3,7 @@ package com.bachelor.toolbox.target;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -515,7 +516,52 @@ class TargetServiceTests {
     assertThat(existing.getAllowedPorts())
         .as("局部更新不应把已收窄的授权端口范围静默放宽为默认集合")
         .isEqualTo("443");
+  }  @Test
+  void updatingAuthorizationScopeRecordsTheChangeInAuditDetail() {
+    AuthorizedTargetRepository repository = mock(AuthorizedTargetRepository.class);
+    AuditService auditService = mock(AuditService.class);
+    AssessmentProjectRepository projects = mock(AssessmentProjectRepository.class);
+    ProjectTargetRepository projectTargets = mock(ProjectTargetRepository.class);
+    ProjectAuthorizationService authorization = mock(ProjectAuthorizationService.class);
+    when(authorization.isAdmin()).thenReturn(true);
+    when(authorization.currentUsername()).thenReturn("admin");
+
+    AuthorizedTarget existing = new AuthorizedTarget();
+    existing.setId(13L);
+    existing.setName("审计范围目标");
+    existing.setTargetValue("http://192.168.222.158");
+    existing.setTargetType("URL");
+    existing.setAuthorizationNote("授权记录");
+    existing.setAllowedPorts("443");
+    existing.setEnabled(false);
+    when(repository.findById(13L)).thenReturn(Optional.of(existing));
+    when(repository.save(any(AuthorizedTarget.class))).thenAnswer(inv -> inv.getArgument(0));
+
+    TargetService service =
+        new TargetService(
+            repository,
+            auditService,
+            new PortRangeParser(),
+            projects,
+            projectTargets,
+            authorization,
+            65535);
+
+    service.update(
+        13L,
+        new TargetRequest("审计范围目标", "http://192.168.222.158", "URL", "授权记录", "443,8443", true));
+
+    ArgumentCaptor<String> detail = ArgumentCaptor.forClass(String.class);
+    verify(auditService)
+        .record(eq("UPDATE_TARGET"), eq("TARGET"), eq(13L), detail.capture(), eq("SUCCESS"));
+    assertThat(detail.getValue())
+        .as("授权范围（端口/启停）变更必须进入审计明细")
+        .contains("443")
+        .contains("443,8443")
+        .contains("enabled");
   }}
+
+
 
 
 
