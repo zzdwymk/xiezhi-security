@@ -171,6 +171,8 @@ public class TrafficProxyService {
       stopped.setStatus("STOPPED");
       stopped.setStoppedAt(Instant.now());
       sessions.save(stopped);
+      // Round 275：会话结束即释放其自动动作去重键，避免长跑进程内无界增长。
+      pruneSessionAutoActions(autoActions, stopped.getId());
       audit.record("STOP_TRAFFIC_PROXY", "TRAFFIC_SESSION", stopped.getId(), "stopped", "SUCCESS");
     }
     return status();
@@ -389,6 +391,16 @@ public class TrafficProxyService {
 
   static String bounded(String value, int max) {
     return value == null || value.length() <= max ? value : value.substring(0, max);
+  }
+
+  /**
+   * Round 275：{@code autoActions} 只增不减——每会话最多两条（http_headers/tls_config），但会话数无上限，
+   * 反复启停代理会让这个 Set 在长跑进程里持续增长。停止会话时按前缀精确清除，并保留硬上限兜底。
+   */
+  static void pruneSessionAutoActions(Set<String> actions, Long sessionId) {
+    if (actions == null || actions.isEmpty() || sessionId == null) return;
+    String prefix = sessionId + ":";
+    actions.removeIf(key -> key != null && key.startsWith(prefix));
   }
 
   private void executeAutomaticSafeAction(TrafficSession session, TrafficPacket packet) {
