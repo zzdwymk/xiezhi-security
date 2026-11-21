@@ -2,11 +2,13 @@ package com.bachelor.toolbox.traffic;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.bachelor.toolbox.audit.AuditService;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 class TrafficCaptureFilterServiceTests {
@@ -66,6 +68,20 @@ class TrafficCaptureFilterServiceTests {
     assertTrue(service.shouldExclude(capture));
   }
 
+  @Test
+  void updatingADisabledRuleWithoutEnabledFlagKeepsItDisabled() {
+    TrafficCaptureFilter existing = rule("BLACKLIST", "DOMAIN", "example.com");
+    existing.setId(9L);
+    existing.setEnabled(false);
+    when(repository.findById(9L)).thenReturn(Optional.of(existing));
+    when(repository.save(any(TrafficCaptureFilter.class))).thenAnswer(inv -> inv.getArgument(0));
+
+    service.update(
+        9L, new TrafficCaptureFilterService.FilterRequest("BLACKLIST", "DOMAIN", "example.com", null));
+
+    assertFalse(existing.isEnabled(), "局部更新不应把已禁用规则静默重新启用");
+  }
+
   private TrafficCaptureFilter rule(String listType, String type, String pattern) {
     TrafficCaptureFilter rule = new TrafficCaptureFilter();
     rule.setListType(listType);
@@ -96,3 +112,4 @@ class TrafficCaptureFilterServiceTests {
         null);
   }
 }
+

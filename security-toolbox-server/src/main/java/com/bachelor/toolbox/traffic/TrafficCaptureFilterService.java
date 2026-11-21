@@ -40,7 +40,7 @@ public class TrafficCaptureFilterService {
 
   public TrafficCaptureFilter create(FilterRequest request) {
     TrafficCaptureFilter rule = new TrafficCaptureFilter();
-    apply(rule, request);
+    apply(rule, request, true);
     TrafficCaptureFilter saved = repository.save(rule);
     reload();
     audit.record(
@@ -55,7 +55,7 @@ public class TrafficCaptureFilterService {
   public TrafficCaptureFilter update(Long id, FilterRequest request) {
     TrafficCaptureFilter rule =
         repository.findById(id).orElseThrow(() -> new ApiException("抓包排除规则不存在"));
-    apply(rule, request);
+    apply(rule, request, false);
     TrafficCaptureFilter saved = repository.save(rule);
     reload();
     audit.record(
@@ -107,7 +107,12 @@ public class TrafficCaptureFilterService {
     return hasWhitelist && !matchesWhitelist;
   }
 
-  private void apply(TrafficCaptureFilter rule, FilterRequest request) {
+  /**
+   * Round 282：{@code enabled} 是可选字段。创建时缺省为启用；更新时缺省表示「保持原状态」，
+   * 否则一次与开关无关的局部编辑会把运维已停用的规则静默重新启用，导致该主机流量重新被排除在
+   * 抓包证据之外。
+   */
+  private void apply(TrafficCaptureFilter rule, FilterRequest request, boolean creating) {
     String type = request.type() == null ? "" : request.type().trim().toUpperCase(Locale.ROOT);
     String listType =
         request.listType() == null
@@ -126,7 +131,8 @@ public class TrafficCaptureFilterService {
     rule.setType(type);
     rule.setListType(listType);
     rule.setPattern(pattern);
-    rule.setEnabled(request.enabled() == null || request.enabled());
+    rule.setEnabled(
+        request.enabled() != null ? request.enabled() : (creating || rule.isEnabled()));
   }
 
   private boolean matches(
