@@ -32,30 +32,56 @@ public class TaskExecutionControlService {
 
   public Permit acquire(Long taskId, Long targetId) {
     if (isCancellationRequested(taskId)) throw new ApiException("任务已取消");
-    Semaphore target =
-        targets.computeIfAbsent(targetId, ignored -> new Semaphore(perTargetLimit, true));
     boolean globalAcquired = false;
-    boolean targetAcquired = false;
     boolean handedOff = false;
     try {
       global.acquire();
       globalAcquired = true;
-      target.acquire();
-      targetAcquired = true;
-      if (isCancellationRequested(taskId)) throw new ApiException("任务已取消");
+      Semaphore acquired = acquireTargetPermit(targetId);
+      if (isCancellationRequested(taskId)) {
+        releaseTargetPermit(targetId, acquired);
+        throw new ApiException("任务已取消");
+      }
       handedOff = true;
-      return new Permit(global, target);
+      return new Permit(global, acquired, () -> releaseTargetPermit(targetId, acquired));
     } catch (InterruptedException ex) {
       Thread.currentThread().interrupt();
       throw new ApiException("任务等待并发配额时被中断");
-    } catch (RuntimeException ex) {
-      throw ex;
     } finally {
-      if (!handedOff) {
-        if (targetAcquired) target.release();
-        if (globalAcquired) global.release();
-      }
+      if (!handedOff && globalAcquired) global.release();
     }
+  }
+
+  /**
+   * Round 276：按 target 限流用过的 Semaphore 原先只增不减（{@code targets} 永不移除），
+   * 每个出现过的 targetId 都会在长跑进程里永久驻留。这里在「许可全部归还」时把条目从 map 移除，
+   * 并用「取得许可后复核仍是当前实例」的重试消除与并发 acquire 的竞态：若条目在等待期间被移除，
+   * 就归还许可并在新实例上重试，保证同一 target 的并发上限始终成立。
+   */
+  private Semaphore acquireTargetPermit(Long targetId) throws InterruptedException {
+    while (true) {
+      Semaphore candidate =
+          targets.computeIfAbsent(targetId, ignored -> new Semaphore(perTargetLimit, true));
+      candidate.acquire();
+      if (targets.get(targetId) == candidate) return candidate;
+      candidate.release();
+    }
+  }
+
+  /** 归还许可；若该 target 的许可已全部归还，则在同一把 key 锁内原子地移除条目。 */
+  private void releaseTargetPermit(Long targetId, Semaphore target) {
+    targets.compute(
+        targetId,
+        (ignored, current) -> {
+          target.release();
+          if (current != target) return current;
+          return target.availablePermits() >= perTargetLimit ? null : target;
+        });
+  }
+
+  /** 供测试与运维观测：当前仍在跟踪的 target 限流器数量。 */
+  int trackedTargets() {
+    return targets.size();
   }
 
   public void requestCancellation(Long taskId) {
@@ -134,18 +160,22 @@ public class TaskExecutionControlService {
   public static final class Permit implements AutoCloseable {
     private final Semaphore global;
     private final Semaphore target;
+    private final Runnable targetRelease;
     private boolean closed;
 
-    private Permit(Semaphore global, Semaphore target) {
+    private Permit(Semaphore global, Semaphore target, Runnable targetRelease) {
       this.global = global;
       this.target = target;
+      this.targetRelease = targetRelease;
     }
 
     @Override
     public synchronized void close() {
       if (!closed) {
         closed = true;
-        target.release();
+        // Round 276：按 target 归还许可走回调，由服务在归还后按需回收该 target 的限流器。
+        if (targetRelease != null) targetRelease.run();
+        else target.release();
         global.release();
       }
     }
