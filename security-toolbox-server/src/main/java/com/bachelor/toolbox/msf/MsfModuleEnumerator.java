@@ -42,6 +42,12 @@ public class MsfModuleEnumerator {
   private final ExecutableLocator locator;
   private final List<String> executableCandidates;
 
+  /** Round 310：模块目录扫描结果缓存（默认 60 秒），避免每次列表请求都全盘遍历。 */
+  private static final long CACHE_TTL_MILLIS = 60_000;
+
+  private volatile List<MsfModuleOutputParser.MsfLine> cachedResult;
+  private volatile long cachedAtMillis;
+
   public MsfModuleEnumerator(
       ExecutableLocator locator,
       @Value("${toolbox.execution.msf-path:msfconsole}") String configuredExecutable) {
@@ -57,6 +63,31 @@ public class MsfModuleEnumerator {
 
   /** 扫描并返回本机 auxiliary/exploit 模块元数据（按模块路径排序）。 */
   public List<MsfModuleOutputParser.MsfLine> enumerate() {
+    long now = System.currentTimeMillis();
+    List<MsfModuleOutputParser.MsfLine> snapshot = cachedResult;
+    if (snapshot != null && now - cachedAtMillis < CACHE_TTL_MILLIS) {
+      return snapshot;
+    }
+    synchronized (this) {
+      now = System.currentTimeMillis();
+      snapshot = cachedResult;
+      if (snapshot != null && now - cachedAtMillis < CACHE_TTL_MILLIS) {
+        return snapshot;
+      }
+      List<MsfModuleOutputParser.MsfLine> scanned = scanModules();
+      cachedResult = List.copyOf(scanned);
+      cachedAtMillis = System.currentTimeMillis();
+      return cachedResult;
+    }
+  }
+
+  /** 供测试或显式刷新使用：清空缓存。 */
+  public synchronized void clearCache() {
+    cachedResult = null;
+    cachedAtMillis = 0L;
+  }
+
+  private List<MsfModuleOutputParser.MsfLine> scanModules() {
     Path modulesRoot = resolveModulesRoot();
     List<MsfModuleOutputParser.MsfLine> result = new ArrayList<>();
     int remaining = MAX_MODULES;
@@ -64,7 +95,10 @@ public class MsfModuleEnumerator {
       Path categoryRoot = modulesRoot.resolve(top);
       if (!Files.isDirectory(categoryRoot)) continue;
       try (Stream<Path> walk = Files.walk(categoryRoot)) {
-        for (Path file : walk.toList()) {
+        // Round 310：流式消费，避免 walk.toList() 把整棵目录树先物化进内存。
+        java.util.Iterator<Path> iterator = walk.iterator();
+        while (iterator.hasNext()) {
+          Path file = iterator.next();
           if (remaining <= 0) throw new ApiException("MSF 模块数量超过安全上限 " + MAX_MODULES);
           if (!isModuleFile(file)) continue;
           MsfModuleOutputParser.MsfLine line = toLine(top, modulesRoot, file);
