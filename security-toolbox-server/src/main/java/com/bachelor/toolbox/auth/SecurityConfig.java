@@ -129,6 +129,11 @@ public class SecurityConfig {
                     // Audit records contain global security operations, not just project data.
                     .requestMatchers(HttpMethod.GET, "/api/audits", "/api/audits/**")
                     .hasRole("ADMIN")
+                    // Round 294：抓包数据含 Cookie/Authorization/请求体，是全平台共享的敏感内容。
+                    // 写操作与 PUT 早已限管理员，前端也用 role==="ADMIN" 决定是否展示抓包入口，
+                    // 但读接口此前对任何登录用户开放——现补齐 GET 同样限管理员。
+                    .requestMatchers(HttpMethod.GET, "/api/traffic/**")
+                    .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.POST, "/api/traffic/**")
                     .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.DELETE, "/api/traffic/**")
