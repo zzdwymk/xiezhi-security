@@ -164,6 +164,7 @@ public class AfrogScanTool implements SecurityTool {
       String json) {
     List<FindingDraft> findings = new ArrayList<>();
     List<Map<String, Object>> matches = new ArrayList<>();
+    int totalMatches = 0;
     Map<String, ScannerPocSelectionService.SelectedPoc> allowed = new LinkedHashMap<>();
     selected.forEach(item -> allowed.put(item.externalId(), item));
     try {
@@ -212,6 +213,8 @@ public class AfrogScanTool implements SecurityTool {
                   "依据 PoC 引用与厂商公告确认影响，修复后使用同一 PoC 复测。",
                   selectedPoc.vulnerabilityCode()));
         }
+        // Round 333：独立统计真实匹配总数；截断必须可见，不能让 matchCount 等于截断后的条数。
+        totalMatches++;
         // Round 332：matches 与 findings 使用同一上限，避免大量结果把响应与内存放大。
         if (matches.size() < MAX_FINDINGS) {
           matches.add(Map.of("pocId", id, "name", name, "severity", severity, "target", matched));
@@ -224,9 +227,10 @@ public class AfrogScanTool implements SecurityTool {
     }
     Map<String, Object> data = new LinkedHashMap<>();
     data.put("selectedPocCount", selected.size());
-    data.put("matchCount", matches.size());
+    data.put("matchCount", totalMatches);
+    data.put("truncated", totalMatches > MAX_FINDINGS);
     data.put("matches", matches);
-    return new ToolExecutionResult("Afrog 扫描完成，匹配 " + matches.size() + " 项潜在问题", data, findings);
+    return new ToolExecutionResult("Afrog 扫描完成，匹配 " + totalMatches + " 项潜在问题", data, findings);
   }
 
   ToolExecutionResult parseCompletedOutput(

@@ -50,5 +50,10 @@ class AfrogOutputParserTests {
     assertThat(matches)
         .as("matches 必须有上限，当前 %s 条", matches.size())
         .hasSizeLessThanOrEqualTo(500);
+    // Round 333：截断必须是可见的——总数不能等于截断后的条数，且要有 truncated 标记。
+    assertThat(result.data().get("matchCount"))
+        .as("matchCount 必须反映真实匹配总数（600），不能等于截断后的 500")
+        .isEqualTo(600);
+    assertThat(result.data().get("truncated")).isEqualTo(true);
   }
 }
