@@ -559,7 +559,57 @@ class TargetServiceTests {
         .contains("443")
         .contains("443,8443")
         .contains("enabled");
-  }  @Test
+  }
+
+  @Test
+  void repointingTargetAndEditingAuthorizationNoteAreBothAudited() {
+    AuthorizedTargetRepository repository = mock(AuthorizedTargetRepository.class);
+    AuditService auditService = mock(AuditService.class);
+    AssessmentProjectRepository projects = mock(AssessmentProjectRepository.class);
+    ProjectTargetRepository projectTargets = mock(ProjectTargetRepository.class);
+    ProjectAuthorizationService authorization = mock(ProjectAuthorizationService.class);
+    when(authorization.isAdmin()).thenReturn(true);
+    when(authorization.currentUsername()).thenReturn("admin");
+
+    AuthorizedTarget existing = new AuthorizedTarget();
+    existing.setId(15L);
+    existing.setName("改指目标");
+    existing.setTargetValue("http://192.168.222.158/Less-1/?id=1");
+    existing.setTargetType("URL");
+    existing.setAuthorizationNote("已获得书面授权，仅限 192.168.222.158");
+    existing.setAllowedPorts("443");
+    existing.setEnabled(true);
+    when(repository.findById(15L)).thenReturn(Optional.of(existing));
+    when(repository.save(any(AuthorizedTarget.class))).thenAnswer(inv -> inv.getArgument(0));
+
+    TargetService service =
+        new TargetService(
+            repository, auditService, new PortRangeParser(), projects, projectTargets, authorization, 65535);
+
+    service.update(
+        15L,
+        new TargetRequest(
+            "改指目标",
+            "http://10.0.0.9/Less-1/?id=1",
+            "URL",
+            "授权说明已放宽到任意地址",
+            "443",
+            true));
+
+    ArgumentCaptor<String> detail = ArgumentCaptor.forClass(String.class);
+    verify(auditService)
+        .record(eq("UPDATE_TARGET"), eq("TARGET"), eq(15L), detail.capture(), eq("SUCCESS"));
+    assertThat(detail.getValue())
+        .as("把授权目标改指到别处必须留下旧值，否则事后无法证明授权被改写")
+        .contains("http://192.168.222.158/Less-1/?id=1")
+        .contains("http://10.0.0.9/Less-1/?id=1");
+    assertThat(detail.getValue())
+        .as("授权说明被修改同样必须留痕（旧值→新值）")
+        .contains("已获得书面授权，仅限 192.168.222.158")
+        .contains("授权说明已放宽到任意地址");
+  }
+
+  @Test
   void updatingWithoutAuthorizationWindowKeepsTheExpiredWindow() {
     AuthorizedTargetRepository repository = mock(AuthorizedTargetRepository.class);
     AuditService auditService = mock(AuditService.class);
@@ -640,6 +690,7 @@ class TargetServiceTests {
     assertThat(existing.getAuthorizationValidFrom()).isNull();
     assertThat(existing.getAuthorizationExpiresAt()).isNull();
   }}
+
 
 
 

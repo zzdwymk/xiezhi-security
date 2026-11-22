@@ -172,6 +172,10 @@ public class TargetService {
     boolean enabledBefore = target.isEnabled();
     Instant validFromBefore = target.getAuthorizationValidFrom();
     Instant expiresAtBefore = target.getAuthorizationExpiresAt();
+    // Round 291：把授权目标改指到别处（或篡改授权说明文字）同样必须留痕。
+    // 原实现只记录**新** targetValue，事后无法证明「授权范围被改写过」。
+    String targetValueBefore = target.getTargetValue();
+    String authorizationNoteBefore = target.getAuthorizationNote();
     apply(target, request, false);
     AuthorizedTarget saved;
     try {
@@ -186,19 +190,54 @@ public class TargetService {
         "UPDATE_TARGET",
         "TARGET",
         saved.getId(),
-        describeScopeChange(saved, portsBefore, enabledBefore, validFromBefore, expiresAtBefore),
+        describeScopeChange(
+            saved,
+            targetValueBefore,
+            authorizationNoteBefore,
+            portsBefore,
+            enabledBefore,
+            validFromBefore,
+            expiresAtBefore),
         "SUCCESS");
     return saved;
+  }
+
+  /** 审计明细中的长文本裁剪：保留足够辨识的前缀，避免一条审计被整段授权说明撑爆。 */
+  private static String clipForAudit(String value) {
+    if (value == null) return "-";
+    String trimmed = value.trim();
+    if (trimmed.isEmpty()) return "-";
+    int max = 120;
+    return trimmed.length() <= max ? trimmed : trimmed.substring(0, max) + "…";
   }
 
   /** 生成授权范围变更摘要；仅在授权边界字段实际变化时追加对应片段。 */
   static String describeScopeChange(
       AuthorizedTarget saved,
+      String targetValueBefore,
+      String authorizationNoteBefore,
       String portsBefore,
       boolean enabledBefore,
       Instant validFromBefore,
       Instant expiresAtBefore) {
     StringBuilder detail = new StringBuilder(saved.getTargetValue());
+    // Round 291：改指授权目标 = 改写授权对象本身，必须留旧值。
+    if (!java.util.Objects.equals(targetValueBefore, saved.getTargetValue())) {
+      detail
+          .append("; targetValue ")
+          .append(targetValueBefore == null ? "-" : targetValueBefore)
+          .append("→")
+          .append(saved.getTargetValue() == null ? "-" : saved.getTargetValue());
+    }
+    // Round 291：授权说明是"已获授权"的书面依据，被改写同样要可追溯（裁剪长度防审计膨胀）。
+    String noteAfter = saved.getAuthorizationNote();
+    if (!java.util.Objects.equals(authorizationNoteBefore, noteAfter)) {
+      detail
+          .append("; authorizationNote ")
+          .append(clipForAudit(authorizationNoteBefore))
+          .append("→")
+          .append(clipForAudit(noteAfter));
+    }
     if (!java.util.Objects.equals(portsBefore, saved.getAllowedPorts())) {
       detail
           .append("; allowedPorts ")
