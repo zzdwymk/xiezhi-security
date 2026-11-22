@@ -95,6 +95,10 @@ public class SecurityConfig {
                     .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.POST, "/api/tasks/*/cancel", "/api/tasks/*/retry")
                     .authenticated()
+                    // Round 301：全局任务并发上限是平台级配置，普通用户改它可让所有人任务排队（压到 1）
+                    // 或放大资源占用（拉到 32）；与扫描计划/抓包过滤器等其它平台配置保持一致，限管理员。
+                    .requestMatchers(HttpMethod.PUT, "/api/tasks/control/limits")
+                    .hasRole("ADMIN")
                     .requestMatchers(HttpMethod.POST, "/api/projects/*/approvals/*/decision")
                     .hasRole("ADMIN")
                     .requestMatchers(
