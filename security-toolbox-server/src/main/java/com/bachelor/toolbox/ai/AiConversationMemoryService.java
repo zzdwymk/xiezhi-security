@@ -38,6 +38,9 @@ public class AiConversationMemoryService {
   /** Round 308：客户端对话线程整体 JSON 的上限，避免用户把任意大文本写进 TEXT 列。 */
   private static final int MAX_THREAD_JSON_CHARS = 512_000;
 
+  /** Round 309：对话列表一次最多返回的线程数。 */
+  private static final int MAX_LISTED_THREADS = 200;
+
   private final ConcurrentHashMap<String, Session> sessions = new ConcurrentHashMap<>();
   private final Object lifecycleMonitor = new Object();
   private final int maxMessages;
@@ -652,7 +655,11 @@ public class AiConversationMemoryService {
 
   public List<Map<String, Object>> listAllPersistedThreads() {
     if (repository == null) return List.of();
-    List<AiConversationSessionRecord> records = repository.findAllByOrderByLastAccessDesc();
+    // Round 309：只返回最近的一批线程。原实现全量读取，线程数量无上限，会随使用时间增长而放大内存。
+    List<AiConversationSessionRecord> records =
+        repository.findAllByOrderByLastAccessDesc(
+            com.bachelor.toolbox.common.PageRequests.bounded(
+                0, MAX_LISTED_THREADS, 1, MAX_LISTED_THREADS, org.springframework.data.domain.Sort.unsorted()));
     List<Map<String, Object>> threads = new ArrayList<>(records.size());
     for (AiConversationSessionRecord record : records) {
       if (record.getThreadJson() != null && !record.getThreadJson().isBlank()) {
@@ -785,6 +792,7 @@ public class AiConversationMemoryService {
 
   private record PersistedTurn(boolean user, String text) {}
 }
+
 
 
 

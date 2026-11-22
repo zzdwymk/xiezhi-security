@@ -14,5 +14,10 @@ public interface AiConversationSessionRepository
 
   List<AiConversationSessionRecord> findAllByOrderByLastAccessDesc();
 
+  /** Round 309：按最近访问时间倒序的分页版本，供列表接口限流使用。 */
+  List<AiConversationSessionRecord> findAllByOrderByLastAccessDesc(
+      org.springframework.data.domain.Pageable pageable);
+
   void deleteByProjectIdIn(Collection<Long> projectIds);
 }
+
