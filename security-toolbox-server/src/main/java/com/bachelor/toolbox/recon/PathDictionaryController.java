@@ -51,13 +51,13 @@ public class PathDictionaryController {
 
   /** Bulk imports words from raw multi-line text; existing/invalid words are reported. */
   @PostMapping("/import")
-  public PathDictionaryService.ImportResult importText(@RequestBody TextImportRequest request) {
+  public PathDictionaryService.ImportResult importText(@jakarta.validation.Valid @RequestBody TextImportRequest request) {
     return dictionary.importText(request.text());
   }
 
   /** Adds and/or removes words in one call (the portable editor's save action). */
   @PostMapping("/update")
-  public PathDictionaryService.UpdateResult update(@RequestBody UpdateRequest request) {
+  public PathDictionaryService.UpdateResult update(@jakarta.validation.Valid @RequestBody UpdateRequest request) {
     return dictionary.update(request.additions(), request.removals());
   }
 
@@ -66,7 +66,14 @@ public class PathDictionaryController {
       @jakarta.validation.constraints.Size(max = 100_000, message = "一次校验的词条数量超过 100000 条限制")
           List<String> words) {}
 
-  public record TextImportRequest(String text) {}
+  public record TextImportRequest(
+      @jakarta.validation.constraints.Size(max = 2_000_000, message = "导入文本不能超过 2000000 个字符")
+          String text) {}
 
-  public record UpdateRequest(List<String> additions, Set<String> removals) {}
+  public record UpdateRequest(
+      @jakarta.validation.constraints.Size(max = 100_000, message = "一次新增词条超过 100000 条限制")
+          List<String> additions,
+      @jakarta.validation.constraints.Size(max = 100_000, message = "一次删除词条超过 100000 条限制")
+          Set<String> removals) {}
 }
+
