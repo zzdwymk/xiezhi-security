@@ -159,6 +159,35 @@ public class TargetService {
     return saved;
   }
 
+  /** 目标更新涉及的项目集合：请求声明的项目，或目标已关联的全部项目。 */
+  private java.util.List<Long> projectIdsForUpdate(Long targetId, TargetRequest request) {
+    java.util.List<Long> ids = new java.util.ArrayList<>();
+    if (request != null && request.projectId() != null) {
+      ids.add(request.projectId());
+    } else {
+      var links = projectTargets.findByTargetId(targetId);
+      if (links != null) links.forEach(link -> ids.add(link.getProjectId()));
+    }
+    return ids;
+  }
+
+  /** 按项目 id 排序后嵌套加锁，避免不同更新顺序造成死锁。 */
+  private <T> T withProjectLocks(java.util.List<Long> projectIds, java.util.function.Supplier<T> action) {
+    java.util.List<Long> sorted =
+        projectIds == null
+            ? java.util.List.of()
+            : projectIds.stream().distinct().sorted().collect(java.util.stream.Collectors.toList());
+    return withProjectLocksAt(sorted, 0, action);
+  }
+
+  private <T> T withProjectLocksAt(
+      java.util.List<Long> sorted, int index, java.util.function.Supplier<T> action) {
+    if (index >= sorted.size()) return action.get();
+    synchronized (projectLocks.computeIfAbsent(sorted.get(index), key -> new Object())) {
+      return withProjectLocksAt(sorted, index + 1, action);
+    }
+  }
+
   /** 同项目内重复的授权目标不会带来任何额外授权信息，只会造成审计歧义与重复维护。 */
   private void ensureNoDuplicateTarget(Long projectId, String targetValue, Long excludeTargetId) {
     String incoming = normalizeTargetValue(targetValue);
@@ -212,6 +241,11 @@ public class TargetService {
 
   @Transactional
   public AuthorizedTarget update(Long id, TargetRequest request) {
+    // Round 319：更新路径与创建一样是"先查后写"，并发改指到同一地址会产生重复目标。按相关项目加锁。
+    return withProjectLocks(projectIdsForUpdate(id, request), () -> doUpdate(id, request));
+  }
+
+  private AuthorizedTarget doUpdate(Long id, TargetRequest request) {
     AuthorizedTarget target = get(id);
     requireTargetManage(target);
     if (request.projectId() != null) {
