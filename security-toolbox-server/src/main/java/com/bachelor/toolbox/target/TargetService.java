@@ -36,6 +36,9 @@ public class TargetService {
   private static final Sort LIST_SORT =
       Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id"));
 
+  /** Round 321：列表最多读取的页数（50 × 1000 = 5 万条），防止无限翻页把全部数据读入内存。 */
+  static final int MAX_LIST_PAGES = 50;
+
   private final AuthorizedTargetRepository repository;
 
   /** Round 318：按项目串行化目标创建，关闭"先查后写"的并发窗口。 */
@@ -76,7 +79,7 @@ public class TargetService {
   /** Keep the array API compatible while reading every accessible page, not only the first 1000. */
   private <T> List<T> loadAll(java.util.function.Function<Pageable, Page<T>> pageLoader) {
     List<T> result = new ArrayList<>();
-    for (int page = 0; ; page++) {
+    for (int page = 0; page < MAX_LIST_PAGES; page++) {
       Page<T> batch =
           pageLoader.apply(
               PageRequests.bounded(
@@ -90,6 +93,7 @@ public class TargetService {
         return List.copyOf(result);
       }
     }
+    return List.copyOf(result);
   }
 
   public AuthorizedTarget get(Long id) {
