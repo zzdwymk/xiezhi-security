@@ -355,9 +355,10 @@ public class AssessmentProjectService {
     }
   }
 
-  private void validateAuthorizationWindow(AssessmentProject project, Instant now) {
+  void validateAuthorizationWindow(AssessmentProject project, Instant now) {
+    // Round 303：到期时刻本身必须视为已过期（与 TargetService 的 !now.isBefore(expiresAt) 语义一致）。
     if (now.isBefore(project.getAuthorizationValidFrom())
-        || now.isAfter(project.getAuthorizationExpiresAt())) {
+        || !now.isBefore(project.getAuthorizationExpiresAt())) {
       throw new ApiException("项目授权已过期或尚未生效");
     }
   }
@@ -408,3 +409,4 @@ public class AssessmentProjectService {
     }
   }
 }
+
