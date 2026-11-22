@@ -197,7 +197,15 @@ public class AssessmentProjectService {
     }
     validateTargetCanBeAdded(projectId, targetId);
 
-    ProjectTarget link = links.save(new ProjectTarget(projectId, targetId));
+    ProjectTarget link;
+    try {
+      // Round 320：并发添加同一目标时先查后写会同时通过校验，数据库唯一约束拦下第二个。
+      // flush 让冲突在此处暴露，并转成可读业务错误（否则会被全局处理器归为 500）。
+      link = links.save(new ProjectTarget(projectId, targetId));
+      links.flush();
+    } catch (org.springframework.dao.DataIntegrityViolationException conflict) {
+      throw new ApiException("目标已在项目中");
+    }
     audit.record("ADD_PROJECT_TARGET", "PROJECT", projectId, "targetId=" + targetId, "SUCCESS");
     return link;
   }
