@@ -147,6 +147,8 @@ security-toolbox-web/scripts/*
 !security-toolbox-web/scripts/test-desktop-dev-runner.cjs
 !security-toolbox-web/scripts/test-desktop-packaged-e2e.cjs
 !security-toolbox-web/scripts/test-runtime-log-integration.cjs
+!security-toolbox-web/scripts/test-findings-footer-consistency.cjs
+!security-toolbox-web/scripts/test-welcome-centering.cjs
 !security-toolbox-web/scripts/test-global-notifications-browser.cjs
 !security-toolbox-web/scripts/test-json-file.cjs
 !security-toolbox-web/scripts/test-notification-center.cjs
@@ -315,4 +317,5 @@ preview-*/
 
 # 保留源码、正式测试、统计/构建脚本、package-lock.json 和应用图标。
 # web_fingerprint_db/dist/*.json 按该模块的 .gitignore 规则随仓库交付。
+
 
