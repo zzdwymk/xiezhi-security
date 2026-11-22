@@ -108,16 +108,71 @@ public class AssessmentProjectService {
   @Transactional
   public AssessmentProject update(Long id, ProjectDtos.Update request) {
     AssessmentProject project = get(id);
+    // Round 292：项目更新原先**完全不入审计账本**（只有 CREATE/STATUS/ADD_TARGET/REMOVE_TARGET），
+    // 而项目授权声明与授权时间窗是整套任务的授权依据——改写它们必须可追溯。
+    String nameBefore = project.getName();
+    String statementBefore = project.getAuthorizationStatement();
+    java.time.Instant validFromBefore = project.getAuthorizationValidFrom();
+    java.time.Instant expiresAtBefore = project.getAuthorizationExpiresAt();
+    String ownerBefore = project.getOwner();
     applyUpdate(project, request);
     validateDates(project.getAuthorizationValidFrom(), project.getAuthorizationExpiresAt());
+    AssessmentProject saved;
     try {
-      AssessmentProject saved = projects.save(project);
+      saved = projects.save(project);
       projects.flush();
-      return saved;
     } catch (org.springframework.dao.OptimisticLockingFailureException conflict) {
       // Round 288：并发编辑同一项目时拒绝后写者，避免用旧快照覆盖他人的授权边界修改。
       throw new ApiException("该评估项目已被其他操作修改，请刷新后重新提交");
     }
+    audit.record(
+        "UPDATE_PROJECT",
+        "PROJECT",
+        id,
+        describeProjectChange(
+            saved, nameBefore, statementBefore, validFromBefore, expiresAtBefore, ownerBefore),
+        "SUCCESS");
+    return saved;
+  }
+
+  /** 生成项目更新摘要：只记录实际变化的字段，授权声明做长度裁剪。 */
+  private static String describeProjectChange(
+      AssessmentProject saved,
+      String nameBefore,
+      String statementBefore,
+      java.time.Instant validFromBefore,
+      java.time.Instant expiresAtBefore,
+      String ownerBefore) {
+    StringBuilder detail = new StringBuilder(saved.getName() == null ? "" : saved.getName());
+    if (!java.util.Objects.equals(nameBefore, saved.getName())) {
+      detail.append("; name ").append(clipForAudit(nameBefore)).append("→").append(clipForAudit(saved.getName()));
+    }
+    if (!java.util.Objects.equals(statementBefore, saved.getAuthorizationStatement())) {
+      detail
+          .append("; authorizationStatement ")
+          .append(clipForAudit(statementBefore))
+          .append("→")
+          .append(clipForAudit(saved.getAuthorizationStatement()));
+    }
+    if (!java.util.Objects.equals(validFromBefore, saved.getAuthorizationValidFrom())) {
+      detail.append("; validFrom ").append(validFromBefore).append("→").append(saved.getAuthorizationValidFrom());
+    }
+    if (!java.util.Objects.equals(expiresAtBefore, saved.getAuthorizationExpiresAt())) {
+      detail.append("; expiresAt ").append(expiresAtBefore).append("→").append(saved.getAuthorizationExpiresAt());
+    }
+    if (!java.util.Objects.equals(ownerBefore, saved.getOwner())) {
+      detail.append("; owner ").append(clipForAudit(ownerBefore)).append("→").append(clipForAudit(saved.getOwner()));
+    }
+    return detail.toString();
+  }
+
+  /** 审计明细里的长文本裁剪（保留可辨识前缀）。 */
+  private static String clipForAudit(String value) {
+    if (value == null) return "-";
+    String trimmed = value.trim();
+    if (trimmed.isEmpty()) return "-";
+    int max = 120;
+    return trimmed.length() <= max ? trimmed : trimmed.substring(0, max) + "…";
   }
 
   @Transactional

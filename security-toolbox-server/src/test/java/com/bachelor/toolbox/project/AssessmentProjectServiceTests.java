@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -104,6 +105,24 @@ class AssessmentProjectServiceTests {
     assertThatThrownBy(() -> service.get(9L))
         .isInstanceOf(ApiException.class)
         .hasMessage("评估项目不存在");
+  }
+
+  @Test
+  void updatingProjectAuthorizationStatementIsAudited() {
+    AssessmentProject project = project("ACTIVE");
+    project.setAuthorizationStatement("严格限定在 192.168.222.158 靶机环境");
+    project.setOwner("安全审计组");
+    when(projects.findById(1L)).thenReturn(Optional.of(project));
+    when(projects.save(project)).thenReturn(project);
+
+    service.update(1L, new ProjectDtos.Update(null, null, "授权范围放宽到任意地址", null, null, null));
+
+    ArgumentCaptor<String> detail = ArgumentCaptor.forClass(String.class);
+    verify(audit).record(eq("UPDATE_PROJECT"), eq("PROJECT"), eq(1L), detail.capture(), eq("SUCCESS"));
+    assertThat(detail.getValue())
+        .as("项目授权声明的改写必须留痕（旧值→新值），否则无法证明授权依据被换过")
+        .contains("严格限定在 192.168.222.158")
+        .contains("授权范围放宽到任意地址");
   }
 
   @Test
