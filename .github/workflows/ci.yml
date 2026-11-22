@@ -306,6 +306,10 @@ jobs:
         working-directory: security-toolbox-web
         run: npm run test:runtime-logs
 
+      - name: Test script file references
+        working-directory: security-toolbox-web
+        run: npm run test:script-files
+
       - name: Test offline tools
         working-directory: security-toolbox-web
         run: npm run test:offline
