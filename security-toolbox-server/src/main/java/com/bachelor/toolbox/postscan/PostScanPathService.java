@@ -158,8 +158,8 @@ public class PostScanPathService {
       return response(entity, document, findingIds, readLongList(entity.getTaskIdsJson()));
     }
     if (!"DRAFT".equals(entity.getStatus())) throw new ApiException("该后续路径当前不可执行");
-    // Round 304：到期时刻本身视为已过期（原实现 expiresAt < now 才过期，恰好在到期时刻仍可执行）。
-    if (!entity.getExpiresAt().isAfter(Instant.now())) {
+    // Round 305：expiresAt 列允许为空（历史数据）；null 按"已过期"处理，避免 NPE 变成 500。
+    if (isExpired(entity.getExpiresAt(), Instant.now())) {
       entity.setStatus("EXPIRED");
       paths.save(entity);
       throw new ApiException("后续路径已过期，请根据最新扫描结果重新生成");
@@ -647,6 +647,11 @@ public class PostScanPathService {
         MessageDigest.getInstance("SHA-256")
             .digest(objectMapper.writeValueAsString(value).getBytes(StandardCharsets.UTF_8));
     return java.util.HexFormat.of().formatHex(digest);
+  }
+
+  /** Round 305：到期判断（null 视为已过期，保证 fail-closed 且不抛 NPE）。 */
+  static boolean isExpired(java.time.Instant expiresAt, java.time.Instant now) {
+    return expiresAt == null || !expiresAt.isAfter(now);
   }
 
   private PostScanPlanDocument readDocument(PostScanPath entity) throws Exception {

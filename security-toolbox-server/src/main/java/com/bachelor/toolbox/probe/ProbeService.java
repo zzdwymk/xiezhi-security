@@ -138,7 +138,7 @@ public class ProbeService {
     return projects.findById(projectId).orElseThrow(() -> new IllegalArgumentException("未找到项目"));
   }
 
-  private void validateProjectAuthorization(AssessmentProject project) {
+  void validateProjectAuthorization(AssessmentProject project) {
     Instant now = Instant.now();
     boolean authorizationInactive =
         !"ACTIVE".equalsIgnoreCase(project.getStatus())
@@ -467,3 +467,4 @@ public class ProbeService {
 
   private record PreparedProbe(String url, URI uri) {}
 }
+
