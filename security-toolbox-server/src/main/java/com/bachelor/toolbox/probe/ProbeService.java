@@ -143,7 +143,8 @@ public class ProbeService {
     boolean authorizationInactive =
         !"ACTIVE".equalsIgnoreCase(project.getStatus())
             || now.isBefore(project.getAuthorizationValidFrom())
-            || now.isAfter(project.getAuthorizationExpiresAt());
+            // Round 304：到期时刻本身视为已过期（与目标级/项目级其它校验统一）。
+            || !now.isBefore(project.getAuthorizationExpiresAt());
     if (authorizationInactive) {
       throw new ApiException("项目授权已过期或尚未生效");
     }

@@ -166,8 +166,9 @@ public class SecurityActionService {
     }
   }
 
-  private void ensureInsideExecutionWindow(SecurityAction action, Instant now) {
-    if (now.isBefore(action.getWindowStart()) || now.isAfter(action.getWindowEnd())) {
+  void ensureInsideExecutionWindow(SecurityAction action, Instant now) {
+    // Round 304：结束时刻本身必须视为窗口已关闭（与项目/目标授权窗口的"到期即失效"语义一致）。
+    if (now.isBefore(action.getWindowStart()) || !now.isBefore(action.getWindowEnd())) {
       throw new ApiException("当前不在批准执行时间窗内");
     }
   }
@@ -196,3 +197,4 @@ public class SecurityActionService {
     return value == null ? null : value.trim();
   }
 }
+

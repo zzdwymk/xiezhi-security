@@ -158,7 +158,8 @@ public class PostScanPathService {
       return response(entity, document, findingIds, readLongList(entity.getTaskIdsJson()));
     }
     if (!"DRAFT".equals(entity.getStatus())) throw new ApiException("该后续路径当前不可执行");
-    if (entity.getExpiresAt().isBefore(Instant.now())) {
+    // Round 304：到期时刻本身视为已过期（原实现 expiresAt < now 才过期，恰好在到期时刻仍可执行）。
+    if (!entity.getExpiresAt().isAfter(Instant.now())) {
       entity.setStatus("EXPIRED");
       paths.save(entity);
       throw new ApiException("后续路径已过期，请根据最新扫描结果重新生成");
