@@ -35,6 +35,9 @@ import org.springframework.stereotype.Service;
 public class AiConversationMemoryService {
   private static final int MAX_TRANSCRIPT_CHARS = 8_000;
 
+  /** Round 308：客户端对话线程整体 JSON 的上限，避免用户把任意大文本写进 TEXT 列。 */
+  private static final int MAX_THREAD_JSON_CHARS = 512_000;
+
   private final ConcurrentHashMap<String, Session> sessions = new ConcurrentHashMap<>();
   private final Object lifecycleMonitor = new Object();
   private final int maxMessages;
@@ -681,6 +684,19 @@ public class AiConversationMemoryService {
 
   public synchronized void saveClientThread(String sessionId, Map<String, Object> threadData) {
     if (repository == null || sessionId == null || sessionId.isBlank()) return;
+    // Round 308：先在事务外完成序列化与大小校验——原实现把整个 threadData 直接写 TEXT 列，
+    // 客户端可提交数 MB 的对话线程，导致库膨胀且 listAllPersistedThreads 全量载入时内存放大。
+    String threadJson = null;
+    if (threadData != null) {
+      try {
+        threadJson = objectMapper.writeValueAsString(threadData);
+      } catch (Exception serializationFailure) {
+        throw new ApiException("对话线程内容无法序列化");
+      }
+      if (threadJson.length() > MAX_THREAD_JSON_CHARS) {
+        throw new ApiException("对话线程内容过大，最多 " + MAX_THREAD_JSON_CHARS + " 个字符");
+      }
+    }
     try {
       AiConversationSessionRecord record =
           repository
@@ -704,7 +720,7 @@ public class AiConversationMemoryService {
         if (tgt instanceof Number n) record.setTargetId(n.longValue());
         Object tgtName = threadData.get("targetName");
         if (tgtName != null) record.setTargetName(bounded(String.valueOf(tgtName), 255));
-        record.setThreadJson(objectMapper.writeValueAsString(threadData));
+        record.setThreadJson(threadJson);
       }
       repository.save(record);
     } catch (Exception ignored) {
@@ -769,3 +785,6 @@ public class AiConversationMemoryService {
 
   private record PersistedTurn(boolean user, String text) {}
 }
+
+
+
