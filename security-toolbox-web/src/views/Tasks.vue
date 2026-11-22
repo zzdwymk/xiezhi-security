@@ -1045,6 +1045,12 @@ function collectResultStats(source: unknown) {
     }));
 }
 
+const detailResultTruncated = computed(() => {
+  const result = parsedDetailResult.value as { data?: { truncated?: unknown }; truncated?: unknown } | undefined;
+  if (!result || typeof result !== "object") return false;
+  return Boolean(result.data?.truncated ?? result.truncated);
+});
+
 const detailResultStats = computed(() => {
   const result = parsedDetailResult.value;
   if (!result) return [];
@@ -1954,6 +1960,16 @@ onUnmounted(() => {
                 <strong>{{ stat.value }}</strong><span>{{ stat.label }}</span>
               </div>
             </div>
+            <el-tag
+              v-if="detailResultTruncated"
+              class="task-result-truncated"
+              size="small"
+              type="warning"
+              effect="plain"
+              role="status"
+            >
+              结果超过展示上限，已截断；命中总数以统计为准
+            </el-tag>
             <ProjectEvidenceResult v-if="detail.toolCode === 'retrieve_project_context' && parsedDetailResult" :data="parsedDetailResult.data" />
             <p v-if="!detailResultSummary && !detailResultStats.length && detail.toolCode !== 'retrieve_project_context'" class="task-result-empty">执行输出已记录，可展开原始输出排查执行情况。</p>
             <el-collapse v-model="detailResultExpanded">
@@ -2870,6 +2886,9 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
   gap: 8px;
+}
+.task-result-truncated {
+  margin-top: 8px;
 }
 .task-result-stat {
   display: flex;
