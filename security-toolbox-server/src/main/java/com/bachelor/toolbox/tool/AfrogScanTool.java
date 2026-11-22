@@ -212,7 +212,10 @@ public class AfrogScanTool implements SecurityTool {
                   "依据 PoC 引用与厂商公告确认影响，修复后使用同一 PoC 复测。",
                   selectedPoc.vulnerabilityCode()));
         }
-        matches.add(Map.of("pocId", id, "name", name, "severity", severity, "target", matched));
+        // Round 332：matches 与 findings 使用同一上限，避免大量结果把响应与内存放大。
+        if (matches.size() < MAX_FINDINGS) {
+          matches.add(Map.of("pocId", id, "name", name, "severity", severity, "target", matched));
+        }
       }
     } catch (ApiException ex) {
       throw ex;
