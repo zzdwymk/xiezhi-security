@@ -92,6 +92,17 @@ public class GlobalExceptionHandler {
   }
 
   /**
+   * Round 298：客户端只接受无法提供的媒体类型（如 {@code Accept: application/xml}）时必须回 406。
+   * 兜底成 500 且响应体为空，客户端既拿不到状态语义也拿不到说明。
+   */
+  @ExceptionHandler(org.springframework.web.HttpMediaTypeNotAcceptableException.class)
+  public ResponseEntity<ApiErrorResponse> handleMediaTypeNotAcceptable(
+      org.springframework.web.HttpMediaTypeNotAcceptableException ex) {
+    log.warn("无法提供客户端可接受的响应类型: {}", ex.getMessage());
+    return error(HttpStatus.NOT_ACCEPTABLE, "无法提供客户端可接受的响应类型");
+  }
+
+  /**
    * Round 296：请求体类型不支持同样是客户端错误，必须回 415。
    * 与 R295 的 405 同类：兜底成 500 会把客户端用法错误记成服务端故障。
    */
