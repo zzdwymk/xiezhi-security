@@ -110,8 +110,32 @@ public class TaskService {
     if (projectIds.isEmpty()) {
       return List.of();
     }
-    return repository.findAllByProjectIdIn(
-        projectIds, PageRequests.bounded(0, LIST_LIMIT, 1, LIST_LIMIT, LIST_SORT));
+    List<SecurityTask> tasks =
+        repository.findAllByProjectIdIn(
+            projectIds, PageRequests.bounded(0, LIST_LIMIT, 1, LIST_LIMIT, LIST_SORT));
+    // Round 315：列表接口只返回结果摘要，完整 resultJson（实测单条可达数十 KB）仅由详情接口提供。
+    // open-in-view=false 下这些实体已脱离持久化上下文，内存内改写不会回写数据库。
+    for (SecurityTask task : tasks) {
+      task.setResultJson(compactResultJson(task.getResultJson()));
+      // 列表不需要完整请求体/执行日志/目标快照；详情接口仍返回全部字段。
+      task.setRequestJson(null);
+      task.setExecutionLog(null);
+      task.setTargetSnapshotJson(null);
+    }
+    return tasks;
+  }
+
+  /** 把执行结果压缩成 {@code {"summary": "..."}}，解析失败时返回 null（列表不需要明细）。 */
+  String compactResultJson(String raw) {
+    if (raw == null || raw.isBlank()) return null;
+    try {
+      com.fasterxml.jackson.databind.JsonNode node = objectMapper.readTree(raw);
+      String summary = node.path("summary").asText("");
+      if (summary.length() > 500) summary = summary.substring(0, 500) + "…";
+      return objectMapper.writeValueAsString(java.util.Map.of("summary", summary));
+    } catch (Exception ignored) {
+      return null;
+    }
   }
 
   public SecurityTask get(Long id) {
