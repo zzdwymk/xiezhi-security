@@ -1,6 +1,12 @@
 server:
   address: ${SERVER_ADDRESS:127.0.0.1}
   port: 8080
+  compression:
+    # Round 314：任务列表等接口的 JSON 响应可达数十 MB（实测 /api/tasks 约 23 MB），
+    # 全量明文传输会放大网络与前端内存压力。开启 gzip 后传输体积显著下降。
+    enabled: true
+    mime-types: application/json,text/html,text/css,application/javascript,text/plain
+    min-response-size: 2048
   tomcat:
     # 纵深防御（Round 25）：限制连接吞掉（swallow）与表单 POST 体积，避免超大请求体拖垮线程/内存；
     # JSON 请求体大小另由 RequestSizeLimitFilter 在反序列化前按 Content-Length 拒绝。
@@ -205,3 +211,4 @@ spring:
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
     driver-class-name: org.postgresql.Driver
+
