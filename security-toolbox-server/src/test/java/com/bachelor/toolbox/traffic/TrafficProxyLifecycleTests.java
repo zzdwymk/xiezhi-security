@@ -93,11 +93,11 @@ class TrafficProxyLifecycleTests {
   void stoppedProxyCallbacksCannotWriteIntoTheNextRecordingRun() throws Exception {
     persistSessions();
     int port = availablePort();
-    service.start(request(port));
+    startWithRetry(port);
     Consumer<LocalTrafficProxy.Capture> previousCapture = callback();
     service.stop();
     try {
-      service.start(request(port));
+      startWithRetry(port);
       service.setCapturing(true);
       previousCapture.accept(capture());
       verifyNoInteractions(packets, filters, transactionManager, assetSync);
@@ -177,6 +177,24 @@ class TrafficProxyLifecycleTests {
   private Consumer<LocalTrafficProxy.Capture> callback() {
     Object proxy = ReflectionTestUtils.getField(service, "proxy");
     return (Consumer<LocalTrafficProxy.Capture>) ReflectionTestUtils.getField(proxy, "capture");
+  }
+
+  /**
+   * Round 307：CI 上偶发 BindException（端口在 availablePort 探测与 bind 之间被别的测试类抢占）。
+   * 生产端口区间被限制在 19080-19120，无法用 0 端口，故这里对"端口已被占用"做有限重试。
+   */
+  private void startWithRetry(int preferredPort) throws Exception {
+    for (int attempt = 0; attempt < 10; attempt++) {
+      int port = attempt == 0 ? preferredPort : availablePort();
+      try {
+        service.start(request(port));
+        return;
+      } catch (ApiException failure) {
+        if (!(failure.getCause() instanceof java.net.BindException) || attempt == 9) {
+          throw failure;
+        }
+      }
+    }
   }
 
   private static TrafficDtos.StartRequest request(int port) { return new TrafficDtos.StartRequest(999L, port, "ASK"); }

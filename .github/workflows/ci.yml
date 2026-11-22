@@ -118,7 +118,11 @@ jobs:
 
       - name: Verify backend
         working-directory: security-toolbox-server
-        run: mvn -B -ntp verify
+        run: >-
+          mvn -B -ntp
+          -Dmaven.wagon.http.retryHandler.count=5
+          -Dmaven.wagon.http.retryHandler.requestSentEnabled=true
+          verify
 
       - name: Upload backend test reports on failure
         if: failure()
@@ -250,6 +254,8 @@ jobs:
         working-directory: security-toolbox-server
         run: >-
           mvn -B -ntp
+          -Dmaven.wagon.http.retryHandler.count=5
+          -Dmaven.wagon.http.retryHandler.requestSentEnabled=true
           -Dtest=AiPythonRuntimeEndToEndTests,AiPythonAgentRouteEndToEndTests
           test
 
@@ -311,3 +317,4 @@ jobs:
       - name: Test browser and Electron asset paths
         working-directory: security-toolbox-web
         run: node scripts/test-build-paths.cjs --web-dist=dist
+

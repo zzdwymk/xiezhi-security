@@ -30,35 +30,39 @@ class LocalTrafficProxyConnectionLimitTests {
   @Test
   void permitIsReleasedAfterEachRequestCompletes() throws Exception {
     try (ServerSocket upstream = upstream();
-        LocalTrafficProxy proxy = proxy();
-        Socket client = client(proxy)) {
+        LocalTrafficProxy proxy = proxy()) {
       Semaphore permits = (Semaphore) ReflectionTestUtils.getField(proxy, "connectionPermits");
+      // Round 307：基线必须在建立任何连接之前采样。原实现先 client(proxy) 再采样，accept 线程可能
+      // 已扣掉 1 个许可（基线=127），处理完归还后变 128 → CI 上稳定复现的假失败。
       int total = permits.availablePermits();
+      assertThat(total).isPositive();
 
-      send(client,
-          "GET http://127.0.0.1:" + upstream.getLocalPort()
-              + "/ok HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
-      try (Socket accepted = upstream.accept()) {
-        accepted.setSoTimeout(2000);
-        readHeader(accepted.getInputStream());
-        accepted.getOutputStream().write(
-            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi"
-                .getBytes(StandardCharsets.ISO_8859_1));
-        accepted.getOutputStream().flush();
+      for (int round = 0; round < 2; round++) {
+        try (Socket client = client(proxy)) {
+          send(client,
+              "GET http://127.0.0.1:" + upstream.getLocalPort()
+                  + "/ok HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+          try (Socket accepted = upstream.accept()) {
+            accepted.setSoTimeout(2000);
+            readHeader(accepted.getInputStream());
+            accepted.getOutputStream().write(
+                "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi"
+                    .getBytes(StandardCharsets.ISO_8859_1));
+            accepted.getOutputStream().flush();
+          }
+          try {
+            client.close();
+          } catch (IOException ignored) {
+          }
+        }
+        long deadline = System.currentTimeMillis() + 5000;
+        while (permits.availablePermits() != total && System.currentTimeMillis() < deadline) {
+          Thread.sleep(50);
+        }
+        assertThat(permits.availablePermits())
+            .as("第 %d 轮连接处理完毕后许可必须归还且不得多还，避免上限被放大或耗尽", round + 1)
+            .isEqualTo(total);
       }
-      // 关闭客户端，促使代理处理循环结束
-      try {
-        client.close();
-      } catch (IOException ignored) {
-      }
-      // 给 handle 的 finally 释放许可留时间
-      long deadline = System.currentTimeMillis() + 5000;
-      while (permits.availablePermits() < total && System.currentTimeMillis() < deadline) {
-        Thread.sleep(50);
-      }
-      assertThat(permits.availablePermits())
-          .as("连接处理完毕后许可必须归还，避免上限被逐渐耗尽")
-          .isEqualTo(total);
     }
   }
 
