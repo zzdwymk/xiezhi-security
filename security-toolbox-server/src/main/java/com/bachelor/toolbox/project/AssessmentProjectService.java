@@ -29,6 +29,9 @@ public class AssessmentProjectService {
   private static final int MAX_PROJECT_FINDINGS = 20000;
   private static final Sort LIST_SORT =
       Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id"));
+
+  /** Round 322：列表最多读取的页数（50 × 1000 = 5 万条），防止无限翻页。 */
+  static final int MAX_LIST_PAGES = 50;
   private static final Set<String> STATUSES =
       Set.of("DRAFT", "ACTIVE", "PAUSED", "COMPLETED", "ARCHIVED");
 
@@ -75,7 +78,7 @@ public class AssessmentProjectService {
    */
   private <T> List<T> loadAll(Function<Pageable, Page<T>> pageLoader) {
     List<T> result = new ArrayList<>();
-    for (int page = 0; ; page++) {
+    for (int page = 0; page < MAX_LIST_PAGES; page++) {
       Page<T> batch =
           pageLoader.apply(
               PageRequests.bounded(
@@ -89,6 +92,7 @@ public class AssessmentProjectService {
         return List.copyOf(result);
       }
     }
+    return List.copyOf(result);
   }
 
   public AssessmentProject get(Long id) {
