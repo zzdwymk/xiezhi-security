@@ -9,6 +9,9 @@ import org.springframework.data.repository.query.Param;
 public interface NotificationRepository extends JpaRepository<SystemNotification, Long> {
   boolean existsByEventKey(String eventKey);
 
+  /** 删除早于截止时间的通知（保留策略清理用）。 */
+  long deleteByCreatedAtBefore(java.time.Instant cutoff);
+
   @Query("select coalesce(max(n.id), 0) from SystemNotification n")
   long currentCursor();
 
@@ -24,3 +27,4 @@ public interface NotificationRepository extends JpaRepository<SystemNotification
       @Param("after") long after, @Param("boundary") long boundary,
       @Param("admin") boolean admin, @Param("username") String username, Pageable pageable);
 }
+
