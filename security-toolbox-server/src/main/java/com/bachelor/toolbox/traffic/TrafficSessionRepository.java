@@ -11,4 +11,8 @@ public interface TrafficSessionRepository extends JpaRepository<TrafficSession, 
   List<TrafficSession> findByIdGreaterThanOrderByIdAsc(Long id, Pageable pageable);
 
   long countByStatusIn(Collection<String> statuses);
+
+  List<TrafficSession> findByStatusIn(Collection<String> statuses);
 }
+
+

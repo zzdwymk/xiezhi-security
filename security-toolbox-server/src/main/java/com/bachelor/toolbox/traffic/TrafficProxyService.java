@@ -58,6 +58,10 @@ public class TrafficProxyService {
   private LocalTrafficProxy proxy;
   private TrafficSession current;
   private volatile boolean capturing;
+
+  /** Round 299：残留会话自愈只做一次（每个进程）。 */
+  private boolean staleSessionsHealed;
+
   private long proxyGeneration;
 
   public TrafficProxyService(
@@ -192,7 +196,35 @@ public class TrafficProxyService {
     return status();
   }
 
+  /**
+   * Round 299：进程崩溃/被强制结束后，{@code stop()} 不会执行，会话行会永远停在 STARTING/RUNNING。
+   * 此后内存中没有代理（{@code status().running()} 为 false），但 {@code assertIdle()} 依据数据库状态
+   * 判定"代理仍在运行"，「清空业务数据」被永久拒绝。这里在无代理时做一次自愈：把残留会话标记为 FAILED。
+   */
+  private void healStaleSessions() {
+    if (staleSessionsHealed) return;
+    staleSessionsHealed = true;
+    try {
+      for (TrafficSession stale : sessions.findByStatusIn(List.of("STARTING", "RUNNING"))) {
+        stale.setStatus("FAILED");
+        stale.setErrorMessage("服务重启或异常退出，流量会话已自动结束");
+        stale.setStoppedAt(Instant.now());
+        sessions.save(stale);
+        LOGGER.warn("自愈残留流量会话: id={}", stale.getId());
+        audit.record(
+            "RECOVER_TRAFFIC_SESSION",
+            "TRAFFIC_SESSION",
+            stale.getId(),
+            "stale-session",
+            "SUCCESS");
+      }
+    } catch (RuntimeException ex) {
+      LOGGER.warn("自愈残留流量会话失败", ex);
+    }
+  }
+
   public synchronized Status status() {
+    healStaleSessions();
     Long targetId =
         current == null || current.getTargetId() == null || current.getTargetId() <= 0
             ? null
@@ -497,3 +529,5 @@ public class TrafficProxyService {
       String caFingerprint,
       boolean capturing) {}
 }
+
+
