@@ -37,6 +37,10 @@ public class TargetService {
       Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id"));
 
   private final AuthorizedTargetRepository repository;
+
+  /** Round 318：按项目串行化目标创建，关闭"先查后写"的并发窗口。 */
+  private final java.util.concurrent.ConcurrentHashMap<Long, Object> projectLocks =
+      new java.util.concurrent.ConcurrentHashMap<>();
   private final AuditService auditService;
   private final PortRangeParser portRangeParser;
   private final AssessmentProjectRepository projects;
@@ -130,6 +134,14 @@ public class TargetService {
   @Transactional
   public AuthorizedTarget create(TargetRequest request) {
     if (request.projectId() == null) throw new ApiException("请先创建安全评估项目，并在项目下登记授权目标");
+    // Round 318：重复校验是"先查后写"，并发请求会同时通过检查各自写入。按项目串行化整个创建过程，
+    // 让"检查 + 保存 + 建立项目关联"成为一个临界区（单机桌面部署，无需分布式锁）。
+    synchronized (projectLocks.computeIfAbsent(request.projectId(), key -> new Object())) {
+      return createLocked(request);
+    }
+  }
+
+  private AuthorizedTarget createLocked(TargetRequest request) {
     authorization.requireManage(request.projectId());
     validateProjectAssignable(request.projectId());
     // Round 316：同一项目内不允许重复登记相同目标地址（实测原实现可连续创建两条完全相同的授权目标）。
@@ -433,4 +445,6 @@ public class TargetService {
     }
   }
 }
+
+
 
