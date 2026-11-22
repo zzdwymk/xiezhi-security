@@ -6445,6 +6445,24 @@ function assertRuntimeLogPath(candidate) {
   return resolved;
 }
 
+// Round 324：字符串校验无法阻止日志根目录内的 junction/symlink 指向外部。
+// 使用 realpath 解析后再次做包含性校验；目标不存在时按"不存在"处理（无需解析）。
+async function assertRuntimeLogRealPath(full) {
+  const realRoot = await fs.promises.realpath(path.resolve(runtimeLogRoot()));
+  let real;
+  try {
+    real = await fs.promises.realpath(full);
+  } catch (error) {
+    if (error && error.code === "ENOENT") return full;
+    throw new UserFacingError(`无法校验日志路径：${error?.message || error}`);
+  }
+  const relative = path.relative(realRoot, real);
+  if (relative === ".." || path.isAbsolute(relative) || relative.startsWith(`..${path.sep}`)) {
+    throw new UserFacingError("日志路径不合法");
+  }
+  return real;
+}
+
 function humanBytes(value) {
   const bytes = Number(value) || 0;
   if (bytes < 1024) return `${bytes} B`;
@@ -6586,7 +6604,7 @@ async function listRuntimeLogs() {
 }
 
 async function readRuntimeLog(candidate) {
-  const full = assertRuntimeLogPath(candidate);
+  const full = await assertRuntimeLogRealPath(assertRuntimeLogPath(candidate));
   let stat;
   try { stat = await fs.promises.stat(full); }
   catch (error) { throw new UserFacingError(error?.code === "ENOENT" ? "日志文件不存在" : `无法读取日志：${error?.message || error}`); }
@@ -6614,9 +6632,10 @@ async function openRuntimeLogDirectory(candidateDir) {
     }
   }
   try { await fs.promises.mkdir(target, { recursive: true }); } catch {}
-  const error = await shell.openPath(target);
+  const safeTarget = await assertRuntimeLogRealPath(target);
+  const error = await shell.openPath(safeTarget);
   if (error) throw new UserFacingError(`无法打开日志目录：${error}`);
-  return { opened: true, directory: target };
+  return { opened: true, directory: safeTarget };
 }
 
 async function clearRuntimeLogs() {
@@ -6674,7 +6693,7 @@ async function clearRuntimeLogs() {
 }
 
 async function deleteRuntimeLog(candidate) {
-  const full = assertRuntimeLogPath(candidate);
+  const full = await assertRuntimeLogRealPath(assertRuntimeLogPath(candidate));
   let stat;
   try {
     stat = await fs.promises.stat(full);
