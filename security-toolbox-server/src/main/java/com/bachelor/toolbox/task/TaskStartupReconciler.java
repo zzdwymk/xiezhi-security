@@ -28,14 +28,26 @@ public class TaskStartupReconciler implements org.springframework.core.Ordered {
   private final SecurityTaskRepository tasks;
   private final TaskExecutionControlService executionControl;
   private final AuditService audit;
+  private final com.bachelor.toolbox.notification.NotificationService notifications;
 
   public TaskStartupReconciler(
       SecurityTaskRepository tasks,
       TaskExecutionControlService executionControl,
       AuditService audit) {
+    this(tasks, executionControl, audit, null);
+  }
+
+  @org.springframework.beans.factory.annotation.Autowired
+  public TaskStartupReconciler(
+      SecurityTaskRepository tasks,
+      TaskExecutionControlService executionControl,
+      AuditService audit,
+      @org.springframework.beans.factory.annotation.Autowired(required = false)
+          com.bachelor.toolbox.notification.NotificationService notifications) {
     this.tasks = tasks;
     this.executionControl = executionControl;
     this.audit = audit;
+    this.notifications = notifications;
   }
 
   /** Round 307：必须在其它启动期监听器（如扫描调度器）之前完成对账，否则会把刚入队的任务误杀。 */
@@ -57,6 +69,25 @@ public class TaskStartupReconciler implements org.springframework.core.Ordered {
         task.setFinishedAt(Instant.now());
         tasks.save(task);
         audit.record("RECOVER_TASK", "TASK", task.getId(), "startup-reconcile", "SUCCESS");
+        // Round 340：对账结果必须让用户看到，否则只能自己去任务列表里翻出"执行中"变"失败"。
+        if (notifications != null) {
+          try {
+            notifications.publish(
+                "task:" + task.getId() + ":startup-failed",
+                task.getProjectId(),
+                false,
+                "task",
+                "error",
+                "任务因服务重启中断",
+                "任务「"
+                    + (task.getToolCode() == null ? "未知工具" : task.getToolCode())
+                    + "」已标记为失败，请重试。",
+                "/tasks?taskId=" + task.getId(),
+                List.of("high"));
+          } catch (RuntimeException notificationFailure) {
+            LOG.warn("启动对账通知发送失败 taskId={}", task.getId(), notificationFailure);
+          }
+        }
         healed++;
       }
     }
