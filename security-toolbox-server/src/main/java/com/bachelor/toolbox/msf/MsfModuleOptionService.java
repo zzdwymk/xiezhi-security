@@ -50,6 +50,13 @@ public class MsfModuleOptionService {
   private final String configuredExecutable;
   private final long timeoutSeconds;
 
+  /** Round 311：模块选项缓存（10 分钟，最多 500 条），避免每次请求都启动 msfconsole。 */
+  private static final long CACHE_TTL_MILLIS = 10 * 60_000L;
+
+  private static final int MAX_CACHE_ENTRIES = 500;
+
+  private final Map<String, CachedOptions> optionsCache = new java.util.concurrent.ConcurrentHashMap<>();
+
   public MsfModuleOptionService(
       ExecutableLocator locator,
       ObjectMapper objectMapper,
@@ -64,6 +71,26 @@ public class MsfModuleOptionService {
   /** 返回某模块的可配置选项（不含服务端保留键）。 */
   public List<ModuleOption> options(String modulePath) {
     String module = normalizeModule(modulePath);
+    long now = System.currentTimeMillis();
+    CachedOptions cached = optionsCache.get(module);
+    if (cached != null && now - cached.cachedAtMillis < CACHE_TTL_MILLIS) {
+      return cached.options;
+    }
+    synchronized (this) {
+      cached = optionsCache.get(module);
+      if (cached != null && System.currentTimeMillis() - cached.cachedAtMillis < CACHE_TTL_MILLIS) {
+        return cached.options;
+      }
+      List<ModuleOption> loaded = loadOptions(module);
+      List<ModuleOption> snapshot = List.copyOf(loaded);
+      if (optionsCache.size() >= MAX_CACHE_ENTRIES) optionsCache.clear();
+      optionsCache.put(module, new CachedOptions(snapshot, System.currentTimeMillis()));
+      return snapshot;
+    }
+  }
+
+  /** 供测试覆写：真正启动 msfconsole 读取并解析的慢路径。 */
+  List<ModuleOption> loadOptions(String module) {
     Path executable = requireExecutable();
     String script = "info -j " + module + "; exit";
     ProcessBuilder builder =
@@ -245,4 +272,7 @@ public class MsfModuleOptionService {
   /** 单个模块选项描述。 */
   public record ModuleOption(
       String name, String type, boolean required, String defaultValue, String description) {}
+
+  /** Round 311：缓存条目。 */
+  private record CachedOptions(List<ModuleOption> options, long cachedAtMillis) {}
 }
