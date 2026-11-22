@@ -61,15 +61,32 @@ public class MsfModuleOptionService {
   private final java.util.concurrent.ConcurrentHashMap<String, Object> moduleLocks =
       new java.util.concurrent.ConcurrentHashMap<>();
 
+  /** Round 313：同时进行的 msfconsole 读取上限。 */
+  private final int maxConcurrentOptions;
+
+  private final java.util.concurrent.Semaphore optionSlots;
+
+  @org.springframework.beans.factory.annotation.Autowired
   public MsfModuleOptionService(
       ExecutableLocator locator,
       ObjectMapper objectMapper,
       @Value("${toolbox.execution.msf-path:msfconsole}") String configuredExecutable,
       @Value("${toolbox.execution.msf-timeout-seconds:600}") long timeoutSeconds) {
+    this(locator, objectMapper, configuredExecutable, timeoutSeconds, 2);
+  }
+
+  public MsfModuleOptionService(
+      ExecutableLocator locator,
+      ObjectMapper objectMapper,
+      String configuredExecutable,
+      long timeoutSeconds,
+      int maxConcurrentOptions) {
     this.locator = locator;
     this.objectMapper = objectMapper;
     this.configuredExecutable = configuredExecutable;
     this.timeoutSeconds = timeoutSeconds;
+    this.maxConcurrentOptions = Math.max(1, Math.min(maxConcurrentOptions, 8));
+    this.optionSlots = new java.util.concurrent.Semaphore(this.maxConcurrentOptions);
   }
 
   /** 返回某模块的可配置选项（不含服务端保留键）。 */
@@ -86,7 +103,22 @@ public class MsfModuleOptionService {
       if (cached != null && System.currentTimeMillis() - cached.cachedAtMillis < CACHE_TTL_MILLIS) {
         return cached.options;
       }
-      List<ModuleOption> loaded = loadOptions(module);
+      List<ModuleOption> loaded;
+      boolean acquired = false;
+      try {
+        // Round 313：单次 msfconsole 读取实测约 60 秒，排队等待必须覆盖这一量级，
+        // 否则第三个并发请求会在 15 秒时被误判为"繁忙"（实测 3 并发时返回 400）。
+        acquired = optionSlots.tryAcquire(180, TimeUnit.SECONDS);
+        if (!acquired) {
+          throw new ApiException("MSF 模块选项读取繁忙，请稍后重试");
+        }
+        loaded = loadOptions(module);
+      } catch (InterruptedException interrupted) {
+        Thread.currentThread().interrupt();
+        throw new ApiException("MSF 模块选项读取被中断");
+      } finally {
+        if (acquired) optionSlots.release();
+      }
       List<ModuleOption> snapshot = List.copyOf(loaded);
       if (optionsCache.size() >= MAX_CACHE_ENTRIES) {
         optionsCache.clear();
@@ -284,3 +316,4 @@ public class MsfModuleOptionService {
   /** Round 311：缓存条目。 */
   private record CachedOptions(List<ModuleOption> options, long cachedAtMillis) {}
 }
+
