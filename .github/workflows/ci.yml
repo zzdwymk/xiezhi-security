@@ -302,6 +302,10 @@ jobs:
         working-directory: security-toolbox-web
         run: npm run test:json-file
 
+      - name: Test runtime log path confinement
+        working-directory: security-toolbox-web
+        run: npm run test:runtime-logs
+
       - name: Test offline tools
         working-directory: security-toolbox-web
         run: npm run test:offline
@@ -317,4 +321,5 @@ jobs:
       - name: Test browser and Electron asset paths
         working-directory: security-toolbox-web
         run: node scripts/test-build-paths.cjs --web-dist=dist
+
 

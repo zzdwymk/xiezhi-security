@@ -13,6 +13,7 @@
     "test:build-paths": "node scripts/test-build-paths.cjs",
     "test:audit-format": "node scripts/test-audit-format.cjs",
     "test:json-file": "node scripts/test-json-file.cjs",
+    "test:runtime-logs": "node --test scripts/test-runtime-log-integration.cjs",
     "test:ai-settings": "node scripts/test-ai-settings.cjs",
     "test:ai-progress": "node scripts/test-ai-progress.cjs",
     "test:ai-step-state": "node scripts/test-ai-step-state.cjs",
@@ -120,3 +121,4 @@
     }
   }
 }
+
