@@ -12,6 +12,14 @@ public interface NotificationRepository extends JpaRepository<SystemNotification
   /** 删除早于截止时间的通知（保留策略清理用）。 */
   long deleteByCreatedAtBefore(java.time.Instant cutoff);
 
+  /** 分批清理：只取 id，避免一次性载入实体。 */
+  @Query("""
+      select n.id from SystemNotification n
+      where n.createdAt < :cutoff
+      order by n.id asc
+      """)
+  List<Long> findIdsByCreatedAtBefore(@Param("cutoff") java.time.Instant cutoff, Pageable pageable);
+
   @Query("select coalesce(max(n.id), 0) from SystemNotification n")
   long currentCursor();
 
@@ -27,4 +35,5 @@ public interface NotificationRepository extends JpaRepository<SystemNotification
       @Param("after") long after, @Param("boundary") long boundary,
       @Param("admin") boolean admin, @Param("username") String username, Pageable pageable);
 }
+
 

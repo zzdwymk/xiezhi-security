@@ -17,6 +17,8 @@ import org.springframework.stereotype.Service;
 @Service
 public class NotificationRetentionService {
   private static final Logger log = LoggerFactory.getLogger(NotificationRetentionService.class);
+  private static final int BATCH_SIZE = 500;
+  private static final int MAX_BATCHES = 200;
 
   private final NotificationRepository repository;
   private final int retentionDays;
@@ -36,11 +38,20 @@ public class NotificationRetentionService {
   /** 返回删除条数；供测试注入固定时间。 */
   int purgeExpired(Instant now) {
     Instant cutoff = now.minus(Duration.ofDays(retentionDays));
-    long deleted = repository.deleteByCreatedAtBefore(cutoff);
-    if (deleted > 0) {
-      log.info("通知保留清理：删除 {} 条早于 {} 的通知", deleted, cutoff);
+    int total = 0;
+    // Round 348：分批删除（每批 500 条，最多 200 批），避免一次大事务长时间锁表。
+    for (int batch = 0; batch < MAX_BATCHES; batch++) {
+      java.util.List<Long> ids =
+          repository.findIdsByCreatedAtBefore(
+              cutoff, org.springframework.data.domain.PageRequest.of(0, BATCH_SIZE));
+      if (ids.isEmpty()) break;
+      repository.deleteAllByIdInBatch(ids);
+      total += ids.size();
     }
-    return (int) Math.min(Integer.MAX_VALUE, deleted);
+    if (total > 0) {
+      log.info("通知保留清理：删除 {} 条早于 {} 的通知", total, cutoff);
+    }
+    return total;
   }
 
   int retentionDays() {
