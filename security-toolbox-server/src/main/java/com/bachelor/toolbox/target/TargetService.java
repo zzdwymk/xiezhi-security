@@ -132,6 +132,8 @@ public class TargetService {
     if (request.projectId() == null) throw new ApiException("请先创建安全评估项目，并在项目下登记授权目标");
     authorization.requireManage(request.projectId());
     validateProjectAssignable(request.projectId());
+    // Round 316：同一项目内不允许重复登记相同目标地址（实测原实现可连续创建两条完全相同的授权目标）。
+    ensureNoDuplicateTarget(request.projectId(), request.targetValue());
     AuthorizedTarget target = new AuthorizedTarget();
     apply(target, request, true);
     AuthorizedTarget saved = repository.save(target);
@@ -145,8 +147,33 @@ public class TargetService {
     return saved;
   }
 
-  private void validateProjectAssignable(Long projectId) {
-    AssessmentProject project =
+  /** 同项目内重复的授权目标不会带来任何额外授权信息，只会造成审计歧义与重复维护。 */
+  private void ensureNoDuplicateTarget(Long projectId, String targetValue) {
+    String incoming = normalizeTargetValue(targetValue);
+    if (incoming.isEmpty()) return;
+    var links = projectTargets.findByProjectId(projectId);
+    if (links == null) return;
+    for (ProjectTarget link : links) {
+      repository
+          .findById(link.getTargetId())
+          .filter(existing -> incoming.equals(normalizeTargetValue(existing.getTargetValue())))
+          .ifPresent(
+              existing -> {
+                throw new ApiException("该评估项目下已存在相同目标地址");
+              });
+    }
+  }
+
+  private static String normalizeTargetValue(String value) {
+    if (value == null) return "";
+    String normalized = value.trim().toLowerCase(java.util.Locale.ROOT);
+    while (normalized.endsWith("/")) {
+      normalized = normalized.substring(0, normalized.length() - 1);
+    }
+    return normalized;
+  }
+
+  private void validateProjectAssignable(Long projectId) {    AssessmentProject project =
         projects
             .findById(projectId)
             .orElseThrow(() -> new ApiException("评估项目不存在"));
