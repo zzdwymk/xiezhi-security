@@ -150,8 +150,8 @@ public class ReportService {
         .append(row("创建时间", format(task.getCreatedAt())))
         .append(row("开始时间", format(task.getStartedAt())))
         .append(row("完成时间", format(task.getFinishedAt())))
-        .append(row("请求参数", formatJsonBlock(task.getRequestJson())))
-        .append(row("执行结果", formatJsonBlock(task.getResultJson())))
+        .append(rowHtml("请求参数", formatJsonBlock(task.getRequestJson())))
+        .append(rowHtml("执行结果", formatJsonBlock(task.getResultJson())))
         .append(row("错误信息", reportErrorMessage(task)))
         .append("</div>");
 
@@ -278,18 +278,19 @@ public class ReportService {
         + " 字符）";
   }
 
-  private String row(String label, Object value) {
-    String content;
-    if (value instanceof String str && (str.startsWith("<pre") || str.contains("<br>"))) {
-      content = str;
-    } else {
-      content = multiline(value == null ? null : value.toString());
-    }
+  String row(String label, Object value) {
+    // Round 297：一律转义。原实现按"内容里有没有 <br>/<pre>"猜测是否原样输出，任何含 <br> 的文本
+    // 都能绕过转义；表格单元不需要内嵌 HTML，需要的地方走 rowHtml。
     return "<div class=\"label\">"
         + text(label)
         + "</div><div>"
-        + content
+        + multiline(value == null ? null : value.toString())
         + "</div>";
+  }
+
+  /** 显式声明"这段是已转义的 HTML 片段"（例如 formatJsonBlock 的 pre/code 结构）。 */
+  private String rowHtml(String label, String html) {
+    return "<div class=\"label\">" + text(label) + "</div><div>" + html + "</div>";
   }
 
   private String multiline(String value) {
@@ -335,3 +336,5 @@ public class ReportService {
         .replace("'", "&#39;");
   }
 }
+
+
