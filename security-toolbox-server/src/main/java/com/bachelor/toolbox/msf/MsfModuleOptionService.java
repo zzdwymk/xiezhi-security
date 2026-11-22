@@ -57,6 +57,10 @@ public class MsfModuleOptionService {
 
   private final Map<String, CachedOptions> optionsCache = new java.util.concurrent.ConcurrentHashMap<>();
 
+  /** Round 312：按模块分锁，避免一个慢模块阻塞其它模块的读取。 */
+  private final java.util.concurrent.ConcurrentHashMap<String, Object> moduleLocks =
+      new java.util.concurrent.ConcurrentHashMap<>();
+
   public MsfModuleOptionService(
       ExecutableLocator locator,
       ObjectMapper objectMapper,
@@ -76,14 +80,18 @@ public class MsfModuleOptionService {
     if (cached != null && now - cached.cachedAtMillis < CACHE_TTL_MILLIS) {
       return cached.options;
     }
-    synchronized (this) {
+    Object moduleLock = moduleLocks.computeIfAbsent(module, key -> new Object());
+    synchronized (moduleLock) {
       cached = optionsCache.get(module);
       if (cached != null && System.currentTimeMillis() - cached.cachedAtMillis < CACHE_TTL_MILLIS) {
         return cached.options;
       }
       List<ModuleOption> loaded = loadOptions(module);
       List<ModuleOption> snapshot = List.copyOf(loaded);
-      if (optionsCache.size() >= MAX_CACHE_ENTRIES) optionsCache.clear();
+      if (optionsCache.size() >= MAX_CACHE_ENTRIES) {
+        optionsCache.clear();
+        moduleLocks.clear();
+      }
       optionsCache.put(module, new CachedOptions(snapshot, System.currentTimeMillis()));
       return snapshot;
     }
