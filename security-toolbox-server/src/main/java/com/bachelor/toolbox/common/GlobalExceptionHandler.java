@@ -92,6 +92,17 @@ public class GlobalExceptionHandler {
   }
 
   /**
+   * Round 295：客户端用错 HTTP 方法（例如对只有 PUT/DELETE 的路径发 GET）是**客户端错误**，
+   * 必须回 405 而不是被兜底成 500——否则监控上会把用法错误记成服务端故障。
+   */
+  @ExceptionHandler(org.springframework.web.HttpRequestMethodNotSupportedException.class)
+  public ResponseEntity<ApiErrorResponse> handleMethodNotSupported(
+      org.springframework.web.HttpRequestMethodNotSupportedException ex) {
+    log.warn("请求方法不支持: {}", ex.getMessage());
+    return error(HttpStatus.METHOD_NOT_ALLOWED, "请求方法不支持");
+  }
+
+  /**
    * Round 288：并发更新冲突（乐观锁 / 悲观锁读到的版本已过期）是**预期内**的业务结果，
    * 不能落到通用的 {@link DataAccessException} 分支被报成 500。
    */
