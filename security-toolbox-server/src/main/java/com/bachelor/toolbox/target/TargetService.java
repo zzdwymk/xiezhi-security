@@ -270,9 +270,29 @@ public class TargetService {
   public void delete(Long id) {
     AuthorizedTarget target = get(id);
     requireTargetManage(target);
+    // Round 293：删除后目标行不复存在，审计若只留地址，授权边界（端口/启停/时间窗/授权说明）
+    // 就永久丢失，事后无法证明"被删掉的那份授权究竟覆盖了什么"。故在删除前取全量快照。
+    String snapshot = describeDeletedTarget(target);
     projectTargets.deleteAll(projectTargets.findByTargetId(id));
     repository.delete(target);
-    auditService.record("DELETE_TARGET", "TARGET", id, target.getTargetValue(), "SUCCESS");
+    auditService.record("DELETE_TARGET", "TARGET", id, snapshot, "SUCCESS");
+  }
+
+  /** 删除审计用的授权快照（目标行删除后不可再查）。 */
+  private static String describeDeletedTarget(AuthorizedTarget target) {
+    return target.getTargetValue()
+        + "; type="
+        + target.getTargetType()
+        + "; ports="
+        + target.getAllowedPorts()
+        + "; enabled="
+        + target.isEnabled()
+        + "; validFrom="
+        + target.getAuthorizationValidFrom()
+        + "; expiresAt="
+        + target.getAuthorizationExpiresAt()
+        + "; note="
+        + clipForAudit(target.getAuthorizationNote());
   }
 
   private void requireTargetAccess(AuthorizedTarget target) {

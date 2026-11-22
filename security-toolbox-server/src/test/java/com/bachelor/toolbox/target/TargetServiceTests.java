@@ -337,7 +337,52 @@ class TargetServiceTests {
 
     verify(projectTargets).deleteAll(List.of(first, second));
     verify(repository).delete(target);
-    verify(auditService).record("DELETE_TARGET", "TARGET", 7L, "127.0.0.1", "SUCCESS");
+    // Round 293：删除审计改为携带完整授权快照，这里只断言地址仍在明细中。
+    ArgumentCaptor<String> detail = ArgumentCaptor.forClass(String.class);
+    verify(auditService).record(eq("DELETE_TARGET"), eq("TARGET"), eq(7L), detail.capture(), eq("SUCCESS"));
+    assertThat(detail.getValue()).contains("127.0.0.1");
+  }
+
+  @Test
+  void deletingTargetKeepsAuthorizationSnapshotInAudit() {
+    AuthorizedTargetRepository repository = mock(AuthorizedTargetRepository.class);
+    AuditService auditService = mock(AuditService.class);
+    AssessmentProjectRepository projects = mock(AssessmentProjectRepository.class);
+    ProjectTargetRepository projectTargets = mock(ProjectTargetRepository.class);
+    ProjectAuthorizationService authorization = mock(ProjectAuthorizationService.class);
+    AuthorizedTarget target = new AuthorizedTarget();
+    target.setId(21L);
+    target.setName("待删目标");
+    target.setTargetValue("http://192.168.222.158/Less-1/?id=1");
+    target.setTargetType("URL");
+    target.setAllowedPorts("443");
+    target.setEnabled(true);
+    target.setAuthorizationNote("已获书面授权，仅限 192.168.222.158");
+    target.setAuthorizationValidFrom(java.time.Instant.parse("2026-01-01T00:00:00Z"));
+    target.setAuthorizationExpiresAt(java.time.Instant.parse("2026-03-01T00:00:00Z"));
+    when(repository.findById(21L)).thenReturn(Optional.of(target));
+    when(authorization.isAdmin()).thenReturn(true);
+    when(projectTargets.findByTargetId(21L)).thenReturn(List.of());
+    TargetService service =
+        new TargetService(
+            repository,
+            auditService,
+            new PortRangeParser(),
+            projects,
+            projectTargets,
+            authorization,
+            65535);
+
+    service.delete(21L);
+
+    ArgumentCaptor<String> detail = ArgumentCaptor.forClass(String.class);
+    verify(auditService).record(eq("DELETE_TARGET"), eq("TARGET"), eq(21L), detail.capture(), eq("SUCCESS"));
+    assertThat(detail.getValue())
+        .as("删除后目标行已不存在，审计必须保留当时的授权快照，否则证据链断裂")
+        .contains("http://192.168.222.158/Less-1/?id=1")
+        .contains("443")
+        .contains("2026-03-01T00:00:00Z")
+        .contains("已获书面授权，仅限 192.168.222.158");
   }
 
   @Test
