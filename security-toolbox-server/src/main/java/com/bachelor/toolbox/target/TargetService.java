@@ -133,7 +133,7 @@ public class TargetService {
     authorization.requireManage(request.projectId());
     validateProjectAssignable(request.projectId());
     // Round 316：同一项目内不允许重复登记相同目标地址（实测原实现可连续创建两条完全相同的授权目标）。
-    ensureNoDuplicateTarget(request.projectId(), request.targetValue());
+    ensureNoDuplicateTarget(request.projectId(), request.targetValue(), null);
     AuthorizedTarget target = new AuthorizedTarget();
     apply(target, request, true);
     AuthorizedTarget saved = repository.save(target);
@@ -148,12 +148,13 @@ public class TargetService {
   }
 
   /** 同项目内重复的授权目标不会带来任何额外授权信息，只会造成审计歧义与重复维护。 */
-  private void ensureNoDuplicateTarget(Long projectId, String targetValue) {
+  private void ensureNoDuplicateTarget(Long projectId, String targetValue, Long excludeTargetId) {
     String incoming = normalizeTargetValue(targetValue);
     if (incoming.isEmpty()) return;
     var links = projectTargets.findByProjectId(projectId);
     if (links == null) return;
     for (ProjectTarget link : links) {
+      if (excludeTargetId != null && excludeTargetId.equals(link.getTargetId())) continue;
       repository
           .findById(link.getTargetId())
           .filter(existing -> incoming.equals(normalizeTargetValue(existing.getTargetValue())))
@@ -161,6 +162,20 @@ public class TargetService {
               existing -> {
                 throw new ApiException("该评估项目下已存在相同目标地址");
               });
+    }
+  }
+
+  /** 更新时按请求声明的项目（或目标已关联的全部项目）做重复校验。 */
+  private void ensureUpdateNoDuplicate(Long targetId, TargetRequest request) {
+    if (request.targetValue() == null) return;
+    java.util.List<Long> projectIds = new java.util.ArrayList<>();
+    if (request.projectId() != null) {
+      projectIds.add(request.projectId());
+    } else {
+      projectTargets.findByTargetId(targetId).forEach(link -> projectIds.add(link.getProjectId()));
+    }
+    for (Long projectId : projectIds) {
+      ensureNoDuplicateTarget(projectId, request.targetValue(), targetId);
     }
   }
 
@@ -203,6 +218,8 @@ public class TargetService {
     // 原实现只记录**新** targetValue，事后无法证明「授权范围被改写过」。
     String targetValueBefore = target.getTargetValue();
     String authorizationNoteBefore = target.getAuthorizationNote();
+    // Round 317：改指到同项目已存在的目标地址同样必须拒绝（R316 只覆盖了创建路径）。
+    ensureUpdateNoDuplicate(id, request);
     apply(target, request, false);
     AuthorizedTarget saved;
     try {
@@ -416,3 +433,4 @@ public class TargetService {
     }
   }
 }
+
