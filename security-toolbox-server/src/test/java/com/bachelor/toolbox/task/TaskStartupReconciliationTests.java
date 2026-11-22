@@ -31,6 +31,14 @@ class TaskStartupReconciliationTests {
   @Autowired SecurityTaskRepository tasks;
   @Autowired ApplicationEventPublisher publisher;
   @Autowired ConfigurableApplicationContext context;
+  @Autowired TaskStartupReconciler reconciler;
+
+  @Test
+  void reconcilerRunsBeforeOtherStartupListeners() {
+    // Round 307：对账必须排在任何"启动期入队"的监听器之前，否则会把刚排入的 PENDING 任务误杀。
+    assertThat(reconciler.getOrder())
+        .isEqualTo(org.springframework.core.Ordered.HIGHEST_PRECEDENCE);
+  }
 
   @Test
   void applicationReadyMarksInterruptedTasksFailed() {

@@ -20,7 +20,7 @@ import org.springframework.stereotype.Component;
  * 一律标记为 FAILED（附可读原因并写审计），使重启后的状态与真实执行情况一致。
  */
 @Component
-public class TaskStartupReconciler {
+public class TaskStartupReconciler implements org.springframework.core.Ordered {
   private static final Logger LOG = LoggerFactory.getLogger(TaskStartupReconciler.class);
   private static final List<String> INTERRUPTED_STATUSES =
       List.of("RUNNING", "PENDING", "PREPARING");
@@ -36,6 +36,12 @@ public class TaskStartupReconciler {
     this.tasks = tasks;
     this.executionControl = executionControl;
     this.audit = audit;
+  }
+
+  /** Round 307：必须在其它启动期监听器（如扫描调度器）之前完成对账，否则会把刚入队的任务误杀。 */
+  @Override
+  public int getOrder() {
+    return org.springframework.core.Ordered.HIGHEST_PRECEDENCE;
   }
 
   @EventListener(ApplicationReadyEvent.class)
@@ -59,3 +65,5 @@ public class TaskStartupReconciler {
     }
   }
 }
+
+
