@@ -87,6 +87,15 @@ public class BusinessDataResetService {
   private final BusinessDataOperationGate operationGate;
   private final TransactionTemplate resetTransaction;
 
+  /** Round 300：用于区分「任务真的在跑」与「崩溃残留」。可选注入，便于单元测试构造。 */
+  private com.bachelor.toolbox.task.TaskExecutionControlService executionControl;
+
+  @Autowired(required = false)
+  void setExecutionControl(
+      com.bachelor.toolbox.task.TaskExecutionControlService executionControl) {
+    this.executionControl = executionControl;
+  }
+
   @Autowired
   public BusinessDataResetService(
       EntityManager entityManager,
@@ -162,13 +171,26 @@ public class BusinessDataResetService {
     }
   }
 
-  private void assertIdle() {
+  void assertIdle() {
     if (trafficProxy.status().running()
         || trafficSessions.countByStatusIn(ACTIVE_TRAFFIC_STATUSES) > 0) {
       throw new ApiException("请先停止正在运行的流量代理");
     }
-    if (tasks.countByStatusIn(ACTIVE_TASK_STATUSES) > 0) {
+    // Round 300：PENDING/BLOCKED 属于"排队中"，仍必须等待；
+    // RUNNING 则要区分「有活跃 worker」与「崩溃残留」——后者自愈为 FAILED，否则永久阻塞清空数据。
+    if (tasks.countByStatusIn(List.of("PENDING", "BLOCKED")) > 0) {
       throw new ApiException("请先取消或等待正在运行的任务结束");
+    }
+    for (com.bachelor.toolbox.task.SecurityTask running :
+        tasks.findAllByStatusOrderByCreatedAtAsc("RUNNING")) {
+      if (executionControl != null && executionControl.hasActiveWorker(running.getId())) {
+        throw new ApiException("请先取消或等待正在运行的任务结束");
+      }
+      running.setStatus("FAILED");
+      running.setErrorMessage("服务重启或异常退出，任务已中断，请重试");
+      running.setFinishedAt(Instant.now());
+      tasks.save(running);
+      audit.record("RECOVER_TASK", "TASK", running.getId(), "stale-running-task", "SUCCESS");
     }
   }
 
@@ -215,3 +237,4 @@ public class BusinessDataResetService {
       int clearedProjects,
       int runtimeDocumentsDeleted) {}
 }
+
