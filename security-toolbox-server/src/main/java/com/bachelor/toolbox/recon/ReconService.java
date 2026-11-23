@@ -738,7 +738,7 @@ public class ReconService {
                           || link.startsWith("#")) {
                         continue;
                       }
-                      String url = resolveLink(item.url(), link);
+                      String url = resolveLink(item.url(), link, target);
                       if (url == null) continue;
                       res.linkCount++;
                       // 目录前缀（如 /api/、/admin/）：作为目录轮扩展的种子。
@@ -1120,7 +1120,7 @@ public class ReconService {
                               || link.startsWith("#")) {
                             continue;
                           }
-                          String url = resolveLink(item.url(), link);
+                          String url = resolveLink(item.url(), link, target);
                           if (url == null) continue;
                           String normalized = stripFragment(url);
                           synchronized (enqueued) {
@@ -1464,15 +1464,27 @@ public class ReconService {
     }
   }
 
-  private String resolveLink(String base, String link) {
+  /**
+   * 把页面里的相对/绝对链接解析为可入队 URL。
+   *
+   * <p>Round 355：除同 host 外还必须校验**授权端口**。此前只校验 host，端口靠
+   * {@code discoveredPaths.record} 事后兜底——但爬虫在 record 之前就已经 probePath/fetchBody
+   * 真实访问了该 URL，导致同主机未授权端口（如 6379）仍会被连接。
+   */
+  private String resolveLink(String base, String link, AuthorizedTarget target) {
     try {
       URI baseUri = URI.create(base + "/");
       URI resolved = baseUri.resolve(link);
       if (resolved.getHost() == null) return null;
-      // 仅同源（同 host）链接；端口授权由 discoveredPaths.record 兜底。
       if (!resolved.getHost().equalsIgnoreCase(baseUri.getHost())) return null;
       if (!"http".equalsIgnoreCase(resolved.getScheme())
           && !"https".equalsIgnoreCase(resolved.getScheme())) return null;
+      int port =
+          resolved.getPort() > 0
+              ? resolved.getPort()
+              : ("https".equalsIgnoreCase(resolved.getScheme()) ? 443 : 80);
+      if (target == null || target.getAllowedPorts() == null) return null;
+      if (!allowedPort(target, port)) return null;
       return resolved.toString();
     } catch (Exception ex) {
       return null;
@@ -2174,4 +2186,7 @@ public class ReconService {
   public record IcpResult(
       Long targetId, String domain, String status, String reason, Map<String, Object> data) {}
 }
+
+
+
 
