@@ -470,7 +470,7 @@ public class ReconService {
     List<String> words = expandPathWords(request.pathWords(), request.pathDictionaryId());
     if (words.isEmpty()) return;
     // 软-404 基线：请求一个几乎不可能存在的路径。
-    long[] baseline = probePath(client, base + "/xzy404-" + Long.toHexString(System.nanoTime()) + "/");
+    long[] baseline = probePath(client, base + "/xzy404-" + Long.toHexString(System.nanoTime()) + "/", target);
     int concurrency =
         request.pathConcurrency() != null
             ? Math.max(1, Math.min(50, request.pathConcurrency()))
@@ -501,7 +501,7 @@ public class ReconService {
             pool.submit(
                 () -> {
                   String url = base + "/" + word.replaceFirst("^/+", "");
-                  long[] r = probePath(client, url);
+                  long[] r = probePath(client, url, target);
                   if (r == null) return;
                   int status = (int) r[0];
                   long len = r[1];
@@ -606,7 +606,7 @@ public class ReconService {
 
     // 软-404 基线：爬虫判活与字典枚举共用同一条基线，避免"两套基线、两种判活"。
     long[] baseline =
-        probePath(client, base + "/xzy404-" + Long.toHexString(System.nanoTime()) + "/");
+        probePath(client, base + "/xzy404-" + Long.toHexString(System.nanoTime()) + "/", target);
 
     // 字典词（目录轮使用）。若为空则退化为纯爬虫。
     List<String> words = expandPathWords(request.pathWords(), request.pathDictionaryId());
@@ -705,7 +705,7 @@ public class ReconService {
       futures.add(
           pool.submit(
               () -> {
-                long[] resp = probePath(client, item.url());
+                long[] resp = probePath(client, item.url(), target);
                 if (resp == null) return CrawlPageResult.dead(item);
                 int status = (int) resp[0];
                 long len = resp[1];
@@ -725,7 +725,7 @@ public class ReconService {
                 CrawlPageResult res = new CrawlPageResult(item, true);
                 // 深度允许时抓源码解析下一层链接，并抽取目录前缀作为字典扩展种子。
                 if (item.depth() < ctx.maxDepth) {
-                  String html = fetchBody(client, item.url());
+                  String html = fetchBody(client, item.url(), target);
                   if (html != null) {
                     Matcher matcher = linkPattern.matcher(html);
                     int cap = 200;
@@ -843,7 +843,7 @@ public class ReconService {
       futures.add(
           pool.submit(
               () -> {
-                long[] resp = probePath(client, url);
+                long[] resp = probePath(client, url, target);
                 if (resp == null) return;
                 int status = (int) resp[0];
                 long len = resp[1];
@@ -1029,7 +1029,7 @@ public class ReconService {
         System.nanoTime() + Duration.ofSeconds(Math.max(5, crawlTimeBudgetSeconds)).toNanos();
 
     // 软-404 基线与字典枚举共用：返回"与不存在路径相同响应"的页面视为不可达。
-    long[] baseline = probePath(client, base + "/xzy404-" + Long.toHexString(System.nanoTime()) + "/");
+    long[] baseline = probePath(client, base + "/xzy404-" + Long.toHexString(System.nanoTime()) + "/", target);
 
     Set<String> visited = new java.util.HashSet<>();
     Set<String> enqueued = new java.util.HashSet<>();
@@ -1079,7 +1079,7 @@ public class ReconService {
               pool.submit(
                   () -> {
                     List<QueueItem> next = new ArrayList<>();
-                    long[] resp = probePath(client, item.url());
+                    long[] resp = probePath(client, item.url(), target);
                     if (resp == null) return next;
                     int status = (int) resp[0];
                     long len = resp[1];
@@ -1107,7 +1107,7 @@ public class ReconService {
                     }
                     // 深度允许时抓取页面源码，解析下一层同源链接
                     if (item.depth() < maxDepth) {
-                      String html = fetchBody(client, item.url());
+                      String html = fetchBody(client, item.url(), target);
                       if (html != null) {
                         Matcher matcher = linkPattern.matcher(html);
                         int cap = 200;
@@ -1180,7 +1180,15 @@ public class ReconService {
   private record QueueItem(String url, int depth) {}
 
   /** 抓取页面正文（仅用于解析链接），失败返回 null。 */
-  private String fetchBody(HttpClient client, String url) {
+  /**
+   * 抓取页面源码。
+   *
+   * <p>Round 357：把授权范围校验下沉到本方法内部（host + 授权端口），不再依赖调用方。此前端口校验只在
+   * {@code resolveLink} 与 {@code DiscoveredPathService.record} 里做，一旦新增调用点忘记校验就会退化成
+   * 越界出站（R355 的同源缺陷模式）。
+   */
+  private String fetchBody(HttpClient client, String url, AuthorizedTarget target) {
+    if (!withinAuthorizedScope(url, target)) return null;
     try {
       HttpRequest req =
           HttpRequest.newBuilder(URI.create(url))
@@ -1355,6 +1363,27 @@ public class ReconService {
     }
   }
 
+  /**
+   * 待请求 URL 是否仍在「授权 host + 授权端口」范围内。
+   *
+   * <p>Round 357：这是 recon 出站请求的最后一道不变量。调用方（尤其是新增代码）可能忘记校验，
+   * 因此被 {@code probePath} / {@code fetchBody} 在入口强制调用：越界即返回 false，请求不会发出。
+   */
+  private boolean withinAuthorizedScope(String url, AuthorizedTarget target) {
+    if (url == null || target == null || target.getAllowedPorts() == null) return false;
+    try {
+      URI uri = URI.create(url);
+      if (uri.getHost() == null || uri.getScheme() == null) return false;
+      String scheme = uri.getScheme().toLowerCase(Locale.ROOT);
+      if (!"http".equals(scheme) && !"https".equals(scheme)) return false;
+      String targetHost = targetHostOf(target.getTargetValue());
+      if (targetHost == null || !targetHost.equalsIgnoreCase(uri.getHost())) return false;
+      return allowedPort(target, effectivePort(uri));
+    } catch (RuntimeException ex) {
+      return false;
+    }
+  }
+
   /** 重定向/最终 URI 是否与授权基址同源（host + 有效端口一致，且 scheme 受限 http/https）。 */
   private boolean sameAuthorizedOrigin(URI uri, String targetHost, int targetPort) {
     if (uri == null || uri.getHost() == null || uri.getScheme() == null) return false;
@@ -1431,7 +1460,14 @@ public class ReconService {
   private final java.util.concurrent.atomic.AtomicLong probeFailureCounter =
       new java.util.concurrent.atomic.AtomicLong();
 
-  private long[] probePath(HttpClient client, String url) {
+  /**
+   * 发送一次 GET 探测，只返回状态码与响应体长度。
+   *
+   * <p>Round 357：入口处强制 host + 授权端口校验（{@link #withinAuthorizedScope}），把「只能访问授权
+   * 范围」这条不变量从调用方收敛到本方法，避免将来新增调用点时漏掉端口判断。
+   */
+  private long[] probePath(HttpClient client, String url, AuthorizedTarget target) {
+    if (!withinAuthorizedScope(url, target)) return null;
     try {
       // 目录枚举只需要状态码和长度；用 discarding 不保证能读完整正文，
       // 这里仍读字节但限制上限，避免超大页面把内存与时间吃掉。
@@ -2186,6 +2222,8 @@ public class ReconService {
   public record IcpResult(
       Long targetId, String domain, String status, String reason, Map<String, Object> data) {}
 }
+
+
 
 
 
