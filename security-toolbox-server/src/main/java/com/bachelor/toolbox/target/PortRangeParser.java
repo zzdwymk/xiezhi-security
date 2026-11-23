@@ -59,6 +59,30 @@ public class PortRangeParser {
     return contains;
   }
 
+  /**
+   * 按输入顺序取前 {@code limit} 个端口，用于「只探测少量候选端口」的场景。
+   *
+   * <p>与 {@link #parse(String)} 使用同一严格 token 校验，但**不会**因为范围宽就展开全部端口：
+   * {@code 1-65535} 取前 8 个不会产生 65,535 个 Integer 分配。命中限额后仍会继续校验剩余 token，
+   * 避免非法后缀被"取够就停"掩盖。
+   */
+  public java.util.List<Integer> firstPorts(String specification, int limit) {
+    if (limit < 1) {
+      throw new IllegalArgumentException("limit 必须大于 0");
+    }
+    if (specification == null || specification.isBlank()) {
+      throw invalidFormat();
+    }
+    java.util.List<Integer> selected = new java.util.ArrayList<>(Math.min(limit, 64));
+    for (String rawToken : specification.split(",", -1)) {
+      PortRange range = parseRange(rawToken);
+      for (int port = range.start(); port <= range.end() && selected.size() < limit; port++) {
+        selected.add(port);
+      }
+    }
+    return selected;
+  }
+
   private PortRange parseRange(String rawToken) {
     String token = rawToken.trim();
     if (token.isEmpty()) throw invalidFormat();

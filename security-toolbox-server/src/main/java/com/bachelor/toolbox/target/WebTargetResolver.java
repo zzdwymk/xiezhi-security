@@ -51,6 +51,8 @@ public class WebTargetResolver {
   public static final String PARAM_RESOLVED_BASES = "__resolvedWebBases";
   private static final Set<Integer> DEFAULT_WEB_PORTS = Set.of(80, 443);
   private static final int MAX_RESOLVED_BASES = 8;
+  /** Round 374：从授权范围中最多取样多少个端口参与探测（有界，避免宽范围展开）。 */
+  private static final int MAX_PROBE_PORTS = 20;
   private static final int CONNECT_TIMEOUT_MS = 3000;
   private static final int REQUEST_TIMEOUT_SECONDS = 5;
   private static final int PROBE_BUDGET_SECONDS = REQUEST_TIMEOUT_SECONDS + 2;
@@ -251,12 +253,16 @@ public class WebTargetResolver {
 
   private Set<Integer> probeCandidates(AuthorizedTarget target) {
     LinkedHashSet<Integer> candidates = new LinkedHashSet<>();
-    try {
-      candidates.addAll(portRangeParser.parse(target.getAllowedPorts()));
-    } catch (RuntimeException ignored) {
-      // fall through to	defaults
-    }
+    // Round 374：默认 Web 端口必须排在候选最前面。此前 allowedPorts 先被完整展开、80/443 追加在末尾，
+    // 而探测只取前 16 个候选（8 端口 × http/https），因此授权范围一旦是 1-65535 这类宽范围，
+    // 候选就被端口 1..8 占满，80/443 永不被探测 → 裸 IP 目标的 Web 基址解析必然失败。
     candidates.addAll(DEFAULT_WEB_PORTS);
+    try {
+      // 只取有界的一批授权端口，避免把 1-65535 展开成 65,535 个 Integer（R373 同类收敛）。
+      candidates.addAll(portRangeParser.firstPorts(target.getAllowedPorts(), MAX_PROBE_PORTS));
+    } catch (RuntimeException ignored) {
+      // 授权串异常时仅保留默认 Web 端口（webUri 仍会逐端口复核授权范围）。
+    }
     return candidates;
   }
 
