@@ -51,7 +51,9 @@ public final class ToolParameterPolicy {
           Map.entry("dir_scan", Set.of("dictionary", "concurrency", "depth", "maxRequests", "extensions")),
           Map.entry("zap_fuzz",
               Set.of("fuzzRequestUrl", "method", "fuzzPostBody", "fuzzPayload", "fuzzTargetField")),
-          Map.entry("msf_scan", Set.of("module", "modules", "options")),
+          // Round 371：msfOptions（按模块下发选项）由 MsfScanTool 与 validateMsfOptionMaps 共同支持，
+          // 此前三处白名单均缺该键，导致功能不可用且 Round 15 的嵌套注入防护成为不可达代码。
+          Map.entry("msf_scan", Set.of("module", "modules", "options", "msfOptions")),
           Map.entry("sqlmap_scan", Set.of("path", "level", "risk", "technique")),
           Map.entry("http_security_check", Set.of("check")),
           Map.entry("http_headers", Set.of()),

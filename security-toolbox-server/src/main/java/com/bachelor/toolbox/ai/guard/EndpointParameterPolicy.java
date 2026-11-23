@@ -79,7 +79,7 @@ public final class EndpointParameterPolicy {
           Map.entry("xray_scan", Set.of("pocCodes", "allPocs")),
           Map.entry("nuclei_scan", Set.of("pocCodes", "allPocs")),
           Map.entry("zap_scan", Set.of("spider", "strength")),
-          Map.entry("msf_scan", Set.of("module", "modules", "options")),
+          Map.entry("msf_scan", Set.of("module", "modules", "options", "msfOptions")),
           Map.entry("sqlmap_scan", Set.of("path", "level", "risk", "technique")),
           Map.entry("http_security_check", Set.of("check")),
           Map.entry("dir_scan", Set.of("dictionary", "concurrency", "depth", "maxRequests", "extensions")),
