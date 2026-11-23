@@ -24,6 +24,33 @@ class TrafficPacketEndpointScopeTests {
 
   @Autowired private TrafficPacketRepository packets;
 
+  @jakarta.persistence.PersistenceContext
+  private jakarta.persistence.EntityManager entityManager;
+
+  /** 先红证据：原始「只按 host」查询确实把两个目标的路径混在一起返回。 */
+  @Test
+  void legacyHostOnlyQueryLeaksOtherTargetsPaths() {
+    packets.save(packet(1L, 11L, "/a"));
+    packets.save(packet(2L, 11L, "/c"));
+    packets.flush();
+
+    @SuppressWarnings("unchecked")
+    java.util.List<Object[]> legacy =
+        entityManager
+            .createQuery(
+                "select distinct p.scheme, p.host, p.port, p.path from TrafficPacket p"
+                    + " where lower(p.host) = lower(:host)")
+            .setParameter("host", "192.168.222.157")
+            .getResultList();
+
+    assertThat(legacy)
+        .as("原始只按 host 的查询会同时返回 target 1 与 target 2 的路径（跨项目泄漏）")
+        .hasSize(2);
+    assertThat(packets.findDistinctEndpointsByTargetIdAndHost(1L, "192.168.222.157"))
+        .as("修复后的查询只返回 target 1 自己的路径")
+        .hasSize(1);
+  }
+
   @Test
   void endpointsAreScopedByTargetId() {
     packets.save(packet(1L, 11L, "/a"));
