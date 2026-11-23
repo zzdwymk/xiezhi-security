@@ -269,7 +269,25 @@ public class ScanScheduleService {
     }
   }
 
+  /**
+   * 派发单个计划。
+   *
+   * <p>Round 364：本方法不得向调用方抛出异常——一个坏计划（如存量库中的永不触发 cron）曾经由
+   * catch 分支的 {@code advanceSchedule} 再次抛出，冲出 {@code dispatchUnderGate} 的循环，
+   * 导致同一批剩余计划全部不派发且每 5 秒重复失败。任何异常在此终结：记录日志并继续下一计划。
+   */
   private void dispatchSchedule(ScanSchedule schedule, Instant dispatchTime) {
+    try {
+      dispatchScheduleInternal(schedule, dispatchTime);
+    } catch (Exception exception) {
+      log.error(
+          "扫描计划派发异常，已跳过该计划继续批内剩余派发：scheduleId={}",
+          schedule.getId(),
+          exception);
+    }
+  }
+
+  private void dispatchScheduleInternal(ScanSchedule schedule, Instant dispatchTime) {
     Map<String, Object> parameters;
     try {
       parameters =
