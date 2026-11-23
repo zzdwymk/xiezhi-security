@@ -48,6 +48,13 @@ public class ZapScanTool implements SecurityTool {
           "Testing - MEDIUM",
           "Testing - LOW");
   private static final int MAX_FINDINGS = 300;
+  /**
+   * 第378轮：结果里最多携带多少条爬取 URL。
+   *
+   * <p>ZAP spider 对大站点可返回上万条 URL，此前整包写入 {@code data.spiderUrls}，
+   * 形成与 site_crawl 结果同类的无界载荷（持久化到 {@code result_json} 并经详情接口回传）。
+   */
+  private static final int MAX_SPIDER_URLS = 500;
 
   private final TargetPolicyService policy;
   private final ZapDaemonSupplier daemonSupplier;
@@ -277,7 +284,14 @@ public class ZapScanTool implements SecurityTool {
     data.put("activeAlertCount", activeCount);
     data.put("matches", matches);
     data.put("openApiImported", openApiImported);
-    data.put("spiderUrls", crawledUrls == null ? List.of() : crawledUrls);
+    // Round 378：爬取 URL 列表封顶，并显式给出总数与截断标记（不静默丢弃）。
+    List<String> spiderUrls = crawledUrls == null ? List.of() : crawledUrls;
+    List<String> spiderSample =
+        spiderUrls.size() > MAX_SPIDER_URLS ? spiderUrls.subList(0, MAX_SPIDER_URLS) : spiderUrls;
+    data.put("spiderUrls", spiderSample);
+    data.put("spiderUrlCount", spiderUrls.size());
+    data.put("spiderUrlsReturned", spiderSample.size());
+    data.put("spiderUrlsTruncated", spiderUrls.size() > spiderSample.size());
     data.put("technologies", technologies == null ? List.of() : technologies);
     return new ToolExecutionResult(
         "ZAP 扫描完成，命中 " + findings.size() + " 项在授权范围内的潜在问题（被动 "
