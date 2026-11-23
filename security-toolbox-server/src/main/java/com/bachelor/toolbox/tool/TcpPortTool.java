@@ -187,13 +187,24 @@ public class TcpPortTool implements SecurityTool {
     Map<String, Object> data = new LinkedHashMap<>();
     data.put("host", host);
     data.put("protocol", "TCP");
-    data.put("states", states);
+    // Round 379：states 只返回样本 + 完整分类计数。全段授权（1-65535）时此前会把 65,535 条明细
+    // 写进 result_json 并经详情接口回传；openPorts 仍为完整集合（下游 consumeOpenPorts 依赖它）。
+    PortStateSummary.Summary stateSummary = PortStateSummary.summarize(states, MAX_STATE_DETAILS);
+    data.put("states", stateSummary.sample());
+    data.put("statesTotal", stateSummary.total());
+    data.put("statesReturned", stateSummary.sample().size());
+    data.put("statesTruncated", stateSummary.truncated());
+    data.put("stateCounts", stateSummary.counts());
     data.put("openPorts", openPorts);
     data.put("assessmentType", "ASSET_OBSERVATION");
     data.put("vulnerability", false);
     data.put("note", "开放端口仅代表可达服务；需结合未授权访问、弱口令、危险配置或已知漏洞证据后才能形成漏洞");
     if (udpRequested) {
-      data.put("udpStates", udpStates);
+      PortStateSummary.Summary udpSummary = PortStateSummary.summarize(udpStates, MAX_STATE_DETAILS);
+      data.put("udpStates", udpSummary.sample());
+      data.put("udpStatesTotal", udpSummary.total());
+      data.put("udpStatesTruncated", udpSummary.truncated());
+      data.put("udpStateCounts", udpSummary.counts());
       data.put("udpOpenPorts", udpOpen);
       data.put("udpOpenOrFilteredPorts", udpOpenOrFiltered);
       data.put("udpCaveat", UDP_CAVEAT);
@@ -246,6 +257,9 @@ public class TcpPortTool implements SecurityTool {
   }
 
   private static final int MAX_PROGRESS_PORT_SCOPE_CHARS = 120;
+
+  /** Round 379：结果里最多保留多少条端口状态明细（完整计数另由 stateCounts 给出）。 */
+  static final int MAX_STATE_DETAILS = 500;
 
   private boolean truthy(Object value) {
     return Boolean.TRUE.equals(value) || "true".equalsIgnoreCase(String.valueOf(value));
