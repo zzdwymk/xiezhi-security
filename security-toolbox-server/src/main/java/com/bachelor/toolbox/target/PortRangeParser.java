@@ -31,32 +31,50 @@ public class PortRangeParser {
     LinkedHashSet<Integer> ports = new LinkedHashSet<>();
     String[] tokens = specification.split(",", -1);
     for (String rawToken : tokens) {
-      String token = rawToken.trim();
-      if (token.isEmpty()) {
-        throw invalidFormat();
-      }
-
-      int separator = token.indexOf('-');
-      if (separator < 0) {
-        add(ports, parsePort(token), maxPorts);
-        continue;
-      }
-      if (separator != token.lastIndexOf('-')) {
-        throw invalidFormat();
-      }
-
-      int start = parsePort(token.substring(0, separator).trim());
-      int end = parsePort(token.substring(separator + 1).trim());
-      if (start > end) {
-        throw new ApiException("端口范围起始值不能大于结束值");
-      }
-      for (int port = start; port <= end; port++) {
+      PortRange range = parseRange(rawToken);
+      for (int port = range.start(); port <= range.end(); port++) {
         add(ports, port, maxPorts);
       }
     }
 
     return ports;
   }
+
+  /**
+   * Tests membership without expanding ranges into a port collection.
+   *
+   * <p>Uses the same strict token validation as {@link #parse(String)} and validates every token,
+   * even after a match. An invalid suffix must not turn a malformed authorization into a valid one.
+   * A full {@code 1-65535} scope therefore needs only two endpoint parses, not 65,535 allocations.
+   */
+  public boolean containsPort(String specification, int requestedPort) {
+    if (specification == null || specification.isBlank()) {
+      throw invalidFormat();
+    }
+    boolean contains = false;
+    for (String rawToken : specification.split(",", -1)) {
+      PortRange range = parseRange(rawToken);
+      contains |= requestedPort >= range.start() && requestedPort <= range.end();
+    }
+    return contains;
+  }
+
+  private PortRange parseRange(String rawToken) {
+    String token = rawToken.trim();
+    if (token.isEmpty()) throw invalidFormat();
+    int separator = token.indexOf('-');
+    if (separator < 0) {
+      int port = parsePort(token);
+      return new PortRange(port, port);
+    }
+    if (separator != token.lastIndexOf('-')) throw invalidFormat();
+    int start = parsePort(token.substring(0, separator).trim());
+    int end = parsePort(token.substring(separator + 1).trim());
+    if (start > end) throw new ApiException("端口范围起始值不能大于结束值");
+    return new PortRange(start, end);
+  }
+
+  private record PortRange(int start, int end) {}
 
   public String canonicalize(String specification, int maxPorts) {
     return parse(specification, maxPorts).stream()

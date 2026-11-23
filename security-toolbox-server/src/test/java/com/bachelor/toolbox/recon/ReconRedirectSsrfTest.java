@@ -45,7 +45,8 @@ class ReconRedirectSsrfTest {
         mock(DiscoveredPathService.class),
         mock(TrafficPacketRepository.class),
         mock(SubdomainDictionaryService.class),
-        mock(PathDictionaryService.class));
+        mock(PathDictionaryService.class),
+        new com.bachelor.toolbox.target.PortRangeParser());
   }
 
   private Object invokeMineProbe(ReconService svc, String url, String targetHost, int targetPort) throws Exception {

@@ -30,7 +30,8 @@ class ReconHttpClientRedirectPolicyTests {
             org.mockito.Mockito.mock(com.bachelor.toolbox.asset.DiscoveredPathService.class),
             org.mockito.Mockito.mock(com.bachelor.toolbox.traffic.TrafficPacketRepository.class),
             org.mockito.Mockito.mock(SubdomainDictionaryService.class),
-            org.mockito.Mockito.mock(PathDictionaryService.class));
+            org.mockito.Mockito.mock(PathDictionaryService.class),
+            new com.bachelor.toolbox.target.PortRangeParser());
 
     for (String field : List.of("passiveClient", "activeClient", "paramProbeClient")) {
       HttpClient client = (HttpClient) ReflectionTestUtils.getField(service, field);

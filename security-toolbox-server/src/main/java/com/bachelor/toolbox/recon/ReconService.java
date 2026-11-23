@@ -4,6 +4,7 @@ import com.bachelor.toolbox.project.AssessmentProjectService;
 import com.bachelor.toolbox.asset.DiscoveredPathService;
 import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.AuthorizedTargetRepository;
+import com.bachelor.toolbox.target.PortRangeParser;
 import com.bachelor.toolbox.target.TargetService;
 import com.bachelor.toolbox.traffic.TrafficPacketRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -107,6 +108,8 @@ public class ReconService {
   private final TrafficPacketRepository trafficPackets;
   private final SubdomainDictionaryService subdomainDictionary;
   private final PathDictionaryService pathDictionary;
+  /** Round 359：端口授权统一走 {@link PortRangeParser}，与 TargetService/TargetPolicyService 同一实现。 */
+  private final PortRangeParser portRangeParser;
   private final HttpClient passiveClient =
       HttpClient.newBuilder()
           .connectTimeout(PASSIVE_CONNECT_TIMEOUT)
@@ -210,7 +213,8 @@ public class ReconService {
       DiscoveredPathService discoveredPaths,
       TrafficPacketRepository trafficPackets,
       SubdomainDictionaryService subdomainDictionary,
-      PathDictionaryService pathDictionary) {
+      PathDictionaryService pathDictionary,
+      com.bachelor.toolbox.target.PortRangeParser portRangeParser) {
     this.results = results;
     this.projects = projects;
     this.targets = targets;
@@ -221,6 +225,7 @@ public class ReconService {
     this.trafficPackets = trafficPackets;
     this.subdomainDictionary = subdomainDictionary;
     this.pathDictionary = pathDictionary;
+    this.portRangeParser = portRangeParser;
   }
 
   public ReconResult collect(Long projectId, ReconRequest request) {
@@ -1892,25 +1897,19 @@ public class ReconService {
     return (address[0] & 255) + "." + (address[1] & 255) + "." + (address[2] & 255) + ".0/24";
   }
 
+  /**
+   * 端口是否在该目标的授权范围内。
+   *
+   * <p>Round 359：委托 {@link PortRangeParser}（与 TargetService 写入、TargetPolicyService 校验同一实现），
+   * 消除两套解析的语义漂移。格式非法时仍 fail-closed（返回 false，绝不扩大授权范围）。
+   */
   private boolean allowedPort(AuthorizedTarget target, int port) {
-    for (String part : target.getAllowedPorts().split(",")) {
-      String value = part.trim();
-      try {
-        if (value.contains("-")) {
-          String[] range = value.split("-", 2);
-          int start = Integer.parseInt(range[0]);
-          int end = Integer.parseInt(range[1]);
-          if (port >= start && port <= end) {
-            return true;
-          }
-        } else if (Integer.parseInt(value) == port) {
-          return true;
-        }
-      } catch (Exception ignored) {
-        // 无效端口配置不能扩大授权范围。
-      }
+    try {
+      return portRangeParser.containsPort(target.getAllowedPorts(), port);
+    } catch (RuntimeException ignored) {
+      // 无效端口配置不能扩大授权范围。
+      return false;
     }
-    return false;
   }
 
   private HttpEndpoint httpEndpoint(AuthorizedTarget target) {

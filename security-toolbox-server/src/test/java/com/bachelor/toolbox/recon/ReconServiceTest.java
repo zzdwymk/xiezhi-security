@@ -714,7 +714,7 @@ class ReconServiceTest {
         new ReconService(
             results, projects, targets, targetService, new ObjectMapper(), icpBrowserCaptures,
             discoveredPaths, mock(TrafficPacketRepository.class), subdomainDictionary,
-            pathDictionary);
+            pathDictionary, new com.bachelor.toolbox.target.PortRangeParser());
     ReflectionTestUtils.setField(service, "passiveSourcesEnabled", false);
     ReflectionTestUtils.setField(service, "paramProbeEnabled", true);
     ReflectionTestUtils.setField(service, "paramProbeMaxEndpoints", maxEndpoints);
@@ -771,8 +771,10 @@ class ReconServiceTest {
         new ReconService(
             results, projects, targets, targetService, new ObjectMapper(), icpBrowserCaptures,
             mock(DiscoveredPathService.class), mock(TrafficPacketRepository.class),
-            subdomainDictionary, pathDictionary);
+            subdomainDictionary, pathDictionary,
+            new com.bachelor.toolbox.target.PortRangeParser());
     ReflectionTestUtils.setField(service, "passiveSourcesEnabled", passiveSourcesEnabled);
     return service;
   }
 }
+

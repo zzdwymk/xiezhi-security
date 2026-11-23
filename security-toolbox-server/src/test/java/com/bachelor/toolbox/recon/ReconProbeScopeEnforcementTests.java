@@ -37,7 +37,8 @@ class ReconProbeScopeEnforcementTests {
         mock(DiscoveredPathService.class),
         mock(TrafficPacketRepository.class),
         mock(SubdomainDictionaryService.class),
-        mock(PathDictionaryService.class));
+        mock(PathDictionaryService.class),
+        new com.bachelor.toolbox.target.PortRangeParser());
   }
 
   private static AuthorizedTarget target(String value, String allowedPorts) {

@@ -33,6 +33,55 @@ class PortRangeParserTests {
         .hasMessageContaining("10");
   }
 
+  /**
+   * 第359轮：containsPort 与 parse 的授权语义必须逐点等价。
+   *
+   * <p>containsPort 不展开范围集合；命中前段后仍要校验后续 token（迟到非法段必须让整段授权失败），
+   * 否则 {@code 80,bad} 这类串会退化成「只认前段」的宽松放行。
+   */
+  @Test
+  void containsPortMatchesParseMembershipForValidSpecifications() {
+    List<String> specs = List.of("80", "80,443", "80-82", "8000-8010,443", "1-65535", "80, 443 ");
+    List<Integer> probes = List.of(1, 80, 81, 82, 443, 65535, 8005, 9000);
+    for (String spec : specs) {
+      var parsed = parser.parse(spec);
+      for (int port : probes) {
+        assertThat(parser.containsPort(spec, port))
+            .as("containsPort(%s, %d) 必须与 parse().contains() 等价", spec, port)
+            .isEqualTo(parsed.contains(port));
+      }
+    }
+  }
+
+  @Test
+  void containsPortRejectsLateInvalidTokensInsteadOfTrustingAPrefixMatch() {
+    assertThatThrownBy(() -> parser.containsPort("80,bad", 80)).isInstanceOf(ApiException.class);
+    assertThatThrownBy(() -> parser.containsPort("bad,80", 80)).isInstanceOf(ApiException.class);
+    assertThatThrownBy(() -> parser.containsPort("80,,443", 80)).isInstanceOf(ApiException.class);
+    assertThatThrownBy(() -> parser.containsPort("80,,443", 443)).isInstanceOf(ApiException.class);
+    assertThatThrownBy(() -> parser.containsPort("80,0", 80)).isInstanceOf(ApiException.class);
+    assertThatThrownBy(() -> parser.containsPort("0-65536", 80)).isInstanceOf(ApiException.class);
+    assertThatThrownBy(() -> parser.containsPort(null, 80)).isInstanceOf(ApiException.class);
+    assertThatThrownBy(() -> parser.containsPort("  ", 80)).isInstanceOf(ApiException.class);
+  }
+
+  @Test
+  void containsPortCoversFullRangeWithoutExpansionCost() {
+    assertThat(parser.containsPort("1-65535", 1)).isTrue();
+    assertThat(parser.containsPort("1-65535", 65535)).isTrue();
+    assertThat(parser.containsPort("1-65535", 0)).isFalse();
+    assertThat(parser.containsPort("1-65535", 65536)).isFalse();
+    assertThat(parser.containsPort("80-82", 83)).isFalse();
+  }
+
+  @Test
+  void parseKeepsDeduplicationAndMaxPortsLimitsForToolSelection() {
+    // 去重后 2 个唯一端口，限额 2 内合法（工具选择仍必须走 parse，不能用 containsPort 替代）。
+    assertThat(parser.parse("80,80,81", 2)).containsExactly(80, 81);
+    // 80-82 展开后 3 个唯一端口，超过限额 2 必须拒绝。
+    assertThatThrownBy(() -> parser.parse("80-82", 2)).isInstanceOf(ApiException.class);
+  }
+
   @Test
   void tcpScanStillRejectsPortsOutsideAuthorizedRange() {
     TargetPolicyService policy = new TargetPolicyService(false, parser);
