@@ -151,7 +151,7 @@ public class HttpSecurityCheckTool implements SecurityTool {
       result.put("url", uri.toString());
       result.put("check", check);
       result.put("status", response.statusCode());
-      result.put("headers", sanitizedHeaders(response.headers()));
+      result.put("headers", HeaderRedaction.sanitize(response.headers().map()));
       results.add(result);
     }
     observer.progress(bases.size() * 2, bases.size() * 2, checkName(check) + "完成");
@@ -342,27 +342,12 @@ public class HttpSecurityCheckTool implements SecurityTool {
   }
 
   private Map<String, List<String>> sanitizedHeaders(HttpHeaders headers) {
-    Map<String, List<String>> sanitized = new LinkedHashMap<>();
-    headers
-        .map()
-        .forEach(
-            (name, values) -> {
-              if ("set-cookie".equalsIgnoreCase(name)) {
-                sanitized.put(name, values.stream().map(this::redactCookieValue).toList());
-              } else {
-                sanitized.put(name, values);
-              }
-            });
-    return sanitized;
+    // Round 377：统一委托 HeaderRedaction，避免与 http_headers 再次出现"一处脱敏、一处不脱敏"的漂移。
+    return HeaderRedaction.sanitize(headers.map());
   }
 
   private String redactCookieValue(String rawCookie) {
-    int equals = rawCookie.indexOf('=');
-    if (equals < 0) return "<redacted>";
-    int semicolon = rawCookie.indexOf(';', equals + 1);
-    return rawCookie.substring(0, equals + 1)
-        + "<redacted>"
-        + (semicolon >= 0 ? rawCookie.substring(semicolon) : "");
+    return HeaderRedaction.redactCookie(rawCookie);
   }
 
   private String cookieName(String rawCookie) {

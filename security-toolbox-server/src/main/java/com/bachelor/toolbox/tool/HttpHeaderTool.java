@@ -112,7 +112,9 @@ public class HttpHeaderTool implements SecurityTool {
       observer.progress(total * 2, bases.size() * 2, "已收到 HTTP 响应，正在检查安全响应头");
 
       Map<String, List<String>> headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
-      headers.putAll(response.headers().map());
+      // Round 377：响应头必须脱敏。此前原样写进结果，Set-Cookie 的会话值随之被持久化到
+      // security_tasks.result_json 并经任务详情/界面回传（姊妹工具 http_security_check 早已脱敏）。
+      headers.putAll(HeaderRedaction.sanitize(response.headers().map()));
       RECOMMENDATIONS.forEach(
           (header, remediation) -> {
             if (header.equals("strict-transport-security")
