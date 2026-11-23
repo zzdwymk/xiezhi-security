@@ -1265,6 +1265,7 @@ public class ReconService {
     URI baseUri = URI.create(base + "/");
     String targetHost = baseUri.getHost();
     int targetPort = effectivePort(baseUri);
+    String targetScheme = baseUri.getScheme() == null ? "http" : baseUri.getScheme();
     int tested = 0;
     int found = 0;
     int budget = paramProbeMaxEndpoints * 6 + 24; // 请求预算兜底，避免探测放大。
@@ -1283,14 +1284,16 @@ public class ReconService {
           timedOut = true;
           break outer;
         }
-        MineResponse baseResp = mineProbe(client, appendParam(endpoint, param, "1"), targetHost, targetPort);
+        MineResponse baseResp =
+            mineProbe(client, appendParam(endpoint, param, "1"), targetHost, targetPort, targetScheme);
         if (baseResp == null || baseResp.status() >= 500) continue;
         tested++;
         if (System.nanoTime() > deadline) {
           timedOut = true;
           break outer;
         }
-        MineResponse brkResp = mineProbe(client, appendParam(endpoint, param, "1'" ), targetHost, targetPort);
+        MineResponse brkResp =
+            mineProbe(client, appendParam(endpoint, param, "1'" ), targetHost, targetPort, targetScheme);
         if (brkResp == null) continue;
         boolean errorTriggered =
             SQL_ERROR_SIGNATURE.matcher(brkResp.body()).find()
@@ -1327,8 +1330,13 @@ public class ReconService {
   /** 参数探测的单次响应快照（状态码、跟随重定向后的最终 URL、受限正文）。 */
   private record MineResponse(int status, String finalUrl, String body) {}
 
-  private MineResponse mineProbe(HttpClient client, String url, String targetHost, int targetPort) {
+  private MineResponse mineProbe(
+      HttpClient client, String url, String targetHost, int targetPort, String targetScheme) {
     try {
+      // Round 360：首次发送前也必须过 origin 守卫（此前仅依赖候选来源约定）。
+      if (!sameAuthorizedOrigin(URI.create(url), targetHost, targetPort, targetScheme)) {
+        return null;
+      }
       HttpRequest req =
           HttpRequest.newBuilder(URI.create(url))
               .timeout(Duration.ofSeconds(6))
@@ -1336,14 +1344,14 @@ public class ReconService {
               .GET()
               .build();
       HttpResponse<byte[]> resp = client.send(req, HttpResponse.BodyHandlers.ofByteArray());
-      // 客户端不自动跟随重定向；仅当 Location 与授权 host:端口 同源时手工再发一次（覆盖目录补齐 301）。
+      // 客户端不自动跟随重定向；仅当 Location 与授权 origin 完全一致时手工再发一次（覆盖目录补齐 301）。
       int sc = resp.statusCode();
       if (sc >= 300 && sc < 400) {
         String location = resp.headers().firstValue("location").orElse(null);
         if (location == null || location.isBlank()) return null;
         URI followed = URI.create(url).resolve(location.trim());
-        if (!sameAuthorizedOrigin(followed, targetHost, targetPort)) {
-          // 跨主机或跨端口的重定向一律不跟随（防 SSRF 出站到内网其它服务）。
+        if (!sameAuthorizedOrigin(followed, targetHost, targetPort, targetScheme)) {
+          // 跨主机/跨端口/跨协议的重定向一律不跟随（防 SSRF 出站到内网其它服务）。
           return null;
         }
         HttpRequest hop =
@@ -1355,8 +1363,8 @@ public class ReconService {
         resp = client.send(hop, HttpResponse.BodyHandlers.ofByteArray());
       }
       URI finalUri = resp.uri();
-      // 兜底：最终 URI 仍必须与授权 host:端口 一致。
-      if (!sameAuthorizedOrigin(finalUri, targetHost, targetPort)) {
+      // 兜底：最终 URI 仍必须与授权 origin 一致。
+      if (!sameAuthorizedOrigin(finalUri, targetHost, targetPort, targetScheme)) {
         return null;
       }
       byte[] raw = resp.body() == null ? new byte[0] : resp.body();
@@ -1369,16 +1377,21 @@ public class ReconService {
   }
 
   /**
-   * 待请求 URL 是否仍在「授权 host + 授权端口」范围内。
+   * 待请求 URL 是否仍在「授权 origin（scheme + host + 授权端口）」范围内。
    *
    * <p>Round 357：这是 recon 出站请求的最后一道不变量。调用方（尤其是新增代码）可能忘记校验，
    * 因此被 {@code probePath} / {@code fetchBody} 在入口强制调用：越界即返回 false，请求不会发出。
+   *
+   * <p>Round 360：额外拒绝携带 userinfo 的 URL（出站层与登记层语义对齐）与显式 {@code :0}
+   * 端口（0 是非法端口，不能回落到默认 80/443 授权判断）。
    */
   private boolean withinAuthorizedScope(String url, AuthorizedTarget target) {
     if (url == null || target == null || target.getAllowedPorts() == null) return false;
     try {
       URI uri = URI.create(url);
       if (uri.getHost() == null || uri.getScheme() == null) return false;
+      if (uri.getRawUserInfo() != null) return false;
+      if (uri.getPort() == 0) return false;
       String scheme = uri.getScheme().toLowerCase(Locale.ROOT);
       if (!"http".equals(scheme) && !"https".equals(scheme)) return false;
       String targetHost = targetHostOf(target.getTargetValue());
@@ -1389,10 +1402,19 @@ public class ReconService {
     }
   }
 
-  /** 重定向/最终 URI 是否与授权基址同源（host + 有效端口一致，且 scheme 受限 http/https）。 */
-  private boolean sameAuthorizedOrigin(URI uri, String targetHost, int targetPort) {
+  /**
+   * 重定向/最终 URI 是否与授权基址同 origin（scheme + host + 有效端口一致）。
+   *
+   * <p>Round 360：scheme 必须与授权基址一致（http 基址不放行 https 跳转）；同样拒绝 userinfo
+   * 与显式 {@code :0}。
+   */
+  private boolean sameAuthorizedOrigin(
+      URI uri, String targetHost, int targetPort, String targetScheme) {
     if (uri == null || uri.getHost() == null || uri.getScheme() == null) return false;
-    if (!List.of("http", "https").contains(uri.getScheme().toLowerCase(Locale.ROOT))) return false;
+    if (uri.getRawUserInfo() != null || uri.getPort() == 0) return false;
+    String scheme = uri.getScheme().toLowerCase(Locale.ROOT);
+    if (!List.of("http", "https").contains(scheme)) return false;
+    if (targetScheme == null || !targetScheme.equalsIgnoreCase(scheme)) return false;
     if (targetHost == null || !targetHost.equalsIgnoreCase(uri.getHost())) return false;
     return effectivePort(uri) == targetPort;
   }
@@ -1517,6 +1539,8 @@ public class ReconService {
       URI baseUri = URI.create(base + "/");
       URI resolved = baseUri.resolve(link);
       if (resolved.getHost() == null) return null;
+      if (resolved.getRawUserInfo() != null) return null;
+      if (resolved.getPort() == 0) return null;
       if (!resolved.getHost().equalsIgnoreCase(baseUri.getHost())) return null;
       if (!"http".equalsIgnoreCase(resolved.getScheme())
           && !"https".equalsIgnoreCase(resolved.getScheme())) return null;

@@ -51,10 +51,10 @@ class ReconRedirectSsrfTest {
 
   private Object invokeMineProbe(ReconService svc, String url, String targetHost, int targetPort) throws Exception {
     Method m = ReconService.class.getDeclaredMethod(
-        "mineProbe", java.net.http.HttpClient.class, String.class, String.class, int.class);
+        "mineProbe", java.net.http.HttpClient.class, String.class, String.class, int.class, String.class);
     m.setAccessible(true);
     Object client = ReflectionTestUtils.getField(svc, "paramProbeClient");
-    return m.invoke(svc, client, url, targetHost, targetPort);
+    return m.invoke(svc, client, url, targetHost, targetPort, "http");
   }
 
   @Test
@@ -121,3 +121,4 @@ class ReconRedirectSsrfTest {
     assertThat(status).isEqualTo(200);
   }
 }
+
