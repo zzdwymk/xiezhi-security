@@ -27,6 +27,9 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class SiteCrawlTool implements SecurityTool {
+  /** Round 376：任务结果里最多携带的路径条数（超出只给计数与截断标记）。 */
+  static final int MAX_RESULT_PATHS = 500;
+
   private final ReconService reconService;
   private final DiscoveredPathService discoveredPaths;
 
@@ -99,14 +102,21 @@ public class SiteCrawlTool implements SecurityTool {
 
     List<DiscoveredPath> allPaths = discoveredPaths.list(projectId, target.getId());
     List<Map<String, Object>> pathItems = new ArrayList<>();
+    // Round 376：结果里的路径清单必须封顶。list() 本身上限 20,000 行，若整包塞进 resultJson，
+    // 单次爬取结果可达数百 KB~数 MB，既膨胀任务库又让每次打开任务详情全量传输。
+    // 截断必须是显式信息（pathsTotal/pathsTruncated），不能静默丢弃。
+    int emitted = 0;
     for (DiscoveredPath path : allPaths) {
+      if (emitted >= MAX_RESULT_PATHS) break;
       Map<String, Object> item = new LinkedHashMap<>();
       item.put("url", path.getUrl());
       item.put("path", path.getPath());
       item.put("source", path.getSource());
       item.put("note", path.getNote());
       pathItems.add(item);
+      emitted++;
     }
+    boolean truncated = allPaths.size() > pathItems.size();
 
     Map<String, Object> data = new LinkedHashMap<>();
     data.put("targetId", target.getId());
@@ -114,6 +124,9 @@ public class SiteCrawlTool implements SecurityTool {
     data.put("knownPathsAfter", allPaths.size());
     data.put("newPathsThisRun", Math.max(0, allPaths.size() - knownBefore));
     data.put("paths", pathItems);
+    data.put("pathsTotal", allPaths.size());
+    data.put("pathsReturned", pathItems.size());
+    data.put("pathsTruncated", truncated);
     data.put("evidence", result.getSourceEvidence());
 
     // 非静态且疑似动态的端点摘要，便于模型选择下一步注入验证目标
