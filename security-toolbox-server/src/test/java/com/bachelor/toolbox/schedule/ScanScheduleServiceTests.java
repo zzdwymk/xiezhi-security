@@ -761,6 +761,50 @@ class ScanScheduleServiceTests {
     verify(repository, never()).save(any());
   }
 
+  @Test
+  void rejectsOverflowIntervalWhenCreatingEnabledPlan() {
+    ApiException exception = assertThrows(ApiException.class,
+        () -> service.create(new CreateScheduleRequest(
+            5L, 7L, "http_headers", Map.of(), null, Long.MAX_VALUE, true)));
+    assertEquals("执行间隔过大，超出可计算的时间范围", exception.getMessage());
+    verify(projects, never()).validateProjectTarget(any(), any());
+    verify(repository, never()).save(any());
+  }
+
+  @Test
+  void rejectsOverflowIntervalEvenWhenCreatingDisabledPlan() {
+    ApiException exception = assertThrows(ApiException.class,
+        () -> service.create(new CreateScheduleRequest(
+            5L, 7L, "http_headers", Map.of(), null, Long.MAX_VALUE, false)));
+    assertEquals("执行间隔过大，超出可计算的时间范围", exception.getMessage());
+    verify(repository, never()).save(any());
+  }
+
+  @Test
+  void enablingLegacyOverflowPlanFailsWithoutChangingItsState() {
+    ScanSchedule legacy = intervalSchedule(91L);
+    legacy.setIntervalSeconds(Long.MAX_VALUE);
+    legacy.setEnabled(false);
+    legacy.setNextRunAt(null);
+    when(repository.findById(91L)).thenReturn(Optional.of(legacy));
+    ApiException exception = assertThrows(ApiException.class, () -> service.toggle(91L, true));
+    assertEquals("执行间隔过大，超出可计算的时间范围", exception.getMessage());
+    assertFalse(legacy.isEnabled());
+    assertNull(legacy.getNextRunAt());
+    verify(repository, never()).save(any());
+  }
+
+  @Test
+  void disablingLegacyOverflowPlanRemainsAvailable() {
+    ScanSchedule legacy = intervalSchedule(91L);
+    legacy.setIntervalSeconds(Long.MAX_VALUE);
+    when(repository.findById(91L)).thenReturn(Optional.of(legacy));
+    ScanSchedule disabled = service.toggle(91L, false);
+    assertFalse(disabled.isEnabled());
+    assertNull(disabled.getNextRunAt());
+    verify(repository).save(legacy);
+  }
+
   private CreateScheduleRequest intervalRequest(Map<String, Object> parameters, Boolean enabled) {
     return new CreateScheduleRequest(5L, 7L, "http_headers", parameters, null, 3600L, enabled);
   }

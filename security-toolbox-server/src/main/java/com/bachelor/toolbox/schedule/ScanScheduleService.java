@@ -157,6 +157,7 @@ public class ScanScheduleService {
     ScanSchedule schedule = load(id);
     authorization.requireManage(schedule.getProjectId());
     if (enabled) {
+      validateScheduleExpression(schedule.getCronExpression(), schedule.getIntervalSeconds());
       projectService.validateProjectTarget(schedule.getProjectId(), schedule.getTargetId());
       targetService.getCurrentlyAuthorized(schedule.getTargetId());
       Map<String, Object> parameters =
@@ -392,7 +393,7 @@ public class ScanScheduleService {
 
   private Instant calculateNextRun(ScanSchedule schedule, Instant baseTime) {
     if (schedule.getIntervalSeconds() != null) {
-      return baseTime.plusSeconds(schedule.getIntervalSeconds());
+      return calculateIntervalNextRun(baseTime, schedule.getIntervalSeconds());
     }
 
     CronExpression expression = CronExpression.parse(schedule.getCronExpression());
@@ -412,8 +413,26 @@ public class ScanScheduleService {
     if (intervalSeconds != null && intervalSeconds < MINIMUM_INTERVAL_SECONDS) {
       throw new ApiException("周期扫描间隔不能小于 60 秒");
     }
+    if (intervalSeconds != null) {
+      calculateIntervalNextRun(Instant.now(), intervalSeconds);
+    }
     if (cronExpression != null) {
       validateCronExpression(cronExpression);
+    }
+  }
+
+  /** Reject overflow before persistence, including plans initially created disabled. */
+  private Instant calculateIntervalNextRun(Instant baseTime, long intervalSeconds) {
+    try {
+      Instant next = baseTime.plusSeconds(intervalSeconds);
+      // Persistence/reporting uses ordinary SQL timestamps and four-digit calendar years.
+      // Checking only Instant arithmetic still permits dates that cannot be stored or rendered.
+      if (next.isAfter(Instant.parse("9999-12-31T23:59:59Z"))) {
+        throw new ApiException("执行间隔过大，超出可计算的时间范围");
+      }
+      return next;
+    } catch (ArithmeticException | java.time.DateTimeException exception) {
+      throw new ApiException("执行间隔过大，超出可计算的时间范围");
     }
   }
 
