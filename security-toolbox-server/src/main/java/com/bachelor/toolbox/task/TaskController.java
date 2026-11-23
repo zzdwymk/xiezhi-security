@@ -15,6 +15,15 @@ public class TaskController {
   private final TaskControlStatusService controlStatus;
   private final TaskExecutionLimitService limitService;
 
+  /**
+   * Round 381：全局事件流按项目归属过滤需要当前主体的可见项目。
+   *
+   * <p>用字段注入（与 {@code TaskService} 内的既有风格一致）以免改动所有既有测试构造器；
+   * 生产由 Spring 注入，缺失时退化为"无可见项目"（fail-closed，不会泄露）。
+   */
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  private com.bachelor.toolbox.project.ProjectAuthorizationService authorization;
+
   public TaskController(
       TaskService service,
       TaskProgressEventService progressEvents,
@@ -110,6 +119,14 @@ public class TaskController {
 
   @GetMapping(value = "/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
   public SseEmitter allEvents() {
-    return progressEvents.subscribeAll();
+    // Round 381：全局事件流必须按项目归属过滤。此前把全部任务事件推给任何已认证用户，
+    // 事件含 projectId/targetId/toolCode/progressMessage/errorMessage/logLine → 跨项目信息泄露。
+    boolean admin = authorization != null && authorization.isAdmin();
+    java.util.Set<Long> visibleProjects =
+        admin
+            ? java.util.Set.of()
+            : new java.util.HashSet<>(
+                authorization == null ? java.util.List.of() : authorization.accessibleProjectIds());
+    return progressEvents.subscribeAll(admin, visibleProjects);
   }
 }

@@ -13,7 +13,8 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 public class TaskProgressEventService {
   private static final long STREAM_TIMEOUT_MS = 30L * 60L * 1000L;
   private final Map<Long, Set<SseEmitter>> subscribers = new ConcurrentHashMap<>();
-  private final Set<SseEmitter> allTaskSubscribers = ConcurrentHashMap.newKeySet();
+  /** 全局订阅者 → 其可见范围（第381轮：按项目过滤，避免跨项目事件泄露）。 */
+  private final Map<SseEmitter, AllScope> allTaskScopes = new ConcurrentHashMap<>();
   private final LongFunction<SseEmitter> emitterFactory;
 
   public TaskProgressEventService() {
@@ -43,15 +44,38 @@ public class TaskProgressEventService {
     return emitter;
   }
 
-  public SseEmitter subscribeAll() {
+  /**
+   * 全局任务流订阅（第381轮：必须按项目归属过滤）。
+   *
+   * <p>此前无过滤地把所有任务事件推给任何已认证用户——事件含 taskId/projectId/targetId/toolCode/
+   * progressMessage/errorMessage/logLine，构成跨项目信息泄露。现在调用方必须给出可见范围：
+   * 管理员传 {@code allProjects=true}，普通用户传自己的项目 ID 集合。
+   *
+   * @param allProjects 是否可见全部项目（管理员）
+   * @param projectIds 可见项目 ID（{@code allProjects=false} 时生效）
+   */
+  public SseEmitter subscribeAll(boolean allProjects, Set<Long> projectIds) {
     SseEmitter emitter = emitterFactory.apply(STREAM_TIMEOUT_MS);
-    allTaskSubscribers.add(emitter);
-    Runnable cleanup = () -> allTaskSubscribers.remove(emitter);
+    Set<Long> scope =
+        allProjects || projectIds == null
+            ? null
+            : Set.copyOf(projectIds);
+    allTaskScopes.put(emitter, new AllScope(allProjects, scope));
+    Runnable cleanup = () -> allTaskScopes.remove(emitter);
     emitter.onCompletion(cleanup);
     emitter.onTimeout(() -> timeout(null, emitter));
     emitter.onError(ignored -> cleanup.run());
     send(null, emitter, "ready", Map.of("connected", true, "emittedAt", Instant.now().toString()));
     return emitter;
+  }
+
+  /** 全局订阅的可见范围：{@code all=true} 表示全部项目；否则只允许 {@code projectIds}。 */
+  private record AllScope(boolean all, Set<Long> projectIds) {
+    boolean visible(SecurityTask task) {
+      if (all) return true;
+      Long projectId = task.getProjectId();
+      return projectId != null && projectIds != null && projectIds.contains(projectId);
+    }
   }
 
   public void publish(SecurityTask task, String logLine) {
@@ -66,7 +90,10 @@ public class TaskProgressEventService {
             }
           });
     }
-    allTaskSubscribers.forEach(emitter -> send(null, emitter, "progress", payload));
+    allTaskScopes.forEach(
+        (emitter, scope) -> {
+          if (scope.visible(task)) send(null, emitter, "progress", payload);
+        });
   }
 
   private Map<String, Object> payload(SecurityTask task, String logLine) {
@@ -122,7 +149,7 @@ public class TaskProgressEventService {
   }
 
   private void retire(Long taskId, SseEmitter emitter) {
-    if (taskId == null) allTaskSubscribers.remove(emitter);
+    if (taskId == null) allTaskScopes.remove(emitter);
     else remove(taskId, emitter);
   }
 

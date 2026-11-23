@@ -64,7 +64,7 @@ class TaskProgressEventServiceTests {
     TaskProgressEventService service =
         new TaskProgressEventService(timeout -> new FailingSseEmitter(timeout, 2));
 
-    SseEmitter emitter = service.subscribeAll();
+    SseEmitter emitter = service.subscribeAll(true, java.util.Set.of());
     service.publish(runningTask(10L), "progress");
 
     assertThat(allTaskSubscribers(service)).doesNotContain(emitter);
@@ -122,7 +122,7 @@ class TaskProgressEventServiceTests {
 
   @SuppressWarnings("unchecked")
   private Set<SseEmitter> allTaskSubscribers(TaskProgressEventService service) {
-    return (Set<SseEmitter>) ReflectionTestUtils.getField(service, "allTaskSubscribers");
+    return ((java.util.Map<SseEmitter, ?>) ReflectionTestUtils.getField(service, "allTaskScopes")).keySet();
   }
 
   private static final class FailingSseEmitter extends SseEmitter {

@@ -54,9 +54,18 @@ class TaskProgressEventTimeoutMvcTests {
     task.setId(7L);
     task.setStatus("RUNNING");
     task.setProgress(40);
+    // 第381轮：全局事件流按项目归属过滤，测试任务必须带项目归属才可能收到事件。
+    task.setProjectId(5L);
     when(tasks.get(7L)).thenReturn(task);
+    TaskController controller =
+        new TaskController(tasks, events, mock(TaskControlStatusService.class),
+            mock(TaskExecutionLimitService.class));
+    com.bachelor.toolbox.project.ProjectAuthorizationService authorization =
+        mock(com.bachelor.toolbox.project.ProjectAuthorizationService.class);
+    when(authorization.isAdmin()).thenReturn(true);
+    ReflectionTestUtils.setField(controller, "authorization", authorization);
     mvc = MockMvcBuilders.standaloneSetup(
-        new TaskController(tasks, events, mock(TaskControlStatusService.class), mock(TaskExecutionLimitService.class)),
+        controller,
         new TimeoutController())
         .setControllerAdvice(new GlobalExceptionHandler())
         .build();
@@ -170,7 +179,9 @@ class TaskProgressEventTimeoutMvcTests {
   private int subscriberCount() {
     Map<Long, Set<SseEmitter>> individual =
         (Map<Long, Set<SseEmitter>>) ReflectionTestUtils.getField(events, "subscribers");
-    Set<SseEmitter> all = (Set<SseEmitter>) ReflectionTestUtils.getField(events, "allTaskSubscribers");
+    // 第381轮：全局订阅者改为 allTaskScopes（发射器 → 可见范围），计数按 key 集合。
+    Map<SseEmitter, ?> all =
+        (Map<SseEmitter, ?>) ReflectionTestUtils.getField(events, "allTaskScopes");
     return individual.values().stream().mapToInt(Set::size).sum() + all.size();
   }
 
