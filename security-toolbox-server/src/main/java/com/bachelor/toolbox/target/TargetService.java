@@ -478,8 +478,16 @@ public class TargetService {
     if ("IP".equals(targetType) && !IPV4_PATTERN.matcher(targetValue).matches()) {
       throw new ApiException("IP 地址格式不正确：请填写标准的 IPv4 地址（如 192.168.1.1），不得包含协议、路径或末尾多余符号");
     }
-    if ("URL".equals(targetType) && !URL_PATTERN.matcher(targetValue).matches()) {
-      throw new ApiException("URL 格式不正确：请填写以 http:// 或 https:// 开头的合法 URL 地址");
+    if ("URL".equals(targetType)) {
+      if (!URL_PATTERN.matcher(targetValue).matches()) {
+        throw new ApiException("URL 格式不正确：请填写以 http:// 或 https:// 开头的合法 URL 地址");
+      }
+      // Shared by creation and update; disabled targets must not bypass address validation.
+      // -1 means an omitted port, not an explicit zero.
+      int port = java.net.URI.create(targetValue).getPort();
+      if (port != -1 && (port < PortRangeParser.MIN_PORT || port > PortRangeParser.MAX_PORT)) {
+        throw new ApiException("URL 端口必须在 1-65535 范围内");
+      }
     }
   }
 }
