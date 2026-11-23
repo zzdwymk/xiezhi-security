@@ -6,6 +6,7 @@ import com.bachelor.toolbox.target.PortRangeParser;
 import com.bachelor.toolbox.target.TargetPolicyService;
 import com.bachelor.toolbox.target.TargetService;
 import com.bachelor.toolbox.tool.SecurityToolRegistry;
+import com.bachelor.toolbox.tool.ToolParameterPolicy;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -271,31 +272,31 @@ public class AiTaskDispatchService {
     }
   }
 
+  /**
+   * AI 计划允许的工具参数键（第385轮：改为委托唯一事实来源）。
+   *
+   * <p>此前这里是第四份 switch 副本，且在第371/372 轮修好能力层/护栏/规则侧之后**未同步**：
+   * {@code msfOptions}、{@code data}、{@code timeoutSeconds} 与 {@code zap_scan} 的认证/模式类参数
+   * 在 AI 通道上仍被判为「未允许的工具参数」，导致同一批功能在 AI 规划路径上不可用。
+   *
+   * <p>现在直接取 {@link ToolParameterPolicy#allowedKeys(String)}，杜绝再出现"改了四处漏一处"。
+   * 未知工具返回空集（fail-closed：随后会被 {@code SAFE_AI_TOOLS} 与注册表存在性校验拒绝）。
+   */
+  static java.util.Set<String> allowedAiParameterKeys(String toolCode) {
+    if (toolCode == null || !SAFE_AI_TOOLS.contains(toolCode)) {
+      return java.util.Set.of();
+    }
+    return ToolParameterPolicy.allowedKeys(toolCode);
+  }
+
   private Map<String, Object> normalizeParameters(
       String toolCode, Map<String, Object> rawParameters, AuthorizedTarget target) {
     Map<String, Object> parameters =
         rawParameters == null ? new LinkedHashMap<>() : new LinkedHashMap<>(rawParameters);
-    Set<String> allowedKeys =
-        switch (toolCode) {
-          // tcp_ports 的扫描面只由 ports 决定（缺省 = 授权全段）。历史上的 mode=quick 会静默
-          // 忽略 ports 只扫 17 个常用端口，与审批弹窗展示的参数不一致，已移除。
-          // udp=true 追加 UDP 快速探测，结果单独标注（UDP 只能判"开放或过滤"，不能确证开放）。
-          case "tcp_ports" -> Set.of("ports", "udp");
-          case "nmap_service_scan" -> Set.of("ports", "mode", "consumeOpenPorts");
-          case "fscan_scan" -> Set.of("ports", "vulnMode");
-          case "afrog_scan", "xray_scan" -> Set.of("pocCodes", "allPocs");
-          case "zap_scan" -> Set.of("spider", "strength");
-          case "msf_scan" -> Set.of("module", "modules", "options");
-          case "sqlmap_scan" -> Set.of("path", "level", "risk", "technique");
-          case "zap_fuzz" -> ZapFuzzAiParameters.KEYS;
-          case "nuclei_scan" -> Set.of("pocCodes", "allPocs");
-          case "http_security_check" -> Set.of("check");
-          case "dir_scan" ->
-              Set.of("dictionary", "concurrency", "depth", "maxRequests", "extensions");
-          case "site_crawl" -> Set.of("fuse");
-          case "http_headers", "tls_config" -> Set.of();
-          default -> throw new ApiException("AI 工具不在安全白名单内");
-        };
+    Set<String> allowedKeys = allowedAiParameterKeys(toolCode);
+    if (allowedKeys.isEmpty() && !"http_headers".equals(toolCode) && !"tls_config".equals(toolCode)) {
+      throw new ApiException("AI 工具不在安全白名单内");
+    }
     if (!allowedKeys.containsAll(parameters.keySet())) {
       throw new ApiException("AI 计划包含未允许的工具参数");
     }
