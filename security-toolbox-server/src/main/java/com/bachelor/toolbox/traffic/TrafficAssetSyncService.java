@@ -87,7 +87,9 @@ public class TrafficAssetSyncService {
         recorded += recordEndpoint(target, scheme, rowHost, port, path, null, null);
       }
     } catch (RuntimeException ex) {
-      LOGGER.debug("代理流量资产同步失败 target={} host={} : {}", target.getId(), host, ex.getMessage());
+      // Round 362：同步失败从 debug 提升为 warn——生产默认级别下此前完全不可见，
+      // 运维无法发现「抓包没进资产库」的原因。失败不抛出（不阻断调用方）但必须可观察。
+      LOGGER.warn("代理流量资产同步失败 target={} host={} : {}", target.getId(), host, ex.getMessage());
     }
     return recorded;
   }
