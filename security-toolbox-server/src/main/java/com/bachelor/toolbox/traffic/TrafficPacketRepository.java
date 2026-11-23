@@ -22,9 +22,14 @@ public interface TrafficPacketRepository extends JpaRepository<TrafficPacket, Lo
   /** 某会话按 id 升序（最旧在前）分页，用于保留上限淘汰（Round 23）。 */
   List<TrafficPacket> findAllBySessionIdOrderByIdAsc(Long sessionId, Pageable pageable);
 
-  /** 代理观测到的某主机去重路径（含查询串）。用于被动子路径聚合。 */
+  /**
+   * 某授权目标观测到的去重路径。Round 354：按 targetId 过滤，避免同 host 的其它项目目标
+   * 互相看到对方抓包路径（跨项目数据泄漏）。
+   */
   @Query(
       "select distinct p.scheme, p.host, p.port, p.path from TrafficPacket p"
-          + " where lower(p.host) = lower(:host)")
-  List<Object[]> findDistinctEndpointsByHost(@Param("host") String host);
+          + " where p.targetId = :targetId and lower(p.host) = lower(:host)")
+  List<Object[]> findDistinctEndpointsByTargetIdAndHost(
+      @Param("targetId") Long targetId, @Param("host") String host);
 }
+

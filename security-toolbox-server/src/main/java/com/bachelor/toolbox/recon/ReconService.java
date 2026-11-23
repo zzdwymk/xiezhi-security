@@ -1410,7 +1410,7 @@ public class ReconService {
     if (host == null) return;
     int found = 0;
     try {
-      for (Object[] row : trafficPackets.findDistinctEndpointsByHost(host)) {
+      for (Object[] row : trafficPackets.findDistinctEndpointsByTargetIdAndHost(target.getId(), host)) {
         String scheme = row[0] == null ? "http" : String.valueOf(row[0]);
         Integer port = row[2] == null ? null : ((Number) row[2]).intValue();
         String path = row[3] == null ? "/" : String.valueOf(row[3]);
@@ -2174,3 +2174,4 @@ public class ReconService {
   public record IcpResult(
       Long targetId, String domain, String status, String reason, Map<String, Object> data) {}
 }
+

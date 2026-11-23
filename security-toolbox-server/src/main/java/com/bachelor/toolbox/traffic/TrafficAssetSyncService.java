@@ -79,7 +79,7 @@ public class TrafficAssetSyncService {
     }
     int recorded = 0;
     try {
-      for (Object[] row : packets.findDistinctEndpointsByHost(host)) {
+      for (Object[] row : packets.findDistinctEndpointsByTargetIdAndHost(target.getId(), host)) {
         String scheme = row[0] == null ? "http" : String.valueOf(row[0]);
         String rowHost = row[1] == null ? host : String.valueOf(row[1]);
         Integer port = row[2] == null ? null : ((Number) row[2]).intValue();
@@ -148,3 +148,4 @@ public class TrafficAssetSyncService {
     }
   }
 }
+
