@@ -27,6 +27,7 @@ import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Sort;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.scheduling.support.CronExpression;
@@ -74,6 +75,10 @@ public class ScanScheduleService {
   private final SecurityToolRegistry toolRegistry;
   private final ScannerPocSelectionService scannerPocs;
   private final BusinessDataOperationGate operationGate;
+
+  /** Round 365：连续派发失败达到该次数后自动停用计划（默认 5，最小 1）。 */
+  @Value("${toolbox.scheduler.max-consecutive-failures:5}")
+  private int maxConsecutiveFailures;
 
   @Autowired
   public ScanScheduleService(
@@ -320,9 +325,26 @@ public class ScanScheduleService {
       schedule.setLastTaskId(task.getId());
       schedule.setLastError(null);
       advanceSchedule(schedule, dispatchTime);
+      // Round 365：只有推进成功才算真正成功——清零必须放在 advanceSchedule 之后，
+      // 否则「任务创建成功但推进失败」会把连续失败计数每轮重置，坏计划永不收敛。
+      schedule.setConsecutiveFailures(0);
     } catch (Exception exception) {
+      // Round 365：连续失败计数，达到阈值自动停用，杜绝坏计划每轮轮询无限重试。
+      int failures =
+          (schedule.getConsecutiveFailures() == null ? 0 : schedule.getConsecutiveFailures()) + 1;
+      schedule.setConsecutiveFailures(failures);
       String previousError = schedule.getLastError();
       schedule.setLastError(scheduleErrorMessage(exception));
+      int threshold = maxConsecutiveFailures > 0 ? maxConsecutiveFailures : 5;
+      if (failures >= threshold) {
+        schedule.setEnabled(false);
+        schedule.setNextRunAt(null);
+        repository.save(schedule);
+        publishScheduleError(schedule, true, dispatchTime);
+        log.warn(
+            "扫描计划连续失败 {} 次，已自动停用：scheduleId={}", failures, schedule.getId(), exception);
+        return;
+      }
       advanceSchedule(schedule, dispatchTime);
       if (!Objects.equals(previousError, schedule.getLastError())) {
         publishScheduleError(schedule, false, dispatchTime);

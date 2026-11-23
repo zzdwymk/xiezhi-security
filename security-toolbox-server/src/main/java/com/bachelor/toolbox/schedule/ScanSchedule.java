@@ -53,6 +53,10 @@ public class ScanSchedule {
   @Column(length = 1000)
   private String lastError;
 
+  /** 连续派发失败次数；成功一次即清零（Round 365：达到阈值自动停用计划）。 */
+  @Column
+  private Integer consecutiveFailures;
+
   @Column(nullable = false, updatable = false)
   private Instant createdAt;
 
