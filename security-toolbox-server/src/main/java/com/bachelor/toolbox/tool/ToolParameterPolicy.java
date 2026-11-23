@@ -47,15 +47,21 @@ public final class ToolParameterPolicy {
           Map.entry("afrog_scan", Set.of("pocCodes", "allPocs")),
           Map.entry("xray_scan", Set.of("pocCodes", "allPocs")),
           Map.entry("nuclei_scan", Set.of("pocCodes", "allPocs")),
-          Map.entry("zap_scan", Set.of("spider", "strength")),
-          Map.entry("dir_scan", Set.of("dictionary", "concurrency", "depth", "maxRequests", "extensions")),
+          // Round 372：ZapScanTool 实际读取 mode/scanPolicy/ajaxSpider 与 openApiUrl/authLoginUrl/auth* 全部
+          // 认证参数（URL 由其 assertZapUrlWithinScope 复核授权范围），规则侧也一直声明支持，
+          // 但执行入口白名单缺这些键 → 功能被整体拒绝。
+          Map.entry("zap_scan", Set.of("spider", "strength", "mode", "scanPolicy", "ajaxSpider",
+              "openApiUrl", "authLoginUrl", "authUsername", "authPassword",
+              "authUsernameField", "authPasswordField", "authType")),
+          Map.entry("dir_scan", Set.of("dictionary", "concurrency", "depth", "maxRequests", "extensions",
+              "timeoutSeconds")),
           Map.entry("zap_fuzz",
               Set.of("fuzzRequestUrl", "method", "fuzzPostBody", "fuzzPayload", "fuzzTargetField")),
           // Round 371：msfOptions（按模块下发选项）由 MsfScanTool 与 validateMsfOptionMaps 共同支持，
           // 此前三处白名单均缺该键，导致功能不可用且 Round 15 的嵌套注入防护成为不可达代码。
           Map.entry("msf_scan", Set.of("module", "modules", "options", "msfOptions")),
-          Map.entry("sqlmap_scan", Set.of("path", "level", "risk", "technique")),
-          Map.entry("http_security_check", Set.of("check")),
+          Map.entry("sqlmap_scan", Set.of("path", "data", "level", "risk", "technique")),
+          Map.entry("http_security_check", Set.of("check", "path")),
           Map.entry("http_headers", Set.of()),
           Map.entry("tls_config", Set.of()),
           Map.entry("site_crawl", Set.of("fuse")),
@@ -67,6 +73,7 @@ public final class ToolParameterPolicy {
           Map.entry("nmap_service_scan.mode", com.bachelor.toolbox.ai.ToolParameterSpec.NMAP_MODES),
           Map.entry("fscan_scan.vulnMode", Set.of("SAFE", "FINGERPRINT", "FULL")),
           Map.entry("zap_scan.strength", Set.of("LOW", "MEDIUM", "HIGH", "INSANE")),
+          Map.entry("zap_scan.mode", Set.of("active", "passive")),
           Map.entry("http_security_check.check", Set.of("cookies", "cors", "methods", "disclosure")));
 
   private ToolParameterPolicy() {}

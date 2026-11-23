@@ -66,8 +66,10 @@ class ToolParameterPolicyDriftTests {
     assertThat(allowed.get("tcp_ports")).contains("udp");
     assertThat(allowed.get("nmap_service_scan")).contains("consumeOpenPorts");
     assertThat(allowed).containsKey("dir_scan");
+    // 第372轮：dir_scan 增加了实现读取的 timeoutSeconds，此处按"包含"断言而非"完全相等"，
+    // 白名单的等值性由 D-DRIFT-3（护栏=能力层）与 ToolParameterImplementationParityTests 保证。
     assertThat(allowed.get("dir_scan"))
-        .containsExactlyInAnyOrder("dictionary", "concurrency", "depth", "maxRequests", "extensions");
+        .contains("dictionary", "concurrency", "depth", "maxRequests", "extensions");
     assertThat(allowed).containsKey("zap_fuzz");
     assertThat(allowed.get("zap_fuzz"))
         .containsExactlyInAnyOrder(
