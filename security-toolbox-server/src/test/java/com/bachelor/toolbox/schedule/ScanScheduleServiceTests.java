@@ -743,6 +743,24 @@ class ScanScheduleServiceTests {
     verify(repository).save(created);
   }
 
+  /**
+   * 第363轮：语义上永远不触发的 cron（2 月无 31 日）必须被可读拒绝。
+   *
+   * <p>原实现里 {@code validateCronIntervals} 对 {@code next()==null} 静默放行（校验通过），
+   * 随后 {@code calculateNextRun} 对 null 直接 {@code .toInstant()} 抛 NPE——创建接口返回 500
+   * 而非可读错误；若存量数据含此类 cron，调度器推进 nextRunAt 时同样 NPE 并中断整批派发。
+   */
+  @Test
+  void rejectsCronThatCanNeverFireAgain() {
+    CreateScheduleRequest request = cronRequest("0 0 0 31 2 *");
+
+    ApiException exception = assertThrows(ApiException.class, () -> service.create(request));
+
+    assertEquals("该 Cron 表达式不会再触发任何时间点", exception.getMessage());
+    verify(projects, never()).validateProjectTarget(any(), any());
+    verify(repository, never()).save(any());
+  }
+
   private CreateScheduleRequest intervalRequest(Map<String, Object> parameters, Boolean enabled) {
     return new CreateScheduleRequest(5L, 7L, "http_headers", parameters, null, 3600L, enabled);
   }

@@ -358,6 +358,10 @@ public class ScanScheduleService {
     CronExpression expression = CronExpression.parse(schedule.getCronExpression());
     ZonedDateTime nextRun =
         expression.next(ZonedDateTime.ofInstant(baseTime, ZoneId.systemDefault()));
+    if (nextRun == null) {
+      // Round 363：语义上永不触发的 cron（如 2 月 31 日）不能让调度链 NPE。
+      throw new ApiException("该 Cron 表达式不会再触发任何时间点");
+    }
     return nextRun.toInstant();
   }
 
@@ -391,7 +395,9 @@ public class ScanScheduleService {
     for (int index = 0; index < CRON_INTERVAL_CHECK_COUNT; index++) {
       ZonedDateTime nextRun = expression.next(current);
       if (nextRun == null) {
-        return;
+        // Round 363：语义上永不触发的 cron（如 2 月 31 日）必须被可读拒绝，
+        // 否则创建时 calculateNextRun 会对 null 直接 NPE（接口 500）。
+        throw new ApiException("该 Cron 表达式不会再触发任何时间点");
       }
       if (index > 0 && Duration.between(current, nextRun).compareTo(minimumInterval) < 0) {
         throw new ApiException("Cron 相邻触发间隔不能小于 60 秒");
