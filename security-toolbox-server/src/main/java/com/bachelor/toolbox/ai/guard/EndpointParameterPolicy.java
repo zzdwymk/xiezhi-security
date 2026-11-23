@@ -317,17 +317,25 @@ public final class EndpointParameterPolicy {
       return;
     }
     String requested = text(raw);
-    Set<Integer> authorized;
     Set<Integer> wanted;
     try {
-      authorized = portRangeParser.parse(target.getAllowedPorts());
+      // 请求端口必须受单任务限额约束地解析（这是调用方指定的集合，规模受限）。
       wanted = portRangeParser.parse(requested, maxPortsPerTask);
     } catch (ApiException | IllegalArgumentException invalid) {
       throw new ApiException("端口范围格式无效: " + invalid.getMessage());
     }
-    if (!authorized.containsAll(wanted)) {
-      Set<Integer> escaped = new LinkedHashSet<>(wanted);
-      escaped.removeAll(authorized);
+    // Round 373：授权侧改用 containsPort 做成员判断，不再把 allowedPorts（可能是 1-65535 紧凑串）
+    // 展开成 65,535 个 Integer。逐个请求端口判断仍保持 containsAll 语义。
+    String authorized = target.getAllowedPorts();
+    Set<Integer> escaped = new LinkedHashSet<>();
+    try {
+      for (Integer port : wanted) {
+        if (!portRangeParser.containsPort(authorized, port)) escaped.add(port);
+      }
+    } catch (ApiException | IllegalArgumentException invalid) {
+      throw new ApiException("端口范围格式无效: " + invalid.getMessage());
+    }
+    if (!escaped.isEmpty()) {
       throw new ApiException("请求的端口超出目标授权范围: " + escaped);
     }
   }

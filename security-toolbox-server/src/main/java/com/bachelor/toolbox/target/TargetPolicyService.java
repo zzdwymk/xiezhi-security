@@ -111,7 +111,9 @@ public class TargetPolicyService {
     if (port < PortRangeParser.MIN_PORT || port > PortRangeParser.MAX_PORT) {
       throw new ApiException("目标端口必须在 1-65535 范围内");
     }
-    if (!portRangeParser.parse(target.getAllowedPorts()).contains(port)) {
+    // Round 373：用 containsPort 做成员判断，避免把 1-65535 这类紧凑授权串展开成 65,535 个 Integer。
+    // 该方法在每条链接解析、每次探测/登记/任务创建时都会执行，展开即构成「全端口 × 请求数」的分配放大。
+    if (!portRangeParser.containsPort(target.getAllowedPorts(), port)) {
       throw new ApiException("目标端口 " + port + " 不在授权端口范围内");
     }
   }
