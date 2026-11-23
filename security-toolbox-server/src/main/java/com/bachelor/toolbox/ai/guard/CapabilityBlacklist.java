@@ -59,7 +59,11 @@ public final class CapabilityBlacklist {
           "/api/settings/business-data",
           "/api/settings/business-data/*",
           "/api/settings/reset",
-          "/api/settings/data-reset");
+          "/api/settings/data-reset",
+          // Round 386：实际存在的「清空全部业务数据」端点（SettingsController → BusinessDataResetService.clear）。
+          // 此前只登记了 business-data*/reset/data-reset，漏掉本条，Agent 经 invoke_endpoint 调用时
+          // 只落在"需管理员确认"而非"绝对禁止"，与黑名单对同类不可逆操作的立场不一致。
+          "/api/settings/data");
 
   private final Set<String> blockedCodes;
   private final Set<String> blockedPaths;
