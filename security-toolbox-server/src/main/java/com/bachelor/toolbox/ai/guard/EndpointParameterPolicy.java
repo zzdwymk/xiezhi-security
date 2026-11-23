@@ -95,9 +95,9 @@ public final class EndpointParameterPolicy {
   /** PoC 编号格式，与 {@code AiTaskDispatchService:390} 一致。 */
   private static final String POC_CODE_PATTERN = "[A-Z]{2}-[A-F0-9]{24}";
 
-  /** 需要端口子集校验的工具，与 {@code AiTaskDispatchService:284} 一致。 */
+  /** 需要端口子集校验的工具（第375轮起与执行入口共用同一来源，避免两处清单漂移）。 */
   private static final Set<String> PORT_TOOLS =
-      Set.of("tcp_ports", "nmap_service_scan", "fscan_scan");
+      com.bachelor.toolbox.tool.ToolPortScope.PORT_SCOPED_TOOLS;
 
   /**
    * 需要"主机/URI 授权校验"的工具（D-5 修复）。

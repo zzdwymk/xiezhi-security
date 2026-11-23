@@ -53,6 +53,9 @@ public class TaskService {
   /** 与 AiAuthorizationGuard 共用同一组配额配置，保证批量执行与 AI 派发口径一致。 */
   @org.springframework.beans.factory.annotation.Value("${toolbox.ai.agent.max-active-tasks-per-target:4}")
   private int maxActiveTasksPerTarget = 4;
+  /** Round 375：单次请求允许解析的端口数上限（与护栏侧口径一致，防止超长端口串放大）。 */
+  @org.springframework.beans.factory.annotation.Value("${toolbox.execution.max-requested-ports:1024}")
+  private int maxPortsPerTaskRequest = 1024;
 
   @Autowired
   public TaskService(
@@ -254,6 +257,10 @@ public class TaskService {
     // ToolParameterPolicy（全平台唯一白名单）执行一次校验，即可消除上游多份白名单的漂移。
     // 对策略未覆盖的已注册工具 fail-open 跳过（见 validateAtExecutionEntry 的说明）。
     com.bachelor.toolbox.tool.ToolParameterPolicy.validateAtExecutionEntry(request.toolCode(), parameters);
+    // Round 375：端口子集校验前移到创建期。此前越界端口只在工具执行期被拦下（fail-closed），
+    // 于是本方法先返回任务、任务随后 FAILED，留下失败记录并占用一次任务配额。
+    com.bachelor.toolbox.tool.ToolPortScope.requireWithinAuthorization(
+        target, request.toolCode(), parameters, portRangeParser, maxPortsPerTaskRequest);
     SecurityTask task = new SecurityTask();
     task.setTargetId(request.targetId());
     task.setProjectId(request.projectId());
