@@ -97,6 +97,49 @@ class AiConversationListAccessTests {
   }
 
   @Test
+  @DisplayName("CL-6 新建会话不声明项目 → 拒绝且不落库")
+  void saveRejectsNewSessionWithoutProject() {
+    ProjectAuthorizationService auth = mock(ProjectAuthorizationService.class);
+    AiConversationMemoryService mem = mock(AiConversationMemoryService.class);
+    when(mem.scope("new")).thenReturn(null);
+
+    org.assertj.core.api.Assertions.assertThatThrownBy(
+            () -> controller(auth, mem).saveConversation("new", new LinkedHashMap<>()))
+        .isInstanceOf(com.bachelor.toolbox.common.ApiException.class)
+        .hasMessageContaining("评估项目");
+    org.mockito.Mockito.verify(mem, org.mockito.Mockito.never())
+        .saveClientThread(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+  }
+
+  @Test
+  @DisplayName("CL-7 新建会话声明可访问项目 → 允许保存")
+  void saveAllowsNewSessionWithAccessibleProject() {
+    ProjectAuthorizationService auth = mock(ProjectAuthorizationService.class);
+    AiConversationMemoryService mem = mock(AiConversationMemoryService.class);
+    when(mem.scope("new5")).thenReturn(null);
+
+    controller(auth, mem).saveConversation(
+        "new5", new java.util.LinkedHashMap<>(Map.of("projectId", 5)));
+
+    org.mockito.Mockito.verify(mem)
+        .saveClientThread(org.mockito.ArgumentMatchers.eq("new5"), org.mockito.ArgumentMatchers.any());
+  }
+
+  @Test
+  @DisplayName("CL-8 存量孤立线程更新仍放行（兼容既有数据，不外泄给他人）")
+  void saveAllowsLegacyOrphanUpdate() {
+    ProjectAuthorizationService auth = mock(ProjectAuthorizationService.class);
+    AiConversationMemoryService mem = mock(AiConversationMemoryService.class);
+    when(mem.scope("legacy"))
+        .thenReturn(new AiConversationMemoryService.SessionScope(null, null));
+
+    controller(auth, mem).saveConversation("legacy", new LinkedHashMap<>());
+
+    org.mockito.Mockito.verify(mem)
+        .saveClientThread(org.mockito.ArgumentMatchers.eq("legacy"), org.mockito.ArgumentMatchers.any());
+  }
+
+  @Test
   @DisplayName("CL-4 删除他人项目会话 → 拒绝")
   void deleteRejectsOtherProjectThread() {
     ProjectAuthorizationService auth = mock(ProjectAuthorizationService.class);

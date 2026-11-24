@@ -476,6 +476,11 @@ public class AiController {
       if (declaredPid != null) {
         authorization.requireAccess(declaredPid);
       }
+      // Round 407：新建会话（无存量 scope）必须声明一个可访问的评估项目，防止任意登录用户
+      // 灌入不可归属的孤立线程（对他人不可见但会占用存储并污染管理员视图）。
+      if (existing == null && declaredPid == null) {
+        throw new com.bachelor.toolbox.common.ApiException("新建 AI 会话必须声明可访问的评估项目 ID");
+      }
       memoryService.saveClientThread(sessionId, payload);
     }
     return Map.of("sessionId", sessionId, "saved", true);
