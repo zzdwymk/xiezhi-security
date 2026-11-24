@@ -147,6 +147,8 @@ security-toolbox-web/scripts/*
 !security-toolbox-web/scripts/test-desktop-dev-runner.cjs
 !security-toolbox-web/scripts/test-desktop-packaged-e2e.cjs
 !security-toolbox-web/scripts/test-runtime-log-integration.cjs
+!security-toolbox-web/scripts/test-exported-file-policy.cjs
+!security-toolbox-web/scripts/test-runtime-log-writer-paths.cjs
 !security-toolbox-web/scripts/test-findings-footer-consistency.cjs
 !security-toolbox-web/scripts/test-welcome-centering.cjs
 !security-toolbox-web/scripts/test-script-references.cjs
