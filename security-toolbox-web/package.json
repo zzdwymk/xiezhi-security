@@ -13,6 +13,7 @@
     "test:build-paths": "node scripts/test-build-paths.cjs",
     "test:audit-format": "node scripts/test-audit-format.cjs",
     "test:json-file": "node scripts/test-json-file.cjs",
+    "test:exported-file-policy": "node scripts/test-exported-file-policy.cjs",
     "test:runtime-logs": "node --test scripts/test-runtime-log-integration.cjs",
     "test:script-files": "node scripts/test-script-references.cjs",
     "test:ai-settings": "node scripts/test-ai-settings.cjs",
