@@ -31,6 +31,7 @@ const { evaluateInstalledRelease } = require("./dependency-version.cjs");
 const { selectEmbeddingTestConnection, runtimeModelEnvironment } = require("./ai-settings.cjs");
 const { createAiRelay, listProviderModels } = require("./ai-relay.cjs");
 const { normalizeRelaySettings, publicRelaySettings, resolveRelayProviders, resolveModelDiscoveryProvider } = require("./ai-relay-settings.cjs");
+const { credentialMutationPolicy } = require("./desktop-credential-policy.cjs");
 const {
   UserFacingError,
   diagnosticError,
@@ -620,6 +621,36 @@ function desktopCredentialState() {
 function desktopCredentialBinding() {
   const { bound, configured } = desktopCredentialState();
   return { bound, configured };
+}
+
+/**
+ * 第401轮：生成/初始化/绑定本机凭据都会改写 admin 密码或快捷登录绑定。
+ * 首次设置可直接进行；账号已配置后必须重新通过 Windows Hello，
+ * 防止仅凭“可信渲染进程”就能重置已存在的管理员凭据。
+ */
+async function requireCredentialMutationReauthentication(action) {
+  const { configured } = desktopCredentialState();
+  let helloVerified = false;
+  let helloAvailable = null;
+  if (configured) {
+    const hello = await verifyWindowsHello();
+    helloVerified = hello.verified === true;
+    helloAvailable = hello.available ?? null;
+  }
+  const policy = credentialMutationPolicy({ configured, helloVerified });
+  writeDesktopStartupDiagnostic("desktop-credential-mutation", null, {
+    action,
+    configured,
+    helloVerified,
+    helloAvailable,
+    mode: policy.mode,
+  });
+  if (!policy.allowed) {
+    throw new UserFacingError(
+      "桌面登录已配置，修改或重置登录凭据需要通过 Windows Hello 验证",
+    );
+  }
+  return policy;
 }
 
 // 是否允许发起本机安全凭据 / Windows Hello 快捷登录：全新未配置（首次进入）允许，绑定后允许，
@@ -6947,8 +6978,10 @@ handleRendererIpc("toolbox:get-desktop-login-binding", (event) => {
   assertMainRenderer(event);
   return desktopCredentialBinding();
 });
-handleRendererIpc("toolbox:bind-desktop-login", (event) => {
+handleRendererIpc("toolbox:bind-desktop-login", async (event) => {
   assertMainRenderer(event);
+  // 第401轮：已配置账号重新绑定必须先通过 Windows Hello；首次设置不受影响。
+  await requireCredentialMutationReauthentication("bind");
   // Ensure a credential bundle exists, then mark it bound.
   ensureDesktopCredentials();
   markDesktopCredentialBinding();
@@ -7147,6 +7180,8 @@ handleRendererIpc(
 // 与“自定义密码”一致：生成后即视为完成首次设置，登录页不再显示首次选项。
 handleRendererIpc("toolbox:generate-desktop-login", async (event) => {
   assertMainRenderer(event);
+  // 第401轮：该入口会重置 admin 密码；已配置账号必须重新通过 Windows Hello。
+  await requireCredentialMutationReauthentication("generate");
   const password = generatedDesktopSecret(24);
   updateDesktopAdminPassword(password);
   markDesktopCredentialBinding();
@@ -7168,6 +7203,8 @@ handleRendererIpc("toolbox:generate-desktop-login", async (event) => {
 // 重启后端让 admin 用新密码，前端随后用 admin + 该密码登录。
 handleRendererIpc("toolbox:init-desktop-login", async (event, payload = {}) => {
   assertMainRenderer(event);
+  // 第401轮：自定义初始密码同样会改写 admin 凭据；已配置账号必须重新验证。
+  await requireCredentialMutationReauthentication("init");
   const options = payload && typeof payload === "object" ? payload : {};
   const password = String(options.password || "").trim();
   if (password.length < 8 || password.length > 128)

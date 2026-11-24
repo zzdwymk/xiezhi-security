@@ -144,6 +144,7 @@ security-toolbox-web/scripts/*
 !security-toolbox-web/scripts/test-chat-scroll-follow.cjs
 !security-toolbox-web/scripts/test-composer-stats-popovers.cjs
 !security-toolbox-web/scripts/test-desktop-ai-live-rounds.cjs
+!security-toolbox-web/scripts/test-desktop-credential-policy.cjs
 !security-toolbox-web/scripts/test-desktop-dev-runner.cjs
 !security-toolbox-web/scripts/test-desktop-packaged-e2e.cjs
 !security-toolbox-web/scripts/test-runtime-log-integration.cjs

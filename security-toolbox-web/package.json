@@ -34,6 +34,7 @@
     "test:startup-window": "node scripts/test-startup-window-dismissal.cjs",
     "test:setup-auto-continue": "node scripts/test-setup-auto-continue-browser.cjs",
     "test:startup-navigation": "node scripts/test-startup-navigation-browser.cjs",
+    "test:desktop-credential-policy": "node scripts/test-desktop-credential-policy.cjs",
     "test:desktop-dev-runner": "node scripts/test-desktop-dev-runner.cjs",
     "test:desktop-packaged": "node scripts/test-desktop-packaged-e2e.cjs",
     "test:ai-relay": "node scripts/test-ai-relay-settings.cjs && node scripts/test-ai-relay.cjs && node scripts/test-ai-relay-models.cjs",
