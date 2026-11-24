@@ -80,7 +80,11 @@ public final class CapabilityBlacklist {
           // 批量删除全部扫描发现（不可逆）
           "DELETE /api/findings",
           // 清空漏洞目录（不可逆）
-          "DELETE /api/vulnerabilities/catalog");
+          "DELETE /api/vulnerabilities/catalog",
+          // Round 388：清空全部抓包会话/报文（TrafficProxyController → clearPackets）——
+          // 抓包是取证与复核的原始证据，一次性清空不可恢复，与"清空发现/目录"同一风险等级。
+          // 单条删除（DELETE /api/traffic/sessions/{packetId}）不在此列：那是正常的逐条清理。
+          "DELETE /api/traffic/sessions");
 
   private final Set<String> blockedCodes;
   private final Set<String> blockedPaths;

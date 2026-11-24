@@ -51,6 +51,23 @@ class GuardBlacklistDestructiveEndpointsTests {
   }
 
   @Test
+  @DisplayName("第388轮：清空全部抓包证据按「方法+路径」绝对禁止，单条删除与读取不受影响")
+  void clearAllCapturedTrafficIsBlocked() {
+    assertThat(blacklist.blocksMethodPath("DELETE", "/api/traffic/sessions"))
+        .as("清空全部抓包证据必须绝对禁止")
+        .isTrue();
+    assertThat(blacklist.blocksMethodPath("GET", "/api/traffic/sessions"))
+        .as("读取抓包会话必须放行")
+        .isFalse();
+    assertThat(blacklist.blocksMethodPath("DELETE", "/api/traffic/sessions/42"))
+        .as("单条报文删除属正常清理，不得被禁")
+        .isFalse();
+    assertThat(blacklist.blocksMethodPath("DELETE", "/api/traffic/filters/9"))
+        .as("删除过滤器不得被禁")
+        .isFalse();
+  }
+
+  @Test
   @DisplayName("第387轮：批量删除类端点按「方法+路径」绝对禁止，读方法不受影响")
   void methodLevelDestructiveEndpointsAreBlocked() {
     assertThat(blacklist.blocksMethodPath("DELETE", "/api/findings"))
