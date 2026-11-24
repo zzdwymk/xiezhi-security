@@ -15,6 +15,7 @@ import com.bachelor.toolbox.target.AuthorizedTarget;
 import com.bachelor.toolbox.target.TargetService;
 import com.bachelor.toolbox.tool.SecurityToolRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -113,6 +114,29 @@ class TaskServiceToolParameterGateTests {
     service.create(new CreateTaskRequest(1L, 3L, "msf_scan",
         Map.of("module", "auxiliary/scanner/ssh/ssh_login",
             "options", Map.of("USERNAME", "root", "THREADS", "4"))));
+    verify(repository).save(any(SecurityTask.class));
+  }
+
+  @Test
+  @DisplayName("GATE-7 工作流任务创建同样执行中央白名单 → http_headers.path 被拒（Round 397）")
+  void workflowTaskCreationAlsoRejectsUnexpectedKey() {
+    ApiException ex = assertThrows(ApiException.class, () -> service.createWorkflowTask(
+        new CreateTaskRequest(1L, 3L, "http_headers", Map.of("path", "/admin")),
+        "sha256:" + "a".repeat(64), "node-1", "run-1.node-1", 0, "SAFE", false,
+        List.of(), 42L));
+    org.assertj.core.api.Assertions.assertThat(ex.getMessage()).contains("http_headers", "path");
+    verify(repository, never()).save(any());
+  }
+
+  @Test
+  @DisplayName("GATE-8 服务端注入 __resolvedWebBases + 合法端口 → 工作流任务仍可创建（不误伤）")
+  void workflowTaskCreationAllowsServerInjectedFrameworkKey() throws Exception {
+    SecurityTask saved = service.createWorkflowTask(
+        new CreateTaskRequest(1L, 3L, "nmap_service_scan",
+            Map.of("ports", "80", "__resolvedWebBases", List.of("http://192.168.222.158/"))),
+        "sha256:" + "b".repeat(64), "node-2", "run-1.node-2", 0, "SAFE", false,
+        List.of(), 42L);
+    assertEquals("nmap_service_scan", saved.getToolCode());
     verify(repository).save(any(SecurityTask.class));
   }
 }

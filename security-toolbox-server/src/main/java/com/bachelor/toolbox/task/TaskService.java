@@ -6,6 +6,8 @@ import com.bachelor.toolbox.common.PageRequests;
 import com.bachelor.toolbox.project.AssessmentProjectService;
 import com.bachelor.toolbox.target.TargetService;
 import com.bachelor.toolbox.tool.SecurityToolRegistry;
+import com.bachelor.toolbox.tool.ToolParameterPolicy;
+import com.bachelor.toolbox.tool.ToolPortScope;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
@@ -449,6 +451,18 @@ public class TaskService {
     projectService.validateProjectTarget(request.projectId(), request.targetId());
     var target = targetService.getCurrentlyAuthorized(request.targetId(), request.projectId());
     var tool = registry.require(request.toolCode());
+    Map<String, Object> parameters =
+        request.parameters() == null ? Map.of() : new java.util.LinkedHashMap<>(request.parameters());
+    // Round 397：工作流任务也必须经过唯一执行入口的参数策略。任务执行时会把
+    // requestJson 原样交给工具；若这里不校验，工作流保存接口可绕过 REST/能力层
+    // 的键白名单（实测 http_headers.path 经工作流可创建并执行，而 REST 返回 400）。
+    if ("tcp_ports".equals(request.toolCode())) {
+      // 历史模板中的 tcp_ports.mode 不被执行器读取，剥离后再按中央白名单校验。
+      parameters.remove("mode");
+    }
+    ToolParameterPolicy.validateAtExecutionEntry(request.toolCode(), parameters);
+    ToolPortScope.requireWithinAuthorization(
+        target, request.toolCode(), parameters, portRangeParser, maxPortsPerTaskRequest);
     for (SecurityTask dependency : repository.findAllById(identity.dependencyIds())) {
       if (!request.projectId().equals(dependency.getProjectId())
           || !workflowDigest.equals(dependency.getWorkflowDigest())) {
@@ -472,8 +486,7 @@ public class TaskService {
     task.setProgressUpdatedAt(java.time.Instant.now());
     task.setQueueEnteredAt(java.time.Instant.now());
     task.setRequestJson(
-        objectMapper.writeValueAsString(
-            request.parameters() == null ? Map.of() : request.parameters()));
+        objectMapper.writeValueAsString(parameters));
     task.setWorkflowDigest(workflowDigest);
     task.setWorkflowRunId(workflowRunId);
     task.setWorkflowNodeId(workflowNodeId);

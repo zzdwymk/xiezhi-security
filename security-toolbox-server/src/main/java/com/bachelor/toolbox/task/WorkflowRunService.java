@@ -11,6 +11,8 @@ import com.bachelor.toolbox.target.PortRangeParser;
 import com.bachelor.toolbox.target.TargetService;
 import com.bachelor.toolbox.target.WebTargetResolver;
 import com.bachelor.toolbox.tool.ScannerPocSelectionService;
+import com.bachelor.toolbox.tool.ToolParameterPolicy;
+import com.bachelor.toolbox.tool.ToolPortScope;
 import com.bachelor.toolbox.vulnerability.ScannerPocCatalogService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -383,6 +385,30 @@ public class WorkflowRunService {
     List<URI> targetWebBases = null;
     for (Map<String, Object> step : workflowSpecs.executableSteps(snapshot)) {
       String toolCode = requiredText(step, "tool");
+      // Round 397：工作流同样是用户输入边界，必须先经过唯一事实来源
+      // ToolParameterPolicy（键白名单 + 枚举 + 结构约束）与端口子集校验。
+      // 此前 createWorkflowTask 直接落库，导致工作流通道可绕过 REST 的
+      // “不接受参数”拒绝，把 path/框架内部键等写进任务。
+      Map<String, Object> stepParameters = new LinkedHashMap<>(parameters(step));
+      if ("tcp_ports".equals(toolCode)) {
+        // 历史工作流模板可能携带 tcp_ports.mode；执行器不读取它，归一化掉以
+        // 保持与中央白名单（tcp_ports 只接受 ports/udp）一致。
+        stepParameters.remove("mode");
+      }
+      try {
+        ToolParameterPolicy.rejectUserSuppliedFrameworkKeys(stepParameters);
+        ToolParameterPolicy.validateAtExecutionEntry(toolCode, stepParameters);
+        ToolPortScope.requireWithinAuthorization(
+            target,
+            toolCode,
+            stepParameters,
+            portRangeParser,
+            "nmap_service_scan".equals(toolCode) ? maxNmapPorts : maxPorts);
+      } catch (ApiException ex) {
+        issues.add(new WorkflowRunDtos.NodeIssue(
+            requiredText(step, "nodeId"), toolCode, label(step), ex.getMessage()));
+        continue;
+      }
       // Use the execution defaults and the same parser as the port tools, so
       // malformed or out-of-scope inputs are rejected before tasks are queued.
       if ("tcp_ports".equals(toolCode) || "nmap_service_scan".equals(toolCode)) {
@@ -629,6 +655,12 @@ public class WorkflowRunService {
       Map<String, Object> step, String allowedPorts) {
     Map<String, Object> parameters = new LinkedHashMap<>(parameters(step));
     String toolCode = requiredText(step, "tool");
+    // Legacy workflow templates may still carry tcp_ports.mode; the executor has
+    // never read it, and the central parameter policy rejects it. Drop it before
+    // validation so the legacy default keeps working without widening the policy.
+    if ("tcp_ports".equals(toolCode)) {
+      parameters.remove("mode");
+    }
     if ("retrieve_project_context".equals(toolCode)) {
       parameters.put("query", com.bachelor.toolbox.tool.ProjectContextRetrievalTool.query(parameters));
     }

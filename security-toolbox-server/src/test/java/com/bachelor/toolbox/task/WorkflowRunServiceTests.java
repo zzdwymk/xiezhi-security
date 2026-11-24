@@ -147,6 +147,57 @@ class WorkflowRunServiceTests {
     assertThat(createdRequests.get(1).parameters()).containsEntry("check", "cookies");
   }
 
+  @Test
+  void workflowCannotBypassCentralParameterWhitelistWithToolSpecificKey() {
+    stubSnapshot(List.of(
+        step("headers", "http_headers", 0, false, List.of(), Map.of("path", "/admin"))));
+
+    WorkflowRunDtos.PreflightResponse preflight = service.preflight(
+        new WorkflowRunDtos.SnapshotRequest(PROJECT_ID, TARGET_ID, "workflow-1", 3L, DIGEST));
+
+    assertThat(preflight.issues()).singleElement().satisfies(issue -> {
+      assertThat(issue.nodeId()).isEqualTo("headers");
+      assertThat(issue.reason()).contains("http_headers").contains("path");
+    });
+    assertThatThrownBy(() -> service.start(startRequest(List.of(), List.of())))
+        .isInstanceOf(ApiException.class).hasMessageContaining("path");
+    verify(runs, never()).save(any());
+    assertThat(createdRequests).isEmpty();
+  }
+
+  @Test
+  void workflowCannotInjectFrameworkInternalChannelKey() {
+    stubSnapshot(List.of(
+        step("headers", "http_headers", 0, false, List.of(),
+            Map.of("__resolvedWebBases", List.of("http://169.254.169.254/")))));
+
+    WorkflowRunDtos.PreflightResponse preflight = service.preflight(
+        new WorkflowRunDtos.SnapshotRequest(PROJECT_ID, TARGET_ID, "workflow-1", 3L, DIGEST));
+
+    assertThat(preflight.issues()).singleElement().satisfies(issue -> {
+      assertThat(issue.nodeId()).isEqualTo("headers");
+      assertThat(issue.reason()).contains("保留键");
+    });
+    assertThatThrownBy(() -> service.start(startRequest(List.of(), List.of())))
+        .isInstanceOf(ApiException.class).hasMessageContaining("保留键");
+    verify(runs, never()).save(any());
+    assertThat(createdRequests).isEmpty();
+  }
+
+  @Test
+  void legacyTcpPortModeIsNormalizedBeforeCentralValidation() throws Exception {
+    stubSnapshot(List.of(
+        step("ports", "tcp_ports", 0, false, List.of(), Map.of("mode", "quick", "ports", "80"))));
+
+    assertThat(service.preflight(
+        new WorkflowRunDtos.SnapshotRequest(PROJECT_ID, TARGET_ID, "workflow-1", 3L, DIGEST))
+        .issues()).isEmpty();
+    service.start(startRequest(List.of(), List.of()));
+
+    assertThat(createdRequests).singleElement().satisfies(request ->
+        assertThat(request.parameters()).containsEntry("ports", "80").doesNotContainKey("mode"));
+  }
+
   @ParameterizedTest
   @ValueSource(strings = {"0", "65536", "eighty", "80<script>", "81"})
   void invalidTcpPortsAreReportedBeforeAnyWorkflowTaskCanBeCreated(String ports) {
@@ -215,7 +266,7 @@ class WorkflowRunServiceTests {
     stubSnapshot(List.of(step("context", "retrieve_project_context", 0, false, List.of(),
         Map.of("query", "证据", "projectId", 999))));
     assertThatThrownBy(() -> service.start(startRequest(List.of(), List.of())))
-        .isInstanceOf(ApiException.class).hasMessageContaining("仅支持查询内容");
+        .isInstanceOf(ApiException.class).hasMessageContaining("不接受参数", "projectId");
     verify(runs, never()).save(any());
   }
 
@@ -349,9 +400,9 @@ class WorkflowRunServiceTests {
         new WorkflowRunDtos.SnapshotRequest(PROJECT_ID, TARGET_ID, "workflow-1", 3L, DIGEST));
 
     assertThat(preflight.issues()).singleElement()
-        .satisfies(issue -> assertThat(issue.reason()).isEqualTo("请至少选择一个 PoC"));
+        .satisfies(issue -> assertThat(issue.reason()).contains("全部 PoC 参数必须为 true"));
     assertThatThrownBy(() -> service.start(startRequest(List.of(), List.of())))
-        .hasMessageContaining("请至少选择一个 PoC");
+        .hasMessageContaining("全部 PoC 参数必须为 true");
     assertThat(createdTasks).isEmpty();
     verify(runs, never()).save(any());
   }
