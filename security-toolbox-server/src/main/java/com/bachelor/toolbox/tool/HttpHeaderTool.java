@@ -92,6 +92,11 @@ public class HttpHeaderTool implements SecurityTool {
     List<URI> bases = WebTargetResolver.basesFromParameters(parameters);
     if (bases.isEmpty()) {
       bases = List.of(policyService.validatedHttpUri(target, path.isBlank() ? null : path));
+    } else {
+      // Round 398：缓存基址不是授权凭证。先复核全部基址，再发第一个请求。
+      bases = bases.stream()
+          .map(base -> policyService.validatedResolvedHttpUri(target, base))
+          .toList();
     }
     List<FindingDraft> findings = new ArrayList<>();
     List<Map<String, Object>> responses = new ArrayList<>();

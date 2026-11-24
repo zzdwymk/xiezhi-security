@@ -50,7 +50,9 @@ public class TlsConfigurationTool implements SecurityTool {
    */
   private URI resolveBase(AuthorizedTarget target, Map<String, Object> parameters) {
     List<URI> bases = WebTargetResolver.basesFromParameters(parameters);
-    for (URI base : bases) {
+    List<URI> checked =
+        bases.stream().map(base -> policyService.validatedResolvedHttpUri(target, base)).toList();
+    for (URI base : checked) {
       if ("https".equalsIgnoreCase(base.getScheme())) return base;
     }
     return policyService.validatedHttpUri(target);

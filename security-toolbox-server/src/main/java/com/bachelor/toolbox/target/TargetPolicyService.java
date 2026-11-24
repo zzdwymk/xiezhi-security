@@ -107,6 +107,36 @@ public class TargetPolicyService {
     }
   }
 
+  /**
+   * 复核一条“服务端预解析”的 Web 基址是否仍属于当前授权目标。
+   *
+   * <p>Round 398：{@code __resolvedWebBases} 只是任务参数里的缓存信息，不是授权凭证。
+   * 定时计划/重试/回归复测可能把旧的基址带入新任务，目标端口或地址也可能在期间被修改。
+   * 因此工具在真正发请求前，必须像 SQL 注入工具那样重新核对最终 scheme、host、port。
+   */
+  public URI validatedResolvedHttpUri(AuthorizedTarget target, URI candidate) {
+    if (candidate == null) {
+      throw new ApiException("Web 基址不能为空");
+    }
+    String host = validatedHost(target);
+    if (!"http".equalsIgnoreCase(candidate.getScheme())
+        && !"https".equalsIgnoreCase(candidate.getScheme())) {
+      throw new ApiException("Web 基址仅支持 http 或 https");
+    }
+    if (candidate.getHost() == null || !candidate.getHost().equalsIgnoreCase(host)) {
+      throw new ApiException("Web 基址主机与授权目标不一致");
+    }
+    if (candidate.getRawUserInfo() != null || candidate.getRawFragment() != null) {
+      throw new ApiException("Web 基址不允许包含用户信息或片段");
+    }
+    int port =
+        candidate.getPort() >= 0
+            ? candidate.getPort()
+            : ("https".equalsIgnoreCase(candidate.getScheme()) ? 443 : 80);
+    validateAuthorizedPort(target, port);
+    return candidate;
+  }
+
   public void validateAuthorizedPort(AuthorizedTarget target, int port) {
     if (port < PortRangeParser.MIN_PORT || port > PortRangeParser.MAX_PORT) {
       throw new ApiException("目标端口必须在 1-65535 范围内");

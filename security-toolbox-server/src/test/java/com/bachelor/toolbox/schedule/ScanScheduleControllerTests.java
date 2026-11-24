@@ -54,7 +54,7 @@ class ScanScheduleControllerTests {
     String body =
         objectMapper.writeValueAsString(
             new CreateScheduleRequest(
-                5L, 7L, "http_headers", java.util.Map.of("depth", 2), null, 3600L, true));
+                5L, 7L, "http_headers", java.util.Map.of(), null, 3600L, true));
 
     mockMvc
         .perform(post("/api/scan-schedules").contentType(MediaType.APPLICATION_JSON).content(body))
@@ -69,7 +69,7 @@ class ScanScheduleControllerTests {
     ArgumentCaptor<CreateScheduleRequest> requestCaptor =
         ArgumentCaptor.forClass(CreateScheduleRequest.class);
     verify(service).create(requestCaptor.capture());
-    assertEquals(2, requestCaptor.getValue().parameters().get("depth"));
+    assertEquals(java.util.Map.of(), requestCaptor.getValue().parameters());
   }
 
   @Test
@@ -106,7 +106,7 @@ class ScanScheduleControllerTests {
     schedule.setProjectId(5L);
     schedule.setTargetId(7L);
     schedule.setToolCode("http_headers");
-    schedule.setParametersJson("{\"depth\":2}");
+    schedule.setParametersJson("{}");
     schedule.setIntervalSeconds(3600L);
     schedule.setEnabled(true);
     return schedule;

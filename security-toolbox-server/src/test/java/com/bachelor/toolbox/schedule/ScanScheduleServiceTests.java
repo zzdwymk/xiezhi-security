@@ -137,12 +137,12 @@ class ScanScheduleServiceTests {
   void createsProjectScopedScheduleWithNonNullProjectColumn() {
     Instant before = Instant.now();
 
-    ScanSchedule created = service.create(intervalRequest(Map.of("depth", 2), true));
+    ScanSchedule created = service.create(intervalRequest(Map.of(), true));
 
     assertEquals(5L, created.getProjectId());
     assertEquals(7L, created.getTargetId());
     assertEquals("http_headers", created.getToolCode());
-    assertEquals("{\"depth\":2}", created.getParametersJson());
+    assertEquals("{}", created.getParametersJson());
     assertNotNull(created.getNextRunAt());
     assertTrue(created.getNextRunAt().isAfter(before.plus(Duration.ofMinutes(59))));
     verify(projects).validateProjectTarget(5L, 7L);
@@ -449,7 +449,7 @@ class ScanScheduleServiceTests {
     ApiException exception =
         assertThrows(
             ApiException.class,
-            () -> failingService.create(intervalRequest(Map.of("depth", 2), true)));
+            () -> failingService.create(intervalRequest(Map.of(), true)));
 
     assertEquals("扫描参数无效", exception.getMessage());
     verify(repository, never()).save(any());

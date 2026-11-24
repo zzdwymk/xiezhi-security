@@ -137,7 +137,11 @@ public final class ToolParameterPolicy {
    * 因此在唯一入口校验时把它们从"待校验键集合"中剔除，只对<strong>剩余的用户键</strong>套用白名单。
    */
   private static final Set<String> FRAMEWORK_INJECTED_KEYS =
-      Set.of(com.bachelor.toolbox.target.WebTargetResolver.PARAM_RESOLVED_BASES);
+      Set.of(
+          com.bachelor.toolbox.target.WebTargetResolver.PARAM_RESOLVED_BASES,
+          // Round 398：定时计划由服务端注入的“仅 SAFE PoC”标记。它不是用户选项，
+          // 用户/模型在任何入口自带该键都必须拒绝；执行入口只接受三个 PoC 扫描器上的 true。
+          ScannerPocSelectionService.SAFE_ONLY_PARAMETER);
 
   /**
    * 拒绝用户/模型在请求体里自带的"框架内部信道"参数（Round 28，SSRF/越权范围防护）。
@@ -180,6 +184,15 @@ public final class ToolParameterPolicy {
       for (Map.Entry<String, Object> entry : parameters.entrySet()) {
         String key = entry.getKey();
         if (key == null) continue;
+        if (ScannerPocSelectionService.SAFE_ONLY_PARAMETER.equals(key)) {
+          // 只接受调度器对三个 PoC 扫描器注入的 true；值必须原样保留在任务参数里，
+          // 供执行期 ScannerPocSelectionService.resolve 再次强制 SAFE，不能在校验时删除。
+          if (ScannerPocSelectionService.sourceForTool(toolCode) == null
+              || !Boolean.TRUE.equals(entry.getValue())) {
+            throw new ApiException("参数 " + key + " 为系统内部保留键，只允许定时扫描器注入 true");
+          }
+          continue;
+        }
         if (key.startsWith("__") || FRAMEWORK_INJECTED_KEYS.contains(key)) {
           continue; // 框架内部信道，非用户参数
         }

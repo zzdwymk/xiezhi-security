@@ -11,6 +11,7 @@ import com.bachelor.toolbox.task.SecurityTask;
 import com.bachelor.toolbox.task.TaskService;
 import com.bachelor.toolbox.tool.ScannerPocSelectionService;
 import com.bachelor.toolbox.tool.SecurityToolRegistry;
+import com.bachelor.toolbox.tool.ToolParameterPolicy;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
@@ -142,6 +143,7 @@ public class ScanScheduleService {
   @Transactional
   public ScanSchedule create(CreateScheduleRequest request) {
     validateCreateRequest(request);
+    rejectUserSuppliedScheduledParameters(request.parameters());
     projectService.validateProjectTarget(request.projectId(), request.targetId());
     targetService.getCurrentlyAuthorized(request.targetId());
     Map<String, Object> parameters =
@@ -241,12 +243,29 @@ public class ScanScheduleService {
     Map<String, Object> safeParameters = parameters == null ? Map.of() : parameters;
     if ("http_security_check".equals(toolCode)) {
       validateHttpSecurityParameters(safeParameters);
-      return;
     }
 
     String scannerSource = ScannerPocSelectionService.sourceForTool(toolCode);
+    Map<String, Object> userParameters = new LinkedHashMap<>(safeParameters);
+    if (scannerSource != null) {
+      // The scheduler owns this flag; normalizeScheduledParameters validates persisted true.
+      // Keep it in the task request for the executor's SAFE PoC recheck, not in user options.
+      userParameters.remove(ScannerPocSelectionService.SAFE_ONLY_PARAMETER);
+    }
+    ToolParameterPolicy.validateAtExecutionEntry(toolCode, userParameters);
     if (scannerSource != null) {
       scannerPocs.resolve(scannerSource, safeParameters, false);
+    }
+  }
+
+  private void rejectUserSuppliedScheduledParameters(Map<String, Object> parameters) {
+    ToolParameterPolicy.rejectUserSuppliedFrameworkKeys(parameters);
+    if (parameters != null
+        && parameters.containsKey(ScannerPocSelectionService.SAFE_ONLY_PARAMETER)) {
+      throw new ApiException(
+          "参数 "
+              + ScannerPocSelectionService.SAFE_ONLY_PARAMETER
+              + " 为系统内部保留键，不允许在请求中指定");
     }
   }
 
@@ -254,7 +273,21 @@ public class ScanScheduleService {
       String toolCode, Map<String, Object> parameters) {
     Map<String, Object> normalized =
         new LinkedHashMap<>(parameters == null ? Map.of() : parameters);
-    if (ScannerPocSelectionService.sourceForTool(toolCode) == null) {
+    String scannerSource = ScannerPocSelectionService.sourceForTool(toolCode);
+    Map<String, Object> userParameters = new LinkedHashMap<>(normalized);
+    if (userParameters.containsKey(ScannerPocSelectionService.SAFE_ONLY_PARAMETER)) {
+      // Existing scanner plans legitimately contain this server-injected flag, but false,
+      // non-boolean values and flags on other tools are not trusted scheduler metadata.
+      if (scannerSource == null
+          || !Boolean.TRUE.equals(userParameters.get(ScannerPocSelectionService.SAFE_ONLY_PARAMETER))) {
+        throw new ApiException("定时安全参数仅允许由扫描器计划规范注入 true");
+      }
+      userParameters.remove(ScannerPocSelectionService.SAFE_ONLY_PARAMETER);
+    }
+    // A persisted scheduler flag never makes other internal channels trustworthy.
+    // Schedules do not resolve Web bases server-side, so even stored __ keys are rejected.
+    ToolParameterPolicy.rejectUserSuppliedFrameworkKeys(userParameters);
+    if (scannerSource == null) {
       return normalized;
     }
     if (normalized.containsKey(ScannerPocSelectionService.ALL_PARAMETER)) {
