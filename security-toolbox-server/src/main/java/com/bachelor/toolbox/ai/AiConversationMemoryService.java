@@ -666,6 +666,13 @@ public class AiConversationMemoryService {
         try {
           @SuppressWarnings("unchecked")
           Map<String, Object> map = objectMapper.readValue(record.getThreadJson(), Map.class);
+          // Round 412：历史线程 JSON 可能缺 id/projectId（旧客户端省略），而列表归属过滤只读 map 字段，
+          // 会让非管理员看不到自己的线程、前端按 id 合并时视为新条目。这里用记录列补齐缺失字段。
+          if (map.get("id") == null) map.put("id", record.getId());
+          if (map.get("projectId") == null && record.getProjectId() != null)
+            map.put("projectId", record.getProjectId());
+          if (map.get("targetId") == null && record.getTargetId() != null)
+            map.put("targetId", record.getTargetId());
           threads.add(map);
           continue;
         } catch (Exception ignored) {

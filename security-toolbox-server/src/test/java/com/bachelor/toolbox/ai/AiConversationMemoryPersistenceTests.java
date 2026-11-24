@@ -68,6 +68,37 @@ class AiConversationMemoryPersistenceTests {
   }
 
   @Test
+  void listedThreadFillsMissingIdAndProjectFromRecordColumns() {
+    AiConversationMemoryService service = service(mock(AiAgentRuntimeClient.class));
+    // 旧格式：JSON 里既没有 id 也没有 projectId
+    service.saveClientThread(
+        "legacy-no-id", java.util.Map.of("title", "旧线程", "messages", java.util.List.of()));
+
+    var listed = service.listAllPersistedThreads();
+    var entry = listed.stream()
+        .filter(item -> "legacy-no-id".equals(String.valueOf(item.get("id"))))
+        .findFirst()
+        .orElseThrow();
+
+    assertThat(entry.get("id")).isEqualTo("legacy-no-id");
+  }
+
+  @Test
+  void listedThreadKeepsClientSuppliedId() {
+    AiConversationMemoryService service = service(mock(AiAgentRuntimeClient.class));
+    service.saveClientThread(
+        "with-id",
+        java.util.Map.of("id", "client-1", "projectId", 101L, "messages", java.util.List.of()));
+
+    var entry = service.listAllPersistedThreads().stream()
+        .filter(item -> "client-1".equals(String.valueOf(item.get("id"))))
+        .findFirst()
+        .orElseThrow();
+
+    assertThat(entry.get("id")).isEqualTo("client-1");
+  }
+
+  @Test
   void deliveredPlanAndOriginalMessagesSurviveRealJpaRestart() {
     var first = service(mock(AiAgentRuntimeClient.class));
     var fixture = new AiPlanContinuityServiceTests.Fixture(first);
