@@ -183,9 +183,14 @@ public class TaskService {
     projectService.validateProjectTarget(request.projectId(), request.targetId());
     var target = targetService.getCurrentlyAuthorized(request.targetId(), request.projectId());
     var tool = registry.require(request.toolCode());
+    Map<String, Object> parameters = request.parameters() == null ? Map.of() : request.parameters();
     // Round 10：依赖任务也是创建路径，同样在唯一入口做工具参数校验。
     com.bachelor.toolbox.tool.ToolParameterPolicy.validateAtExecutionEntry(
-        request.toolCode(), request.parameters() == null ? Map.of() : request.parameters());
+        request.toolCode(), parameters);
+    // Round 399：依赖任务与普通任务共用同一套端口子集校验，避免越界端口先落库、
+    // 直到执行期才失败，留下误导性的 BLOCKED/FAILED 记录。
+    com.bachelor.toolbox.tool.ToolPortScope.requireWithinAuthorization(
+        target, request.toolCode(), parameters, portRangeParser, maxPortsPerTaskRequest);
     List<SecurityTask> dependencyTasks = repository.findAllById(dependencies);
     if (dependencyTasks.size() != dependencies.size()) {
       throw new ApiException("任务依赖不存在");
@@ -208,8 +213,7 @@ public class TaskService {
     task.setProgressMessage("等待前置端口探测完成");
     task.setProgressUpdatedAt(java.time.Instant.now());
     task.setQueueEnteredAt(java.time.Instant.now());
-    task.setRequestJson(objectMapper.writeValueAsString(
-        request.parameters() == null ? Map.of() : request.parameters()));
+    task.setRequestJson(objectMapper.writeValueAsString(parameters));
     task.setWorkflowGroup(Math.max(0, workflowGroup));
     task.setDependencyTaskIds(objectMapper.writeValueAsString(dependencies));
     task.setEffectiveRisk("SAFE");
@@ -648,6 +652,23 @@ public class TaskService {
     if (!RETRYABLE_STATUSES.contains(original.getStatus())) {
       throw new ApiException("仅失败、被拒绝或已取消的任务可以重试");
     }
+    // Round 399：重试复用历史 requestJson，必须重新经过当前中央参数白名单与端口子集复核，
+    // 否则旧任务在目标授权范围收紧后仍可能被原样重放。幂等命中已在上面校验过请求是否变化，
+    // 此处只针对“新建重试”执行实时授权校验。
+    Map<String, Object> retryParameters;
+    try {
+      retryParameters =
+          original.getRequestJson() == null || original.getRequestJson().isBlank()
+              ? Map.of()
+              : objectMapper.readValue(
+                  original.getRequestJson(), new com.fasterxml.jackson.core.type.TypeReference<>() {});
+    } catch (Exception invalid) {
+      throw new ApiException("原任务参数无法复核，不能重试");
+    }
+    com.bachelor.toolbox.tool.ToolParameterPolicy.validateAtExecutionEntry(
+        original.getToolCode(), retryParameters);
+    com.bachelor.toolbox.tool.ToolPortScope.requireWithinAuthorization(
+        target, original.getToolCode(), retryParameters, portRangeParser, maxPortsPerTaskRequest);
 
     SecurityTask retry = new SecurityTask();
     retry.setTargetId(original.getTargetId());

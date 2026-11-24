@@ -57,6 +57,17 @@ class TaskServiceTests {
             projectService,
             progressEvents);
     when(projectService.get(any())).thenReturn(taskProject());
+    setField(service, "portRangeParser", new com.bachelor.toolbox.target.PortRangeParser());
+  }
+
+  private static void setField(Object target, String name, Object value) {
+    try {
+      var field = target.getClass().getDeclaredField(name);
+      field.setAccessible(true);
+      field.set(target, value);
+    } catch (ReflectiveOperationException error) {
+      throw new IllegalStateException(error);
+    }
   }
 
   @Test
@@ -150,6 +161,51 @@ class TaskServiceTests {
     assertThrows(ApiException.class, () -> service.retry(7L));
 
     assertEquals("REJECTED", findSavedRetry().getStatus());
+  }
+
+  @Test
+  void createDependentRejectsPortsOutsideAuthorizationBeforePersistence() throws Exception {
+    when(targetService.getCurrentlyAuthorized(3L, 1L)).thenReturn(authorizedTarget());
+    when(registry.require("tcp_ports")).thenReturn(null);
+    SecurityTask dependency = task("SUCCESS");
+    dependency.setId(7L);
+    when(repository.findAllById(List.of(7L))).thenReturn(List.of(dependency));
+
+    ApiException error =
+        assertThrows(
+            ApiException.class,
+            () ->
+                service.createDependent(
+                    new CreateTaskRequest(1L, 3L, "tcp_ports", java.util.Map.of("ports", "80")),
+                    List.of(7L),
+                    0));
+
+    assertEquals("请求的端口超出目标授权范围: [80]", error.getMessage());
+    verify(repository, never()).save(any());
+  }
+
+  @Test
+  void retryRejectsStoredPortsOutsideCurrentAuthorization() {
+    SecurityTask original = task("FAILED");
+    when(repository.findById(7L)).thenReturn(Optional.of(original));
+    when(targetService.getCurrentlyAuthorized(3L, 1L)).thenReturn(authorizedTarget());
+    when(repository.findByRetryRequestKey(org.mockito.ArgumentMatchers.any()))
+        .thenReturn(Optional.empty());
+
+    ApiException error = assertThrows(ApiException.class, () -> service.retry(7L));
+
+    assertEquals("请求的端口超出目标授权范围: [80]", error.getMessage());
+    verify(repository, never()).save(any());
+    verify(executionService, never()).executeAsync(any());
+  }
+
+  private com.bachelor.toolbox.target.AuthorizedTarget authorizedTarget() {
+    var target = new com.bachelor.toolbox.target.AuthorizedTarget();
+    target.setId(3L);
+    target.setTargetValue("192.168.222.155");
+    target.setAllowedPorts("443");
+    target.setEnabled(true);
+    return target;
   }
 
   private SecurityTask task(String status) {
