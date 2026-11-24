@@ -2,6 +2,7 @@ import axios from "axios";
 import { clearAuthToken, notifyAuthExpired, readAuthToken } from "./authToken";
 import { taskbarProgress } from "./utils/taskbarProgress";
 import { isEntryPage, workspaceRedirect } from "./utils/startupNavigation";
+import { sanitizeApiBaseUrl } from "./utils/apiBaseUrl";
 
 let requestIdCounter = 0;
 
@@ -13,8 +14,12 @@ const desktopMode = Boolean(
 // 注意：这里不要用 import.meta.env —— 该文件会被 scripts/test-stream-auth.cjs
 // 以 ts.transpileModule(CommonJS) + vm 方式加载做 401/403 鉴权回归，
 // import.meta 在非模块上下文会直接抛 SyntaxError。
-export const apiBaseUrl =
-  query.get("backend") || window.toolboxDesktop?.backendBaseUrl || "/api";
+// 第403轮：任何来源的基址都必须先经过本机回环校验；渲染进程会自动附加 Bearer Token，
+// 不能让恶意查询参数把请求（连同令牌）导向外部主机。
+export const apiBaseUrl = sanitizeApiBaseUrl(
+  query.get("backend") || window.toolboxDesktop?.backendBaseUrl,
+  window.location.origin,
+);
 
 export function getApiUrl(path: string): string {
   const normalized = apiBaseUrl.replace(/\/+$/, "");
