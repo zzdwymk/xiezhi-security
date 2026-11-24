@@ -65,12 +65,35 @@ public final class CapabilityBlacklist {
           // 只落在"需管理员确认"而非"绝对禁止"，与黑名单对同类不可逆操作的立场不一致。
           "/api/settings/data");
 
+  /**
+   * 第387轮：<strong>方法 + 路径</strong>级绝对禁止条目（形如 {@code "DELETE /api/findings"}）。
+   *
+   * <p>存在原因：{@link #DEFAULT_PATH_PATTERNS} 只按路径匹配、不含 HTTP 方法，因此只能收录
+   * "该路径上所有方法都是破坏性"的端点。{@code /api/findings}、{@code /api/vulnerabilities/catalog}
+   * 这类**同时提供读接口**的资源无法整体拉黑（会把合法 GET 也禁掉），结果是它们的 DELETE
+   * 只能靠"需管理员确认"防守——与黑名单对"不可逆批量删除"的立场不一致。
+   *
+   * <p>因此这里增加方法维度：只禁止破坏性的那个方法，读方法照常放行。
+   */
+  private static final Set<String> DEFAULT_METHOD_PATHS =
+      Set.of(
+          // 批量删除全部扫描发现（不可逆）
+          "DELETE /api/findings",
+          // 清空漏洞目录（不可逆）
+          "DELETE /api/vulnerabilities/catalog");
+
   private final Set<String> blockedCodes;
   private final Set<String> blockedPaths;
+  private final Set<String> blockedMethodPaths;
 
   private CapabilityBlacklist(Set<String> codes, Set<String> paths) {
+    this(codes, paths, DEFAULT_METHOD_PATHS);
+  }
+
+  private CapabilityBlacklist(Set<String> codes, Set<String> paths, Set<String> methodPaths) {
     this.blockedCodes = Set.copyOf(codes);
     this.blockedPaths = Set.copyOf(paths);
+    this.blockedMethodPaths = Set.copyOf(methodPaths);
   }
 
   /** §6.4 默认黑名单。 */
@@ -100,7 +123,7 @@ public final class CapabilityBlacklist {
         }
       }
     }
-    return new CapabilityBlacklist(codes, paths);
+    return new CapabilityBlacklist(codes, paths, blockedMethodPaths);
   }
 
   /** 从逗号/分号/空白分隔的配置串构建追加黑名单。 */
@@ -170,6 +193,54 @@ public final class CapabilityBlacklist {
   /** 能力码黑名单快照。 */
   public Set<String> blockedCodes() {
     return blockedCodes;
+  }
+
+  /**
+   * 第387轮：按<strong>方法 + 路径</strong>判定是否被绝对禁止。
+   *
+   * <p>判定顺序（任何一步命中即禁止）：
+   *
+   * <ol>
+   *   <li>先走 <strong>仅路径</strong> 规则（{@link #blocksPath(String)}）——这类端点上所有方法都属破坏性；
+   *   <li>再看方法级规则（{@link #DEFAULT_METHOD_PATHS}）——只禁止破坏性方法，读方法放行。
+   * </ol>
+   *
+   * <p>方法缺失/为空时**只**按路径规则判定：不给调用方"省略方法即逃逸"的机会，也不会因为读不到方法
+   * 就把 DELETE 放行——真正的方法级拦截发生在 {@link CapabilityGate} 拿得到方法的那条路径上。
+   */
+  public boolean blocksMethodPath(String method, String path) {
+    if (blocksPath(path)) {
+      return true;
+    }
+    if (path == null || path.isBlank() || method == null || method.isBlank()) {
+      return false;
+    }
+    String normalizedMethod = method.trim().toUpperCase(java.util.Locale.ROOT);
+    String normalizedPath = normalizePath(path);
+    if (blockedMethodPaths.contains(normalizedMethod + " " + normalizedPath)) {
+      return true;
+    }
+    for (String blocked : blockedMethodPaths) {
+      int split = blocked.indexOf(' ');
+      if (split <= 0) {
+        continue;
+      }
+      String blockedMethod = blocked.substring(0, split);
+      String blockedPath = blocked.substring(split + 1);
+      if (!blockedMethod.equals(normalizedMethod)) {
+        continue;
+      }
+      if (blockedPath.endsWith("/*")
+          && normalizedPath.startsWith(blockedPath.substring(0, blockedPath.length() - 1))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** 方法级黑名单快照（形如 {@code "DELETE /api/findings"}）。 */
+  public Set<String> blockedMethodPaths() {
+    return blockedMethodPaths;
   }
 
   /** 端点黑名单快照（前缀模式已展开）。 */

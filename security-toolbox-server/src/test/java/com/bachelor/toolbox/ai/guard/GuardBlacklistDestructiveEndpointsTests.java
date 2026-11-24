@@ -49,4 +49,41 @@ class GuardBlacklistDestructiveEndpointsTests {
     assertThat(blacklist.blocksPath("/api/tasks")).isFalse();
     assertThat(blacklist.blocksPath("/api/settings")).isFalse();
   }
+
+  @Test
+  @DisplayName("第387轮：批量删除类端点按「方法+路径」绝对禁止，读方法不受影响")
+  void methodLevelDestructiveEndpointsAreBlocked() {
+    assertThat(blacklist.blocksMethodPath("DELETE", "/api/findings"))
+        .as("批量删除全部扫描发现必须绝对禁止")
+        .isTrue();
+    assertThat(blacklist.blocksMethodPath("delete", "/api/findings"))
+        .as("方法名大小写不敏感")
+        .isTrue();
+    assertThat(blacklist.blocksMethodPath("GET", "/api/findings"))
+        .as("读取发现必须放行")
+        .isFalse();
+    assertThat(blacklist.blocksMethodPath("DELETE", "/api/vulnerabilities/catalog"))
+        .as("清空漏洞目录必须绝对禁止")
+        .isTrue();
+    assertThat(blacklist.blocksMethodPath("GET", "/api/vulnerabilities/catalog"))
+        .as("读取漏洞目录必须放行")
+        .isFalse();
+  }
+
+  @Test
+  @DisplayName("第387轮：仅路径规则对所有方法生效（方法缺失也不能逃逸）")
+  void pathOnlyRulesApplyToEveryMethod() {
+    assertThat(blacklist.blocksMethodPath("GET", "/api/system/shutdown")).isTrue();
+    assertThat(blacklist.blocksMethodPath(null, "/api/system/shutdown")).isTrue();
+    assertThat(blacklist.blocksMethodPath("POST", "/api/settings/data")).isTrue();
+    assertThat(blacklist.blocksMethodPath(null, "/api/settings/data")).isTrue();
+  }
+
+  @Test
+  @DisplayName("第387轮：方法级规则不得扩散到同前缀的其他资源")
+  void methodLevelRulesDoNotLeakToSiblings() {
+    assertThat(blacklist.blocksMethodPath("DELETE", "/api/findings/123")).isFalse();
+    assertThat(blacklist.blocksMethodPath("DELETE", "/api/findings-extra")).isFalse();
+    assertThat(blacklist.blocksMethodPath("PUT", "/api/findings")).isFalse();
+  }
 }

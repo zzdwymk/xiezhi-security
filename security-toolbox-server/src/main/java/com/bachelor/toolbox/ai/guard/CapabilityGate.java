@@ -394,8 +394,11 @@ public class CapabilityGate {
 
     // §6.5 反向能力映射：通用端点原语（invoke_endpoint）不是绕过通道，必须按它"实际要打的端点"套用同样的黑名单。
     // 只检查能力自身的 code/path 会留下后门——invoke_endpoint("POST", "/api/system/shutdown") 的能力码是合法的。
+    // Round 387：改用 blocksMethodPath，把 (方法 + 路径) 级条目（如 DELETE /api/findings）也纳入拦截；
+    // 方法取不到时仍按纯路径规则判定（不给"省略 method 即逃逸"的机会）。
     String requestedPath = requestedEndpointPath(params);
-    if (requestedPath != null && blacklist.blocksPath(requestedPath)) {
+    if (requestedPath != null
+        && blacklist.blocksMethodPath(requestedEndpointMethod(params), requestedPath)) {
       throw deny(
           CapabilityDeniedException.Layer.ADMISSION,
           "BLOCKED_CAPABILITY",
@@ -435,6 +438,23 @@ public class CapabilityGate {
 
   /** 端点原语用于承载路径的参数键。 */
   private static final Set<String> ENDPOINT_PATH_KEYS = Set.of("path", "endpoint", "endpointPath");
+
+  /** 端点原语用于承载 HTTP 方法的参数键（第387轮：方法级黑名单需要它）。 */
+  private static final Set<String> ENDPOINT_METHOD_KEYS = Set.of("method", "httpMethod", "verb");
+
+  /** 读取端点原语请求的 HTTP 方法；读不到返回 {@code null}（此时只按路径规则判定）。 */
+  private String requestedEndpointMethod(Map<String, Object> params) {
+    if (params == null) {
+      return null;
+    }
+    for (String key : ENDPOINT_METHOD_KEYS) {
+      Object value = params.get(key);
+      if (value instanceof String text && !text.isBlank()) {
+        return text.trim();
+      }
+    }
+    return null;
+  }
 
   private boolean requiresExplicitEnable(AgentCapability capability) {
     return capability.kind() == com.bachelor.toolbox.ai.capability.CapabilityKind.ADMIN
