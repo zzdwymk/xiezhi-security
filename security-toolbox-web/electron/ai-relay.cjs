@@ -100,12 +100,71 @@ function textContent(content) {
 }
 
 function validateRequest(body) {
-  if (!body || !Array.isArray(body.messages) || !body.messages.length || body.messages.length > 256
-    || (body.tools && body.tools.length) || (body.functions && body.functions.length)) throw new RelayError('text_messages_required')
+  if (!body || typeof body !== 'object' || Array.isArray(body) || !Array.isArray(body.messages)
+    || !body.messages.length || body.messages.length > 256) throw new RelayError('text_messages_required')
+  // Round 400：非数组的 tools/functions 以前被静默丢弃，等于悄悄改变请求语义。
+  // 现在只接受“未提供或空数组”，其余形状一律 400，绝不把非空工具集降级成纯文本请求。
+  for (const key of ['tools', 'functions']) {
+    if (body[key] === undefined) continue
+    if (!Array.isArray(body[key]) || body[key].length) throw new RelayError('text_messages_required')
+  }
+  if (body.stream !== undefined && typeof body.stream !== 'boolean') throw new RelayError('invalid_request')
+  // 在进入提供方循环前校验可选参数，错误必须成为 400 而不是被记成“上游不可用”。
+  validatedOptions(body)
   return body.messages.map(m => {
     if (!m || !['system', 'developer', 'user', 'assistant'].includes(m.role)) throw new RelayError('text_messages_required')
+    if (m.tool_calls !== undefined || m.function_call !== undefined || m.tool_call_id !== undefined) {
+      throw new RelayError('text_messages_required')
+    }
     return { role: m.role, content: textContent(m.content) }
   })
+}
+
+// Round 400：可选采样参数来自渲染进程，必须按 OpenAI 契约做类型与范围校验。
+// 以前 temperature 传对象、max_tokens 传 -1 等都会被原样转发，只会在上游变成 4xx/5xx。
+const NUMERIC_OPTIONS = {
+  temperature: {min: 0, max: 2, integer: false},
+  top_p: {min: 0, max: 1, integer: false},
+  max_tokens: {min: 1, max: 200000, integer: true},
+  max_completion_tokens: {min: 1, max: 200000, integer: true},
+  seed: {min: 0, max: 2147483647, integer: true},
+}
+
+function validatedOptions(body) {
+  const result = {}
+  for (const [key, rule] of Object.entries(NUMERIC_OPTIONS)) {
+    if (body[key] === undefined) continue
+    const value = body[key]
+    if (typeof value !== 'number' || !Number.isFinite(value) || (rule.integer && !Number.isInteger(value))
+      || value < rule.min || value > rule.max) throw new RelayError('invalid_request')
+    result[key] = value
+  }
+  if (body.response_format !== undefined) {
+    const format = body.response_format
+    if (!format || typeof format !== 'object' || Array.isArray(format)
+      || !['text', 'json_object', 'json_schema'].includes(format.type)) throw new RelayError('invalid_request')
+    result.response_format = format
+  }
+  if (body.stop !== undefined) {
+    const stop = body.stop
+    const valid = typeof stop === 'string'
+      ? stop.length > 0 && stop.length <= 512
+      : Array.isArray(stop) && stop.length > 0 && stop.length <= 4
+        && stop.every(item => typeof item === 'string' && item.length > 0 && item.length <= 512)
+    if (!valid) throw new RelayError('invalid_request')
+    result.stop = stop
+  }
+  return result
+}
+
+function sanitizeUsage(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const usage = {}
+  for (const key of ['prompt_tokens', 'completion_tokens', 'total_tokens']) {
+    const value = raw[key]
+    if (Number.isInteger(value) && value >= 0 && value <= 1000000000) usage[key] = value
+  }
+  return Object.keys(usage).length ? usage : null
 }
 
 function upstreamBody(provider, body, messages) {
@@ -123,9 +182,7 @@ function upstreamBody(provider, body, messages) {
     return result
   }
   const result = {model: provider.model, messages, stream: false}
-  for (const key of ['temperature', 'top_p', 'max_tokens', 'max_completion_tokens', 'response_format', 'stop', 'seed']) {
-    if (body[key] !== undefined) result[key] = body[key]
-  }
+  Object.assign(result, validatedOptions(body))
   return result
 }
 
@@ -143,7 +200,9 @@ async function readLimited(response, limit = MAX_RESPONSE) {
 }
 
 function responseText(data) {
-  if (data.error || (data.status && data.status !== 'completed')) throw new RelayError('upstream_incomplete')
+  // Round 400：Responses 协议以 status 作为终态。缺少 status 的响应不再被当作成功，
+  // 避免把未完成的输出或中间态 JSON 记成完整答案。
+  if (!data || data.error || data.status !== 'completed') throw new RelayError('upstream_incomplete')
   const output = (data.output || []).filter(o => o.type === 'message').flatMap(o => o.content || [])
     .filter(c => c.type === 'output_text').map(c => c.text || '').join('')
   return output || data.output_text || ''
@@ -238,7 +297,7 @@ function decodeResponse(raw, contentType, mode) {
   }
   if (!answer.trim()) throw new RelayError('empty_answer')
   // Only expose the successful text; upstream metadata can contain internal URLs.
-  return { answer, usage: completion?.usage, interrupted, reasoningOnly: !contentSeen }
+  return { answer, usage: sanitizeUsage(completion?.usage), interrupted, reasoningOnly: !contentSeen }
 }
 
 // 单次上游尝试必须给推理型模型留足时间：运行时侧的模型超时为 45 秒
@@ -351,7 +410,9 @@ function createAiRelay({providers = [], fetchImpl = globalThis.fetch, attemptTim
       if (body.stream === true) {
         res.writeHead(200, {'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache'})
         res.write(`data: ${JSON.stringify({...common, object: 'chat.completion.chunk', choices: [{index: 0, delta: {role: 'assistant', content: result.answer}, finish_reason: null}]})}\n\n`)
-        res.write(`data: ${JSON.stringify({...common, object: 'chat.completion.chunk', choices: [{index: 0, delta: {}, finish_reason: 'stop'}]})}\n\n`)
+        // Round 400：流式响应与 JSON 使用同一可识别契约；救援/截断必须在最后一个 chunk 里带 relay_notice，
+        // 否则调用方只能看到 finish_reason=stop，无法区分完整答案与被截断后救回的文本。
+        res.write(`data: ${JSON.stringify({...common, object: 'chat.completion.chunk', choices: [{index: 0, delta: {}, finish_reason: 'stop'}], ...(notice ? {relay_notice: notice} : {})})}\n\n`)
         res.end('data: [DONE]\n\n')
       } else {
         res.writeHead(200, {'Content-Type': 'application/json'})
@@ -359,8 +420,8 @@ function createAiRelay({providers = [], fetchImpl = globalThis.fetch, attemptTim
       }
     } catch (error) {
       if (error.code === 'request_cancelled') return
-      const code = ['text_messages_required', 'no_enabled_providers', 'all_providers_cooling_down'].includes(error.code) ? error.code : 'all_providers_unavailable'
-      sendError(res, code === 'text_messages_required' ? 400 : 503, code)
+      const code = ['text_messages_required', 'invalid_request', 'no_enabled_providers', 'all_providers_cooling_down'].includes(error.code) ? error.code : 'all_providers_unavailable'
+      sendError(res, ['text_messages_required', 'invalid_request'].includes(code) ? 400 : 503, code)
     } finally { res.removeListener('close', onClose) }
   }
 

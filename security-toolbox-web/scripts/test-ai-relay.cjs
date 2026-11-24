@@ -358,6 +358,92 @@ async function main() {
   await test('request body accepts runtime payloads above 1MB', () => fixture({providers: [provider('a')], fetchImpl: async () => ok('OK')}, async (_, request) => {
     assert.equal((await request({messages: [{role: 'user', content: 'x'.repeat(1024 * 1024 + 1024)}]})).status, 200)
   }))
+  // Round 400：非数组 tools/functions 与消息级工具字段过去被静默丢弃，等于把带工具的请求
+  // 降级成纯文本；现在必须在本地 400 拒绝，且不得触达上游。
+  await test('rejects non-array tools, functions and message tool fields without upstream calls', () => {
+    let calls = 0
+    return fixture({providers: [provider('a')], fetchImpl: async () => { calls++; return ok('must not be sent') }}, async (_, request) => {
+      const bodies = [
+        {tools: {type: 'function'}},
+        {tools: 'function'},
+        {functions: {name: 'x'}},
+        {messages: [{role: 'assistant', content: 'hi', tool_calls: [{id: '1'}]}]},
+        {messages: [{role: 'user', content: 'hi', function_call: {name: 'x'}}]},
+        {messages: [{role: 'tool', content: 'result', tool_call_id: '1'}]},
+      ]
+      for (const body of bodies) {
+        const response = await request(body)
+        assert.equal(response.status, 400, JSON.stringify(body))
+        const payload = await response.json()
+        assert.equal(payload.error.type, 'relay_error')
+        assert.equal(payload.error.code, 'text_messages_required')
+      }
+      const streamResponse = await request({stream: 'yes'})
+      assert.equal(streamResponse.status, 400)
+      assert.equal((await streamResponse.json()).error.code, 'invalid_request')
+      assert.equal(calls, 0)
+    })
+  })
+  await test('rejects invalid sampling parameters instead of forwarding them upstream', () => {
+    let calls = 0
+    return fixture({providers: [provider('a')], fetchImpl: async () => { calls++; return ok('must not be sent') }}, async (_, request) => {
+      const bodies = [
+        {temperature: {unexpected: true}},
+        {temperature: 3},
+        {max_tokens: -1},
+        {max_tokens: 1.5},
+        {top_p: 2},
+        {response_format: 'json_object'},
+        {response_format: {type: 'unknown'}},
+        {stop: 42},
+        {stop: []},
+        {stop: ['a', 'b', 'c', 'd', 'e']},
+        {seed: -1},
+      ]
+      for (const body of bodies) {
+        const response = await request(body)
+        assert.equal(response.status, 400, JSON.stringify(body))
+        assert.equal((await response.json()).error.code, 'invalid_request')
+      }
+      assert.equal(calls, 0)
+    })
+  })
+  await test('forwards valid sampling parameters in contract shape', () => fixture({providers: [provider('a')], fetchImpl: async (_, init) => {
+    const body = JSON.parse(init.body)
+    assert.equal(body.temperature, 0.7)
+    assert.equal(body.top_p, 0.9)
+    assert.equal(body.max_tokens, 128)
+    assert.deepEqual(body.stop, ['END'])
+    assert.deepEqual(body.response_format, {type: 'json_object'})
+    assert.equal(body.seed, 7)
+    return ok('{}')
+  }}, async (_, request) => {
+    const response = await request({temperature: 0.7, top_p: 0.9, max_tokens: 128, stop: ['END'], response_format: {type: 'json_object'}, seed: 7})
+    assert.equal(response.status, 200)
+  }))
+  // Responses 协议以 status 作为终态：缺失 status 的 JSON 不再是“成功答案”。
+  await test('Responses JSON without completed status fails closed', () => fixture({providers: [provider('a', {apiMode: 'responses'})], fetchImpl: async () =>
+    new Response(JSON.stringify({output_text: 'fixture answer without status'}), {headers: {'content-type': 'application/json'}})}, async (_, request) => {
+    assert.equal((await request()).status, 503)
+    assert.equal((await request()).status, 503)
+  }))
+  await test('streamed truncated answer carries relay notice on the final chunk', () => fixture({providers: [provider('a')], fetchImpl: async () => new Response(
+    event({choices: [{index: 0, delta: {content: '{"intent":"plan"'}}]}) +
+    event({choices: [{index: 0, delta: {}, finish_reason: 'length'}]}) + 'data: [DONE]\n\n',
+    {headers: {'content-type': 'text/event-stream'}})}, async (_, request) => {
+    const text = await (await request({stream: true})).text()
+    assert.ok(text.includes('"relay_notice":"upstream_length"'))
+    assert.ok(text.endsWith('data: [DONE]\n\n'))
+  }))
+  await test('usage metadata is whitelisted and internal fields never reach callers', () => fixture({providers: [provider('a')], fetchImpl: async () => new Response(JSON.stringify({
+    choices: [{message: {content: 'OK'}, finish_reason: 'stop'}],
+    usage: {prompt_tokens: 3, completion_tokens: 4, internal_url: 'http://127.0.0.1:9999/secret', debug: {token: 'secret'}},
+  }), {headers: {'content-type': 'application/json'}})}, async (_, request) => {
+    const body = await (await request()).json()
+    assert.deepEqual(body.usage, {prompt_tokens: 3, completion_tokens: 4})
+    assert.ok(!JSON.stringify(body).includes('internal_url'))
+    assert.ok(!JSON.stringify(body).includes('secret'))
+  }))
   console.log(`${passed} AI relay tests passed`)
 }
 main().catch(error => { console.error(error); process.exitCode = 1 })
