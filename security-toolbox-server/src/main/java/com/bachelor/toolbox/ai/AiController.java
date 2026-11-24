@@ -481,7 +481,14 @@ public class AiController {
       if (existing == null && declaredPid == null) {
         throw new com.bachelor.toolbox.common.ApiException("新建 AI 会话必须声明可访问的评估项目 ID");
       }
-      memoryService.saveClientThread(sessionId, payload);
+      // Round 409：客户端线程若省略 id，落库后在列表里没有主键，前端按 id 合并会把同一会话
+      // 当作新条目或丢弃。这里在落库前补上规范 id（=sessionId），客户端自带 id 时保持原值。
+      Map<String, Object> threadToSave = payload;
+      if (threadToSave != null && !threadToSave.containsKey("id")) {
+        threadToSave = new LinkedHashMap<>(threadToSave);
+        threadToSave.put("id", sessionId);
+      }
+      memoryService.saveClientThread(sessionId, threadToSave);
     }
     return Map.of("sessionId", sessionId, "saved", true);
   }

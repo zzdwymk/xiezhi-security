@@ -140,6 +140,40 @@ class AiConversationListAccessTests {
   }
 
   @Test
+  @DisplayName("CL-9 客户端省略 id → 落库前补 sessionId 作为主键")
+  void saveFillsMissingIdWithSessionId() {
+    ProjectAuthorizationService auth = mock(ProjectAuthorizationService.class);
+    AiConversationMemoryService mem = mock(AiConversationMemoryService.class);
+    when(mem.scope("no-id")).thenReturn(null);
+
+    controller(auth, mem).saveConversation(
+        "no-id", new java.util.LinkedHashMap<>(Map.of("projectId", 5)));
+
+    org.mockito.ArgumentCaptor<Map<String, Object>> captor =
+        org.mockito.ArgumentCaptor.forClass(Map.class);
+    org.mockito.Mockito.verify(mem)
+        .saveClientThread(org.mockito.ArgumentMatchers.eq("no-id"), captor.capture());
+    assertThat(captor.getValue()).containsEntry("id", "no-id");
+  }
+
+  @Test
+  @DisplayName("CL-10 客户端自带 id → 原值保留，不被覆盖")
+  void saveKeepsClientSuppliedId() {
+    ProjectAuthorizationService auth = mock(ProjectAuthorizationService.class);
+    AiConversationMemoryService mem = mock(AiConversationMemoryService.class);
+    when(mem.scope("has-id")).thenReturn(null);
+    Map<String, Object> payload = new LinkedHashMap<>(Map.of("projectId", 5, "id", "client-thread-1"));
+
+    controller(auth, mem).saveConversation("has-id", payload);
+
+    org.mockito.ArgumentCaptor<Map<String, Object>> captor =
+        org.mockito.ArgumentCaptor.forClass(Map.class);
+    org.mockito.Mockito.verify(mem)
+        .saveClientThread(org.mockito.ArgumentMatchers.eq("has-id"), captor.capture());
+    assertThat(captor.getValue()).containsEntry("id", "client-thread-1");
+  }
+
+  @Test
   @DisplayName("CL-4 删除他人项目会话 → 拒绝")
   void deleteRejectsOtherProjectThread() {
     ProjectAuthorizationService auth = mock(ProjectAuthorizationService.class);
