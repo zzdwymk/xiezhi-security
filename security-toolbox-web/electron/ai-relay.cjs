@@ -5,6 +5,14 @@ const { randomBytes, randomUUID, timingSafeEqual } = require('node:crypto')
 
 const MAX_BODY = 2 * 1024 * 1024
 const MAX_RESPONSE = 4 * 1024 * 1024
+// 第402轮：超时/上限的单一契约。文案在 src/utils/aiRelayContract.ts，测试会比对两处。
+const AI_RELAY_DEFAULTS = Object.freeze({
+  attemptTimeoutMs: 120000,
+  totalTimeoutMs: 150000,
+  cooldownMs: 5000,
+  maxPromptChars: 4000,
+  maxProviders: 16,
+})
 class RelayError extends Error {
   constructor(code, reason = null) { super(code); this.code = code; this.reason = reason }
 }
@@ -80,7 +88,7 @@ async function listProviderModels(provider, {fetchImpl = globalThis.fetch, timeo
 }
 
 function normalize(providers) {
-  if (!Array.isArray(providers) || providers.length > 32) throw new RelayError('invalid_providers')
+  if (!Array.isArray(providers) || providers.length > AI_RELAY_DEFAULTS.maxProviders) throw new RelayError('invalid_providers')
   const ids = new Set()
   return providers.map(p => {
     if (!p || typeof p.id !== 'string' || !p.id || ids.has(p.id) || typeof p.model !== 'string'
@@ -307,7 +315,10 @@ function decodeResponse(raw, contentType, mode) {
 // 因此这里让尝试超时与总超时都高于运行时模型超时，并缩短冷却时间。
 // Keep the relay deadline above the runtime's 45-second model timeout, so a slow
 // but healthy model response is not mistaken for an upstream outage.
-function createAiRelay({providers = [], fetchImpl = globalThis.fetch, attemptTimeoutMs = 120000, totalTimeoutMs = 150000, cooldownMs = 5000} = {}) {
+function createAiRelay({providers = [], fetchImpl = globalThis.fetch,
+  attemptTimeoutMs = AI_RELAY_DEFAULTS.attemptTimeoutMs,
+  totalTimeoutMs = AI_RELAY_DEFAULTS.totalTimeoutMs,
+  cooldownMs = AI_RELAY_DEFAULTS.cooldownMs} = {}) {
   let entries = normalize(providers), cursor = 0, server = null, baseUrl = null
   let forcedCoolingAttempts = 0
   const apiKey = randomBytes(32).toString('hex')
@@ -440,7 +451,7 @@ function createAiRelay({providers = [], fetchImpl = globalThis.fetch, attemptTim
     async testProvider(provider, prompt = '你好，请简短介绍自己。') {
       const began = Date.now()
       try {
-        if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 4000) throw new RelayError('invalid_test_prompt')
+        if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > AI_RELAY_DEFAULTS.maxPromptChars) throw new RelayError('invalid_test_prompt')
         const entry = normalize([provider])[0]
         const body = {messages: [{role: 'user', content: prompt.trim()}], max_tokens: 512}
         const result = await attempt(entry.provider, body, body.messages, attemptTimeoutMs)
@@ -457,4 +468,4 @@ function createAiRelay({providers = [], fetchImpl = globalThis.fetch, attemptTim
   }
 }
 
-module.exports = {createAiRelay, listProviderModels}
+module.exports = {createAiRelay, listProviderModels, AI_RELAY_DEFAULTS}

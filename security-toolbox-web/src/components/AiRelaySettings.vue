@@ -2,6 +2,11 @@
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import FluentIcon from "./FluentIcon.vue";
 import MarkdownBody from "./MarkdownBody.vue";
+import {
+  AI_RELAY_MAX_PROMPT_CHARS,
+  AI_RELAY_MAX_PROVIDERS,
+  relayDeadlineHelp,
+} from "../utils/aiRelayContract";
 
 const bridge = window.toolboxDesktop;
 const emit = defineEmits<{ "saved-mode": [enabled: boolean] }>();
@@ -38,9 +43,10 @@ watch(() => settings.providers.map((item) => ({ id: item.id, connection: JSON.st
 });
 
 function upstreamMessage(code: string, ok = false): string {
-  if (ok) return "线路测试成功，已收到完整模型回答。";
+  if (ok) return "线路测试成功，已收到模型回答。";
   const messages: Record<string, string> = {
-    invalid_test_prompt: "测试内容不能为空，且最多 4000 字。",
+    invalid_test_prompt: `测试内容不能为空，且最多 ${AI_RELAY_MAX_PROMPT_CHARS} 字。`,
+    invalid_request: "请求参数不符合上游契约（HTTP 400），请检查温度、最大 token、response_format 或 stop 设置。",
     invalid_responses_request: "上游不接受当前 Responses 请求格式，请检查 Codex 兼容模式（HTTP 400）。",
     model_not_found: "此 API 不支持所选模型，请获取模型列表后重新选择。",
     upstream_overloaded: "上游模型负载已达上限，请稍后重试或添加另一条 API 线路。",
@@ -109,7 +115,7 @@ onMounted(async () => {
 });
 
 function addProvider() {
-  if (settings.providers.length >= 16) return;
+  if (settings.providers.length >= AI_RELAY_MAX_PROVIDERS) return;
   const item: AiRelayProvider = {
     id: crypto.randomUUID(), name: `线路 ${settings.providers.length + 1}`,
     baseUrl: "", model: "", apiMode: "chat_completions", codexHeaders: false,
@@ -177,8 +183,8 @@ async function test(item: AiRelayProvider) {
     results[item.id] = { ok: false, message: "请输入测试内容。" };
     return;
   }
-  if (testPrompt.value.length > 4000) {
-    results[item.id] = { ok: false, message: "测试内容不能超过 4000 字符。" };
+  if (testPrompt.value.length > AI_RELAY_MAX_PROMPT_CHARS) {
+    results[item.id] = { ok: false, message: `测试内容不能超过 ${AI_RELAY_MAX_PROMPT_CHARS} 字符。` };
     return;
   }
   const invalid = validate(item);
@@ -227,7 +233,7 @@ function cooldown(until: number) {
 
     <div v-if="settings.providers.length" class="relay-editor">
       <nav class="relay-list" aria-label="API 线路">
-        <div class="relay-toolbar"><strong>线路</strong><el-button size="small" :disabled="busy || settings.providers.length >= 16" @click="addProvider">添加 API</el-button></div>
+        <div class="relay-toolbar"><strong>线路</strong><el-button size="small" :disabled="busy || settings.providers.length >= AI_RELAY_MAX_PROVIDERS" @click="addProvider">添加 API</el-button></div>
         <button v-for="item in settings.providers" :key="item.id" type="button" class="relay-list-item" :class="{ selected: selected === item.id }" @click="selected = item.id">
           <strong>{{ item.name || '未命名线路' }}</strong>
           <small>{{ item.enabled ? '已启用' : '已停用' }} · {{ item.model || '未填模型' }}</small>
@@ -263,7 +269,7 @@ function cooldown(until: number) {
         <details class="relay-details">
           <summary><FluentIcon name="chevron-right" />测试连接</summary>
           <el-form-item label="测试内容">
-            <el-input v-model="testPrompt" type="textarea" :rows="3" maxlength="4000" show-word-limit placeholder="输入要发送给模型的内容" />
+            <el-input v-model="testPrompt" type="textarea" :rows="3" :maxlength="AI_RELAY_MAX_PROMPT_CHARS" show-word-limit placeholder="输入要发送给模型的内容" />
           </el-form-item>
           <el-button :loading="testing === provider.id" :disabled="!testPrompt.trim()" @click="test(provider)">发送测试</el-button>
           <el-alert v-if="results[provider.id]" :title="results[provider.id]!.message" :type="results[provider.id]!.ok ? 'success' : 'error'" :closable="false" show-icon />
@@ -288,7 +294,7 @@ function cooldown(until: number) {
         <span>请求 {{ item.requests }} · 成功 {{ item.successes }} · 失败 {{ item.failures }} · {{ cooldown(item.cooldownUntil) }}</span>
         <small v-if="item.lastError">最近错误：{{ upstreamMessage(item.lastReason || item.lastError) }}</small>
       </div>
-      <p class="relay-help">每次请求每条线路最多尝试一次；单线路最多 30 秒，总计最多 40 秒，失败冷却 30 秒。收到完整回答后展示。启停会短暂重启服务，线路修改保存后对新请求生效。最多 16 条线路。</p>
+      <p class="relay-help">{{ relayDeadlineHelp() }}</p>
     </details>
   </div>
 </template>

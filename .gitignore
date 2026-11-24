@@ -137,6 +137,7 @@ security-toolbox-web/scripts/*
 !security-toolbox-web/scripts/test-ai-relay-models.cjs
 !security-toolbox-web/scripts/test-ai-relay-runtime.cjs
 !security-toolbox-web/scripts/test-ai-relay-settings.cjs
+!security-toolbox-web/scripts/test-ai-relay-contract.cjs
 !security-toolbox-web/scripts/test-ai-relay.cjs
 !security-toolbox-web/scripts/test-ai-settings.cjs
 !security-toolbox-web/scripts/test-ai-step-state.cjs
