@@ -63,14 +63,10 @@ async function verifySha256(
   return { totalBytes, digest };
 }
 
-function safeArchiveEntryName(entryName) {
-  const normalized = String(entryName || "").replace(/\\/g, "/");
-  if (!normalized || normalized.includes("\0") || normalized.startsWith("/"))
-    return undefined;
-  const parts = normalized.split("/");
-  if (parts.includes("..") || parts.some((part) => !part)) return undefined;
-  return { normalized, parts };
-}
+// 第394轮：Zip Slip 条目名校验抽到纯模块 archive-entry-policy.cjs。
+// 原因：本文件依赖 Electron 内置的 `original-fs`，纯 Node 下无法 require，安全判定无法被单元测试直接覆盖。
+// 抽成纯模块后，worker 与测试引用**同一份实现**，不存在"测试的是副本"的盲区。
+const { safeArchiveEntryName } = require("./archive-entry-policy.cjs");
 
 async function stageExecutableBinary(payload) {
   const {
