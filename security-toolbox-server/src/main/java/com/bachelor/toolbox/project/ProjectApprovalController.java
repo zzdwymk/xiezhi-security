@@ -1,5 +1,8 @@
 package com.bachelor.toolbox.project;
 
+import com.bachelor.toolbox.common.ApiException;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -57,6 +60,46 @@ public class ProjectApprovalController {
     // explicitly approved. The service validates the status value.
     Object rawStatus = body.containsKey("status") ? body.get("status") : DEFAULT_DECISION;
     String status = rawStatus == null ? null : String.valueOf(rawStatus);
-    return service.decide(projectId, approvalId, status, comment);
+    List<Map<String, Object>> stepOverrides = parseStepOverrides(body.get("stepOverrides"), status);
+    return stepOverrides == null
+        ? service.decide(projectId, approvalId, status, comment)
+        : service.decide(projectId, approvalId, status, comment, stepOverrides);
+  }
+
+  /**
+   * 审批弹窗提交的是“按步骤顺序排列的参数覆盖数组”。控制器必须把它原样交给
+   * {@link ProjectApprovalService} 的五参 decide；否则 UI 中看到的微调会被静默丢弃，
+   * 实际执行的仍是旧方案（审批内容与执行内容不一致）。
+   */
+  private List<Map<String, Object>> parseStepOverrides(Object raw, String status) {
+    if (raw == null) return null;
+    if (!"APPROVED".equals(status)) {
+      throw new ApiException("仅批准方案时允许提交参数覆盖");
+    }
+    if (!(raw instanceof List<?> values)) {
+      throw new ApiException("stepOverrides 必须是数组");
+    }
+    if (values.size() > 128) {
+      throw new ApiException("stepOverrides 步骤数量过多");
+    }
+    List<Map<String, Object>> normalized = new ArrayList<>(values.size());
+    for (Object value : values) {
+      if (value == null) {
+        normalized.add(null);
+        continue;
+      }
+      if (!(value instanceof Map<?, ?> map)) {
+        throw new ApiException("stepOverrides 每个元素必须是对象");
+      }
+      Map<String, Object> step = new LinkedHashMap<>();
+      for (Map.Entry<?, ?> entry : map.entrySet()) {
+        if (!(entry.getKey() instanceof String key) || key.isBlank()) {
+          throw new ApiException("stepOverrides 参数名必须是非空字符串");
+        }
+        step.put(key, entry.getValue());
+      }
+      normalized.add(step);
+    }
+    return List.copyOf(normalized);
   }
 }

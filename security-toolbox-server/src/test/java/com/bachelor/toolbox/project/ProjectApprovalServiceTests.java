@@ -12,6 +12,7 @@ import com.bachelor.toolbox.audit.AuditService;
 import com.bachelor.toolbox.common.ApiException;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
@@ -106,6 +107,29 @@ class ProjectApprovalServiceTests {
     assertThatThrownBy(() -> service.decide(3L, 7L, "APPROVED", null))
         .isInstanceOf(ApiException.class).hasMessageContaining("AI 不能确认");
     verify(repository, never()).findForUpdate(any(), any());
+  }
+
+  @Test
+  void approvesWithStepOverridesAndPersistsTheMergedPlan() throws Exception {
+    var mapper = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();
+    var plan = new com.bachelor.toolbox.ai.AiPlanResponse("provider", "model", "原计划", true,
+        List.of(new com.bachelor.toolbox.ai.AiPlanResponse.PlanStep(
+            "nmap_service_scan", "服务识别", "授权检查", Map.of("mode", "quick", "ports", "80"))));
+    ProjectApproval approval = approval(7L, 3L, "hash");
+    approval.setAiPlanJson(mapper.writeValueAsString(plan));
+    when(repository.findForUpdate(7L, 3L)).thenReturn(Optional.of(approval));
+    when(repository.save(approval)).thenReturn(approval);
+
+    ProjectApproval decided = service.decide(
+        3L, 7L, "APPROVED", "确认微调",
+        List.of(Map.of("mode", "regular", "ports", "443")));
+
+    assertThat(decided.getStatus()).isEqualTo("APPROVED");
+    var merged = mapper.readValue(approval.getAiPlanJson(), com.bachelor.toolbox.ai.AiPlanResponse.class);
+    assertThat(merged.steps()).singleElement().satisfies(step ->
+        assertThat(step.parameters())
+            .containsEntry("mode", "regular")
+            .containsEntry("ports", "443"));
   }
 
   @Test
