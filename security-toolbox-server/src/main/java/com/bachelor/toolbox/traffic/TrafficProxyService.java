@@ -159,7 +159,8 @@ public class TrafficProxyService {
       } catch (RuntimeException saveFailure) {
         LOGGER.warn("保存流量代理启动失败状态失败，会话={}", session.getId(), saveFailure);
       }
-      throw new ApiException("启动流量代理失败，请查看服务日志");
+      // 保留真实原因供诊断和端口占用重试使用，对外仍返回通用提示。
+      throw new ApiException("启动流量代理失败，请查看服务日志", ex);
     }
   }
 

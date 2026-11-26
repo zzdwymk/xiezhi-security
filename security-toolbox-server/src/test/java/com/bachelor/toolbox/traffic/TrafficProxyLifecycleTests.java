@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
@@ -25,6 +26,7 @@ import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -64,14 +66,43 @@ class TrafficProxyLifecycleTests {
   void startupAuditFailureClosesListenerAndAllowsImmediateRetry() throws Exception {
     persistSessions();
     int port = availablePort();
-    doThrow(new IllegalStateException("audit unavailable")).when(audit)
+    IllegalStateException auditFailure = new IllegalStateException("audit unavailable");
+    doThrow(auditFailure).when(audit)
         .record(eq("START_TRAFFIC_PROXY"), anyString(), any(), anyString(), anyString());
-    assertThatThrownBy(() -> service.start(request(port))).isInstanceOf(ApiException.class);
-    assertStoppedAndPortReleased(port);
+    assertThatThrownBy(() -> startWithRetry(port))
+        .isInstanceOf(ApiException.class)
+        .hasMessage("启动流量代理失败，请查看服务日志")
+        .hasCause(auditFailure);
+    verify(audit).record(eq("START_TRAFFIC_PROXY"), anyString(), any(), anyString(), anyString());
+    ArgumentCaptor<TrafficSession> failedSession = ArgumentCaptor.forClass(TrafficSession.class);
+    verify(sessions, atLeastOnce()).save(failedSession.capture());
+    int failedPort = failedSession.getValue().getListenPort();
+    assertStoppedAndPortReleased(failedPort);
     doNothing().when(audit).record(eq("START_TRAFFIC_PROXY"), anyString(), any(), anyString(), anyString());
     try {
-      assertThat(service.start(request(port)).running()).isTrue();
+      assertThat(service.start(request(failedPort)).running()).isTrue();
     } finally { service.stop(); }
+  }
+
+  @Test
+  void startupBindFailurePreservesCauseAndAllowsRetryOnAnotherPort() throws Exception {
+    persistSessions();
+    try (ServerSocket occupied = reservePort()) {
+      int port = occupied.getLocalPort();
+      try {
+        assertThatThrownBy(() -> service.start(request(port)))
+            .isInstanceOf(ApiException.class)
+            .hasMessage("启动流量代理失败，请查看服务日志")
+            .hasCauseInstanceOf(java.net.BindException.class);
+        assertThat(service.status().running()).isFalse();
+        assertThat(service.status().capturing()).isFalse();
+        assertThat(ReflectionTestUtils.getField(service, "current")).isNull();
+        verifyNoInteractions(audit);
+        startWithRetry(port);
+        assertThat(service.status().running()).isTrue();
+        assertThat(service.status().listenPort()).isNotEqualTo(port);
+      } finally { service.stop(); }
+    }
   }
 
   @Test
@@ -224,19 +255,30 @@ class TrafficProxyLifecycleTests {
    * 因此测试侧只能做到这里——该窗口已在注释中如实记录。
    */
   private static int availablePort() throws Exception {
+    try (ServerSocket socket = reservePort()) {
+      return socket.getLocalPort();
+    }
+  }
+
+  /** 直接保留已绑定端口，供占用端口回归使用，避免探测后重绑的竞态。 */
+  private static ServerSocket reservePort() throws Exception {
     int span = 19120 - 19080 + 1;
     int offset = java.util.concurrent.ThreadLocalRandom.current().nextInt(span);
     for (int attempt = 0; attempt < span; attempt++) {
       int port = 19080 + ((offset + attempt) % span);
       ServerSocket socket = new ServerSocket();
+      boolean reserved = false;
       try {
         socket.setReuseAddress(true);
         socket.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), 1);
-        return port;
+        reserved = true;
+        return socket;
       } catch (java.io.IOException occupied) {
         // 该端口已被占用，试下一个。
       } finally {
-        try { socket.close(); } catch (java.io.IOException ignored) { }
+        if (!reserved) {
+          try { socket.close(); } catch (java.io.IOException ignored) { }
+        }
       }
     }
     throw new IllegalStateException("No free test proxy port");
